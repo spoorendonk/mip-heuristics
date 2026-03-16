@@ -203,6 +203,8 @@ void run(HighsMipSolver& mipsolver) {
     // Determine gap to the binding bound
     double gap;
     bool row_violated = is_violated(i, l);
+    // NOLINTBEGIN(bugprone-branch-clone) — same expression form, different
+    // bounds
     if (l > row_hi[i] + feastol)
       gap = l - row_hi[i];  // upper violated
     else if (l < row_lo[i] - feastol)
@@ -211,6 +213,7 @@ void run(HighsMipSolver& mipsolver) {
       gap = l - row_hi[i];  // satisfied: push toward upper
     else
       gap = l - row_lo[i];  // satisfied: push toward lower
+    // NOLINTEND(bugprone-branch-clone)
 
     double delta = -gap / coeff;
 
@@ -376,7 +379,7 @@ void run(HighsMipSolver& mipsolver) {
     uint64_t w;
   };
   std::vector<WeightedCon> sampled;
-  sampled.reserve(kBmsConstraints * 3);
+  sampled.reserve(static_cast<size_t>(kBmsConstraints) * 3);
 
   // Lift bounds computation (ranged rows)
   auto compute_lift_bounds = [&](HighsInt j) -> std::pair<double, double> {
@@ -631,12 +634,9 @@ void run(HighsMipSolver& mipsolver) {
           batch.push_back({j, new_val});
         }
         auto fallback = select_best_from_batch(step, false);
-        bool better = false;
-        if (fallback.score > cand.score + kViolTol)
-          better = true;
-        else if (fallback.score > cand.score - kViolTol &&
-                 fallback.bonus > cand.bonus)
-          better = true;
+        bool better = fallback.score > cand.score + kViolTol ||
+                      (fallback.score > cand.score - kViolTol &&
+                       fallback.bonus > cand.bonus);
         if (better) cand = fallback;
       }
 
