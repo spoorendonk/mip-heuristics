@@ -1,9 +1,17 @@
 #pragma once
 
+#include <limits>
 #include <vector>
 
 #include "lp_data/HConst.h"
 #include "util/HighsInt.h"
+
+struct HeuristicResult {
+  bool found_feasible = false;
+  std::vector<double> solution;
+  double objective = std::numeric_limits<double>::infinity();
+  size_t effort = 0;
+};
 
 struct CscMatrix {
   std::vector<HighsInt> col_start;
