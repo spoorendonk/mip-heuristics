@@ -194,8 +194,10 @@ void run(HighsMipSolver& mipsolver) {
       lhs[i] += col_val[p] * delta;
       update_violated(i);
       // Invalidate lift cache for all variables sharing this row
-      for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
-        lift_dirty[ARindex[k]] = true;
+      if (!lift_all_dirty) {
+        for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
+          lift_dirty[ARindex[k]] = true;
+      }
     }
   };
 
@@ -449,6 +451,11 @@ void run(HighsMipSolver& mipsolver) {
     }
   };
 
+  // Precompute variables with nonzero cost for breakthrough moves
+  std::vector<HighsInt> costed_vars;
+  for (HighsInt j = 0; j < ncol; ++j)
+    if (std::abs(col_cost[j]) >= 1e-15) costed_vars.push_back(j);
+
   // --- Initialize solution ---
   if (!mipdata->incumbent.empty()) {
     for (HighsInt j = 0; j < ncol; ++j) {
@@ -599,8 +606,7 @@ void run(HighsMipSolver& mipsolver) {
 
       // Phase 2: Breakthrough moves
       if (best_feasible) {
-        for (HighsInt j = 0; j < ncol; ++j) {
-          if (std::abs(col_cost[j]) < 1e-15) continue;
+        for (HighsInt j : costed_vars) {
           double delta = compute_breakthrough_delta(j, current_obj);
           append_candidate(j, delta);
         }
