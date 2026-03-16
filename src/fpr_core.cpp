@@ -417,8 +417,8 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
 
     // --- Phase 3: WalkSAT Repair ---
     if (!feasible) {
+      for (auto i : violated) violated_pos[i] = -1;
       violated.clear();
-      std::fill(violated_pos.begin(), violated_pos.end(), -1);
 
       auto add_violated = [&](HighsInt i) {
         if (violated_pos[i] != -1) return;
