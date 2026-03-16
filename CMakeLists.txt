@@ -32,4 +32,6 @@ include(Catch)
 add_executable(mip_heuristics_tests tests/test_basic.cpp)
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs)
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
+target_compile_definitions(mip_heuristics_tests PRIVATE
+    "INSTANCES_DIR=\"${highs_SOURCE_DIR}/check/instances\"")
 catch_discover_tests(mip_heuristics_tests)

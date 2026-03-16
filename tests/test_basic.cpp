@@ -1,5 +1,10 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <string>
+
 #include "Highs.h"
+
+static const std::string kInstancesDir = INSTANCES_DIR;
 
 TEST_CASE("Smoke test: solve small MIP", "[basic]") {
     // min x + y
@@ -29,4 +34,34 @@ TEST_CASE("Smoke test: solve small MIP", "[basic]") {
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == 1.0);
+}
+
+TEST_CASE("Characterization: flugpl", "[heuristic][fpr]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.readModel(kInstancesDir + "/flugpl.mps");
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("Characterization: egout", "[heuristic][fpr]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.readModel(kInstancesDir + "/egout.mps");
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+}
+
+TEST_CASE("Characterization: bell5", "[heuristic][fpr]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.readModel(kInstancesDir + "/bell5.mps");
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-6));
 }
