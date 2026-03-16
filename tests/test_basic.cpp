@@ -1,8 +1,11 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <random>
 #include <string>
 
 #include "Highs.h"
+#include "adaptive/solution_pool.h"
+#include "adaptive/thompson_sampler.h"
 
 static const std::string kInstancesDir = INSTANCES_DIR;
 
@@ -124,4 +127,100 @@ TEST_CASE("Portfolio: bell5 finds solution", "[portfolio]") {
   double obj;
   highs.getInfoValue("objective_function_value", obj);
   REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-6));
+}
+
+TEST_CASE("ThompsonSampler: basic operation", "[bandit]") {
+  double priors[] = {2.0, 3.0, 2.5};
+  ThompsonSampler sampler(3, priors, false);
+
+  std::mt19937 rng(42);
+
+  // Select should return valid arm indices
+  for (int i = 0; i < 100; ++i) {
+    int arm = sampler.select(rng);
+    REQUIRE(arm >= 0);
+    REQUIRE(arm < 3);
+  }
+
+  // Update should not crash
+  sampler.update(0, 0);  // infeasible
+  sampler.update(1, 1);  // stale
+  sampler.update(2, 2);  // first feasible
+  sampler.update(0, 3);  // improved
+
+  // Stats should reflect updates
+  auto s0 = sampler.stats(0);
+  REQUIRE(s0.pulls == 2);
+  REQUIRE(s0.alpha == Catch::Approx(3.5));  // 2.0 + 1.5
+  REQUIRE(s0.beta == Catch::Approx(2.0));   // 1.0 + 1.0
+
+  auto s1 = sampler.stats(1);
+  REQUIRE(s1.pulls == 1);
+  REQUIRE(s1.beta == Catch::Approx(1.25));  // 1.0 + 0.25
+
+  auto s2 = sampler.stats(2);
+  REQUIRE(s2.alpha == Catch::Approx(3.5));  // 2.5 + 1.0
+}
+
+TEST_CASE("ThompsonSampler: thread-safe mode", "[bandit]") {
+  double priors[] = {2.0, 2.0};
+  ThompsonSampler sampler(2, priors, true);
+
+  std::mt19937 rng(123);
+  int arm = sampler.select(rng);
+  REQUIRE(arm >= 0);
+  REQUIRE(arm < 2);
+  sampler.update(arm, 2);
+}
+
+TEST_CASE("SolutionPool: basic operations", "[pool]") {
+  SolutionPool pool(3, true);  // minimize, capacity 3
+
+  // Empty pool
+  auto snap = pool.snapshot();
+  REQUIRE_FALSE(snap.has_solution);
+  REQUIRE(pool.size() == 0);
+
+  // Add solutions
+  REQUIRE(pool.try_add(10.0, {1.0, 2.0}));
+  REQUIRE(pool.try_add(5.0, {3.0, 4.0}));
+  REQUIRE(pool.try_add(8.0, {5.0, 6.0}));
+
+  snap = pool.snapshot();
+  REQUIRE(snap.has_solution);
+  REQUIRE(snap.best_objective == Catch::Approx(5.0));
+  REQUIRE(pool.size() == 3);
+
+  // Adding worse solution when full should fail
+  REQUIRE_FALSE(pool.try_add(15.0, {7.0, 8.0}));
+
+  // Adding better solution when full should replace worst
+  REQUIRE(pool.try_add(3.0, {9.0, 10.0}));
+  snap = pool.snapshot();
+  REQUIRE(snap.best_objective == Catch::Approx(3.0));
+
+  // Sorted entries should be best-first
+  auto entries = pool.sorted_entries();
+  REQUIRE(entries.size() == 3);
+  REQUIRE(entries[0].objective <= entries[1].objective);
+  REQUIRE(entries[1].objective <= entries[2].objective);
+}
+
+TEST_CASE("SolutionPool: restart strategies", "[pool]") {
+  SolutionPool pool(5, true);
+  pool.try_add(10.0, {0.0, 1.0, 0.0});
+  pool.try_add(5.0, {1.0, 0.0, 1.0});
+  pool.try_add(7.0, {0.0, 0.0, 1.0});
+
+  std::mt19937 rng(42);
+  std::vector<double> restart;
+
+  // Simple restart (crossover or copy)
+  REQUIRE(pool.get_restart(rng, restart));
+  REQUIRE(restart.size() == 3);
+
+  // Multiple restarts should not crash
+  for (int i = 0; i < 50; ++i) {
+    REQUIRE(pool.get_restart(rng, restart));
+  }
 }
