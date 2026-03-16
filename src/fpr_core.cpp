@@ -549,13 +549,10 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
       continue;
     }
 
-    // Verify feasibility from scratch
+    // Verify feasibility using cached LHS values (O(nrow) vs O(nnz))
     bool truly_feasible = true;
     for (HighsInt i = 0; i < nrow; ++i) {
-      double lhs = 0.0;
-      for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
-        lhs += ARvalue[k] * solution[ARindex[k]];
-      if (is_violated(i, lhs)) {
+      if (is_violated(i, lhs_cache[i])) {
         truly_feasible = false;
         break;
       }
