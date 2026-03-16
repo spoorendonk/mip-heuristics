@@ -159,6 +159,8 @@ void run(HighsMipSolver& mipsolver) {
     return obj;
   };
 
+  double current_obj = 0.0;
+
   // Rebuild all constraint state from scratch
   auto rebuild_state = [&]() {
     violated.clear();
@@ -176,6 +178,7 @@ void run(HighsMipSolver& mipsolver) {
         add_satisfied(i);
     }
     lift_all_dirty = true;
+    current_obj = compute_objective();
   };
 
   // Apply a move: update solution, LHS, violated/satisfied lists, lift dirty
@@ -184,6 +187,7 @@ void run(HighsMipSolver& mipsolver) {
     double delta = new_val - old_val;
     if (std::abs(delta) < 1e-15) return;
     solution[j] = new_val;
+    current_obj += col_cost[j] * delta;
     lift_dirty[j] = true;
     for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
       HighsInt i = col_row[p];
@@ -519,7 +523,7 @@ void run(HighsMipSolver& mipsolver) {
       if (!truly_feasible) continue;
 
       // Submit solution if it improves best
-      double obj = compute_objective();
+      double obj = current_obj;
       bool improved = false;
       if (!best_feasible)
         improved = true;
@@ -612,7 +616,6 @@ void run(HighsMipSolver& mipsolver) {
 
       // Phase 2: Breakthrough moves
       if (best_feasible) {
-        double current_obj = compute_objective();
         for (HighsInt j = 0; j < ncol; ++j) {
           if (std::abs(col_cost[j]) < 1e-15) continue;
           double delta = compute_breakthrough_delta(j, current_obj);
