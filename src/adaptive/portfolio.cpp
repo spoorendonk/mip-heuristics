@@ -19,13 +19,14 @@ namespace portfolio {
 
 namespace {
 
-// Arm indices for presolve portfolio
-enum PresolveArm { kArmFPR = 0, kArmLocalMIP = 1 };
+// Arm indices for presolve portfolio (values are arbitrary, used as arm_type)
+enum PresolveArm { kArmFPR = 0, kArmLocalMIP = 1, kArmFJ = 2 };
 
 // Arm indices for LP-based portfolio
 enum LpArm { kArmScyllaFPR = 0 };
 
 // MIPLIB sweep priors
+constexpr double kFjAlpha = 2.0;
 constexpr double kFprAlpha = 2.5;
 constexpr double kLocalMipAlpha = 3.0;
 constexpr double kScyllaFprAlpha = 2.0;
@@ -103,6 +104,20 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
     case kArmLocalMIP: {
       return local_mip::worker(mipsolver, csc, rng, restart_sol);
     }
+    case kArmFJ: {
+      auto* mipdata = mipsolver.mipdata_.get();
+      HeuristicResult result;
+      std::vector<double> captured_sol;
+      double captured_obj = 0.0;
+      mipdata->feasibilityJumpCapture(captured_sol, captured_obj);
+      if (!captured_sol.empty()) {
+        result.found_feasible = true;
+        result.solution = std::move(captured_sol);
+        result.objective = captured_obj;
+      }
+      result.effort = mipdata->ARindex_.size();  // approximate
+      return result;
+    }
     default:
       return {};
   }
@@ -134,6 +149,10 @@ void run_presolve(HighsMipSolver& mipsolver) {
   // Determine enabled arms
   std::vector<int> enabled_arms;
   std::vector<double> priors;
+  if (options->mip_heuristic_run_feasibility_jump) {
+    enabled_arms.push_back(kArmFJ);
+    priors.push_back(kFjAlpha);
+  }
   if (options->mip_heuristic_run_fpr) {
     enabled_arms.push_back(kArmFPR);
     priors.push_back(kFprAlpha);
