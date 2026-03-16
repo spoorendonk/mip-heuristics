@@ -65,3 +65,21 @@ TEST_CASE("Characterization: bell5", "[heuristic][fpr]") {
   highs.getInfoValue("objective_function_value", obj);
   REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-6));
 }
+
+TEST_CASE("Options: disable custom heuristics", "[options]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  // Verify options exist and can be set
+  REQUIRE(highs.setOptionValue("mip_heuristic_run_fpr", false) ==
+          HighsStatus::kOk);
+  REQUIRE(highs.setOptionValue("mip_heuristic_run_local_mip", false) ==
+          HighsStatus::kOk);
+  REQUIRE(highs.setOptionValue("mip_heuristic_run_scylla_fpr", false) ==
+          HighsStatus::kOk);
+  // Solve still works with all custom heuristics disabled
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
