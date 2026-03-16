@@ -198,15 +198,12 @@ void run(HighsMipSolver& mipsolver) {
     double delta = new_val - old_val;
     if (std::abs(delta) < 1e-15) return;
     solution[j] = new_val;
+    lift_dirty[j] = true;
     for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
       HighsInt i = col_row[p];
       lhs[i] += col_val[p] * delta;
       update_violated(i);
-    }
-    // Invalidate lift cache for neighbors
-    lift_dirty[j] = true;
-    for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
-      HighsInt i = col_row[p];
+      // Invalidate lift cache for all variables sharing this row
       for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
         lift_dirty[ARindex[k]] = true;
     }
@@ -365,14 +362,17 @@ void run(HighsMipSolver& mipsolver) {
       }
 
       double prog = compute_progress_score(c.var_idx, c.new_val);
-      double bon = compute_bonus_score(c.var_idx, c.new_val);
 
-      bool better = false;
-      if (prog > best.score + kViolTol)
-        better = true;
-      else if (prog > best.score - kViolTol && bon > best.bonus)
-        better = true;
-      if (better) best = {c.var_idx, c.new_val, prog, bon};
+      if (prog > best.score + kViolTol) {
+        // Clear winner on progress — compute bonus for future tie-breaking
+        double bon = compute_bonus_score(c.var_idx, c.new_val);
+        best = {c.var_idx, c.new_val, prog, bon};
+      } else if (prog > best.score - kViolTol) {
+        // Tied on progress — break tie with bonus
+        double bon = compute_bonus_score(c.var_idx, c.new_val);
+        if (bon > best.bonus)
+          best = {c.var_idx, c.new_val, prog, bon};
+      }
     }
     return best;
   };
