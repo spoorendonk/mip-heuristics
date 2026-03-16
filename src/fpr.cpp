@@ -148,15 +148,14 @@ void run(HighsMipSolver& mipsolver) {
         } else if (is_integer(j)) {
           double lo = std::max(col_lb[j], -1e8);
           double hi = std::min(col_ub[j], lo + 100.0);
-          solution[j] = std::round(
-              std::uniform_real_distribution<double>(lo, hi)(rng));
+          solution[j] =
+              std::round(std::uniform_real_distribution<double>(lo, hi)(rng));
           solution[j] = std::max(col_lb[j], std::min(col_ub[j], solution[j]));
         } else {
           double lo = finite_clamp(0.0, col_lb[j], col_ub[j]);
           double hi = std::min(col_ub[j], lo + 1e6);
           if (hi < kHighsInf && lo > -kHighsInf && hi > lo)
-            solution[j] =
-                std::uniform_real_distribution<double>(lo, hi)(rng);
+            solution[j] = std::uniform_real_distribution<double>(lo, hi)(rng);
           else
             solution[j] = lo;
         }
@@ -513,7 +512,8 @@ void run(HighsMipSolver& mipsolver) {
             double coeff = col_val[p];
             double old_lhs = lhs_cache[i2];
             double new_lhs = old_lhs + coeff * delta_change;
-            delta_viol += raw_violation(i2, new_lhs) - raw_violation(i2, old_lhs);
+            delta_viol +=
+                raw_violation(i2, new_lhs) - raw_violation(i2, old_lhs);
           }
 
           if (delta_viol < best_delta_viol) {
@@ -529,8 +529,7 @@ void run(HighsMipSolver& mipsolver) {
         HighsInt changed_var = -1;
         double delta_change = 0.0;
 
-        double roll =
-            std::uniform_real_distribution<double>(0.0, 1.0)(rng);
+        double roll = std::uniform_real_distribution<double>(0.0, 1.0)(rng);
         if (roll > greedy_prob && row_len > 1) {
           // Random variable from this row
           HighsInt k = ARstart[i] + std::uniform_int_distribution<HighsInt>(
