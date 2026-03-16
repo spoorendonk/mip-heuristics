@@ -409,8 +409,7 @@ void run(HighsMipSolver& mipsolver) {
     for (HighsInt i = 0; i < nrow; ++i)
       if (is_violated(i, lhs_cache[i])) add_violated(i);
 
-    for (HighsInt step = 0; step < repair_budget && !violated.empty();
-         ++step) {
+    for (HighsInt step = 0; step < repair_budget && !violated.empty(); ++step) {
       HighsInt pick = std::uniform_int_distribution<HighsInt>(
           0, static_cast<HighsInt>(violated.size()) - 1)(rng);
       HighsInt i = violated[pick];
@@ -458,8 +457,7 @@ void run(HighsMipSolver& mipsolver) {
           double coeff = col_val[p];
           double old_lhs = lhs_cache[i2];
           double new_lhs = old_lhs + coeff * delta_change;
-          delta_viol +=
-              raw_violation(i2, new_lhs) - raw_violation(i2, old_lhs);
+          delta_viol += raw_violation(i2, new_lhs) - raw_violation(i2, old_lhs);
         }
 
         if (delta_viol < best_delta_viol) {
@@ -499,8 +497,8 @@ void run(HighsMipSolver& mipsolver) {
 
       if (changed_var == -1 || std::abs(delta_change) < 1e-15) continue;
 
-      for (HighsInt p = col_start[changed_var];
-           p < col_start[changed_var + 1]; ++p) {
+      for (HighsInt p = col_start[changed_var]; p < col_start[changed_var + 1];
+           ++p) {
         HighsInt i2 = col_row[p];
         lhs_cache[i2] += col_val[p] * delta_change;
         bool was = violated_pos[i2] != -1;

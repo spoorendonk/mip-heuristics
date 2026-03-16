@@ -1,3 +1,5 @@
 #pragma once
 class HighsMipSolver;
-namespace local_mip { void run(HighsMipSolver& mipsolver); }
+namespace local_mip {
+void run(HighsMipSolver& mipsolver);
+}

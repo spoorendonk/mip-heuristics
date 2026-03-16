@@ -210,20 +210,21 @@ void run(HighsMipSolver& mipsolver) {
   };
 
   // Tight delta for ranged rows: compute delta that satisfies the binding bound
-  auto compute_tight_delta = [&](HighsInt i, HighsInt j, double coeff) -> double {
+  auto compute_tight_delta = [&](HighsInt i, HighsInt j,
+                                 double coeff) -> double {
     if (std::abs(coeff) < 1e-15) return 0.0;
     double l = lhs[i];
     // Determine gap to the binding bound
     double gap;
     bool row_violated = is_violated(i, l);
     if (l > row_hi[i] + feastol)
-      gap = l - row_hi[i];           // upper violated
+      gap = l - row_hi[i];  // upper violated
     else if (l < row_lo[i] - feastol)
-      gap = l - row_lo[i];           // lower violated
+      gap = l - row_lo[i];  // lower violated
     else if (row_hi[i] < kHighsInf)
-      gap = l - row_hi[i];           // satisfied: push toward upper
+      gap = l - row_hi[i];  // satisfied: push toward upper
     else
-      gap = l - row_lo[i];           // satisfied: push toward lower
+      gap = l - row_lo[i];  // satisfied: push toward lower
 
     double delta = -gap / coeff;
 
@@ -313,7 +314,7 @@ void run(HighsMipSolver& mipsolver) {
   // Breakthrough delta: move toward best objective value.
   // Caller must supply current_obj to avoid redundant O(ncol) recomputation.
   auto compute_breakthrough_delta = [&](HighsInt j,
-                                         double current_obj) -> double {
+                                        double current_obj) -> double {
     double obj_coeff = col_cost[j];
     if (std::abs(obj_coeff) < 1e-15) return 0.0;
 
@@ -328,7 +329,7 @@ void run(HighsMipSolver& mipsolver) {
     double new_val = solution[j] + delta;
     if (new_val < col_lb[j] || new_val > col_ub[j]) {
       delta = (obj_coeff > 0) ? (col_lb[j] - solution[j])
-                               : (col_ub[j] - solution[j]);
+                              : (col_ub[j] - solution[j]);
     }
     return delta;
   };
@@ -351,7 +352,7 @@ void run(HighsMipSolver& mipsolver) {
 
   // Select best from batch with tabu/aspiration filtering
   auto select_best_from_batch = [&](HighsInt step,
-                                     bool aspiration) -> Candidate {
+                                    bool aspiration) -> Candidate {
     Candidate best;
     for (const auto& c : batch) {
       double delta = c.new_val - solution[c.var_idx];
@@ -370,8 +371,7 @@ void run(HighsMipSolver& mipsolver) {
       } else if (prog > best.score - kViolTol) {
         // Tied on progress — break tie with bonus
         double bon = compute_bonus_score(c.var_idx, c.new_val);
-        if (bon > best.bonus)
-          best = {c.var_idx, c.new_val, prog, bon};
+        if (bon > best.bonus) best = {c.var_idx, c.new_val, prog, bon};
       }
     }
     return best;
@@ -487,8 +487,8 @@ void run(HighsMipSolver& mipsolver) {
       } else if (is_integer(j)) {
         double lo = std::max(col_lb[j], -1e8);
         double hi = std::min(col_ub[j], lo + 100.0);
-        solution[j] =
-            std::max(col_lb[j], std::min(col_ub[j], std::round((lo + hi) * 0.5)));
+        solution[j] = std::max(
+            col_lb[j], std::min(col_ub[j], std::round((lo + hi) * 0.5)));
       } else {
         double val = 0.0;
         if (col_lb[j] > 0.0)
@@ -568,8 +568,7 @@ void run(HighsMipSolver& mipsolver) {
       if (lift_best.var_idx != -1) {
         double delta = lift_best.new_val - solution[lift_best.var_idx];
         apply_move(lift_best.var_idx, lift_best.new_val);
-        HighsInt tabu_len =
-            kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
+        HighsInt tabu_len = kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
         if (delta > 0)
           tabu_dec_until[lift_best.var_idx] = step + tabu_len;
         else
@@ -583,15 +582,14 @@ void run(HighsMipSolver& mipsolver) {
       // --- Infeasible mode ---
 
       // Phase 1: BMS tight moves from violated constraints
-      HighsInt num_to_sample = std::min(kBmsConstraints * 3,
-                                         static_cast<HighsInt>(violated.size()));
-      HighsInt num_to_keep = std::min(kBmsConstraints,
-                                       static_cast<HighsInt>(violated.size()));
+      HighsInt num_to_sample =
+          std::min(kBmsConstraints * 3, static_cast<HighsInt>(violated.size()));
+      HighsInt num_to_keep =
+          std::min(kBmsConstraints, static_cast<HighsInt>(violated.size()));
 
       sampled.clear();
       if (num_to_sample == static_cast<HighsInt>(violated.size())) {
-        for (auto ci : violated)
-          sampled.push_back({ci, weight[ci]});
+        for (auto ci : violated) sampled.push_back({ci, weight[ci]});
       } else {
         for (HighsInt s = 0; s < num_to_sample; ++s) {
           HighsInt idx = static_cast<HighsInt>(rng() % violated.size());
@@ -600,11 +598,11 @@ void run(HighsMipSolver& mipsolver) {
       }
 
       if (static_cast<HighsInt>(sampled.size()) > num_to_keep) {
-        std::partial_sort(
-            sampled.begin(), sampled.begin() + num_to_keep, sampled.end(),
-            [](const WeightedCon& a, const WeightedCon& b) {
-              return a.w > b.w;
-            });
+        std::partial_sort(sampled.begin(), sampled.begin() + num_to_keep,
+                          sampled.end(),
+                          [](const WeightedCon& a, const WeightedCon& b) {
+                            return a.w > b.w;
+                          });
         sampled.resize(num_to_keep);
       }
 
@@ -614,7 +612,8 @@ void run(HighsMipSolver& mipsolver) {
       for (auto& [ci, w] : sampled) {
         (void)w;
         if (budget_remaining <= 0) break;
-        for (HighsInt k = ARstart[ci]; k < ARstart[ci + 1] && budget_remaining > 0; ++k) {
+        for (HighsInt k = ARstart[ci];
+             k < ARstart[ci + 1] && budget_remaining > 0; ++k) {
           HighsInt j = ARindex[k];
           --budget_remaining;
           double delta = compute_tight_delta(ci, j, ARvalue[k]);
@@ -660,8 +659,7 @@ void run(HighsMipSolver& mipsolver) {
         HighsInt ci = violated[rng() % violated.size()];
         HighsInt row_len = ARstart[ci + 1] - ARstart[ci];
         if (row_len > 0) {
-          HighsInt k = ARstart[ci] +
-              static_cast<HighsInt>(rng() % row_len);
+          HighsInt k = ARstart[ci] + static_cast<HighsInt>(rng() % row_len);
           HighsInt j = ARindex[k];
           double new_val;
           if (mipdata->domain.isBinary(j)) {
@@ -671,9 +669,8 @@ void run(HighsMipSolver& mipsolver) {
             new_val = clamp_and_round(j, solution[j] + dir);
           } else {
             double range = std::min(col_ub[j], col_lb[j] + 1e6) - col_lb[j];
-            double perturbation =
-                std::uniform_real_distribution<double>(-0.1 * range,
-                                                       0.1 * range)(rng);
+            double perturbation = std::uniform_real_distribution<double>(
+                -0.1 * range, 0.1 * range)(rng);
             new_val = clamp_and_round(j, solution[j] + perturbation);
           }
           if (std::abs(new_val - solution[j]) > 1e-15) {
@@ -742,8 +739,7 @@ void run(HighsMipSolver& mipsolver) {
       if (cand.var_idx != -1) {
         double delta = cand.new_val - solution[cand.var_idx];
         apply_move(cand.var_idx, cand.new_val);
-        HighsInt tabu_len =
-            kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
+        HighsInt tabu_len = kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
         if (delta > 0)
           tabu_dec_until[cand.var_idx] = step + tabu_len;
         else
@@ -784,8 +780,7 @@ void run(HighsMipSolver& mipsolver) {
             double lo = col_lb[j] > -kHighsInf ? col_lb[j] : -1e6;
             double hi = col_ub[j] < kHighsInf ? col_ub[j] : lo + 1e6;
             if (hi > lo)
-              solution[j] =
-                  std::uniform_real_distribution<double>(lo, hi)(rng);
+              solution[j] = std::uniform_real_distribution<double>(lo, hi)(rng);
             else
               solution[j] = lo;
           }

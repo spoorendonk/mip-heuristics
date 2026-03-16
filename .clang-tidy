@@ -1,0 +1,30 @@
+---
+Checks: >-
+  clang-diagnostic-*,
+  clang-analyzer-*,
+
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+
+  modernize-*,
+  -modernize-avoid-c-arrays,
+  -modernize-use-auto,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+
+  performance-*,
+
+  readability-*,
+  -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-isolate-declaration,
+  -readability-qualified-auto,
+  -readability-else-after-return,
+
+HeaderFilterRegex: 'src/.*'
+FormatStyle: file
+...
