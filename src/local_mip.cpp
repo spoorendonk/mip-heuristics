@@ -159,6 +159,8 @@ void run(HighsMipSolver& mipsolver) {
     return obj;
   };
 
+  double current_obj = 0.0;
+
   // Rebuild all constraint state from scratch
   auto rebuild_state = [&]() {
     violated.clear();
@@ -176,6 +178,7 @@ void run(HighsMipSolver& mipsolver) {
         add_satisfied(i);
     }
     lift_all_dirty = true;
+    current_obj = compute_objective();
   };
 
   // Apply a move: update solution, LHS, violated/satisfied lists, lift dirty
@@ -184,6 +187,7 @@ void run(HighsMipSolver& mipsolver) {
     double delta = new_val - old_val;
     if (std::abs(delta) < 1e-15) return;
     solution[j] = new_val;
+    current_obj += col_cost[j] * delta;
     lift_dirty[j] = true;
     for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
       HighsInt i = col_row[p];
@@ -250,30 +254,16 @@ void run(HighsMipSolver& mipsolver) {
     return delta;
   };
 
-  // Progress score: net weighted violation improvement
-  auto compute_progress_score = [&](HighsInt j, double new_val) -> double {
+  // Combined candidate scores: progress (weighted violation improvement)
+  // and bonus (newly satisfied count + small objective term) in one pass
+  auto compute_candidate_scores =
+      [&](HighsInt j, double new_val) -> std::pair<double, double> {
     double old_val = solution[j];
     double delta = new_val - old_val;
     if (std::abs(delta) < 1e-15)
-      return -std::numeric_limits<double>::infinity();
+      return {-std::numeric_limits<double>::infinity(), 0.0};
 
-    double score = 0.0;
-    for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
-      HighsInt i = col_row[p];
-      double coeff = col_val[p];
-      double old_lhs = lhs[i];
-      double new_lhs = old_lhs + coeff * delta;
-      double old_viol = compute_violation(i, old_lhs);
-      double new_viol = compute_violation(i, new_lhs);
-      score += static_cast<double>(weight[i]) * (old_viol - new_viol);
-    }
-    return score;
-  };
-
-  // Bonus score: count newly satisfied + small objective term
-  auto compute_bonus_score = [&](HighsInt j, double new_val) -> double {
-    double old_val = solution[j];
-    double delta = new_val - old_val;
+    double progress = 0.0;
     double bonus = 0.0;
     for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
       HighsInt i = col_row[p];
@@ -282,12 +272,13 @@ void run(HighsMipSolver& mipsolver) {
       double new_lhs = old_lhs + coeff * delta;
       double old_viol = compute_violation(i, old_lhs);
       double new_viol = compute_violation(i, new_lhs);
+      progress += static_cast<double>(weight[i]) * (old_viol - new_viol);
       if (old_viol > kViolTol && new_viol <= kViolTol) bonus += 1.0;
     }
     double obj_delta = col_cost[j] * delta;
     if (!minimize) obj_delta = -obj_delta;
     bonus -= 0.001 * obj_delta;
-    return bonus;
+    return {progress, bonus};
   };
 
   // Aspiration: would this move beat best objective?
@@ -351,15 +342,11 @@ void run(HighsMipSolver& mipsolver) {
         if (!(aspiration && is_aspiration(c.var_idx, c.new_val))) continue;
       }
 
-      double prog = compute_progress_score(c.var_idx, c.new_val);
+      auto [prog, bon] = compute_candidate_scores(c.var_idx, c.new_val);
 
       if (prog > best.score + kViolTol) {
-        // Clear winner on progress — compute bonus for future tie-breaking
-        double bon = compute_bonus_score(c.var_idx, c.new_val);
         best = {c.var_idx, c.new_val, prog, bon};
       } else if (prog > best.score - kViolTol) {
-        // Tied on progress — break tie with bonus
-        double bon = compute_bonus_score(c.var_idx, c.new_val);
         if (bon > best.bonus) best = {c.var_idx, c.new_val, prog, bon};
       }
     }
@@ -519,7 +506,7 @@ void run(HighsMipSolver& mipsolver) {
       if (!truly_feasible) continue;
 
       // Submit solution if it improves best
-      double obj = compute_objective();
+      double obj = current_obj;
       bool improved = false;
       if (!best_feasible)
         improved = true;
@@ -612,7 +599,6 @@ void run(HighsMipSolver& mipsolver) {
 
       // Phase 2: Breakthrough moves
       if (best_feasible) {
-        double current_obj = compute_objective();
         for (HighsInt j = 0; j < ncol; ++j) {
           if (std::abs(col_cost[j]) < 1e-15) continue;
           double delta = compute_breakthrough_delta(j, current_obj);
@@ -660,8 +646,8 @@ void run(HighsMipSolver& mipsolver) {
             new_val = clamp_and_round(j, solution[j] + perturbation);
           }
           if (std::abs(new_val - solution[j]) > 1e-15) {
-            double prog = compute_progress_score(j, new_val);
-            cand = {j, new_val, prog, 0.0};
+            auto [prog, bon] = compute_candidate_scores(j, new_val);
+            cand = {j, new_val, prog, bon};
           }
         }
       }
