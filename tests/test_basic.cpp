@@ -83,3 +83,45 @@ TEST_CASE("Options: disable custom heuristics", "[options]") {
   highs.getInfoValue("objective_function_value", obj);
   REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }
+
+TEST_CASE("Options: portfolio option exists", "[options][portfolio]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  REQUIRE(highs.setOptionValue("mip_heuristic_portfolio", true) ==
+          HighsStatus::kOk);
+  REQUIRE(highs.setOptionValue("mip_heuristic_portfolio", false) ==
+          HighsStatus::kOk);
+}
+
+TEST_CASE("Portfolio: flugpl finds solution", "[portfolio]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_portfolio", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("Portfolio: egout finds solution", "[portfolio]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_portfolio", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+}
+
+TEST_CASE("Portfolio: bell5 finds solution", "[portfolio]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_portfolio", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-6));
+}
