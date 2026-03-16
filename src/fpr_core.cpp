@@ -29,10 +29,13 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
   const HighsInt nrow = model->num_row_;
   if (ncol == 0 || nrow == 0) return;
 
-  auto csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
-  const auto& col_start = csc.col_start;
-  const auto& col_row = csc.col_row;
-  const auto& col_val = csc.col_val;
+  // Use caller's CSC if provided, otherwise build our own
+  CscMatrix owned_csc;
+  if (!cfg.csc) owned_csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
+  const auto& csc_ref = cfg.csc ? *cfg.csc : owned_csc;
+  const auto& col_start = csc_ref.col_start;
+  const auto& col_row = csc_ref.col_row;
+  const auto& col_val = csc_ref.col_val;
 
   auto is_int = [&](HighsInt j) { return is_integer(integrality, j); };
 
@@ -143,12 +146,13 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
       vs[j].fixed = false;
     }
 
-    // choose_fix_value: hint-aware, objective-greedy fallback
+    // choose_fix_value: hint-aware on attempt 0 only, objective-greedy fallback
+    const bool use_hint = (attempt == 0 && cfg.hint != nullptr);
     auto choose_fix_value = [&](HighsInt j) -> double {
       double lo = vs[j].lb;
       double hi = vs[j].ub;
 
-      if (cfg.hint) {
+      if (use_hint) {
         double h = cfg.hint[j];
         if (is_int(j)) h = std::round(h);
         if (h >= lo - feastol && h <= hi + feastol)

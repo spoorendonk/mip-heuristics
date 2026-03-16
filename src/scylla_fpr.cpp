@@ -50,6 +50,7 @@ void run(HighsMipSolver& mipsolver) {
   cfg.hint = hint;
   cfg.scores = scores.data();
   cfg.cont_fallback = cont_fallback;
+  cfg.csc = nullptr;
 
   fpr_core(mipsolver, cfg);
 }
