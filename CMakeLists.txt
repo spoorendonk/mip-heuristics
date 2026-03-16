@@ -12,7 +12,7 @@ add_library(mip_heuristics OBJECT
     src/local_mip.cpp
     src/scylla_fpr.cpp
 )
-target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs src)
+target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
 
 target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics>)
 target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
