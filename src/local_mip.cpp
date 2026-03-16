@@ -36,9 +36,7 @@ void run(HighsMipSolver& mipsolver) {
   const auto& col_row = csc.col_row;
   const auto& col_val = csc.col_val;
 
-  auto is_integer = [&](HighsInt j) {
-    return ::is_integer(integrality, j);
-  };
+  auto is_integer = [&](HighsInt j) { return ::is_integer(integrality, j); };
 
   std::mt19937 rng(mipdata->numImprovingSols + 137);
 
