@@ -84,6 +84,10 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
   prop_worklist.reserve(nrow);
   std::vector<char> prop_in_wl(nrow);
 
+  std::vector<HighsInt> violated;
+  std::vector<HighsInt> violated_pos(nrow, -1);
+  violated.reserve(nrow);
+
   std::vector<VarState> vs(ncol);
   std::vector<std::pair<HighsInt, VarState>> vs_undo;
   std::vector<std::pair<HighsInt, double>> sol_undo;
@@ -413,8 +417,8 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
 
     // --- Phase 3: WalkSAT Repair ---
     if (!feasible) {
-      std::vector<HighsInt> violated;
-      std::vector<HighsInt> violated_pos(nrow, -1);
+      violated.clear();
+      std::fill(violated_pos.begin(), violated_pos.end(), -1);
 
       auto add_violated = [&](HighsInt i) {
         if (violated_pos[i] != -1) return;
