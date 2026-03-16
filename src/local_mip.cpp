@@ -313,12 +313,13 @@ void run(HighsMipSolver& mipsolver) {
                     : (new_obj > best_objective + 1e-9);
   };
 
-  // Breakthrough delta: move toward best objective value
-  auto compute_breakthrough_delta = [&](HighsInt j) -> double {
+  // Breakthrough delta: move toward best objective value.
+  // Caller must supply current_obj to avoid redundant O(ncol) recomputation.
+  auto compute_breakthrough_delta = [&](HighsInt j,
+                                         double current_obj) -> double {
     double obj_coeff = col_cost[j];
     if (std::abs(obj_coeff) < 1e-15) return 0.0;
 
-    double current_obj = compute_objective();
     double obj_gap = current_obj - best_objective;
     if (!minimize) obj_gap = -obj_gap;
 
@@ -611,6 +612,7 @@ void run(HighsMipSolver& mipsolver) {
       HighsInt budget_remaining = kBmsBudget;
 
       for (auto& [ci, w] : sampled) {
+        (void)w;
         if (budget_remaining <= 0) break;
         for (HighsInt k = ARstart[ci]; k < ARstart[ci + 1] && budget_remaining > 0; ++k) {
           HighsInt j = ARindex[k];
@@ -622,9 +624,10 @@ void run(HighsMipSolver& mipsolver) {
 
       // Phase 2: Breakthrough moves
       if (best_feasible) {
+        double current_obj = compute_objective();
         for (HighsInt j = 0; j < ncol; ++j) {
           if (std::abs(col_cost[j]) < 1e-15) continue;
-          double delta = compute_breakthrough_delta(j);
+          double delta = compute_breakthrough_delta(j, current_obj);
           append_candidate(j, delta);
         }
       }
