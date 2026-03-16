@@ -6,6 +6,7 @@
 #include <random>
 #include <vector>
 
+#include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
@@ -29,28 +30,13 @@ void run(HighsMipSolver& mipsolver) {
   const HighsInt ncol = model->num_col_;
   const HighsInt nrow = model->num_row_;
   if (ncol == 0 || nrow == 0) return;
-  const HighsInt nnz = static_cast<HighsInt>(ARindex.size());
 
-  // Build column view (CSC) from row-major AR arrays
-  std::vector<HighsInt> col_start(ncol + 1, 0);
-  for (HighsInt k = 0; k < nnz; ++k) col_start[ARindex[k] + 1]++;
-  for (HighsInt j = 0; j < ncol; ++j) col_start[j + 1] += col_start[j];
-  std::vector<HighsInt> col_row(nnz);
-  std::vector<double> col_val(nnz);
-  {
-    std::vector<HighsInt> pos(col_start);
-    for (HighsInt i = 0; i < nrow; ++i)
-      for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-        HighsInt j = ARindex[k];
-        col_row[pos[j]] = i;
-        col_val[pos[j]] = ARvalue[k];
-        pos[j]++;
-      }
-  }
+  auto csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
+  const auto& col_start = csc.col_start;
+  const auto& col_row = csc.col_row;
+  const auto& col_val = csc.col_val;
 
-  auto is_integer = [&](HighsInt j) {
-    return integrality[j] != HighsVarType::kContinuous;
-  };
+  auto is_integer = [&](HighsInt j) { return ::is_integer(integrality, j); };
 
   std::mt19937 rng(mipdata->numImprovingSols + 137);
 
