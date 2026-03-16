@@ -1,7 +1,9 @@
 #include "scylla_fpr.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -20,6 +22,7 @@ void run(HighsMipSolver& mipsolver) {
   if (!HighsLpRelaxation::scaledOptimal(lp_status)) return;
 
   const auto& lp_sol = mipdata->lp.getLpSolver().getSolution().col_value;
+  assert(static_cast<HighsInt>(lp_sol.size()) >= model->num_col_);
 
   const auto& ARstart = mipdata->ARstart_;
   const auto& ARindex = mipdata->ARindex_;
