@@ -12,6 +12,8 @@ add_library(mip_heuristics OBJECT
     src/fpr_core.cpp
     src/local_mip.cpp
     src/scylla_fpr.cpp
+    src/adaptive/thompson_sampler.cpp
+    src/adaptive/solution_pool.cpp
 )
 target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
 
