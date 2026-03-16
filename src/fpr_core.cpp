@@ -361,9 +361,8 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
 
       if (!is_int(j)) {
         if (std::abs(col_cost[j]) > 1e-15) {
-          double preferred = minimize ? (col_cost[j] > 0 ? lo : hi)
-                                      : (col_cost[j] > 0 ? hi : lo);
-          solution[j] = finite_clamp(preferred, lo, hi);
+          bool want_low = (minimize == (col_cost[j] > 0));
+          solution[j] = finite_clamp(want_low ? lo : hi, lo, hi);
         } else {
           solution[j] = finite_clamp(cfg.cont_fallback[j], lo, hi);
         }
