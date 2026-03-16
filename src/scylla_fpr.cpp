@@ -44,13 +44,16 @@ void run(HighsMipSolver& mipsolver) {
   // (lp_sol already has length >= ncol, so we use it directly)
   const double* cont_fallback = lp_sol.data();
 
+  auto csc = build_csc(ncol, model->num_row_, mipdata->ARstart_,
+                       mipdata->ARindex_, mipdata->ARvalue_);
+
   FprConfig cfg{};
   cfg.max_attempts = 1;
   cfg.rng_seed_offset = 137;
   cfg.hint = hint;
   cfg.scores = scores.data();
   cfg.cont_fallback = cont_fallback;
-  cfg.csc = nullptr;
+  cfg.csc = &csc;
 
   fpr_core(mipsolver, cfg);
 }
