@@ -85,8 +85,10 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
   std::vector<char> prop_in_wl(nrow);
 
   std::vector<VarState> vs(ncol);
-  std::vector<VarState> saved_vs(ncol);
-  std::vector<double> saved_sol(ncol);
+  std::vector<std::pair<HighsInt, VarState>> vs_undo;
+  std::vector<std::pair<HighsInt, double>> sol_undo;
+  vs_undo.reserve(ncol);
+  sol_undo.reserve(ncol);
 
   for (int attempt = 0; attempt < cfg.max_attempts; ++attempt) {
     if (mipdata->terminatorTerminated()) return;
@@ -139,6 +141,8 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
     }
 
     // --- Phase 2: Fix & Propagate ---
+    vs_undo.clear();
+    sol_undo.clear();
     for (HighsInt j = 0; j < ncol; ++j) {
       vs[j].lb = col_lb[j];
       vs[j].ub = col_ub[j];
@@ -181,6 +185,8 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
         return false;
       value = std::max(vs[j].lb, std::min(vs[j].ub, value));
       if (is_int(j)) value = std::round(value);
+      vs_undo.push_back({j, vs[j]});
+      sol_undo.push_back({j, solution[j]});
       vs[j].fixed = true;
       vs[j].val = value;
       solution[j] = value;
@@ -283,16 +289,24 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
           if (new_lb > new_ub + feastol) return false;
 
           bool changed = false;
-          if (new_lb > old_lb + feastol) {
-            vs[j].lb = new_lb;
-            changed = true;
-          }
-          if (new_ub < old_ub - feastol) {
-            vs[j].ub = new_ub;
-            changed = true;
+          if (new_lb > old_lb + feastol || new_ub < old_ub - feastol) {
+            vs_undo.push_back({j, vs[j]});
+            sol_undo.push_back({j, solution[j]});
+            if (new_lb > old_lb + feastol) {
+              vs[j].lb = new_lb;
+              changed = true;
+            }
+            if (new_ub < old_ub - feastol) {
+              vs[j].ub = new_ub;
+              changed = true;
+            }
           }
 
           if (!vs[j].fixed && vs[j].ub - vs[j].lb < feastol) {
+            if (!changed) {
+              vs_undo.push_back({j, vs[j]});
+              sol_undo.push_back({j, solution[j]});
+            }
             double val = (vs[j].lb + vs[j].ub) * 0.5;
             if (is_int(j)) val = std::round(val);
             vs[j].fixed = true;
@@ -325,12 +339,19 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
         }
       }
 
-      saved_vs = vs;
-      saved_sol = solution;
+      HighsInt vs_mark = static_cast<HighsInt>(vs_undo.size());
+      HighsInt sol_mark = static_cast<HighsInt>(sol_undo.size());
 
       if (!propagate()) {
-        vs = saved_vs;
-        solution = saved_sol;
+        // Replay undo logs in reverse to restore state
+        for (HighsInt u = static_cast<HighsInt>(vs_undo.size()) - 1; u >= vs_mark;
+             --u)
+          vs[vs_undo[u].first] = vs_undo[u].second;
+        vs_undo.resize(vs_mark);
+        for (HighsInt u = static_cast<HighsInt>(sol_undo.size()) - 1;
+             u >= sol_mark; --u)
+          solution[sol_undo[u].first] = sol_undo[u].second;
+        sol_undo.resize(sol_mark);
         vs[j].fixed = false;
 
         double alt;
