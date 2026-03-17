@@ -19,19 +19,19 @@ if(_opts_found EQUAL -1)
     # Member variables: insert after mip_heuristic_run_shifting
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla_fpr;\n  bool mip_heuristic_portfolio;\n"
+      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla_fpr;\n  bool mip_heuristic_portfolio;\n  bool mip_heuristic_portfolio_opportunistic;\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer list: insert after mip_heuristic_run_shifting(false),
     string(REPLACE
       "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_run_scylla_fpr(false),\n        mip_heuristic_portfolio(false),\n"
+      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_run_scylla_fpr(false),\n        mip_heuristic_portfolio(false),\n        mip_heuristic_portfolio_opportunistic(false),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla_fpr\",\n                                       \"Use the ScyllaFPR heuristic\", advanced,\n                                       &mip_heuristic_run_scylla_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio\",\n                                       \"Use adaptive portfolio mode for custom heuristics\", advanced,\n                                       &mip_heuristic_portfolio, false);\n    records.push_back(record_bool);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla_fpr\",\n                                       \"Use the ScyllaFPR heuristic\", advanced,\n                                       &mip_heuristic_run_scylla_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio\",\n                                       \"Use adaptive portfolio mode for custom heuristics\", advanced,\n                                       &mip_heuristic_portfolio, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio_opportunistic\",\n                                       \"Use opportunistic (non-deterministic) mode for presolve portfolio\", advanced,\n                                       &mip_heuristic_portfolio_opportunistic, false);\n    records.push_back(record_bool);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
@@ -47,7 +47,7 @@ string(FIND "${MIPDATA_H}" "feasibilityJumpCapture" _fj_h_found)
 if(_fj_h_found EQUAL -1)
     string(REPLACE
       "HighsModelStatus feasibilityJump();"
-      "HighsModelStatus feasibilityJump();\n  HighsModelStatus feasibilityJumpCapture(std::vector<double>& captured_solution, double& captured_obj);"
+      "HighsModelStatus feasibilityJump();\n  HighsModelStatus feasibilityJumpCapture(std::vector<double>& captured_solution, double& captured_obj, const std::vector<double>* hint_incumbent = nullptr);"
       MIPDATA_H "${MIPDATA_H}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
@@ -64,7 +64,8 @@ if(_fj_found EQUAL -1)
     # Append the capture variant after the original function
     string(APPEND FJ_CONTENT "\n\
 HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
-    std::vector<double>& captured_solution, double& captured_obj) {\n\
+    std::vector<double>& captured_solution, double& captured_obj,\n\
+    const std::vector<double>* hint_incumbent) {\n\
   const HighsLp* model = this->mipsolver.model_;\n\
   const HighsLogOptions& log_options = mipsolver.options_mip_->log_options;\n\
   double sense_multiplier = static_cast<double>(model->sense_);\n\
@@ -80,7 +81,8 @@ HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
   std::vector<double> col_value(model->num_col_, 0.0);\n\
   double objective_function_value = 0.0;\n\
 \n\
-  const bool use_incumbent = !incumbent.empty();\n\
+  const auto& inc = hint_incumbent ? *hint_incumbent : incumbent;\n\
+  const bool use_incumbent = !inc.empty();\n\
 \n\
   auto solver = external_feasibilityjump::FeasibilityJumpSolver(\n\
       log_options,\n\
@@ -111,8 +113,8 @@ HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
                   sense_multiplier * model->col_cost_[col]);\n\
 \n\
     double initial_assignment = 0.0;\n\
-    if (use_incumbent && std::isfinite(incumbent[col])) {\n\
-      initial_assignment = std::max(lower, std::min(upper, incumbent[col]));\n\
+    if (use_incumbent && std::isfinite(inc[col])) {\n\
+      initial_assignment = std::max(lower, std::min(upper, inc[col]));\n\
     } else {\n\
       if (std::isfinite(lower)) {\n\
         initial_assignment = lower;\n\

@@ -1,5 +1,6 @@
 #include "adaptive/portfolio.h"
 
+#include <atomic>
 #include <random>
 #include <vector>
 
@@ -71,11 +72,11 @@ int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot after,
 HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
                                  std::mt19937& rng, int attempt_idx,
                                  const double* restart_sol,
-                                 const CscMatrix& csc) {
+                                 const CscMatrix& csc,
+                                 const std::vector<double>& incumbent_snapshot) {
   switch (arm_type) {
     case kArmFPR: {
       const auto* model = mipsolver.model_;
-      auto* mipdata = mipsolver.mipdata_.get();
       const auto& integrality = model->integrality_;
       const auto& col_cost = model->col_cost_;
       const HighsInt ncol = model->num_col_;
@@ -93,7 +94,7 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
       }
 
       const double* hint =
-          mipdata->incumbent.empty() ? nullptr : mipdata->incumbent.data();
+          incumbent_snapshot.empty() ? nullptr : incumbent_snapshot.data();
       std::vector<double> cont_fallback(ncol, 0.0);
 
       FprConfig cfg{};
@@ -107,14 +108,31 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
       return fpr_attempt(mipsolver, cfg, rng, attempt_idx, restart_sol);
     }
     case kArmLocalMIP: {
-      return local_mip::worker(mipsolver, csc, rng, restart_sol);
+      const double* init = restart_sol;
+      if (!init && !incumbent_snapshot.empty())
+        init = incumbent_snapshot.data();
+      return local_mip::worker(mipsolver, csc, rng, init);
     }
     case kArmFJ: {
       auto* mipdata = mipsolver.mipdata_.get();
+      const HighsInt ncol = mipsolver.model_->num_col_;
       HeuristicResult result;
       std::vector<double> captured_sol;
       double captured_obj = 0.0;
-      mipdata->feasibilityJumpCapture(captured_sol, captured_obj);
+
+      // Prefer pool restart over static incumbent snapshot.
+      // restart_sol is a raw pointer from the pool, so we must copy into a
+      // vector to satisfy the FJ signature (const vector<double>*).
+      const std::vector<double>* hint = nullptr;
+      std::vector<double> restart_vec;
+      if (restart_sol) {
+        restart_vec.assign(restart_sol, restart_sol + ncol);
+        hint = &restart_vec;
+      } else if (!incumbent_snapshot.empty()) {
+        hint = &incumbent_snapshot;
+      }
+
+      mipdata->feasibilityJumpCapture(captured_sol, captured_obj, hint);
       if (!captured_sol.empty()) {
         result.found_feasible = true;
         result.solution = std::move(captured_sol);
@@ -162,6 +180,91 @@ HeuristicResult run_lp_arm(HighsMipSolver& mipsolver, int arm_type,
   }
 }
 
+void run_presolve_opportunistic(HighsMipSolver& mipsolver,
+                                 const std::vector<int>& enabled_arms,
+                                 const std::vector<double>& priors,
+                                 const CscMatrix& csc, bool minimize) {
+  auto* mipdata = mipsolver.mipdata_.get();
+  const int N = highs::parallel::num_threads();
+  const int num_arms = static_cast<int>(enabled_arms.size());
+
+  ThompsonSampler bandit(num_arms, priors.data(), true);  // mutex-protected
+  SolutionPool pool(kPoolCapacity, minimize);
+  seed_pool(pool, mipsolver);
+
+  // Snapshot incumbent once (read-only for all workers)
+  std::vector<double> incumbent_snapshot = mipdata->incumbent;
+
+  const size_t nnz = mipdata->ARindex_.size();
+  const size_t budget = nnz << 10;
+  const size_t stale_budget = nnz << 8;
+
+  std::atomic<size_t> total_effort{0};
+  std::atomic<size_t> effort_since_improvement{0};
+  std::atomic<bool> stop{false};
+
+  uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + 42);
+
+  highs::parallel::for_each(
+      0, static_cast<HighsInt>(N),
+      [&](HighsInt lo, HighsInt hi) {
+        for (HighsInt w = lo; w < hi; ++w) {
+          std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * 997);
+          int attempt_counter = 0;
+
+          while (!stop.load(std::memory_order_relaxed)) {
+            // Worker 0 periodically checks termination (not thread-safe
+            // to call from multiple workers)
+            if (w == 0 && attempt_counter % 16 == 0 && attempt_counter > 0) {
+              if (mipdata->terminatorTerminated())
+                stop.store(true, std::memory_order_relaxed);
+            }
+            if (stop.load(std::memory_order_relaxed)) break;
+
+            int arm = bandit.select(rng);
+            auto before = pool.snapshot();
+
+            std::vector<double> restart;
+            pool.get_restart(rng, restart);
+            const double* restart_ptr =
+                restart.empty() ? nullptr : restart.data();
+
+            auto result =
+                run_presolve_arm(mipsolver, enabled_arms[arm], rng,
+                                 attempt_counter++, restart_ptr, csc,
+                                 incumbent_snapshot);
+
+            if (result.found_feasible)
+              pool.try_add(result.objective, result.solution);
+
+            auto after = pool.snapshot();
+            int reward = compute_reward(before, after, result, minimize);
+            bandit.update(arm, reward);
+
+            if (reward >= 2)
+              effort_since_improvement.store(0, std::memory_order_relaxed);
+            else
+              effort_since_improvement.fetch_add(result.effort,
+                                                  std::memory_order_relaxed);
+
+            if (effort_since_improvement.load(std::memory_order_relaxed) >=
+                stale_budget)
+              stop.store(true, std::memory_order_relaxed);
+
+            size_t new_total =
+                total_effort.fetch_add(result.effort) + result.effort;
+            if (new_total >= budget)
+              stop.store(true, std::memory_order_relaxed);
+          }
+        }
+      },
+      1);
+
+  // Flush pool solutions to HiGHS (sequential)
+  for (auto& entry : pool.sorted_entries())
+    mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
+}
+
 }  // namespace
 
 void run_presolve(HighsMipSolver& mipsolver) {
@@ -196,10 +299,19 @@ void run_presolve(HighsMipSolver& mipsolver) {
   auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
                         mipdata->ARvalue_);
 
+  // Dispatch to opportunistic mode if requested
+  if (options->mip_heuristic_portfolio_opportunistic) {
+    run_presolve_opportunistic(mipsolver, enabled_arms, priors, csc, minimize);
+    return;
+  }
+
   ThompsonSampler bandit(static_cast<int>(enabled_arms.size()), priors.data(),
                          false);
   SolutionPool pool(kPoolCapacity, minimize);
   seed_pool(pool, mipsolver);
+
+  // Snapshot incumbent before parallel work (read-only for all workers)
+  std::vector<double> incumbent_snapshot = mipdata->incumbent;
 
   // FJ-style budget: nnz << 10 total, nnz << 8 since last improvement
   const size_t nnz = mipdata->ARindex_.size();
@@ -236,7 +348,8 @@ void run_presolve(HighsMipSolver& mipsolver) {
                 restarts[w].empty() ? nullptr : restarts[w].data();
             results[w] = run_presolve_arm(mipsolver, enabled_arms[arms[w]],
                                           rngs[w], attempt_counters[w],
-                                          restart_ptr, csc);
+                                          restart_ptr, csc,
+                                          incumbent_snapshot);
           }
         },
         1);
