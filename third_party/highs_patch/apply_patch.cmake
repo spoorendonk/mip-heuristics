@@ -209,7 +209,18 @@ if(_found EQUAL -1)
       "    }\n    if (options_mip_->mip_heuristic_portfolio) {\n      portfolio::run_presolve(*this);\n    } else {\n      if (options_mip_->mip_heuristic_run_fpr) fpr::run(*this);\n      if (options_mip_->mip_heuristic_run_local_mip) local_mip::run(*this);\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
-    # Patch B: after RINS/RENS block closing brace (B&B dive)
+    # Patch B: guard standalone RINS/RENS when portfolio is on (B&B dive)
+    # In portfolio mode, RINS/RENS run as bandit arms inside run_lp_based.
+    string(REPLACE
+      "if (options_mip_->mip_heuristic_run_rens) {"
+      "if (options_mip_->mip_heuristic_run_rens && !options_mip_->mip_heuristic_portfolio) {"
+      CONTENT "${CONTENT}")
+    string(REPLACE
+      "if (options_mip_->mip_heuristic_run_rins) {"
+      "if (options_mip_->mip_heuristic_run_rins && !options_mip_->mip_heuristic_portfolio) {"
+      CONTENT "${CONTENT}")
+
+    # Patch C: after RINS/RENS block closing brace, insert portfolio/scylla dispatch
     string(REPLACE
       "          }\n\n          mipdata_->heuristics.flushStatistics();"
       "          }\n          if (options_mip_->mip_heuristic_portfolio) {\n            portfolio::run_lp_based(*this);\n          } else {\n            if (options_mip_->mip_heuristic_run_scylla_fpr) scylla_fpr::run(*this);\n          }\n\n          mipdata_->heuristics.flushStatistics();"

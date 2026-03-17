@@ -23,13 +23,14 @@ namespace {
 enum PresolveArm { kArmFPR = 0, kArmLocalMIP = 1, kArmFJ = 2 };
 
 // Arm indices for LP-based portfolio
-enum LpArm { kArmScyllaFPR = 0 };
+enum LpArm { kArmScyllaFPR = 0, kArmSubMIP = 1 };
 
 // MIPLIB sweep priors
 constexpr double kFjAlpha = 2.0;
 constexpr double kFprAlpha = 2.5;
 constexpr double kLocalMipAlpha = 3.0;
 constexpr double kScyllaFprAlpha = 2.0;
+constexpr double kSubMipAlpha = 1.5;
 
 constexpr double kBaseEpochEffort = 64.0;
 constexpr double kMinEpochScale = 0.25;
@@ -128,6 +129,28 @@ HeuristicResult run_lp_arm(HighsMipSolver& mipsolver, int arm_type,
   switch (arm_type) {
     case kArmScyllaFPR:
       return scylla_fpr::attempt(mipsolver, rng);
+    case kArmSubMIP: {
+      auto* mipdata = mipsolver.mipdata_.get();
+      HeuristicResult result;
+      HighsInt old_improving = mipdata->numImprovingSols;
+      const auto& lpsol = mipdata->lp.getLpSolver().getSolution().col_value;
+
+      if (mipdata->incumbent.empty())
+        mipdata->heuristics.RENS(lpsol);
+      else
+        mipdata->heuristics.RINS(lpsol);
+
+      if (mipdata->numImprovingSols > old_improving &&
+          !mipdata->incumbent.empty()) {
+        result.found_feasible = true;
+        result.solution = mipdata->incumbent;
+        result.objective = mipdata->upper_bound;
+      }
+      // RINS/RENS solve sub-MIPs — much more expensive than FPR.
+      // Use high effort so only ~2 calls fit per dive budget.
+      result.effort = mipdata->ARindex_.size() * 128;
+      return result;
+    }
     default:
       return {};
   }
@@ -260,9 +283,15 @@ void run_lp_based(HighsMipSolver& mipsolver) {
 
   std::vector<int> enabled_arms;
   std::vector<double> priors;
+  bool has_submip = false;
   if (options->mip_heuristic_run_scylla_fpr) {
     enabled_arms.push_back(kArmScyllaFPR);
     priors.push_back(kScyllaFprAlpha);
+  }
+  if (options->mip_heuristic_run_rins || options->mip_heuristic_run_rens) {
+    enabled_arms.push_back(kArmSubMIP);
+    priors.push_back(kSubMipAlpha);
+    has_submip = true;
   }
   if (enabled_arms.empty()) return;
 
@@ -281,31 +310,40 @@ void run_lp_based(HighsMipSolver& mipsolver) {
   const size_t budget = nnz * 256;  // Smaller budget for LP-based (per dive)
   size_t total_effort = 0;
 
+  // RINS/RENS modify shared solver state, so run single worker when present
+  const int effective_N = has_submip ? 1 : N;
+
   uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + 137);
-  std::vector<std::mt19937> rngs(N);
-  for (int w = 0; w < N; ++w) rngs[w].seed(base_seed + w * 997);
-  std::vector<int> stale(N, 0);
+  std::vector<std::mt19937> rngs(effective_N);
+  for (int w = 0; w < effective_N; ++w) rngs[w].seed(base_seed + w * 997);
+  std::vector<int> stale(effective_N, 0);
 
   for (int epoch = 0; total_effort < budget; ++epoch) {
     if (mipdata->terminatorTerminated()) break;
 
     auto pool_snap = pool.snapshot();
 
-    std::vector<HeuristicResult> results(N);
-    std::vector<int> arms(N);
+    std::vector<HeuristicResult> results(effective_N);
+    std::vector<int> arms(effective_N);
 
-    highs::parallel::for_each(
-        0, static_cast<HighsInt>(N),
-        [&](HighsInt lo, HighsInt hi) {
-          for (HighsInt w = lo; w < hi; ++w) {
-            arms[w] = bandit.select(rngs[w]);
-            results[w] =
-                run_lp_arm(mipsolver, enabled_arms[arms[w]], rngs[w]);
-          }
-        },
-        1);
+    if (has_submip) {
+      // Sequential: RINS/RENS not safe for parallel execution
+      arms[0] = bandit.select(rngs[0]);
+      results[0] = run_lp_arm(mipsolver, enabled_arms[arms[0]], rngs[0]);
+    } else {
+      highs::parallel::for_each(
+          0, static_cast<HighsInt>(effective_N),
+          [&](HighsInt lo, HighsInt hi) {
+            for (HighsInt w = lo; w < hi; ++w) {
+              arms[w] = bandit.select(rngs[w]);
+              results[w] =
+                  run_lp_arm(mipsolver, enabled_arms[arms[w]], rngs[w]);
+            }
+          },
+          1);
+    }
 
-    for (int w = 0; w < N; ++w) {
+    for (int w = 0; w < effective_N; ++w) {
       if (results[w].found_feasible)
         pool.try_add(results[w].objective, results[w].solution);
 
