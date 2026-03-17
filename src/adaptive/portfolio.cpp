@@ -39,7 +39,7 @@ void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {
   auto* mipdata = mipsolver.mipdata_.get();
   if (mipdata->incumbent.empty()) return;
   const HighsInt ncol = model->num_col_;
-  double obj = 0.0;
+  double obj = model->offset_;
   for (HighsInt j = 0; j < ncol; ++j)
     obj += model->col_cost_[j] * mipdata->incumbent[j];
   pool.try_add(obj, mipdata->incumbent);
@@ -152,6 +152,8 @@ HeuristicResult run_lp_arm(HighsMipSolver& mipsolver, int arm_type,
     case kArmScyllaFPR:
       return scylla_fpr::attempt(mipsolver, rng);
     case kArmSubMIP: {
+      // Note: reads mipdata->incumbent directly. Safe because LP-based
+      // portfolio forces effective_N == 1 when SubMIP arm is present.
       auto* mipdata = mipsolver.mipdata_.get();
       const auto* options = mipsolver.options_mip_;
       HeuristicResult result;
