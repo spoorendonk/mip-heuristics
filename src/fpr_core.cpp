@@ -110,7 +110,13 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
   sol_undo.reserve(ncol);
 
   // --- Initialize solution ---
-  if (attempt_idx == 0 && cfg.hint) {
+  if (initial_solution) {
+    for (HighsInt j = 0; j < ncol; ++j) {
+      double v = initial_solution[j];
+      if (is_int(j)) v = std::round(v);
+      solution[j] = std::max(col_lb[j], std::min(col_ub[j], v));
+    }
+  } else if (attempt_idx == 0 && cfg.hint) {
     for (HighsInt j = 0; j < ncol; ++j) {
       double v = cfg.hint[j];
       if (is_int(j)) v = std::round(v);

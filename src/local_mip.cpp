@@ -302,12 +302,12 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
     return {progress, bonus};
   };
 
-  // Aspiration: would this move beat best objective?
+  // Aspiration: would applying this move to the current solution beat best?
   auto is_aspiration = [&](HighsInt j, double new_val) -> bool {
     if (!best_feasible) return false;
     double delta = new_val - solution[j];
     double obj_delta = col_cost[j] * delta;
-    double new_obj = best_objective + obj_delta;
+    double new_obj = current_obj + obj_delta;
     return minimize ? (new_obj < best_objective - 1e-9)
                     : (new_obj > best_objective + 1e-9);
   };
