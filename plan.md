@@ -6,7 +6,7 @@ The standalone mip-heuristics library can't compete with HiGHS on upper bounds d
 
 **HiGHS landscape**: Mark Turner has draft branches for `local-mip` (WalkSAT-style 1-opt) and `mt/fix-and-propagate` (one-shot fix+propagate, no repair). Neither is merged or a PR. Our implementations are more mature: FPR adds WalkSAT repair; LocalMIP adds weight decay, restarts, aspiration, lift moves. We build independently and let benchmarks showcase quality.
 
-**Not porting**: FJ (HiGHS already has it, core identical), Diving (redundant inside HiGHS B&B), Thompson Sampling portfolio (less valuable inside B&B).
+**Not porting**: Diving (redundant inside HiGHS B&B). FJ is used via the existing HiGHS implementation, wrapped as a portfolio arm via `feasibilityJumpCapture` patch.
 
 ## Project structure
 
@@ -22,7 +22,11 @@ mip-heuristics/
     fpr.h / fpr.cpp              # Fix-Propagate-Repair with WalkSAT
     local_mip.h / local_mip.cpp  # LocalMIP tabu search
     scylla_fpr.h / scylla_fpr.cpp # LP-guided FPR variant
-    common.h                     # shared types/utilities (constraint iteration helpers)
+    heuristic_common.h           # shared types/utilities (HeuristicResult, CscMatrix)
+    adaptive/
+      portfolio.h / portfolio.cpp  # adaptive portfolio orchestrator
+      thompson_sampler.h / .cpp    # Beta-Bernoulli Thompson Sampling bandit
+      solution_pool.h / .cpp       # thread-safe top-K solution pool
   tests/
     test_basic.cpp
 ```
@@ -39,10 +43,10 @@ Idempotent `string(FIND ...)` + `string(REPLACE ...)` on `HighsMipSolver.cpp` an
 
 | Location | After | Insert |
 |---|---|---|
-| Pre-root-node | `feasibilityJump()` block closing `}` | `if (opt) fpr::run(*this); if (opt) local_mip::run(*this);` |
-| B&B dive | RINS/RENS block closing `}` | `if (opt) scylla_fpr::run(*this);` |
+| Pre-root-node | `feasibilityJump()` block closing `}` | Portfolio mode: `portfolio::run_presolve(*this)`. Sequential: `fpr::run(); local_mip::run()`. FJ skipped when portfolio is on (runs as arm). |
+| B&B dive | RINS/RENS block closing `}` | Portfolio mode: `portfolio::run_lp_based(*this)`. Sequential: `scylla_fpr::run()`. Standalone RINS/RENS guarded when portfolio is on. |
 
-Includes added at top: `fpr.h`, `local_mip.h`, `scylla_fpr.h`.
+Includes added at top: `fpr.h`, `local_mip.h`, `scylla_fpr.h`, `adaptive/portfolio.h`.
 
 Our OBJECT library objects are injected into the `highs` target via `target_sources` — no need to touch `cmake/sources.cmake`.
 
@@ -62,7 +66,7 @@ Algorithms access HiGHS data directly (no copying):
 | LP solution (Scylla) | `mipdata_->lp.getLpSolver().getSolution().col_value` |
 | Inject solution | `mipdata_->addIncumbent(sol, obj, source)` |
 
-`common.h` provides lightweight iteration helpers for clean algorithm code.
+`heuristic_common.h` provides `HeuristicResult`, `CscMatrix`, `build_csc`, and `is_integer` helpers.
 
 ## Implementation steps
 
@@ -94,11 +98,14 @@ Added `.clang-format` and `.clang-tidy` configs. Fixed all clang-tidy warnings.
 
 Registered `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla_fpr` as standard HiGHS boolean options (default `true`). Call sites gated with `if` guards.
 
-### Step 8: Benchmark
+### ~~Step 8: Adaptive portfolio~~ ✅ Done (PR #11)
+
+Thompson Sampling bandit with FPR, LocalMIP, FJ arms (presolve) and ScyllaFPR, RINS/RENS arms (LP-based). Thread-safe solution pool with crossover/copy restarts. Two execution modes: deterministic (epoch-based, `for_each` parallel) and opportunistic (free-running workers, atomic budgets). New options: `mip_heuristic_portfolio`, `mip_heuristic_portfolio_opportunistic`. FJ wrapped via `feasibilityJumpCapture` patch.
+
+### Step 9: Benchmark
 - Patched HiGHS vs vanilla on MIPLIB subset.
 
 ### Future (not in first pass)
-- FJ improvements (pool-based restarts, configurable stall detection) as small upstream PR
 - Pseudocost diving — skip, redundant inside HiGHS B&B
 
 ## Verification
