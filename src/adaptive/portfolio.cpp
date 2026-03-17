@@ -6,7 +6,6 @@
 
 #include "adaptive/solution_pool.h"
 #include "adaptive/thompson_sampler.h"
-#include "fpr.h"
 #include "fpr_core.h"
 #include "heuristic_common.h"
 #include "local_mip.h"

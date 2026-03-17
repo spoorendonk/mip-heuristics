@@ -560,5 +560,13 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     if (is_violated(i, lhs_cache[i])) return {};
   }
 
-  return {true, std::move(solution)};
+  double obj = model->offset_;
+  for (HighsInt j = 0; j < ncol; ++j) obj += col_cost[j] * solution[j];
+
+  HeuristicResult result;
+  result.found_feasible = true;
+  result.solution = std::move(solution);
+  result.objective = obj;
+  result.effort = ARindex.size();
+  return result;
 }

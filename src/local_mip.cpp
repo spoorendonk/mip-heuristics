@@ -173,7 +173,7 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
 
   // Compute objective
   auto compute_objective = [&]() -> double {
-    double obj = 0.0;
+    double obj = model->offset_;
     for (HighsInt j = 0; j < ncol; ++j) obj += col_cost[j] * solution[j];
     return obj;
   };
