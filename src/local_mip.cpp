@@ -7,12 +7,31 @@
 #include <vector>
 
 #include "heuristic_common.h"
+#include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
 namespace local_mip {
 
 void run(HighsMipSolver& mipsolver) {
+  const auto* model = mipsolver.model_;
+  auto* mipdata = mipsolver.mipdata_.get();
+  const HighsInt ncol = model->num_col_;
+  const HighsInt nrow = model->num_row_;
+  if (ncol == 0 || nrow == 0) return;
+  if (mipdata->incumbent.empty()) return;
+
+  auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
+                        mipdata->ARvalue_);
+  std::mt19937 rng(mipdata->numImprovingSols + 137);
+
+  auto result = worker(mipsolver, csc, rng, nullptr);
+  if (result.found_feasible)
+    mipdata->trySolution(result.solution, kSolutionSourceHeuristic);
+}
+
+HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
+                       std::mt19937& rng, const double* initial_solution) {
   const auto* model = mipsolver.model_;
   auto* mipdata = mipsolver.mipdata_.get();
   const auto& ARstart = mipdata->ARstart_;
@@ -29,16 +48,16 @@ void run(HighsMipSolver& mipsolver) {
 
   const HighsInt ncol = model->num_col_;
   const HighsInt nrow = model->num_row_;
-  if (ncol == 0 || nrow == 0) return;
 
-  auto csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
+  HeuristicResult result;
+
+  if (ncol == 0 || nrow == 0) return result;
+
   const auto& col_start = csc.col_start;
   const auto& col_row = csc.col_row;
   const auto& col_val = csc.col_val;
 
   auto is_integer = [&](HighsInt j) { return ::is_integer(integrality, j); };
-
-  std::mt19937 rng(mipdata->numImprovingSols + 137);
 
   // --- Constants ---
   constexpr double kViolTol = 5e-7;
@@ -154,7 +173,7 @@ void run(HighsMipSolver& mipsolver) {
 
   // Compute objective
   auto compute_objective = [&]() -> double {
-    double obj = 0.0;
+    double obj = model->offset_;
     for (HighsInt j = 0; j < ncol; ++j) obj += col_cost[j] * solution[j];
     return obj;
   };
@@ -283,12 +302,12 @@ void run(HighsMipSolver& mipsolver) {
     return {progress, bonus};
   };
 
-  // Aspiration: would this move beat best objective?
+  // Aspiration: would applying this move to the current solution beat best?
   auto is_aspiration = [&](HighsInt j, double new_val) -> bool {
     if (!best_feasible) return false;
     double delta = new_val - solution[j];
     double obj_delta = col_cost[j] * delta;
-    double new_obj = best_objective + obj_delta;
+    double new_obj = current_obj + obj_delta;
     return minimize ? (new_obj < best_objective - 1e-9)
                     : (new_obj > best_objective + 1e-9);
   };
@@ -296,11 +315,11 @@ void run(HighsMipSolver& mipsolver) {
   // Breakthrough delta: move toward best objective value.
   // Caller must supply current_obj to avoid redundant O(ncol) recomputation.
   auto compute_breakthrough_delta = [&](HighsInt j,
-                                        double current_obj) -> double {
+                                        double cur_obj) -> double {
     double obj_coeff = col_cost[j];
     if (std::abs(obj_coeff) < 1e-15) return 0.0;
 
-    double obj_gap = current_obj - best_objective;
+    double obj_gap = cur_obj - best_objective;
     if (!minimize) obj_gap = -obj_gap;
 
     double delta = -obj_gap / obj_coeff;
@@ -457,7 +476,13 @@ void run(HighsMipSolver& mipsolver) {
     if (std::abs(col_cost[j]) >= 1e-15) costed_vars.push_back(j);
 
   // --- Initialize solution ---
-  if (!mipdata->incumbent.empty()) {
+  if (initial_solution) {
+    for (HighsInt j = 0; j < ncol; ++j) {
+      double v = initial_solution[j];
+      if (is_integer(j)) v = std::round(v);
+      solution[j] = std::max(col_lb[j], std::min(col_ub[j], v));
+    }
+  } else if (!mipdata->incumbent.empty()) {
     for (HighsInt j = 0; j < ncol; ++j) {
       double v = mipdata->incumbent[j];
       if (is_integer(j)) v = std::round(v);
@@ -492,7 +517,7 @@ void run(HighsMipSolver& mipsolver) {
   // --- Main loop ---
   for (HighsInt step = 0; step < kMaxSteps; ++step) {
     if (step % kTermCheckInterval == 0 && mipdata->terminatorTerminated())
-      return;
+      break;
 
     bool feasible_mode = violated.empty();
 
@@ -512,7 +537,7 @@ void run(HighsMipSolver& mipsolver) {
       }
       if (!truly_feasible) continue;
 
-      // Submit solution if it improves best
+      // Track best solution
       double obj = current_obj;
       bool improved = false;
       if (!best_feasible)
@@ -527,7 +552,6 @@ void run(HighsMipSolver& mipsolver) {
         best_objective = obj;
         best_solution = solution;
         steps_since_improvement = 0;
-        mipdata->trySolution(solution, kSolutionSourceHeuristic);
       }
 
       // Lift move: find variable giving best feasible objective improvement
@@ -769,7 +793,17 @@ void run(HighsMipSolver& mipsolver) {
       std::fill(tabu_inc_until.begin(), tabu_inc_until.end(), 0);
       std::fill(tabu_dec_until.begin(), tabu_dec_until.end(), 0);
     }
+
+    ++result.effort;
   }
+
+  if (best_feasible) {
+    result.found_feasible = true;
+    result.objective = best_objective;
+    result.solution = std::move(best_solution);
+  }
+
+  return result;
 }
 
 }  // namespace local_mip

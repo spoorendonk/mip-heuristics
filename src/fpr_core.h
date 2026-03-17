@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <random>
 
 struct CscMatrix;
+struct HeuristicResult;
 class HighsMipSolver;
 
 struct FprConfig {
@@ -20,4 +22,13 @@ struct FprConfig {
   const CscMatrix* csc;
 };
 
+// Original: runs all attempts, submits solutions via trySolution.
 void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg);
+
+// Single-attempt variant for portfolio mode. Returns result without submitting.
+// Uses provided RNG and attempt index. If initial_solution is non-null, uses it
+// as the starting point (overriding cfg.hint). Otherwise falls back to cfg.hint
+// on attempt 0, or random initialization on later attempts.
+HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
+                            std::mt19937& rng, int attempt_idx,
+                            const double* initial_solution);

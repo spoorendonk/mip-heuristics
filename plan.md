@@ -6,7 +6,7 @@ The standalone mip-heuristics library can't compete with HiGHS on upper bounds d
 
 **HiGHS landscape**: Mark Turner has draft branches for `local-mip` (WalkSAT-style 1-opt) and `mt/fix-and-propagate` (one-shot fix+propagate, no repair). Neither is merged or a PR. Our implementations are more mature: FPR adds WalkSAT repair; LocalMIP adds weight decay, restarts, aspiration, lift moves. We build independently and let benchmarks showcase quality.
 
-**Not porting**: FJ (HiGHS already has it, core identical), Diving (redundant inside HiGHS B&B), Thompson Sampling portfolio (less valuable inside B&B).
+**Not porting**: Diving (redundant inside HiGHS B&B). FJ is used via the existing HiGHS implementation, wrapped as a portfolio arm via `feasibilityJumpCapture` patch.
 
 ## Project structure
 
@@ -22,7 +22,11 @@ mip-heuristics/
     fpr.h / fpr.cpp              # Fix-Propagate-Repair with WalkSAT
     local_mip.h / local_mip.cpp  # LocalMIP tabu search
     scylla_fpr.h / scylla_fpr.cpp # LP-guided FPR variant
-    common.h                     # shared types/utilities (constraint iteration helpers)
+    heuristic_common.h           # shared types/utilities (HeuristicResult, CscMatrix)
+    adaptive/
+      portfolio.h / portfolio.cpp  # adaptive portfolio orchestrator
+      thompson_sampler.h / .cpp    # Beta-Bernoulli Thompson Sampling bandit
+      solution_pool.h / .cpp       # thread-safe top-K solution pool
   tests/
     test_basic.cpp
 ```
@@ -33,16 +37,16 @@ Target: HiGHS **v1.13.1** (same as cptp, proven patch compatibility).
 
 ## Patch design (apply_patch.cmake)
 
-Idempotent `string(FIND ...)` + `string(REPLACE ...)` on `HighsMipSolver.cpp`. No `HighsUserHeuristic` dispatch layer — the patch calls algorithm entry points directly.
+Idempotent `string(FIND ...)` + `string(REPLACE ...)` on `HighsMipSolver.cpp` and `HighsOptions.h`. No `HighsUserHeuristic` dispatch layer — the patch calls algorithm entry points directly, gated by `mip_heuristic_run_*` options.
 
 ### Patch points (2 insertions in HighsMipSolver.cpp)
 
 | Location | After | Insert |
 |---|---|---|
-| Pre-root-node | `feasibilityJump()` block closing `}` | `fpr::run(*this); local_mip::run(*this);` |
-| B&B dive | RINS/RENS block closing `}` | `scylla_fpr::run(*this);` |
+| Pre-root-node | `feasibilityJump()` block closing `}` | Portfolio mode: `portfolio::run_presolve(*this)`. Sequential: `fpr::run(); local_mip::run()`. FJ skipped when portfolio is on (runs as arm). |
+| B&B dive | RINS/RENS block closing `}` | Portfolio mode: `portfolio::run_lp_based(*this)`. Sequential: `scylla_fpr::run()`. Standalone RINS/RENS guarded when portfolio is on. |
 
-Includes added at top: `fpr.h`, `local_mip.h`, `scylla_fpr.h`.
+Includes added at top: `fpr.h`, `local_mip.h`, `scylla_fpr.h`, `adaptive/portfolio.h`.
 
 Our OBJECT library objects are injected into the `highs` target via `target_sources` — no need to touch `cmake/sources.cmake`.
 
@@ -62,7 +66,7 @@ Algorithms access HiGHS data directly (no copying):
 | LP solution (Scylla) | `mipdata_->lp.getLpSolver().getSolution().col_value` |
 | Inject solution | `mipdata_->addIncumbent(sol, obj, source)` |
 
-`common.h` provides lightweight iteration helpers for clean algorithm code.
+`heuristic_common.h` provides `HeuristicResult`, `CscMatrix`, `build_csc`, and `is_integer` helpers.
 
 ## Implementation steps
 
@@ -70,31 +74,38 @@ Algorithms access HiGHS data directly (no copying):
 
 CMake + FetchHiGHS v1.13.1 + patch wiring + no-op algorithm stubs. Build pipeline verified: `highs` binary builds, Catch2 smoke test passes.
 
-### Step 2: Port FPR (Fix-Propagate-Repair)
-- **Source**: `mip-heuristics-old/src/heuristic/fpr/fpr.cpp` (~400 LOC core)
-- **Algorithm**: Rank variables by degree×objective → greedy fix → propagate bounds → WalkSAT repair
-- **LP-free**: Yes. Runs at root before B&B starts.
-- **Key differentiator vs HiGHS `mt/fix-and-propagate`**: WalkSAT repair phase. HiGHS branch gives up on infeasibility; we repair.
-- **Why first**: Smallest, validates entire patch infrastructure end-to-end.
+### ~~Step 2: Port FPR~~ ✅ Done (PR #2)
 
-### Step 3: Port LocalMIP
-- **Source**: `mip-heuristics-old/src/heuristic/local_mip/local_mip.cpp` (~600 LOC core)
-- **Algorithm**: Tabu search with breakthrough scoring, lift moves, weight smoothing, aspiration
-- **LP-free**: Yes. Needs incumbent to start (naturally runs after FPR finds one).
-- **Key differentiators vs HiGHS `local-mip` branch**: Weight decay, restarts, aspiration criterion, longer tabu tenure, lift moves (vs one-opt), BMS sampling.
-- **Why second**: Strongest algorithm, but depends on incumbent from Step 2.
+Full FPR algorithm (~600 LOC) ported into `src/fpr.cpp`. Zero-copy constraint access via AR arrays + local CSC column view. Three phases: rank by degree×|cost| → greedy fix with worklist propagation + snapshot backtracking → WalkSAT repair with O(1) violated-set tracking. Finds `H` solutions on flugpl and neos-911970 at pre-root-node.
 
-### Step 4: Port ScyllaFPR
-- **Source**: `mip-heuristics-old/src/heuristic/scylla/scylla_fpr.cpp` (~100 LOC wrapper)
-- **Algorithm**: FPR but ranks by LP fractionality instead of degree.
-- **LP-dependent**: Yes. Runs during B&B dives when LP solution is available.
-- **Why third**: Trivial once FPR exists (ranking-strategy swap). Demonstrates LP-guided variant.
+### ~~Step 3: Port LocalMIP~~ ✅ Done (PR #3)
 
-### Step 5: Benchmark
+Tabu search with breakthrough scoring, lift moves, weight smoothing, aspiration, BMS sampling. ~600 LOC core in `src/local_mip.cpp`. Runs after FPR when incumbent is available.
+
+### ~~Step 4: Port ScyllaFPR~~ ✅ Done (PR #4)
+
+LP-guided FPR variant in `src/scylla_fpr.cpp`. Ranks by LP fractionality instead of degree. Runs during B&B dives when LP solution is available.
+
+### ~~Step 5: Shared FPR core~~ ✅ Done (PR #6)
+
+Extracted common FPR logic into shared core, eliminating duplication between FPR and ScyllaFPR.
+
+### ~~Step 6: Code quality~~ ✅ Done (PRs #5, #7)
+
+Added `.clang-format` and `.clang-tidy` configs. Fixed all clang-tidy warnings.
+
+### ~~Step 7: HiGHS option parameters~~ ✅ Done (PR #8)
+
+Registered `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla_fpr` as standard HiGHS boolean options (default `true`). Call sites gated with `if` guards.
+
+### ~~Step 8: Adaptive portfolio~~ ✅ Done (PR #11)
+
+Thompson Sampling bandit with FPR, LocalMIP, FJ arms (presolve) and ScyllaFPR, RINS/RENS arms (LP-based). Thread-safe solution pool with crossover/copy restarts. Two execution modes: deterministic (epoch-based, `for_each` parallel) and opportunistic (free-running workers, atomic budgets). New options: `mip_heuristic_portfolio`, `mip_heuristic_portfolio_opportunistic`. FJ wrapped via `feasibilityJumpCapture` patch.
+
+### Step 9: Benchmark
 - Patched HiGHS vs vanilla on MIPLIB subset.
 
 ### Future (not in first pass)
-- FJ improvements (pool-based restarts, configurable stall detection) as small upstream PR
 - Pseudocost diving — skip, redundant inside HiGHS B&B
 
 ## Verification

@@ -58,4 +58,41 @@ void run(HighsMipSolver& mipsolver) {
   fpr_core(mipsolver, cfg);
 }
 
+HeuristicResult attempt(HighsMipSolver& mipsolver, std::mt19937& rng) {
+  HeuristicResult result;
+  const auto* model = mipsolver.model_;
+  auto* mipdata = mipsolver.mipdata_.get();
+
+  auto lp_status = mipdata->lp.getStatus();
+  if (!HighsLpRelaxation::scaledOptimal(lp_status)) return result;
+
+  const auto& lp_sol = mipdata->lp.getLpSolver().getSolution().col_value;
+  const auto& integrality = model->integrality_;
+  const HighsInt ncol = model->num_col_;
+  if (ncol == 0) return result;
+  if (mipdata->terminatorTerminated()) return result;
+
+  std::vector<double> scores(ncol);
+  for (HighsInt j = 0; j < ncol; ++j) {
+    if (!is_integer(integrality, j))
+      scores[j] = -1.0;
+    else
+      scores[j] = std::abs(lp_sol[j] - std::round(lp_sol[j]));
+  }
+
+  auto csc = build_csc(ncol, model->num_row_, mipdata->ARstart_,
+                        mipdata->ARindex_, mipdata->ARvalue_);
+
+  FprConfig cfg{};
+  cfg.max_attempts = 1;
+  cfg.rng_seed_offset = 137;
+  cfg.hint = lp_sol.data();
+  cfg.scores = scores.data();
+  cfg.cont_fallback = lp_sol.data();
+  cfg.csc = &csc;
+
+  result = fpr_attempt(mipsolver, cfg, rng, 0, nullptr);
+  return result;
+}
+
 }  // namespace scylla_fpr
