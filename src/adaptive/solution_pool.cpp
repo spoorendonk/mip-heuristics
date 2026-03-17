@@ -1,33 +1,40 @@
 #include "adaptive/solution_pool.h"
 
 #include <algorithm>
+#include <limits>
 
 SolutionPool::SolutionPool(int capacity, bool minimize)
     : capacity_(capacity), minimize_(minimize) {}
 
 bool SolutionPool::try_add(double obj, const std::vector<double>& sol) {
   std::lock_guard<HighsSpinMutex> lock(mtx_);
+
+  // Find insertion point (entries_ kept sorted, best first)
+  auto cmp = [this](const Entry& e, double val) {
+    return minimize_ ? e.objective < val : e.objective > val;
+  };
+  auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
+
   if (static_cast<int>(entries_.size()) >= capacity_) {
+    // Full: only add if better than worst
     auto& worst = entries_.back();
     bool dominated = minimize_ ? obj >= worst.objective : obj <= worst.objective;
     if (dominated) return false;
-    worst.objective = obj;
-    worst.solution = sol;
+    // Remove worst, insert at correct position
+    entries_.pop_back();
+    pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
+    entries_.insert(pos, {obj, sol});
   } else {
-    entries_.push_back({obj, sol});
+    entries_.insert(pos, {obj, sol});
   }
-  std::sort(entries_.begin(), entries_.end(),
-            [this](const Entry& a, const Entry& b) {
-              return minimize_ ? a.objective < b.objective
-                               : a.objective > b.objective;
-            });
   return true;
 }
 
 SolutionPool::Snapshot SolutionPool::snapshot() {
   std::lock_guard<HighsSpinMutex> lock(mtx_);
   if (entries_.empty()) {
-    return {false, minimize_ ? 1e30 : -1e30};
+    return {false, minimize_ ? std::numeric_limits<double>::infinity()
+                              : -std::numeric_limits<double>::infinity()};
   }
   return {true, entries_[0].objective};
 }

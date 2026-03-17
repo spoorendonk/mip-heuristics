@@ -1,6 +1,5 @@
 #include "adaptive/portfolio.h"
 
-#include <cmath>
 #include <random>
 #include <vector>
 
@@ -32,13 +31,18 @@ constexpr double kLocalMipAlpha = 3.0;
 constexpr double kScyllaFprAlpha = 2.0;
 constexpr double kSubMipAlpha = 1.5;
 
-constexpr double kBaseEpochEffort = 64.0;
-constexpr double kMinEpochScale = 0.25;
-constexpr double kMaxEpochScale = 4.0;
-constexpr double kGrowFactor = 1.2;
-constexpr double kShrinkFactor = 0.75;
-constexpr int kStaleThreshold = 2;
 constexpr int kPoolCapacity = 10;
+
+void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {
+  const auto* model = mipsolver.model_;
+  auto* mipdata = mipsolver.mipdata_.get();
+  if (mipdata->incumbent.empty()) return;
+  const HighsInt ncol = model->num_col_;
+  double obj = 0.0;
+  for (HighsInt j = 0; j < ncol; ++j)
+    obj += model->col_cost_[j] * mipdata->incumbent[j];
+  pool.try_add(obj, mipdata->incumbent);
+}
 
 bool objective_better(bool minimize, double lhs, double rhs) {
   constexpr double kTol = 1e-9;
@@ -131,14 +135,18 @@ HeuristicResult run_lp_arm(HighsMipSolver& mipsolver, int arm_type,
       return scylla_fpr::attempt(mipsolver, rng);
     case kArmSubMIP: {
       auto* mipdata = mipsolver.mipdata_.get();
+      const auto* options = mipsolver.options_mip_;
       HeuristicResult result;
       HighsInt old_improving = mipdata->numImprovingSols;
       const auto& lpsol = mipdata->lp.getLpSolver().getSolution().col_value;
 
-      if (mipdata->incumbent.empty())
-        mipdata->heuristics.RENS(lpsol);
-      else
-        mipdata->heuristics.RINS(lpsol);
+      if (mipdata->incumbent.empty()) {
+        if (options->mip_heuristic_run_rens)
+          mipdata->heuristics.RENS(lpsol);
+      } else {
+        if (options->mip_heuristic_run_rins)
+          mipdata->heuristics.RINS(lpsol);
+      }
 
       if (mipdata->numImprovingSols > old_improving &&
           !mipdata->incumbent.empty()) {
@@ -146,9 +154,7 @@ HeuristicResult run_lp_arm(HighsMipSolver& mipsolver, int arm_type,
         result.solution = mipdata->incumbent;
         result.objective = mipdata->upper_bound;
       }
-      // RINS/RENS solve sub-MIPs — much more expensive than FPR.
-      // Use high effort so only ~2 calls fit per dive budget.
-      result.effort = mipdata->ARindex_.size() * 128;
+      result.effort = mipdata->ARindex_.size();
       return result;
     }
     default:
@@ -193,29 +199,24 @@ void run_presolve(HighsMipSolver& mipsolver) {
   ThompsonSampler bandit(static_cast<int>(enabled_arms.size()), priors.data(),
                          false);
   SolutionPool pool(kPoolCapacity, minimize);
+  seed_pool(pool, mipsolver);
 
-  // Seed incumbent into pool if available
-  if (!mipdata->incumbent.empty()) {
-    double obj = 0.0;
-    for (HighsInt j = 0; j < ncol; ++j)
-      obj += model->col_cost_[j] * mipdata->incumbent[j];
-    pool.try_add(obj, mipdata->incumbent);
-  }
-
+  // FJ-style budget: nnz << 10 total, nnz << 8 since last improvement
   const size_t nnz = mipdata->ARindex_.size();
-  const size_t budget = nnz * 1024;
+  const size_t budget = nnz << 10;
+  const size_t stale_budget = nnz << 8;
   size_t total_effort = 0;
+  size_t effort_since_improvement = 0;
 
   // Deterministic per-worker state
   uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + 42);
   std::vector<std::mt19937> rngs(N);
   for (int w = 0; w < N; ++w) rngs[w].seed(base_seed + w * 997);
-  std::vector<double> epoch_efforts(N, kBaseEpochEffort);
-  std::vector<int> stale(N, 0);
   std::vector<int> attempt_counters(N, 0);
 
   for (int epoch = 0; total_effort < budget; ++epoch) {
     if (mipdata->terminatorTerminated()) break;
+    if (effort_since_improvement > stale_budget) break;
 
     // Pre-epoch: snapshot + get restarts (sequential, deterministic)
     auto pool_snap = pool.snapshot();
@@ -251,15 +252,10 @@ void run_presolve(HighsMipSolver& mipsolver) {
       total_effort += results[w].effort;
       attempt_counters[w]++;
 
-      if (reward >= 2) {
-        stale[w] = 0;
-        epoch_efforts[w] = std::min(kBaseEpochEffort * kMaxEpochScale,
-                                    epoch_efforts[w] * kGrowFactor);
-      } else if (++stale[w] >= kStaleThreshold) {
-        epoch_efforts[w] = std::max(kBaseEpochEffort * kMinEpochScale,
-                                    epoch_efforts[w] * kShrinkFactor);
-        stale[w] = 0;
-      }
+      if (reward >= 2)
+        effort_since_improvement = 0;
+      else
+        effort_since_improvement += results[w].effort;
 
       // Update snapshot for next worker's reward computation
       pool_snap = after_snap;
@@ -275,8 +271,7 @@ void run_lp_based(HighsMipSolver& mipsolver) {
   const auto* model = mipsolver.model_;
   auto* mipdata = mipsolver.mipdata_.get();
   const auto* options = mipsolver.options_mip_;
-  const HighsInt ncol = model->num_col_;
-  if (ncol == 0) return;
+  if (model->num_col_ == 0) return;
 
   const bool minimize = (model->sense_ == ObjSense::kMinimize);
   const int N = highs::parallel::num_threads();
@@ -298,17 +293,12 @@ void run_lp_based(HighsMipSolver& mipsolver) {
   ThompsonSampler bandit(static_cast<int>(enabled_arms.size()), priors.data(),
                          false);
   SolutionPool pool(kPoolCapacity, minimize);
+  seed_pool(pool, mipsolver);
 
-  if (!mipdata->incumbent.empty()) {
-    double obj = 0.0;
-    for (HighsInt j = 0; j < ncol; ++j)
-      obj += model->col_cost_[j] * mipdata->incumbent[j];
-    pool.try_add(obj, mipdata->incumbent);
-  }
-
-  const size_t nnz = mipdata->ARindex_.size();
-  const size_t budget = nnz * 256;  // Smaller budget for LP-based (per dive)
-  size_t total_effort = 0;
+  // RINS/RENS-style budget: limited number of epochs (each epoch runs one
+  // sub-MIP or ScyllaFPR attempt, which is already expensive).
+  // HiGHS uses ~500 maxleaves per RINS/RENS call; we allow a few bandit rounds.
+  constexpr int kMaxLpEpochs = 4;
 
   // RINS/RENS modify shared solver state, so run single worker when present
   const int effective_N = has_submip ? 1 : N;
@@ -316,9 +306,8 @@ void run_lp_based(HighsMipSolver& mipsolver) {
   uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + 137);
   std::vector<std::mt19937> rngs(effective_N);
   for (int w = 0; w < effective_N; ++w) rngs[w].seed(base_seed + w * 997);
-  std::vector<int> stale(effective_N, 0);
 
-  for (int epoch = 0; total_effort < budget; ++epoch) {
+  for (int epoch = 0; epoch < kMaxLpEpochs; ++epoch) {
     if (mipdata->terminatorTerminated()) break;
 
     auto pool_snap = pool.snapshot();
@@ -350,7 +339,6 @@ void run_lp_based(HighsMipSolver& mipsolver) {
       auto after_snap = pool.snapshot();
       int reward = compute_reward(pool_snap, after_snap, results[w], minimize);
       bandit.update(arms[w], reward);
-      total_effort += results[w].effort;
 
       pool_snap = after_snap;
     }
