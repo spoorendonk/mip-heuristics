@@ -73,6 +73,10 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
                                  const double* restart_sol,
                                  const CscMatrix& csc,
                                  const std::vector<double>& incumbent_snapshot) {
+  if (mipsolver.mipdata_->terminatorTerminated())
+    return {};
+  if (mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit)
+    return {};
   switch (arm_type) {
     case kArmFPR: {
       const auto* model = mipsolver.model_;
@@ -216,8 +220,9 @@ void run_presolve_opportunistic(HighsMipSolver& mipsolver,
           while (!stop.load(std::memory_order_relaxed)) {
             // Worker 0 periodically checks termination (not thread-safe
             // to call from multiple workers)
-            if (w == 0 && attempt_counter % 16 == 0 && attempt_counter > 0) {
-              if (mipdata->terminatorTerminated())
+            if (w == 0) {
+              if (mipdata->terminatorTerminated() ||
+                  mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit)
                 stop.store(true, std::memory_order_relaxed);
             }
             if (stop.load(std::memory_order_relaxed)) break;
@@ -328,7 +333,9 @@ void run_presolve(HighsMipSolver& mipsolver) {
   std::vector<int> attempt_counters(N, 0);
 
   for (int epoch = 0; total_effort < budget; ++epoch) {
-    if (mipdata->terminatorTerminated()) break;
+    if (mipdata->terminatorTerminated() ||
+        mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit)
+      break;
     if (effort_since_improvement > stale_budget) break;
 
     // Pre-epoch: snapshot + get restarts (sequential, deterministic)

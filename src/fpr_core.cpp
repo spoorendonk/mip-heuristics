@@ -232,7 +232,10 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
       }
     };
 
+    HighsInt prop_iters = 0;
+    const HighsInt prop_budget = 10 * nrow;
     while (!prop_worklist.empty()) {
+      if (++prop_iters > prop_budget) return false;
       HighsInt i = prop_worklist.back();
       prop_worklist.pop_back();
       prop_in_wl[i] = 0;
@@ -345,7 +348,11 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
 
   // Fix integer variables in ranked order
   bool fix_failed = false;
+  const double time_limit = mipsolver.options_mip_->time_limit;
   for (HighsInt idx = 0; idx < ncol; ++idx) {
+    if (idx % 100 == 0 &&
+        mipsolver.timer_.read() >= time_limit)
+      return {};
     HighsInt j = var_order[idx];
     if (!is_int(j)) continue;
     if (vs[j].fixed) continue;

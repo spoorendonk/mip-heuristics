@@ -63,7 +63,7 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   constexpr double kViolTol = 5e-7;
   constexpr HighsInt kMaxSteps = 500000;
   constexpr HighsInt kRestartInterval = 200000;
-  constexpr HighsInt kTermCheckInterval = 10000;
+  constexpr HighsInt kTermCheckInterval = 1000;
   constexpr HighsInt kActivityPeriod = 100000;
   constexpr double kSmoothProb = 1e-4;
   constexpr HighsInt kBmsConstraints = 12;
@@ -516,7 +516,9 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
 
   // --- Main loop ---
   for (HighsInt step = 0; step < kMaxSteps; ++step) {
-    if (step % kTermCheckInterval == 0 && mipdata->terminatorTerminated())
+    if (step % kTermCheckInterval == 0 &&
+        (mipdata->terminatorTerminated() ||
+         mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit))
       break;
 
     bool feasible_mode = violated.empty();
