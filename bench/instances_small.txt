@@ -1,0 +1,26 @@
+# Small tuning subset (~20 instances)
+# Mix of easy (solve <10s) and medium (need 60s) instances
+# Used for quick iteration on heuristic tuning
+#
+# Easy (solve in <10s at 10s limit):
+flugpl
+gr4x6
+supportcase14
+supportcase16
+opt1217
+beavma
+rlp1
+gen
+sp150x300d
+nexp-50-20-1-1
+bppc8-02
+# Medium (need more time, interesting for heuristic evaluation):
+blend2
+dcmulti
+p0201
+qnet1_o
+pk1
+noswot
+misc07
+neos-911970
+rentacar

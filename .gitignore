@@ -1,0 +1,7 @@
+build/
+build_*/
+.cache/
+__pycache__/
+bench/results/
+*.pyc
+Highs.log
