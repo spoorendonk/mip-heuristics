@@ -1,26 +1,33 @@
-# Small tuning subset (~20 instances)
-# Mix of easy (solve <10s) and medium (need 60s) instances
-# Used for quick iteration on heuristic tuning
+# Tuning subset (~25 instances) selected from Mittelmann benchmarks
+# HiGHS 1.13.0 solve time 10-600s, structural diversity
+# Used for patched-vs-vanilla regression testing
 #
-# Easy (solve in <10s at 10s limit):
-flugpl
-gr4x6
-supportcase14
-supportcase16
-opt1217
-beavma
-rlp1
-gen
-sp150x300d
-nexp-50-20-1-1
-bppc8-02
-# Medium (need more time, interesting for heuristic evaluation):
-blend2
-dcmulti
-p0201
-qnet1_o
+# General integer (non-binary) — tests FPR repair strategies
+n5-3
+gen-ip054
+timtab1
+mzzv11
+mzzv42z
+# Mixed binary + continuous — tests LP-guided heuristics
+dano3_3
+fiball
+mc11
+roll3000
+swath3
+unitcal_7
+triptim1
+# Pure/mostly binary — tests FJ vs portfolio
+neos5
+mas76
 pk1
-noswot
-misc07
-neos-911970
-rentacar
+seymour1
+nexp-150-20-8-5
+tr12-30
+nw04
+qap10
+# Scheduling/structured — tests heuristic diversity
+csched008
+satellites2-60-fs
+wachplan
+neos-3627168-kasai
+mushroom-best
