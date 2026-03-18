@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <random>
 
 struct CscMatrix;
@@ -20,6 +21,8 @@ struct FprConfig {
   // Optional pre-built CSC matrix (avoids redundant build if caller already has
   // one)
   const CscMatrix* csc;
+  // Wall-clock deadline (timer_.read() value); infinity = no extra cap
+  double deadline = std::numeric_limits<double>::infinity();
 };
 
 // Original: runs all attempts, submits solutions via trySolution.

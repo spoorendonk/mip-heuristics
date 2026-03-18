@@ -17,6 +17,7 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
 
   for (int attempt = 0; attempt < cfg.max_attempts; ++attempt) {
     if (mipdata->terminatorTerminated()) return;
+    if (mipsolver.timer_.read() >= cfg.deadline) return;
     auto result = fpr_attempt(mipsolver, cfg, rng, attempt, nullptr);
     if (result.found_feasible) {
       if (mipdata->trySolution(result.solution, kSolutionSourceHeuristic))
@@ -348,10 +349,11 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
 
   // Fix integer variables in ranked order
   bool fix_failed = false;
-  const double time_limit = mipsolver.options_mip_->time_limit;
+  const double deadline = std::min(mipsolver.options_mip_->time_limit,
+                                   cfg.deadline);
   for (HighsInt idx = 0; idx < ncol; ++idx) {
     if (idx % 100 == 0 &&
-        mipsolver.timer_.read() >= time_limit)
+        mipsolver.timer_.read() >= deadline)
       return {};
     HighsInt j = var_order[idx];
     if (!is_int(j)) continue;

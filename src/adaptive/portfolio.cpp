@@ -1,5 +1,6 @@
 #include "adaptive/portfolio.h"
 
+#include <algorithm>
 #include <atomic>
 #include <random>
 #include <vector>
@@ -72,10 +73,12 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
                                  std::mt19937& rng, int attempt_idx,
                                  const double* restart_sol,
                                  const CscMatrix& csc,
-                                 const std::vector<double>& incumbent_snapshot) {
+                                 const std::vector<double>& incumbent_snapshot,
+                                 double deadline) {
   if (mipsolver.mipdata_->terminatorTerminated())
     return {};
-  if (mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit)
+  if (mipsolver.timer_.read() >= std::min(mipsolver.options_mip_->time_limit,
+                                          deadline))
     return {};
   switch (arm_type) {
     case kArmFPR: {
@@ -107,6 +110,7 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
       cfg.scores = scores.data();
       cfg.cont_fallback = cont_fallback.data();
       cfg.csc = &csc;
+      cfg.deadline = deadline;
 
       return fpr_attempt(mipsolver, cfg, rng, attempt_idx, restart_sol);
     }
@@ -114,7 +118,7 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
       const double* init = restart_sol;
       if (!init && !incumbent_snapshot.empty())
         init = incumbent_snapshot.data();
-      return local_mip::worker(mipsolver, csc, rng, init);
+      return local_mip::worker(mipsolver, csc, rng, init, deadline);
     }
     case kArmFJ: {
       auto* mipdata = mipsolver.mipdata_.get();
@@ -204,6 +208,11 @@ void run_presolve_opportunistic(HighsMipSolver& mipsolver,
   const size_t budget = nnz << 10;
   const size_t stale_budget = nnz << 8;
 
+  // Wall-clock cap: 10% of time limit, clamped to [5, 30] seconds
+  const double time_limit = mipsolver.options_mip_->time_limit;
+  const double wall_cap = std::min(30.0, std::max(5.0, 0.1 * time_limit));
+  const double wall_deadline = mipsolver.timer_.read() + wall_cap;
+
   std::atomic<size_t> total_effort{0};
   std::atomic<size_t> effort_since_improvement{0};
   std::atomic<bool> stop{false};
@@ -222,7 +231,7 @@ void run_presolve_opportunistic(HighsMipSolver& mipsolver,
             // to call from multiple workers)
             if (w == 0) {
               if (mipdata->terminatorTerminated() ||
-                  mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit)
+                  mipsolver.timer_.read() >= std::min(time_limit, wall_deadline))
                 stop.store(true, std::memory_order_relaxed);
             }
             if (stop.load(std::memory_order_relaxed)) break;
@@ -238,7 +247,7 @@ void run_presolve_opportunistic(HighsMipSolver& mipsolver,
             auto result =
                 run_presolve_arm(mipsolver, enabled_arms[arm], rng,
                                  attempt_counter++, restart_ptr, csc,
-                                 incumbent_snapshot);
+                                 incumbent_snapshot, wall_deadline);
 
             if (result.found_feasible)
               pool.try_add(result.objective, result.solution);
@@ -326,6 +335,11 @@ void run_presolve(HighsMipSolver& mipsolver) {
   size_t total_effort = 0;
   size_t effort_since_improvement = 0;
 
+  // Wall-clock cap: 10% of time limit, clamped to [5, 30] seconds
+  const double time_limit = mipsolver.options_mip_->time_limit;
+  const double wall_cap = std::min(30.0, std::max(5.0, 0.1 * time_limit));
+  const double wall_deadline = mipsolver.timer_.read() + wall_cap;
+
   // Deterministic per-worker state
   uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + 42);
   std::vector<std::mt19937> rngs(N);
@@ -334,7 +348,7 @@ void run_presolve(HighsMipSolver& mipsolver) {
 
   for (int epoch = 0; total_effort < budget; ++epoch) {
     if (mipdata->terminatorTerminated() ||
-        mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit)
+        mipsolver.timer_.read() >= std::min(time_limit, wall_deadline))
       break;
     if (effort_since_improvement > stale_budget) break;
 
@@ -357,7 +371,7 @@ void run_presolve(HighsMipSolver& mipsolver) {
             results[w] = run_presolve_arm(mipsolver, enabled_arms[arms[w]],
                                           rngs[w], attempt_counters[w],
                                           restart_ptr, csc,
-                                          incumbent_snapshot);
+                                          incumbent_snapshot, wall_deadline);
           }
         },
         1);
