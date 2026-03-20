@@ -20,7 +20,7 @@ void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
     if (mipsolver.timer_.read() >= cfg.deadline) return;
     auto result = fpr_attempt(mipsolver, cfg, rng, attempt, nullptr);
     if (result.found_feasible) {
-      if (mipdata->trySolution(result.solution, kSolutionSourceHeuristic))
+      if (mipdata->trySolution(result.solution, kSolutionSourceFPR))
         return;
     }
   }
@@ -95,6 +95,8 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     if (lhs < row_lo[i] - feastol) return true;
     return false;
   };
+
+  size_t total_prop_work = 0;
 
   std::vector<HighsInt> prop_worklist;
   prop_worklist.reserve(nrow);
@@ -236,7 +238,10 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     HighsInt prop_iters = 0;
     const HighsInt prop_budget = 10 * nrow;
     while (!prop_worklist.empty()) {
-      if (++prop_iters > prop_budget) return false;
+      if (++prop_iters > prop_budget) {
+        total_prop_work += prop_iters;
+        return false;
+      }
       HighsInt i = prop_worklist.back();
       prop_worklist.pop_back();
       prop_in_wl[i] = 0;
@@ -344,17 +349,17 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
         if (changed) enqueue_neighbors(j);
       }
     }
+    total_prop_work += prop_iters;
     return true;
   };
 
   // Fix integer variables in ranked order
   bool fix_failed = false;
-  const double deadline = std::min(mipsolver.options_mip_->time_limit,
-                                   cfg.deadline);
+  const double deadline = cfg.deadline;
   for (HighsInt idx = 0; idx < ncol; ++idx) {
     if (idx % 100 == 0 &&
         mipsolver.timer_.read() >= deadline)
-      return {};
+      return HeuristicResult::failed(total_prop_work);
     HighsInt j = var_order[idx];
     if (!is_int(j)) continue;
     if (vs[j].fixed) continue;
@@ -400,7 +405,8 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     }
   }
 
-  if (fix_failed) return {};
+  if (fix_failed)
+    return HeuristicResult::failed(total_prop_work);
 
   // Fix remaining unfixed variables
   for (HighsInt j = 0; j < ncol; ++j) {
@@ -568,11 +574,13 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     feasible = violated.empty();
   }
 
-  if (!feasible) return {};
+  if (!feasible)
+    return HeuristicResult::failed(total_prop_work);
 
   // Verify feasibility using cached LHS values (O(nrow) vs O(nnz))
   for (HighsInt i = 0; i < nrow; ++i) {
-    if (is_violated(i, lhs_cache[i])) return {};
+    if (is_violated(i, lhs_cache[i]))
+      return HeuristicResult::failed(total_prop_work);
   }
 
   double obj = model->offset_;
@@ -582,6 +590,6 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
   result.found_feasible = true;
   result.solution = std::move(solution);
   result.objective = obj;
-  result.effort = ARindex.size();
+  result.effort = total_prop_work;
   return result;
 }

@@ -25,13 +25,11 @@ void run(HighsMipSolver& mipsolver) {
                         mipdata->ARvalue_);
   std::mt19937 rng(mipdata->numImprovingSols + 137);
 
-  // Cap LocalMIP at 10% of time limit (min 5s, max 30s)
-  const double tl = mipsolver.options_mip_->time_limit;
-  const double dl = mipsolver.timer_.read() +
-                    std::min(30.0, std::max(5.0, 0.1 * tl));
+  const double dl = heuristic_deadline(mipsolver.options_mip_->time_limit,
+                                       mipsolver.timer_.read());
   auto result = worker(mipsolver, csc, rng, nullptr, dl);
   if (result.found_feasible)
-    mipdata->trySolution(result.solution, kSolutionSourceHeuristic);
+    mipdata->trySolution(result.solution, kSolutionSourceLocalMIP);
 }
 
 HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
@@ -518,13 +516,14 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
 
   HighsInt steps_since_improvement = 0;
   HighsInt restart_count = 0;
+  const double effective_deadline =
+      std::min(mipsolver.options_mip_->time_limit, deadline);
 
   // --- Main loop ---
   for (HighsInt step = 0; step < kMaxSteps; ++step) {
     if (step % kTermCheckInterval == 0 &&
         (mipdata->terminatorTerminated() ||
-         mipsolver.timer_.read() >= std::min(mipsolver.options_mip_->time_limit,
-                                             deadline)))
+         mipsolver.timer_.read() >= effective_deadline))
       break;
 
     bool feasible_mode = violated.empty();

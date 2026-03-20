@@ -47,10 +47,8 @@ void run(HighsMipSolver& mipsolver) {
   cfg.scores = scores.data();
   cfg.cont_fallback = cont_fallback.data();
   cfg.csc = &csc;
-  // Cap FPR at 10% of time limit (min 5s, max 30s)
-  const double tl = mipsolver.options_mip_->time_limit;
-  cfg.deadline = mipsolver.timer_.read() +
-                 std::min(30.0, std::max(5.0, 0.1 * tl));
+  cfg.deadline = heuristic_deadline(mipsolver.options_mip_->time_limit,
+                                    mipsolver.timer_.read());
 
   fpr_core(mipsolver, cfg);
 }

@@ -11,6 +11,10 @@ struct HeuristicResult {
   std::vector<double> solution;
   double objective = std::numeric_limits<double>::infinity();
   size_t effort = 0;
+
+  static HeuristicResult failed(size_t effort = 0) {
+    return {false, {}, std::numeric_limits<double>::infinity(), effort};
+  }
 };
 
 struct CscMatrix {
@@ -46,4 +50,11 @@ inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow,
 inline bool is_integer(const std::vector<HighsVarType>& integrality,
                        HighsInt j) {
   return integrality[j] != HighsVarType::kContinuous;
+}
+
+// Wall-clock cap for heuristic entry points: 10% of time limit, [5s, 30s],
+// but never exceed the overall time_limit.
+inline double heuristic_deadline(double time_limit, double now) {
+  double cap = std::min(30.0, std::max(5.0, 0.1 * time_limit));
+  return std::min(time_limit, now + cap);
 }
