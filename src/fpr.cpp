@@ -1,5 +1,6 @@
 #include "fpr.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -46,6 +47,8 @@ void run(HighsMipSolver& mipsolver) {
   cfg.scores = scores.data();
   cfg.cont_fallback = cont_fallback.data();
   cfg.csc = &csc;
+  cfg.deadline = heuristic_deadline(mipsolver.options_mip_->time_limit,
+                                    mipsolver.timer_.read());
 
   fpr_core(mipsolver, cfg);
 }

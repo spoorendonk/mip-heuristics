@@ -11,7 +11,6 @@ add_library(mip_heuristics OBJECT
     src/fpr.cpp
     src/fpr_core.cpp
     src/local_mip.cpp
-    src/scylla_fpr.cpp
     src/adaptive/thompson_sampler.cpp
     src/adaptive/solution_pool.cpp
     src/adaptive/portfolio.cpp

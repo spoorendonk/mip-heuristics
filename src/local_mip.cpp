@@ -25,13 +25,16 @@ void run(HighsMipSolver& mipsolver) {
                         mipdata->ARvalue_);
   std::mt19937 rng(mipdata->numImprovingSols + 137);
 
-  auto result = worker(mipsolver, csc, rng, nullptr);
+  const double dl = heuristic_deadline(mipsolver.options_mip_->time_limit,
+                                       mipsolver.timer_.read());
+  auto result = worker(mipsolver, csc, rng, nullptr, dl);
   if (result.found_feasible)
-    mipdata->trySolution(result.solution, kSolutionSourceHeuristic);
+    mipdata->trySolution(result.solution, kSolutionSourceLocalMIP);
 }
 
 HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
-                       std::mt19937& rng, const double* initial_solution) {
+                       std::mt19937& rng, const double* initial_solution,
+                       double deadline) {
   const auto* model = mipsolver.model_;
   auto* mipdata = mipsolver.mipdata_.get();
   const auto& ARstart = mipdata->ARstart_;
@@ -63,7 +66,7 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   constexpr double kViolTol = 5e-7;
   constexpr HighsInt kMaxSteps = 500000;
   constexpr HighsInt kRestartInterval = 200000;
-  constexpr HighsInt kTermCheckInterval = 10000;
+  constexpr HighsInt kTermCheckInterval = 1000;
   constexpr HighsInt kActivityPeriod = 100000;
   constexpr double kSmoothProb = 1e-4;
   constexpr HighsInt kBmsConstraints = 12;
@@ -513,10 +516,14 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
 
   HighsInt steps_since_improvement = 0;
   HighsInt restart_count = 0;
+  const double effective_deadline =
+      std::min(mipsolver.options_mip_->time_limit, deadline);
 
   // --- Main loop ---
   for (HighsInt step = 0; step < kMaxSteps; ++step) {
-    if (step % kTermCheckInterval == 0 && mipdata->terminatorTerminated())
+    if (step % kTermCheckInterval == 0 &&
+        (mipdata->terminatorTerminated() ||
+         mipsolver.timer_.read() >= effective_deadline))
       break;
 
     bool feasible_mode = violated.empty();

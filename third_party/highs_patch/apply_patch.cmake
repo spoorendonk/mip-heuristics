@@ -40,7 +40,7 @@ else()
     message(STATUS "Option patches already applied to HighsOptions.h, skipping")
 endif()
 
-# ── Patch HighsMipSolverData.h: add capture overload for feasibilityJump ──
+# ── Patch HighsMipSolverData.h: add capture overload + custom solution source enums ──
 file(READ "${MIP_DIR}/HighsMipSolverData.h" MIPDATA_H)
 
 string(FIND "${MIPDATA_H}" "feasibilityJumpCapture" _fj_h_found)
@@ -54,6 +54,43 @@ if(_fj_h_found EQUAL -1)
     message(STATUS "Applied feasibilityJumpCapture declaration to HighsMipSolverData.h")
 else()
     message(STATUS "feasibilityJumpCapture patch already applied, skipping")
+endif()
+
+# Add per-heuristic solution source enum entries
+string(FIND "${MIPDATA_H}" "kSolutionSourceFPR" _src_enum_found)
+if(_src_enum_found EQUAL -1)
+    string(REPLACE
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScyllaFPR,           // G (LP-guided FPR)\n  kSolutionSourceCleanup,"
+      MIPDATA_H "${MIPDATA_H}")
+
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
+    message(STATUS "Applied custom solution source enums to HighsMipSolverData.h")
+else()
+    message(STATUS "Custom solution source enums already applied, skipping")
+endif()
+
+# ── Patch HighsMipSolverData.cpp: add source strings + fix key display ──
+file(READ "${MIP_DIR}/HighsMipSolverData.cpp" MIPDATA_CPP)
+
+string(FIND "${MIPDATA_CPP}" "kSolutionSourceFPR" _src_cpp_found)
+if(_src_cpp_found EQUAL -1)
+    # Add source-to-string entries before kSolutionSourceCleanup
+    string(REPLACE
+      "} else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
+      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScyllaFPR) {\n    if (code) return \"G\";\n    return \"Scylla FPR\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
+      MIPDATA_CPP "${MIPDATA_CPP}")
+
+    # Update printSolutionSourceKey limits for the 3 new entries
+    string(REPLACE
+      "std::vector<int> limits = {4, 9, 14, last_enum};"
+      "std::vector<int> limits = {4, 9, 14, 18, last_enum};"
+      MIPDATA_CPP "${MIPDATA_CPP}")
+
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")
+    message(STATUS "Applied solution source strings to HighsMipSolverData.cpp")
+else()
+    message(STATUS "Solution source strings already applied, skipping")
 endif()
 
 # ── Patch HighsFeasibilityJump.cpp: add capture implementation ──
@@ -195,7 +232,7 @@ if(_found EQUAL -1)
     # Add includes at top (after existing includes)
     string(REPLACE
       "#include \"mip/HighsMipSolver.h\""
-      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"local_mip.h\"\n#include \"scylla_fpr.h\"\n#include \"adaptive/portfolio.h\""
+      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"local_mip.h\"\n#include \"adaptive/portfolio.h\""
       CONTENT "${CONTENT}")
 
     # Patch A: after feasibilityJump block (pre-root-node, LP-free heuristics)
@@ -222,10 +259,10 @@ if(_found EQUAL -1)
       "if (options_mip_->mip_heuristic_run_rins && !options_mip_->mip_heuristic_portfolio) {"
       CONTENT "${CONTENT}")
 
-    # Patch C: after RINS/RENS block closing brace, insert portfolio/scylla dispatch
+    # Patch C: after RINS/RENS block closing brace, insert ScyllaFPR parallel restarts
     string(REPLACE
       "          }\n\n          mipdata_->heuristics.flushStatistics();"
-      "          }\n          if (options_mip_->mip_heuristic_portfolio) {\n            portfolio::run_lp_based(*this);\n          } else {\n            if (options_mip_->mip_heuristic_run_scylla_fpr) scylla_fpr::run(*this);\n          }\n\n          mipdata_->heuristics.flushStatistics();"
+      "          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr)\n            portfolio::run_scylla_parallel(*this);\n\n          mipdata_->heuristics.flushStatistics();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
