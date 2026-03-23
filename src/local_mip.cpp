@@ -176,6 +176,11 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   lift_dirty_list.reserve(ncol);
   bool lift_all_dirty = true;
 
+  // Positive-lift list: columns with lift_score > 0 (avoids O(ncol) scan)
+  std::vector<HighsInt> lift_positive_list;
+  std::vector<bool> lift_in_positive(ncol, false);
+  lift_positive_list.reserve(ncol);
+
   // Clamp and round
   auto clamp_and_round = [&](HighsInt j, double val) -> double {
     if (is_integer(j)) val = std::round(val);
@@ -215,6 +220,8 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
     lift_all_dirty = true;
     lift_dirty_list.clear();
     std::fill(lift_dirty.begin(), lift_dirty.end(), true);
+    lift_positive_list.clear();
+    std::fill(lift_in_positive.begin(), lift_in_positive.end(), false);
     current_obj = compute_objective();
   };
 
@@ -454,9 +461,14 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
 
   // Recompute lift cache for dirty variables
   auto recompute_one_lift = [&](HighsInt j) {
+    double old_score = lift_score[j];
     if (std::abs(col_cost[j]) < 1e-15) {
       lift_score[j] = 0.0;
       lift_dirty[j] = false;
+      if (old_score > 0.0 && lift_in_positive[j]) {
+        lift_in_positive[j] = false;
+        // lazy removal: stale entries filtered during scan
+      }
       return;
     }
     auto [lo, hi] = compute_lift_bounds(j);
@@ -477,6 +489,18 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
         double obj_delta = col_cost[j] * (target - solution[j]);
         if (!minimize) obj_delta = -obj_delta;
         lift_score[j] = -obj_delta;  // positive = improving
+      }
+    }
+    // Maintain positive-lift list
+    if (lift_score[j] > 0.0) {
+      if (!lift_in_positive[j]) {
+        lift_in_positive[j] = true;
+        lift_positive_list.push_back(j);
+      }
+    } else {
+      if (lift_in_positive[j]) {
+        lift_in_positive[j] = false;
+        // lazy removal: stale entries filtered during scan
       }
     }
     lift_dirty[j] = false;
@@ -585,15 +609,11 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
             remove_satisfied(i);
           }
         }
-      } else {
-        for (HighsInt i = 0; i < nrow; ++i) {
-          if (is_violated(i, lhs[i])) {
-            truly_feasible = false;
-            add_violated(i);
-            remove_satisfied(i);
-          }
-        }
       }
+      // When !need_full_recheck, trust incremental state: apply_move's
+      // update_violated() already maintains the violated set for every
+      // row touched by each move, so no row can become violated without
+      // being caught.  The periodic full recheck guards against FP drift.
       if (!truly_feasible) continue;
 
       // Track best solution
@@ -629,18 +649,26 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
       recompute_lift_cache();
       Candidate lift_best;
       lift_best.score = 0.0;  // must strictly improve
-      for (HighsInt j = 0; j < ncol; ++j) {
-        if (lift_score[j] <= lift_best.score) continue;
-        double lo = lift_lo[j], hi = lift_hi[j];
-        if (lo > hi) continue;
-        double target;
-        if (minimize)
-          target = (col_cost[j] > 0) ? lo : hi;
-        else
-          target = (col_cost[j] > 0) ? hi : lo;
-        target = clamp_and_round(j, target);
-        if (std::abs(target - solution[j]) < 1e-15) continue;
-        lift_best = {j, target, lift_score[j], 0.0};
+      // Compact stale entries and find best lift in a single pass
+      {
+        HighsInt write = 0;
+        for (HighsInt read = 0; read < static_cast<HighsInt>(lift_positive_list.size()); ++read) {
+          HighsInt j = lift_positive_list[read];
+          if (!lift_in_positive[j]) continue;
+          lift_positive_list[write++] = j;
+          if (lift_score[j] <= lift_best.score) continue;
+          double lo = lift_lo[j], hi = lift_hi[j];
+          if (lo > hi) continue;
+          double target;
+          if (minimize)
+            target = (col_cost[j] > 0) ? lo : hi;
+          else
+            target = (col_cost[j] > 0) ? hi : lo;
+          target = clamp_and_round(j, target);
+          if (std::abs(target - solution[j]) < 1e-15) continue;
+          lift_best = {j, target, lift_score[j], 0.0};
+        }
+        lift_positive_list.resize(write);
       }
 
       if (lift_best.var_idx != -1) {
