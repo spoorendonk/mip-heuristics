@@ -11,6 +11,18 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
+namespace {
+
+double compute_objective(const HighsLp* model,
+                         const std::vector<double>& solution) {
+  double obj = model->offset_;
+  for (HighsInt j = 0; j < model->num_col_; ++j)
+    obj += model->col_cost_[j] * solution[j];
+  return obj;
+}
+
+}  // namespace
+
 namespace local_mip {
 
 void run(HighsMipSolver& mipsolver) {
@@ -132,9 +144,8 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
     satisfied_pos[i] = -1;
   };
 
-  // Violation helpers (ranged rows)
   auto compute_violation = [&](HighsInt i, double l) -> double {
-    return std::max(0.0, l - row_hi[i]) + std::max(0.0, row_lo[i] - l);
+    return row_violation(l, row_lo[i], row_hi[i]);
   };
   auto is_violated = [&](HighsInt i, double l) -> bool {
     return l > row_hi[i] + feastol || l < row_lo[i] - feastol;
@@ -181,17 +192,12 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   std::vector<bool> lift_in_positive(ncol, false);
   lift_positive_list.reserve(ncol);
 
-  // Clamp and round
   auto clamp_and_round = [&](HighsInt j, double val) -> double {
-    if (is_integer(j)) val = std::round(val);
-    return std::max(col_lb[j], std::min(col_ub[j], val));
+    return clamp_round(val, col_lb[j], col_ub[j], is_integer(j));
   };
 
-  // Compute objective
-  auto compute_objective = [&]() -> double {
-    double obj = model->offset_;
-    for (HighsInt j = 0; j < ncol; ++j) obj += col_cost[j] * solution[j];
-    return obj;
+  auto recompute_obj = [&]() -> double {
+    return compute_objective(model, solution);
   };
 
   double current_obj = 0.0;
@@ -222,7 +228,7 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
     std::fill(lift_dirty.begin(), lift_dirty.end(), true);
     lift_positive_list.clear();
     std::fill(lift_in_positive.begin(), lift_in_positive.end(), false);
-    current_obj = compute_objective();
+    current_obj = recompute_obj();
   };
 
   // Apply a move: update solution, LHS, violated/satisfied lists, lift dirty

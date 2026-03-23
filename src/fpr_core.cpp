@@ -11,6 +11,44 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
+FprConfig build_default_fpr_config(const HighsMipSolver& mipsolver,
+                                   const CscMatrix& csc, double deadline,
+                                   std::vector<double>& scores_buf,
+                                   std::vector<double>& cont_fallback_buf) {
+  const auto* model = mipsolver.model_;
+  auto* mipdata = mipsolver.mipdata_.get();
+  const auto& integrality = model->integrality_;
+  const auto& col_cost = model->col_cost_;
+  const HighsInt ncol = model->num_col_;
+
+  // Ranking: degree * (1 + |cost|)
+  scores_buf.resize(ncol);
+  for (HighsInt j = 0; j < ncol; ++j) {
+    if (!is_integer(integrality, j))
+      scores_buf[j] = -1.0;
+    else {
+      double degree =
+          static_cast<double>(csc.col_start[j + 1] - csc.col_start[j]);
+      scores_buf[j] = degree * (1.0 + std::abs(col_cost[j]));
+    }
+  }
+
+  cont_fallback_buf.assign(ncol, 0.0);
+
+  const double* hint =
+      mipdata->incumbent.empty() ? nullptr : mipdata->incumbent.data();
+
+  FprConfig cfg{};
+  cfg.max_attempts = 1;
+  cfg.rng_seed_offset = 42;
+  cfg.hint = hint;
+  cfg.scores = scores_buf.data();
+  cfg.cont_fallback = cont_fallback_buf.data();
+  cfg.csc = &csc;
+  cfg.deadline = deadline;
+  return cfg;
+}
+
 void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
   auto* mipdata = mipsolver.mipdata_.get();
   std::mt19937 rng(cfg.rng_seed_offset);
@@ -83,11 +121,8 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
   const HighsInt repair_budget = std::max(HighsInt{1000}, 20 * ncol);
   constexpr double greedy_prob = 0.7;
 
-  auto raw_violation = [&](HighsInt i, double lhs) -> double {
-    double v = 0.0;
-    if (row_hi[i] < kHighsInf) v += std::max(0.0, lhs - row_hi[i]);
-    if (row_lo[i] > -kHighsInf) v += std::max(0.0, row_lo[i] - lhs);
-    return v;
+  auto viol = [&](HighsInt i, double lhs) -> double {
+    return row_violation(lhs, row_lo[i], row_hi[i]);
   };
 
   auto is_violated = [&](HighsInt i, double lhs) -> bool {
@@ -523,7 +558,7 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
           double old_lhs = lhs_cache[i2];
           double new_lhs = old_lhs + coeff * delta_change;
           delta_viol +=
-              raw_violation(i2, new_lhs) - raw_violation(i2, old_lhs);
+              viol(i2, new_lhs) - viol(i2, old_lhs);
         }
 
         if (delta_viol < best_delta_viol) {

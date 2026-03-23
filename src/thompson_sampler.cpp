@@ -1,4 +1,4 @@
-#include "adaptive/thompson_sampler.h"
+#include "thompson_sampler.h"
 
 #include <cassert>
 #include <mutex>

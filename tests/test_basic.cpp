@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "Highs.h"
-#include "adaptive/solution_pool.h"
-#include "adaptive/thompson_sampler.h"
+#include "solution_pool.h"
+#include "thompson_sampler.h"
 
 static const std::string kInstancesDir = INSTANCES_DIR;
 
