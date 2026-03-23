@@ -218,11 +218,16 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     return true;
   };
 
-  auto propagate = [&]() -> bool {
+  auto propagate = [&](HighsInt fixed_var) -> bool {
     prop_worklist.clear();
-    for (HighsInt i = 0; i < nrow; ++i) {
-      prop_worklist.push_back(i);
-      prop_in_wl[i] = 1;
+    // Seed only the rows containing the just-fixed variable (AC-3).
+    // Same fixpoint as seeding all rows, since unaffected rows cannot tighten.
+    for (HighsInt p = col_start[fixed_var]; p < col_start[fixed_var + 1]; ++p) {
+      HighsInt i = col_row[p];
+      if (!prop_in_wl[i]) {
+        prop_in_wl[i] = 1;
+        prop_worklist.push_back(i);
+      }
     }
 
     auto enqueue_neighbors = [&](HighsInt j) {
@@ -378,7 +383,7 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     HighsInt vs_mark = static_cast<HighsInt>(vs_undo.size());
     HighsInt sol_mark = static_cast<HighsInt>(sol_undo.size());
 
-    if (!propagate()) {
+    if (!propagate(j)) {
       // Replay undo logs in reverse to restore state
       for (HighsInt u = static_cast<HighsInt>(vs_undo.size()) - 1; u >= vs_mark;
            --u)
@@ -398,7 +403,7 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
         if (is_int(j)) alt = std::round(alt);
       }
 
-      if (!fix_variable(j, alt) || !propagate()) {
+      if (!fix_variable(j, alt) || !propagate(j)) {
         fix_failed = true;
         break;
       }

@@ -82,6 +82,12 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   std::vector<double> lhs(nrow);
   std::vector<uint64_t> weight(nrow, 1);
 
+  // Batch violation cache: memoize compute_violation(i, lhs[i]) within a batch
+  constexpr double kViolCacheSentinel = -1.0;
+  std::vector<double> viol_cache(nrow, kViolCacheSentinel);
+  std::vector<HighsInt> viol_cache_used;
+  viol_cache_used.reserve(nrow);
+
   // Violated list with O(1) add/remove
   std::vector<HighsInt> violated;
   std::vector<HighsInt> violated_pos(nrow, -1);
@@ -166,7 +172,14 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   // Lift cache
   std::vector<double> lift_lo(ncol), lift_hi(ncol), lift_score(ncol);
   std::vector<bool> lift_dirty(ncol, true);
+  std::vector<HighsInt> lift_dirty_list;
+  lift_dirty_list.reserve(ncol);
   bool lift_all_dirty = true;
+
+  // Positive-lift list: columns with lift_score > 0 (avoids O(ncol) scan)
+  std::vector<HighsInt> lift_positive_list;
+  std::vector<bool> lift_in_positive(ncol, false);
+  lift_positive_list.reserve(ncol);
 
   // Clamp and round
   auto clamp_and_round = [&](HighsInt j, double val) -> double {
@@ -182,9 +195,14 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   };
 
   double current_obj = 0.0;
+  bool was_infeasible = true;
+  HighsInt feasible_recheck_counter = 0;
+  constexpr HighsInt kFeasibleRecheckPeriod = 100;
 
   // Rebuild all constraint state from scratch
   auto rebuild_state = [&]() {
+    was_infeasible = true;
+    feasible_recheck_counter = 0;
     violated.clear();
     std::fill(violated_pos.begin(), violated_pos.end(), -1);
     satisfied.clear();
@@ -200,6 +218,10 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
         add_satisfied(i);
     }
     lift_all_dirty = true;
+    lift_dirty_list.clear();
+    std::fill(lift_dirty.begin(), lift_dirty.end(), true);
+    lift_positive_list.clear();
+    std::fill(lift_in_positive.begin(), lift_in_positive.end(), false);
     current_obj = compute_objective();
   };
 
@@ -210,15 +232,17 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
     if (std::abs(delta) < 1e-15) return;
     solution[j] = new_val;
     current_obj += col_cost[j] * delta;
-    lift_dirty[j] = true;
+    if (!lift_dirty[j]) { lift_dirty[j] = true; lift_dirty_list.push_back(j); }
     for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
       HighsInt i = col_row[p];
       lhs[i] += col_val[p] * delta;
       update_violated(i);
       // Invalidate lift cache for all variables sharing this row
       if (!lift_all_dirty) {
-        for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
-          lift_dirty[ARindex[k]] = true;
+        for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
+          HighsInt jj = ARindex[k];
+          if (!lift_dirty[jj]) { lift_dirty[jj] = true; lift_dirty_list.push_back(jj); }
+        }
       }
     }
   };
@@ -294,7 +318,14 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
       double coeff = col_val[p];
       double old_lhs = lhs[i];
       double new_lhs = old_lhs + coeff * delta;
-      double old_viol = compute_violation(i, old_lhs);
+      double old_viol;
+      if (viol_cache[i] >= 0.0) {
+        old_viol = viol_cache[i];
+      } else {
+        old_viol = compute_violation(i, old_lhs);
+        viol_cache[i] = old_viol;
+        viol_cache_used.push_back(i);
+      }
       double new_viol = compute_violation(i, new_lhs);
       progress += static_cast<double>(weight[i]) * (old_viol - new_viol);
       if (old_viol > kViolTol && new_viol <= kViolTol) bonus += 1.0;
@@ -374,6 +405,9 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
         if (bon > best.bonus) best = {c.var_idx, c.new_val, prog, bon};
       }
     }
+    // Reset viol cache after batch evaluation
+    for (HighsInt i : viol_cache_used) viol_cache[i] = kViolCacheSentinel;
+    viol_cache_used.clear();
     return best;
   };
 
@@ -426,35 +460,61 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
   };
 
   // Recompute lift cache for dirty variables
-  auto recompute_lift_cache = [&]() {
-    for (HighsInt j = 0; j < ncol; ++j) {
-      if (!lift_all_dirty && !lift_dirty[j]) continue;
-      if (std::abs(col_cost[j]) < 1e-15) {
-        lift_score[j] = 0.0;
-        lift_dirty[j] = false;
-        continue;
-      }
-      auto [lo, hi] = compute_lift_bounds(j);
-      lift_lo[j] = lo;
-      lift_hi[j] = hi;
-      if (lo > hi) {
-        lift_score[j] = 0.0;
-      } else {
-        double target;
-        if (minimize)
-          target = (col_cost[j] > 0) ? lo : hi;
-        else
-          target = (col_cost[j] > 0) ? hi : lo;
-        target = clamp_and_round(j, target);
-        if (std::abs(target - solution[j]) < 1e-15)
-          lift_score[j] = 0.0;
-        else {
-          double obj_delta = col_cost[j] * (target - solution[j]);
-          if (!minimize) obj_delta = -obj_delta;
-          lift_score[j] = -obj_delta;  // positive = improving
-        }
-      }
+  auto recompute_one_lift = [&](HighsInt j) {
+    double old_score = lift_score[j];
+    if (std::abs(col_cost[j]) < 1e-15) {
+      lift_score[j] = 0.0;
       lift_dirty[j] = false;
+      if (old_score > 0.0 && lift_in_positive[j]) {
+        lift_in_positive[j] = false;
+        // lazy removal: stale entries filtered during scan
+      }
+      return;
+    }
+    auto [lo, hi] = compute_lift_bounds(j);
+    lift_lo[j] = lo;
+    lift_hi[j] = hi;
+    if (lo > hi) {
+      lift_score[j] = 0.0;
+    } else {
+      double target;
+      if (minimize)
+        target = (col_cost[j] > 0) ? lo : hi;
+      else
+        target = (col_cost[j] > 0) ? hi : lo;
+      target = clamp_and_round(j, target);
+      if (std::abs(target - solution[j]) < 1e-15)
+        lift_score[j] = 0.0;
+      else {
+        double obj_delta = col_cost[j] * (target - solution[j]);
+        if (!minimize) obj_delta = -obj_delta;
+        lift_score[j] = -obj_delta;  // positive = improving
+      }
+    }
+    // Maintain positive-lift list
+    if (lift_score[j] > 0.0) {
+      if (!lift_in_positive[j]) {
+        lift_in_positive[j] = true;
+        lift_positive_list.push_back(j);
+      }
+    } else {
+      if (lift_in_positive[j]) {
+        lift_in_positive[j] = false;
+        // lazy removal: stale entries filtered during scan
+      }
+    }
+    lift_dirty[j] = false;
+  };
+
+  auto recompute_lift_cache = [&]() {
+    if (lift_all_dirty) {
+      for (HighsInt j = 0; j < ncol; ++j) recompute_one_lift(j);
+      lift_dirty_list.clear();
+    } else {
+      for (HighsInt j : lift_dirty_list) {
+        if (lift_dirty[j]) recompute_one_lift(j);
+      }
+      lift_dirty_list.clear();
     }
     lift_all_dirty = false;
   };
@@ -529,19 +589,31 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
     bool feasible_mode = violated.empty();
 
     if (feasible_mode) {
-      // Verify feasibility from scratch (prevent FP drift false positives)
+      // Full O(nnz) recheck on infeasible→feasible transition or periodically;
+      // otherwise trust incremental lhs[] (O(nrow) check only).
+      bool need_full_recheck = was_infeasible ||
+                               (feasible_recheck_counter % kFeasibleRecheckPeriod == 0);
+      was_infeasible = false;
+      ++feasible_recheck_counter;
+
       bool truly_feasible = true;
-      for (HighsInt i = 0; i < nrow; ++i) {
-        double l = 0.0;
-        for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
-          l += ARvalue[k] * solution[ARindex[k]];
-        lhs[i] = l;
-        if (is_violated(i, l)) {
-          truly_feasible = false;
-          add_violated(i);
-          remove_satisfied(i);
+      if (need_full_recheck) {
+        for (HighsInt i = 0; i < nrow; ++i) {
+          double l = 0.0;
+          for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
+            l += ARvalue[k] * solution[ARindex[k]];
+          lhs[i] = l;
+          if (is_violated(i, l)) {
+            truly_feasible = false;
+            add_violated(i);
+            remove_satisfied(i);
+          }
         }
       }
+      // When !need_full_recheck, trust incremental state: apply_move's
+      // update_violated() already maintains the violated set for every
+      // row touched by each move, so no row can become violated without
+      // being caught.  The periodic full recheck guards against FP drift.
       if (!truly_feasible) continue;
 
       // Track best solution
@@ -555,6 +627,18 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
         improved = (obj > best_objective + 1e-9);
 
       if (improved) {
+        // Full recheck before recording best (guard against FP drift)
+        if (!need_full_recheck) {
+          bool still_ok = true;
+          for (HighsInt i = 0; i < nrow; ++i) {
+            double l = 0.0;
+            for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
+              l += ARvalue[k] * solution[ARindex[k]];
+            lhs[i] = l;
+            if (is_violated(i, l)) { still_ok = false; break; }
+          }
+          if (!still_ok) { rebuild_state(); continue; }
+        }
         best_feasible = true;
         best_objective = obj;
         best_solution = solution;
@@ -565,18 +649,26 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
       recompute_lift_cache();
       Candidate lift_best;
       lift_best.score = 0.0;  // must strictly improve
-      for (HighsInt j = 0; j < ncol; ++j) {
-        if (lift_score[j] <= lift_best.score) continue;
-        double lo = lift_lo[j], hi = lift_hi[j];
-        if (lo > hi) continue;
-        double target;
-        if (minimize)
-          target = (col_cost[j] > 0) ? lo : hi;
-        else
-          target = (col_cost[j] > 0) ? hi : lo;
-        target = clamp_and_round(j, target);
-        if (std::abs(target - solution[j]) < 1e-15) continue;
-        lift_best = {j, target, lift_score[j], 0.0};
+      // Compact stale entries and find best lift in a single pass
+      {
+        HighsInt write = 0;
+        for (HighsInt read = 0; read < static_cast<HighsInt>(lift_positive_list.size()); ++read) {
+          HighsInt j = lift_positive_list[read];
+          if (!lift_in_positive[j]) continue;
+          lift_positive_list[write++] = j;
+          if (lift_score[j] <= lift_best.score) continue;
+          double lo = lift_lo[j], hi = lift_hi[j];
+          if (lo > hi) continue;
+          double target;
+          if (minimize)
+            target = (col_cost[j] > 0) ? lo : hi;
+          else
+            target = (col_cost[j] > 0) ? hi : lo;
+          target = clamp_and_round(j, target);
+          if (std::abs(target - solution[j]) < 1e-15) continue;
+          lift_best = {j, target, lift_score[j], 0.0};
+        }
+        lift_positive_list.resize(write);
       }
 
       if (lift_best.var_idx != -1) {
@@ -594,6 +686,7 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
       ++steps_since_improvement;
     } else {
       // --- Infeasible mode ---
+      was_infeasible = true;
 
       // Phase 1: BMS tight moves from violated constraints
       HighsInt num_to_sample =
@@ -684,6 +777,10 @@ HeuristicResult worker(HighsMipSolver& mipsolver, const CscMatrix& csc,
           }
           if (std::abs(new_val - solution[j]) > 1e-15) {
             auto [prog, bon] = compute_candidate_scores(j, new_val);
+            // Clean up viol_cache (compute_candidate_scores populated it
+            // outside select_best_from_batch which normally handles cleanup)
+            for (HighsInt ii : viol_cache_used) viol_cache[ii] = kViolCacheSentinel;
+            viol_cache_used.clear();
             cand = {j, new_val, prog, bon};
           }
         }
