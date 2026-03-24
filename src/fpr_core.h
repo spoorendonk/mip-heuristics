@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <vector>
 
 struct CscMatrix;
 struct HeuristicResult;
@@ -24,6 +25,13 @@ struct FprConfig {
   // Wall-clock deadline (timer_.read() value); infinity = no extra cap
   double deadline = std::numeric_limits<double>::infinity();
 };
+
+// Build a default FprConfig with degree*(1+|cost|) scores,
+// zero continuous fallback, and incumbent hint.
+FprConfig build_default_fpr_config(const HighsMipSolver& mipsolver,
+                                   const CscMatrix& csc, double deadline,
+                                   std::vector<double>& scores_buf,
+                                   std::vector<double>& cont_fallback_buf);
 
 // Original: runs all attempts, submits solutions via trySolution.
 void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -50,6 +52,22 @@ inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow,
 inline bool is_integer(const std::vector<HighsVarType>& integrality,
                        HighsInt j) {
   return integrality[j] != HighsVarType::kContinuous;
+}
+
+// Tolerance hierarchy:
+//   feastol  (~1e-6)  — from solver, used for feasibility checks
+//   kViolTol (5e-7)   — local_mip local-search violation threshold
+//   1e-15             — numerical zero (avoids division/move on zero-delta)
+
+// Row violation: how much lhs exceeds [lo, hi] bounds.
+inline double row_violation(double lhs, double lo, double hi) {
+  return std::max(0.0, lhs - hi) + std::max(0.0, lo - lhs);
+}
+
+// Clamp value to [lb, ub], rounding if integer.
+inline double clamp_round(double val, double lb, double ub, bool integer) {
+  if (integer) val = std::round(val);
+  return std::max(lb, std::min(ub, val));
 }
 
 // Wall-clock cap for heuristic entry points: 10% of time limit, [5s, 30s],

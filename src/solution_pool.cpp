@@ -1,4 +1,4 @@
-#include "adaptive/solution_pool.h"
+#include "solution_pool.h"
 
 #include <algorithm>
 #include <limits>

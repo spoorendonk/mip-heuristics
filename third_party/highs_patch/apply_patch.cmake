@@ -232,7 +232,7 @@ if(_found EQUAL -1)
     # Add includes at top (after existing includes)
     string(REPLACE
       "#include \"mip/HighsMipSolver.h\""
-      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"local_mip.h\"\n#include \"adaptive/portfolio.h\""
+      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"local_mip.h\"\n#include \"portfolio.h\"\n#include \"scylla.h\""
       CONTENT "${CONTENT}")
 
     # Patch A: after feasibilityJump block (pre-root-node, LP-free heuristics)
@@ -262,7 +262,7 @@ if(_found EQUAL -1)
     # Patch C: after RINS/RENS block closing brace, insert ScyllaFPR parallel restarts
     string(REPLACE
       "          }\n\n          mipdata_->heuristics.flushStatistics();"
-      "          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr)\n            portfolio::run_scylla_parallel(*this);\n\n          mipdata_->heuristics.flushStatistics();"
+      "          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr)\n            scylla::run(*this);\n\n          mipdata_->heuristics.flushStatistics();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")

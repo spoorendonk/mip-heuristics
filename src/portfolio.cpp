@@ -1,16 +1,15 @@
-#include "adaptive/portfolio.h"
+#include "portfolio.h"
 
 #include <algorithm>
 #include <atomic>
 #include <random>
 #include <vector>
 
-#include "adaptive/solution_pool.h"
-#include "adaptive/thompson_sampler.h"
+#include "solution_pool.h"
+#include "thompson_sampler.h"
 #include "fpr_core.h"
 #include "heuristic_common.h"
 #include "local_mip.h"
-#include "mip/HighsLpRelaxation.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
@@ -19,7 +18,7 @@ namespace portfolio {
 
 namespace {
 
-// Arm indices for presolve portfolio (values are arbitrary, used as arm_type)
+// Arm indices for presolve portfolio (used as arm_type)
 enum PresolveArm { kArmFPR = 0, kArmLocalMIP = 1, kArmFJ = 2 };
 
 // MIPLIB sweep priors
@@ -28,6 +27,11 @@ constexpr double kFprAlpha = 2.5;
 constexpr double kLocalMipAlpha = 3.0;
 
 constexpr int kPoolCapacity = 10;
+
+// FJ-style budget: total work ~ nnz * 2^kTotalBudgetShift,
+// stale (no improvement) ~ nnz * 2^kStaleBudgetShift.
+constexpr int kTotalBudgetShift = 10;
+constexpr int kStaleBudgetShift = 8;
 
 void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {
   const auto* model = mipsolver.model_;
@@ -77,36 +81,13 @@ HeuristicResult run_presolve_arm(HighsMipSolver& mipsolver, int arm_type,
     return {};
   switch (arm_type) {
     case kArmFPR: {
-      const auto* model = mipsolver.model_;
-      const auto& integrality = model->integrality_;
-      const auto& col_cost = model->col_cost_;
-      const HighsInt ncol = model->num_col_;
-
-      // Ranking: degree * (1 + |cost|)
-      std::vector<double> scores(ncol);
-      for (HighsInt j = 0; j < ncol; ++j) {
-        if (!is_integer(integrality, j))
-          scores[j] = -1.0;
-        else {
-          double degree = static_cast<double>(csc.col_start[j + 1] -
-                                              csc.col_start[j]);
-          scores[j] = degree * (1.0 + std::abs(col_cost[j]));
-        }
-      }
-
-      const double* hint =
+      std::vector<double> scores, cont_fallback;
+      auto cfg = build_default_fpr_config(mipsolver, csc, deadline, scores,
+                                          cont_fallback);
+      // Override hint with thread-safe snapshot (build_default_fpr_config
+      // uses mipdata->incumbent which is racy in parallel context)
+      cfg.hint =
           incumbent_snapshot.empty() ? nullptr : incumbent_snapshot.data();
-      std::vector<double> cont_fallback(ncol, 0.0);
-
-      FprConfig cfg{};
-      cfg.max_attempts = 1;
-      cfg.rng_seed_offset = 42;
-      cfg.hint = hint;
-      cfg.scores = scores.data();
-      cfg.cont_fallback = cont_fallback.data();
-      cfg.csc = &csc;
-      cfg.deadline = deadline;
-
       return fpr_attempt(mipsolver, cfg, rng, attempt_idx, restart_sol);
     }
     case kArmLocalMIP: {
@@ -164,8 +145,8 @@ void run_presolve_opportunistic(HighsMipSolver& mipsolver,
   std::vector<double> incumbent_snapshot = mipdata->incumbent;
 
   const size_t nnz = mipdata->ARindex_.size();
-  const size_t budget = nnz << 10;
-  const size_t stale_budget = nnz << 8;
+  const size_t budget = nnz << kTotalBudgetShift;
+  const size_t stale_budget = nnz << kStaleBudgetShift;
 
   const double wall_deadline =
       heuristic_deadline(mipsolver.options_mip_->time_limit,
@@ -287,10 +268,9 @@ void run_presolve(HighsMipSolver& mipsolver) {
   // Snapshot incumbent before parallel work (read-only for all workers)
   std::vector<double> incumbent_snapshot = mipdata->incumbent;
 
-  // FJ-style budget: nnz << 10 total, nnz << 8 since last improvement
   const size_t nnz = mipdata->ARindex_.size();
-  const size_t budget = nnz << 10;
-  const size_t stale_budget = nnz << 8;
+  const size_t budget = nnz << kTotalBudgetShift;
+  const size_t stale_budget = nnz << kStaleBudgetShift;
   size_t total_effort = 0;
   size_t effort_since_improvement = 0;
 
@@ -358,96 +338,6 @@ void run_presolve(HighsMipSolver& mipsolver) {
   // Flush pool solutions to HiGHS (best first)
   for (auto& entry : pool.sorted_entries())
     mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
-}
-
-void run_scylla_parallel(HighsMipSolver& mipsolver) {
-  const auto* model = mipsolver.model_;
-  auto* mipdata = mipsolver.mipdata_.get();
-  const HighsInt ncol = model->num_col_;
-  const HighsInt nrow = model->num_row_;
-  if (ncol == 0 || nrow == 0) return;
-
-  // Guard: need an optimal LP relaxation
-  auto lp_status = mipdata->lp.getStatus();
-  if (!HighsLpRelaxation::scaledOptimal(lp_status)) return;
-
-  const bool minimize = (model->sense_ == ObjSense::kMinimize);
-  const int N = highs::parallel::num_threads();
-  constexpr int kMaxEpochs = 4;
-
-  SolutionPool pool(kPoolCapacity, minimize);
-  seed_pool(pool, mipsolver);
-
-  const double deadline =
-      heuristic_deadline(mipsolver.options_mip_->time_limit,
-                         mipsolver.timer_.read());
-
-  // Snapshot LP solution once (read-only for all workers)
-  const auto& lp_sol = mipdata->lp.getLpSolver().getSolution().col_value;
-  const auto& integrality = model->integrality_;
-  const auto& col_lb = model->col_lower_;
-  const auto& col_ub = model->col_upper_;
-
-  // Build CSC once for all workers
-  auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
-                        mipdata->ARvalue_);
-
-  // Pre-allocate per-worker scores to avoid repeated allocation in epoch loop
-  std::vector<std::vector<double>> worker_scores(N);
-  for (int w = 0; w < N; ++w) worker_scores[w].resize(ncol);
-
-  for (int epoch = 0; epoch < kMaxEpochs; ++epoch) {
-    if (mipsolver.timer_.read() >= deadline) break;
-    if (mipdata->terminatorTerminated()) break;
-
-    std::vector<HeuristicResult> results(N);
-    highs::parallel::for_each(0, static_cast<HighsInt>(N),
-        [&](HighsInt lo, HighsInt hi) {
-          for (HighsInt w = lo; w < hi; ++w) {
-            std::mt19937 rng(42 + epoch * N + static_cast<int>(w));
-
-            // Compute scores: LP fractionality + per-worker noise
-            auto& scores = worker_scores[w];
-            for (HighsInt j = 0; j < ncol; ++j) {
-              if (!is_integer(integrality, j)) {
-                scores[j] = -1.0;
-              } else {
-                double s = std::abs(lp_sol[j] - std::round(lp_sol[j]));
-                if (w > 0) {  // perturb for workers 1..N-1
-                  double range = col_ub[j] - col_lb[j];
-                  double proximity = (range > 0 && range < 1e8)
-                      ? std::min(lp_sol[j] - col_lb[j],
-                                 col_ub[j] - lp_sol[j]) / range
-                      : 0.0;
-                  double noise_scale = 0.3 + 0.6 * proximity;
-                  s *= 1.0 + std::uniform_real_distribution<>(
-                      -noise_scale, noise_scale)(rng);
-                }
-                scores[j] = s;
-              }
-            }
-
-            FprConfig cfg{};
-            cfg.max_attempts = 1;
-            cfg.rng_seed_offset = 42 + epoch * N + static_cast<int>(w);
-            cfg.hint = lp_sol.data();
-            cfg.scores = scores.data();
-            cfg.cont_fallback = lp_sol.data();
-            cfg.csc = &csc;
-            cfg.deadline = deadline;
-
-            results[w] = fpr_attempt(mipsolver, cfg, rng, 0, nullptr);
-          }
-        }, 1);
-
-    for (int w = 0; w < N; ++w)
-      if (results[w].found_feasible)
-        pool.try_add(results[w].objective, results[w].solution);
-  }
-
-  // Submit best solutions to solver
-  for (auto& entry : pool.sorted_entries())
-    mipdata->trySolution(entry.solution, kSolutionSourceScyllaFPR);
 }
 
 }  // namespace portfolio
