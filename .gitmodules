@@ -1,0 +1,3 @@
+[submodule ".dev-standards"]
+	path = .dev-standards
+	url = https://github.com/flowty/dev-standards.git
