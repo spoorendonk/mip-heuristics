@@ -1,0 +1,102 @@
+{
+  "_note": "Git pre-push hook is also installed at .git/hooks/pre-push by setup.sh (runs tests, clang-tidy, mypy, review check)",
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(cmake *)",
+      "Bash(ctest *)",
+      "Bash(make *)",
+      "Bash(ninja *)",
+      "Bash(g++ *)",
+      "Bash(gcc *)",
+      "Bash(c++ *)",
+      "Bash(cc *)",
+      "Bash(clang++ *)",
+      "Bash(clang *)",
+      "Bash(ccache *)",
+      "Bash(nvcc *)",
+      "Bash(nvidia-smi *)",
+      "Bash(cuda-memcheck *)",
+      "Bash(nsys *)",
+      "Bash(ncu *)",
+      "Bash(cl *)",
+      "Bash(cl.exe *)",
+      "Bash(msbuild *)",
+      "Bash(devenv *)",
+      "Bash(vcvarsall *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip *)",
+      "Bash(uv *)",
+      "Bash(pipx *)",
+      "Bash(pytest *)",
+      "Bash(python -m pytest *)",
+      "Bash(ruff *)",
+      "Bash(clang-format *)",
+      "Bash(clang-tidy *)",
+      "Bash(mypy *)",
+      "Bash(dmypy *)",
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(find *)",
+      "Bash(mkdir *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(sort *)",
+      "Bash(diff *)",
+      "Bash(* --version)",
+      "Bash(* --help)",
+      "Read",
+      "Edit"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(sudo *)",
+      "Bash(chmod -R 777 *)",
+      "Read(./.env*)",
+      "Read(./secrets/**)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .dev-standards/hooks/post-tool-format.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .dev-standards/hooks/check-pending-review.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .dev-standards/hooks/check-branch-create.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .dev-standards/hooks/check-venv.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash .dev-standards/statusline.sh"
+  }
+}

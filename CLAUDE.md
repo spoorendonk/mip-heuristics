@@ -1,56 +1,54 @@
-# mip-heuristics
+# CLAUDE.md
 
-## Quick Reference
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+@.dev-standards/standards/cpp.md
+
+## Project Overview
+
+Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solver via a patched fork. The heuristics run during HiGHS's presolve phase and are compiled as object files linked directly into the `highs` library target.
+
+## Build Commands
 
 ```bash
-# build
-cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
+# Configure (from repo root)
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-# test
-ctest --test-dir build -j$(nproc)
+# Build
+cmake --build build -j$(nproc)
 
-# run highs directly
-./build/bin/highs [model.mps]
+# Run all tests
+cd build && ctest --output-on-failure
+
+# Run a single test by name
+cd build && ctest -R "Portfolio: flugpl" --output-on-failure
+
+# Run tests matching a Catch2 tag
+cd build && ./mip_heuristics_tests "[portfolio]"
 ```
 
-## Git
+First build is slow (~5 min) because it fetches and builds HiGHS via FetchContent.
 
-- Never commit directly to `main`. Always feature branches.
-- Linear history only (squash-merge or rebase-merge).
+## Architecture
 
-## Workflow: Plan → Grind
+**Integration model**: Heuristics are compiled as a static object library (`mip_heuristics`) whose objects are injected into the HiGHS `highs` target. The HiGHS source is fetched at build time (v1.13.1) with patches applied from `third_party/highs_patch/`. Heuristics access HiGHS internals directly via `HighsMipSolver&`.
 
-Every task has two phases. Do not skip planning.
+**Heuristic entry points** — each has a standalone `run()` that HiGHS calls during presolve:
+- `fpr` — Feasibility Pump with Rounding. `fpr_core` contains the shared single-attempt logic.
+- `local_mip` — neighborhood-search local MIP solver.
+- `scylla` — parallel ScyllaFPR restarts with LP-guided scoring.
+- `portfolio` — adaptive bandit (Thompson sampling) that selects among FPR, LocalMIP, and FeasibilityJump arms. Has deterministic and opportunistic (parallel) modes.
 
-### Plan (default)
+**Shared utilities** (`src/`):
+- `heuristic_common.h` — `HeuristicResult`, `CscMatrix`, row violation, clamping, deadline helpers.
+- `thompson_sampler` — Beta-Bernoulli Thompson Sampling bandit (thread-safe option).
+- `solution_pool` — thread-safe top-K solution pool with crossover restarts.
 
-When given a task, **plan first**: investigate the code, propose an approach,
-discuss with the user. Wait for approval before implementing (e.g. "grind", "go", "do it").
+**HiGHS options** added by the patch:
+- `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla_fpr` — enable/disable individual heuristics.
+- `mip_heuristic_portfolio`, `mip_heuristic_portfolio_opportunistic` — enable portfolio mode / parallel opportunistic mode.
+- `mip_heuristic_run_feasibility_jump` — enable FJ arm in portfolio.
 
-### Grind (on approval)
+**Testing**: Catch2 v3. Tests use `.mps` instances from HiGHS's own `check/instances/` directory (path injected via `INSTANCES_DIR` compile definition). Characterization tests verify known-optimal objectives.
 
-Execute autonomously. Build, test, fix, repeat until green.
-Self-review, then fullgate: branch, PR, sync main, push.
-Progress lives in files and git — not in your context window.
-
-Only pause and ask a human when:
-- A fix requires changing the public API or architecture
-- You discover a bug in unrelated code you shouldn't touch
-- You're stuck after multiple failed attempts
-
-### Fullgate
-
-Also runs standalone when user says **"fullgate"**:
-branch → PR → sync (merge main **into** feature branch) → tests → docs →
-push → review → build → test → push fixes → squash-merge → delete branch
-
-### Claiming Work (GitHub)
-
-- `gh issue edit <N> --add-label agent-wip` when starting on an issue or PR
-- Check for `agent-wip` label before picking up work
-- Remove label and close/merge when done
-
-### Teams
-
-For independent sub-tasks, launch a team. Each teammate works in its own
-worktree. Lead integrates: merge, resolve conflicts, build/test the result.
+**Benchmarking**: `bench/` has scripts for MIPLIB benchmarks — `run_benchmark.py` runs instances, `analyze_results.py` parses results.
