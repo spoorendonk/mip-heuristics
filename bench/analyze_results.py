@@ -13,19 +13,103 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_highs_log import SolveResult, parse_log_file
 
 
-def load_results(results_dir: str, configs: list[str]) -> dict[str, dict[str, SolveResult]]:
-    """Load all parsed results. Returns {config: {instance: SolveResult}}."""
-    results: dict[str, dict[str, SolveResult]] = {}
+def load_results(
+    results_dir: str, configs: list[str]
+) -> dict[str, dict[int, dict[str, SolveResult]]]:
+    """Load all parsed results.
+
+    Returns {config: {seed: {instance: SolveResult}}}.
+    Supports both seed-aware (results/{config}/seed{N}/*.log) and
+    legacy flat (results/{config}/*.log, treated as seed 0) layouts.
+    """
+    results: dict[str, dict[int, dict[str, SolveResult]]] = {}
     for config in configs:
         config_dir = os.path.join(results_dir, config)
         if not os.path.isdir(config_dir):
             print(f"Warning: config directory not found: {config_dir}", file=sys.stderr)
             continue
         results[config] = {}
-        for log_file in sorted(Path(config_dir).glob("*.log")):
-            name = log_file.stem
-            results[config][name] = parse_log_file(str(log_file))
+
+        # Check for seed subdirectories
+        seed_dirs = sorted(Path(config_dir).glob("seed*"))
+        if seed_dirs:
+            for sd in seed_dirs:
+                if not sd.is_dir():
+                    continue
+                seed_num = int(sd.name.removeprefix("seed"))
+                results[config][seed_num] = {}
+                for log_file in sorted(sd.glob("*.log")):
+                    name = log_file.stem
+                    results[config][seed_num][name] = parse_log_file(str(log_file))
+        else:
+            # Legacy flat layout: treat as seed 0
+            results[config][0] = {}
+            for log_file in sorted(Path(config_dir).glob("*.log")):
+                name = log_file.stem
+                results[config][0][name] = parse_log_file(str(log_file))
     return results
+
+
+def get_seeds(results: dict[str, dict[int, dict[str, SolveResult]]]) -> list[int]:
+    """Get sorted list of all seeds across configs."""
+    seeds: set[int] = set()
+    for config_data in results.values():
+        seeds.update(config_data.keys())
+    return sorted(seeds)
+
+
+def get_common_instances(
+    results: dict[str, dict[int, dict[str, SolveResult]]], configs: list[str]
+) -> list[str]:
+    """Get instances present in all configs and at least one seed."""
+    per_config: list[set[str]] = []
+    for config in configs:
+        if config not in results:
+            continue
+        inst_set: set[str] = set()
+        for seed_data in results[config].values():
+            inst_set.update(seed_data.keys())
+        per_config.append(inst_set)
+    if not per_config:
+        return []
+    return sorted(set.intersection(*per_config))
+
+
+def aggregate_results(
+    results: dict[str, dict[int, dict[str, SolveResult]]], configs: list[str]
+) -> dict[str, dict[str, SolveResult]]:
+    """Aggregate across seeds using median for each metric.
+
+    Returns {config: {instance: SolveResult}} with median values.
+    For incumbents, uses the seed with the median time_to_first_feasible.
+    """
+    aggregated: dict[str, dict[str, SolveResult]] = {}
+    for config in configs:
+        if config not in results:
+            continue
+        aggregated[config] = {}
+        instances = get_common_instances(results, [config])
+        seeds = sorted(results[config].keys())
+
+        for inst in instances:
+            seed_results = [
+                results[config][s][inst]
+                for s in seeds
+                if inst in results[config][s]
+            ]
+            if not seed_results:
+                continue
+            if len(seed_results) == 1:
+                aggregated[config][inst] = seed_results[0]
+                continue
+
+            # Pick the median-performing seed based on primal_bound
+            # (lower is better for minimization; use the middle one)
+            by_obj = sorted(seed_results, key=lambda r: r.primal_bound)
+            median_r = by_obj[len(by_obj) // 2]
+
+            aggregated[config][inst] = median_r
+    return aggregated
 
 
 def shifted_geomean(values: list[float], shift: float = 1.0) -> float:
@@ -46,12 +130,63 @@ def format_float(v: float | None, width: int = 10, prec: int = 4) -> str:
     return f"{v:.{prec}f}".rjust(width)
 
 
+def count_feasible(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    config: str,
+    instances: list[str],
+) -> dict[str, int]:
+    """Count #Feas: instances with at least one feasible solution across all seeds.
+
+    Returns {"per_seed": {seed: count}, "any": count_any_seed}.
+    """
+    seeds = sorted(results.get(config, {}).keys())
+    per_seed = {}
+    any_seed_count = 0
+
+    for inst in instances:
+        found_any = False
+        for s in seeds:
+            r = results.get(config, {}).get(s, {}).get(inst)
+            if r and r.incumbents:
+                per_seed[s] = per_seed.get(s, 0) + 1
+                found_any = True
+        if found_any:
+            any_seed_count += 1
+
+    return {"per_seed": per_seed, "any": any_seed_count}
+
+
+def count_wins(
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    instances: list[str],
+) -> dict[str, int]:
+    """Count #Win: instances where config finds the best primal bound.
+
+    Returns {config: win_count}.
+    """
+    wins = {c: 0 for c in configs}
+    for inst in instances:
+        bounds = {}
+        for c in configs:
+            r = agg_results.get(c, {}).get(inst)
+            if r and r.primal_bound != float("inf"):
+                bounds[c] = r.primal_bound
+        if not bounds:
+            continue
+        best = min(bounds.values())
+        for c, b in bounds.items():
+            if abs(b - best) < 1e-6:
+                wins[c] += 1
+    return wins
+
+
 def print_comparison_table(
-    results: dict[str, dict[str, SolveResult]],
+    agg_results: dict[str, dict[str, SolveResult]],
     configs: list[str],
     time_cutoffs: list[float] | None = None,
 ) -> None:
-    """Print per-instance comparison table."""
+    """Print per-instance comparison table using seed-aggregated values."""
     if time_cutoffs is None:
         time_cutoffs = [10.0, 60.0, 600.0]
 
@@ -60,17 +195,16 @@ def print_comparison_table(
         return
 
     c1, c2 = configs[0], configs[1]
-    instances = sorted(set(results.get(c1, {}).keys()) & set(results.get(c2, {}).keys()))
+    instances = sorted(set(agg_results.get(c1, {}).keys()) & set(agg_results.get(c2, {}).keys()))
 
     if not instances:
         print("No common instances found between configs")
         return
 
-    # Determine which time cutoffs are relevant (at least one instance has solve_time >= cutoff,
-    # or has incumbents, meaning gap@T is meaningful)
+    # Determine which time cutoffs are relevant
     max_solve_time = max(
-        max((r.solve_time for r in results[c1].values()), default=0),
-        max((r.solve_time for r in results[c2].values()), default=0),
+        max((r.solve_time for r in agg_results[c1].values()), default=0),
+        max((r.solve_time for r in agg_results[c2].values()), default=0),
     )
     active_cutoffs = [tc for tc in time_cutoffs if tc <= max_solve_time + 1]
 
@@ -92,7 +226,7 @@ def print_comparison_table(
     pd_vals = {c1: [], c2: []}
 
     for inst in instances:
-        r1, r2 = results[c1][inst], results[c2][inst]
+        r1, r2 = agg_results[c1][inst], agg_results[c2][inst]
 
         print(f"{inst:<25} ", end="")
 
@@ -165,8 +299,72 @@ def print_comparison_table(
           f"{format_float(shifted_geomean(pd_vals[c2], 1.0), 12, 4)}")
 
 
+def print_paper_metrics(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    time_limit: float,
+) -> None:
+    """Print paper-standard metrics: #Feas, #Win, SGM of T1st, SGM of gap@cutoff."""
+    instances = get_common_instances(results, configs)
+    seeds = get_seeds(results)
+
+    print(f"\n## Paper Metrics ({len(instances)} instances, {len(seeds)} seed(s))\n")
+
+    # --- #Feas per seed and aggregated ---
+    print(f"{'#Feas':<25}", end="")
+    for c in configs:
+        print(f" {c:<12}", end="")
+    print()
+    print("-" * (25 + 13 * len(configs)))
+
+    feas_data = {c: count_feasible(results, c, instances) for c in configs}
+    for s in seeds:
+        print(f"  seed {s:<19}", end="")
+        for c in configs:
+            count = feas_data[c]["per_seed"].get(s, 0)
+            print(f" {count:<12}", end="")
+        print()
+    if len(seeds) > 1:
+        print(f"  {'any seed':<21}", end="")
+        for c in configs:
+            print(f" {feas_data[c]['any']:<12}", end="")
+        print()
+
+    # --- #Win (on aggregated) ---
+    win_counts = count_wins(agg_results, configs, instances)
+    print(f"\n{'#Win (best obj)':<25}", end="")
+    for c in configs:
+        print(f" {win_counts[c]:<12}", end="")
+    print()
+
+    # --- SGM of time-to-first-feasible (shift=1s, matching FJ/FPR) ---
+    print(f"\n{'SGM T1st (s=1)':<25}", end="")
+    for c in configs:
+        t1st = []
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            if r and r.time_to_first_feasible is not None:
+                t1st.append(r.time_to_first_feasible)
+        print(f" {format_float(shifted_geomean(t1st, 1.0), 12, 4)}", end="")
+    print()
+
+    # --- SGM of primal gap at cutoff (shift=0.01, matching FPR/Scylla) ---
+    print(f"{'SGM Gap@' + str(int(time_limit)) + 's (s=0.01)':<25}", end="")
+    for c in configs:
+        gaps = []
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            if r:
+                g = r.primal_gap_at(time_limit)
+                if g is not None:
+                    gaps.append(g)
+        print(f" {format_float(shifted_geomean(gaps, 0.01), 12, 6)}", end="")
+    print()
+
+
 def generate_survival_plot(
-    results: dict[str, dict[str, SolveResult]],
+    agg_results: dict[str, dict[str, SolveResult]],
     configs: list[str],
     output_path: str,
     gap_threshold: float = 0.01,
@@ -180,7 +378,7 @@ def generate_survival_plot(
         print("matplotlib not available, skipping survival plot", file=sys.stderr)
         return
 
-    instances = sorted(set.intersection(*(set(results[c].keys()) for c in configs)))
+    instances = sorted(set.intersection(*(set(agg_results[c].keys()) for c in configs)))
     if not instances:
         return
 
@@ -190,7 +388,7 @@ def generate_survival_plot(
         # For each instance, find time when gap <= threshold
         solve_times = []
         for inst in instances:
-            r = results[config][inst]
+            r = agg_results[config][inst]
             # Find first incumbent where gap <= threshold
             found = False
             for inc in r.incumbents:
@@ -221,7 +419,7 @@ def generate_survival_plot(
             fractions.append(solved / n)
 
         # Extend to max time
-        max_time = max(r.solve_time for r in results[config].values())
+        max_time = max(r.solve_time for r in agg_results[config].values())
         times.append(max_time)
         fractions.append(fractions[-1])
 
@@ -248,6 +446,8 @@ def main() -> None:
     parser.add_argument("--plot", default=None, help="Path to save survival plot (e.g., bench/survival.png)")
     parser.add_argument("--gap-threshold", type=float, default=0.01,
                         help="Gap threshold for survival plot (default: 0.01 = 1%%)")
+    parser.add_argument("--time-limit", type=float, default=600.0,
+                        help="Time limit used in the benchmark (for gap@cutoff metric)")
     args = parser.parse_args()
 
     results = load_results(args.results_dir, args.configs)
@@ -255,10 +455,14 @@ def main() -> None:
         print("No results found", file=sys.stderr)
         sys.exit(1)
 
-    print_comparison_table(results, args.configs)
+    active_configs = [c for c in args.configs if c in results]
+    agg_results = aggregate_results(results, active_configs)
+
+    print_comparison_table(agg_results, active_configs)
+    print_paper_metrics(results, agg_results, active_configs, args.time_limit)
 
     if args.plot:
-        generate_survival_plot(results, args.configs, args.plot, args.gap_threshold)
+        generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)
 
 
 if __name__ == "__main__":

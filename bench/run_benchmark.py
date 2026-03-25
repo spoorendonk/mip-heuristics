@@ -7,7 +7,6 @@ import argparse
 import os
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 # Default vanilla options: disable all custom heuristics
@@ -51,24 +50,28 @@ def run_single(
     instance_file: str,
     instance_name: str,
     config: str,
+    seed: int,
     time_limit: float,
     output_dir: str,
     extra_options: dict[str, str] | None = None,
-) -> tuple[str, str, bool]:
-    """Run HiGHS on a single instance with given config.
+) -> tuple[str, str, int, bool]:
+    """Run HiGHS on a single instance with given config and seed.
 
-    Returns (instance_name, config, success).
+    Returns (instance_name, config, seed, success).
     """
-    config_dir = os.path.join(output_dir, config)
-    os.makedirs(config_dir, exist_ok=True)
-    log_path = os.path.join(config_dir, f"{instance_name}.log")
+    seed_dir = os.path.join(output_dir, config, f"seed{seed}")
+    os.makedirs(seed_dir, exist_ok=True)
+    log_path = os.path.join(seed_dir, f"{instance_name}.log")
 
-    cmd = [binary, instance_file, "--time_limit", str(time_limit)]
+    # Build options: start with extra_options, then add random_seed
+    options = dict(extra_options) if extra_options else {}
+    options["random_seed"] = str(seed)
 
-    if extra_options:
-        opts_path = os.path.join(config_dir, f"{instance_name}.opts")
-        write_options_file(extra_options, opts_path)
-        cmd.extend(["--options_file", opts_path])
+    opts_path = os.path.join(seed_dir, f"{instance_name}.opts")
+    write_options_file(options, opts_path)
+
+    cmd = [binary, instance_file, "--time_limit", str(time_limit),
+           "--options_file", opts_path]
 
     try:
         result = subprocess.run(
@@ -83,15 +86,15 @@ def run_single(
             output += "\n--- stderr ---\n" + result.stderr
         with open(log_path, "w") as f:
             f.write(output)
-        return (instance_name, config, True)
+        return (instance_name, config, seed, True)
     except subprocess.TimeoutExpired:
         with open(log_path, "w") as f:
             f.write(f"TIMEOUT: process killed after {time_limit * 1.5 + 120}s\n")
-        return (instance_name, config, False)
+        return (instance_name, config, seed, False)
     except Exception as e:
         with open(log_path, "w") as f:
             f.write(f"ERROR: {e}\n")
-        return (instance_name, config, False)
+        return (instance_name, config, seed, False)
 
 
 def main() -> None:
@@ -101,7 +104,8 @@ def main() -> None:
     parser.add_argument("--data-dir", default="/tmp/miplib", help="Directory with .mps.gz files")
     parser.add_argument("--time-limit", type=float, default=60, help="Time limit per instance (seconds)")
     parser.add_argument("--output", default="bench/results", help="Output directory for logs")
-    parser.add_argument("--jobs", "-j", type=int, default=1, help="Parallel jobs (per config, not across configs)")
+    parser.add_argument("--seeds", nargs="+", type=int, default=[0],
+                        help="Random seeds to run (default: 0)")
     parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
                         help="Configs to run (default: patched vanilla)")
     args = parser.parse_args()
@@ -131,35 +135,31 @@ def main() -> None:
 
     os.makedirs(args.output, exist_ok=True)
 
-    # Run each config sequentially (to avoid resource contention),
-    # but parallelise instances within each config
+    total_runs = len(args.configs) * len(args.seeds) * len(instances)
+    done = 0
+
+    # Sequential loop: config → seed → instance
     for config in args.configs:
         extra_opts = VANILLA_OPTIONS if config == "vanilla" else None
-        print(f"\n{'='*60}")
-        print(f"Running config: {config} ({len(instances)} instances, {args.time_limit}s limit)")
-        print(f"{'='*60}")
+        for seed in args.seeds:
+            print(f"\n{'='*60}")
+            print(f"Config: {config}, seed: {seed} ({len(instances)} instances, {args.time_limit}s limit)")
+            print(f"{'='*60}")
 
-        futures = {}
-        with ProcessPoolExecutor(max_workers=args.jobs) as executor:
             for name in instances:
-                fut = executor.submit(
-                    run_single,
+                inst_name, cfg, sd, success = run_single(
                     binary,
                     instance_files[name],
                     name,
                     config,
+                    seed,
                     args.time_limit,
                     args.output,
                     extra_opts,
                 )
-                futures[fut] = name
-
-            done = 0
-            for fut in as_completed(futures):
-                name, cfg, success = fut.result()
                 done += 1
                 status = "OK" if success else "FAIL"
-                print(f"  [{done}/{len(instances)}] {name}: {status}")
+                print(f"  [{done}/{total_runs}] {name} (seed {seed}): {status}")
 
     print(f"\nResults written to {args.output}/")
     print(f"Run: python bench/analyze_results.py {args.output}")
