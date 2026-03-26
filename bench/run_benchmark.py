@@ -64,7 +64,7 @@ def run_single(
     log_path = os.path.join(seed_dir, f"{instance_name}.log")
 
     # Build options: start with extra_options, then add random_seed
-    options = dict(extra_options) if extra_options else {}
+    options = dict(extra_options) if extra_options is not None else {}
     options["random_seed"] = str(seed)
 
     opts_path = os.path.join(seed_dir, f"{instance_name}.opts")
@@ -108,6 +108,8 @@ def main() -> None:
                         help="Random seeds to run (default: 0)")
     parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
                         help="Configs to run (default: patched vanilla)")
+    parser.add_argument("--threads", type=int, default=None,
+                        help="Number of solver threads (omit to use HiGHS default)")
     args = parser.parse_args()
 
     binary = os.path.abspath(args.binary)
@@ -138,9 +140,14 @@ def main() -> None:
     total_runs = len(args.configs) * len(args.seeds) * len(instances)
     done = 0
 
+    # Build base options (applied to all configs)
+    base_opts: dict[str, str] = {}
+    if args.threads is not None:
+        base_opts["threads"] = str(args.threads)
+
     # Sequential loop: config → seed → instance
     for config in args.configs:
-        extra_opts = VANILLA_OPTIONS if config == "vanilla" else None
+        extra_opts = {**base_opts, **(VANILLA_OPTIONS if config == "vanilla" else {})}
         for seed in args.seeds:
             print(f"\n{'='*60}")
             print(f"Config: {config}, seed: {seed} ({len(instances)} instances, {args.time_limit}s limit)")
