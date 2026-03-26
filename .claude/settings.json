@@ -4,6 +4,13 @@
     "allow": [
       "Bash(* --help)",
       "Bash(* --version)",
+      "Bash(*<(*)",
+      "Bash(*<*)",
+      "Bash(*<<*)",
+      "Bash(*>*)",
+      "Bash(*>>*)",
+      "Bash(bash .dev-std/setup.sh*)",
+      "Bash(bash .dev-std/update.sh*)",
       "Bash(c++ *)",
       "Bash(cat *)",
       "Bash(cc *)",
@@ -17,14 +24,19 @@
       "Bash(cmake *)",
       "Bash(ctest *)",
       "Bash(cuda-memcheck *)",
+      "Bash(curl *)",
       "Bash(devenv *)",
       "Bash(diff *)",
       "Bash(dmypy *)",
+      "Bash(do echo*)",
+      "Bash(done)",
+      "Bash(echo *)",
       "Bash(find *)",
       "Bash(g++ *)",
       "Bash(gcc *)",
       "Bash(gh *)",
       "Bash(git *)",
+      "Bash(grep *)",
       "Bash(head *)",
       "Bash(ls *)",
       "Bash(make *)",
@@ -44,13 +56,17 @@
       "Bash(python -m pytest *)",
       "Bash(python3 *)",
       "Bash(ruff *)",
+      "Bash(sed *)",
       "Bash(sort *)",
       "Bash(tail *)",
       "Bash(uv *)",
       "Bash(vcvarsall *)",
       "Bash(wc *)",
+      "Bash(while read*)",
       "Edit",
-      "Read"
+      "Read",
+      "WebFetch",
+      "WebSearch"
     ],
     "deny": [
       "Bash(chmod -R 777 *)",
@@ -67,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .dev-standards/hooks/post-tool-format.sh"
+            "command": "bash .dev-std/hooks/post-tool-format.sh"
           }
         ]
       },
@@ -75,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .dev-standards/hooks/check-pending-review.sh"
+            "command": "bash .dev-std/hooks/check-pending-review.sh"
           }
         ]
       }
@@ -86,11 +102,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .dev-standards/hooks/check-branch-create.sh"
+            "command": "bash .dev-std/hooks/check-branch-create.sh"
           },
           {
             "type": "command",
-            "command": "bash .dev-standards/hooks/check-venv.sh"
+            "command": "bash .dev-std/hooks/check-venv.sh"
           }
         ]
       }
@@ -98,6 +114,6 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash .dev-standards/statusline.sh"
+    "command": "bash .dev-std/statusline.sh"
   }
 }

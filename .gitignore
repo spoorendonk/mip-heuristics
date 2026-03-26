@@ -5,3 +5,4 @@ __pycache__/
 bench/results/
 *.pyc
 Highs.log
+.claude/settings.local.json

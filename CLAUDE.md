@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-@.dev-standards/standards/cpp.md
+@.dev-std/standards/cpp.md
 
 ## Project Overview
 

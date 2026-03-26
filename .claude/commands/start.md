@@ -1,20 +1,20 @@
 Before starting any work, check the current state and present options. Follow these steps exactly:
 
-## Step 1: Check for dev-standards updates
+## Step 1: Check for dev-std updates
 
 1. Check if the submodule has upstream updates:
    ```bash
-   cd .dev-standards && git fetch origin main --quiet && git rev-list HEAD..origin/main --count
+   cd .dev-std && git fetch origin main --quiet && git rev-list HEAD..origin/main --count
    ```
-   If the count is > 0, tell the user how many commits behind the submodule is and suggest running `bash .dev-standards/update.sh` to pull the latest and re-apply shared files. Don't auto-run — let the user decide.
+   If the count is > 0, tell the user how many commits behind the submodule is and suggest running `bash .dev-std/update.sh` to pull the latest and re-apply shared files. Don't auto-run — let the user decide.
 
 2. Check if copied files are out of sync with the current submodule:
-   - Compare each file in `.claude/commands/` against the matching file in `.dev-standards/commands/`
-   - Compare `.git/hooks/pre-commit` against `.dev-standards/hooks/pre-commit.sh`
-   - Compare `.git/hooks/pre-push` against `.dev-standards/hooks/pre-push.sh`
-   - Compare `.git/hooks/commit-msg` against `.dev-standards/hooks/commit-msg.sh`
+   - Compare each file in `.claude/commands/` against the matching file in `.dev-std/commands/`
+   - Compare `.git/hooks/pre-commit` against `.dev-std/hooks/pre-commit.sh`
+   - Compare `.git/hooks/pre-push` against `.dev-std/hooks/pre-push.sh`
+   - Compare `.git/hooks/commit-msg` against `.dev-std/hooks/commit-msg.sh`
 
-   Use `diff -q` for each pair. If any differ, list the stale files and suggest running `bash .dev-standards/update.sh` to update them.
+   Use `diff -q` for each pair. If any differ, list the stale files and suggest running `bash .dev-std/update.sh` to update them.
 
 3. Check if CLAUDE.md has been fleshed out beyond the minimal template (should have build commands, test commands, project-specific conventions). If it's still minimal, suggest running `/init` to auto-detect project details.
 
