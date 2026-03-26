@@ -1,0 +1,13 @@
+# Preliminary test subset (10 instances)
+# Local-MIP new-record instances from Lin, Zou, Cai (CP 2024 + AIJ 2025)
+# These are MIPLIB open instances where local-search heuristics excel.
+sorrell7
+genus-sym-g31-8
+supportcase22
+cdc7-4-3-2
+genus-sym-g62-2
+genus-g61-25
+ns1828997
+neos-4232544-orira
+scpm1
+scpn2
