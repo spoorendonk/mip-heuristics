@@ -1,17 +1,22 @@
 Before starting any work, check the current state and present options. Follow these steps exactly:
 
-## Step 1: Project health check
+## Step 1: Check for dev-standards updates
 
-1. If `.gitmodules` mentions `.dev-standards` but the `.dev-standards/` directory is empty (submodule not initialized), stop and ask the user. Suggest running `git submodule update --init`. Don't continue until this is resolved.
+1. Check if the submodule has upstream updates:
+   ```bash
+   cd .dev-standards && git fetch origin main --quiet && git rev-list HEAD..origin/main --count
+   ```
+   If the count is > 0, tell the user how many commits behind the submodule is and suggest running `bash .dev-standards/update.sh` to pull the latest and re-apply shared files. Don't auto-run — let the user decide.
 
-2. If CLAUDE.md is missing or minimal (fewer than 5 lines or missing build/test commands), stop and suggest running `/init` to auto-detect project details. Don't continue until this is resolved.
-
-3. Check if copied files are out of sync:
+2. Check if copied files are out of sync with the current submodule:
    - Compare each file in `.claude/commands/` against the matching file in `.dev-standards/commands/`
+   - Compare `.git/hooks/pre-commit` against `.dev-standards/hooks/pre-commit.sh`
    - Compare `.git/hooks/pre-push` against `.dev-standards/hooks/pre-push.sh`
    - Compare `.git/hooks/commit-msg` against `.dev-standards/hooks/commit-msg.sh`
 
-   Use `diff -q` for each pair. If any differ, list the stale files and suggest running `.dev-standards/setup.sh` to update them. Don't auto-fix — setup.sh has interactive diff/overwrite prompts.
+   Use `diff -q` for each pair. If any differ, list the stale files and suggest running `bash .dev-standards/update.sh` to update them.
+
+3. Check if CLAUDE.md has been fleshed out beyond the minimal template (should have build commands, test commands, project-specific conventions). If it's still minimal, suggest running `/init` to auto-detect project details.
 
 ## Step 2: Check current state
 
