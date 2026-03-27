@@ -39,7 +39,7 @@ FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver,
       mipdata->incumbent.empty() ? nullptr : mipdata->incumbent.data();
 
   FprConfig cfg{};
-  cfg.max_attempts = 1;
+  cfg.max_effort = 0; // caller sets budget
   cfg.rng_seed_offset = 42;
   cfg.hint = hint;
   cfg.scores = scores_buf.data();
@@ -51,12 +51,17 @@ FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver,
 void fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg) {
   auto *mipdata = mipsolver.mipdata_.get();
   std::mt19937 rng(cfg.rng_seed_offset);
+  size_t cumulative_effort = 0;
 
-  for (int attempt = 0; attempt < cfg.max_attempts; ++attempt) {
+  for (int attempt = 0;; ++attempt) {
     if (mipdata->terminatorTerminated()) {
       return;
     }
+    if (cfg.max_effort > 0 && cumulative_effort >= cfg.max_effort) {
+      return;
+    }
     auto result = fpr_attempt(mipsolver, cfg, rng, attempt, nullptr);
+    cumulative_effort += result.effort;
     if (result.found_feasible) {
       if (mipdata->trySolution(result.solution, kSolutionSourceFPR)) {
         return;
@@ -574,6 +579,9 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     }
 
     for (HighsInt step = 0; step < repair_budget && !violated.empty(); ++step) {
+      if (cfg.max_effort > 0 && total_prop_work >= cfg.max_effort) {
+        break;
+      }
       HighsInt pick = std::uniform_int_distribution<HighsInt>(
           0, static_cast<HighsInt>(violated.size()) - 1)(rng);
       HighsInt i = violated[pick];

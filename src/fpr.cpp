@@ -20,9 +20,10 @@ void run(HighsMipSolver &mipsolver) {
   auto csc = build_csc(ncol, model->num_row_, mipdata->ARstart_,
                        mipdata->ARindex_, mipdata->ARvalue_);
 
+  const size_t nnz = mipdata->ARindex_.size();
   std::vector<double> scores, cont_fallback;
   auto cfg = build_default_fpr_config(mipsolver, csc, scores, cont_fallback);
-  cfg.max_attempts = 10;
+  cfg.max_effort = nnz << 10;
 
   fpr_core(mipsolver, cfg);
 }

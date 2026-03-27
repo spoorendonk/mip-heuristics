@@ -803,14 +803,16 @@ void run(HighsMipSolver &mipsolver) {
                        mipdata->ARvalue_);
   std::mt19937 rng(mipdata->numImprovingSols + 137);
 
-  auto result = worker(mipsolver, csc, rng, nullptr);
+  const size_t nnz = mipdata->ARindex_.size();
+  auto result = worker(mipsolver, csc, rng, nullptr, nnz << 10);
   if (result.found_feasible) {
     mipdata->trySolution(result.solution, kSolutionSourceLocalMIP);
   }
 }
 
 HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
-                       std::mt19937 &rng, const double *initial_solution) {
+                       std::mt19937 &rng, const double *initial_solution,
+                       size_t max_effort) {
   const HighsInt ncol = mipsolver.model_->num_col_;
   const HighsInt nrow = mipsolver.model_->num_row_;
 
@@ -884,11 +886,15 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
   const double time_limit = mipsolver.options_mip_->time_limit;
 
   // --- Main loop ---
-  for (HighsInt step = 0; step < kMaxSteps; ++step) {
-    if (step % kTermCheckInterval == 0 &&
-        (mipdata->terminatorTerminated() ||
-         mipsolver.timer_.read() >= time_limit)) {
-      break;
+  for (HighsInt step = 0;; ++step) {
+    if (step % kTermCheckInterval == 0) {
+      if (mipdata->terminatorTerminated() ||
+          mipsolver.timer_.read() >= time_limit) {
+        break;
+      }
+      if (max_effort > 0 && ctx.effort >= max_effort) {
+        break;
+      }
     }
 
     bool feasible_mode = ctx.violated.empty();

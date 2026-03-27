@@ -61,6 +61,9 @@ void run(HighsMipSolver &mipsolver) {
   seed_pool(pool, mipsolver);
 
   const double time_limit = mipsolver.options_mip_->time_limit;
+  const size_t nnz = mipdata->ARindex_.size();
+  const size_t effort_budget = nnz << 10;
+  size_t total_effort = 0;
 
   // Snapshot LP solution once (read-only for all workers)
   const auto &lp_sol = mipdata->lp.getLpSolver().getSolution().col_value;
@@ -78,7 +81,7 @@ void run(HighsMipSolver &mipsolver) {
     worker_scores[w].resize(ncol);
   }
 
-  for (int epoch = 0; epoch < kMaxEpochs; ++epoch) {
+  for (int epoch = 0; total_effort < effort_budget; ++epoch) {
     if (mipsolver.timer_.read() >= time_limit) {
       break;
     }
@@ -117,7 +120,8 @@ void run(HighsMipSolver &mipsolver) {
             }
 
             FprConfig cfg{};
-            cfg.max_attempts = 1;
+            cfg.max_effort =
+                effort_budget - std::min(effort_budget, total_effort);
             cfg.rng_seed_offset = 42 + epoch * N + static_cast<int>(w);
             cfg.hint = lp_sol.data();
             cfg.scores = scores.data();
@@ -130,6 +134,7 @@ void run(HighsMipSolver &mipsolver) {
         1);
 
     for (int w = 0; w < N; ++w) {
+      total_effort += results[w].effort;
       if (results[w].found_feasible) {
         pool.try_add(results[w].objective, results[w].solution);
       }
