@@ -11,22 +11,22 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
-FprConfig build_default_fpr_config(const HighsMipSolver& mipsolver,
-                                   const CscMatrix& csc, double deadline,
-                                   std::vector<double>& scores_buf,
-                                   std::vector<double>& cont_fallback_buf) {
-  const auto* model = mipsolver.model_;
-  auto* mipdata = mipsolver.mipdata_.get();
-  const auto& integrality = model->integrality_;
-  const auto& col_cost = model->col_cost_;
+FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver,
+                                   const CscMatrix &csc,
+                                   std::vector<double> &scores_buf,
+                                   std::vector<double> &cont_fallback_buf) {
+  const auto *model = mipsolver.model_;
+  auto *mipdata = mipsolver.mipdata_.get();
+  const auto &integrality = model->integrality_;
+  const auto &col_cost = model->col_cost_;
   const HighsInt ncol = model->num_col_;
 
   // Ranking: degree * (1 + |cost|)
   scores_buf.resize(ncol);
   for (HighsInt j = 0; j < ncol; ++j) {
-    if (!is_integer(integrality, j))
+    if (!is_integer(integrality, j)) {
       scores_buf[j] = -1.0;
-    else {
+    } else {
       double degree =
           static_cast<double>(csc.col_start[j + 1] - csc.col_start[j]);
       scores_buf[j] = degree * (1.0 + std::abs(col_cost[j]));
@@ -35,7 +35,7 @@ FprConfig build_default_fpr_config(const HighsMipSolver& mipsolver,
 
   cont_fallback_buf.assign(ncol, 0.0);
 
-  const double* hint =
+  const double *hint =
       mipdata->incumbent.empty() ? nullptr : mipdata->incumbent.data();
 
   FprConfig cfg{};
@@ -45,67 +45,79 @@ FprConfig build_default_fpr_config(const HighsMipSolver& mipsolver,
   cfg.scores = scores_buf.data();
   cfg.cont_fallback = cont_fallback_buf.data();
   cfg.csc = &csc;
-  cfg.deadline = deadline;
   return cfg;
 }
 
-void fpr_core(HighsMipSolver& mipsolver, const FprConfig& cfg) {
-  auto* mipdata = mipsolver.mipdata_.get();
+void fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg) {
+  auto *mipdata = mipsolver.mipdata_.get();
   std::mt19937 rng(cfg.rng_seed_offset);
 
   for (int attempt = 0; attempt < cfg.max_attempts; ++attempt) {
-    if (mipdata->terminatorTerminated()) return;
-    if (mipsolver.timer_.read() >= cfg.deadline) return;
+    if (mipdata->terminatorTerminated()) {
+      return;
+    }
     auto result = fpr_attempt(mipsolver, cfg, rng, attempt, nullptr);
     if (result.found_feasible) {
-      if (mipdata->trySolution(result.solution, kSolutionSourceFPR))
+      if (mipdata->trySolution(result.solution, kSolutionSourceFPR)) {
         return;
+      }
     }
   }
 }
 
-HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
-                            std::mt19937& rng, int attempt_idx,
-                            const double* initial_solution) {
-  const auto* model = mipsolver.model_;
-  auto* mipdata = mipsolver.mipdata_.get();
-  const auto& ARstart = mipdata->ARstart_;
-  const auto& ARindex = mipdata->ARindex_;
-  const auto& ARvalue = mipdata->ARvalue_;
-  const auto& col_lb = model->col_lower_;
-  const auto& col_ub = model->col_upper_;
-  const auto& col_cost = model->col_cost_;
-  const auto& row_lo = model->row_lower_;
-  const auto& row_hi = model->row_upper_;
-  const auto& integrality = model->integrality_;
+HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
+                            std::mt19937 &rng, int attempt_idx,
+                            const double *initial_solution) {
+  const auto *model = mipsolver.model_;
+  auto *mipdata = mipsolver.mipdata_.get();
+  const auto &ARstart = mipdata->ARstart_;
+  const auto &ARindex = mipdata->ARindex_;
+  const auto &ARvalue = mipdata->ARvalue_;
+  const auto &col_lb = model->col_lower_;
+  const auto &col_ub = model->col_upper_;
+  const auto &col_cost = model->col_cost_;
+  const auto &row_lo = model->row_lower_;
+  const auto &row_hi = model->row_upper_;
+  const auto &integrality = model->integrality_;
   const double feastol = mipdata->feastol;
   const bool minimize = (model->sense_ == ObjSense::kMinimize);
 
   const HighsInt ncol = model->num_col_;
   const HighsInt nrow = model->num_row_;
-  if (ncol == 0 || nrow == 0) return {};
+  if (ncol == 0 || nrow == 0) {
+    return {};
+  }
 
   // Use caller's CSC if provided, otherwise build our own
   CscMatrix owned_csc;
-  if (!cfg.csc) owned_csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
-  const auto& csc_ref = cfg.csc ? *cfg.csc : owned_csc;
-  const auto& col_start = csc_ref.col_start;
-  const auto& col_row = csc_ref.col_row;
-  const auto& col_val = csc_ref.col_val;
+  if (!cfg.csc) {
+    owned_csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
+  }
+  const auto &csc_ref = cfg.csc ? *cfg.csc : owned_csc;
+  const auto &col_start = csc_ref.col_start;
+  const auto &col_row = csc_ref.col_row;
+  const auto &col_val = csc_ref.col_val;
 
   auto is_int = [&](HighsInt j) { return is_integer(integrality, j); };
 
   auto finite_clamp = [](double val, double lo, double hi) -> double {
-    if (lo > -kHighsInf && hi < kHighsInf)
+    if (lo > -kHighsInf && hi < kHighsInf) {
       return std::max(lo, std::min(hi, val));
-    if (lo > -kHighsInf) return std::max(lo, std::min(lo + 1e6, val));
-    if (hi < kHighsInf) return std::min(hi, std::max(hi - 1e6, val));
+    }
+    if (lo > -kHighsInf) {
+      return std::max(lo, std::min(lo + 1e6, val));
+    }
+    if (hi < kHighsInf) {
+      return std::min(hi, std::max(hi - 1e6, val));
+    }
     return std::max(-1e6, std::min(1e6, val));
   };
 
   // Phase 1: Rank variables using caller-provided scores
   std::vector<HighsInt> var_order(ncol);
-  for (HighsInt j = 0; j < ncol; ++j) var_order[j] = j;
+  for (HighsInt j = 0; j < ncol; ++j) {
+    var_order[j] = j;
+  }
   std::sort(var_order.begin(), var_order.end(), [&](HighsInt a, HighsInt b) {
     return cfg.scores[a] > cfg.scores[b];
   });
@@ -126,8 +138,12 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
   };
 
   auto is_violated = [&](HighsInt i, double lhs) -> bool {
-    if (lhs > row_hi[i] + feastol) return true;
-    if (lhs < row_lo[i] - feastol) return true;
+    if (lhs > row_hi[i] + feastol) {
+      return true;
+    }
+    if (lhs < row_lo[i] - feastol) {
+      return true;
+    }
     return false;
   };
 
@@ -151,13 +167,17 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
   if (initial_solution) {
     for (HighsInt j = 0; j < ncol; ++j) {
       double v = initial_solution[j];
-      if (is_int(j)) v = std::round(v);
+      if (is_int(j)) {
+        v = std::round(v);
+      }
       solution[j] = std::max(col_lb[j], std::min(col_ub[j], v));
     }
   } else if (attempt_idx == 0 && cfg.hint) {
     for (HighsInt j = 0; j < ncol; ++j) {
       double v = cfg.hint[j];
-      if (is_int(j)) v = std::round(v);
+      if (is_int(j)) {
+        v = std::round(v);
+      }
       solution[j] = std::max(col_lb[j], std::min(col_ub[j], v));
     }
   } else if (attempt_idx == 0) {
@@ -186,10 +206,11 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
       } else {
         double lo = finite_clamp(0.0, col_lb[j], col_ub[j]);
         double hi = std::min(col_ub[j], lo + 1e6);
-        if (hi < kHighsInf && lo > -kHighsInf && hi > lo)
+        if (hi < kHighsInf && lo > -kHighsInf && hi > lo) {
           solution[j] = std::uniform_real_distribution<double>(lo, hi)(rng);
-        else
+        } else {
           solution[j] = lo;
+        }
       }
     }
   }
@@ -218,33 +239,41 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
 
     if (use_hint) {
       double h = cfg.hint[j];
-      if (is_int(j)) h = std::round(h);
-      if (h >= lo - feastol && h <= hi + feastol)
+      if (is_int(j)) {
+        h = std::round(h);
+      }
+      if (h >= lo - feastol && h <= hi + feastol) {
         return std::max(lo, std::min(hi, h));
+      }
     }
 
     if (mipdata->domain.isBinary(j)) {
-      if (minimize)
+      if (minimize) {
         return (col_cost[j] >= 0) ? lo : hi;
-      else
+      } else {
         return (col_cost[j] >= 0) ? hi : lo;
+      }
     }
 
     if (std::abs(col_cost[j]) < 1e-15) {
       double mid = std::round((lo + hi) * 0.5);
       return std::max(lo, std::min(hi, mid));
     }
-    if (minimize)
+    if (minimize) {
       return (col_cost[j] > 0) ? lo : hi;
-    else
+    } else {
       return (col_cost[j] > 0) ? hi : lo;
+    }
   };
 
   auto fix_variable = [&](HighsInt j, double value) -> bool {
-    if (value < vs[j].lb - feastol || value > vs[j].ub + feastol)
+    if (value < vs[j].lb - feastol || value > vs[j].ub + feastol) {
       return false;
+    }
     value = std::max(vs[j].lb, std::min(vs[j].ub, value));
-    if (is_int(j)) value = std::round(value);
+    if (is_int(j)) {
+      value = std::round(value);
+    }
     vs_undo.push_back({j, vs[j]});
     sol_undo.push_back({j, solution[j]});
     vs[j].fixed = true;
@@ -307,16 +336,22 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
         }
       }
 
-      if (num_unfixed == 0) continue;
+      if (num_unfixed == 0) {
+        continue;
+      }
 
       bool has_upper = row_hi[i] < kHighsInf;
       bool has_lower = row_lo[i] > -kHighsInf;
 
       for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
         HighsInt j = ARindex[k];
-        if (vs[j].fixed) continue;
+        if (vs[j].fixed) {
+          continue;
+        }
         double a = ARvalue[k];
-        if (std::abs(a) < 1e-15) continue;
+        if (std::abs(a) < 1e-15) {
+          continue;
+        }
 
         double old_lb = vs[j].lb;
         double old_ub = vs[j].ub;
@@ -335,18 +370,20 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
 
         if (has_upper) {
           double bound = row_hi[i] - fixed_sum - min_others;
-          if (a > 0)
+          if (a > 0) {
             new_ub = std::min(new_ub, bound / a);
-          else
+          } else {
             new_lb = std::max(new_lb, bound / a);
+          }
         }
 
         if (has_lower) {
           double bound = row_lo[i] - fixed_sum - max_others;
-          if (a > 0)
+          if (a > 0) {
             new_lb = std::max(new_lb, bound / a);
-          else
+          } else {
             new_ub = std::min(new_ub, bound / a);
+          }
         }
 
         if (is_int(j)) {
@@ -357,7 +394,9 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
         new_lb = std::max(new_lb, col_lb[j]);
         new_ub = std::min(new_ub, col_ub[j]);
 
-        if (new_lb > new_ub + feastol) return false;
+        if (new_lb > new_ub + feastol) {
+          return false;
+        }
 
         bool changed = false;
         if (new_lb > old_lb + feastol || new_ub < old_ub - feastol) {
@@ -379,14 +418,18 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
             sol_undo.push_back({j, solution[j]});
           }
           double val = (vs[j].lb + vs[j].ub) * 0.5;
-          if (is_int(j)) val = std::round(val);
+          if (is_int(j)) {
+            val = std::round(val);
+          }
           vs[j].fixed = true;
           vs[j].val = val;
           solution[j] = val;
           changed = true;
         }
 
-        if (changed) enqueue_neighbors(j);
+        if (changed) {
+          enqueue_neighbors(j);
+        }
       }
     }
     total_prop_work += prop_iters;
@@ -395,20 +438,22 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
 
   // Fix integer variables in ranked order
   bool fix_failed = false;
-  const double deadline = cfg.deadline;
   for (HighsInt idx = 0; idx < ncol; ++idx) {
-    if (idx % 100 == 0 &&
-        mipsolver.timer_.read() >= deadline)
-      return HeuristicResult::failed(total_prop_work);
     HighsInt j = var_order[idx];
-    if (!is_int(j)) continue;
-    if (vs[j].fixed) continue;
+    if (!is_int(j)) {
+      continue;
+    }
+    if (vs[j].fixed) {
+      continue;
+    }
 
     double value = choose_fix_value(j);
 
     if (!fix_variable(j, value)) {
       double alt = (value == vs[j].lb) ? vs[j].ub : vs[j].lb;
-      if (is_int(j)) alt = std::round(alt);
+      if (is_int(j)) {
+        alt = std::round(alt);
+      }
       if (!fix_variable(j, alt)) {
         fix_failed = true;
         break;
@@ -421,12 +466,14 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     if (!propagate(j)) {
       // Replay undo logs in reverse to restore state
       for (HighsInt u = static_cast<HighsInt>(vs_undo.size()) - 1; u >= vs_mark;
-           --u)
+           --u) {
         vs[vs_undo[u].first] = vs_undo[u].second;
+      }
       vs_undo.resize(vs_mark);
       for (HighsInt u = static_cast<HighsInt>(sol_undo.size()) - 1;
-           u >= sol_mark; --u)
+           u >= sol_mark; --u) {
         solution[sol_undo[u].first] = sol_undo[u].second;
+      }
       sol_undo.resize(sol_mark);
       vs[j].fixed = false;
 
@@ -435,7 +482,9 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
         alt = (value < 0.5) ? 1.0 : 0.0;
       } else {
         alt = (value == vs[j].lb) ? vs[j].ub : vs[j].lb;
-        if (is_int(j)) alt = std::round(alt);
+        if (is_int(j)) {
+          alt = std::round(alt);
+        }
       }
 
       if (!fix_variable(j, alt) || !propagate(j)) {
@@ -445,12 +494,15 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     }
   }
 
-  if (fix_failed)
+  if (fix_failed) {
     return HeuristicResult::failed(total_prop_work);
+  }
 
   // Fix remaining unfixed variables
   for (HighsInt j = 0; j < ncol; ++j) {
-    if (vs[j].fixed) continue;
+    if (vs[j].fixed) {
+      continue;
+    }
     double lo = vs[j].lb;
     double hi = vs[j].ub;
 
@@ -464,7 +516,9 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
     } else {
       solution[j] = choose_fix_value(j);
       solution[j] = std::max(lo, std::min(hi, solution[j]));
-      if (is_int(j)) solution[j] = std::round(solution[j]);
+      if (is_int(j)) {
+        solution[j] = std::round(solution[j]);
+      }
     }
     solution[j] = std::max(col_lb[j], std::min(col_ub[j], solution[j]));
   }
@@ -472,8 +526,9 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
   // --- Compute LHS cache ---
   for (HighsInt i = 0; i < nrow; ++i) {
     double lhs = 0.0;
-    for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k)
+    for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
       lhs += ARvalue[k] * solution[ARindex[k]];
+    }
     lhs_cache[i] = lhs;
   }
 
@@ -487,17 +542,23 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
 
   // --- Phase 3: WalkSAT Repair ---
   if (!feasible) {
-    for (auto i : violated) violated_pos[i] = -1;
+    for (auto i : violated) {
+      violated_pos[i] = -1;
+    }
     violated.clear();
 
     auto add_violated = [&](HighsInt i) {
-      if (violated_pos[i] != -1) return;
+      if (violated_pos[i] != -1) {
+        return;
+      }
       violated_pos[i] = static_cast<HighsInt>(violated.size());
       violated.push_back(i);
     };
     auto remove_violated = [&](HighsInt i) {
       HighsInt p = violated_pos[i];
-      if (p == -1) return;
+      if (p == -1) {
+        return;
+      }
       HighsInt last = violated.back();
       violated[p] = last;
       violated_pos[last] = p;
@@ -505,25 +566,30 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
       violated_pos[i] = -1;
     };
 
-    for (HighsInt i = 0; i < nrow; ++i)
-      if (is_violated(i, lhs_cache[i])) add_violated(i);
+    for (HighsInt i = 0; i < nrow; ++i) {
+      if (is_violated(i, lhs_cache[i])) {
+        add_violated(i);
+      }
+    }
 
-    for (HighsInt step = 0; step < repair_budget && !violated.empty();
-         ++step) {
+    for (HighsInt step = 0; step < repair_budget && !violated.empty(); ++step) {
       HighsInt pick = std::uniform_int_distribution<HighsInt>(
           0, static_cast<HighsInt>(violated.size()) - 1)(rng);
       HighsInt i = violated[pick];
 
       HighsInt row_len = ARstart[i + 1] - ARstart[i];
-      if (row_len == 0) continue;
+      if (row_len == 0) {
+        continue;
+      }
 
       double ci_lhs = lhs_cache[i];
 
       double target_rhs;
-      if (ci_lhs > row_hi[i] + feastol)
+      if (ci_lhs > row_hi[i] + feastol) {
         target_rhs = row_hi[i];
-      else
+      } else {
         target_rhs = row_lo[i];
+      }
 
       HighsInt best_var = -1;
       double best_delta_viol = std::numeric_limits<double>::infinity();
@@ -532,7 +598,9 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
       for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
         HighsInt j = ARindex[k];
         double a = ARvalue[k];
-        if (std::abs(a) < 1e-15) continue;
+        if (std::abs(a) < 1e-15) {
+          continue;
+        }
 
         double old_val = solution[j];
         double target_delta = (target_rhs - ci_lhs) / a;
@@ -548,7 +616,9 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
           }
         }
         new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
-        if (std::abs(new_val - old_val) < 1e-15) continue;
+        if (std::abs(new_val - old_val) < 1e-15) {
+          continue;
+        }
 
         double delta_change = new_val - old_val;
         double delta_viol = 0.0;
@@ -557,8 +627,7 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
           double coeff = col_val[p];
           double old_lhs = lhs_cache[i2];
           double new_lhs = old_lhs + coeff * delta_change;
-          delta_viol +=
-              viol(i2, new_lhs) - viol(i2, old_lhs);
+          delta_viol += viol(i2, new_lhs) - viol(i2, old_lhs);
         }
 
         if (delta_viol < best_delta_viol) {
@@ -568,7 +637,9 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
         }
       }
 
-      if (best_var == -1) continue;
+      if (best_var == -1) {
+        continue;
+      }
 
       HighsInt changed_var = -1;
       double delta_change = 0.0;
@@ -579,10 +650,14 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
                                       0, row_len - 1)(rng);
         HighsInt j = ARindex[k];
         double a = ARvalue[k];
-        if (std::abs(a) < 1e-15) continue;
+        if (std::abs(a) < 1e-15) {
+          continue;
+        }
         double old_val = solution[j];
         double new_val = old_val + (target_rhs - ci_lhs) / a;
-        if (is_int(j)) new_val = std::round(new_val);
+        if (is_int(j)) {
+          new_val = std::round(new_val);
+        }
         new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
         if (std::abs(new_val - old_val) > 1e-15) {
           solution[j] = new_val;
@@ -596,35 +671,42 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg,
         delta_change = best_new_val - old_val;
       }
 
-      if (changed_var == -1 || std::abs(delta_change) < 1e-15) continue;
+      if (changed_var == -1 || std::abs(delta_change) < 1e-15) {
+        continue;
+      }
 
-      for (HighsInt p = col_start[changed_var];
-           p < col_start[changed_var + 1]; ++p) {
+      for (HighsInt p = col_start[changed_var]; p < col_start[changed_var + 1];
+           ++p) {
         HighsInt i2 = col_row[p];
         lhs_cache[i2] += col_val[p] * delta_change;
         bool was = violated_pos[i2] != -1;
         bool now = is_violated(i2, lhs_cache[i2]);
-        if (was && !now)
+        if (was && !now) {
           remove_violated(i2);
-        else if (!was && now)
+        } else if (!was && now) {
           add_violated(i2);
+        }
       }
     }
 
     feasible = violated.empty();
   }
 
-  if (!feasible)
+  if (!feasible) {
     return HeuristicResult::failed(total_prop_work);
+  }
 
   // Verify feasibility using cached LHS values (O(nrow) vs O(nnz))
   for (HighsInt i = 0; i < nrow; ++i) {
-    if (is_violated(i, lhs_cache[i]))
+    if (is_violated(i, lhs_cache[i])) {
       return HeuristicResult::failed(total_prop_work);
+    }
   }
 
   double obj = model->offset_;
-  for (HighsInt j = 0; j < ncol; ++j) obj += col_cost[j] * solution[j];
+  for (HighsInt j = 0; j < ncol; ++j) {
+    obj += col_cost[j] * solution[j];
+  }
 
   HeuristicResult result;
   result.found_feasible = true;
