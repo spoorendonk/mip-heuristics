@@ -47,7 +47,7 @@ string(FIND "${MIPDATA_H}" "feasibilityJumpCapture" _fj_h_found)
 if(_fj_h_found EQUAL -1)
     string(REPLACE
       "HighsModelStatus feasibilityJump();"
-      "HighsModelStatus feasibilityJump();\n  HighsModelStatus feasibilityJumpCapture(std::vector<double>& captured_solution, double& captured_obj, const std::vector<double>* hint_incumbent = nullptr);"
+      "HighsModelStatus feasibilityJump();\n  HighsModelStatus feasibilityJumpCapture(std::vector<double>& captured_solution, double& captured_obj, size_t& captured_effort, const std::vector<double>* hint_incumbent = nullptr);"
       MIPDATA_H "${MIPDATA_H}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
@@ -102,6 +102,7 @@ if(_fj_found EQUAL -1)
     string(APPEND FJ_CONTENT "\n\
 HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
     std::vector<double>& captured_solution, double& captured_obj,\n\
+    size_t& captured_effort,\n\
     const std::vector<double>* hint_incumbent) {\n\
   const HighsLp* model = this->mipsolver.model_;\n\
   const HighsLogOptions& log_options = mipsolver.options_mip_->log_options;\n\
@@ -189,10 +190,12 @@ HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
   const size_t kMaxTotalEffort = (size_t)nnz << 10;\n\
   const size_t kMaxEffortSinceLastImprovement = (size_t)nnz << 8;\n\
 \n\
+  size_t last_total_effort = 0;\n\
   auto fjControlCallback =\n\
       [=, &col_value, &found_integer_feasible_solution,\n\
-       &objective_function_value](external_feasibilityjump::FJStatus status)\n\
+       &objective_function_value, &last_total_effort](external_feasibilityjump::FJStatus status)\n\
       -> external_feasibilityjump::CallbackControlFlow {\n\
+    last_total_effort = status.totalEffort;\n\
     if (status.solution != nullptr) {\n\
       found_integer_feasible_solution = true;\n\
       col_value = std::vector<double>(status.solution,\n\
@@ -209,6 +212,7 @@ HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
   };\n\
 \n\
   solver.solve(col_value.data(), fjControlCallback);\n\
+  captured_effort = last_total_effort;\n\
 \n\
   if (found_integer_feasible_solution) {\n\
     captured_solution = std::move(col_value);\n\

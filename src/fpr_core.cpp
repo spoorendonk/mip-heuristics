@@ -595,6 +595,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       double best_delta_viol = std::numeric_limits<double>::infinity();
       double best_new_val = 0.0;
 
+      // Evaluate all candidate variables in violated row
+      total_prop_work += row_len; // scanning row entries
       for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
         HighsInt j = ARindex[k];
         double a = ARvalue[k];
@@ -620,6 +622,9 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
           continue;
         }
 
+        // Evaluate delta_viol by scanning column
+        HighsInt col_deg = col_start[j + 1] - col_start[j];
+        total_prop_work += col_deg;
         double delta_change = new_val - old_val;
         double delta_viol = 0.0;
         for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
@@ -675,6 +680,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
         continue;
       }
 
+      // Apply move: update LHS cache for all rows of changed variable
+      total_prop_work += col_start[changed_var + 1] - col_start[changed_var];
       for (HighsInt p = col_start[changed_var]; p < col_start[changed_var + 1];
            ++p) {
         HighsInt i2 = col_row[p];

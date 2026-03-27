@@ -118,13 +118,15 @@ run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, std::mt19937 &rng,
       hint = &incumbent_snapshot;
     }
 
-    mipdata->feasibilityJumpCapture(captured_sol, captured_obj, hint);
+    size_t fj_effort = 0;
+    mipdata->feasibilityJumpCapture(captured_sol, captured_obj, fj_effort,
+                                    hint);
     if (!captured_sol.empty()) {
       result.found_feasible = true;
       result.solution = std::move(captured_sol);
       result.objective = captured_obj;
     }
-    result.effort = mipdata->ARindex_.size(); // approximate
+    result.effort = fj_effort;
     return result;
   }
   default:

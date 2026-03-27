@@ -208,6 +208,9 @@ struct WorkerCtx {
   bool was_infeasible = true;
   HighsInt feasible_recheck_counter = 0;
 
+  // Effort tracking (coefficient accesses)
+  size_t effort = 0;
+
   WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_)
       : model(mipsolver.model_), ARstart(mipsolver.mipdata_->ARstart_),
         ARindex(mipsolver.mipdata_->ARindex_),
@@ -279,6 +282,7 @@ struct WorkerCtx {
     }
     solution[j] = new_val;
     current_obj += col_cost[j] * delta;
+    effort += csc.col_start[j + 1] - csc.col_start[j];
     lift.mark_dirty(j);
     for (HighsInt p = csc.col_start[j]; p < csc.col_start[j + 1]; ++p) {
       HighsInt i = csc.col_row[p];
@@ -297,6 +301,7 @@ struct WorkerCtx {
     feasible_recheck_counter = 0;
     violated.clear();
     satisfied.clear();
+    effort += ARindex.size(); // full O(nnz) LHS recomputation
     for (HighsInt i = 0; i < nrow; ++i) {
       double l = 0.0;
       for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
@@ -492,6 +497,7 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx &ctx, HighsInt j,
     return {-std::numeric_limits<double>::infinity(), 0.0};
   }
 
+  ctx.effort += ctx.csc.col_start[j + 1] - ctx.csc.col_start[j];
   double progress = 0.0;
   double bonus = 0.0;
   for (HighsInt p = ctx.csc.col_start[j]; p < ctx.csc.col_start[j + 1]; ++p) {
@@ -1072,10 +1078,9 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
       std::fill(ctx.tabu_inc_until.begin(), ctx.tabu_inc_until.end(), 0);
       std::fill(ctx.tabu_dec_until.begin(), ctx.tabu_dec_until.end(), 0);
     }
-
-    ++result.effort;
   }
 
+  result.effort = ctx.effort;
   if (best_feasible) {
     result.found_feasible = true;
     result.objective = best_objective;
