@@ -27,11 +27,6 @@ constexpr double kLocalMipAlpha = 3.0;
 
 constexpr int kPoolCapacity = 10;
 
-// FJ-style budget: total work ~ nnz * 2^kTotalBudgetShift,
-// stale (no improvement) ~ nnz * 2^kStaleBudgetShift.
-constexpr int kTotalBudgetShift = 10;
-constexpr int kStaleBudgetShift = 8;
-
 void seed_pool(SolutionPool &pool, const HighsMipSolver &mipsolver) {
   const auto *model = mipsolver.model_;
   auto *mipdata = mipsolver.mipdata_.get();
@@ -139,7 +134,8 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type,
 void run_presolve_opportunistic(HighsMipSolver &mipsolver,
                                 const std::vector<int> &enabled_arms,
                                 const std::vector<double> &priors,
-                                const CscMatrix &csc, bool minimize) {
+                                const CscMatrix &csc, bool minimize,
+                                size_t budget) {
   auto *mipdata = mipsolver.mipdata_.get();
   const int N = highs::parallel::num_threads();
   const int num_arms = static_cast<int>(enabled_arms.size());
@@ -151,9 +147,7 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
   // Snapshot incumbent once (read-only for all workers)
   std::vector<double> incumbent_snapshot = mipdata->incumbent;
 
-  const size_t nnz = mipdata->ARindex_.size();
-  const size_t budget = nnz << kTotalBudgetShift;
-  const size_t stale_budget = nnz << kStaleBudgetShift;
+  const size_t stale_budget = budget >> 2;
 
   const double time_limit = mipsolver.options_mip_->time_limit;
 
@@ -237,7 +231,7 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
 
 } // namespace
 
-void run_presolve(HighsMipSolver &mipsolver) {
+void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   const auto *model = mipsolver.model_;
   auto *mipdata = mipsolver.mipdata_.get();
   const auto *options = mipsolver.options_mip_;
@@ -275,7 +269,8 @@ void run_presolve(HighsMipSolver &mipsolver) {
 
   // Dispatch to opportunistic mode if requested
   if (options->mip_heuristic_portfolio_opportunistic) {
-    run_presolve_opportunistic(mipsolver, enabled_arms, priors, csc, minimize);
+    run_presolve_opportunistic(mipsolver, enabled_arms, priors, csc, minimize,
+                               max_effort);
     return;
   }
 
@@ -287,9 +282,8 @@ void run_presolve(HighsMipSolver &mipsolver) {
   // Snapshot incumbent before parallel work (read-only for all workers)
   std::vector<double> incumbent_snapshot = mipdata->incumbent;
 
-  const size_t nnz = mipdata->ARindex_.size();
-  const size_t budget = nnz << kTotalBudgetShift;
-  const size_t stale_budget = nnz << kStaleBudgetShift;
+  const size_t budget = max_effort;
+  const size_t stale_budget = budget >> 2;
   size_t total_effort = 0;
   size_t effort_since_improvement = 0;
 

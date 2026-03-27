@@ -48,23 +48,23 @@ FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver,
   return cfg;
 }
 
-void fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg) {
+size_t fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg) {
   auto *mipdata = mipsolver.mipdata_.get();
   std::mt19937 rng(cfg.rng_seed_offset);
   size_t cumulative_effort = 0;
 
   for (int attempt = 0;; ++attempt) {
     if (mipdata->terminatorTerminated()) {
-      return;
+      return cumulative_effort;
     }
     if (cfg.max_effort > 0 && cumulative_effort >= cfg.max_effort) {
-      return;
+      return cumulative_effort;
     }
     auto result = fpr_attempt(mipsolver, cfg, rng, attempt, nullptr);
     cumulative_effort += result.effort;
     if (result.found_feasible) {
       if (mipdata->trySolution(result.solution, kSolutionSourceFPR)) {
-        return;
+        return cumulative_effort;
       }
     }
   }

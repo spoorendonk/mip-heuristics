@@ -14,8 +14,10 @@ struct HeuristicResult {
   double objective = std::numeric_limits<double>::infinity();
   size_t effort = 0;
 
-  static HeuristicResult failed(size_t effort = 0) {
-    return {false, {}, std::numeric_limits<double>::infinity(), effort};
+  static HeuristicResult failed(size_t e = 0) {
+    HeuristicResult r;
+    r.effort = e;
+    return r;
   }
 };
 
@@ -75,4 +77,15 @@ inline double clamp_round(double val, double lb, double ub, bool integer) {
     val = std::round(val);
   }
   return std::max(lb, std::min(ub, val));
+}
+
+// Effort budget for presolve heuristics, scaled by mip_heuristic_effort.
+// Base budget nnz << 12 at default effort 0.05; scales linearly.
+inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {
+  if (mip_heuristic_effort <= 0.0) {
+    return 0;
+}
+  constexpr int kBaseShift = 12;
+  double scale = mip_heuristic_effort / 0.05;
+  return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);
 }

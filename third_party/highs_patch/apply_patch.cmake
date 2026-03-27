@@ -43,6 +43,19 @@ endif()
 # ── Patch HighsMipSolverData.h: add capture overload + custom solution source enums ──
 file(READ "${MIP_DIR}/HighsMipSolverData.h" MIPDATA_H)
 
+# Add heuristic_effort_used field
+string(FIND "${MIPDATA_H}" "heuristic_effort_used" _effort_field_found)
+if(_effort_field_found EQUAL -1)
+    string(REPLACE
+      "double heuristic_effort;"
+      "double heuristic_effort;\n  size_t heuristic_effort_used = 0;"
+      MIPDATA_H "${MIPDATA_H}")
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
+    message(STATUS "Applied heuristic_effort_used field to HighsMipSolverData.h")
+else()
+    message(STATUS "heuristic_effort_used field already applied, skipping")
+endif()
+
 string(FIND "${MIPDATA_H}" "feasibilityJumpCapture" _fj_h_found)
 if(_fj_h_found EQUAL -1)
     string(REPLACE
@@ -230,6 +243,28 @@ else()
     message(STATUS "feasibilityJumpCapture already applied, skipping")
 endif()
 
+# ── Patch standalone feasibilityJump() to store effort ──
+file(READ "${MIP_DIR}/HighsFeasibilityJump.cpp" FJ_CONTENT2)
+string(FIND "${FJ_CONTENT2}" "heuristic_effort_used" _fj_effort_found)
+if(_fj_effort_found EQUAL -1)
+    # Add effort capture variable to original FJ callback
+    string(REPLACE
+      "  auto fjControlCallback =\n      [=, &col_value, &found_integer_feasible_solution,\n       &objective_function_value](external_feasibilityjump::FJStatus status)\n      -> external_feasibilityjump::CallbackControlFlow {"
+      "  size_t fj_last_effort = 0;\n  auto fjControlCallback =\n      [=, &col_value, &found_integer_feasible_solution,\n       &objective_function_value, &fj_last_effort](external_feasibilityjump::FJStatus status)\n      -> external_feasibilityjump::CallbackControlFlow {\n    fj_last_effort = status.totalEffort;"
+      FJ_CONTENT2 "${FJ_CONTENT2}")
+
+    # Store effort after solve
+    string(REPLACE
+      "  solver.solve(col_value.data(), fjControlCallback);\n\n  if (found_integer_feasible_solution) {\n    // Initial assignments"
+      "  solver.solve(col_value.data(), fjControlCallback);\n  heuristic_effort_used += fj_last_effort;\n\n  if (found_integer_feasible_solution) {\n    // Initial assignments"
+      FJ_CONTENT2 "${FJ_CONTENT2}")
+
+    file(WRITE "${MIP_DIR}/HighsFeasibilityJump.cpp" "${FJ_CONTENT2}")
+    message(STATUS "Applied effort tracking to standalone feasibilityJump()")
+else()
+    message(STATUS "Standalone FJ effort tracking already applied, skipping")
+endif()
+
 # ── Patch HighsMipSolver.cpp: insert heuristic call sites ──
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
 
@@ -238,7 +273,7 @@ if(_found EQUAL -1)
     # Add includes at top (after existing includes)
     string(REPLACE
       "#include \"mip/HighsMipSolver.h\""
-      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"local_mip.h\"\n#include \"portfolio.h\"\n#include \"scylla.h\""
+      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"heuristic_common.h\"\n#include \"local_mip.h\"\n#include \"portfolio.h\"\n#include \"scylla.h\""
       CONTENT "${CONTENT}")
 
     # Patch A: after feasibilityJump block (pre-root-node, LP-free heuristics)
@@ -251,7 +286,7 @@ if(_found EQUAL -1)
 
     string(REPLACE
       "    }\n    // End of pre-root-node heuristics"
-      "    }\n    if (options_mip_->mip_heuristic_portfolio) {\n      portfolio::run_presolve(*this);\n    } else {\n      if (options_mip_->mip_heuristic_run_fpr) fpr::run(*this);\n      if (options_mip_->mip_heuristic_run_local_mip) local_mip::run(*this);\n    }\n\n    // End of pre-root-node heuristics"
+      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      size_t used = mipdata_->heuristic_effort_used;\n      if (options_mip_->mip_heuristic_portfolio) {\n        size_t remaining = (used < budget) ? budget - used : 0;\n        portfolio::run_presolve(*this, remaining);\n      } else {\n        if (options_mip_->mip_heuristic_run_fpr && used < budget) {\n          fpr::run(*this, budget - used);\n          used = mipdata_->heuristic_effort_used;\n        }\n        if (options_mip_->mip_heuristic_run_local_mip && used < budget) {\n          local_mip::run(*this, budget - used);\n        }\n      }\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
     # Patch B: guard standalone RINS/RENS when portfolio is on (B&B dive)
@@ -268,7 +303,7 @@ if(_found EQUAL -1)
     # Patch C: after RINS/RENS block closing brace, insert ScyllaFPR parallel restarts
     string(REPLACE
       "          }\n\n          mipdata_->heuristics.flushStatistics();"
-      "          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr)\n            scylla::run(*this);\n\n          mipdata_->heuristics.flushStatistics();"
+      "          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr) {\n            const size_t scylla_nnz = mipdata_->ARindex_.size();\n            scylla::run(*this, heuristic_effort_budget(scylla_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")

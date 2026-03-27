@@ -39,7 +39,7 @@ void seed_pool(SolutionPool &pool, const HighsMipSolver &mipsolver) {
 
 } // namespace
 
-void run(HighsMipSolver &mipsolver) {
+void run(HighsMipSolver &mipsolver, size_t max_effort) {
   const auto *model = mipsolver.model_;
   auto *mipdata = mipsolver.mipdata_.get();
   const HighsInt ncol = model->num_col_;
@@ -61,8 +61,7 @@ void run(HighsMipSolver &mipsolver) {
   seed_pool(pool, mipsolver);
 
   const double time_limit = mipsolver.options_mip_->time_limit;
-  const size_t nnz = mipdata->ARindex_.size();
-  const size_t effort_budget = nnz << 10;
+  const size_t effort_budget = max_effort;
   size_t total_effort = 0;
 
   // Snapshot LP solution once (read-only for all workers)

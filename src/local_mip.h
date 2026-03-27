@@ -8,7 +8,7 @@ struct HeuristicResult;
 class HighsMipSolver;
 
 namespace local_mip {
-void run(HighsMipSolver &mipsolver);
+void run(HighsMipSolver &mipsolver, size_t max_effort);
 
 // Single-worker variant for portfolio mode. Returns result without submitting.
 // If initial_solution is non-null, uses it as starting point.

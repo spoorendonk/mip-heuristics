@@ -31,7 +31,8 @@ FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver,
                                    std::vector<double> &cont_fallback_buf);
 
 // Original: runs all attempts, submits solutions via trySolution.
-void fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg);
+// Returns total effort (coefficient accesses) consumed.
+size_t fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg);
 
 // Single-attempt variant for portfolio mode. Returns result without submitting.
 // Uses provided RNG and attempt index. If initial_solution is non-null, uses it

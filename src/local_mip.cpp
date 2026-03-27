@@ -787,7 +787,7 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step,
 
 namespace local_mip {
 
-void run(HighsMipSolver &mipsolver) {
+void run(HighsMipSolver &mipsolver, size_t max_effort) {
   const auto *model = mipsolver.model_;
   auto *mipdata = mipsolver.mipdata_.get();
   const HighsInt ncol = model->num_col_;
@@ -803,8 +803,8 @@ void run(HighsMipSolver &mipsolver) {
                        mipdata->ARvalue_);
   std::mt19937 rng(mipdata->numImprovingSols + 137);
 
-  const size_t nnz = mipdata->ARindex_.size();
-  auto result = worker(mipsolver, csc, rng, nullptr, nnz << 10);
+  auto result = worker(mipsolver, csc, rng, nullptr, max_effort);
+  mipdata->heuristic_effort_used += result.effort;
   if (result.found_feasible) {
     mipdata->trySolution(result.solution, kSolutionSourceLocalMIP);
   }
