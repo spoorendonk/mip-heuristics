@@ -402,6 +402,7 @@ void LiftCache::recompute_one(HighsInt j, WorkerCtx &ctx) {
     return;
   }
   // Compute lift bounds
+  ctx.effort += ctx.csc.col_start[j + 1] - ctx.csc.col_start[j];
   double lo_j = ctx.col_lb[j];
   double hi_j = ctx.col_ub[j];
   for (HighsInt p = ctx.csc.col_start[j]; p < ctx.csc.col_start[j + 1]; ++p) {
@@ -903,6 +904,7 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
 
       bool truly_feasible = true;
       if (need_full_recheck) {
+        ctx.effort += ctx.ARindex.size();
         for (HighsInt i = 0; i < nrow; ++i) {
           double l = 0.0;
           for (HighsInt k = ctx.ARstart[i]; k < ctx.ARstart[i + 1]; ++k) {
@@ -938,6 +940,7 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
       if (improved) {
         // Full recheck before recording best (guard against FP drift)
         if (!need_full_recheck) {
+          ctx.effort += ctx.ARindex.size();
           bool still_ok = true;
           for (HighsInt i = 0; i < nrow; ++i) {
             double l = 0.0;

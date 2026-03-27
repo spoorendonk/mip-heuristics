@@ -524,6 +524,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   }
 
   // --- Compute LHS cache ---
+  total_prop_work += ARindex.size();
   for (HighsInt i = 0; i < nrow; ++i) {
     double lhs = 0.0;
     for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
