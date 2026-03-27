@@ -222,6 +222,9 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
       },
       1);
 
+  mipdata->heuristic_effort_used +=
+      total_effort.load(std::memory_order_relaxed);
+
   // Flush pool solutions to HiGHS (sequential, use generic H tag since
   // pool mixes arms)
   for (auto &entry : pool.sorted_entries()) {
@@ -354,6 +357,8 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
       pool_snap = after_snap;
     }
   }
+
+  mipdata->heuristic_effort_used += total_effort;
 
   // Flush pool solutions to HiGHS (best first)
   for (auto &entry : pool.sorted_entries()) {

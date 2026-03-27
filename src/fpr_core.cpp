@@ -39,7 +39,7 @@ FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver,
       mipdata->incumbent.empty() ? nullptr : mipdata->incumbent.data();
 
   FprConfig cfg{};
-  cfg.max_effort = 0; // caller sets budget
+  cfg.max_effort = 0; // caller must set budget
   cfg.rng_seed_offset = 42;
   cfg.hint = hint;
   cfg.scores = scores_buf.data();
@@ -57,7 +57,7 @@ size_t fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg) {
     if (mipdata->terminatorTerminated()) {
       return cumulative_effort;
     }
-    if (cfg.max_effort > 0 && cumulative_effort >= cfg.max_effort) {
+    if (cumulative_effort >= cfg.max_effort) {
       return cumulative_effort;
     }
     auto result = fpr_attempt(mipsolver, cfg, rng, attempt, nullptr);
@@ -579,7 +579,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     }
 
     for (HighsInt step = 0; step < repair_budget && !violated.empty(); ++step) {
-      if (cfg.max_effort > 0 && total_prop_work >= cfg.max_effort) {
+      if (total_prop_work >= cfg.max_effort) {
         break;
       }
       HighsInt pick = std::uniform_int_distribution<HighsInt>(

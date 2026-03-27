@@ -9,7 +9,7 @@ struct HeuristicResult;
 class HighsMipSolver;
 
 struct FprConfig {
-  size_t max_effort; // effort budget (coefficient accesses); 0 = unlimited
+  size_t max_effort; // effort budget (coefficient accesses)
   uint32_t rng_seed_offset;
   // Per-variable hint for choose_fix_value (nullable; length ncol if non-null).
   // Used only on attempt 0 (papers: FPR uses incumbent, Scylla uses LP sol).

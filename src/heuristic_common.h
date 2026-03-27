@@ -84,7 +84,7 @@ inline double clamp_round(double val, double lb, double ub, bool integer) {
 inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {
   if (mip_heuristic_effort <= 0.0) {
     return 0;
-}
+  }
   constexpr int kBaseShift = 12;
   double scale = mip_heuristic_effort / 0.05;
   return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);

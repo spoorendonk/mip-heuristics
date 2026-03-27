@@ -15,7 +15,6 @@ namespace {
 
 // --- File-scope constants ---
 constexpr double kViolTol = 5e-7;
-constexpr HighsInt kMaxSteps = 500000;
 constexpr HighsInt kRestartInterval = 200000;
 constexpr HighsInt kTermCheckInterval = 1000;
 constexpr HighsInt kActivityPeriod = 100000;
@@ -892,7 +891,7 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
           mipsolver.timer_.read() >= time_limit) {
         break;
       }
-      if (max_effort > 0 && ctx.effort >= max_effort) {
+      if (ctx.effort >= max_effort) {
         break;
       }
     }

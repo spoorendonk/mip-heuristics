@@ -17,7 +17,6 @@ namespace scylla {
 namespace {
 
 constexpr int kPoolCapacity = 10;
-constexpr int kMaxEpochs = 4;
 
 // Noise scaling: proximity-weighted perturbation for workers 1..N-1
 constexpr double kNoiseBase = 0.3;
@@ -139,6 +138,8 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
       }
     }
   }
+
+  mipdata->heuristic_effort_used += total_effort;
 
   // Submit best solutions to solver
   for (auto &entry : pool.sorted_entries()) {
