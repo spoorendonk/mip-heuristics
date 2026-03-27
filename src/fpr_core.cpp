@@ -309,16 +309,17 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       }
     };
 
-    HighsInt prop_iters = 0;
-    const HighsInt prop_budget = 10 * nrow;
+    size_t prop_work = 0;
+    const size_t prop_budget = 10 * static_cast<size_t>(ARindex.size());
     while (!prop_worklist.empty()) {
-      if (++prop_iters > prop_budget) {
-        total_prop_work += prop_iters;
-        return false;
-      }
       HighsInt i = prop_worklist.back();
       prop_worklist.pop_back();
       prop_in_wl[i] = 0;
+      prop_work += ARstart[i + 1] - ARstart[i];
+      if (prop_work > prop_budget) {
+        total_prop_work += prop_work;
+        return false;
+      }
 
       double fixed_sum = 0.0;
       double min_act = 0.0, max_act = 0.0;
@@ -437,7 +438,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
         }
       }
     }
-    total_prop_work += prop_iters;
+    total_prop_work += prop_work;
     return true;
   };
 
