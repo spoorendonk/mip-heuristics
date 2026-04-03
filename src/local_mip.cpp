@@ -821,7 +821,7 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step,
   if (!binary_vars.empty()) {
     batch.clear();
     HighsInt nbinary = static_cast<HighsInt>(binary_vars.size());
-    HighsInt offset = (nbinary > 0) ? static_cast<HighsInt>(rng() % nbinary) : 0;
+    HighsInt offset = static_cast<HighsInt>(rng() % nbinary);
     for (HighsInt idx = 0; idx < nbinary && idx < kBoolFlipBudget; ++idx) {
       HighsInt j = binary_vars[(offset + idx) % nbinary];
       double new_val = (ctx.solution[j] < 0.5) ? 1.0 : 0.0;
