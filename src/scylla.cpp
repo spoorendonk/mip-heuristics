@@ -137,8 +137,8 @@ void perturb(std::vector<double> &x, const HighsLp &model,
     if (hi <= lo) continue;
     // Pick a different integer value uniformly via modular shift
     double current = std::round(x[j]);
-    auto irange = static_cast<int>(hi - lo);
-    int shift = std::uniform_int_distribution<int>(1, irange)(rng);
+    auto irange = static_cast<int64_t>(hi - lo);
+    int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
     x[j] = lo + std::fmod(current - lo + shift, irange + 1.0);
   }
 }
@@ -249,6 +249,21 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
           break;
         }
       }
+      // PDLP solutions are approximate — verify row feasibility too
+      if (mip_feasible) {
+        for (HighsInt i = 0; i < nrow; ++i) {
+          double lhs = 0.0;
+          for (HighsInt k = mipdata->ARstart_[i]; k < mipdata->ARstart_[i + 1];
+               ++k) {
+            lhs += mipdata->ARvalue_[k] * x_bar[mipdata->ARindex_[k]];
+          }
+          if (lhs > model->row_upper_[i] + feastol ||
+              lhs < model->row_lower_[i] - feastol) {
+            mip_feasible = false;
+            break;
+          }
+        }
+      }
       if (mip_feasible) {
         double obj = model->offset_;
         for (HighsInt j = 0; j < ncol; ++j) {
@@ -269,6 +284,9 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     }
 
     // Line 12: fix-and-propagate to round PDLP solution
+    // Scylla uses kDiveprop (default): propagation on, repair on, no backtrack.
+    // Deliberate — the pump runs many iterations so fast single-pass rounding
+    // is appropriate.  Mexi et al.'s "FixAndPropagate" maps to this mode.
     FprConfig cfg{};
     cfg.max_effort = max_effort - std::min(max_effort, total_effort);
     cfg.rng_seed_offset = 42 + K;
