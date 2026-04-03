@@ -37,10 +37,11 @@ enum class ValStrategy {
 };
 
 enum class FrameworkMode {
-  kDfs,      // propagation on, repair off, backtrack on infeasibility
-  kDfsrep,   // propagation on, repair on, backtrack on infeasibility
-  kDive,     // propagation off, repair on (at end only), no backtrack
-  kDiveprop, // propagation on, repair on, no backtrack
+  kDfs,           // propagation on, repair off, backtrack on infeasibility
+  kDfsrep,        // propagation on, repair on, backtrack on infeasibility
+  kDive,          // propagation off, repair on (at end only), no backtrack
+  kDiveprop,      // propagation on, repair on, no backtrack
+  kRepairSearch,  // propagation on, DFS repair with secondary engine R (Fig. 5)
 };
 
 // ---------------------------------------------------------------------------
@@ -58,11 +59,14 @@ inline bool mode_propagates(FrameworkMode m) {
 }
 
 inline bool mode_repairs(FrameworkMode m) {
-  return m != FrameworkMode::kDfs;
+  // RepairSearch has its own Phase 3 dispatch — not the WalkSAT path.
+  return m == FrameworkMode::kDfsrep || m == FrameworkMode::kDive ||
+         m == FrameworkMode::kDiveprop;
 }
 
 inline bool mode_backtracks(FrameworkMode m) {
-  return m == FrameworkMode::kDfs || m == FrameworkMode::kDfsrep;
+  return m == FrameworkMode::kDfs || m == FrameworkMode::kDfsrep ||
+         m == FrameworkMode::kRepairSearch;
 }
 
 // Does this strategy require an LP solution?

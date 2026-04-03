@@ -27,6 +27,7 @@ enum PresolveArm {
   kArmFprDfsrepLocks,
   kArmFprDfsrepBadobjcl,
   kArmFprDivepropRandom,
+  kArmFprRepairSearchLocks,
   kArmLocalMIP,
   kArmFJ,
 };
@@ -44,6 +45,7 @@ constexpr FprArmConfig kFprArms[] = {
     {kArmFprDfsrepLocks, kStratLocks, FrameworkMode::kDfsrep},
     {kArmFprDfsrepBadobjcl, kStratBadobjcl, FrameworkMode::kDfsrep},
     {kArmFprDivepropRandom, kStratRandom, FrameworkMode::kDiveprop},
+    {kArmFprRepairSearchLocks, kStratLocks, FrameworkMode::kRepairSearch},
 };
 constexpr int kNumFprArms =
     static_cast<int>(sizeof(kFprArms) / sizeof(kFprArms[0]));

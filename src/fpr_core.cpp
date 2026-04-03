@@ -10,6 +10,9 @@
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "prop_engine.h"
+#include "repair_search.h"
+#include "walksat.h"
 
 FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver,
                                    const CscMatrix &csc,
@@ -140,7 +143,6 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     });
   }
 
-  std::vector<double> solution(ncol);
   std::vector<double> lhs_cache(nrow);
 
   const HighsInt repair_budget = cfg.repair_iterations;
@@ -159,30 +161,23 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     return false;
   };
 
-  size_t total_prop_work = 0;
-
-  std::vector<HighsInt> prop_worklist;
-  prop_worklist.reserve(nrow);
-  std::vector<char> prop_in_wl(nrow);
-
   std::vector<HighsInt> violated;
   std::vector<HighsInt> violated_pos(nrow, -1);
   violated.reserve(nrow);
 
-  std::vector<VarState> vs(ncol);
-  std::vector<std::pair<HighsInt, VarState>> vs_undo;
-  std::vector<std::pair<HighsInt, double>> sol_undo;
-  vs_undo.reserve(ncol);
-  sol_undo.reserve(ncol);
+  // --- Create PropEngine for Phase 2 ---
+  PropEngine E(ncol, nrow, ARstart.data(), ARindex.data(), ARvalue.data(),
+               csc_ref, col_lb.data(), col_ub.data(), row_lo.data(),
+               row_hi.data(), integrality.data(), feastol);
 
-  // --- Initialize solution ---
+  // --- Initialize solution in E ---
   if (initial_solution) {
     for (HighsInt j = 0; j < ncol; ++j) {
       double v = initial_solution[j];
       if (is_int(j)) {
         v = std::round(v);
       }
-      solution[j] = std::max(col_lb[j], std::min(col_ub[j], v));
+      E.sol(j) = std::max(col_lb[j], std::min(col_ub[j], v));
     }
   } else if (attempt_idx == 0 && cfg.hint) {
     for (HighsInt j = 0; j < ncol; ++j) {
@@ -190,38 +185,38 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       if (is_int(j)) {
         v = std::round(v);
       }
-      solution[j] = std::max(col_lb[j], std::min(col_ub[j], v));
+      E.sol(j) = std::max(col_lb[j], std::min(col_ub[j], v));
     }
   } else if (attempt_idx == 0) {
     for (HighsInt j = 0; j < ncol; ++j) {
       if (mipdata->domain.isBinary(j)) {
-        solution[j] = 0.0;
+        E.sol(j) = 0.0;
       } else if (is_int(j)) {
         double lo = std::max(col_lb[j], -1e8);
         double hi = std::min(col_ub[j], lo + 100.0);
-        solution[j] = std::round((lo + hi) * 0.5);
-        solution[j] = std::max(col_lb[j], std::min(col_ub[j], solution[j]));
+        E.sol(j) = std::round((lo + hi) * 0.5);
+        E.sol(j) = std::max(col_lb[j], std::min(col_ub[j], E.sol(j)));
       } else {
-        solution[j] = finite_clamp(0.0, col_lb[j], col_ub[j]);
+        E.sol(j) = finite_clamp(0.0, col_lb[j], col_ub[j]);
       }
     }
   } else {
     for (HighsInt j = 0; j < ncol; ++j) {
       if (mipdata->domain.isBinary(j)) {
-        solution[j] = std::uniform_int_distribution<int>(0, 1)(rng);
+        E.sol(j) = std::uniform_int_distribution<int>(0, 1)(rng);
       } else if (is_int(j)) {
         double lo = std::max(col_lb[j], -1e8);
         double hi = std::min(col_ub[j], lo + 100.0);
-        solution[j] =
+        E.sol(j) =
             std::round(std::uniform_real_distribution<double>(lo, hi)(rng));
-        solution[j] = std::max(col_lb[j], std::min(col_ub[j], solution[j]));
+        E.sol(j) = std::max(col_lb[j], std::min(col_ub[j], E.sol(j)));
       } else {
         double lo = finite_clamp(0.0, col_lb[j], col_ub[j]);
         double hi = std::min(col_ub[j], lo + 1e6);
         if (hi < kHighsInf && lo > -kHighsInf && hi > lo) {
-          solution[j] = std::uniform_real_distribution<double>(lo, hi)(rng);
+          E.sol(j) = std::uniform_real_distribution<double>(lo, hi)(rng);
         } else {
-          solution[j] = lo;
+          E.sol(j) = lo;
         }
       }
     }
@@ -234,28 +229,21 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   }
 
   // --- Phase 2: Fix & Propagate ---
-  vs_undo.clear();
-  sol_undo.clear();
-  for (HighsInt j = 0; j < ncol; ++j) {
-    vs[j].lb = col_lb[j];
-    vs[j].ub = col_ub[j];
-    vs[j].val = 0.0;
-    vs[j].fixed = false;
-  }
+  // (E already initialized with global bounds via constructor)
 
   // choose_fix_value: strategy-aware or legacy hint+objective-greedy fallback
   const bool use_hint = (attempt_idx == 0 && cfg.hint != nullptr);
   auto choose_fix_value = [&](HighsInt j) -> double {
     // Strategy-based value selection (paper Table 2)
     if (cfg.strategy) {
-      return choose_value(j, vs[j].lb, vs[j].ub, is_int(j), minimize,
+      return choose_value(j, E.var(j).lb, E.var(j).ub, is_int(j), minimize,
                           col_cost[j], cfg.strategy->val_strategy, rng,
-                          cfg.lp_ref, &mipsolver, vs.data(), &csc_ref);
+                          cfg.lp_ref, &mipsolver, &E.var(0), &csc_ref);
     }
 
     // Legacy behavior
-    double lo = vs[j].lb;
-    double hi = vs[j].ub;
+    double lo = E.var(j).lb;
+    double hi = E.var(j).ub;
 
     if (use_hint) {
       double h = cfg.hint[j];
@@ -284,197 +272,17 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     return (col_cost[j] > 0) ? hi : lo;
   };
 
-  auto fix_variable = [&](HighsInt j, double value) -> bool {
-    if (value < vs[j].lb - feastol || value > vs[j].ub + feastol) {
-      return false;
-    }
-    value = std::max(vs[j].lb, std::min(vs[j].ub, value));
-    if (is_int(j)) {
-      value = std::round(value);
-    }
-    vs_undo.push_back({j, vs[j]});
-    sol_undo.push_back({j, solution[j]});
-    vs[j].fixed = true;
-    vs[j].val = value;
-    solution[j] = value;
-    return true;
-  };
-
-  auto propagate = [&](HighsInt fixed_var) -> bool {
-    if (fixed_var >= 0) {
-      // Seed only the rows containing the just-fixed variable (AC-3).
-      prop_worklist.clear();
-      for (HighsInt p = col_start[fixed_var]; p < col_start[fixed_var + 1];
-           ++p) {
-        HighsInt i = col_row[p];
-        if (!prop_in_wl[i]) {
-          prop_in_wl[i] = 1;
-          prop_worklist.push_back(i);
-        }
-      }
-    }
-    // When fixed_var == -1, assume prop_worklist is already seeded by caller.
-
-    auto enqueue_neighbors = [&](HighsInt j) {
-      for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
-        HighsInt i = col_row[p];
-        if (!prop_in_wl[i]) {
-          prop_in_wl[i] = 1;
-          prop_worklist.push_back(i);
-        }
-      }
-    };
-
-    size_t prop_work = 0;
-    const size_t prop_budget = 10 * static_cast<size_t>(ARindex.size());
-    while (!prop_worklist.empty()) {
-      HighsInt i = prop_worklist.back();
-      prop_worklist.pop_back();
-      prop_in_wl[i] = 0;
-      prop_work += ARstart[i + 1] - ARstart[i];
-      if (prop_work > prop_budget) {
-        total_prop_work += prop_work;
-        // Clear stale worklist markers to avoid permanently excluding
-        // these rows from future propagation calls on other DFS branches.
-        for (HighsInt wi : prop_worklist) {
-          prop_in_wl[wi] = 0;
-        }
-        prop_worklist.clear();
-        return false;
-      }
-
-      double fixed_sum = 0.0;
-      double min_act = 0.0, max_act = 0.0;
-      HighsInt num_unfixed = 0;
-
-      for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-        HighsInt j = ARindex[k];
-        double a = ARvalue[k];
-        if (vs[j].fixed) {
-          fixed_sum += a * vs[j].val;
-        } else {
-          ++num_unfixed;
-          if (a > 0) {
-            min_act += a * vs[j].lb;
-            max_act += a * vs[j].ub;
-          } else {
-            min_act += a * vs[j].ub;
-            max_act += a * vs[j].lb;
-          }
-        }
-      }
-
-      if (num_unfixed == 0) {
-        continue;
-      }
-
-      bool has_upper = row_hi[i] < kHighsInf;
-      bool has_lower = row_lo[i] > -kHighsInf;
-
-      for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-        HighsInt j = ARindex[k];
-        if (vs[j].fixed) {
-          continue;
-        }
-        double a = ARvalue[k];
-        if (std::abs(a) < 1e-15) {
-          continue;
-        }
-
-        double old_lb = vs[j].lb;
-        double old_ub = vs[j].ub;
-
-        double min_others, max_others;
-        if (a > 0) {
-          min_others = min_act - a * old_lb;
-          max_others = max_act - a * old_ub;
-        } else {
-          min_others = min_act - a * old_ub;
-          max_others = max_act - a * old_lb;
-        }
-
-        double new_lb = old_lb;
-        double new_ub = old_ub;
-
-        if (has_upper) {
-          double bound = row_hi[i] - fixed_sum - min_others;
-          if (a > 0) {
-            new_ub = std::min(new_ub, bound / a);
-          } else {
-            new_lb = std::max(new_lb, bound / a);
-          }
-        }
-
-        if (has_lower) {
-          double bound = row_lo[i] - fixed_sum - max_others;
-          if (a > 0) {
-            new_lb = std::max(new_lb, bound / a);
-          } else {
-            new_ub = std::min(new_ub, bound / a);
-          }
-        }
-
-        if (is_int(j)) {
-          new_lb = std::ceil(new_lb - feastol);
-          new_ub = std::floor(new_ub + feastol);
-        }
-
-        new_lb = std::max(new_lb, col_lb[j]);
-        new_ub = std::min(new_ub, col_ub[j]);
-
-        if (new_lb > new_ub + feastol) {
-          return false;
-        }
-
-        bool changed = false;
-        if (new_lb > old_lb + feastol || new_ub < old_ub - feastol) {
-          vs_undo.push_back({j, vs[j]});
-          sol_undo.push_back({j, solution[j]});
-          if (new_lb > old_lb + feastol) {
-            vs[j].lb = new_lb;
-            changed = true;
-          }
-          if (new_ub < old_ub - feastol) {
-            vs[j].ub = new_ub;
-            changed = true;
-          }
-        }
-
-        if (!vs[j].fixed && vs[j].ub - vs[j].lb < feastol) {
-          if (!changed) {
-            vs_undo.push_back({j, vs[j]});
-            sol_undo.push_back({j, solution[j]});
-          }
-          double val = (vs[j].lb + vs[j].ub) * 0.5;
-          if (is_int(j)) {
-            val = std::round(val);
-          }
-          vs[j].fixed = true;
-          vs[j].val = val;
-          solution[j] = val;
-          changed = true;
-        }
-
-        if (changed) {
-          enqueue_neighbors(j);
-        }
-      }
-    }
-    total_prop_work += prop_work;
-    return true;
-  };
-
   // Paper Section 6: "fix all trivially-roundable variables (if any) to the
   // corresponding bound" before running strategies.
   if (!mipdata->uplocks.empty()) {
     const auto &uplocks = mipdata->uplocks;
     const auto &downlocks = mipdata->downlocks;
     for (HighsInt j = 0; j < ncol; ++j) {
-      if (!is_int(j) || vs[j].fixed) continue;
+      if (!is_int(j) || E.var(j).fixed) continue;
       if (uplocks[j] == 0 && downlocks[j] != 0) {
-        fix_variable(j, vs[j].ub);
+        E.fix(j, E.var(j).ub);
       } else if (downlocks[j] == 0 && uplocks[j] != 0) {
-        fix_variable(j, vs[j].lb);
+        E.fix(j, E.var(j).lb);
       }
     }
   }
@@ -482,41 +290,19 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   // Paper Section 6: "perform a first round of constraint propagation, until
   // a fixpoint is reached" before starting the DFS.
   for (HighsInt j = 0; j < ncol; ++j) {
-    if (vs[j].fixed) {
-      for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
-        HighsInt row = col_row[p];
-        if (!prop_in_wl[row]) {
-          prop_in_wl[row] = 1;
-          prop_worklist.push_back(row);
-        }
-      }
+    if (E.var(j).fixed) {
+      E.seed_worklist(j);
     }
   }
-  if (!prop_worklist.empty()) {
-    propagate(-1);  // -1 = worklist already seeded
-  }
+  E.propagate(-1);
 
   // --- Phase 2: DFS Fix & Propagate (paper Fig. 1) ---
-
-  // Backtrack undo stacks to given marks
-  auto backtrack_to = [&](HighsInt vs_mark, HighsInt sol_mark) {
-    for (HighsInt u = static_cast<HighsInt>(vs_undo.size()) - 1; u >= vs_mark;
-         --u) {
-      vs[vs_undo[u].first] = vs_undo[u].second;
-    }
-    vs_undo.resize(vs_mark);
-    for (HighsInt u = static_cast<HighsInt>(sol_undo.size()) - 1;
-         u >= sol_mark; --u) {
-      solution[sol_undo[u].first] = sol_undo[u].second;
-    }
-    sol_undo.resize(sol_mark);
-  };
 
   // Find first unfixed integer variable in var_order
   auto find_next_unfixed_int = [&]() -> HighsInt {
     for (HighsInt idx = 0; idx < ncol; ++idx) {
       HighsInt j = var_order[idx];
-      if (is_int(j) && !vs[j].fixed) return j;
+      if (is_int(j) && !E.var(j).fixed) return j;
     }
     return -1;
   };
@@ -526,8 +312,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     if (mipdata->domain.isBinary(j)) {
       return (preferred < 0.5) ? 1.0 : 0.0;
     }
-    double alt = (std::abs(preferred - vs[j].lb) < feastol) ? vs[j].ub
-                                                             : vs[j].lb;
+    double alt = (std::abs(preferred - E.var(j).lb) < feastol) ? E.var(j).ub
+                                                                : E.var(j).lb;
     if (is_int(j)) alt = std::round(alt);
     return alt;
   };
@@ -556,13 +342,13 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   } else {
     double pref = choose_fix_value(first_var);
     double alt = compute_alt(first_var, pref);
-    HighsInt vs_mark = static_cast<HighsInt>(vs_undo.size());
-    HighsInt sol_mark = static_cast<HighsInt>(sol_undo.size());
+    HighsInt vs_m = E.vs_mark();
+    HighsInt sol_m = E.sol_mark();
 
     if (do_backtrack) {
-      dfs_stack.push_back({first_var, alt, vs_mark, sol_mark});
+      dfs_stack.push_back({first_var, alt, vs_m, sol_m});
     }
-    dfs_stack.push_back({first_var, pref, vs_mark, sol_mark});
+    dfs_stack.push_back({first_var, pref, vs_m, sol_m});
   }
 
   while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete) {
@@ -571,16 +357,16 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     ++nodes_visited;
 
     // Backtrack to parent state
-    backtrack_to(node.vs_mark, node.sol_mark);
+    E.backtrack_to(node.vs_mark, node.sol_mark);
 
     // Apply the branching fixing
-    if (!fix_variable(node.var, node.val)) {
+    if (!E.fix(node.var, node.val)) {
       continue;  // can't fix, try next node (sibling)
     }
 
     // Propagate
     if (do_propagate) {
-      if (!propagate(node.var)) {
+      if (!E.propagate(node.var)) {
         continue;  // infeasible, try next node (sibling)
       }
     }
@@ -597,44 +383,48 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     // Branch on next variable: push children to DFS stack
     double pref = choose_fix_value(next_var);
     double alt = compute_alt(next_var, pref);
-    HighsInt vs_mark = static_cast<HighsInt>(vs_undo.size());
-    HighsInt sol_mark = static_cast<HighsInt>(sol_undo.size());
+    HighsInt vs_m = E.vs_mark();
+    HighsInt sol_m = E.sol_mark();
 
     if (do_backtrack) {
-      dfs_stack.push_back({next_var, alt, vs_mark, sol_mark});
+      dfs_stack.push_back({next_var, alt, vs_m, sol_m});
     }
-    dfs_stack.push_back({next_var, pref, vs_mark, sol_mark});
+    dfs_stack.push_back({next_var, pref, vs_m, sol_m});
   }
 
   if (!found_complete) {
-    return HeuristicResult::failed(total_prop_work);
+    return HeuristicResult::failed(E.effort());
   }
 
-  // Fix remaining unfixed variables
+  // Fix remaining unfixed variables (continuous and residual integers)
   for (HighsInt j = 0; j < ncol; ++j) {
-    if (vs[j].fixed) {
+    if (E.var(j).fixed) {
       continue;
     }
-    double lo = vs[j].lb;
-    double hi = vs[j].ub;
+    double lo = E.var(j).lb;
+    double hi = E.var(j).ub;
 
     if (!is_int(j)) {
       if (std::abs(col_cost[j]) > 1e-15) {
         bool want_low = (minimize == (col_cost[j] > 0));
-        solution[j] = finite_clamp(want_low ? lo : hi, lo, hi);
+        E.sol(j) = finite_clamp(want_low ? lo : hi, lo, hi);
       } else {
         double fallback = cfg.cont_fallback ? cfg.cont_fallback[j] : 0.0;
-        solution[j] = finite_clamp(fallback, lo, hi);
+        E.sol(j) = finite_clamp(fallback, lo, hi);
       }
     } else {
-      solution[j] = choose_fix_value(j);
-      solution[j] = std::max(lo, std::min(hi, solution[j]));
+      E.sol(j) = choose_fix_value(j);
+      E.sol(j) = std::max(lo, std::min(hi, E.sol(j)));
       if (is_int(j)) {
-        solution[j] = std::round(solution[j]);
+        E.sol(j) = std::round(E.sol(j));
       }
     }
-    solution[j] = std::max(col_lb[j], std::min(col_ub[j], solution[j]));
+    E.sol(j) = std::max(col_lb[j], std::min(col_ub[j], E.sol(j)));
   }
+
+  // --- Copy solution out of E for Phase 3 and result ---
+  std::vector<double> solution(E.sol_data(), E.sol_data() + ncol);
+  size_t total_prop_work = E.effort();
 
   // --- Compute LHS cache ---
   total_prop_work += ARindex.size();
@@ -654,8 +444,17 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     }
   }
 
-  // --- Phase 3: WalkSAT Repair (modes: dfsrep, dive, diveprop) ---
-  if (!feasible && mode_repairs(cfg.mode)) {
+  // --- Phase 3: RepairSearch (Fig. 5) or WalkSAT Repair ---
+  if (!feasible && cfg.mode == FrameworkMode::kRepairSearch) {
+    size_t rs_effort = 0;
+    feasible = repair_search(
+        E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(),
+        row_hi.data(), cfg.repair_iterations, cfg.repair_noise,
+        cfg.repair_track_best,
+        cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0,
+        rng, rs_effort);
+    total_prop_work += rs_effort;
+  } else if (!feasible && mode_repairs(cfg.mode)) {
     for (auto i : violated) {
       violated_pos[i] = -1;
     }
@@ -698,14 +497,6 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       best_lhs = lhs_cache;
     }
 
-    // Candidate struct for WalkSAT selection
-    struct Candidate {
-      HighsInt var;
-      double new_val;
-      double damage;  // violation increase only (ignoring improvements)
-    };
-    std::vector<Candidate> cand;
-
     for (HighsInt step = 0; step < repair_budget && !violated.empty(); ++step) {
       if (total_prop_work >= cfg.max_effort) {
         break;
@@ -716,112 +507,14 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
           0, static_cast<HighsInt>(violated.size()) - 1)(rng);
       HighsInt i = violated[pick];
 
-      HighsInt row_len = ARstart[i + 1] - ARstart[i];
-      if (row_len == 0) {
-        continue;
-      }
+      // WalkSAT move selection (paper Fig. 4)
+      auto move = walksat_select_move(i, solution.data(), lhs_cache.data(),
+                                      col_lb.data(), col_ub.data(), E,
+                                      cfg.repair_noise, rng, total_prop_work);
+      if (move.var < 0) continue;
 
-      double ci_lhs = lhs_cache[i];
-      double ci_viol = viol(i, ci_lhs);
-
-      // Compute best shift for each variable in the constraint (Fig. 4, line 8)
-      // Filter: only candidates with s_j != 0 whose shift reduces this
-      // constraint's violation (Fig. 4, lines 9-11)
-      cand.clear();
-      double best_damage = std::numeric_limits<double>::infinity();
-
-      total_prop_work += row_len;
-      for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-        HighsInt j = ARindex[k];
-        double a = ARvalue[k];
-        if (std::abs(a) < 1e-15) {
-          continue;
-        }
-
-        // ComputeShift: best shift to reduce violation of constraint i
-        double target_rhs;
-        if (ci_lhs > row_hi[i] + feastol) {
-          target_rhs = row_hi[i];
-        } else {
-          target_rhs = row_lo[i];
-        }
-        double old_val = solution[j];
-        double new_val = old_val + (target_rhs - ci_lhs) / a;
-
-        if (is_int(j)) {
-          if (ci_lhs > row_hi[i] + feastol) {
-            new_val = (a > 0) ? std::floor(new_val + feastol)
-                              : std::ceil(new_val - feastol);
-          } else {
-            new_val = (a > 0) ? std::ceil(new_val - feastol)
-                              : std::floor(new_val + feastol);
-          }
-        }
-        new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
-
-        // s_j == 0 check
-        if (std::abs(new_val - old_val) < 1e-15) {
-          continue;
-        }
-
-        // Check if shift reduces violation of the picked constraint
-        double delta_change = new_val - old_val;
-        double new_ci_lhs = ci_lhs + a * delta_change;
-        double new_ci_viol = viol(i, new_ci_lhs);
-        if (new_ci_viol >= ci_viol - feastol) {
-          continue;  // shift doesn't reduce this constraint's violation
-        }
-
-        // Evaluate damage: violation increase across OTHER constraints
-        // (paper: only count increases, ignore improvements)
-        HighsInt col_deg = col_start[j + 1] - col_start[j];
-        total_prop_work += col_deg;
-        double damage = 0.0;
-        for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
-          HighsInt i2 = col_row[p];
-          if (i2 == i) continue;  // skip the picked constraint itself
-          double coeff = col_val[p];
-          double old_lhs = lhs_cache[i2];
-          double new_lhs = old_lhs + coeff * delta_change;
-          double dv = viol(i2, new_lhs) - viol(i2, old_lhs);
-          if (dv > 0) {
-            damage += dv;  // only count increases
-          }
-        }
-
-        best_damage = std::min(best_damage, damage);
-        cand.push_back({j, new_val, damage});
-      }
-
-      if (cand.empty()) {
-        continue;
-      }
-
-      // WalkSAT selection (paper Fig. 4, lines 17-21)
-      HighsInt chosen_var;
-      double chosen_val;
-      if (best_damage > feastol &&
-          std::uniform_real_distribution<double>(0.0, 1.0)(rng) <
-              cfg.repair_noise) {
-        // Random walk: pick random from all candidates
-        HighsInt idx = std::uniform_int_distribution<HighsInt>(
-            0, static_cast<HighsInt>(cand.size()) - 1)(rng);
-        chosen_var = cand[idx].var;
-        chosen_val = cand[idx].new_val;
-      } else {
-        // Greedy: filter to candidates with damage == best_damage,
-        // pick random among them
-        std::vector<HighsInt> best_indices;
-        for (HighsInt ci = 0; ci < static_cast<HighsInt>(cand.size()); ++ci) {
-          if (cand[ci].damage <= best_damage + feastol) {
-            best_indices.push_back(ci);
-          }
-        }
-        HighsInt idx = best_indices[std::uniform_int_distribution<HighsInt>(
-            0, static_cast<HighsInt>(best_indices.size()) - 1)(rng)];
-        chosen_var = cand[idx].var;
-        chosen_val = cand[idx].new_val;
-      }
+      HighsInt chosen_var = move.var;
+      double chosen_val = move.val;
 
       double old_val = solution[chosen_var];
       double delta_change = chosen_val - old_val;

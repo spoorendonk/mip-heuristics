@@ -11,12 +11,6 @@ struct CscMatrix;
 struct HeuristicResult;
 class HighsMipSolver;
 
-// Variable state used during fix-and-propagate.
-struct VarState {
-  double lb, ub, val;
-  bool fixed;
-};
-
 struct FprConfig {
   size_t max_effort; // effort budget (coefficient accesses)
   uint32_t rng_seed_offset;

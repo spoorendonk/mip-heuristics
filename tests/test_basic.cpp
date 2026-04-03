@@ -11,6 +11,7 @@
 #include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "prop_engine.h"
 #include "solution_pool.h"
 #include "thompson_sampler.h"
 
@@ -720,6 +721,11 @@ TEST_CASE("FPR strategies: framework mode helpers", "[fpr][strategies]") {
   REQUIRE(mode_propagates(FrameworkMode::kDiveprop));
   REQUIRE(mode_repairs(FrameworkMode::kDiveprop));
   REQUIRE_FALSE(mode_backtracks(FrameworkMode::kDiveprop));
+
+  // repairsearch: propagate on, WalkSAT repair off (own dispatch), backtrack on
+  REQUIRE(mode_propagates(FrameworkMode::kRepairSearch));
+  REQUIRE_FALSE(mode_repairs(FrameworkMode::kRepairSearch));
+  REQUIRE(mode_backtracks(FrameworkMode::kRepairSearch));
 }
 
 TEST_CASE("FPR strategies: strategy_needs_lp", "[fpr][strategies]") {
@@ -738,18 +744,6 @@ TEST_CASE("FPR strategies: strategy_needs_lp", "[fpr][strategies]") {
   REQUIRE(strategy_needs_lp(kStratCliques2));
 }
 
-// Helper to build a solver from an instance file for strategy testing
-static HighsMipSolver *get_mip_solver(Highs &highs, const std::string &file) {
-  highs.setOptionValue("output_flag", false);
-  highs.readModel(file);
-  // Run presolve to populate mipdata
-  highs.setOptionValue("mip_heuristic_run_fpr", false);
-  highs.setOptionValue("mip_heuristic_run_local_mip", false);
-  highs.setOptionValue("mip_heuristic_run_scylla_fpr", false);
-  highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-  highs.run();
-  return nullptr;  // can't easily get HighsMipSolver from Highs API
-}
 
 TEST_CASE("FPR strategies: DFS mode on flugpl", "[fpr][strategies][dfs]") {
   // Test that DFS mode (with backtracking) solves flugpl
@@ -802,4 +796,192 @@ TEST_CASE("FPR strategies: portfolio multi-arm on bell5",
   double obj;
   highs.getInfoValue("objective_function_value", obj);
   REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-4));
+}
+
+// ===================================================================
+// RepairSearch tests (Fig. 5 with secondary propagation engine R)
+// ===================================================================
+
+TEST_CASE("RepairSearch: portfolio with RepairSearch arm on flugpl",
+          "[repair-search][portfolio]") {
+  // Portfolio now includes the RepairSearch arm — verify it still solves flugpl
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_portfolio", true);
+  highs.setOptionValue("mip_heuristic_run_fpr", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("RepairSearch: portfolio with RepairSearch arm on egout",
+          "[repair-search][portfolio]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_portfolio", true);
+  highs.setOptionValue("mip_heuristic_run_fpr", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+}
+
+TEST_CASE("RepairSearch: opportunistic portfolio on flugpl",
+          "[repair-search][portfolio][opportunistic]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_portfolio", true);
+  highs.setOptionValue("mip_heuristic_portfolio_opportunistic", true);
+  highs.setOptionValue("mip_heuristic_run_fpr", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
+          "[repair-search][fpr]") {
+  // Standalone FPR mode now includes RepairSearch config — must still solve
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", true);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+// ===================================================================
+// PropEngine unit tests
+// ===================================================================
+
+// Helper: build a small test model for PropEngine tests.
+// 3 variables: x0 (binary), x1 (integer [0,5]), x2 (continuous [0,10])
+// 2 constraints:
+//   row 0: x0 + x1 >= 2   (row_lo=2, row_hi=inf)
+//   row 1: x1 + x2 <= 8   (row_lo=-inf, row_hi=8)
+namespace {
+struct SmallModel {
+  static constexpr HighsInt ncol = 3;
+  static constexpr HighsInt nrow = 2;
+  std::vector<HighsInt> ar_start = {0, 2, 4};
+  std::vector<HighsInt> ar_index = {0, 1, 1, 2};
+  std::vector<double> ar_value = {1.0, 1.0, 1.0, 1.0};
+  std::vector<double> col_lb = {0.0, 0.0, 0.0};
+  std::vector<double> col_ub = {1.0, 5.0, 10.0};
+  double row_lo[2] = {2.0, -kHighsInf};
+  double row_hi[2] = {kHighsInf, 8.0};
+  std::vector<HighsVarType> integrality = {HighsVarType::kInteger,
+                                           HighsVarType::kInteger,
+                                           HighsVarType::kContinuous};
+  CscMatrix csc;
+
+  SmallModel() { csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value); }
+
+  PropEngine make_engine(double feastol = 1e-6) {
+    return PropEngine(ncol, nrow, ar_start.data(), ar_index.data(),
+                      ar_value.data(), csc, col_lb.data(), col_ub.data(),
+                      row_lo, row_hi, integrality.data(), feastol);
+  }
+};
+}  // namespace
+
+TEST_CASE("PropEngine: fix and propagate", "[prop-engine]") {
+  SmallModel m;
+  auto eng = m.make_engine();
+
+  // Initial state: all variables unfixed with global bounds
+  REQUIRE_FALSE(eng.var(0).fixed);
+  REQUIRE(eng.var(1).lb == Catch::Approx(0.0));
+  REQUIRE(eng.var(1).ub == Catch::Approx(5.0));
+
+  // Fix x0 = 0, propagate: row 0 (x0+x1 >= 2) forces x1 >= 2
+  REQUIRE(eng.fix(0, 0.0));
+  REQUIRE(eng.propagate(0));
+  REQUIRE(eng.var(0).fixed);
+  REQUIRE(eng.var(0).val == Catch::Approx(0.0));
+  REQUIRE(eng.var(1).lb >= 2.0 - 1e-6);
+
+  // Fix x1 = 5, propagate: row 1 (x1+x2 <= 8) forces x2 <= 3
+  REQUIRE(eng.fix(1, 5.0));
+  REQUIRE(eng.propagate(1));
+  REQUIRE(eng.var(2).ub <= 3.0 + 1e-6);
+}
+
+TEST_CASE("PropEngine: backtrack restores state", "[prop-engine]") {
+  SmallModel m;
+  auto eng = m.make_engine();
+
+  HighsInt vs_m = eng.vs_mark();
+  HighsInt sol_m = eng.sol_mark();
+
+  REQUIRE(eng.fix(0, 1.0));
+  REQUIRE(eng.propagate(0));
+  REQUIRE(eng.var(0).fixed);
+
+  eng.backtrack_to(vs_m, sol_m);
+  REQUIRE_FALSE(eng.var(0).fixed);
+  REQUIRE(eng.var(0).lb == Catch::Approx(0.0));
+  REQUIRE(eng.var(0).ub == Catch::Approx(1.0));
+  REQUIRE(eng.var(1).lb == Catch::Approx(0.0));
+}
+
+TEST_CASE("PropEngine: tighten bounds and auto-fix", "[prop-engine]") {
+  SmallModel m;
+  auto eng = m.make_engine();
+
+  REQUIRE(eng.tighten_lb(1, 3.0));
+  REQUIRE(eng.var(1).lb >= 3.0 - 1e-6);
+  REQUIRE(eng.var(1).ub == Catch::Approx(5.0));
+
+  // Tighten ub to match lb — should auto-fix
+  REQUIRE(eng.tighten_ub(1, 3.0));
+  REQUIRE(eng.var(1).fixed);
+  REQUIRE(eng.var(1).val == Catch::Approx(3.0));
+}
+
+TEST_CASE("PropEngine: infeasible propagation", "[prop-engine]") {
+  SmallModel m;
+  auto eng = m.make_engine();
+
+  // Fix x0=0, tighten x1 ub to 1. Propagation from row 0 (x0+x1 >= 2)
+  // tries to tighten x1 lb to 2, but ub is 1 → lb > ub → infeasible.
+  REQUIRE(eng.fix(0, 0.0));
+  REQUIRE(eng.tighten_ub(1, 1.0));
+  REQUIRE_FALSE(eng.propagate(0));
+}
+
+TEST_CASE("PropEngine: reset clears state", "[prop-engine]") {
+  SmallModel m;
+  auto eng = m.make_engine();
+
+  eng.fix(0, 1.0);
+  eng.propagate(0);
+  REQUIRE(eng.var(0).fixed);
+
+  eng.reset();
+  REQUIRE_FALSE(eng.var(0).fixed);
+  REQUIRE(eng.var(0).lb == Catch::Approx(0.0));
+  REQUIRE(eng.var(0).ub == Catch::Approx(1.0));
+  REQUIRE(eng.var(1).lb == Catch::Approx(0.0));
+  REQUIRE(eng.var(1).ub == Catch::Approx(5.0));
+}
+
+TEST_CASE("PropEngine: effort tracking", "[prop-engine]") {
+  SmallModel m;
+  auto eng = m.make_engine();
+
+  size_t before = eng.effort();
+  eng.fix(0, 1.0);
+  eng.propagate(0);
+  REQUIRE(eng.effort() > before);
+
+  eng.add_effort(100);
+  REQUIRE(eng.effort() >= before + 100);
 }

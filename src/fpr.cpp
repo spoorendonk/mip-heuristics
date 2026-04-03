@@ -25,9 +25,9 @@ struct NamedConfig {
   FrameworkMode mode;
 };
 
-// Paper's 6 LP-free configs:
+// Paper's 6 LP-free configs + RepairSearch:
 //   dfs-badobjcl, dfs-locks2, dive-locks2,
-//   dfsrep-locks, dfsrep-badobjcl, diveprop-random
+//   dfsrep-locks, dfsrep-badobjcl, diveprop-random, repairsearch-locks
 constexpr NamedConfig kLpFreeConfigs[] = {
     {kStratBadobjcl, FrameworkMode::kDfs},
     {kStratLocks2, FrameworkMode::kDfs},
@@ -35,6 +35,7 @@ constexpr NamedConfig kLpFreeConfigs[] = {
     {kStratLocks, FrameworkMode::kDfsrep},
     {kStratBadobjcl, FrameworkMode::kDfsrep},
     {kStratRandom, FrameworkMode::kDiveprop},
+    {kStratLocks, FrameworkMode::kRepairSearch},
 };
 
 constexpr int kNumLpFreeConfigs =

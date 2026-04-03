@@ -8,6 +8,12 @@
 #include "lp_data/HConst.h"
 #include "util/HighsInt.h"
 
+// Variable state used during fix-and-propagate.
+struct VarState {
+  double lb, ub, val;
+  bool fixed;
+};
+
 struct HeuristicResult {
   bool found_feasible = false;
   std::vector<double> solution;

@@ -13,10 +13,13 @@ add_library(mip_heuristics OBJECT
     src/fpr_lp.cpp
     src/fpr_strategies.cpp
     src/local_mip.cpp
+    src/prop_engine.cpp
+    src/repair_search.cpp
     src/thompson_sampler.cpp
     src/solution_pool.cpp
     src/portfolio.cpp
     src/scylla.cpp
+    src/walksat.cpp
 )
 target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
 
