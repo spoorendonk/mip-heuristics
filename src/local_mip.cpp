@@ -566,15 +566,24 @@ compute_candidate_scores(WorkerCtx &ctx, HighsInt j, double new_val,
       }
     }
 
-    // Def 9: robustness bonus (strictly satisfied, not tight)
+    // Def 9: robustness bonus — only for transitions into strictly
+    // satisfied (was violated or tight, now strictly interior).
     if (!now_viol) {
-      bool strictly_sat =
+      bool old_strict =
+          !was_viol &&
           (ctx.row_hi[i] >= kHighsInf ||
-           new_lhs < ctx.row_hi[i] - ctx.feastol) &&
+           old_lhs < ctx.row_hi[i] - ctx.feastol) &&
           (ctx.row_lo[i] <= -kHighsInf ||
-           new_lhs > ctx.row_lo[i] + ctx.feastol);
-      if (strictly_sat) {
-        bonus += w;
+           old_lhs > ctx.row_lo[i] + ctx.feastol);
+      if (!old_strict) {
+        bool new_strict =
+            (ctx.row_hi[i] >= kHighsInf ||
+             new_lhs < ctx.row_hi[i] - ctx.feastol) &&
+            (ctx.row_lo[i] <= -kHighsInf ||
+             new_lhs > ctx.row_lo[i] + ctx.feastol);
+        if (new_strict) {
+          bonus += w;
+        }
       }
     }
   }
@@ -767,15 +776,15 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step,
   // --- Phase 3: Boolean flip (Alg 2 lines 9-11) ---
   {
     batch.clear();
-    for (HighsInt j : binary_vars) {
+    HighsInt nbinary = static_cast<HighsInt>(binary_vars.size());
+    HighsInt offset = (nbinary > 0) ? static_cast<HighsInt>(rng() % nbinary) : 0;
+    for (HighsInt idx = 0; idx < nbinary && idx < kBoolFlipBudget; ++idx) {
+      HighsInt j = binary_vars[(offset + idx) % nbinary];
       double new_val = (ctx.solution[j] < 0.5) ? 1.0 : 0.0;
       if (std::abs(new_val - ctx.solution[j]) < 1e-15) {
         continue;
       }
       batch.push_back({j, new_val});
-      if (static_cast<HighsInt>(batch.size()) >= kBoolFlipBudget) {
-        break;
-      }
     }
     if (!batch.empty()) {
       auto flip_cand = select_best_from_batch(ctx, batch, step, true,
