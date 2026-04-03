@@ -592,6 +592,53 @@ TEST_CASE("SolutionPool: single-entry restart is always copy",
   }
 }
 
+// ── Scylla standalone: PDLP pump finds feasible solution ──
+
+TEST_CASE("Scylla standalone: flugpl general integers",
+          "[heuristic][scylla]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", false);
+  highs.setOptionValue("mip_heuristic_run_local_mip", false);
+  highs.setOptionValue("mip_heuristic_run_scylla_fpr", true);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("Scylla standalone: gt2 pure binary instance",
+          "[heuristic][scylla]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", false);
+  highs.setOptionValue("mip_heuristic_run_local_mip", false);
+  highs.setOptionValue("mip_heuristic_run_scylla_fpr", true);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(21166.0).epsilon(1e-3));
+}
+
+TEST_CASE("Scylla standalone: egout mixed integers",
+          "[heuristic][scylla]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", false);
+  highs.setOptionValue("mip_heuristic_run_local_mip", false);
+  highs.setOptionValue("mip_heuristic_run_scylla_fpr", true);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+}
+
 // ── Portfolio: gt2 instance (pure binary, tests FJ on binary vars) ──
 
 TEST_CASE("Portfolio: gt2 binary instance", "[portfolio]") {
