@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "fpr_core.h"
+#include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "local_mip.h"
 #include "mip/HighsMipSolver.h"
@@ -17,12 +18,47 @@ namespace portfolio {
 
 namespace {
 
-// Arm indices for presolve portfolio (used as arm_type)
-enum PresolveArm { kArmFPR = 0, kArmLocalMIP = 1, kArmFJ = 2 };
+// Arm indices for presolve portfolio (used as arm_type).
+// FPR arms 0-5 correspond to the paper's 6 LP-free configs.
+enum PresolveArm {
+  kArmFprDfsBadobjcl = 0,
+  kArmFprDfsLocks2,
+  kArmFprDiveLocks2,
+  kArmFprDfsrepLocks,
+  kArmFprDfsrepBadobjcl,
+  kArmFprDivepropRandom,
+  kArmLocalMIP,
+  kArmFJ,
+};
+
+// Strategy configs for each FPR arm (matching fpr.cpp's kLpFreeConfigs)
+struct FprArmConfig {
+  int arm_id;
+  FprStrategyConfig strat;
+  FrameworkMode mode;
+};
+constexpr FprArmConfig kFprArms[] = {
+    {kArmFprDfsBadobjcl, kStratBadobjcl, FrameworkMode::kDfs},
+    {kArmFprDfsLocks2, kStratLocks2, FrameworkMode::kDfs},
+    {kArmFprDiveLocks2, kStratLocks2, FrameworkMode::kDive},
+    {kArmFprDfsrepLocks, kStratLocks, FrameworkMode::kDfsrep},
+    {kArmFprDfsrepBadobjcl, kStratBadobjcl, FrameworkMode::kDfsrep},
+    {kArmFprDivepropRandom, kStratRandom, FrameworkMode::kDiveprop},
+};
+constexpr int kNumFprArms =
+    static_cast<int>(sizeof(kFprArms) / sizeof(kFprArms[0]));
+
+// Returns the FprArmConfig for the given arm_type, or nullptr if not FPR.
+const FprArmConfig *find_fpr_arm(int arm_type) {
+  for (int i = 0; i < kNumFprArms; ++i) {
+    if (kFprArms[i].arm_id == arm_type) return &kFprArms[i];
+  }
+  return nullptr;
+}
 
 // MIPLIB sweep priors
 constexpr double kFjAlpha = 2.0;
-constexpr double kFprAlpha = 2.5;
+constexpr double kFprArmAlpha = 2.5;  // per FPR config arm
 constexpr double kLocalMipAlpha = 3.0;
 
 constexpr int kPoolCapacity = 10;
@@ -79,16 +115,24 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type,
   if (mipsolver.timer_.read() >= mipsolver.options_mip_->time_limit) {
     return {};
   }
-  switch (arm_type) {
-  case kArmFPR: {
-    std::vector<double> scores, cont_fallback;
-    auto cfg = build_default_fpr_config(mipsolver, csc, scores, cont_fallback);
+  // Check if this is an FPR config arm
+  const FprArmConfig *fpr_arm = find_fpr_arm(arm_type);
+  if (fpr_arm) {
+    FprConfig cfg{};
     cfg.max_effort = max_effort;
-    // Override hint with thread-safe snapshot (build_default_fpr_config
-    // uses mipdata->incumbent which is racy in parallel context)
-    cfg.hint = incumbent_snapshot.empty() ? nullptr : incumbent_snapshot.data();
+    cfg.rng_seed_offset = 42;
+    cfg.hint =
+        incumbent_snapshot.empty() ? nullptr : incumbent_snapshot.data();
+    cfg.scores = nullptr;
+    cfg.cont_fallback = nullptr;
+    cfg.csc = &csc;
+    cfg.mode = fpr_arm->mode;
+    cfg.strategy = &fpr_arm->strat;
+    cfg.lp_ref = nullptr;
     return fpr_attempt(mipsolver, cfg, rng, attempt_idx, restart_sol);
   }
+
+  switch (arm_type) {
   case kArmLocalMIP: {
     const double *init = restart_sol;
     if (!init && !incumbent_snapshot.empty()) {
@@ -255,8 +299,10 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
     priors.push_back(kFjAlpha);
   }
   if (options->mip_heuristic_run_fpr) {
-    enabled_arms.push_back(kArmFPR);
-    priors.push_back(kFprAlpha);
+    for (int i = 0; i < kNumFprArms; ++i) {
+      enabled_arms.push_back(kFprArms[i].arm_id);
+      priors.push_back(kFprArmAlpha);
+    }
   }
   if (options->mip_heuristic_run_local_mip) {
     enabled_arms.push_back(kArmLocalMIP);
