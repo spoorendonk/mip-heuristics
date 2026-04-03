@@ -97,8 +97,8 @@ std::pair<Branch, Branch> move_to_disjunction(const PropEngine& E,
             {var, e_lb, false, true}};   // tighten_lb — alternative
   }
   // Paper: x_j ≤ a ∨ x_j ≥ b
-  return {{var, e_lb, false, true},    // tighten_lb — preferred
-          {var, e_ub, false, false}};  // tighten_ub — alternative
+  return {{var, e_lb, false, false},   // tighten_ub(a) — preferred
+          {var, e_ub, false, true}};   // tighten_lb(b) — alternative
 }
 
 // BacktrackBestOpen: swap the lowest-violation node to the back of Q.
@@ -225,6 +225,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
 
   size_t total_effort = 0;
   size_t e_effort_baseline = E.effort();
+  size_t r_effort_baseline = R.effort();
   HighsInt nodes_without_progress = 0;
   constexpr HighsInt kProgressThreshold = 10;
 
@@ -261,7 +262,19 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
 
     // Apply branch to solution/lhs (our extension for complete-assignment)
     if (node.var >= 0) {
-      apply_move(node.var, node.val, total_effort);
+      if (node.is_fix) {
+        // Binary: set solution to the fixed value
+        apply_move(node.var, node.val, total_effort);
+      } else {
+        // Non-binary: clamp solution to the new domain after tightening
+        double cur = solution[node.var];
+        double new_lb = E.var(node.var).lb;
+        double new_ub = E.var(node.var).ub;
+        double clamped = std::max(new_lb, std::min(new_ub, cur));
+        if (std::abs(clamped - cur) > feastol) {
+          apply_move(node.var, clamped, total_effort);
+        }
+      }
       rebuild_violated();
     }
 
@@ -271,7 +284,8 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
 
     if (violated.empty()) {
       // Feasible! (paper lines 15-16)
-      effort_out = total_effort + (E.effort() - e_effort_baseline);
+      effort_out = total_effort + (E.effort() - e_effort_baseline) +
+                 (R.effort() - r_effort_baseline);
       return true;
     }
 
@@ -321,15 +335,19 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
     Q.push_back({preferred.var, preferred.val, preferred.is_fix,
                  preferred.is_lb, cur_e_vs, cur_e_sol, cur_r_vs, cur_r_sol,
                  cur_sol, cur_lhs, total_viol});
+
+    // Best-first steering (paper line 27)
+    backtrack_best_open(Q);
   }
 
-  // Restore best state (paper lines 27-28)
+  // Restore best state (paper line 28)
   if (repair_track_best && best_viol < total_viol) {
     solution = best_solution;
     lhs_cache = best_lhs;
     rebuild_violated();
   }
 
-  effort_out = total_effort + (E.effort() - e_effort_baseline);
+  effort_out = total_effort + (E.effort() - e_effort_baseline) +
+                 (R.effort() - r_effort_baseline);
   return violated.empty();
 }
