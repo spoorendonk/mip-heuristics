@@ -26,6 +26,7 @@ constexpr double kEpsilonFloor = 1e-8;
 constexpr int kCycleWindow = 3;
 constexpr double kPerturbFraction = 0.2;
 constexpr double kCycleTol = 0.5; // integer values differ by >= 1.0
+constexpr int kMaxPdlpStalls = 3;
 
 void seed_pool(SolutionPool &pool, const HighsMipSolver &mipsolver) {
   const auto *model = mipsolver.model_;
@@ -202,6 +203,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   std::mt19937 rng(42);
 
   // Outer feasibility pump loop (Algorithm 1.1)
+  int pdlp_stall_count = 0;
   for (int K = 1; total_effort < max_effort; ++K) {
     if (mipsolver.timer_.read() >= time_limit) break;
     if (mipdata->terminatorTerminated()) break;
@@ -220,6 +222,16 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     highs.getInfoValue("pdlp_iteration_count", pdlp_iters);
     size_t nnz = mipdata->ARindex_.size();
     total_effort += static_cast<size_t>(pdlp_iters) * nnz;
+
+    // Stall detection: if PDLP warm-starts and immediately returns
+    // (0 iterations), the pump objective isn't changing the LP solution.
+    // Break after consecutive stalls to avoid spinning.
+    if (pdlp_iters == 0) {
+      ++pdlp_stall_count;
+      if (pdlp_stall_count >= kMaxPdlpStalls) break;
+    } else {
+      pdlp_stall_count = 0;
+    }
 
     if (status == HighsStatus::kError) break;
     const auto &sol = highs.getSolution();
