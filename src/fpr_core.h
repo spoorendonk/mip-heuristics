@@ -4,6 +4,7 @@
 #include <random>
 #include <vector>
 
+#include "fpr_strategies.h"
 #include "util/HighsInt.h"
 
 struct CscMatrix;
@@ -11,7 +12,6 @@ struct HeuristicResult;
 class HighsMipSolver;
 
 // Variable state used during fix-and-propagate.
-// Layout must remain compatible with fpr_strategies.cpp.
 struct VarState {
   double lb, ub, val;
   bool fixed;
@@ -23,13 +23,24 @@ struct FprConfig {
   // Per-variable hint for choose_fix_value (nullable; length ncol if non-null).
   // Used only on attempt 0 (papers: FPR uses incumbent, Scylla uses LP sol).
   const double *hint;
-  // Ranking scores per variable (length ncol; caller computes)
+  // Ranking scores per variable (length ncol; caller computes).
+  // Used only when strategy is null (legacy mode).
   const double *scores;
   // Fallback values for zero-cost continuous vars (length ncol)
   const double *cont_fallback;
   // Optional pre-built CSC matrix (avoids redundant build if caller already has
   // one)
   const CscMatrix *csc;
+
+  // --- Framework mode (paper Section 3) ---
+  FrameworkMode mode = FrameworkMode::kDiveprop;
+
+  // --- Strategy (paper Table 3) ---
+  // When non-null, uses the paper's variable ranking and value selection.
+  // When null, falls back to legacy scores-based ranking + hint/goodobj.
+  const FprStrategyConfig *strategy = nullptr;
+  // LP reference solution for LP-based strategies (nullable).
+  const double *lp_ref = nullptr;
 
   // --- Repair parameters (paper: Salvagnin et al. 2025, Section 5) ---
   // Noise parameter p: probability of random walk move (paper default: 0.75).

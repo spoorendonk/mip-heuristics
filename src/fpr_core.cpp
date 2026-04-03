@@ -120,14 +120,21 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     return std::max(-kBox, std::min(kBox, val));
   };
 
-  // Phase 1: Rank variables using caller-provided scores
-  std::vector<HighsInt> var_order(ncol);
-  for (HighsInt j = 0; j < ncol; ++j) {
-    var_order[j] = j;
+  // Phase 1: Rank variables
+  std::vector<HighsInt> var_order;
+  if (cfg.strategy) {
+    var_order =
+        compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
+  } else {
+    // Legacy: sort by caller-provided scores
+    var_order.resize(ncol);
+    for (HighsInt j = 0; j < ncol; ++j) {
+      var_order[j] = j;
+    }
+    std::sort(var_order.begin(), var_order.end(), [&](HighsInt a, HighsInt b) {
+      return cfg.scores[a] > cfg.scores[b];
+    });
   }
-  std::sort(var_order.begin(), var_order.end(), [&](HighsInt a, HighsInt b) {
-    return cfg.scores[a] > cfg.scores[b];
-  });
 
   std::vector<double> solution(ncol);
   std::vector<double> lhs_cache(nrow);
@@ -233,9 +240,17 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     vs[j].fixed = false;
   }
 
-  // choose_fix_value: hint-aware on attempt 0 only, objective-greedy fallback
+  // choose_fix_value: strategy-aware or legacy hint+objective-greedy fallback
   const bool use_hint = (attempt_idx == 0 && cfg.hint != nullptr);
   auto choose_fix_value = [&](HighsInt j) -> double {
+    // Strategy-based value selection (paper Table 2)
+    if (cfg.strategy) {
+      return choose_value(j, vs[j].lb, vs[j].ub, is_int(j), minimize,
+                          col_cost[j], cfg.strategy->val_strategy, rng,
+                          cfg.lp_ref, &mipsolver, vs.data(), &csc_ref);
+    }
+
+    // Legacy behavior
     double lo = vs[j].lb;
     double hi = vs[j].ub;
 
@@ -252,9 +267,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     if (mipdata->domain.isBinary(j)) {
       if (minimize) {
         return (col_cost[j] >= 0) ? lo : hi;
-      } else {
-        return (col_cost[j] >= 0) ? hi : lo;
       }
+      return (col_cost[j] >= 0) ? hi : lo;
     }
 
     if (std::abs(col_cost[j]) < 1e-15) {
@@ -263,9 +277,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     }
     if (minimize) {
       return (col_cost[j] > 0) ? lo : hi;
-    } else {
-      return (col_cost[j] > 0) ? hi : lo;
     }
+    return (col_cost[j] > 0) ? hi : lo;
   };
 
   auto fix_variable = [&](HighsInt j, double value) -> bool {
@@ -439,65 +452,117 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     return true;
   };
 
-  // Fix integer variables in ranked order
-  bool fix_failed = false;
-  for (HighsInt idx = 0; idx < ncol; ++idx) {
-    HighsInt j = var_order[idx];
-    if (!is_int(j)) {
-      continue;
-    }
-    if (vs[j].fixed) {
-      continue;
-    }
+  // --- Phase 2: DFS Fix & Propagate (paper Fig. 1) ---
 
-    double value = choose_fix_value(j);
-
-    if (!fix_variable(j, value)) {
-      double alt = (value == vs[j].lb) ? vs[j].ub : vs[j].lb;
-      if (is_int(j)) {
-        alt = std::round(alt);
-      }
-      if (!fix_variable(j, alt)) {
-        fix_failed = true;
-        break;
-      }
+  // Backtrack undo stacks to given marks
+  auto backtrack_to = [&](HighsInt vs_mark, HighsInt sol_mark) {
+    for (HighsInt u = static_cast<HighsInt>(vs_undo.size()) - 1; u >= vs_mark;
+         --u) {
+      vs[vs_undo[u].first] = vs_undo[u].second;
     }
+    vs_undo.resize(vs_mark);
+    for (HighsInt u = static_cast<HighsInt>(sol_undo.size()) - 1;
+         u >= sol_mark; --u) {
+      solution[sol_undo[u].first] = sol_undo[u].second;
+    }
+    sol_undo.resize(sol_mark);
+  };
 
+  // Find first unfixed integer variable in var_order
+  auto find_next_unfixed_int = [&]() -> HighsInt {
+    for (HighsInt idx = 0; idx < ncol; ++idx) {
+      HighsInt j = var_order[idx];
+      if (is_int(j) && !vs[j].fixed) return j;
+    }
+    return -1;
+  };
+
+  // Compute alternative value for branching
+  auto compute_alt = [&](HighsInt j, double preferred) -> double {
+    if (mipdata->domain.isBinary(j)) {
+      return (preferred < 0.5) ? 1.0 : 0.0;
+    }
+    double alt = (std::abs(preferred - vs[j].lb) < feastol) ? vs[j].ub
+                                                             : vs[j].lb;
+    if (is_int(j)) alt = std::round(alt);
+    return alt;
+  };
+
+  struct DfsNode {
+    HighsInt var;
+    double val;
+    HighsInt vs_mark;
+    HighsInt sol_mark;
+  };
+
+  const bool do_propagate = mode_propagates(cfg.mode);
+  const bool do_backtrack = mode_backtracks(cfg.mode);
+  const HighsInt node_limit = ncol + 1;
+
+  std::vector<DfsNode> dfs_stack;
+  dfs_stack.reserve(do_backtrack ? 2 * static_cast<size_t>(ncol) : ncol);
+  HighsInt nodes_visited = 0;
+  bool found_complete = false;
+
+  // Seed the DFS with the first unfixed integer variable
+  HighsInt first_var = find_next_unfixed_int();
+  if (first_var < 0) {
+    // All integer variables already fixed (e.g., by propagation)
+    found_complete = true;
+  } else {
+    double pref = choose_fix_value(first_var);
+    double alt = compute_alt(first_var, pref);
     HighsInt vs_mark = static_cast<HighsInt>(vs_undo.size());
     HighsInt sol_mark = static_cast<HighsInt>(sol_undo.size());
 
-    if (!propagate(j)) {
-      // Replay undo logs in reverse to restore state
-      for (HighsInt u = static_cast<HighsInt>(vs_undo.size()) - 1; u >= vs_mark;
-           --u) {
-        vs[vs_undo[u].first] = vs_undo[u].second;
-      }
-      vs_undo.resize(vs_mark);
-      for (HighsInt u = static_cast<HighsInt>(sol_undo.size()) - 1;
-           u >= sol_mark; --u) {
-        solution[sol_undo[u].first] = sol_undo[u].second;
-      }
-      sol_undo.resize(sol_mark);
-      vs[j].fixed = false;
-
-      double alt;
-      if (mipdata->domain.isBinary(j)) {
-        alt = (value < 0.5) ? 1.0 : 0.0;
-      } else {
-        alt = (value == vs[j].lb) ? vs[j].ub : vs[j].lb;
-        if (is_int(j)) {
-          alt = std::round(alt);
-        }
-      }
-
-      if (!fix_variable(j, alt) || !propagate(j)) {
-        fix_failed = true;
-        break;
-      }
+    if (do_backtrack) {
+      dfs_stack.push_back({first_var, alt, vs_mark, sol_mark});
     }
+    dfs_stack.push_back({first_var, pref, vs_mark, sol_mark});
   }
 
-  if (fix_failed) {
+  while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete) {
+    auto node = dfs_stack.back();
+    dfs_stack.pop_back();
+    ++nodes_visited;
+
+    // Backtrack to parent state
+    backtrack_to(node.vs_mark, node.sol_mark);
+
+    // Apply the branching fixing
+    if (!fix_variable(node.var, node.val)) {
+      continue;  // can't fix, try next node (sibling)
+    }
+
+    // Propagate
+    if (do_propagate) {
+      if (!propagate(node.var)) {
+        continue;  // infeasible, try next node (sibling)
+      }
+    }
+
+    // Find next unfixed integer variable
+    HighsInt next_var = find_next_unfixed_int();
+
+    if (next_var < 0) {
+      // All integer variables fixed
+      found_complete = true;
+      break;
+    }
+
+    // Branch on next variable: push children to DFS stack
+    double pref = choose_fix_value(next_var);
+    double alt = compute_alt(next_var, pref);
+    HighsInt vs_mark = static_cast<HighsInt>(vs_undo.size());
+    HighsInt sol_mark = static_cast<HighsInt>(sol_undo.size());
+
+    if (do_backtrack) {
+      dfs_stack.push_back({next_var, alt, vs_mark, sol_mark});
+    }
+    dfs_stack.push_back({next_var, pref, vs_mark, sol_mark});
+  }
+
+  if (!found_complete) {
     return HeuristicResult::failed(total_prop_work);
   }
 
