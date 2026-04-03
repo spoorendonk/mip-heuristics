@@ -14,7 +14,7 @@ VANILLA_OPTIONS = {
     "mip_heuristic_portfolio": "false",
     "mip_heuristic_run_fpr": "false",
     "mip_heuristic_run_local_mip": "false",
-    "mip_heuristic_run_scylla_fpr": "false",
+    "mip_heuristic_run_scylla": "false",
 }
 
 

@@ -85,7 +85,7 @@ TEST_CASE("Options: disable custom heuristics", "[options]") {
           HighsStatus::kOk);
   REQUIRE(highs.setOptionValue("mip_heuristic_run_local_mip", false) ==
           HighsStatus::kOk);
-  REQUIRE(highs.setOptionValue("mip_heuristic_run_scylla_fpr", false) ==
+  REQUIRE(highs.setOptionValue("mip_heuristic_run_scylla", false) ==
           HighsStatus::kOk);
   // Solve still works with all custom heuristics disabled
   REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
@@ -606,7 +606,7 @@ TEST_CASE("Scylla standalone: flugpl general integers",
   highs.setOptionValue("output_flag", false);
   highs.setOptionValue("mip_heuristic_run_fpr", false);
   highs.setOptionValue("mip_heuristic_run_local_mip", false);
-  highs.setOptionValue("mip_heuristic_run_scylla_fpr", true);
+  highs.setOptionValue("mip_heuristic_run_scylla", true);
   highs.setOptionValue("mip_heuristic_portfolio", false);
   REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
   REQUIRE(highs.run() == HighsStatus::kOk);
@@ -621,7 +621,7 @@ TEST_CASE("Scylla standalone: gt2 pure binary instance",
   highs.setOptionValue("output_flag", false);
   highs.setOptionValue("mip_heuristic_run_fpr", false);
   highs.setOptionValue("mip_heuristic_run_local_mip", false);
-  highs.setOptionValue("mip_heuristic_run_scylla_fpr", true);
+  highs.setOptionValue("mip_heuristic_run_scylla", true);
   highs.setOptionValue("mip_heuristic_portfolio", false);
   REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
   REQUIRE(highs.run() == HighsStatus::kOk);
@@ -636,7 +636,7 @@ TEST_CASE("Scylla standalone: egout mixed integers",
   highs.setOptionValue("output_flag", false);
   highs.setOptionValue("mip_heuristic_run_fpr", false);
   highs.setOptionValue("mip_heuristic_run_local_mip", false);
-  highs.setOptionValue("mip_heuristic_run_scylla_fpr", true);
+  highs.setOptionValue("mip_heuristic_run_scylla", true);
   highs.setOptionValue("mip_heuristic_portfolio", false);
   REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
   REQUIRE(highs.run() == HighsStatus::kOk);

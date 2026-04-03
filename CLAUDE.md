@@ -36,7 +36,7 @@ First build is slow (~5 min) because it fetches and builds HiGHS via FetchConten
 **Heuristic entry points** — each has a standalone `run()` that HiGHS calls during presolve:
 - `fpr` — Feasibility Pump with Rounding. `fpr_core` contains the shared single-attempt logic.
 - `local_mip` — neighborhood-search local MIP solver.
-- `scylla` — parallel ScyllaFPR restarts with LP-guided scoring.
+- `scylla` — parallel Scylla restarts with LP-guided scoring.
 - `portfolio` — adaptive bandit (Thompson sampling) that selects among FPR, LocalMIP, and FeasibilityJump arms. Has deterministic and opportunistic (parallel) modes.
 
 **Shared utilities** (`src/`):
@@ -45,7 +45,7 @@ First build is slow (~5 min) because it fetches and builds HiGHS via FetchConten
 - `solution_pool` — thread-safe top-K solution pool with crossover restarts.
 
 **HiGHS options** added by the patch:
-- `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla_fpr` — enable/disable individual heuristics.
+- `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla` — enable/disable individual heuristics.
 - `mip_heuristic_portfolio`, `mip_heuristic_portfolio_opportunistic` — enable portfolio mode / parallel opportunistic mode.
 - `mip_heuristic_run_feasibility_jump` — enable FJ arm in portfolio.
 

@@ -19,19 +19,19 @@ if(_opts_found EQUAL -1)
     # Member variables: insert after mip_heuristic_run_shifting
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla_fpr;\n  bool mip_heuristic_portfolio;\n  bool mip_heuristic_portfolio_opportunistic;\n"
+      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla;\n  bool mip_heuristic_portfolio;\n  bool mip_heuristic_portfolio_opportunistic;\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer list: insert after mip_heuristic_run_shifting(false),
     string(REPLACE
       "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_run_scylla_fpr(false),\n        mip_heuristic_portfolio(false),\n        mip_heuristic_portfolio_opportunistic(false),\n"
+      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_run_scylla(false),\n        mip_heuristic_portfolio(false),\n        mip_heuristic_portfolio_opportunistic(false),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla_fpr\",\n                                       \"Use the ScyllaFPR heuristic\", advanced,\n                                       &mip_heuristic_run_scylla_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio\",\n                                       \"Use adaptive portfolio mode for custom heuristics\", advanced,\n                                       &mip_heuristic_portfolio, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio_opportunistic\",\n                                       \"Use opportunistic (non-deterministic) mode for presolve portfolio\", advanced,\n                                       &mip_heuristic_portfolio_opportunistic, false);\n    records.push_back(record_bool);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio\",\n                                       \"Use adaptive portfolio mode for custom heuristics\", advanced,\n                                       &mip_heuristic_portfolio, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio_opportunistic\",\n                                       \"Use opportunistic (non-deterministic) mode for presolve portfolio\", advanced,\n                                       &mip_heuristic_portfolio_opportunistic, false);\n    records.push_back(record_bool);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
@@ -74,7 +74,7 @@ string(FIND "${MIPDATA_H}" "kSolutionSourceFPR" _src_enum_found)
 if(_src_enum_found EQUAL -1)
     string(REPLACE
       "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
-      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScyllaFPR,           // G (LP-guided FPR)\n  kSolutionSourceCleanup,"
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,           // G (Scylla)\n  kSolutionSourceCleanup,"
       MIPDATA_H "${MIPDATA_H}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
@@ -91,7 +91,7 @@ if(_src_cpp_found EQUAL -1)
     # Add source-to-string entries before kSolutionSourceCleanup
     string(REPLACE
       "} else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
-      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScyllaFPR) {\n    if (code) return \"G\";\n    return \"Scylla FPR\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
+      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
     # Update printSolutionSourceKey limits for the 3 new entries
@@ -300,10 +300,10 @@ if(_found EQUAL -1)
       "if (options_mip_->mip_heuristic_run_rins && !options_mip_->mip_heuristic_portfolio) {"
       CONTENT "${CONTENT}")
 
-    # Patch C: after RINS/RENS block closing brace, insert ScyllaFPR parallel restarts
+    # Patch C: after RINS/RENS block closing brace, insert Scylla parallel restarts
     string(REPLACE
       "          }\n\n          mipdata_->heuristics.flushStatistics();"
-      "          }\n          if (options_mip_->mip_heuristic_run_fpr) {\n            const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n            fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr) {\n            const size_t scylla_nnz = mipdata_->ARindex_.size();\n            scylla::run(*this, heuristic_effort_budget(scylla_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
+      "          }\n          if (options_mip_->mip_heuristic_run_fpr) {\n            const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n            fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n          }\n          if (options_mip_->mip_heuristic_run_scylla) {\n            const size_t scylla_nnz = mipdata_->ARindex_.size();\n            scylla::run(*this, heuristic_effort_budget(scylla_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
