@@ -223,17 +223,17 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     size_t nnz = mipdata->ARindex_.size();
     total_effort += static_cast<size_t>(pdlp_iters) * nnz;
 
-    // Stall detection: if PDLP warm-starts and immediately returns
-    // (0 iterations), the pump objective isn't changing the LP solution.
-    // Break after consecutive stalls to avoid spinning.
+    if (status == HighsStatus::kError) break;
+
+    // Stall detection: if PDLP returns 0 iterations, the modified
+    // objective isn't changing the LP solution.  Break after consecutive
+    // stalls to avoid spinning.
     if (pdlp_iters == 0) {
       ++pdlp_stall_count;
       if (pdlp_stall_count >= kMaxPdlpStalls) break;
     } else {
       pdlp_stall_count = 0;
     }
-
-    if (status == HighsStatus::kError) break;
     const auto &sol = highs.getSolution();
     if (sol.col_value.empty()) break;
     const auto &x_bar = sol.col_value;

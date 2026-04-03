@@ -74,7 +74,7 @@ string(FIND "${MIPDATA_H}" "kSolutionSourceFPR" _src_enum_found)
 if(_src_enum_found EQUAL -1)
     string(REPLACE
       "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
-      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,           // G (Scylla)\n  kSolutionSourceCleanup,"
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceCleanup,"
       MIPDATA_H "${MIPDATA_H}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
