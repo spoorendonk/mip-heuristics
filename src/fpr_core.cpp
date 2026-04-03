@@ -284,13 +284,15 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
 
   // --- Phase 2: DFS Fix & Propagate (paper Fig. 1) ---
 
-  // Find first unfixed integer variable in var_order
-  auto find_next_unfixed_int = [&]() -> HighsInt {
-    for (HighsInt idx = 0; idx < ncol; ++idx) {
+  // Find first unfixed integer variable in var_order starting from hint.
+  // Returns {variable, index} or {-1, -1} if none found.
+  const auto var_order_size = static_cast<HighsInt>(var_order.size());
+  auto find_next_unfixed_int = [&](HighsInt hint) -> std::pair<HighsInt, HighsInt> {
+    for (HighsInt idx = hint; idx < var_order_size; ++idx) {
       HighsInt j = var_order[idx];
-      if (is_int(j) && !E.var(j).fixed) return j;
+      if (is_int(j) && !E.var(j).fixed) return {j, idx};
     }
-    return -1;
+    return {-1, -1};
   };
 
   // Compute alternative value for branching
@@ -309,6 +311,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double val;
     HighsInt vs_mark;
     HighsInt sol_mark;
+    HighsInt scan_start;  // hint: resume var_order scan from this index
   };
 
   const bool do_propagate = mode_propagates(cfg.mode);
@@ -321,7 +324,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   bool found_complete = false;
 
   // Seed the DFS with the first unfixed integer variable
-  HighsInt first_var = find_next_unfixed_int();
+  auto [first_var, first_idx] = find_next_unfixed_int(0);
   if (first_var < 0) {
     // All integer variables already fixed (e.g., by propagation)
     found_complete = true;
@@ -330,11 +333,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double alt = compute_alt(first_var, pref);
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
+    HighsInt next_scan = first_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({first_var, alt, vs_m, sol_m});
+      dfs_stack.push_back({first_var, alt, vs_m, sol_m, next_scan});
     }
-    dfs_stack.push_back({first_var, pref, vs_m, sol_m});
+    dfs_stack.push_back({first_var, pref, vs_m, sol_m, next_scan});
   }
 
   while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete) {
@@ -357,8 +361,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       }
     }
 
-    // Find next unfixed integer variable
-    HighsInt next_var = find_next_unfixed_int();
+    // Find next unfixed integer variable (scan from hint, not from 0)
+    auto [next_var, next_idx] = find_next_unfixed_int(node.scan_start);
 
     if (next_var < 0) {
       // All integer variables fixed
@@ -371,11 +375,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double alt = compute_alt(next_var, pref);
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
+    HighsInt next_scan = next_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({next_var, alt, vs_m, sol_m});
+      dfs_stack.push_back({next_var, alt, vs_m, sol_m, next_scan});
     }
-    dfs_stack.push_back({next_var, pref, vs_m, sol_m});
+    dfs_stack.push_back({next_var, pref, vs_m, sol_m, next_scan});
   }
 
   if (!found_complete) {
