@@ -579,7 +579,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
         bool want_low = (minimize == (col_cost[j] > 0));
         solution[j] = finite_clamp(want_low ? lo : hi, lo, hi);
       } else {
-        solution[j] = finite_clamp(cfg.cont_fallback[j], lo, hi);
+        double fallback = cfg.cont_fallback ? cfg.cont_fallback[j] : 0.0;
+        solution[j] = finite_clamp(fallback, lo, hi);
       }
     } else {
       solution[j] = choose_fix_value(j);
