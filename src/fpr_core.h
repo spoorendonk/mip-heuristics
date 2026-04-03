@@ -4,6 +4,8 @@
 #include <random>
 #include <vector>
 
+#include "util/HighsInt.h"
+
 struct CscMatrix;
 struct HeuristicResult;
 class HighsMipSolver;
@@ -28,6 +30,15 @@ struct FprConfig {
   // Optional pre-built CSC matrix (avoids redundant build if caller already has
   // one)
   const CscMatrix *csc;
+
+  // --- Repair parameters (paper: Salvagnin et al. 2025, Section 5) ---
+  // Noise parameter p: probability of random walk move (paper default: 0.75).
+  // Greedy probability = 1 - repair_noise.
+  double repair_noise = 0.75;
+  // Iteration limit per repair call (paper default: 200).
+  HighsInt repair_iterations = 200;
+  // Track best total violation during walk and restore at end (paper: yes).
+  bool repair_track_best = true;
 };
 
 // Build a default FprConfig with degree*(1+|cost|) scores,

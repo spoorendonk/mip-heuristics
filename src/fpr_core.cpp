@@ -130,8 +130,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   std::vector<double> solution(ncol);
   std::vector<double> lhs_cache(nrow);
 
-  const HighsInt repair_budget = std::max(HighsInt{1000}, 20 * ncol);
-  constexpr double greedy_prob = 0.7;
+  const HighsInt repair_budget = cfg.repair_iterations;
+  const double greedy_prob = 1.0 - cfg.repair_noise;
 
   auto viol = [&](HighsInt i, double lhs) -> double {
     return row_violation(lhs, row_lo[i], row_hi[i]);
@@ -574,10 +574,32 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       }
     }
 
+    // Best-state tracking (paper Fig. 4, lines 23-26)
+    double best_total_viol = 0.0;
+    for (HighsInt i = 0; i < nrow; ++i) {
+      best_total_viol += viol(i, lhs_cache[i]);
+    }
+    std::vector<double> best_solution;
+    std::vector<double> best_lhs;
+    if (cfg.repair_track_best) {
+      best_solution = solution;
+      best_lhs = lhs_cache;
+    }
+
+    // Candidate struct for WalkSAT selection
+    struct Candidate {
+      HighsInt var;
+      double new_val;
+      double damage;  // violation increase only (ignoring improvements)
+    };
+    std::vector<Candidate> cand;
+
     for (HighsInt step = 0; step < repair_budget && !violated.empty(); ++step) {
       if (total_prop_work >= cfg.max_effort) {
         break;
       }
+
+      // Pick a violated constraint uniformly at random (Fig. 4, line 4)
       HighsInt pick = std::uniform_int_distribution<HighsInt>(
           0, static_cast<HighsInt>(violated.size()) - 1)(rng);
       HighsInt i = violated[pick];
@@ -588,20 +610,15 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       }
 
       double ci_lhs = lhs_cache[i];
+      double ci_viol = viol(i, ci_lhs);
 
-      double target_rhs;
-      if (ci_lhs > row_hi[i] + feastol) {
-        target_rhs = row_hi[i];
-      } else {
-        target_rhs = row_lo[i];
-      }
+      // Compute best shift for each variable in the constraint (Fig. 4, line 8)
+      // Filter: only candidates with s_j != 0 whose shift reduces this
+      // constraint's violation (Fig. 4, lines 9-11)
+      cand.clear();
+      double best_damage = std::numeric_limits<double>::infinity();
 
-      HighsInt best_var = -1;
-      double best_delta_viol = std::numeric_limits<double>::infinity();
-      double best_new_val = 0.0;
-
-      // Evaluate all candidate variables in violated row
-      total_prop_work += row_len; // scanning row entries
+      total_prop_work += row_len;
       for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
         HighsInt j = ARindex[k];
         double a = ARvalue[k];
@@ -609,9 +626,15 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
           continue;
         }
 
+        // ComputeShift: best shift to reduce violation of constraint i
+        double target_rhs;
+        if (ci_lhs > row_hi[i] + feastol) {
+          target_rhs = row_hi[i];
+        } else {
+          target_rhs = row_lo[i];
+        }
         double old_val = solution[j];
-        double target_delta = (target_rhs - ci_lhs) / a;
-        double new_val = old_val + target_delta;
+        double new_val = old_val + (target_rhs - ci_lhs) / a;
 
         if (is_int(j)) {
           if (ci_lhs > row_hi[i] + feastol) {
@@ -623,72 +646,79 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
           }
         }
         new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
+
+        // s_j == 0 check
         if (std::abs(new_val - old_val) < 1e-15) {
           continue;
         }
 
-        // Evaluate delta_viol by scanning column
+        // Check if shift reduces violation of the picked constraint
+        double delta_change = new_val - old_val;
+        double new_ci_lhs = ci_lhs + a * delta_change;
+        double new_ci_viol = viol(i, new_ci_lhs);
+        if (new_ci_viol >= ci_viol - feastol) {
+          continue;  // shift doesn't reduce this constraint's violation
+        }
+
+        // Evaluate damage: violation increase across OTHER constraints
+        // (paper: only count increases, ignore improvements)
         HighsInt col_deg = col_start[j + 1] - col_start[j];
         total_prop_work += col_deg;
-        double delta_change = new_val - old_val;
-        double delta_viol = 0.0;
+        double damage = 0.0;
         for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
           HighsInt i2 = col_row[p];
+          if (i2 == i) continue;  // skip the picked constraint itself
           double coeff = col_val[p];
           double old_lhs = lhs_cache[i2];
           double new_lhs = old_lhs + coeff * delta_change;
-          delta_viol += viol(i2, new_lhs) - viol(i2, old_lhs);
+          double dv = viol(i2, new_lhs) - viol(i2, old_lhs);
+          if (dv > 0) {
+            damage += dv;  // only count increases
+          }
         }
 
-        if (delta_viol < best_delta_viol) {
-          best_delta_viol = delta_viol;
-          best_var = j;
-          best_new_val = new_val;
-        }
+        best_damage = std::min(best_damage, damage);
+        cand.push_back({j, new_val, damage});
       }
 
-      if (best_var == -1) {
+      if (cand.empty()) {
         continue;
       }
 
-      HighsInt changed_var = -1;
-      double delta_change = 0.0;
-
-      double roll = std::uniform_real_distribution<double>(0.0, 1.0)(rng);
-      if (roll > greedy_prob && row_len > 1) {
-        HighsInt k = ARstart[i] + std::uniform_int_distribution<HighsInt>(
-                                      0, row_len - 1)(rng);
-        HighsInt j = ARindex[k];
-        double a = ARvalue[k];
-        if (std::abs(a) < 1e-15) {
-          continue;
-        }
-        double old_val = solution[j];
-        double new_val = old_val + (target_rhs - ci_lhs) / a;
-        if (is_int(j)) {
-          new_val = std::round(new_val);
-        }
-        new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
-        if (std::abs(new_val - old_val) > 1e-15) {
-          solution[j] = new_val;
-          changed_var = j;
-          delta_change = new_val - old_val;
-        }
+      // WalkSAT selection (paper Fig. 4, lines 17-21)
+      HighsInt chosen_var;
+      double chosen_val;
+      if (best_damage > feastol &&
+          std::uniform_real_distribution<double>(0.0, 1.0)(rng) <
+              cfg.repair_noise) {
+        // Random walk: pick random from all candidates
+        HighsInt idx = std::uniform_int_distribution<HighsInt>(
+            0, static_cast<HighsInt>(cand.size()) - 1)(rng);
+        chosen_var = cand[idx].var;
+        chosen_val = cand[idx].new_val;
       } else {
-        double old_val = solution[best_var];
-        solution[best_var] = best_new_val;
-        changed_var = best_var;
-        delta_change = best_new_val - old_val;
+        // Greedy: filter to candidates with damage == best_damage,
+        // pick random among them
+        std::vector<HighsInt> best_indices;
+        for (HighsInt ci = 0; ci < static_cast<HighsInt>(cand.size()); ++ci) {
+          if (cand[ci].damage <= best_damage + feastol) {
+            best_indices.push_back(ci);
+          }
+        }
+        HighsInt idx = best_indices[std::uniform_int_distribution<HighsInt>(
+            0, static_cast<HighsInt>(best_indices.size()) - 1)(rng)];
+        chosen_var = cand[idx].var;
+        chosen_val = cand[idx].new_val;
       }
 
-      if (changed_var == -1 || std::abs(delta_change) < 1e-15) {
-        continue;
-      }
+      double old_val = solution[chosen_var];
+      double delta_change = chosen_val - old_val;
+      solution[chosen_var] = chosen_val;
 
       // Apply move: update LHS cache for all rows of changed variable
-      total_prop_work += col_start[changed_var + 1] - col_start[changed_var];
-      for (HighsInt p = col_start[changed_var]; p < col_start[changed_var + 1];
-           ++p) {
+      total_prop_work += col_start[chosen_var + 1] - col_start[chosen_var];
+      for (HighsInt p = col_start[chosen_var];
+           p < col_start[chosen_var + 1]; ++p) {
         HighsInt i2 = col_row[p];
         lhs_cache[i2] += col_val[p] * delta_change;
         bool was = violated_pos[i2] != -1;
@@ -697,6 +727,35 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
           remove_violated(i2);
         } else if (!was && now) {
           add_violated(i2);
+        }
+      }
+
+      // Update best-state tracking (paper Fig. 4, lines 23-26)
+      if (cfg.repair_track_best) {
+        double curr_total_viol = 0.0;
+        for (HighsInt ii = 0; ii < nrow; ++ii) {
+          curr_total_viol += viol(ii, lhs_cache[ii]);
+        }
+        if (curr_total_viol < best_total_viol) {
+          best_total_viol = curr_total_viol;
+          best_solution = solution;
+          best_lhs = lhs_cache;
+        }
+      }
+    }
+
+    // Restore best state if tracking enabled (paper Fig. 4, line 27)
+    if (cfg.repair_track_best && !violated.empty()) {
+      solution = best_solution;
+      lhs_cache = best_lhs;
+      // Rebuild violated set from best state
+      for (auto vi : violated) {
+        violated_pos[vi] = -1;
+      }
+      violated.clear();
+      for (HighsInt i = 0; i < nrow; ++i) {
+        if (is_violated(i, lhs_cache[i])) {
+          add_violated(i);
         }
       }
     }
