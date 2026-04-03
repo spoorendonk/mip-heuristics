@@ -319,12 +319,17 @@ struct WorkerCtx {
     }
   }
 
-  void rebuild_state() {
-    was_infeasible = true;
-    feasible_recheck_counter = 0;
-    violated.clear();
-    satisfied.clear();
-    effort += ARindex.size(); // full O(nnz) LHS recomputation
+  // Recompute all LHS from scratch and check feasibility.
+  // update_sets: rebuild violated/satisfied partition from scratch.
+  // early_exit:  return false on first violation without full scan.
+  // Always recomputes lhs[] and charges effort.
+  bool full_recheck(bool update_sets, bool early_exit) {
+    effort += ARindex.size();
+    if (update_sets) {
+      violated.clear();
+      satisfied.clear();
+    }
+    bool feasible = true;
     for (HighsInt i = 0; i < nrow; ++i) {
       double l = 0.0;
       for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
@@ -332,11 +337,22 @@ struct WorkerCtx {
       }
       lhs[i] = l;
       if (compute_violation(i, l) > kViolTol) {
-        violated.add(i);
-      } else if (!is_equality(i)) {
+        feasible = false;
+        if (early_exit) break;
+        if (update_sets) {
+          violated.add(i);
+        }
+      } else if (update_sets && !is_equality(i)) {
         satisfied.add(i);
       }
     }
+    return feasible;
+  }
+
+  void rebuild_state() {
+    was_infeasible = true;
+    feasible_recheck_counter = 0;
+    full_recheck(/*update_sets=*/true, /*early_exit=*/false);
     lift.mark_all_dirty();
     current_obj = compute_objective(model, solution);
   }
@@ -1056,19 +1072,8 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
 
       bool truly_feasible = true;
       if (need_full_recheck) {
-        ctx.effort += ctx.ARindex.size();
-        for (HighsInt i = 0; i < nrow; ++i) {
-          double l = 0.0;
-          for (HighsInt k = ctx.ARstart[i]; k < ctx.ARstart[i + 1]; ++k) {
-            l += ctx.ARvalue[k] * ctx.solution[ctx.ARindex[k]];
-          }
-          ctx.lhs[i] = l;
-          if (ctx.is_violated(i, l)) {
-            truly_feasible = false;
-            ctx.violated.add(i);
-            ctx.satisfied.remove(i);
-          }
-        }
+        truly_feasible =
+            ctx.full_recheck(/*update_sets=*/true, /*early_exit=*/false);
       }
       // When !need_full_recheck, trust incremental state: apply_move's
       // update_violated() already maintains the violated set for every
@@ -1092,20 +1097,7 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
       if (improved) {
         // Full recheck before recording best (guard against FP drift)
         if (!need_full_recheck) {
-          ctx.effort += ctx.ARindex.size();
-          bool still_ok = true;
-          for (HighsInt i = 0; i < nrow; ++i) {
-            double l = 0.0;
-            for (HighsInt k = ctx.ARstart[i]; k < ctx.ARstart[i + 1]; ++k) {
-              l += ctx.ARvalue[k] * ctx.solution[ctx.ARindex[k]];
-            }
-            ctx.lhs[i] = l;
-            if (ctx.is_violated(i, l)) {
-              still_ok = false;
-              break;
-            }
-          }
-          if (!still_ok) {
+          if (!ctx.full_recheck(/*update_sets=*/false, /*early_exit=*/true)) {
             ctx.rebuild_state();
             continue;
           }
