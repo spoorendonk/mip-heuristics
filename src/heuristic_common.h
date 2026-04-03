@@ -77,6 +77,11 @@ inline double row_violation(double lhs, double lo, double hi) {
   return std::max(0.0, lhs - hi) + std::max(0.0, lo - lhs);
 }
 
+// Whether a row is violated beyond the given feasibility tolerance.
+inline bool is_row_violated(double lhs, double lo, double hi, double feastol) {
+  return lhs > hi + feastol || lhs < lo - feastol;
+}
+
 // Clamp value to [lb, ub], rounding if integer.
 inline double clamp_round(double val, double lb, double ub, bool integer) {
   if (integer) {

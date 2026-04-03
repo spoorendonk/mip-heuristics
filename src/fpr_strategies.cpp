@@ -228,29 +228,35 @@ std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver,
     HighsInt start = partition_start[c];
     HighsInt end = partition_start[c + 1];
 
-    // Find the variable with the most positive literal value in LP
+    // Paper Fig. 3: compute sum of LP literal values for tightness check
+    double sum = 0.0;
     HighsInt best_col = -1;
     double best_val = -1.0;
 
     for (HighsInt k = start; k < end; ++k) {
       HighsInt col = static_cast<HighsInt>(clq_vars[k].col);
-      if (col_ub[col] - col_lb[col] < 1e-6) continue;
-
       double v = clq_vars[k].val ? lp_ref[col] : 1.0 - lp_ref[col];
-      if (v > best_val && col_ub[col] > col_lb[col]) {
+      sum += v;
+      if (col_ub[col] - col_lb[col] < 1e-6) continue;
+      if (v > best_val) {
         best_val = v;
         best_col = col;
       }
     }
 
-    // Add best first, then remaining in clique order
-    if (best_col >= 0) {
+    // Paper Fig. 3, line 24: only reorder if clique is LP-tight (sum ≈ 1)
+    if (best_col >= 0 && sum >= 1.0 - 1e-6) {
       b.bin.push_back(best_col);
-    }
-    for (HighsInt k = start; k < end; ++k) {
-      HighsInt col = static_cast<HighsInt>(clq_vars[k].col);
-      if (col != best_col) {
-        b.bin.push_back(col);
+      for (HighsInt k = start; k < end; ++k) {
+        HighsInt col = static_cast<HighsInt>(clq_vars[k].col);
+        if (col != best_col) {
+          b.bin.push_back(col);
+        }
+      }
+    } else {
+      // Not tight — keep original clique order
+      for (HighsInt k = start; k < end; ++k) {
+        b.bin.push_back(static_cast<HighsInt>(clq_vars[k].col));
       }
     }
   }
@@ -299,7 +305,7 @@ double val_random(double lb, double ub, bool is_int, std::mt19937& rng) {
 
 double val_goodobj(double lb, double ub, bool minimize, double cost) {
   if (std::abs(cost) < 1e-15) {
-    return (lb + ub) * 0.5;  // caller rounds if integer
+    return lb;  // paper Section 4.2: "always pick the lower bound"
   }
   if (minimize) {
     return (cost > 0) ? lb : ub;
@@ -309,7 +315,7 @@ double val_goodobj(double lb, double ub, bool minimize, double cost) {
 
 double val_badobj(double lb, double ub, bool minimize, double cost) {
   if (std::abs(cost) < 1e-15) {
-    return (lb + ub) * 0.5;  // caller rounds if integer
+    return lb;  // paper Section 4.2: "always pick the lower bound"
   }
   // Opposite of goodobj
   if (minimize) {

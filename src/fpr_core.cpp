@@ -147,23 +147,9 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
 
   const HighsInt repair_budget = cfg.repair_iterations;
 
-  auto viol = [&](HighsInt i, double lhs) -> double {
-    return row_violation(lhs, row_lo[i], row_hi[i]);
-  };
-
   auto is_violated = [&](HighsInt i, double lhs) -> bool {
-    if (lhs > row_hi[i] + feastol) {
-      return true;
-    }
-    if (lhs < row_lo[i] - feastol) {
-      return true;
-    }
-    return false;
+    return is_row_violated(lhs, row_lo[i], row_hi[i], feastol);
   };
-
-  std::vector<HighsInt> violated;
-  std::vector<HighsInt> violated_pos(nrow, -1);
-  violated.reserve(nrow);
 
   // --- Create PropEngine for Phase 2 ---
   PropEngine E(ncol, nrow, ARstart.data(), ARindex.data(), ARvalue.data(),
@@ -452,117 +438,13 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
         rng, rs_effort);
     total_prop_work += rs_effort;
   } else if (!feasible && mode_repairs(cfg.mode)) {
-    for (auto i : violated) {
-      violated_pos[i] = -1;
-    }
-    violated.clear();
-
-    auto add_violated = [&](HighsInt i) {
-      if (violated_pos[i] != -1) {
-        return;
-      }
-      violated_pos[i] = static_cast<HighsInt>(violated.size());
-      violated.push_back(i);
-    };
-    auto remove_violated = [&](HighsInt i) {
-      HighsInt p = violated_pos[i];
-      if (p == -1) {
-        return;
-      }
-      HighsInt last = violated.back();
-      violated[p] = last;
-      violated_pos[last] = p;
-      violated.pop_back();
-      violated_pos[i] = -1;
-    };
-
-    for (HighsInt i = 0; i < nrow; ++i) {
-      if (is_violated(i, lhs_cache[i])) {
-        add_violated(i);
-      }
-    }
-
-    // Best-state tracking (paper Fig. 4, lines 23-26)
-    double best_total_viol = 0.0;
-    for (HighsInt i = 0; i < nrow; ++i) {
-      best_total_viol += viol(i, lhs_cache[i]);
-    }
-    std::vector<double> best_solution;
-    std::vector<double> best_lhs;
-    if (cfg.repair_track_best) {
-      best_solution = solution;
-      best_lhs = lhs_cache;
-    }
-
-    for (HighsInt step = 0; step < repair_budget && !violated.empty(); ++step) {
-      if (total_prop_work >= cfg.max_effort) {
-        break;
-      }
-
-      // Pick a violated constraint uniformly at random (Fig. 4, line 4)
-      HighsInt pick = std::uniform_int_distribution<HighsInt>(
-          0, static_cast<HighsInt>(violated.size()) - 1)(rng);
-      HighsInt i = violated[pick];
-
-      // WalkSAT move selection (paper Fig. 4)
-      auto move = walksat_select_move(i, solution.data(), lhs_cache.data(),
-                                      col_lb.data(), col_ub.data(), E,
-                                      cfg.repair_noise, rng, total_prop_work);
-      if (move.var < 0) continue;
-
-      HighsInt chosen_var = move.var;
-      double chosen_val = move.val;
-
-      double old_val = solution[chosen_var];
-      double delta_change = chosen_val - old_val;
-      solution[chosen_var] = chosen_val;
-
-      // Apply move: update LHS cache for all rows of changed variable
-      total_prop_work += col_start[chosen_var + 1] - col_start[chosen_var];
-      for (HighsInt p = col_start[chosen_var];
-           p < col_start[chosen_var + 1]; ++p) {
-        HighsInt i2 = col_row[p];
-        lhs_cache[i2] += col_val[p] * delta_change;
-        bool was = violated_pos[i2] != -1;
-        bool now = is_violated(i2, lhs_cache[i2]);
-        if (was && !now) {
-          remove_violated(i2);
-        } else if (!was && now) {
-          add_violated(i2);
-        }
-      }
-
-      // Update best-state tracking (paper Fig. 4, lines 23-26)
-      if (cfg.repair_track_best) {
-        double curr_total_viol = 0.0;
-        for (HighsInt ii = 0; ii < nrow; ++ii) {
-          curr_total_viol += viol(ii, lhs_cache[ii]);
-        }
-        if (curr_total_viol < best_total_viol) {
-          best_total_viol = curr_total_viol;
-          best_solution = solution;
-          best_lhs = lhs_cache;
-        }
-      }
-    }
-
-    // Restore best state if tracking enabled (paper Fig. 4, line 27)
-    if (cfg.repair_track_best && !violated.empty()) {
-      solution = best_solution;
-      lhs_cache = best_lhs;
-      // Rebuild violated set from best state
-      for (auto vi : violated) {
-        violated_pos[vi] = -1;
-      }
-      violated.clear();
-      for (HighsInt i = 0; i < nrow; ++i) {
-        if (is_violated(i, lhs_cache[i])) {
-          add_violated(i);
-        }
-      }
-    }
-
-    feasible = violated.empty();
+    size_t walk_effort = 0;
+    feasible = walksat_repair(
+        E, solution, lhs_cache, col_lb.data(), col_ub.data(), repair_budget,
+        cfg.repair_noise, cfg.repair_track_best,
+        cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0,
+        rng, walk_effort);
+    total_prop_work += walk_effort;
   }
 
   if (!feasible) {
@@ -576,45 +458,9 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     }
   }
 
-  // Greedy 1-opt: try shifting each integer variable toward better objective
-  // (paper Section 6: "before adding it to the solution pool, we apply a
-  //  simple greedy 1-opt step to try to improve its objective")
-  for (HighsInt j = 0; j < ncol; ++j) {
-    if (!is_int(j)) continue;
-    if (std::abs(col_cost[j]) < 1e-15) continue;
-
-    // Determine improvement direction
-    double direction;
-    if (minimize) {
-      direction = (col_cost[j] > 0) ? -1.0 : 1.0;
-    } else {
-      direction = (col_cost[j] > 0) ? 1.0 : -1.0;
-    }
-    double new_val = solution[j] + direction;
-    new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
-    if (std::abs(new_val - solution[j]) < 1e-15) continue;
-
-    // Check feasibility of the shift across all affected constraints
-    double delta = new_val - solution[j];
-    bool shift_feasible = true;
-    total_prop_work += col_start[j + 1] - col_start[j];
-    for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
-      HighsInt row = col_row[p];
-      double new_lhs = lhs_cache[row] + col_val[p] * delta;
-      if (is_violated(row, new_lhs)) {
-        shift_feasible = false;
-        break;
-      }
-    }
-
-    if (shift_feasible) {
-      // Apply the improving shift
-      for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
-        lhs_cache[col_row[p]] += col_val[p] * delta;
-      }
-      solution[j] = new_val;
-    }
-  }
+  // Greedy 1-opt (paper Section 6)
+  greedy_1opt(E, solution, lhs_cache, col_cost.data(), minimize,
+              total_prop_work);
 
   double obj = model->offset_;
   for (HighsInt j = 0; j < ncol; ++j) {

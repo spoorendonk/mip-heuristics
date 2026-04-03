@@ -160,17 +160,35 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
   std::vector<HighsInt> violated_pos(nrow, -1);
   violated.reserve(nrow);
 
+  auto add_violated = [&](HighsInt i) {
+    if (violated_pos[i] != -1) return;
+    violated_pos[i] = static_cast<HighsInt>(violated.size());
+    violated.push_back(i);
+  };
+  auto remove_violated = [&](HighsInt i) {
+    HighsInt pos = violated_pos[i];
+    if (pos == -1) return;
+    HighsInt last = violated.back();
+    violated[pos] = last;
+    violated_pos[last] = pos;
+    violated.pop_back();
+    violated_pos[i] = -1;
+  };
   auto rebuild_violated = [&]() {
     for (auto vi : violated) violated_pos[vi] = -1;
     violated.clear();
     for (HighsInt i = 0; i < nrow; ++i) {
       if (is_violated(i, lhs_cache[i])) {
-        violated_pos[i] = static_cast<HighsInt>(violated.size());
-        violated.push_back(i);
+        add_violated(i);
       }
     }
   };
 
+  // --- Initialize total violation and violated set ---
+  double total_viol = 0.0;
+  for (HighsInt i = 0; i < nrow; ++i) {
+    total_viol += viol(i, lhs_cache[i]);
+  }
   rebuild_violated();
   if (violated.empty()) {
     effort_out = 0;
@@ -181,6 +199,8 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
   std::vector<UndoEntry> sol_undo;
   std::vector<UndoEntry> lhs_undo;
 
+  // apply_move updates solution, lhs_cache, total_viol, and violated set
+  // incrementally (O(column_degree) instead of O(nrow)).
   auto apply_move = [&](HighsInt var, double new_val, size_t& effort) {
     double old_val = solution[var];
     sol_undo.push_back({var, old_val});
@@ -189,8 +209,17 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
     effort += csc_start[var + 1] - csc_start[var];
     for (HighsInt p = csc_start[var]; p < csc_start[var + 1]; ++p) {
       HighsInt row = csc_row[p];
+      double old_v = row_violation(lhs_cache[row], row_lo[row], row_hi[row]);
       lhs_undo.push_back({row, lhs_cache[row]});
       lhs_cache[row] += csc_val[p] * delta;
+      double new_v = row_violation(lhs_cache[row], row_lo[row], row_hi[row]);
+      total_viol += new_v - old_v;
+
+      bool was = violated_pos[row] != -1;
+      bool now = is_row_violated(lhs_cache[row], row_lo[row], row_hi[row],
+                                 feastol);
+      if (was && !now) remove_violated(row);
+      else if (!was && now) add_violated(row);
     }
   };
 
@@ -206,10 +235,6 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
     }
     lhs_undo.resize(l_mark);
   };
-
-  // --- Best-state tracking ---
-  double total_viol = 0.0;
-  for (HighsInt i = 0; i < nrow; ++i) total_viol += viol(i, lhs_cache[i]);
   double best_viol = total_viol;
   std::vector<double> best_solution;
   std::vector<double> best_lhs;
@@ -226,6 +251,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
   size_t total_effort = 0;
   size_t e_effort_baseline = E.effort();
   size_t r_effort_baseline = R.effort();
+  WalkSatScratch scratch;
   HighsInt nodes_without_progress = 0;
   constexpr HighsInt kProgressThreshold = 10;
 
@@ -249,6 +275,8 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
     backtrack_sol_lhs(node.sol_undo_mark, node.lhs_undo_mark);
     E.backtrack_to(node.e_vs_mark, node.e_sol_mark);
     R.backtrack_to(node.r_vs_mark, node.r_sol_mark);
+    total_viol = node.violation;
+    rebuild_violated();
 
     // Apply branch to R, propagate (paper lines 8-10)
     if (!apply_branch_to_r(R, node)) {
@@ -261,12 +289,11 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
     }
 
     // Apply branch to solution/lhs (our extension for complete-assignment)
+    // apply_move updates total_viol and violated set incrementally.
     if (node.var >= 0) {
       if (node.is_fix) {
-        // Binary: set solution to the fixed value
         apply_move(node.var, node.val, total_effort);
       } else {
-        // Non-binary: clamp solution to the new domain after tightening
         double cur = solution[node.var];
         double new_lb = E.var(node.var).lb;
         double new_ub = E.var(node.var).ub;
@@ -275,12 +302,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
           apply_move(node.var, clamped, total_effort);
         }
       }
-      rebuild_violated();
     }
-
-    // Compute violation (paper lines 14-17)
-    total_viol = 0.0;
-    for (HighsInt i = 0; i < nrow; ++i) total_viol += viol(i, lhs_cache[i]);
 
     if (violated.empty()) {
       // Feasible! (paper lines 15-16)
@@ -314,7 +336,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution,
 
     auto move = walksat_select_move(row, solution.data(), lhs_cache.data(),
                                     col_lb, col_ub, E, repair_noise, rng,
-                                    total_effort);
+                                    total_effort, scratch);
     if (move.var < 0) continue;  // no valid move (paper lines 21-22)
 
     // MoveToDisjunction (paper lines 24-26)

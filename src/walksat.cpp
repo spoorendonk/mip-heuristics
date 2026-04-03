@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <limits>
+#include <random>
 #include <vector>
 
 #include "heuristic_common.h"
@@ -10,8 +11,8 @@
 WalkSatMove walksat_select_move(HighsInt row, const double* solution,
                                 const double* lhs_cache, const double* col_lb,
                                 const double* col_ub, const PropEngine& data,
-                                double noise, std::mt19937& rng,
-                                size_t& effort) {
+                                double noise, std::mt19937& rng, size_t& effort,
+                                WalkSatScratch& scratch) {
   const HighsInt* ar_start = data.ar_start();
   const HighsInt* ar_index = data.ar_index();
   const double* ar_value = data.ar_value();
@@ -32,12 +33,8 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution,
   double ci_lhs = lhs_cache[row];
   double ci_viol = viol(row, ci_lhs);
 
-  struct Candidate {
-    HighsInt var;
-    double new_val;
-    double damage;
-  };
-  std::vector<Candidate> cand;
+  auto& cand = scratch.cand;
+  cand.clear();
   double best_damage = std::numeric_limits<double>::infinity();
 
   effort += row_len;
@@ -95,13 +92,12 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution,
   // WalkSAT selection (paper Fig. 4, lines 17-21)
   if (best_damage > feastol &&
       std::uniform_real_distribution<double>(0.0, 1.0)(rng) < noise) {
-    // Random walk
     HighsInt idx = std::uniform_int_distribution<HighsInt>(
         0, static_cast<HighsInt>(cand.size()) - 1)(rng);
     return {cand[idx].var, cand[idx].new_val};
   }
-  // Greedy: pick random among best-damage candidates
-  std::vector<HighsInt> best_indices;
+  auto& best_indices = scratch.best_indices;
+  best_indices.clear();
   for (HighsInt ci = 0; ci < static_cast<HighsInt>(cand.size()); ++ci) {
     if (cand[ci].damage <= best_damage + feastol) {
       best_indices.push_back(ci);
@@ -110,4 +106,172 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution,
   HighsInt idx = best_indices[std::uniform_int_distribution<HighsInt>(
       0, static_cast<HighsInt>(best_indices.size()) - 1)(rng)];
   return {cand[idx].var, cand[idx].new_val};
+}
+
+// ---------------------------------------------------------------------------
+// WalkSAT repair walk (paper Fig. 4)
+// ---------------------------------------------------------------------------
+
+bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
+                    std::vector<double>& lhs_cache, const double* col_lb,
+                    const double* col_ub, HighsInt max_iterations, double noise,
+                    bool track_best, size_t max_effort, std::mt19937& rng,
+                    size_t& effort) {
+  const HighsInt nrow = data.nrow();
+  const double feastol = data.feastol();
+  const double* row_lo = data.row_lo();
+  const double* row_hi = data.row_hi();
+  const HighsInt* csc_start = data.csc_start();
+  const HighsInt* csc_row = data.csc_row();
+  const double* csc_val = data.csc_val();
+
+  // Violated set
+  std::vector<HighsInt> violated;
+  std::vector<HighsInt> violated_pos(nrow, -1);
+  violated.reserve(nrow);
+
+  auto add_violated = [&](HighsInt i) {
+    if (violated_pos[i] != -1) return;
+    violated_pos[i] = static_cast<HighsInt>(violated.size());
+    violated.push_back(i);
+  };
+  auto remove_violated = [&](HighsInt i) {
+    HighsInt pos = violated_pos[i];
+    if (pos == -1) return;
+    HighsInt last = violated.back();
+    violated[pos] = last;
+    violated_pos[last] = pos;
+    violated.pop_back();
+    violated_pos[i] = -1;
+  };
+
+  // Initialize violated set and total violation
+  double total_viol = 0.0;
+  for (HighsInt i = 0; i < nrow; ++i) {
+    double v = row_violation(lhs_cache[i], row_lo[i], row_hi[i]);
+    total_viol += v;
+    if (is_row_violated(lhs_cache[i], row_lo[i], row_hi[i], feastol)) {
+      add_violated(i);
+    }
+  }
+
+  if (violated.empty()) return true;
+
+  // Best-state tracking
+  double best_viol = total_viol;
+  std::vector<double> best_solution;
+  std::vector<double> best_lhs;
+  if (track_best) {
+    best_solution = solution;
+    best_lhs = lhs_cache;
+  }
+
+  WalkSatScratch scratch;
+
+  for (HighsInt step = 0; step < max_iterations && !violated.empty(); ++step) {
+    if (effort >= max_effort) break;
+
+    HighsInt pick = std::uniform_int_distribution<HighsInt>(
+        0, static_cast<HighsInt>(violated.size()) - 1)(rng);
+    HighsInt row = violated[pick];
+
+    auto move = walksat_select_move(row, solution.data(), lhs_cache.data(),
+                                    col_lb, col_ub, data, noise, rng, effort,
+                                    scratch);
+    if (move.var < 0) continue;
+
+    double old_val = solution[move.var];
+    double delta = move.val - old_val;
+    solution[move.var] = move.val;
+
+    // Apply move: update lhs_cache, violated set, and total_viol incrementally
+    effort += csc_start[move.var + 1] - csc_start[move.var];
+    for (HighsInt p = csc_start[move.var]; p < csc_start[move.var + 1]; ++p) {
+      HighsInt i2 = csc_row[p];
+      double old_v = row_violation(lhs_cache[i2], row_lo[i2], row_hi[i2]);
+      lhs_cache[i2] += csc_val[p] * delta;
+      double new_v = row_violation(lhs_cache[i2], row_lo[i2], row_hi[i2]);
+      total_viol += new_v - old_v;
+
+      bool was = violated_pos[i2] != -1;
+      bool now = is_row_violated(lhs_cache[i2], row_lo[i2], row_hi[i2], feastol);
+      if (was && !now) remove_violated(i2);
+      else if (!was && now) add_violated(i2);
+    }
+
+    // Update best-state tracking (paper Fig. 4, lines 23-26)
+    if (track_best && total_viol < best_viol) {
+      best_viol = total_viol;
+      best_solution = solution;
+      best_lhs = lhs_cache;
+    }
+  }
+
+  // Restore best state if tracking enabled (paper Fig. 4, line 27)
+  if (track_best && !violated.empty()) {
+    solution = best_solution;
+    lhs_cache = best_lhs;
+    // Rebuild violated set from best state
+    for (auto vi : violated) violated_pos[vi] = -1;
+    violated.clear();
+    for (HighsInt i = 0; i < nrow; ++i) {
+      if (is_row_violated(lhs_cache[i], row_lo[i], row_hi[i], feastol)) {
+        add_violated(i);
+      }
+    }
+  }
+
+  return violated.empty();
+}
+
+// ---------------------------------------------------------------------------
+// Greedy 1-opt improvement (paper Section 6)
+// ---------------------------------------------------------------------------
+
+void greedy_1opt(const PropEngine& data, std::vector<double>& solution,
+                 std::vector<double>& lhs_cache, const double* col_cost,
+                 bool minimize, size_t& effort) {
+  const HighsInt ncol = data.ncol();
+  const HighsInt* csc_start = data.csc_start();
+  const HighsInt* csc_row = data.csc_row();
+  const double* csc_val = data.csc_val();
+  const double* col_lb = data.col_lb();
+  const double* col_ub = data.col_ub();
+  const double* row_lo = data.row_lo();
+  const double* row_hi = data.row_hi();
+  const double feastol = data.feastol();
+
+  for (HighsInt j = 0; j < ncol; ++j) {
+    if (!data.is_int(j)) continue;
+    if (std::abs(col_cost[j]) < 1e-15) continue;
+
+    double direction;
+    if (minimize) {
+      direction = (col_cost[j] > 0) ? -1.0 : 1.0;
+    } else {
+      direction = (col_cost[j] > 0) ? 1.0 : -1.0;
+    }
+    double new_val = solution[j] + direction;
+    new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
+    if (std::abs(new_val - solution[j]) < 1e-15) continue;
+
+    double delta = new_val - solution[j];
+    bool shift_feasible = true;
+    effort += csc_start[j + 1] - csc_start[j];
+    for (HighsInt p = csc_start[j]; p < csc_start[j + 1]; ++p) {
+      HighsInt row = csc_row[p];
+      double new_lhs = lhs_cache[row] + csc_val[p] * delta;
+      if (is_row_violated(new_lhs, row_lo[row], row_hi[row], feastol)) {
+        shift_feasible = false;
+        break;
+      }
+    }
+
+    if (shift_feasible) {
+      for (HighsInt p = csc_start[j]; p < csc_start[j + 1]; ++p) {
+        lhs_cache[csc_row[p]] += csc_val[p] * delta;
+      }
+      solution[j] = new_val;
+    }
+  }
 }

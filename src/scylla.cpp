@@ -318,7 +318,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
 
   // Submit best solutions to solver
   for (auto &entry : pool.sorted_entries()) {
-    mipdata->trySolution(entry.solution, kSolutionSourceScylla);
+    mipdata->trySolution(entry.solution, kSolutionSourceScyllaFPR);
   }
 }
 
