@@ -301,16 +301,19 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   };
 
   auto propagate = [&](HighsInt fixed_var) -> bool {
-    prop_worklist.clear();
-    // Seed only the rows containing the just-fixed variable (AC-3).
-    // Same fixpoint as seeding all rows, since unaffected rows cannot tighten.
-    for (HighsInt p = col_start[fixed_var]; p < col_start[fixed_var + 1]; ++p) {
-      HighsInt i = col_row[p];
-      if (!prop_in_wl[i]) {
-        prop_in_wl[i] = 1;
-        prop_worklist.push_back(i);
+    if (fixed_var >= 0) {
+      // Seed only the rows containing the just-fixed variable (AC-3).
+      prop_worklist.clear();
+      for (HighsInt p = col_start[fixed_var]; p < col_start[fixed_var + 1];
+           ++p) {
+        HighsInt i = col_row[p];
+        if (!prop_in_wl[i]) {
+          prop_in_wl[i] = 1;
+          prop_worklist.push_back(i);
+        }
       }
     }
+    // When fixed_var == -1, assume prop_worklist is already seeded by caller.
 
     auto enqueue_neighbors = [&](HighsInt j) {
       for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
@@ -454,6 +457,38 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     total_prop_work += prop_work;
     return true;
   };
+
+  // Paper Section 6: "fix all trivially-roundable variables (if any) to the
+  // corresponding bound" before running strategies.
+  if (!mipdata->uplocks.empty()) {
+    const auto &uplocks = mipdata->uplocks;
+    const auto &downlocks = mipdata->downlocks;
+    for (HighsInt j = 0; j < ncol; ++j) {
+      if (!is_int(j) || vs[j].fixed) continue;
+      if (uplocks[j] == 0 && downlocks[j] != 0) {
+        fix_variable(j, vs[j].ub);
+      } else if (downlocks[j] == 0 && uplocks[j] != 0) {
+        fix_variable(j, vs[j].lb);
+      }
+    }
+  }
+
+  // Paper Section 6: "perform a first round of constraint propagation, until
+  // a fixpoint is reached" before starting the DFS.
+  for (HighsInt j = 0; j < ncol; ++j) {
+    if (vs[j].fixed) {
+      for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
+        HighsInt row = col_row[p];
+        if (!prop_in_wl[row]) {
+          prop_in_wl[row] = 1;
+          prop_worklist.push_back(row);
+        }
+      }
+    }
+  }
+  if (!prop_worklist.empty()) {
+    propagate(-1);  // -1 = worklist already seeded
+  }
 
   // --- Phase 2: DFS Fix & Propagate (paper Fig. 1) ---
 

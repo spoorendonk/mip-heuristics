@@ -26,7 +26,12 @@ struct NamedConfig {
 // Paper Section 6.3, Class 2 — zero-obj LP strategies
 constexpr NamedConfig kClass2Configs[] = {
     {kStratZerocore, FrameworkMode::kDfs},
+    {kStratZerocore, FrameworkMode::kDive},
     {kStratZerocore, FrameworkMode::kDiveprop},
+    {kStratCliques, FrameworkMode::kDfs},  // paper: "if predominant clique
+                                            // structure"; run unconditionally,
+                                            // degrades gracefully on non-clique
+                                            // models
 };
 constexpr int kNumClass2 =
     static_cast<int>(sizeof(kClass2Configs) / sizeof(kClass2Configs[0]));
