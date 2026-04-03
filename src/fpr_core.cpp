@@ -105,17 +105,19 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
 
   auto is_int = [&](HighsInt j) { return is_integer(integrality, j); };
 
+  // Paper: artificial bounding box [-100000, +100000] for infinite bounds
   auto finite_clamp = [](double val, double lo, double hi) -> double {
+    constexpr double kBox = 1e5;
     if (lo > -kHighsInf && hi < kHighsInf) {
       return std::max(lo, std::min(hi, val));
     }
     if (lo > -kHighsInf) {
-      return std::max(lo, std::min(lo + 1e6, val));
+      return std::max(lo, std::min(lo + kBox, val));
     }
     if (hi < kHighsInf) {
-      return std::min(hi, std::max(hi - 1e6, val));
+      return std::min(hi, std::max(hi - kBox, val));
     }
-    return std::max(-1e6, std::min(1e6, val));
+    return std::max(-kBox, std::min(kBox, val));
   };
 
   // Phase 1: Rank variables using caller-provided scores
@@ -771,6 +773,46 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   for (HighsInt i = 0; i < nrow; ++i) {
     if (is_violated(i, lhs_cache[i])) {
       return HeuristicResult::failed(total_prop_work);
+    }
+  }
+
+  // Greedy 1-opt: try shifting each integer variable toward better objective
+  // (paper Section 6: "before adding it to the solution pool, we apply a
+  //  simple greedy 1-opt step to try to improve its objective")
+  for (HighsInt j = 0; j < ncol; ++j) {
+    if (!is_int(j)) continue;
+    if (std::abs(col_cost[j]) < 1e-15) continue;
+
+    // Determine improvement direction
+    double direction;
+    if (minimize) {
+      direction = (col_cost[j] > 0) ? -1.0 : 1.0;
+    } else {
+      direction = (col_cost[j] > 0) ? 1.0 : -1.0;
+    }
+    double new_val = solution[j] + direction;
+    new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
+    if (std::abs(new_val - solution[j]) < 1e-15) continue;
+
+    // Check feasibility of the shift across all affected constraints
+    double delta = new_val - solution[j];
+    bool shift_feasible = true;
+    total_prop_work += col_start[j + 1] - col_start[j];
+    for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
+      HighsInt row = col_row[p];
+      double new_lhs = lhs_cache[row] + col_val[p] * delta;
+      if (is_violated(row, new_lhs)) {
+        shift_feasible = false;
+        break;
+      }
+    }
+
+    if (shift_feasible) {
+      // Apply the improving shift
+      for (HighsInt p = col_start[j]; p < col_start[j + 1]; ++p) {
+        lhs_cache[col_row[p]] += col_val[p] * delta;
+      }
+      solution[j] = new_val;
     }
   }
 
