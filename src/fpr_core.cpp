@@ -127,11 +127,6 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     return cfg.scores[a] > cfg.scores[b];
   });
 
-  struct VarState {
-    double lb, ub, val;
-    bool fixed;
-  };
-
   std::vector<double> solution(ncol);
   std::vector<double> lhs_cache(nrow);
 

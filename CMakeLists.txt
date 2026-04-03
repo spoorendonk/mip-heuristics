@@ -10,6 +10,7 @@ include(cmake/FetchHiGHS.cmake)
 add_library(mip_heuristics OBJECT
     src/fpr.cpp
     src/fpr_core.cpp
+    src/fpr_strategies.cpp
     src/local_mip.cpp
     src/thompson_sampler.cpp
     src/solution_pool.cpp
