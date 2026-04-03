@@ -464,75 +464,70 @@ double choose_value(HighsInt j, double lb, double ub, bool is_int,
 // LP reference solutions
 // ===================================================================
 
-std::vector<double> compute_analytic_center(const HighsMipSolver& mipsolver,
-                                            bool use_objective) {
+namespace {
+
+// Solve an LP relaxation of the presolved MIP model.
+// use_ipm: barrier solver (analytic center); otherwise simplex (vertex).
+// run_crossover: false disables crossover (for analytic center).
+// use_objective: true uses model cost; false uses zero objective.
+std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver,
+                                        bool use_ipm, bool run_crossover,
+                                        bool use_objective) {
   const auto* model = mipsolver.model_;
+  const auto& mipdata = *mipsolver.mipdata_;
   const HighsInt ncol = model->num_col_;
-  const HighsInt nrow = model->num_row_;
+
+  HighsLp lp;
+  lp.num_col_ = ncol;
+  lp.num_row_ = model->num_row_;
+  lp.col_lower_ = model->col_lower_;
+  lp.col_upper_ = model->col_upper_;
+  lp.row_lower_ = model->row_lower_;
+  lp.row_upper_ = model->row_upper_;
+  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
+  lp.a_matrix_.num_col_ = ncol;
+  lp.a_matrix_.num_row_ = model->num_row_;
+  lp.a_matrix_.start_ = mipdata.ARstart_;
+  lp.a_matrix_.index_ = mipdata.ARindex_;
+  lp.a_matrix_.value_ = mipdata.ARvalue_;
+
+  if (use_objective) {
+    lp.col_cost_ = model->col_cost_;
+    lp.sense_ = model->sense_;
+    lp.offset_ = model->offset_;
+  } else {
+    lp.col_cost_.assign(ncol, 0.0);
+  }
 
   Highs highs;
   highs.setOptionValue("output_flag", false);
-  highs.setOptionValue("solver", "ipm");
-  highs.setOptionValue("run_crossover", "off");
-  // Strict time limit to avoid blocking
   highs.setOptionValue("time_limit", 30.0);
-
-  // Build LP from the presolved model
-  for (HighsInt j = 0; j < ncol; ++j) {
-    highs.addVar(model->col_lower_[j], model->col_upper_[j]);
-    double c = use_objective ? model->col_cost_[j] : 0.0;
-    highs.changeColCost(j, c);
+  if (use_ipm) {
+    highs.setOptionValue("solver", "ipm");
+  }
+  if (!run_crossover) {
+    highs.setOptionValue("run_crossover", "off");
   }
 
-  // Add rows
-  const auto& ARstart = mipsolver.mipdata_->ARstart_;
-  const auto& ARindex = mipsolver.mipdata_->ARindex_;
-  const auto& ARvalue = mipsolver.mipdata_->ARvalue_;
-  for (HighsInt i = 0; i < nrow; ++i) {
-    HighsInt row_len = ARstart[i + 1] - ARstart[i];
-    highs.addRow(model->row_lower_[i], model->row_upper_[i], row_len,
-                 ARindex.data() + ARstart[i], ARvalue.data() + ARstart[i]);
-  }
-
+  highs.passModel(std::move(lp));
   highs.run();
 
   const auto& sol = highs.getSolution();
   if (static_cast<HighsInt>(sol.col_value.size()) == ncol) {
     return sol.col_value;
   }
-  // Fallback: return empty on failure
   return {};
 }
 
+}  // namespace
+
+std::vector<double> compute_analytic_center(const HighsMipSolver& mipsolver,
+                                            bool use_objective) {
+  return solve_lp_relaxation(mipsolver, /*use_ipm=*/true,
+                             /*run_crossover=*/false, use_objective);
+}
+
 std::vector<double> compute_zero_obj_vertex(const HighsMipSolver& mipsolver) {
-  const auto* model = mipsolver.model_;
-  const HighsInt ncol = model->num_col_;
-  const HighsInt nrow = model->num_row_;
-
-  Highs highs;
-  highs.setOptionValue("output_flag", false);
-  // Use simplex (default) for a vertex solution, zero objective
-  highs.setOptionValue("time_limit", 30.0);
-
-  for (HighsInt j = 0; j < ncol; ++j) {
-    highs.addVar(model->col_lower_[j], model->col_upper_[j]);
-    highs.changeColCost(j, 0.0);
-  }
-
-  const auto& ARstart2 = mipsolver.mipdata_->ARstart_;
-  const auto& ARindex2 = mipsolver.mipdata_->ARindex_;
-  const auto& ARvalue2 = mipsolver.mipdata_->ARvalue_;
-  for (HighsInt i = 0; i < nrow; ++i) {
-    HighsInt row_len = ARstart2[i + 1] - ARstart2[i];
-    highs.addRow(model->row_lower_[i], model->row_upper_[i], row_len,
-                 ARindex2.data() + ARstart2[i], ARvalue2.data() + ARstart2[i]);
-  }
-
-  highs.run();
-
-  const auto& sol = highs.getSolution();
-  if (static_cast<HighsInt>(sol.col_value.size()) == ncol) {
-    return sol.col_value;
-  }
-  return {};
+  return solve_lp_relaxation(mipsolver, /*use_ipm=*/false,
+                             /*run_crossover=*/true, /*use_objective=*/false);
 }
