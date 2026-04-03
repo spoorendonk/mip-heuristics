@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "Highs.h"
-#include "fpr_core.h"  // VarState
 #include "heuristic_common.h"
 #include "mip/HighsCliqueTable.h"
 #include "mip/HighsMipSolver.h"

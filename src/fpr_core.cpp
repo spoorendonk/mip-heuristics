@@ -414,10 +414,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       }
     } else {
       E.sol(j) = choose_fix_value(j);
-      E.sol(j) = std::max(lo, std::min(hi, E.sol(j)));
-      if (is_int(j)) {
-        E.sol(j) = std::round(E.sol(j));
-      }
+      E.sol(j) = std::round(std::max(lo, std::min(hi, E.sol(j))));
     }
     E.sol(j) = std::max(col_lb[j], std::min(col_ub[j], E.sol(j)));
   }
