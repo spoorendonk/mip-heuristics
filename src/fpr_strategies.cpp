@@ -361,8 +361,10 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool is_int,
   // Count dynamic up-locks and down-locks for variable j
   HighsInt up_locks = 0;
   HighsInt down_locks = 0;
+  const HighsInt total_rows = csc.col_start[j + 1] - csc.col_start[j];
 
-  for (HighsInt p = csc.col_start[j]; p < csc.col_start[j + 1]; ++p) {
+  for (HighsInt r = 0; r < total_rows; ++r) {
+    HighsInt p = csc.col_start[j] + r;
     HighsInt i = csc.col_row[p];
     double a = csc.col_val[p];
 
@@ -394,13 +396,16 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool is_int,
       // Already infeasible — skip
     } else {
       // Not redundant: count locks
-      // Increasing j: if a > 0, increases LHS (tightens <= constraint)
-      //                if a < 0, decreases LHS (tightens >= constraint)
       if (has_upper && a > 0) ++up_locks;
       if (has_lower && a < 0) ++up_locks;
       if (has_upper && a < 0) ++down_locks;
       if (has_lower && a > 0) ++down_locks;
     }
+
+    // Early exit: if one direction already wins by more than remaining rows
+    HighsInt remaining = total_rows - r - 1;
+    if (up_locks > down_locks + remaining) return lb;
+    if (down_locks > up_locks + remaining) return ub;
   }
 
   // Pick direction with fewer locks
