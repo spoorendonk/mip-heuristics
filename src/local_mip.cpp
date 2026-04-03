@@ -29,6 +29,7 @@ constexpr HighsInt kTabuBase = 3;
 constexpr HighsInt kTabuVar = 10;
 constexpr HighsInt kFeasibleRecheckPeriod = 100;
 constexpr HighsInt kFeasiblePlateau = 5000;
+constexpr double kEpsZero = 1e-15;
 
 double compute_objective(const HighsLp *model,
                          const std::vector<double> &solution) {
@@ -138,6 +139,7 @@ struct LiftCache {
   bool all_dirty = true;
   std::vector<HighsInt> positive_list;
   std::vector<bool> in_positive;
+  const std::vector<HighsInt> *costed_vars = nullptr;
 
   explicit LiftCache(HighsInt ncol)
       : lo(ncol), hi(ncol), score(ncol), dirty(ncol, true),
@@ -281,22 +283,39 @@ struct WorkerCtx {
   void apply_move(HighsInt j, double new_val) {
     double old_val = solution[j];
     double delta = new_val - old_val;
-    if (std::abs(delta) < 1e-15) {
+    if (std::abs(delta) < kEpsZero) {
       return;
     }
     solution[j] = new_val;
     current_obj += col_cost[j] * delta;
     effort += csc.col_start[j + 1] - csc.col_start[j];
-    lift.mark_dirty(j);
+    // Only maintain LiftCache during feasible mode; on the
+    // infeasible→feasible transition, rebuild_state marks all dirty.
+    bool dirty_lift = !was_infeasible && !lift.all_dirty;
+    if (dirty_lift) {
+      lift.mark_dirty(j);
+    }
     for (HighsInt p = csc.col_start[j]; p < csc.col_start[j + 1]; ++p) {
       HighsInt i = csc.col_row[p];
       lhs[i] += csc.col_val[p] * delta;
       update_violated(i);
-      if (!lift.all_dirty) {
+      if (dirty_lift) {
         for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
           lift.mark_dirty(ARindex[k]);
         }
       }
+    }
+  }
+
+  void apply_move_with_tabu(HighsInt j, double new_val, HighsInt step,
+                            std::mt19937 &rng) {
+    double delta = new_val - solution[j];
+    apply_move(j, new_val);
+    HighsInt tabu_len = kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
+    if (delta > 0) {
+      tabu_dec_until[j] = step + tabu_len;
+    } else {
+      tabu_inc_until[j] = step + tabu_len;
     }
   }
 
@@ -323,7 +342,7 @@ struct WorkerCtx {
   }
 
   double compute_tight_delta(HighsInt i, HighsInt j, double coeff) const {
-    if (std::abs(coeff) < 1e-15) {
+    if (std::abs(coeff) < kEpsZero) {
       return 0.0;
     }
     double l = lhs[i];
@@ -334,10 +353,11 @@ struct WorkerCtx {
       gap = l - row_hi[i]; // upper violated
     } else if (l < row_lo[i] - feastol) {
       gap = l - row_lo[i]; // lower violated
-    } else if (row_hi[i] < kHighsInf) {
-      gap = l - row_hi[i]; // satisfied: push toward upper
     } else {
-      gap = l - row_lo[i]; // satisfied: push toward lower
+      // Satisfied: push toward the nearest bound
+      double gap_hi = (row_hi[i] < kHighsInf) ? (l - row_hi[i]) : kHighsInf;
+      double gap_lo = (row_lo[i] > -kHighsInf) ? (l - row_lo[i]) : kHighsInf;
+      gap = (std::abs(gap_hi) <= std::abs(gap_lo)) ? gap_hi : gap_lo;
     }
     // NOLINTEND(bugprone-branch-clone)
 
@@ -345,7 +365,7 @@ struct WorkerCtx {
 
     if (is_equality(i)) {
       if (is_int(j)) {
-        delta = std::round(delta);
+        delta = (coeff > 0) ? std::floor(delta) : std::ceil(delta);
       }
       double new_val = solution[j] + delta;
       if (new_val < col_lb[j] || new_val > col_ub[j]) {
@@ -405,7 +425,7 @@ struct WorkerCtx {
 
 void LiftCache::recompute_one(HighsInt j, WorkerCtx &ctx) {
   double old_score = score[j];
-  if (std::abs(ctx.col_cost[j]) < 1e-15) {
+  if (std::abs(ctx.col_cost[j]) < kEpsZero) {
     score[j] = 0.0;
     dirty[j] = false;
     if (old_score > 0.0 && in_positive[j]) {
@@ -421,7 +441,7 @@ void LiftCache::recompute_one(HighsInt j, WorkerCtx &ctx) {
   for (HighsInt p = ctx.csc.col_start[j]; p < ctx.csc.col_start[j + 1]; ++p) {
     HighsInt i = ctx.csc.col_row[p];
     double coeff = ctx.csc.col_val[p];
-    if (std::abs(coeff) < 1e-15) {
+    if (std::abs(coeff) < kEpsZero) {
       continue;
     }
     double residual = ctx.lhs[i] - coeff * ctx.solution[j];
@@ -459,7 +479,7 @@ void LiftCache::recompute_one(HighsInt j, WorkerCtx &ctx) {
       target = (ctx.col_cost[j] > 0) ? hi_j : lo_j;
     }
     target = ctx.clamp_and_round(j, target);
-    if (std::abs(target - ctx.solution[j]) < 1e-15) {
+    if (std::abs(target - ctx.solution[j]) < kEpsZero) {
       score[j] = 0.0;
     } else {
       double obj_delta = ctx.col_cost[j] * (target - ctx.solution[j]);
@@ -486,8 +506,16 @@ void LiftCache::recompute_one(HighsInt j, WorkerCtx &ctx) {
 
 void LiftCache::recompute_all(WorkerCtx &ctx) {
   if (all_dirty) {
-    for (HighsInt j = 0; j < ctx.ncol; ++j) {
-      recompute_one(j, ctx);
+    // Only recompute columns with nonzero cost; zero-cost columns
+    // always have score=0 and never need lift recomputation.
+    if (costed_vars) {
+      for (HighsInt j : *costed_vars) {
+        recompute_one(j, ctx);
+      }
+    } else {
+      for (HighsInt j = 0; j < ctx.ncol; ++j) {
+        recompute_one(j, ctx);
+      }
     }
     dirty_list.clear();
   } else {
@@ -511,7 +539,7 @@ compute_candidate_scores(WorkerCtx &ctx, HighsInt j, double new_val,
                          bool best_feasible, double best_obj) {
   double old_val = ctx.solution[j];
   double delta = new_val - old_val;
-  if (std::abs(delta) < 1e-15) {
+  if (std::abs(delta) < kEpsZero) {
     return {-std::numeric_limits<double>::infinity(), 0.0};
   }
 
@@ -560,9 +588,9 @@ compute_candidate_scores(WorkerCtx &ctx, HighsInt j, double new_val,
       progress -= w; // satisfied → violated
     } else if (was_viol && now_viol) {
       if (new_viol < old_viol - kViolTol) {
-        progress += w * 0.5; // still violated, improved
+        progress += w; // still violated, improved
       } else if (new_viol > old_viol + kViolTol) {
-        progress -= w * 0.5; // still violated, worsened
+        progress -= w; // still violated, worsened
       }
     }
 
@@ -606,7 +634,7 @@ bool is_aspiration(const WorkerCtx &ctx, HighsInt j, double new_val,
 double compute_breakthrough_delta(const WorkerCtx &ctx, HighsInt j,
                                   double cur_obj, double best_obj) {
   double obj_coeff = ctx.col_cost[j];
-  if (std::abs(obj_coeff) < 1e-15) {
+  if (std::abs(obj_coeff) < kEpsZero) {
     return 0.0;
   }
 
@@ -634,7 +662,7 @@ Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch,
   Candidate best;
   for (const auto &c : batch) {
     double delta = c.new_val - ctx.solution[c.var_idx];
-    if (std::abs(delta) < 1e-15) {
+    if (std::abs(delta) < kEpsZero) {
       continue;
     }
 
@@ -663,7 +691,7 @@ Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch,
 void append_candidate(WorkerCtx &ctx, std::vector<BatchCand> &batch, HighsInt j,
                       double delta) {
   double new_val = ctx.clamp_and_round(j, ctx.solution[j] + delta);
-  if (std::abs(new_val - ctx.solution[j]) < 1e-15) {
+  if (std::abs(new_val - ctx.solution[j]) < kEpsZero) {
     return;
   }
   batch.push_back({j, new_val});
@@ -774,14 +802,14 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step,
   }
 
   // --- Phase 3: Boolean flip (Alg 2 lines 9-11) ---
-  {
+  if (!binary_vars.empty()) {
     batch.clear();
     HighsInt nbinary = static_cast<HighsInt>(binary_vars.size());
     HighsInt offset = (nbinary > 0) ? static_cast<HighsInt>(rng() % nbinary) : 0;
     for (HighsInt idx = 0; idx < nbinary && idx < kBoolFlipBudget; ++idx) {
       HighsInt j = binary_vars[(offset + idx) % nbinary];
       double new_val = (ctx.solution[j] < 0.5) ? 1.0 : 0.0;
-      if (std::abs(new_val - ctx.solution[j]) < 1e-15) {
+      if (std::abs(new_val - ctx.solution[j]) < kEpsZero) {
         continue;
       }
       batch.push_back({j, new_val});
@@ -810,13 +838,7 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step,
       double delta = ctx.compute_tight_delta(ci, j, ctx.ARvalue[k]);
       append_candidate(ctx, batch, j, delta);
     }
-    if (best_feasible) {
-      for (HighsInt j : costed_vars) {
-        double delta =
-            compute_breakthrough_delta(ctx, j, ctx.current_obj, best_objective);
-        append_candidate(ctx, batch, j, delta);
-      }
-    }
+    // Breakthrough candidates already scored in Phase 1; skip re-scoring.
     auto fallback = select_best_from_batch(ctx, batch, step, false,
                                            best_objective, best_feasible);
     if (fallback.var_idx != -1 &&
@@ -851,7 +873,7 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step,
             -0.1 * range, 0.1 * range)(rng);
         new_val = ctx.clamp_and_round(j, ctx.solution[j] + perturbation);
       }
-      if (std::abs(new_val - ctx.solution[j]) > 1e-15) {
+      if (std::abs(new_val - ctx.solution[j]) > kEpsZero) {
         auto [prog, bon] = compute_candidate_scores(ctx, j, new_val,
                                                     best_feasible,
                                                     best_objective);
@@ -950,33 +972,31 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
   double best_objective = ctx.minimize
                               ? std::numeric_limits<double>::infinity()
                               : -std::numeric_limits<double>::infinity();
-  std::vector<double> best_solution;
+  std::vector<double> best_solution(ncol);
 
   // Precompute variable subsets for breakthrough moves and Boolean flips
   auto *mipdata = ctx.mipdata;
   std::vector<HighsInt> costed_vars;
   std::vector<HighsInt> binary_vars;
   for (HighsInt j = 0; j < ncol; ++j) {
-    if (std::abs(ctx.col_cost[j]) >= 1e-15) {
+    if (std::abs(ctx.col_cost[j]) >= kEpsZero) {
       costed_vars.push_back(j);
     }
     if (mipdata->domain.isBinary(j)) {
       binary_vars.push_back(j);
     }
   }
+  ctx.lift.costed_vars = &costed_vars;
 
   // --- Initialize solution ---
-  if (initial_solution) {
+  const double *src = initial_solution
+                          ? initial_solution
+                          : (!mipdata->incumbent.empty()
+                                 ? mipdata->incumbent.data()
+                                 : nullptr);
+  if (src) {
     for (HighsInt j = 0; j < ncol; ++j) {
-      double v = initial_solution[j];
-      if (ctx.is_int(j)) {
-        v = std::round(v);
-      }
-      ctx.solution[j] = std::max(ctx.col_lb[j], std::min(ctx.col_ub[j], v));
-    }
-  } else if (!mipdata->incumbent.empty()) {
-    for (HighsInt j = 0; j < ncol; ++j) {
-      double v = mipdata->incumbent[j];
+      double v = src[j];
       if (ctx.is_int(j)) {
         v = std::round(v);
       }
@@ -1125,7 +1145,7 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
             target = (ctx.col_cost[j] > 0) ? hi : lo;
           }
           target = ctx.clamp_and_round(j, target);
-          if (std::abs(target - ctx.solution[j]) < 1e-15) {
+          if (std::abs(target - ctx.solution[j]) < kEpsZero) {
             continue;
           }
           lift_best = {j, target, ctx.lift.score[j], 0.0};
@@ -1134,14 +1154,8 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
       }
 
       if (lift_best.var_idx != -1) {
-        double delta = lift_best.new_val - ctx.solution[lift_best.var_idx];
-        ctx.apply_move(lift_best.var_idx, lift_best.new_val);
-        HighsInt tabu_len = kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
-        if (delta > 0) {
-          ctx.tabu_dec_until[lift_best.var_idx] = step + tabu_len;
-        } else {
-          ctx.tabu_inc_until[lift_best.var_idx] = step + tabu_len;
-        }
+        ctx.apply_move_with_tabu(lift_best.var_idx, lift_best.new_val,
+                                 step, rng);
       } else {
         ctx.update_weights(rng, /*is_feasible=*/true, best_feasible,
                            best_objective);
@@ -1162,14 +1176,7 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
 
       // Apply move
       if (cand.var_idx != -1) {
-        double delta = cand.new_val - ctx.solution[cand.var_idx];
-        ctx.apply_move(cand.var_idx, cand.new_val);
-        HighsInt tabu_len = kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
-        if (delta > 0) {
-          ctx.tabu_dec_until[cand.var_idx] = step + tabu_len;
-        } else {
-          ctx.tabu_inc_until[cand.var_idx] = step + tabu_len;
-        }
+        ctx.apply_move_with_tabu(cand.var_idx, cand.new_val, step, rng);
       }
 
       ++steps_since_improvement;
