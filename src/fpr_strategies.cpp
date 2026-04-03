@@ -352,7 +352,6 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool is_int,
   const auto& ARvalue = mipdata->ARvalue_;
   const auto& row_lo = model->row_lower_;
   const auto& row_hi = model->row_upper_;
-  const HighsInt nrow = model->num_row_;
 
   // Count dynamic up-locks and down-locks for variable j
   HighsInt up_locks = 0;

@@ -103,12 +103,27 @@ int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot after,
   return improved ? 3 : 1;
 }
 
+// Pre-computed variable orders for FPR arms (avoids cliquePartition data race).
+// Indexed by FprArmConfig index (0..kNumFprArms-1), not by arm_type enum.
+using FprVarOrders = std::vector<std::vector<HighsInt>>;
+
+FprVarOrders precompute_fpr_var_orders(const HighsMipSolver &mipsolver) {
+  FprVarOrders orders(kNumFprArms);
+  for (int i = 0; i < kNumFprArms; ++i) {
+    std::mt19937 rng(42 + static_cast<uint32_t>(i));
+    orders[i] = compute_var_order(mipsolver, kFprArms[i].strat.var_strategy,
+                                  rng, nullptr);
+  }
+  return orders;
+}
+
 HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type,
                                  std::mt19937 &rng, int attempt_idx,
                                  const double *restart_sol,
                                  const CscMatrix &csc,
                                  const std::vector<double> &incumbent_snapshot,
-                                 size_t max_effort) {
+                                 size_t max_effort,
+                                 const FprVarOrders &fpr_var_orders) {
   if (mipsolver.mipdata_->terminatorTerminated()) {
     return {};
   }
@@ -118,9 +133,11 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type,
   // Check if this is an FPR config arm
   const FprArmConfig *fpr_arm = find_fpr_arm(arm_type);
   if (fpr_arm) {
+    // Find the index into kFprArms for this arm
+    int fpr_idx = static_cast<int>(fpr_arm - kFprArms);
+
     FprConfig cfg{};
     cfg.max_effort = max_effort;
-    cfg.rng_seed_offset = 42;
     cfg.hint =
         incumbent_snapshot.empty() ? nullptr : incumbent_snapshot.data();
     cfg.scores = nullptr;
@@ -129,6 +146,10 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type,
     cfg.mode = fpr_arm->mode;
     cfg.strategy = &fpr_arm->strat;
     cfg.lp_ref = nullptr;
+    // Use pre-computed var order to avoid cliquePartition data race
+    cfg.precomputed_var_order = fpr_var_orders[fpr_idx].data();
+    cfg.precomputed_var_order_size =
+        static_cast<HighsInt>(fpr_var_orders[fpr_idx].size());
     return fpr_attempt(mipsolver, cfg, rng, attempt_idx, restart_sol);
   }
 
@@ -179,7 +200,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
                                 const std::vector<int> &enabled_arms,
                                 const std::vector<double> &priors,
                                 const CscMatrix &csc, bool minimize,
-                                size_t budget) {
+                                size_t budget,
+                                const FprVarOrders &fpr_var_orders) {
   auto *mipdata = mipsolver.mipdata_.get();
   const int N = highs::parallel::num_threads();
   const int num_arms = static_cast<int>(enabled_arms.size());
@@ -234,7 +256,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
                 std::min(budget, total_effort.load(std::memory_order_relaxed));
             auto result = run_presolve_arm(mipsolver, enabled_arms[arm], rng,
                                            attempt_counter++, restart_ptr, csc,
-                                           incumbent_snapshot, remaining);
+                                           incumbent_snapshot, remaining,
+                                           fpr_var_orders);
 
             if (result.found_feasible) {
               pool.try_add(result.objective, result.solution);
@@ -316,10 +339,17 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
                        mipdata->ARvalue_);
 
+  // Pre-compute FPR variable orders sequentially to avoid data races on
+  // HighsCliqueTable::cliquePartition (which mutates internal state).
+  FprVarOrders fpr_var_orders;
+  if (options->mip_heuristic_run_fpr) {
+    fpr_var_orders = precompute_fpr_var_orders(mipsolver);
+  }
+
   // Dispatch to opportunistic mode if requested
   if (options->mip_heuristic_portfolio_opportunistic) {
     run_presolve_opportunistic(mipsolver, enabled_arms, priors, csc, minimize,
-                               max_effort);
+                               max_effort, fpr_var_orders);
     return;
   }
 
@@ -376,7 +406,8 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
             size_t remaining = budget - std::min(budget, total_effort);
             results[w] = run_presolve_arm(
                 mipsolver, enabled_arms[arms[w]], rngs[w], attempt_counters[w],
-                restart_ptr, csc, incumbent_snapshot, remaining);
+                restart_ptr, csc, incumbent_snapshot, remaining,
+                fpr_var_orders);
           }
         },
         1);

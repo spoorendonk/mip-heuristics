@@ -334,6 +334,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       prop_work += ARstart[i + 1] - ARstart[i];
       if (prop_work > prop_budget) {
         total_prop_work += prop_work;
+        // Clear stale worklist markers to avoid permanently excluding
+        // these rows from future propagation calls on other DFS branches.
+        for (HighsInt wi : prop_worklist) {
+          prop_in_wl[wi] = 0;
+        }
+        prop_worklist.clear();
         return false;
       }
 

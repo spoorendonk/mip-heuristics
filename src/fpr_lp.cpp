@@ -36,17 +36,25 @@ constexpr NamedConfig kClass2Configs[] = {
 constexpr int kNumClass2 =
     static_cast<int>(sizeof(kClass2Configs) / sizeof(kClass2Configs[0]));
 
-// Paper Section 6.3, Class 3 — full-obj LP strategies
-constexpr NamedConfig kClass3Configs[] = {
+// Paper Section 6.3, Class 3 — full-obj LP strategies.
+// Split into two groups by reference solution:
+//   3a: zerolp configs use the zero-obj LP vertex (zv_ptr)
+//   3b: lp/cliques2 configs use the full-obj LP solution (lp_ptr)
+constexpr NamedConfig kClass3aConfigs[] = {
     {kStratZerolp, FrameworkMode::kDfs},
     {kStratZerolp, FrameworkMode::kDiveprop},
+};
+constexpr int kNumClass3a =
+    static_cast<int>(sizeof(kClass3aConfigs) / sizeof(kClass3aConfigs[0]));
+
+constexpr NamedConfig kClass3bConfigs[] = {
     {kStratCliques2, FrameworkMode::kDiveprop},
     {kStratLp, FrameworkMode::kDfs},
     {kStratLp, FrameworkMode::kDive},
     {kStratLp, FrameworkMode::kDiveprop},
 };
-constexpr int kNumClass3 =
-    static_cast<int>(sizeof(kClass3Configs) / sizeof(kClass3Configs[0]));
+constexpr int kNumClass3b =
+    static_cast<int>(sizeof(kClass3bConfigs) / sizeof(kClass3bConfigs[0]));
 
 // Run a set of configs in parallel, collecting results into a pool.
 // Returns total effort consumed.
@@ -170,9 +178,15 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
                        snap_before_c2.best_objective));
 
   if (!class2_found_new && remaining > 0) {
-    // Class 3: full-obj LP strategies (use LP solution as lp_ref)
-    total_effort += run_configs(mipsolver, csc, kClass3Configs, kNumClass3,
-                                hint, lp_ptr, pool, remaining);
+    // Class 3a: zerolp configs use zero-obj LP vertex
+    total_effort += run_configs(mipsolver, csc, kClass3aConfigs, kNumClass3a,
+                                hint, zv_ptr, pool, remaining);
+    remaining = (total_effort < max_effort) ? max_effort - total_effort : 0;
+    // Class 3b: lp/cliques2 configs use full-obj LP solution
+    if (remaining > 0) {
+      total_effort += run_configs(mipsolver, csc, kClass3bConfigs, kNumClass3b,
+                                  hint, lp_ptr, pool, remaining);
+    }
   }
 
   mipdata->heuristic_effort_used += total_effort;
