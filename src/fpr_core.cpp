@@ -122,7 +122,11 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
 
   // Phase 1: Rank variables
   std::vector<HighsInt> var_order;
-  if (cfg.strategy) {
+  if (cfg.precomputed_var_order != nullptr) {
+    // Use pre-computed order (avoids data races on cliquePartition)
+    var_order.assign(cfg.precomputed_var_order,
+                     cfg.precomputed_var_order + cfg.precomputed_var_order_size);
+  } else if (cfg.strategy) {
     var_order =
         compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
   } else {
@@ -140,7 +144,6 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   std::vector<double> lhs_cache(nrow);
 
   const HighsInt repair_budget = cfg.repair_iterations;
-  const double greedy_prob = 1.0 - cfg.repair_noise;
 
   auto viol = [&](HighsInt i, double lhs) -> double {
     return row_violation(lhs, row_lo[i], row_hi[i]);
@@ -610,8 +613,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     }
   }
 
-  // --- Phase 3: WalkSAT Repair ---
-  if (!feasible) {
+  // --- Phase 3: WalkSAT Repair (modes: dfsrep, dive, diveprop) ---
+  if (!feasible && mode_repairs(cfg.mode)) {
     for (auto i : violated) {
       violated_pos[i] = -1;
     }

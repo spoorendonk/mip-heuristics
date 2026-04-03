@@ -164,8 +164,6 @@ std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver,
   for (size_t c = 0; c + 1 < partition_start.size(); ++c) {
     HighsInt start = partition_start[c];
     HighsInt end = partition_start[c + 1];
-    HighsInt len = end - start;
-
     // Collect vars and weights (paper Fig. 2)
     std::vector<std::pair<HighsInt, double>> vars_weights;
     for (HighsInt k = start; k < end; ++k) {
@@ -302,7 +300,7 @@ double val_random(double lb, double ub, bool is_int, std::mt19937& rng) {
 
 double val_goodobj(double lb, double ub, bool minimize, double cost) {
   if (std::abs(cost) < 1e-15) {
-    return std::round((lb + ub) * 0.5);
+    return (lb + ub) * 0.5;  // caller rounds if integer
   }
   if (minimize) {
     return (cost > 0) ? lb : ub;
@@ -312,7 +310,7 @@ double val_goodobj(double lb, double ub, bool minimize, double cost) {
 
 double val_badobj(double lb, double ub, bool minimize, double cost) {
   if (std::abs(cost) < 1e-15) {
-    return std::round((lb + ub) * 0.5);
+    return (lb + ub) * 0.5;  // caller rounds if integer
   }
   // Opposite of goodobj
   if (minimize) {

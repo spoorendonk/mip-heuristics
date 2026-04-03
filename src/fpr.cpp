@@ -73,6 +73,15 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   size_t total_effort = 0;
   const int num_configs = kNumLpFreeConfigs;
 
+  // Pre-compute variable orders sequentially to avoid data races on
+  // HighsCliqueTable::cliquePartition (which mutates internal state).
+  std::vector<std::vector<HighsInt>> var_orders(num_configs);
+  for (int w = 0; w < num_configs; ++w) {
+    std::mt19937 rng(42 + static_cast<uint32_t>(w));
+    var_orders[w] = compute_var_order(
+        mipsolver, kLpFreeConfigs[w].strat.var_strategy, rng, nullptr);
+  }
+
   // Run all LP-free configs in parallel (paper Section 6.3, Class 1)
   std::vector<HeuristicResult> results(num_configs);
 
@@ -84,14 +93,16 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
 
           FprConfig cfg{};
           cfg.max_effort = max_effort;
-          cfg.rng_seed_offset = 42 + static_cast<uint32_t>(w);
           cfg.hint = hint;
-          cfg.scores = nullptr;  // unused when strategy is set
+          cfg.scores = nullptr;
           cfg.cont_fallback = nullptr;
           cfg.csc = &csc;
           cfg.mode = kLpFreeConfigs[w].mode;
           cfg.strategy = &kLpFreeConfigs[w].strat;
-          cfg.lp_ref = nullptr;  // LP-free
+          cfg.lp_ref = nullptr;
+          cfg.precomputed_var_order = var_orders[w].data();
+          cfg.precomputed_var_order_size =
+              static_cast<HighsInt>(var_orders[w].size());
 
           results[w] = fpr_attempt(mipsolver, cfg, rng, 0, nullptr);
         }

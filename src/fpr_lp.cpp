@@ -49,6 +49,15 @@ size_t run_configs(HighsMipSolver &mipsolver, const CscMatrix &csc,
                    const NamedConfig *configs, int num_configs,
                    const double *hint, const double *lp_ref,
                    SolutionPool &pool, size_t budget) {
+  // Pre-compute variable orders sequentially to avoid data races on
+  // HighsCliqueTable::cliquePartition (which mutates internal state).
+  std::vector<std::vector<HighsInt>> var_orders(num_configs);
+  for (int w = 0; w < num_configs; ++w) {
+    std::mt19937 rng(42 + static_cast<uint32_t>(w) + 100);
+    var_orders[w] = compute_var_order(mipsolver, configs[w].strat.var_strategy,
+                                      rng, lp_ref);
+  }
+
   std::vector<HeuristicResult> results(num_configs);
 
   highs::parallel::for_each(
@@ -59,7 +68,6 @@ size_t run_configs(HighsMipSolver &mipsolver, const CscMatrix &csc,
 
           FprConfig cfg{};
           cfg.max_effort = budget;
-          cfg.rng_seed_offset = 42 + static_cast<uint32_t>(w) + 100;
           cfg.hint = hint;
           cfg.scores = nullptr;
           cfg.cont_fallback = nullptr;
@@ -67,6 +75,9 @@ size_t run_configs(HighsMipSolver &mipsolver, const CscMatrix &csc,
           cfg.mode = configs[w].mode;
           cfg.strategy = &configs[w].strat;
           cfg.lp_ref = lp_ref;
+          cfg.precomputed_var_order = var_orders[w].data();
+          cfg.precomputed_var_order_size =
+              static_cast<HighsInt>(var_orders[w].size());
 
           results[w] = fpr_attempt(mipsolver, cfg, rng, 0, nullptr);
         }
@@ -136,21 +147,24 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   size_t remaining = max_effort;
 
   // Class 2: zero-obj LP strategies (use analytic center / zero vertex)
-  // The zerocore strategies use the analytic center as lp_ref
+  auto snap_before_c2 = pool.snapshot();
   total_effort += run_configs(mipsolver, csc, kClass2Configs, kNumClass2, hint,
                               ac_ptr, pool, remaining);
   remaining = (total_effort < max_effort) ? max_effort - total_effort : 0;
 
-  // Check if we found a solution — if so, skip Class 3 (paper: stop if
-  // feasible found between classes)
-  bool found = false;
-  for (const auto &entry : pool.sorted_entries()) {
-    // Any entry beyond what was seeded = found by our configs
-    found = true;
-    break;
-  }
+  // Check if Class 2 found a new solution — if so, skip Class 3
+  // (paper: stop if feasible found between classes).
+  // Compare pool snapshot before/after to detect new entries (pool was
+  // seeded with incumbent, so non-empty doesn't mean Class 2 found anything).
+  auto snap_after_c2 = pool.snapshot();
+  bool class2_found_new =
+      snap_after_c2.has_solution &&
+      (!snap_before_c2.has_solution ||
+       (minimize ? snap_after_c2.best_objective < snap_before_c2.best_objective
+                 : snap_after_c2.best_objective >
+                       snap_before_c2.best_objective));
 
-  if (!found && remaining > 0) {
+  if (!class2_found_new && remaining > 0) {
     // Class 3: full-obj LP strategies (use LP solution as lp_ref)
     total_effort += run_configs(mipsolver, csc, kClass3Configs, kNumClass3,
                                 hint, lp_ptr, pool, remaining);

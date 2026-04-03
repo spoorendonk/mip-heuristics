@@ -42,6 +42,11 @@ struct FprConfig {
   // LP reference solution for LP-based strategies (nullable).
   const double *lp_ref = nullptr;
 
+  // --- Pre-computed variable order (avoids data races on cliquePartition) ---
+  // When non-null, fpr_attempt uses this order instead of computing one.
+  const HighsInt *precomputed_var_order = nullptr;
+  HighsInt precomputed_var_order_size = 0;
+
   // --- Repair parameters (paper: Salvagnin et al. 2025, Section 5) ---
   // Noise parameter p: probability of random walk move (paper default: 0.75).
   // Greedy probability = 1 - repair_noise.

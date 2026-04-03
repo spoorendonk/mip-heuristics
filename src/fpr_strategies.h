@@ -50,7 +50,6 @@ enum class FrameworkMode {
 struct FprStrategyConfig {
   VarStrategy var_strategy = VarStrategy::kType;
   ValStrategy val_strategy = ValStrategy::kGoodobj;
-  FrameworkMode mode = FrameworkMode::kDiveprop;
 };
 
 // Framework mode properties
