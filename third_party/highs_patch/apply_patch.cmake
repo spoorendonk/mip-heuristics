@@ -286,7 +286,7 @@ if(_found EQUAL -1)
 
     string(REPLACE
       "    }\n    // End of pre-root-node heuristics"
-      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      size_t used = mipdata_->heuristic_effort_used;\n      if (options_mip_->mip_heuristic_portfolio) {\n        size_t remaining = (used < budget) ? budget - used : 0;\n        portfolio::run_presolve(*this, remaining);\n      } else {\n        if (options_mip_->mip_heuristic_run_fpr && used < budget) {\n          fpr::run(*this, budget - used);\n          used = mipdata_->heuristic_effort_used;\n        }\n        if (options_mip_->mip_heuristic_run_local_mip && used < budget) {\n          local_mip::run(*this, budget - used);\n        }\n      }\n    }\n\n    // End of pre-root-node heuristics"
+      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      size_t used = mipdata_->heuristic_effort_used;\n      if (options_mip_->mip_heuristic_portfolio) {\n        size_t remaining = (used < budget) ? budget - used : 0;\n        portfolio::run_presolve(*this, remaining);\n      } else {\n        if (options_mip_->mip_heuristic_run_fpr && used < budget) {\n          fpr::run(*this, budget - used);\n          used = mipdata_->heuristic_effort_used;\n        }\n        if (options_mip_->mip_heuristic_run_local_mip && used < budget) {\n          local_mip::run(*this, budget - used);\n        }\n      }\n      if (options_mip_->mip_heuristic_run_scylla) {\n        used = mipdata_->heuristic_effort_used;\n        if (used < budget) {\n          scylla::run(*this, budget - used);\n        }\n      }\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
     # Patch B: guard standalone RINS/RENS when portfolio is on (B&B dive)
@@ -300,10 +300,10 @@ if(_found EQUAL -1)
       "if (options_mip_->mip_heuristic_run_rins && !options_mip_->mip_heuristic_portfolio) {"
       CONTENT "${CONTENT}")
 
-    # Patch C: after RINS/RENS block closing brace, insert Scylla parallel restarts
+    # Patch C: after RINS/RENS block, insert LP-dependent FPR (Scylla moved to presolve)
     string(REPLACE
       "          }\n\n          mipdata_->heuristics.flushStatistics();"
-      "          }\n          if (options_mip_->mip_heuristic_run_fpr) {\n            const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n            fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n          }\n          if (options_mip_->mip_heuristic_run_scylla) {\n            const size_t scylla_nnz = mipdata_->ARindex_.size();\n            scylla::run(*this, heuristic_effort_budget(scylla_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
+      "          }\n          if (options_mip_->mip_heuristic_run_fpr) {\n            const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n            fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
