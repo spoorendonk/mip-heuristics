@@ -12,7 +12,10 @@
       "Bash(*|*)",
       "Edit(*)",
       "Edit(.claude/.last-review)",
+      "Glob(*)",
+      "Grep(*)",
       "Read(*)",
+      "Search(*)",
       "WebFetch",
       "WebSearch"
     ],
@@ -31,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .dev-std/hooks/post-tool-format.sh"
+            "command": "bash .devkit/hooks/post-tool-format.sh"
           }
         ]
       }
@@ -42,11 +45,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .dev-std/hooks/check-branch-create.sh"
+            "command": "bash .devkit/hooks/check-branch-create.sh"
           },
           {
             "type": "command",
-            "command": "bash .dev-std/hooks/check-venv.sh"
+            "command": "bash .devkit/hooks/check-venv.sh"
           }
         ]
       }
@@ -54,6 +57,6 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash .dev-std/statusline.sh"
+    "command": "bash .devkit/statusline.sh"
   }
 }
