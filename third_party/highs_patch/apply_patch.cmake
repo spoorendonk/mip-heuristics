@@ -273,7 +273,7 @@ if(_found EQUAL -1)
     # Add includes at top (after existing includes)
     string(REPLACE
       "#include \"mip/HighsMipSolver.h\""
-      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"heuristic_common.h\"\n#include \"local_mip.h\"\n#include \"portfolio.h\"\n#include \"scylla.h\""
+      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"fpr_lp.h\"\n#include \"heuristic_common.h\"\n#include \"local_mip.h\"\n#include \"portfolio.h\"\n#include \"scylla.h\""
       CONTENT "${CONTENT}")
 
     # Patch A: after feasibilityJump block (pre-root-node, LP-free heuristics)
@@ -303,7 +303,7 @@ if(_found EQUAL -1)
     # Patch C: after RINS/RENS block closing brace, insert ScyllaFPR parallel restarts
     string(REPLACE
       "          }\n\n          mipdata_->heuristics.flushStatistics();"
-      "          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr) {\n            const size_t scylla_nnz = mipdata_->ARindex_.size();\n            scylla::run(*this, heuristic_effort_budget(scylla_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
+      "          }\n          if (options_mip_->mip_heuristic_run_fpr) {\n            const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n            fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n          }\n          if (options_mip_->mip_heuristic_run_scylla_fpr) {\n            const size_t scylla_nnz = mipdata_->ARindex_.size();\n            scylla::run(*this, heuristic_effort_budget(scylla_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
