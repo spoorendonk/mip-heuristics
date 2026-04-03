@@ -485,10 +485,10 @@ std::vector<double> compute_analytic_center(const HighsMipSolver& mipsolver,
   }
 
   // Add rows
+  const auto& ARstart = mipsolver.mipdata_->ARstart_;
+  const auto& ARindex = mipsolver.mipdata_->ARindex_;
+  const auto& ARvalue = mipsolver.mipdata_->ARvalue_;
   for (HighsInt i = 0; i < nrow; ++i) {
-    const auto& ARstart = mipsolver.mipdata_->ARstart_;
-    const auto& ARindex = mipsolver.mipdata_->ARindex_;
-    const auto& ARvalue = mipsolver.mipdata_->ARvalue_;
     HighsInt row_len = ARstart[i + 1] - ARstart[i];
     highs.addRow(model->row_lower_[i], model->row_upper_[i], row_len,
                  ARindex.data() + ARstart[i], ARvalue.data() + ARstart[i]);
@@ -519,13 +519,13 @@ std::vector<double> compute_zero_obj_vertex(const HighsMipSolver& mipsolver) {
     highs.changeColCost(j, 0.0);
   }
 
+  const auto& ARstart2 = mipsolver.mipdata_->ARstart_;
+  const auto& ARindex2 = mipsolver.mipdata_->ARindex_;
+  const auto& ARvalue2 = mipsolver.mipdata_->ARvalue_;
   for (HighsInt i = 0; i < nrow; ++i) {
-    const auto& ARstart = mipsolver.mipdata_->ARstart_;
-    const auto& ARindex = mipsolver.mipdata_->ARindex_;
-    const auto& ARvalue = mipsolver.mipdata_->ARvalue_;
-    HighsInt row_len = ARstart[i + 1] - ARstart[i];
+    HighsInt row_len = ARstart2[i + 1] - ARstart2[i];
     highs.addRow(model->row_lower_[i], model->row_upper_[i], row_len,
-                 ARindex.data() + ARstart[i], ARvalue.data() + ARstart[i]);
+                 ARindex2.data() + ARstart2[i], ARvalue2.data() + ARstart2[i]);
   }
 
   highs.run();
