@@ -1,6 +1,6 @@
 # mip-heuristics
 
-Custom MIP primal heuristics compiled directly into [HiGHS](https://github.com/ERGO-Code/HiGHS) via a patched fork.
+Custom MIP primal heuristics compiled directly into a patched build of [HiGHS](https://github.com/ERGO-Code/HiGHS).
 
 ## Overview
 
