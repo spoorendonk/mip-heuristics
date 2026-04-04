@@ -11,7 +11,7 @@ This project implements primal heuristics for finding feasible solutions to mixe
 - **FPR (Fix-Propagate-Repair)** -- Fix-and-propagate framework with multiple variable-ranking and value-selection strategies, plus WalkSAT-based repair search. LP-free and LP-based variants run in separate phases. Based on Salvagnin et al. [1].
 - **LocalMIP** -- Tabu-based neighborhood search with constraint-violation tracking, lifting moves, and backtracking multiple starts. Based on Lin et al. [2].
 - **Scylla** -- Matrix-free fix-propagate-and-project using PDLP as an approximate LP oracle, with objective perturbation and solution-pool crossover restarts. Based on Mexi et al. [3].
-- **FeasibilityJump** -- LP-free Lagrangian heuristic. Uses HiGHS's built-in implementation, captured via a patched entry point for effort tracking and portfolio integration. Based on Luteberget and Sartor [4].
+- **FeasibilityJump** -- LP-free Lagrangian heuristic. Wraps HiGHS's built-in implementation with effort budgeting and portfolio integration. Based on Luteberget and Sartor [4].
 - **Portfolio** -- Thompson sampling (Beta-Bernoulli) bandit that adaptively selects among FPR, LocalMIP, and FeasibilityJump arms. Has deterministic and opportunistic (parallel) modes.
 
 Reference papers are in `docs/`.
