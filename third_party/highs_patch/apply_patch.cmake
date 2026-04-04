@@ -200,10 +200,8 @@ HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
   }\n\
 \n\
   const HighsInt nnz = a_matrix.numNz();\n\
-  const size_t default_total = (size_t)nnz << 10;\n\
-  const size_t default_stale = (size_t)nnz << 8;\n\
-  const size_t kMaxTotalEffort = (max_effort > 0) ? std::min(default_total, max_effort) : default_total;\n\
-  const size_t kMaxEffortSinceLastImprovement = (max_effort > 0) ? std::min(default_stale, max_effort) : default_stale;\n\
+  const size_t kMaxTotalEffort = (max_effort > 0) ? max_effort : ((size_t)nnz << 10);\n\
+  const size_t kMaxEffortSinceLastImprovement = std::min((size_t)nnz << 8, (max_effort > 0) ? max_effort : ((size_t)nnz << 8));\n\
 \n\
   size_t last_total_effort = 0;\n\
   auto fjControlCallback =\n\
@@ -273,20 +271,19 @@ if(_found EQUAL -1)
     # Add includes at top (after existing includes)
     string(REPLACE
       "#include \"mip/HighsMipSolver.h\""
-      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr.h\"\n#include \"fpr_lp.h\"\n#include \"heuristic_common.h\"\n#include \"local_mip.h\"\n#include \"portfolio.h\"\n#include \"scylla.h\""
+      "#include \"mip/HighsMipSolver.h\"\n#include \"fj.h\"\n#include \"fpr.h\"\n#include \"fpr_lp.h\"\n#include \"heuristic_common.h\"\n#include \"local_mip.h\"\n#include \"portfolio.h\"\n#include \"scylla.h\""
       CONTENT "${CONTENT}")
 
-    # Patch A: after feasibilityJump block (pre-root-node, LP-free heuristics)
-    # In portfolio mode: skip standalone FJ (it runs as a portfolio arm).
-    # In sequential mode: FJ already ran above, then run FPR + LocalMIP.
+    # Patch A: disable standalone FJ (we handle it in our presolve block)
     string(REPLACE
-      "    if (options_mip_->mip_heuristic_run_feasibility_jump) {\n      analysis_.mipTimerStart(kMipClockFeasibilityJump);\n      HighsModelStatus returned_model_status = mipdata_->feasibilityJump();"
-      "    if (options_mip_->mip_heuristic_run_feasibility_jump && !options_mip_->mip_heuristic_portfolio) {\n      analysis_.mipTimerStart(kMipClockFeasibilityJump);\n      HighsModelStatus returned_model_status = mipdata_->feasibilityJump();"
+      "if (options_mip_->mip_heuristic_run_feasibility_jump) {"
+      "if (false) { // FJ runs via custom presolve heuristics block"
       CONTENT "${CONTENT}")
 
+    # Patch A2: insert custom heuristics block with independent budgets
     string(REPLACE
       "    }\n    // End of pre-root-node heuristics"
-      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      size_t used = mipdata_->heuristic_effort_used;\n      if (options_mip_->mip_heuristic_portfolio) {\n        size_t remaining = (used < budget) ? budget - used : 0;\n        portfolio::run_presolve(*this, remaining);\n      } else {\n        if (options_mip_->mip_heuristic_run_fpr && used < budget) {\n          fpr::run(*this, budget - used);\n          used = mipdata_->heuristic_effort_used;\n        }\n        if (options_mip_->mip_heuristic_run_local_mip && used < budget) {\n          local_mip::run(*this, budget - used);\n        }\n      }\n      if (options_mip_->mip_heuristic_run_scylla) {\n        used = mipdata_->heuristic_effort_used;\n        if (used < budget) {\n          scylla::run(*this, budget - used);\n        }\n      }\n    }\n\n    // End of pre-root-node heuristics"
+      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      if (options_mip_->mip_heuristic_portfolio) {\n        portfolio::run_presolve(*this, budget);\n      } else {\n        if (options_mip_->mip_heuristic_run_feasibility_jump) {\n          if (fj::run(*this, budget)) {\n            modelstatus_ = HighsModelStatus::kInfeasible;\n            cleanupSolve();\n            return;\n          }\n        }\n        if (options_mip_->mip_heuristic_run_fpr) {\n          fpr::run(*this, budget);\n        }\n        if (options_mip_->mip_heuristic_run_local_mip) {\n          local_mip::run(*this, budget);\n        }\n      }\n      if (options_mip_->mip_heuristic_run_scylla) {\n        scylla::run(*this, budget);\n      }\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
     # Patch B: guard standalone RINS/RENS when portfolio is on (B&B dive)

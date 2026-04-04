@@ -629,6 +629,23 @@ TEST_CASE("LocalMIP standalone: egout", "[heuristic][local_mip]") {
   REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
+// ── FJ standalone: exercises fj::run() wrapper in sequential mode ──
+
+TEST_CASE("FJ standalone: flugpl", "[heuristic][fj]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", false);
+  highs.setOptionValue("mip_heuristic_run_local_mip", false);
+  highs.setOptionValue("mip_heuristic_run_scylla", false);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  highs.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
 // ── Scylla standalone: PDLP pump finds feasible solution ──
 
 TEST_CASE("Scylla standalone: flugpl general integers",
@@ -676,9 +693,9 @@ TEST_CASE("Scylla standalone: egout mixed integers",
   REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
-// ── Scylla + other heuristics: shared presolve budget ──
+// ── Scylla + other heuristics: independent presolve budgets ──
 
-TEST_CASE("Sequential + Scylla: flugpl all heuristics share budget",
+TEST_CASE("Sequential + Scylla: flugpl independent budgets",
           "[heuristic][scylla]") {
   Highs highs;
   highs.setOptionValue("output_flag", false);
@@ -706,7 +723,7 @@ TEST_CASE("Portfolio + Scylla: flugpl bandit then Scylla",
   REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-TEST_CASE("Portfolio + Scylla: egout shared budget",
+TEST_CASE("Portfolio + Scylla: egout independent budgets",
           "[portfolio][scylla]") {
   Highs highs;
   highs.setOptionValue("output_flag", false);

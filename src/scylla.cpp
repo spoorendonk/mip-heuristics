@@ -179,6 +179,13 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   highs.setOptionValue("output_flag", false);
   highs.setOptionValue("pdlp_scaling", true);
   highs.setOptionValue("pdlp_e_restart_method", 2); // CPU restart
+  // Cap each PDLP solve so a single solve can't dominate the budget.
+  // With effort = iters * nnz, limit each solve to max_effort/4 of effort.
+  size_t nnz_lp = mipdata->ARindex_.size();
+  HighsInt pdlp_iter_cap =
+      (nnz_lp > 0) ? static_cast<HighsInt>((max_effort >> 2) / nnz_lp) : 10000;
+  if (pdlp_iter_cap < 100) pdlp_iter_cap = 100;
+  highs.setOptionValue("pdlp_iteration_limit", pdlp_iter_cap);
   highs.passModel(std::move(lp));
 
   // Build CSC for fpr_attempt
@@ -190,6 +197,8 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   double alpha_K = 1.0; // updated after each solve; first solve uses unmodified cost
   const double time_limit = mipsolver.options_mip_->time_limit;
   size_t total_effort = 0;
+  size_t effort_since_improvement = 0;
+  const size_t stale_budget = max_effort >> 2;
 
   SolutionPool pool(kPoolCapacity, minimize);
   seed_pool(pool, mipsolver);
@@ -207,6 +216,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   for (int K = 1; total_effort < max_effort; ++K) {
     if (mipsolver.timer_.read() >= time_limit) break;
     if (mipdata->terminatorTerminated()) break;
+    if (effort_since_improvement > stale_budget) break;
 
     // Configure PDLP tolerances — progressive refinement (§2.2)
     highs.setOptionValue("pdlp_optimality_tolerance", epsilon);
@@ -220,10 +230,12 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     // Track PDLP effort: iterations × nnz (each iteration does two mat-vec products)
     HighsInt pdlp_iters = 0;
     highs.getInfoValue("pdlp_iteration_count", pdlp_iters);
-    size_t nnz = mipdata->ARindex_.size();
-    total_effort += static_cast<size_t>(pdlp_iters) * nnz;
+    size_t iter_effort = static_cast<size_t>(pdlp_iters) * nnz_lp;
+    total_effort += iter_effort;
+    effort_since_improvement += iter_effort;
 
     if (status == HighsStatus::kError) break;
+    if (highs.getModelStatus() == HighsModelStatus::kInfeasible) break;
 
     // Stall detection: if PDLP returns 0 iterations, the modified
     // objective isn't changing the LP solution.  Break after consecutive
@@ -270,6 +282,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
           obj += orig_cost[j] * x_bar[j];
         }
         pool.try_add(obj, x_bar);
+        effort_since_improvement = 0;
         continue; // skip rounding — already integer-feasible
       }
     }
@@ -298,10 +311,12 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     // attempt_idx=0 ensures fpr_attempt uses the PDLP hint as starting point
     auto result = fpr_attempt(mipsolver, cfg, rng, 0, nullptr);
     total_effort += result.effort;
+    effort_since_improvement += result.effort;
 
     // Line 13: collect feasible solutions
     if (result.found_feasible && !result.solution.empty()) {
       pool.try_add(result.objective, result.solution);
+      effort_since_improvement = 0;
     }
 
     // Use the rounded point for objective update (even if infeasible).
