@@ -31,7 +31,7 @@ First build is slow (~5 min) because it fetches and builds HiGHS via FetchConten
 
 ## Architecture
 
-**Integration model**: Heuristics are compiled as a static object library (`mip_heuristics`) whose objects are injected into the HiGHS `highs` target. The HiGHS source is fetched at build time (v1.13.1) with patches applied from `third_party/highs_patch/`. Heuristics access HiGHS internals directly via `HighsMipSolver&`.
+**Integration model**: Heuristics are compiled as a static object library (`mip_heuristics`) whose objects are injected into the HiGHS `highs` target. The HiGHS source is fetched at build time (v1.14.0) with patches applied from `third_party/highs_patch/`. Heuristics access HiGHS internals directly via `HighsMipSolver&`.
 
 **Heuristic entry points** — each has a standalone `run()` that HiGHS calls during presolve:
 - `fpr` — Fix, Propagate, and Repair. DFS tree search that fixes integers, propagates bounds, backtracks on infeasibility, then runs WalkSAT/RepairSearch to fix remaining violations. `fpr_core` contains the shared single-attempt logic.
