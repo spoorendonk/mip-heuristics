@@ -48,6 +48,7 @@ Enable portfolio mode (Thompson sampling arm selection):
 | `mip_heuristic_run_fpr` | `false` | Enable FPR heuristic |
 | `mip_heuristic_run_local_mip` | `false` | Enable LocalMIP heuristic |
 | `mip_heuristic_run_scylla` | `false` | Enable Scylla heuristic |
+| `mip_heuristic_scylla_parallel` | `false` | Run Scylla pump chains in parallel |
 | `mip_heuristic_portfolio` | `false` | Adaptive portfolio mode (selects among arms) |
 | `mip_heuristic_portfolio_opportunistic` | `false` | Parallel opportunistic portfolio |
 

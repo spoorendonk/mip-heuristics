@@ -46,6 +46,7 @@ First build is slow (~5 min) because it fetches and builds HiGHS via FetchConten
 
 **HiGHS options** added by the patch:
 - `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla` — enable/disable individual heuristics.
+- `mip_heuristic_scylla_parallel` — run Scylla pump chains in parallel (independent of portfolio mode).
 - `mip_heuristic_portfolio`, `mip_heuristic_portfolio_opportunistic` — enable portfolio mode / parallel opportunistic mode.
 - `mip_heuristic_run_feasibility_jump` — enable FJ arm in portfolio.
 
