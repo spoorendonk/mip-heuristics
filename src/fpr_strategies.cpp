@@ -285,6 +285,10 @@ std::vector<HighsInt> compute_var_order(const HighsMipSolver& mipsolver,
       return rank_cliques(mipsolver, rng, lp_ref);
     case VarStrategy::kCliques2:
       return rank_cliques2(mipsolver, lp_ref);
+    case VarStrategy::kDomainSize:
+      // Dynamic strategy: initial order is type-based; actual selection
+      // happens at each DFS node in fpr_core via find_smallest_domain.
+      return rank_type(mipsolver);
   }
   return rank_type(mipsolver);  // unreachable
 }

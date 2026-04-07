@@ -14,13 +14,14 @@ class HighsMipSolver;
 // ---------------------------------------------------------------------------
 
 enum class VarStrategy {
-  kLR,       // formulation order
-  kType,     // grouped by type: binary, integer, continuous
-  kRandom,   // random shuffle within each type bucket
-  kLocks,    // sorted by max(uplocks, downlocks) within type
-  kTypecl,   // clique cover for binaries, then type
-  kCliques,  // clique cover + analytic-center-weighted random sort
-  kCliques2, // dynamic clique cover using LP solution
+  kLR,         // formulation order
+  kType,       // grouped by type: binary, integer, continuous
+  kRandom,     // random shuffle within each type bucket
+  kLocks,      // sorted by max(uplocks, downlocks) within type
+  kTypecl,     // clique cover for binaries, then type
+  kCliques,    // clique cover + analytic-center-weighted random sort
+  kCliques2,   // dynamic clique cover using LP solution
+  kDomainSize, // dynamic: smallest domain first at each DFS node
 };
 
 enum class ValStrategy {
@@ -68,6 +69,11 @@ inline bool mode_backtracks(FrameworkMode m) {
          m == FrameworkMode::kRepairSearch;
 }
 
+// Does this variable strategy recompute ordering dynamically at each DFS node?
+inline bool is_dynamic_var_strategy(VarStrategy s) {
+  return s == VarStrategy::kDomainSize;
+}
+
 // Does this strategy require an LP solution?
 inline bool strategy_needs_lp(const FprStrategyConfig& cfg) {
   switch (cfg.val_strategy) {
@@ -109,6 +115,8 @@ inline constexpr FprStrategyConfig kStratCliques{VarStrategy::kCliques,
                                                  ValStrategy::kUp};
 inline constexpr FprStrategyConfig kStratCliques2{VarStrategy::kCliques2,
                                                   ValStrategy::kUp};
+inline constexpr FprStrategyConfig kStratDomsize{VarStrategy::kDomainSize,
+                                                 ValStrategy::kLoosedyn};
 
 // LP-dependent strategies
 inline constexpr FprStrategyConfig kStratZerocore{VarStrategy::kTypecl,

@@ -295,19 +295,43 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
 
   // --- Phase 2: DFS Fix & Propagate (paper Fig. 1) ---
 
+  const bool dynamic_var =
+      cfg.strategy && is_dynamic_var_strategy(cfg.strategy->var_strategy);
+
   // Cursor into var_order: tracks how far we've scanned. Advances on the
   // forward path so each position is visited at most once. Reset on backtrack.
   const auto var_order_size = static_cast<HighsInt>(var_order.size());
   HighsInt var_order_cursor = 0;
 
-  // Find next unfixed integer variable in var_order starting from cursor.
-  // Returns {variable, index} or {-1, -1} if none found.
-  auto find_next_unfixed_int = [&]() -> std::pair<HighsInt, HighsInt> {
+  // Static: scan from cursor (O(1) amortized).
+  auto find_next_unfixed_int_static = [&]() -> std::pair<HighsInt, HighsInt> {
     for (; var_order_cursor < var_order_size; ++var_order_cursor) {
       HighsInt j = var_order[var_order_cursor];
       if (is_int(j) && !E.var(j).fixed) return {j, var_order_cursor};
     }
     return {-1, -1};
+  };
+
+  // Dynamic: pick unfixed integer variable with smallest domain (ub - lb).
+  // Ties broken by var_order traversal order (type-bucketed, then formulation).
+  auto find_smallest_domain = [&]() -> std::pair<HighsInt, HighsInt> {
+    HighsInt best = -1;
+    double best_dom = std::numeric_limits<double>::infinity();
+    for (HighsInt idx = 0; idx < var_order_size; ++idx) {
+      HighsInt j = var_order[idx];
+      if (!is_int(j) || E.var(j).fixed) continue;
+      double dom = E.var(j).ub - E.var(j).lb;
+      if (dom < best_dom) {
+        best_dom = dom;
+        best = j;
+      }
+    }
+    return {best, 0};
+  };
+
+  auto find_next_unfixed_int = [&]() -> std::pair<HighsInt, HighsInt> {
+    if (dynamic_var) return find_smallest_domain();
+    return find_next_unfixed_int_static();
   };
 
   // Compute alternative value for branching

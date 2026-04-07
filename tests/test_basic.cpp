@@ -825,6 +825,12 @@ TEST_CASE("FPR strategies: strategy_needs_lp", "[fpr][strategies]") {
   REQUIRE_FALSE(strategy_needs_lp(kStratBadobjcl));
   REQUIRE_FALSE(strategy_needs_lp(kStratLocks2));
   REQUIRE_FALSE(strategy_needs_lp(kStratGoodobj));
+  REQUIRE_FALSE(strategy_needs_lp(kStratDomsize));
+
+  // Dynamic strategy helpers
+  REQUIRE(is_dynamic_var_strategy(VarStrategy::kDomainSize));
+  REQUIRE_FALSE(is_dynamic_var_strategy(VarStrategy::kType));
+  REQUIRE_FALSE(is_dynamic_var_strategy(VarStrategy::kLocks));
 
   // LP-dependent strategies
   REQUIRE(strategy_needs_lp(kStratZerocore));
