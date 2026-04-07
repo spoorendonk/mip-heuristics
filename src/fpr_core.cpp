@@ -312,28 +312,13 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     return {-1, -1};
   };
 
-  // Dynamic: pick unfixed integer variable with smallest domain (ub - lb).
-  // Ties broken by var_order traversal order (type-bucketed, then formulation).
-  // O(ncol) per DFS node — O(ncol²) total. Acceptable for presolve budgets;
-  // optimize with a priority queue if profiling shows this as a bottleneck.
-  // Note: second return value is unused (cursor is meaningless for dynamic).
-  auto find_smallest_domain = [&]() -> std::pair<HighsInt, HighsInt> {
-    HighsInt best = -1;
-    double best_dom = std::numeric_limits<double>::infinity();
-    for (HighsInt idx = 0; idx < var_order_size; ++idx) {
-      HighsInt j = var_order[idx];
-      if (!is_int(j) || E.var(j).fixed) continue;
-      double dom = E.var(j).ub - E.var(j).lb;
-      if (dom < best_dom) {
-        best_dom = dom;
-        best = j;
-      }
-    }
-    return {best, 0};
-  };
+  // Dynamic: smallest-domain-first via priority queue maintained by PropEngine.
+  if (dynamic_var) {
+    E.init_domain_pq();
+  }
 
   auto find_next_unfixed_int = [&]() -> std::pair<HighsInt, HighsInt> {
-    if (dynamic_var) return find_smallest_domain();
+    if (dynamic_var) return {E.pq_top(), 0};
     return find_next_unfixed_int_static();
   };
 
@@ -354,6 +339,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     HighsInt vs_mark;
     HighsInt sol_mark;
     HighsInt act_mark;
+    HighsInt pq_mark;
     HighsInt cursor_reset;  // backtrack point: reset var_order_cursor here
   };
 
@@ -377,12 +363,13 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
     HighsInt act_m = E.act_mark();
+    HighsInt pq_m = E.pq_initialized() ? E.pq_mark() : -1;
     HighsInt cursor_pt = first_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({first_var, alt, vs_m, sol_m, act_m, cursor_pt});
+      dfs_stack.push_back({first_var, alt, vs_m, sol_m, act_m, pq_m, cursor_pt});
     }
-    dfs_stack.push_back({first_var, pref, vs_m, sol_m, act_m, cursor_pt});
+    dfs_stack.push_back({first_var, pref, vs_m, sol_m, act_m, pq_m, cursor_pt});
   }
 
   while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete) {
@@ -391,7 +378,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     ++nodes_visited;
 
     // Backtrack to parent state and reset cursor
-    E.backtrack_to(node.vs_mark, node.sol_mark, node.act_mark);
+    E.backtrack_to(node.vs_mark, node.sol_mark, node.act_mark, node.pq_mark);
     var_order_cursor = node.cursor_reset;
 
     // Apply the branching fixing
@@ -421,12 +408,13 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
     HighsInt act_m = E.act_mark();
+    HighsInt pq_m = E.pq_initialized() ? E.pq_mark() : -1;
     HighsInt cursor_pt = next_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({next_var, alt, vs_m, sol_m, act_m, cursor_pt});
+      dfs_stack.push_back({next_var, alt, vs_m, sol_m, act_m, pq_m, cursor_pt});
     }
-    dfs_stack.push_back({next_var, pref, vs_m, sol_m, act_m, cursor_pt});
+    dfs_stack.push_back({next_var, pref, vs_m, sol_m, act_m, pq_m, cursor_pt});
   }
 
   if (!found_complete) {

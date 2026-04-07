@@ -1,5 +1,6 @@
 #pragma once
 
+#include <set>
 #include <vector>
 
 #include "heuristic_common.h"
@@ -47,7 +48,8 @@ class PropEngine {
   // Restore state to the given undo marks. Also clears the propagation
   // worklist to avoid stale entries referencing now-reverted state.
   // If act_mark >= 0, also restores row activities to that mark.
-  void backtrack_to(HighsInt vs_mark, HighsInt sol_mark, HighsInt act_mark = -1);
+  void backtrack_to(HighsInt vs_mark, HighsInt sol_mark, HighsInt act_mark = -1,
+                    HighsInt pq_mark = -1);
 
   // Current undo stack sizes (for DFS node marks).
   HighsInt vs_mark() const;
@@ -76,6 +78,13 @@ class PropEngine {
   const double* max_activity_data() const { return max_activity_.data(); }
   bool activities_initialized() const { return !min_activity_.empty(); }
   HighsInt act_mark() const;
+
+  // Domain priority queue: unfixed integer variables sorted by domain size.
+  // Maintained incrementally across fix/tighten/propagate with undo support.
+  void init_domain_pq();
+  HighsInt pq_top() const;
+  HighsInt pq_mark() const;
+  bool pq_initialized() const { return pq_active_; }
 
   // Accumulated propagation effort (coefficient accesses).
   size_t effort() const { return prop_work_; }
@@ -145,4 +154,17 @@ class PropEngine {
     double old_max;
   };
   std::vector<ActUndo> act_undo_;
+
+  // Domain priority queue for dynamic variable selection
+  bool pq_active_ = false;
+  std::set<std::pair<double, HighsInt>> domain_pq_;
+  struct PqUndo {
+    HighsInt var;
+    double old_dom;     // domain size before change
+    double new_dom;     // domain size after change
+    bool was_present;   // was the var in the PQ before this change?
+    bool is_present;    // is the var in the PQ after this change?
+  };
+  std::vector<PqUndo> pq_undo_;
+  void pq_notify(HighsInt j, const VarState& old_vs);
 };

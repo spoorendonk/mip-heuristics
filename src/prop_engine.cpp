@@ -53,6 +53,9 @@ void PropEngine::reset() {
   min_activity_.clear();
   max_activity_.clear();
   act_undo_.clear();
+  pq_active_ = false;
+  domain_pq_.clear();
+  pq_undo_.clear();
 }
 
 bool PropEngine::fix(HighsInt j, double value) {
@@ -70,6 +73,7 @@ bool PropEngine::fix(HighsInt j, double value) {
   vs_[j].val = value;
   solution_[j] = value;
   update_activities(j, old_vs);
+  pq_notify(j, old_vs);
   return true;
 }
 
@@ -97,6 +101,7 @@ bool PropEngine::tighten_lb(HighsInt j, double new_lb) {
     solution_[j] = val;
   }
   update_activities(j, old_vs);
+  pq_notify(j, old_vs);
   seed_worklist(j);
   return true;
 }
@@ -125,6 +130,7 @@ bool PropEngine::tighten_ub(HighsInt j, double new_ub) {
     solution_[j] = val;
   }
   update_activities(j, old_vs);
+  pq_notify(j, old_vs);
   seed_worklist(j);
   return true;
 }
@@ -296,6 +302,7 @@ bool PropEngine::propagate(HighsInt fixed_var) {
 
       if (changed) {
         update_activities(j, pre_change_vs);
+        pq_notify(j, pre_change_vs);
         seed_worklist(j);
       }
     }
@@ -305,7 +312,7 @@ bool PropEngine::propagate(HighsInt fixed_var) {
 }
 
 void PropEngine::backtrack_to(HighsInt vs_mark_target, HighsInt sol_mark_target,
-                              HighsInt act_mark_target) {
+                              HighsInt act_mark_target, HighsInt pq_mark_target) {
   for (HighsInt u = static_cast<HighsInt>(vs_undo_.size()) - 1;
        u >= vs_mark_target; --u) {
     vs_[vs_undo_[u].first] = vs_undo_[u].second;
@@ -324,6 +331,22 @@ void PropEngine::backtrack_to(HighsInt vs_mark_target, HighsInt sol_mark_target,
       max_activity_[act_undo_[u].row] = act_undo_[u].old_max;
     }
     act_undo_.resize(act_mark_target);
+  }
+  // Restore domain priority queue by replaying undo entries in reverse.
+  // Each entry stores the exact PQ key before and after the change, so
+  // we don't depend on vs_ state during replay.
+  if (pq_mark_target >= 0) {
+    for (HighsInt u = static_cast<HighsInt>(pq_undo_.size()) - 1;
+         u >= pq_mark_target; --u) {
+      auto& undo = pq_undo_[u];
+      if (undo.is_present) {
+        domain_pq_.erase({undo.new_dom, undo.var});
+      }
+      if (undo.was_present) {
+        domain_pq_.insert({undo.old_dom, undo.var});
+      }
+    }
+    pq_undo_.resize(pq_mark_target);
   }
   // Clear stale worklist entries that may reference now-reverted state.
   for (HighsInt wi : prop_worklist_) {
@@ -411,5 +434,49 @@ void PropEngine::update_activities(HighsInt j, const VarState& old_vs) {
       min_activity_[i] += (new_lo - old_lo);
       max_activity_[i] += (new_hi - old_hi);
     }
+  }
+}
+
+void PropEngine::init_domain_pq() {
+  domain_pq_.clear();
+  pq_undo_.clear();
+  pq_undo_.reserve(4 * ncol_);
+  for (HighsInt j = 0; j < ncol_; ++j) {
+    if (is_int(j) && !vs_[j].fixed) {
+      domain_pq_.insert({vs_[j].ub - vs_[j].lb, j});
+    }
+  }
+  pq_active_ = true;
+}
+
+HighsInt PropEngine::pq_top() const {
+  if (domain_pq_.empty()) return -1;
+  return domain_pq_.begin()->second;
+}
+
+HighsInt PropEngine::pq_mark() const {
+  return static_cast<HighsInt>(pq_undo_.size());
+}
+
+void PropEngine::pq_notify(HighsInt j, const VarState& old_vs) {
+  if (!pq_active_) return;
+  if (!is_int(j)) return;
+
+  double old_dom = old_vs.ub - old_vs.lb;
+  bool was_present = !old_vs.fixed;
+  bool is_present = !vs_[j].fixed;
+  double new_dom = vs_[j].ub - vs_[j].lb;
+
+  // Remove old entry
+  if (was_present) {
+    domain_pq_.erase({old_dom, j});
+  }
+
+  // Log undo with both old and new state
+  pq_undo_.push_back({j, old_dom, new_dom, was_present, is_present});
+
+  // Insert new entry if not fixed
+  if (is_present) {
+    domain_pq_.insert({new_dom, j});
   }
 }
