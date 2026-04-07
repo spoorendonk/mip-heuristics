@@ -343,21 +343,13 @@ double val_lp_based(double lb, double ub, bool is_int, double lp_val,
 }
 
 // Dynamic locks (paper Section 4.2, "loosedyn"):
-// Compute current min/max activity for each constraint the variable appears in.
-// Count how many constraints would become infeasible (or tighter) if variable
-// goes up vs down. Pick direction with fewer dynamic locks.
-double val_loosedyn(HighsInt j, double lb, double ub, bool is_int,
-                    bool minimize, double cost,
-                    const HighsMipSolver& mipsolver, const VarState* vs,
-                    const CscMatrix& csc) {
-  const auto* model = mipsolver.model_;
-  auto* mipdata = mipsolver.mipdata_.get();
-  const auto& ARstart = mipdata->ARstart_;
-  const auto& ARindex = mipdata->ARindex_;
-  const auto& ARvalue = mipdata->ARvalue_;
-  const auto& row_lo = model->row_lower_;
-  const auto& row_hi = model->row_upper_;
-
+// Use precomputed min/max activities to count how many constraints would become
+// infeasible if variable goes up vs down. Pick direction with fewer dynamic
+// locks.
+double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */,
+                    bool minimize, double cost, const double* row_lo,
+                    const double* row_hi, const double* min_act,
+                    const double* max_act, const CscMatrix& csc) {
   // Count dynamic up-locks and down-locks for variable j
   HighsInt up_locks = 0;
   HighsInt down_locks = 0;
@@ -368,31 +360,11 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool is_int,
     HighsInt i = csc.col_row[p];
     double a = csc.col_val[p];
 
-    // Compute current min/max activity for this row from current VarState
-    double min_act = 0.0, max_act = 0.0;
-    for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-      HighsInt jj = ARindex[k];
-      double aa = ARvalue[k];
-      if (vs[jj].fixed) {
-        min_act += aa * vs[jj].val;
-        max_act += aa * vs[jj].val;
-      } else {
-        if (aa > 0) {
-          min_act += aa * vs[jj].lb;
-          max_act += aa * vs[jj].ub;
-        } else {
-          min_act += aa * vs[jj].ub;
-          max_act += aa * vs[jj].lb;
-        }
-      }
-    }
-
-    // Check if constraint has become redundant (already satisfied for any value)
     bool has_upper = row_hi[i] < kHighsInf;
     bool has_lower = row_lo[i] > -kHighsInf;
-    if (has_upper && min_act > row_hi[i]) {
+    if (has_upper && min_act[i] > row_hi[i]) {
       // Already infeasible — skip
-    } else if (has_lower && max_act < row_lo[i]) {
+    } else if (has_lower && max_act[i] < row_lo[i]) {
       // Already infeasible — skip
     } else {
       // Not redundant: count locks
@@ -423,7 +395,8 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool is_int,
 double choose_value(HighsInt j, double lb, double ub, bool is_int,
                     bool minimize, double cost, ValStrategy strategy,
                     std::mt19937& rng, const double* lp_ref,
-                    const HighsMipSolver* mipsolver, const VarState* vs,
+                    const double* row_lo, const double* row_hi,
+                    const double* min_act, const double* max_act,
                     const CscMatrix* csc) {
   double v;
   switch (strategy) {
@@ -440,9 +413,9 @@ double choose_value(HighsInt j, double lb, double ub, bool is_int,
       v = val_badobj(lb, ub, minimize, cost);
       break;
     case ValStrategy::kLoosedyn:
-      if (mipsolver && vs && csc) {
-        v = val_loosedyn(j, lb, ub, is_int, minimize, cost, *mipsolver, vs,
-                         *csc);
+      if (min_act && max_act && row_lo && row_hi && csc) {
+        v = val_loosedyn(j, lb, ub, is_int, minimize, cost, row_lo, row_hi,
+                         min_act, max_act, *csc);
       } else {
         v = val_goodobj(lb, ub, minimize, cost);
       }

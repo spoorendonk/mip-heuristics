@@ -46,7 +46,8 @@ class PropEngine {
 
   // Restore state to the given undo marks. Also clears the propagation
   // worklist to avoid stale entries referencing now-reverted state.
-  void backtrack_to(HighsInt vs_mark, HighsInt sol_mark);
+  // If act_mark >= 0, also restores row activities to that mark.
+  void backtrack_to(HighsInt vs_mark, HighsInt sol_mark, HighsInt act_mark = -1);
 
   // Current undo stack sizes (for DFS node marks).
   HighsInt vs_mark() const;
@@ -64,6 +65,17 @@ class PropEngine {
 
   // Reset all variables to global bounds, nothing fixed.
   void reset();
+
+  // Row activity tracking: per-row min/max activities computed from current
+  // variable bounds. Maintained incrementally across fix/tighten/propagate.
+  // Must call init_activities() once before use.
+  void init_activities();
+  double row_min_activity(HighsInt i) const { return min_activity_[i]; }
+  double row_max_activity(HighsInt i) const { return max_activity_[i]; }
+  const double* min_activity_data() const { return min_activity_.data(); }
+  const double* max_activity_data() const { return max_activity_.data(); }
+  bool activities_initialized() const { return !min_activity_.empty(); }
+  HighsInt act_mark() const;
 
   // Accumulated propagation effort (coefficient accesses).
   size_t effort() const { return prop_work_; }
@@ -109,6 +121,10 @@ class PropEngine {
   double feastol_;
   size_t nnz_;
 
+  // Update row activities for all rows containing variable j, given its
+  // old VarState. Call after vs_[j] has been modified.
+  void update_activities(HighsInt j, const VarState& old_vs);
+
   // Owned mutable state
   std::vector<VarState> vs_;
   std::vector<double> solution_;
@@ -117,4 +133,16 @@ class PropEngine {
   std::vector<HighsInt> prop_worklist_;
   std::vector<char> prop_in_wl_;
   size_t prop_work_ = 0;
+
+  // Per-row min/max activities (empty until init_activities() is called)
+  std::vector<double> min_activity_;
+  std::vector<double> max_activity_;
+
+  // Activity undo: {row, old_min, old_max}
+  struct ActUndo {
+    HighsInt row;
+    double old_min;
+    double old_max;
+  };
+  std::vector<ActUndo> act_undo_;
 };

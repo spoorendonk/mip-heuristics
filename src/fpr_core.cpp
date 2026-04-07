@@ -217,6 +217,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   // --- Phase 2: Fix & Propagate ---
   // (E already initialized with global bounds via constructor)
 
+  // Initialize incremental row activities if loosedyn is used
+  if (cfg.strategy &&
+      cfg.strategy->val_strategy == ValStrategy::kLoosedyn) {
+    E.init_activities();
+  }
+
   // choose_fix_value: strategy-aware or legacy hint+objective-greedy fallback
   const bool use_hint = (attempt_idx == 0 && cfg.hint != nullptr);
   auto choose_fix_value = [&](HighsInt j) -> double {
@@ -224,7 +230,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     if (cfg.strategy) {
       return choose_value(j, E.var(j).lb, E.var(j).ub, is_int(j), minimize,
                           col_cost[j], cfg.strategy->val_strategy, rng,
-                          cfg.lp_ref, &mipsolver, &E.var(0), &csc_ref);
+                          cfg.lp_ref, row_lo.data(), row_hi.data(),
+                          E.activities_initialized() ? E.min_activity_data()
+                                                     : nullptr,
+                          E.activities_initialized() ? E.max_activity_data()
+                                                     : nullptr,
+                          &csc_ref);
     }
 
     // Legacy behavior
@@ -315,6 +326,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double val;
     HighsInt vs_mark;
     HighsInt sol_mark;
+    HighsInt act_mark;
     HighsInt cursor_reset;  // backtrack point: reset var_order_cursor here
   };
 
@@ -337,12 +349,13 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double alt = compute_alt(first_var, pref);
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
+    HighsInt act_m = E.act_mark();
     HighsInt cursor_pt = first_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({first_var, alt, vs_m, sol_m, cursor_pt});
+      dfs_stack.push_back({first_var, alt, vs_m, sol_m, act_m, cursor_pt});
     }
-    dfs_stack.push_back({first_var, pref, vs_m, sol_m, cursor_pt});
+    dfs_stack.push_back({first_var, pref, vs_m, sol_m, act_m, cursor_pt});
   }
 
   while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete) {
@@ -351,7 +364,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     ++nodes_visited;
 
     // Backtrack to parent state and reset cursor
-    E.backtrack_to(node.vs_mark, node.sol_mark);
+    E.backtrack_to(node.vs_mark, node.sol_mark, node.act_mark);
     var_order_cursor = node.cursor_reset;
 
     // Apply the branching fixing
@@ -380,12 +393,13 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double alt = compute_alt(next_var, pref);
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
+    HighsInt act_m = E.act_mark();
     HighsInt cursor_pt = next_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({next_var, alt, vs_m, sol_m, cursor_pt});
+      dfs_stack.push_back({next_var, alt, vs_m, sol_m, act_m, cursor_pt});
     }
-    dfs_stack.push_back({next_var, pref, vs_m, sol_m, cursor_pt});
+    dfs_stack.push_back({next_var, pref, vs_m, sol_m, act_m, cursor_pt});
   }
 
   if (!found_complete) {

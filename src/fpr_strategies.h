@@ -8,7 +8,6 @@
 #include "util/HighsInt.h"
 
 class HighsMipSolver;
-struct VarState;
 
 // ---------------------------------------------------------------------------
 // Strategy enums (paper Table 1, Table 2, Section 3)
@@ -140,12 +139,13 @@ std::vector<HighsInt> compute_var_order(const HighsMipSolver& mipsolver,
 
 // Choose a fixing value for variable j given the current domain [lb, ub].
 // For LP-based strategies, `lp_ref[j]` provides the reference LP value.
-// For loosedyn, the row-sparse matrix and current VarState are needed.
+// For loosedyn, precomputed row activities and bound arrays are needed.
 double choose_value(HighsInt j, double lb, double ub, bool is_int,
                     bool minimize, double cost, ValStrategy strategy,
                     std::mt19937& rng, const double* lp_ref,
                     // loosedyn support: nullable pointers
-                    const HighsMipSolver* mipsolver, const VarState* vs,
+                    const double* row_lo, const double* row_hi,
+                    const double* min_act, const double* max_act,
                     const CscMatrix* csc);
 
 // ---------------------------------------------------------------------------
