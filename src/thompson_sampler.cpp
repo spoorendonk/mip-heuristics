@@ -61,9 +61,9 @@ int ThompsonSampler::select_effort_aware(std::mt19937& rng) {
       double a = gamma_a(rng);
       double b = gamma_b(rng);
       double sample = (a + b > 0.0) ? a / (a + b) : 0.5;
-      // Divide by effort to get reward-per-second rate.
+      // Divide by effort to get reward-per-unit-effort rate.
       // Guard against zero-effort arms (near-instant returns).
-      double effort = std::max(arms_[i].avg_effort, 1e-9);
+      double effort = std::max(arms_[i].avg_effort, 1.0);
       double score = sample / effort;
       if (score > best_score) {
         best_score = score;
@@ -80,18 +80,18 @@ int ThompsonSampler::select_effort_aware(std::mt19937& rng) {
   return impl();
 }
 
-void ThompsonSampler::record_effort(int arm, double seconds) {
+void ThompsonSampler::record_effort(int arm, size_t effort_units) {
   assert(arm >= 0 && arm < static_cast<int>(arms_.size()));
-  assert(seconds >= 0.0);
 
   auto impl = [&]() {
     constexpr double kEmaAlpha = 0.3;
+    double effort = static_cast<double>(effort_units);
     if (!arms_[arm].has_effort) {
-      arms_[arm].avg_effort = seconds;
+      arms_[arm].avg_effort = effort;
       arms_[arm].has_effort = true;
     } else {
       arms_[arm].avg_effort =
-          kEmaAlpha * seconds + (1.0 - kEmaAlpha) * arms_[arm].avg_effort;
+          kEmaAlpha * effort + (1.0 - kEmaAlpha) * arms_[arm].avg_effort;
     }
   };
 

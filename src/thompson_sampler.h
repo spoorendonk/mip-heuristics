@@ -17,7 +17,7 @@ class ThompsonSampler {
     double alpha;
     double beta;
     int pulls;
-    double avg_effort;  // running average wall-clock effort per pull (seconds)
+    double avg_effort;  // running average effort per pull (coefficient accesses)
     double mean() const { return alpha / (alpha + beta); }
   };
 
@@ -41,9 +41,9 @@ class ThompsonSampler {
   // 3 (improved obj)     → alpha += 1.5
   void update(int arm, int reward);
 
-  // Record wall-clock effort (seconds) for an arm pull. Updates the
+  // Record effort (coefficient accesses) for an arm pull. Updates the
   // exponential moving average with smoothing factor alpha=0.3.
-  void record_effort(int arm, double seconds);
+  void record_effort(int arm, size_t effort_units);
 
   ArmStats stats(int arm) const;
   int num_arms() const { return static_cast<int>(arms_.size()); }
@@ -53,7 +53,7 @@ class ThompsonSampler {
     double alpha;
     double beta;
     int pulls;
-    double avg_effort;      // EMA of wall-clock seconds per pull
+    double avg_effort;      // EMA of effort (coefficient accesses) per pull
     bool has_effort;        // true once at least one effort observation exists
   };
 

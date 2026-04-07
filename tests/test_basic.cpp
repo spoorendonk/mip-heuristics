@@ -190,15 +190,15 @@ TEST_CASE("ThompsonSampler: effort tracking", "[bandit]") {
   REQUIRE(s0.avg_effort == Catch::Approx(0.0));
 
   // First observation sets the average directly
-  sampler.record_effort(0, 1.0);
+  sampler.record_effort(0, 1000);
   s0 = sampler.stats(0);
-  REQUIRE(s0.avg_effort == Catch::Approx(1.0));
+  REQUIRE(s0.avg_effort == Catch::Approx(1000.0));
 
   // Subsequent observations use EMA (alpha=0.3)
-  sampler.record_effort(0, 2.0);
+  sampler.record_effort(0, 2000);
   s0 = sampler.stats(0);
-  // 0.3 * 2.0 + 0.7 * 1.0 = 1.3
-  REQUIRE(s0.avg_effort == Catch::Approx(1.3));
+  // 0.3 * 2000 + 0.7 * 1000 = 1300
+  REQUIRE(s0.avg_effort == Catch::Approx(1300.0));
 
   // Arm 1 still has no effort
   auto s1 = sampler.stats(1);
@@ -232,8 +232,8 @@ TEST_CASE("ThompsonSampler: effort-aware select prefers cheap arms",
   }
 
   // Arm 0 is 100x cheaper than arm 1
-  sampler.record_effort(0, 0.001);
-  sampler.record_effort(1, 0.1);
+  sampler.record_effort(0, 100);
+  sampler.record_effort(1, 10000);
 
   std::mt19937 rng(42);
   int arm0_count = 0;

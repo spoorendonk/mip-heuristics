@@ -1,7 +1,6 @@
 #include "portfolio.h"
 
 #include <atomic>
-#include <chrono>
 #include <random>
 #include <vector>
 
@@ -257,14 +256,10 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
             size_t remaining =
                 budget -
                 std::min(budget, total_effort.load(std::memory_order_relaxed));
-            auto t0 = std::chrono::steady_clock::now();
             auto result = run_presolve_arm(mipsolver, enabled_arms[arm], rng,
                                            attempt_counter++, restart_ptr, csc,
                                            incumbent_snapshot, remaining,
                                            fpr_var_orders);
-            auto t1 = std::chrono::steady_clock::now();
-            double elapsed =
-                std::chrono::duration<double>(t1 - t0).count();
 
             if (result.found_feasible) {
               pool.try_add(result.objective, result.solution);
@@ -273,7 +268,7 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
             auto after = pool.snapshot();
             int reward = compute_reward(before, after, result, minimize);
             bandit.update(arm, reward);
-            bandit.record_effort(arm, elapsed);
+            bandit.record_effort(arm, result.effort);
 
             if (reward >= 2) {
               effort_since_improvement.store(0, std::memory_order_relaxed);
@@ -387,7 +382,6 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   // Pre-allocate per-worker vectors outside epoch loop
   std::vector<int> arms(N);
   std::vector<HeuristicResult> results(N);
-  std::vector<double> elapsed_secs(N, 0.0);
 
   for (int epoch = 0; total_effort < budget; ++epoch) {
     if (mipdata->terminatorTerminated() ||
@@ -417,14 +411,10 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
             const double *restart_ptr =
                 restarts[w].empty() ? nullptr : restarts[w].data();
             size_t remaining = budget - std::min(budget, total_effort);
-            auto t0 = std::chrono::steady_clock::now();
             results[w] = run_presolve_arm(
                 mipsolver, enabled_arms[arms[w]], rngs[w], attempt_counters[w],
                 restart_ptr, csc, incumbent_snapshot, remaining,
                 fpr_var_orders);
-            auto t1 = std::chrono::steady_clock::now();
-            elapsed_secs[w] =
-                std::chrono::duration<double>(t1 - t0).count();
           }
         },
         1);
@@ -438,7 +428,7 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
       auto after_snap = pool.snapshot();
       int reward = compute_reward(pool_snap, after_snap, results[w], minimize);
       bandit.update(arms[w], reward);
-      bandit.record_effort(arms[w], elapsed_secs[w]);
+      bandit.record_effort(arms[w], results[w].effort);
       total_effort += results[w].effort;
       attempt_counters[w]++;
 
