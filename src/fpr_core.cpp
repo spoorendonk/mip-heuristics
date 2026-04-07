@@ -314,6 +314,9 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
 
   // Dynamic: pick unfixed integer variable with smallest domain (ub - lb).
   // Ties broken by var_order traversal order (type-bucketed, then formulation).
+  // O(ncol) per DFS node — O(ncol²) total. Acceptable for presolve budgets;
+  // optimize with a priority queue if profiling shows this as a bottleneck.
+  // Note: second return value is unused (cursor is meaningless for dynamic).
   auto find_smallest_domain = [&]() -> std::pair<HighsInt, HighsInt> {
     HighsInt best = -1;
     double best_dom = std::numeric_limits<double>::infinity();

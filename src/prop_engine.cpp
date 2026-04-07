@@ -348,7 +348,7 @@ void PropEngine::init_activities() {
   min_activity_.assign(nrow_, 0.0);
   max_activity_.assign(nrow_, 0.0);
   act_undo_.clear();
-  act_undo_.reserve(ncol_);
+  act_undo_.reserve(4 * ncol_);  // grows with nnz touched during DFS
 
   for (HighsInt i = 0; i < nrow_; ++i) {
     double lo = 0.0, hi = 0.0;

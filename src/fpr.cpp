@@ -28,7 +28,8 @@ struct NamedConfig {
 // Paper's 6 LP-free configs + RepairSearch + dynamic domain-size:
 //   dfs-badobjcl, dfs-locks2, dive-locks2,
 //   dfsrep-locks, dfsrep-badobjcl, diveprop-random, repairsearch-locks,
-//   dfs-domsize
+//   dfs-domsize (not in paper — experimental, O(ncol²) cost excludes it
+//   from portfolio bandit arms where repeated pulls would be too expensive)
 constexpr NamedConfig kLpFreeConfigs[] = {
     {kStratBadobjcl, FrameworkMode::kDfs},
     {kStratLocks2, FrameworkMode::kDfs},

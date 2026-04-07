@@ -368,11 +368,11 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */,
     bool has_upper = row_hi[i] < kHighsInf;
     bool has_lower = row_lo[i] > -kHighsInf;
     if (has_upper && min_act[i] > row_hi[i]) {
-      // Already infeasible — skip
+      // Upper bound infeasible — skip
       continue;
     }
     if (has_lower && max_act[i] < row_lo[i]) {
-      // Already infeasible — skip
+      // Lower bound infeasible — skip
       continue;
     }
     // Paper Section 4.2: "constraints that have already become redundant
