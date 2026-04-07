@@ -284,13 +284,17 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
 
   // --- Phase 2: DFS Fix & Propagate (paper Fig. 1) ---
 
-  // Find first unfixed integer variable in var_order starting from hint.
-  // Returns {variable, index} or {-1, -1} if none found.
+  // Cursor into var_order: tracks how far we've scanned. Advances on the
+  // forward path so each position is visited at most once. Reset on backtrack.
   const auto var_order_size = static_cast<HighsInt>(var_order.size());
-  auto find_next_unfixed_int = [&](HighsInt hint) -> std::pair<HighsInt, HighsInt> {
-    for (HighsInt idx = hint; idx < var_order_size; ++idx) {
-      HighsInt j = var_order[idx];
-      if (is_int(j) && !E.var(j).fixed) return {j, idx};
+  HighsInt var_order_cursor = 0;
+
+  // Find next unfixed integer variable in var_order starting from cursor.
+  // Returns {variable, index} or {-1, -1} if none found.
+  auto find_next_unfixed_int = [&]() -> std::pair<HighsInt, HighsInt> {
+    for (; var_order_cursor < var_order_size; ++var_order_cursor) {
+      HighsInt j = var_order[var_order_cursor];
+      if (is_int(j) && !E.var(j).fixed) return {j, var_order_cursor};
     }
     return {-1, -1};
   };
@@ -311,7 +315,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double val;
     HighsInt vs_mark;
     HighsInt sol_mark;
-    HighsInt scan_start;  // hint: resume var_order scan from this index
+    HighsInt cursor_reset;  // backtrack point: reset var_order_cursor here
   };
 
   const bool do_propagate = mode_propagates(cfg.mode);
@@ -324,7 +328,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
   bool found_complete = false;
 
   // Seed the DFS with the first unfixed integer variable
-  auto [first_var, first_idx] = find_next_unfixed_int(0);
+  auto [first_var, first_idx] = find_next_unfixed_int();
   if (first_var < 0) {
     // All integer variables already fixed (e.g., by propagation)
     found_complete = true;
@@ -333,12 +337,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double alt = compute_alt(first_var, pref);
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
-    HighsInt next_scan = first_idx + 1;
+    HighsInt cursor_pt = first_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({first_var, alt, vs_m, sol_m, next_scan});
+      dfs_stack.push_back({first_var, alt, vs_m, sol_m, cursor_pt});
     }
-    dfs_stack.push_back({first_var, pref, vs_m, sol_m, next_scan});
+    dfs_stack.push_back({first_var, pref, vs_m, sol_m, cursor_pt});
   }
 
   while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete) {
@@ -346,8 +350,9 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     dfs_stack.pop_back();
     ++nodes_visited;
 
-    // Backtrack to parent state
+    // Backtrack to parent state and reset cursor
     E.backtrack_to(node.vs_mark, node.sol_mark);
+    var_order_cursor = node.cursor_reset;
 
     // Apply the branching fixing
     if (!E.fix(node.var, node.val)) {
@@ -361,8 +366,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
       }
     }
 
-    // Find next unfixed integer variable (scan from hint, not from 0)
-    auto [next_var, next_idx] = find_next_unfixed_int(node.scan_start);
+    // Find next unfixed integer variable (cursor advances from last position)
+    auto [next_var, next_idx] = find_next_unfixed_int();
 
     if (next_var < 0) {
       // All integer variables fixed
@@ -375,12 +380,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg,
     double alt = compute_alt(next_var, pref);
     HighsInt vs_m = E.vs_mark();
     HighsInt sol_m = E.sol_mark();
-    HighsInt next_scan = next_idx + 1;
+    HighsInt cursor_pt = next_idx + 1;
 
     if (do_backtrack) {
-      dfs_stack.push_back({next_var, alt, vs_m, sol_m, next_scan});
+      dfs_stack.push_back({next_var, alt, vs_m, sol_m, cursor_pt});
     }
-    dfs_stack.push_back({next_var, pref, vs_m, sol_m, next_scan});
+    dfs_stack.push_back({next_var, pref, vs_m, sol_m, cursor_pt});
   }
 
   if (!found_complete) {
