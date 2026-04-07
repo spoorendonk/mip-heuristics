@@ -301,16 +301,18 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
             bandit.update(arm, reward);
             bandit.record_effort(arm, result.effort);
 
-            double wall_ms =
-                std::chrono::duration<double, std::milli>(t1 - t0).count();
-            double effort_per_ms =
-                wall_ms > 0.0 ? static_cast<double>(result.effort) / wall_ms
-                              : 0.0;
-            highsLogDev(log_options, HighsLogType::kVerbose,
-                        "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
-                        "effort_per_ms=%.0f\n",
-                        arm_name(enabled_arms[arm]), result.effort, wall_ms,
-                        effort_per_ms);
+            if (result.effort > 0) {
+              double wall_ms =
+                  std::chrono::duration<double, std::milli>(t1 - t0).count();
+              double effort_per_ms =
+                  wall_ms > 0.0 ? static_cast<double>(result.effort) / wall_ms
+                                : 0.0;
+              highsLogDev(log_options, HighsLogType::kVerbose,
+                          "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
+                          "effort_per_ms=%.0f\n",
+                          arm_name(enabled_arms[arm]), result.effort, wall_ms,
+                          effort_per_ms);
+            }
 
             if (reward >= 2) {
               effort_since_improvement.store(0, std::memory_order_relaxed);
@@ -481,16 +483,18 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
       total_effort += results[w].effort;
       attempt_counters[w]++;
 
-      double wms = wall_ms_vec[w];
-      double epm =
-          wms > 0.0
-              ? static_cast<double>(results[w].effort) / wms
-              : 0.0;
-      highsLogDev(log_options, HighsLogType::kVerbose,
-                  "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
-                  "effort_per_ms=%.0f\n",
-                  arm_name(enabled_arms[arms[w]]), results[w].effort,
-                  wms, epm);
+      if (results[w].effort > 0) {
+        double wms = wall_ms_vec[w];
+        double epm =
+            wms > 0.0
+                ? static_cast<double>(results[w].effort) / wms
+                : 0.0;
+        highsLogDev(log_options, HighsLogType::kVerbose,
+                    "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
+                    "effort_per_ms=%.0f\n",
+                    arm_name(enabled_arms[arms[w]]), results[w].effort,
+                    wms, epm);
+      }
 
       if (reward >= 2) {
         effort_since_improvement = 0;

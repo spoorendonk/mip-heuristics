@@ -129,7 +129,7 @@ _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 # Portfolio effort calibration line:
 #   [Portfolio] arm=FprDfsLocks2 effort=123456 wall_ms=45.2 effort_per_ms=2731
 _EFFORT_RE = re.compile(
-    r"\[Portfolio\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
+    r"^\s*\[Portfolio\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
 )
 
 
@@ -234,7 +234,7 @@ def parse_log(log_text: str) -> SolveResult:
             continue
 
         # Portfolio effort calibration line
-        m = _EFFORT_RE.search(line)
+        m = _EFFORT_RE.match(line)
         if m:
             result.effort_samples.append(EffortSample(
                 arm=m.group(1),

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import statistics
 import sys
 from pathlib import Path
 
@@ -469,9 +470,12 @@ def print_effort_calibration(
     for arm_name in sorted(per_arm.keys()):
         vals = sorted(per_arm[arm_name])
         n = len(vals)
-        p25 = vals[n // 4] if n >= 4 else vals[0]
-        median = vals[n // 2]
-        p75 = vals[(3 * n) // 4] if n >= 4 else vals[-1]
+        median = statistics.median(vals)
+        if n >= 2:
+            q1, _, q3 = statistics.quantiles(vals, n=4)
+            p25, p75 = q1, q3
+        else:
+            p25, p75 = vals[0], vals[-1]
         summaries.append((arm_name, n, median, p25, p75))
 
     # Relative median: each arm's median normalized to the fastest arm (highest e/ms)
