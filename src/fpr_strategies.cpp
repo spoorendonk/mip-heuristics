@@ -364,19 +364,28 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */,
     HighsInt i = csc.col_row[p];
     double a = csc.col_val[p];
 
+    // Check if constraint is infeasible or redundant
     bool has_upper = row_hi[i] < kHighsInf;
     bool has_lower = row_lo[i] > -kHighsInf;
     if (has_upper && min_act[i] > row_hi[i]) {
       // Already infeasible — skip
-    } else if (has_lower && max_act[i] < row_lo[i]) {
-      // Already infeasible — skip
-    } else {
-      // Not redundant: count locks
-      if (has_upper && a > 0) ++up_locks;
-      if (has_lower && a < 0) ++up_locks;
-      if (has_upper && a < 0) ++down_locks;
-      if (has_lower && a > 0) ++down_locks;
+      continue;
     }
+    if (has_lower && max_act[i] < row_lo[i]) {
+      // Already infeasible — skip
+      continue;
+    }
+    // Paper Section 4.2: "constraints that have already become redundant
+    // do not contribute to the lock counters."
+    if ((!has_lower || min_act[i] >= row_lo[i]) &&
+        (!has_upper || max_act[i] <= row_hi[i])) {
+      continue;
+    }
+    // Active constraint: count locks
+    if (has_upper && a > 0) ++up_locks;
+    if (has_lower && a < 0) ++up_locks;
+    if (has_upper && a < 0) ++down_locks;
+    if (has_lower && a > 0) ++down_locks;
 
     // Early exit: if one direction already wins by more than remaining rows
     HighsInt remaining = total_rows - r - 1;
