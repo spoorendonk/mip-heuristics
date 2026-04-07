@@ -1019,24 +1019,13 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
       ctx.solution[j] = std::max(ctx.col_lb[j], std::min(ctx.col_ub[j], v));
     }
   } else {
+    // Paper's closest-to-0 initialization (Algorithm 1, line 1).
     for (HighsInt j = 0; j < ncol; ++j) {
-      if (mipdata->domain.isBinary(j)) {
-        ctx.solution[j] = 0.0;
-      } else if (ctx.is_int(j)) {
-        double lo = std::max(ctx.col_lb[j], -1e8);
-        double hi = std::min(ctx.col_ub[j], lo + 100.0);
-        ctx.solution[j] =
-            std::max(ctx.col_lb[j],
-                     std::min(ctx.col_ub[j], std::round((lo + hi) * 0.5)));
-      } else {
-        double val = 0.0;
-        if (ctx.col_lb[j] > 0.0) {
-          val = ctx.col_lb[j];
-        } else if (ctx.col_ub[j] < 0.0) {
-          val = ctx.col_ub[j];
-        }
-        ctx.solution[j] = std::max(ctx.col_lb[j], std::min(ctx.col_ub[j], val));
+      double v = std::clamp(0.0, ctx.col_lb[j], ctx.col_ub[j]);
+      if (ctx.is_int(j)) {
+        v = std::round(v);
       }
+      ctx.solution[j] = v;
     }
   }
 
