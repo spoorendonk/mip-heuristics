@@ -1,12 +1,14 @@
 #include "portfolio.h"
 
 #include <atomic>
+#include <chrono>
 #include <random>
 #include <vector>
 
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
+#include "io/HighsIO.h"
 #include "local_mip.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -103,6 +105,31 @@ int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot after,
       objective_better(minimize, after.best_objective, before.best_objective) &&
       !objective_better(minimize, after.best_objective, result.objective);
   return improved ? 3 : 1;
+}
+
+const char* arm_name(int arm_type) {
+  switch (arm_type) {
+  case kArmFprDfsBadobjcl:
+    return "FprDfsBadobjcl";
+  case kArmFprDfsLocks2:
+    return "FprDfsLocks2";
+  case kArmFprDiveLocks2:
+    return "FprDiveLocks2";
+  case kArmFprDfsrepLocks:
+    return "FprDfsrepLocks";
+  case kArmFprDfsrepBadobjcl:
+    return "FprDfsrepBadobjcl";
+  case kArmFprDivepropRandom:
+    return "FprDivepropRandom";
+  case kArmFprRepairSearchLocks:
+    return "FprRepairSearchLocks";
+  case kArmLocalMIP:
+    return "LocalMIP";
+  case kArmFJ:
+    return "FJ";
+  default:
+    return "Unknown";
+  }
 }
 
 // Pre-computed variable orders for FPR arms (avoids cliquePartition data race).
@@ -205,6 +232,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
                                 size_t budget,
                                 const FprVarOrders &fpr_var_orders) {
   auto *mipdata = mipsolver.mipdata_.get();
+  const HighsLogOptions &log_options =
+      mipsolver.options_mip_->log_options;
   const int N = highs::parallel::num_threads();
   const int num_arms = static_cast<int>(enabled_arms.size());
 
@@ -256,10 +285,12 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
             size_t remaining =
                 budget -
                 std::min(budget, total_effort.load(std::memory_order_relaxed));
+            auto t0 = std::chrono::steady_clock::now();
             auto result = run_presolve_arm(mipsolver, enabled_arms[arm], rng,
                                            attempt_counter++, restart_ptr, csc,
                                            incumbent_snapshot, remaining,
                                            fpr_var_orders);
+            auto t1 = std::chrono::steady_clock::now();
 
             if (result.found_feasible) {
               pool.try_add(result.objective, result.solution);
@@ -269,6 +300,17 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
             int reward = compute_reward(before, after, result, minimize);
             bandit.update(arm, reward);
             bandit.record_effort(arm, result.effort);
+
+            double wall_ms =
+                std::chrono::duration<double, std::milli>(t1 - t0).count();
+            double effort_per_ms =
+                wall_ms > 0.0 ? static_cast<double>(result.effort) / wall_ms
+                              : 0.0;
+            highsLogDev(log_options, HighsLogType::kVerbose,
+                        "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
+                        "effort_per_ms=%.0f\n",
+                        arm_name(enabled_arms[arm]), result.effort, wall_ms,
+                        effort_per_ms);
 
             if (reward >= 2) {
               effort_since_improvement.store(0, std::memory_order_relaxed);
@@ -379,9 +421,12 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   }
   std::vector<int> attempt_counters(N, 0);
 
+  const HighsLogOptions &log_options = options->log_options;
+
   // Pre-allocate per-worker vectors outside epoch loop
   std::vector<int> arms(N);
   std::vector<HeuristicResult> results(N);
+  std::vector<double> wall_ms_vec(N);
 
   for (int epoch = 0; total_effort < budget; ++epoch) {
     if (mipdata->terminatorTerminated() ||
@@ -411,10 +456,14 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
             const double *restart_ptr =
                 restarts[w].empty() ? nullptr : restarts[w].data();
             size_t remaining = budget - std::min(budget, total_effort);
+            auto t0 = std::chrono::steady_clock::now();
             results[w] = run_presolve_arm(
                 mipsolver, enabled_arms[arms[w]], rngs[w], attempt_counters[w],
                 restart_ptr, csc, incumbent_snapshot, remaining,
                 fpr_var_orders);
+            auto t1 = std::chrono::steady_clock::now();
+            wall_ms_vec[w] =
+                std::chrono::duration<double, std::milli>(t1 - t0).count();
           }
         },
         1);
@@ -431,6 +480,17 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
       bandit.record_effort(arms[w], results[w].effort);
       total_effort += results[w].effort;
       attempt_counters[w]++;
+
+      double wms = wall_ms_vec[w];
+      double epm =
+          wms > 0.0
+              ? static_cast<double>(results[w].effort) / wms
+              : 0.0;
+      highsLogDev(log_options, HighsLogType::kVerbose,
+                  "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
+                  "effort_per_ms=%.0f\n",
+                  arm_name(enabled_arms[arms[w]]), results[w].effort,
+                  wms, epm);
 
       if (reward >= 2) {
         effort_since_improvement = 0;

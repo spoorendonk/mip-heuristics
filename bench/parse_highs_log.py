@@ -17,6 +17,15 @@ class Incumbent:
 
 
 @dataclass
+class EffortSample:
+    """A single portfolio arm effort/wall-clock observation."""
+    arm: str
+    effort: int
+    wall_ms: float
+    effort_per_ms: float
+
+
+@dataclass
 class SolveResult:
     """Parsed result from a HiGHS MIP solve."""
     status: str = ""
@@ -28,6 +37,7 @@ class SolveResult:
     nodes: int = 0
     lp_iterations: int = 0
     incumbents: list[Incumbent] = field(default_factory=list)
+    effort_samples: list[EffortSample] = field(default_factory=list)
 
     @property
     def time_to_first_feasible(self) -> float | None:
@@ -115,6 +125,12 @@ _PD_RE = re.compile(r"^\s+P-D integral\s+(.+)$")
 _TIMING_RE = re.compile(r"^\s+Timing\s+([\d.]+)$")
 _NODES_RE = re.compile(r"^\s+Nodes\s+(\d+)$")
 _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
+
+# Portfolio effort calibration line:
+#   [Portfolio] arm=FprDfsLocks2 effort=123456 wall_ms=45.2 effort_per_ms=2731
+_EFFORT_RE = re.compile(
+    r"\[Portfolio\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
+)
 
 
 def _parse_compact_int(s: str) -> int:
@@ -215,6 +231,17 @@ def parse_log(log_text: str) -> SolveResult:
         m = _LPITERS_RE.match(line)
         if m:
             result.lp_iterations = int(m.group(1))
+            continue
+
+        # Portfolio effort calibration line
+        m = _EFFORT_RE.search(line)
+        if m:
+            result.effort_samples.append(EffortSample(
+                arm=m.group(1),
+                effort=int(m.group(2)),
+                wall_ms=float(m.group(3)),
+                effort_per_ms=float(m.group(4)),
+            ))
             continue
 
     return result

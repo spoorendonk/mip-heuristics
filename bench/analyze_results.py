@@ -438,6 +438,60 @@ def generate_survival_plot(
     print(f"Survival plot saved to {output_path}")
 
 
+def print_effort_calibration(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    configs: list[str],
+) -> None:
+    """Print per-arm effort calibration metrics from [Portfolio] log lines.
+
+    For each arm, computes median and IQR of effort_per_ms across all
+    instances and seeds to assess whether effort units correlate with
+    wall-clock time consistently across arms.
+    """
+    # Collect all effort samples across configs, seeds, and instances
+    per_arm: dict[str, list[float]] = {}
+    total_samples = 0
+    for config in configs:
+        for seed_data in results.get(config, {}).values():
+            for solve_result in seed_data.values():
+                for sample in solve_result.effort_samples:
+                    per_arm.setdefault(sample.arm, []).append(sample.effort_per_ms)
+                    total_samples += 1
+
+    if not per_arm:
+        return
+
+    print(f"\n## Effort Calibration ({total_samples} samples)\n")
+    print(f"{'Arm':<25} {'Samples':>8} {'Median e/ms':>12} {'P25 e/ms':>10} {'P75 e/ms':>10} {'Rel. med.':>10}")
+    print("-" * 80)
+
+    summaries: list[tuple[str, int, float, float, float]] = []
+    for arm_name in sorted(per_arm.keys()):
+        vals = sorted(per_arm[arm_name])
+        n = len(vals)
+        p25 = vals[n // 4] if n >= 4 else vals[0]
+        median = vals[n // 2]
+        p75 = vals[(3 * n) // 4] if n >= 4 else vals[-1]
+        summaries.append((arm_name, n, median, p25, p75))
+
+    # Relative median: each arm's median normalized to the fastest arm (highest e/ms)
+    max_median = max(s[2] for s in summaries) if summaries else 1.0
+
+    for arm_name, n, median, p25, p75 in summaries:
+        rel_median = median / max_median if max_median > 0 else 0.0
+        print(f"{arm_name:<25} {n:>8} {median:>12.0f} {p25:>10.0f} {p75:>10.0f} {rel_median:>10.2f}")
+
+    # Cross-arm calibration summary
+    medians = [s[2] for s in summaries if s[2] > 0]
+    if len(medians) >= 2:
+        ratio = max(medians) / min(medians)
+        print(f"\nMax/min median effort_per_ms ratio: {ratio:.1f}x")
+        if ratio > 5.0:
+            print("WARNING: >5x spread suggests effort units are poorly calibrated across arms.")
+        else:
+            print("Effort units appear reasonably calibrated across arms.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze HiGHS benchmark results")
     parser.add_argument("results_dir", help="Directory with config subdirectories of log files")
@@ -460,6 +514,7 @@ def main() -> None:
 
     print_comparison_table(agg_results, active_configs)
     print_paper_metrics(results, agg_results, active_configs, args.time_limit)
+    print_effort_calibration(results, active_configs)
 
     if args.plot:
         generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)
