@@ -211,6 +211,19 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   std::vector<double> modified_cost(ncol);
   std::mt19937 rng(42);
 
+  // Warm-start state: store the previous PDLP primal-dual iterate so the
+  // next solve starts from a nearby point (Mexi et al. 2023, §2.1).
+  // Between pump iterations only the objective changes — the constraint
+  // matrix is identical — so the previous iterate is a strong warm-start.
+  //
+  // HiGHS's CupdlpWrapper already forwards value_valid/dual_valid to
+  // PDHG_PreSolve, which initializes the PDLP iterates from the previous
+  // solution when both flags are true.  We capture col_value (primal) and
+  // row_dual (dual) after each solve and pass them back via setSolution()
+  // to make the warm-start explicit and robust against future HiGHS
+  // changes that might clear internal state between runs.
+  HighsSolution warm_start;
+
   // Outer feasibility pump loop (Algorithm 1.1)
   int pdlp_stall_count = 0;
   for (int K = 1; total_effort < max_effort; ++K) {
@@ -223,6 +236,11 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     double remaining = time_limit - mipsolver.timer_.read();
     if (remaining <= 0.0) break;
     highs.setOptionValue("time_limit", remaining);
+
+    // Warm-start PDLP from the previous iteration's primal-dual iterate.
+    if (warm_start.value_valid && warm_start.dual_valid) {
+      highs.setSolution(warm_start);
+    }
 
     // Solve LP approximately via PDLP
     HighsStatus status = highs.run();
@@ -248,6 +266,15 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     }
     const auto &sol = highs.getSolution();
     if (sol.col_value.empty()) break;
+
+    // Capture the primal-dual iterate for warm-starting the next PDLP solve.
+    // We need col_value (primal) and row_dual (dual); setSolution() computes
+    // the derived row_value and col_dual from these two.
+    warm_start.col_value = sol.col_value;
+    warm_start.row_dual = sol.row_dual;
+    warm_start.value_valid = sol.value_valid;
+    warm_start.dual_valid = sol.dual_valid;
+
     const auto &x_bar = sol.col_value;
 
     // Line 11: check if PDLP solution is already MIP-feasible (fast path)
