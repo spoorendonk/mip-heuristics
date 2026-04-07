@@ -181,6 +181,75 @@ TEST_CASE("ThompsonSampler: thread-safe mode", "[bandit]") {
   sampler.update(arm, 2);
 }
 
+TEST_CASE("ThompsonSampler: effort tracking", "[bandit]") {
+  double priors[] = {2.0, 2.0, 2.0};
+  ThompsonSampler sampler(3, priors, false);
+
+  // Initially no effort recorded
+  auto s0 = sampler.stats(0);
+  REQUIRE(s0.avg_effort == Catch::Approx(0.0));
+
+  // First observation sets the average directly
+  sampler.record_effort(0, 1.0);
+  s0 = sampler.stats(0);
+  REQUIRE(s0.avg_effort == Catch::Approx(1.0));
+
+  // Subsequent observations use EMA (alpha=0.3)
+  sampler.record_effort(0, 2.0);
+  s0 = sampler.stats(0);
+  // 0.3 * 2.0 + 0.7 * 1.0 = 1.3
+  REQUIRE(s0.avg_effort == Catch::Approx(1.3));
+
+  // Arm 1 still has no effort
+  auto s1 = sampler.stats(1);
+  REQUIRE(s1.avg_effort == Catch::Approx(0.0));
+}
+
+TEST_CASE("ThompsonSampler: effort-aware select falls back without effort",
+          "[bandit]") {
+  double priors[] = {2.0, 2.0};
+  ThompsonSampler sampler(2, priors, false);
+
+  std::mt19937 rng(42);
+
+  // Without effort observations, select_effort_aware behaves like select
+  for (int i = 0; i < 50; ++i) {
+    int arm = sampler.select_effort_aware(rng);
+    REQUIRE(arm >= 0);
+    REQUIRE(arm < 2);
+  }
+}
+
+TEST_CASE("ThompsonSampler: effort-aware select prefers cheap arms",
+          "[bandit]") {
+  double priors[] = {2.0, 2.0};
+  ThompsonSampler sampler(2, priors, false);
+
+  // Give both arms equal reward history
+  for (int i = 0; i < 20; ++i) {
+    sampler.update(0, 2);
+    sampler.update(1, 2);
+  }
+
+  // Arm 0 is 100x cheaper than arm 1
+  sampler.record_effort(0, 0.001);
+  sampler.record_effort(1, 0.1);
+
+  std::mt19937 rng(42);
+  int arm0_count = 0;
+  constexpr int kTrials = 200;
+  for (int i = 0; i < kTrials; ++i) {
+    int arm = sampler.select_effort_aware(rng);
+    REQUIRE(arm >= 0);
+    REQUIRE(arm < 2);
+    if (arm == 0) arm0_count++;
+  }
+
+  // With equal reward and 100x cost difference, arm 0 should be selected
+  // much more often
+  REQUIRE(arm0_count > kTrials / 2);
+}
+
 TEST_CASE("SolutionPool: basic operations", "[pool]") {
   SolutionPool pool(3, true);  // minimize, capacity 3
 
