@@ -736,6 +736,56 @@ TEST_CASE("Portfolio + Scylla: egout independent budgets",
   REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
+// ── Scylla parallel: opportunistic flag enables parallel pump chains ──
+
+TEST_CASE("Scylla parallel: flugpl finds solution",
+          "[heuristic][scylla][opportunistic]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", false);
+  highs.setOptionValue("mip_heuristic_run_local_mip", false);
+  highs.setOptionValue("mip_heuristic_run_scylla", true);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  highs.setOptionValue("mip_heuristic_portfolio_opportunistic", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("Scylla parallel: egout finds solution",
+          "[heuristic][scylla][opportunistic]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", false);
+  highs.setOptionValue("mip_heuristic_run_local_mip", false);
+  highs.setOptionValue("mip_heuristic_run_scylla", true);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  highs.setOptionValue("mip_heuristic_portfolio_opportunistic", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+}
+
+TEST_CASE("Scylla parallel: gt2 binary instance",
+          "[heuristic][scylla][opportunistic]") {
+  Highs highs;
+  highs.setOptionValue("output_flag", false);
+  highs.setOptionValue("mip_heuristic_run_fpr", false);
+  highs.setOptionValue("mip_heuristic_run_local_mip", false);
+  highs.setOptionValue("mip_heuristic_run_scylla", true);
+  highs.setOptionValue("mip_heuristic_portfolio", false);
+  highs.setOptionValue("mip_heuristic_portfolio_opportunistic", true);
+  REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
+  REQUIRE(highs.run() == HighsStatus::kOk);
+  double obj;
+  highs.getInfoValue("objective_function_value", obj);
+  REQUIRE(obj == Catch::Approx(21166.0).epsilon(1e-3));
+}
+
 // ── Portfolio: gt2 instance (pure binary, tests FJ on binary vars) ──
 
 TEST_CASE("Portfolio: gt2 binary instance", "[portfolio]") {

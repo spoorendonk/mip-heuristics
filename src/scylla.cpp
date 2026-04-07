@@ -1,6 +1,7 @@
 #include "scylla.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "parallel/HighsParallel.h"
 #include "solution_pool.h"
 
 namespace scylla {
@@ -143,34 +145,35 @@ void perturb(std::vector<double> &x, const HighsLp &model,
   }
 }
 
-} // namespace
-
-void run(HighsMipSolver &mipsolver, size_t max_effort) {
+// Run a single pump chain. Each worker has its own PDLP solver, K counter,
+// cycling history, and RNG. Solutions are collected in the shared pool.
+// Returns total effort consumed by this worker.
+size_t pump_worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
+                   SolutionPool &pool, size_t worker_budget,
+                   uint32_t seed,
+                   // Parallel mode: shared atomics for global effort tracking.
+                   // When null, runs in sequential (single-worker) mode.
+                   std::atomic<size_t> *global_effort = nullptr,
+                   std::atomic<bool> *stop_flag = nullptr) {
   const auto *model = mipsolver.model_;
   auto *mipdata = mipsolver.mipdata_.get();
   const HighsInt ncol = model->num_col_;
   const HighsInt nrow = model->num_row_;
-  if (ncol == 0 || nrow == 0) {
-    return;
-  }
-
-  const bool minimize = (model->sense_ == ObjSense::kMinimize);
   const auto &integrality = model->integrality_;
   const auto &orig_cost = model->col_cost_;
 
-  // Pre-compute cost scaling: √|I| / ‖c‖₂
+  // Pre-compute cost scaling: sqrt(|I|) / ||c||_2
   HighsInt num_integers = 0;
   double norm_c_sq = 0.0;
   for (HighsInt j = 0; j < ncol; ++j) {
     if (is_integer(integrality, j)) ++num_integers;
     norm_c_sq += orig_cost[j] * orig_cost[j];
   }
-  if (num_integers == 0) return;
+  if (num_integers == 0) return 0;
 
   double norm_c = std::sqrt(norm_c_sq);
-  // When costs are all zero (feasibility problem), scaling is irrelevant;
-  // the proximity term dominates the pump objective.
-  double cost_scale = (norm_c > 1e-15) ? std::sqrt(num_integers) / norm_c : 1.0;
+  double cost_scale =
+      (norm_c > 1e-15) ? std::sqrt(num_integers) / norm_c : 1.0;
 
   // Build LP relaxation and configure PDLP solver
   auto lp = build_lp_relaxation(*model, *mipdata);
@@ -178,60 +181,49 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
   highs.setOptionValue("solver", "pdlp");
   highs.setOptionValue("output_flag", false);
   highs.setOptionValue("pdlp_scaling", true);
-  highs.setOptionValue("pdlp_e_restart_method", 2); // CPU restart
-  // Cap each PDLP solve so a single solve can't dominate the budget.
-  // With effort = iters * nnz, limit each solve to max_effort/4 of effort.
+  highs.setOptionValue("pdlp_e_restart_method", 2);
   size_t nnz_lp = mipdata->ARindex_.size();
   HighsInt pdlp_iter_cap =
-      (nnz_lp > 0) ? static_cast<HighsInt>((max_effort >> 2) / nnz_lp) : 10000;
+      (nnz_lp > 0)
+          ? static_cast<HighsInt>((worker_budget >> 2) / nnz_lp)
+          : 10000;
   if (pdlp_iter_cap < 100) pdlp_iter_cap = 100;
   highs.setOptionValue("pdlp_iteration_limit", pdlp_iter_cap);
   highs.passModel(std::move(lp));
 
-  // Build CSC for fpr_attempt
-  auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
-                       mipdata->ARvalue_);
-
   // Algorithm state
   double epsilon = kEpsilonInit;
-  double alpha_K = 1.0; // updated after each solve; first solve uses unmodified cost
+  double alpha_K = 1.0;
   const double time_limit = mipsolver.options_mip_->time_limit;
   size_t total_effort = 0;
   size_t effort_since_improvement = 0;
-  const size_t stale_budget = max_effort >> 2;
+  const size_t stale_budget = worker_budget >> 2;
 
-  SolutionPool pool(kPoolCapacity, minimize);
-  seed_pool(pool, mipsolver);
-
-  // Cycling history (circular buffer of last kCycleWindow rounded solutions)
   std::vector<std::vector<double>> cycle_history;
   cycle_history.reserve(kCycleWindow);
 
   std::vector<double> scores(ncol);
   std::vector<double> modified_cost(ncol);
-  std::mt19937 rng(42);
+  std::mt19937 rng(seed);
+
+  auto should_stop = [&]() {
+    if (stop_flag && stop_flag->load(std::memory_order_relaxed)) return true;
+    if (mipsolver.timer_.read() >= time_limit) return true;
+    return false;
+  };
 
   // Warm-start state: store the previous PDLP primal-dual iterate so the
   // next solve starts from a nearby point (Mexi et al. 2023, §2.1).
   // Between pump iterations only the objective changes — the constraint
   // matrix is identical — so the previous iterate is a strong warm-start.
-  //
-  // HiGHS's CupdlpWrapper already forwards value_valid/dual_valid to
-  // PDHG_PreSolve, which initializes the PDLP iterates from the previous
-  // solution when both flags are true.  We capture col_value (primal) and
-  // row_dual (dual) after each solve and pass them back via setSolution()
-  // to make the warm-start explicit and robust against future HiGHS
-  // changes that might clear internal state between runs.
   HighsSolution warm_start;
-
-  // Outer feasibility pump loop (Algorithm 1.1)
   int pdlp_stall_count = 0;
-  for (int K = 1; total_effort < max_effort; ++K) {
-    if (mipsolver.timer_.read() >= time_limit) break;
+  for (int K = 1; total_effort < worker_budget; ++K) {
+    if (should_stop()) break;
     if (mipdata->terminatorTerminated()) break;
     if (effort_since_improvement > stale_budget) break;
 
-    // Configure PDLP tolerances — progressive refinement (§2.2)
+    // Configure PDLP tolerances -- progressive refinement
     highs.setOptionValue("pdlp_optimality_tolerance", epsilon);
     double remaining = time_limit - mipsolver.timer_.read();
     if (remaining <= 0.0) break;
@@ -242,22 +234,20 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
       highs.setSolution(warm_start);
     }
 
-    // Solve LP approximately via PDLP
     HighsStatus status = highs.run();
 
-    // Track PDLP effort: iterations × nnz (each iteration does two mat-vec products)
     HighsInt pdlp_iters = 0;
     highs.getInfoValue("pdlp_iteration_count", pdlp_iters);
     size_t iter_effort = static_cast<size_t>(pdlp_iters) * nnz_lp;
     total_effort += iter_effort;
     effort_since_improvement += iter_effort;
+    if (global_effort) {
+      global_effort->fetch_add(iter_effort, std::memory_order_relaxed);
+    }
 
     if (status == HighsStatus::kError) break;
     if (highs.getModelStatus() == HighsModelStatus::kInfeasible) break;
 
-    // Stall detection: if PDLP returns 0 iterations, the modified
-    // objective isn't changing the LP solution.  Break after consecutive
-    // stalls to avoid spinning.
     if (pdlp_iters == 0) {
       ++pdlp_stall_count;
       if (pdlp_stall_count >= kMaxPdlpStalls) break;
@@ -277,7 +267,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
 
     const auto &x_bar = sol.col_value;
 
-    // Line 11: check if PDLP solution is already MIP-feasible (fast path)
+    // Check if PDLP solution is already MIP-feasible (fast path)
     {
       bool mip_feasible = true;
       const double feastol = mipsolver.options_mip_->mip_feasibility_tolerance;
@@ -288,12 +278,11 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
           break;
         }
       }
-      // PDLP solutions are approximate — verify row feasibility too
       if (mip_feasible) {
         for (HighsInt i = 0; i < nrow; ++i) {
           double lhs = 0.0;
-          for (HighsInt k = mipdata->ARstart_[i]; k < mipdata->ARstart_[i + 1];
-               ++k) {
+          for (HighsInt k = mipdata->ARstart_[i];
+               k < mipdata->ARstart_[i + 1]; ++k) {
             lhs += mipdata->ARvalue_[k] * x_bar[mipdata->ARindex_[k]];
           }
           if (lhs > model->row_upper_[i] + feastol ||
@@ -310,7 +299,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
         }
         pool.try_add(obj, x_bar);
         effort_since_improvement = 0;
-        continue; // skip rounding — already integer-feasible
+        continue;
       }
     }
 
@@ -323,36 +312,31 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
       }
     }
 
-    // Line 12: fix-and-propagate to round PDLP solution
-    // Scylla uses kDiveprop (default): propagation on, repair on, no backtrack.
-    // Deliberate — the pump runs many iterations so fast single-pass rounding
-    // is appropriate.  Mexi et al.'s "FixAndPropagate" maps to this mode.
+    // Fix-and-propagate to round PDLP solution
     FprConfig cfg{};
-    cfg.max_effort = max_effort - std::min(max_effort, total_effort);
-    cfg.rng_seed_offset = 42 + K;
+    cfg.max_effort = worker_budget - std::min(worker_budget, total_effort);
+    cfg.rng_seed_offset = seed + K;
     cfg.hint = x_bar.data();
     cfg.scores = scores.data();
     cfg.cont_fallback = x_bar.data();
     cfg.csc = &csc;
 
-    // attempt_idx=0 ensures fpr_attempt uses the PDLP hint as starting point
     auto result = fpr_attempt(mipsolver, cfg, rng, 0, nullptr);
     total_effort += result.effort;
     effort_since_improvement += result.effort;
+    if (global_effort) {
+      global_effort->fetch_add(result.effort, std::memory_order_relaxed);
+    }
 
-    // Line 13: collect feasible solutions
     if (result.found_feasible && !result.solution.empty()) {
       pool.try_add(result.objective, result.solution);
       effort_since_improvement = 0;
     }
 
-    // Use the rounded point for objective update (even if infeasible).
-    // If fpr_attempt returned no solution, skip objective update but continue
-    // the pump — the next PDLP solve may produce a better starting point.
     auto &x_hat = result.solution;
     if (x_hat.empty()) continue;
 
-    // Line 14: cycling detection + perturbation
+    // Cycling detection + perturbation
     if (detect_cycling(cycle_history, x_hat, integrality, ncol)) {
       perturb(x_hat, *model, rng);
     }
@@ -362,21 +346,81 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
       cycle_history[(K - 1) % kCycleWindow] = x_hat;
     }
 
-    // Line 15: objective update
-    //   ĉ = α^K · (√|I|/‖c‖) · c + (1-α^K) · Δ(·, x̂)
+    // Objective update
     alpha_K = std::pow(kAlpha, K);
     compute_pump_objective(orig_cost, x_hat, x_bar, integrality,
                            model->col_lower_, model->col_upper_, alpha_K,
                            cost_scale, ncol, modified_cost);
     highs.changeColsCost(0, ncol - 1, modified_cost.data());
 
-    // Progressive tolerance refinement (§2.2)
     epsilon = std::max(kBeta * epsilon, kEpsilonFloor);
   }
 
-  mipdata->heuristic_effort_used += total_effort;
+  return total_effort;
+}
 
-  // Submit best solutions to solver
+} // namespace
+
+void run(HighsMipSolver &mipsolver, size_t max_effort) {
+  const auto *model = mipsolver.model_;
+  auto *mipdata = mipsolver.mipdata_.get();
+  const HighsInt ncol = model->num_col_;
+  const HighsInt nrow = model->num_row_;
+  if (ncol == 0 || nrow == 0) return;
+
+  const bool minimize = (model->sense_ == ObjSense::kMinimize);
+
+  auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
+                       mipdata->ARvalue_);
+
+  SolutionPool pool(kPoolCapacity, minimize);
+  seed_pool(pool, mipsolver);
+
+  size_t effort = pump_worker(mipsolver, csc, pool, max_effort, 42);
+
+  mipdata->heuristic_effort_used += effort;
+
+  for (auto &entry : pool.sorted_entries()) {
+    mipdata->trySolution(entry.solution, kSolutionSourceScylla);
+  }
+}
+
+void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
+  const auto *model = mipsolver.model_;
+  auto *mipdata = mipsolver.mipdata_.get();
+  const HighsInt ncol = model->num_col_;
+  const HighsInt nrow = model->num_row_;
+  if (ncol == 0 || nrow == 0) return;
+
+  const bool minimize = (model->sense_ == ObjSense::kMinimize);
+  const int N = highs::parallel::num_threads();
+
+  auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
+                       mipdata->ARvalue_);
+
+  SolutionPool pool(kPoolCapacity, minimize);
+  seed_pool(pool, mipsolver);
+
+  const size_t worker_budget = max_effort / static_cast<size_t>(N);
+  std::atomic<size_t> global_effort{0};
+
+  uint32_t base_seed =
+      static_cast<uint32_t>(mipdata->numImprovingSols + 42);
+
+  highs::parallel::for_each(
+      0, static_cast<HighsInt>(N),
+      [&](HighsInt lo, HighsInt hi) {
+        for (HighsInt w = lo; w < hi; ++w) {
+          uint32_t seed = base_seed + static_cast<uint32_t>(w) * 997;
+          pump_worker(mipsolver, csc, pool, worker_budget, seed,
+                      &global_effort);
+        }
+      },
+      1);
+
+  mipdata->heuristic_effort_used +=
+      global_effort.load(std::memory_order_relaxed);
+
   for (auto &entry : pool.sorted_entries()) {
     mipdata->trySolution(entry.solution, kSolutionSourceScylla);
   }

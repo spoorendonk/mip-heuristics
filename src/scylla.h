@@ -10,4 +10,8 @@ namespace scylla {
 // rounding with objective perturbation (Mexi et al. 2023, Algorithm 1.1).
 void run(HighsMipSolver &mipsolver, size_t max_effort);
 
+// Parallel mode: run N independent pump chains with different RNG seeds,
+// sharing a thread-safe SolutionPool. Effort budget is split across workers.
+void run_parallel(HighsMipSolver &mipsolver, size_t max_effort);
+
 } // namespace scylla
