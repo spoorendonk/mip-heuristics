@@ -60,10 +60,10 @@ const FprArmConfig *find_fpr_arm(int arm_type) {
   return nullptr;
 }
 
-// MIPLIB sweep priors
-constexpr double kFjAlpha = 2.0;
-constexpr double kFprArmAlpha = 2.5;  // per FPR config arm
-constexpr double kLocalMipAlpha = 3.0;
+// Uniform priors (α=1, β=1): let the bandit learn from scratch.
+constexpr double kFjAlpha = 1.0;
+constexpr double kFprArmAlpha = 1.0;
+constexpr double kLocalMipAlpha = 1.0;
 
 constexpr int kPoolCapacity = 10;
 
