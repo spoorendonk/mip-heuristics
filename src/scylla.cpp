@@ -495,14 +495,13 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
   // Pre-allocate per-worker epoch results outside the loop.
   std::vector<PumpWorker::EpochResult> epoch_results(N);
 
-  const size_t budget = max_effort;
-  const size_t stale_budget = budget >> 2;
+  const size_t stale_budget = max_effort >> 2;
   size_t total_effort = 0;
   size_t effort_since_improvement = 0;
 
   const double time_limit = mipsolver.options_mip_->time_limit;
 
-  for (int epoch = 0; total_effort < budget; ++epoch) {
+  while (total_effort < max_effort) {
     // Pre-epoch checks (sequential, single-thread — safe for
     // terminatorTerminated which is not thread-safe).
     if (mipdata->terminatorTerminated() ||
@@ -535,22 +534,20 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
 
     // Post-epoch: merge results in deterministic worker order.
     bool any_improved = false;
+    size_t epoch_effort = 0;
     for (int w = 0; w < N; ++w) {
-      total_effort += epoch_results[w].effort;
-      if (epoch_results[w].found_improvement) {
-        any_improved = true;
-      } else {
-        effort_since_improvement += epoch_results[w].effort;
-      }
+      epoch_effort += epoch_results[w].effort;
+      if (epoch_results[w].found_improvement) any_improved = true;
     }
+    total_effort += epoch_effort;
 
-    // If any worker found an improvement this epoch, reset staleness
-    // for all workers so they continue exploring.
     if (any_improved) {
       effort_since_improvement = 0;
       for (int w = 0; w < N; ++w) {
         workers[w]->reset_staleness();
       }
+    } else {
+      effort_since_improvement += epoch_effort;
     }
   }
 
