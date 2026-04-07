@@ -157,14 +157,19 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
 
   if (violated.empty()) return true;
 
-  // Best-state tracking
+  // Delta-based best-state tracking: instead of copying full solution/lhs_cache
+  // vectors on each improvement (O(ncol + nrow)), we keep an undo log of
+  // changed entries and record a mark at each improvement. Restore replays
+  // only the entries after the best mark — O(changes_since_best).
+  struct UndoEntry {
+    HighsInt idx;
+    double old_val;
+  };
+  std::vector<UndoEntry> sol_undo;
+  std::vector<UndoEntry> lhs_undo;
   double best_viol = total_viol;
-  std::vector<double> best_solution;
-  std::vector<double> best_lhs;
-  if (track_best) {
-    best_solution = solution;
-    best_lhs = lhs_cache;
-  }
+  HighsInt best_sol_mark = 0;
+  HighsInt best_lhs_mark = 0;
 
   WalkSatScratch scratch;
 
@@ -182,6 +187,9 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
 
     double old_val = solution[move.var];
     double delta = move.val - old_val;
+    if (track_best) {
+      sol_undo.push_back({move.var, old_val});
+    }
     solution[move.var] = move.val;
 
     // Apply move: update lhs_cache, violated set, and total_viol incrementally
@@ -189,6 +197,9 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
     for (HighsInt p = csc_start[move.var]; p < csc_start[move.var + 1]; ++p) {
       HighsInt i2 = csc_row[p];
       double old_v = row_violation(lhs_cache[i2], row_lo[i2], row_hi[i2]);
+      if (track_best) {
+        lhs_undo.push_back({i2, lhs_cache[i2]});
+      }
       lhs_cache[i2] += csc_val[p] * delta;
       double new_v = row_violation(lhs_cache[i2], row_lo[i2], row_hi[i2]);
       total_viol += new_v - old_v;
@@ -202,16 +213,23 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
     // Update best-state tracking (paper Fig. 4, lines 23-26)
     if (track_best && total_viol < best_viol) {
       best_viol = total_viol;
-      best_solution = solution;
-      best_lhs = lhs_cache;
+      best_sol_mark = static_cast<HighsInt>(sol_undo.size());
+      best_lhs_mark = static_cast<HighsInt>(lhs_undo.size());
     }
   }
 
   // Restore best state if tracking enabled (paper Fig. 4, line 27)
   if (track_best && !violated.empty()) {
-    solution = best_solution;
-    lhs_cache = best_lhs;
-    // Rebuild violated set from best state
+    // Undo changes back to the best mark
+    for (HighsInt u = static_cast<HighsInt>(sol_undo.size()) - 1;
+         u >= best_sol_mark; --u) {
+      solution[sol_undo[u].idx] = sol_undo[u].old_val;
+    }
+    for (HighsInt u = static_cast<HighsInt>(lhs_undo.size()) - 1;
+         u >= best_lhs_mark; --u) {
+      lhs_cache[lhs_undo[u].idx] = lhs_undo[u].old_val;
+    }
+    // Rebuild violated set from restored state
     for (auto vi : violated) violated_pos[vi] = -1;
     violated.clear();
     for (HighsInt i = 0; i < nrow; ++i) {
