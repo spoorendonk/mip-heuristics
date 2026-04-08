@@ -109,6 +109,16 @@ const char* arm_name(int arm_type) {
   return "Unknown";
 }
 
+void log_arm_effort(const HighsLogOptions &log_options, int arm_type,
+                    size_t effort, double wall_ms) {
+  double effort_per_ms =
+      wall_ms > 0.0 ? static_cast<double>(effort) / wall_ms : 0.0;
+  highsLogDev(log_options, HighsLogType::kVerbose,
+              "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
+              "effort_per_ms=%.0f\n",
+              arm_name(arm_type), effort, wall_ms, effort_per_ms);
+}
+
 // Pre-computed variable orders for FPR arms (avoids cliquePartition data race).
 // Indexed by FprArmConfig index (0..kNumFprArms-1), not by arm_type enum.
 using FprVarOrders = std::vector<std::vector<HighsInt>>;
@@ -282,14 +292,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
             if (result.effort > 0) {
               double wall_ms =
                   std::chrono::duration<double, std::milli>(t1 - t0).count();
-              double effort_per_ms =
-                  wall_ms > 0.0 ? static_cast<double>(result.effort) / wall_ms
-                                : 0.0;
-              highsLogDev(log_options, HighsLogType::kVerbose,
-                          "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
-                          "effort_per_ms=%.0f\n",
-                          arm_name(enabled_arms[arm]), result.effort, wall_ms,
-                          effort_per_ms);
+              log_arm_effort(log_options, enabled_arms[arm], result.effort,
+                             wall_ms);
             }
 
             if (reward >= 2) {
@@ -464,16 +468,8 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
       attempt_counters[w]++;
 
       if (results[w].effort > 0) {
-        double wms = wall_ms_vec[w];
-        double epm =
-            wms > 0.0
-                ? static_cast<double>(results[w].effort) / wms
-                : 0.0;
-        highsLogDev(log_options, HighsLogType::kVerbose,
-                    "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
-                    "effort_per_ms=%.0f\n",
-                    arm_name(enabled_arms[arms[w]]), results[w].effort,
-                    wms, epm);
+        log_arm_effort(log_options, enabled_arms[arms[w]],
+                       results[w].effort, wall_ms_vec[w]);
       }
 
       if (reward >= 2) {
