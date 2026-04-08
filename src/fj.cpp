@@ -38,7 +38,7 @@ bool run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
   seed_pool(pool, mipsolver);
 
   const size_t worker_budget = max_effort / static_cast<size_t>(N);
-  constexpr int kEpochsPerWorker = 10;
+  constexpr int kEpochsPerWorker = 20;
   const size_t epoch_budget =
       std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
 

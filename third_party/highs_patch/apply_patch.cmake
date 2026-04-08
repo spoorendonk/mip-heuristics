@@ -242,6 +242,22 @@ else()
     message(STATUS "feasibilityJumpCapture already applied, skipping")
 endif()
 
+# ── Patch feasibilityjump.hh: add resume parameter to solve() ──
+file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_HH)
+
+string(FIND "${FJ_HH}" "bool resume = false" _fj_resume_found)
+if(_fj_resume_found EQUAL -1)
+    string(REPLACE
+      "  int solve(double* initialValues,\n            std::function<CallbackControlFlow(FJStatus)> callback) {\n    assert(callback);\n    highsLogDev(logOptions, HighsLogType::kInfo,\n                FJ_LOG_PREFIX\n                \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                weightUpdateDecay, problem.usedRelaxContinuous);\n\n    init(initialValues);\n\n    effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    int num_logging_lines_since_header = 0;"
+      "  int solve(double* initialValues,\n            std::function<CallbackControlFlow(FJStatus)> callback,\n            bool resume = false) {\n    assert(callback);\n    if (!resume) {\n      highsLogDev(logOptions, HighsLogType::kInfo,\n                  FJ_LOG_PREFIX\n                  \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                  weightUpdateDecay, problem.usedRelaxContinuous);\n      init(initialValues);\n      effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    }\n    int num_logging_lines_since_header = 0;"
+      FJ_HH "${FJ_HH}")
+
+    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_HH}")
+    message(STATUS "Applied resume parameter patch to feasibilityjump.hh")
+else()
+    message(STATUS "Resume parameter patch already applied to feasibilityjump.hh, skipping")
+endif()
+
 # ── Patch standalone feasibilityJump() to store effort ──
 file(READ "${MIP_DIR}/HighsFeasibilityJump.cpp" FJ_CONTENT2)
 string(FIND "${FJ_CONTENT2}" "heuristic_effort_used" _fj_effort_found)
