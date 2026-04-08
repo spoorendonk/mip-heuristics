@@ -28,6 +28,12 @@ concept EpochWorker = requires(T w, size_t budget) {
 // synchronize at the barrier.  Finished workers are restarted via the
 // caller-provided callback.
 //
+// Thread-safety contract: workers run concurrently and must only perform
+// read-only access to mipsolver fields (model, options, timer, mipdata
+// arrays).  Pool access must be mutex-protected (SolutionPool uses
+// HighsSpinMutex).  These invariants hold during presolve heuristic
+// execution when HiGHS internals are immutable.
+//
 // Returns total effort consumed.
 template <EpochWorker W, typename RestartFn>
 size_t run_epoch_loop(HighsMipSolver &mipsolver,

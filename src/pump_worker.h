@@ -2,10 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <random>
 #include <vector>
 
-#include "Highs.h"
 #include "epoch_runner.h"
 #include "util/HighsInt.h"
 
@@ -22,6 +22,7 @@ class PumpWorker {
  public:
   PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
              SolutionPool &pool, size_t total_budget, uint32_t seed);
+  ~PumpWorker();
 
   // Run pump chain iterations until epoch_budget effort is consumed.
   // Sets finished_ when the worker cannot make further progress.
@@ -35,6 +36,9 @@ class PumpWorker {
   void reset_staleness() { effort_since_improvement_ = 0; }
 
  private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+
   HighsMipSolver &mipsolver_;
   const CscMatrix &csc_;
   SolutionPool &pool_;
@@ -47,8 +51,6 @@ class PumpWorker {
   size_t nnz_lp_ = 0;
   size_t stale_budget_ = 0;
 
-  Highs highs_;
-  HighsSolution warm_start_;
   int pdlp_stall_count_ = 0;
 
   double epsilon_;

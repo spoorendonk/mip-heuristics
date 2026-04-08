@@ -3,10 +3,10 @@
 #include <memory>
 #include <vector>
 
+#include "epoch_runner.h"
 #include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "parallel/HighsParallel.h"
 #include "pump_worker.h"
 #include "solution_pool.h"
 
@@ -86,64 +86,10 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
         std::make_unique<PumpWorker>(mipsolver, csc, pool, worker_budget, seed));
   }
 
-  // Pre-allocate per-worker epoch results outside the loop.
-  std::vector<EpochResult> epoch_results(N);
-
-  const size_t stale_budget = max_effort >> 2;
-  size_t total_effort = 0;
-  size_t effort_since_improvement = 0;
-
-  const double time_limit = mipsolver.options_mip_->time_limit;
-
-  while (total_effort < max_effort) {
-    // Pre-epoch checks (sequential, single-thread — safe for
-    // terminatorTerminated which is not thread-safe).
-    if (mipdata->terminatorTerminated() ||
-        mipsolver.timer_.read() >= time_limit) {
-      break;
-    }
-    if (effort_since_improvement > stale_budget) {
-      break;
-    }
-
-    // Check if all workers are finished.
-    bool all_finished = true;
-    for (int w = 0; w < N; ++w) {
-      if (!workers[w]->finished()) {
-        all_finished = false;
-        break;
-      }
-    }
-    if (all_finished) break;
-
-    // Epoch: all workers run a pump chain slice in parallel.
-    highs::parallel::for_each(
-        0, static_cast<HighsInt>(N),
-        [&](HighsInt lo, HighsInt hi) {
-          for (HighsInt w = lo; w < hi; ++w) {
-            epoch_results[w] = workers[w]->run_epoch(epoch_budget);
-          }
-        },
-        1);
-
-    // Post-epoch: merge results in deterministic worker order.
-    bool any_improved = false;
-    size_t epoch_effort = 0;
-    for (int w = 0; w < N; ++w) {
-      epoch_effort += epoch_results[w].effort;
-      if (epoch_results[w].found_improvement) any_improved = true;
-    }
-    total_effort += epoch_effort;
-
-    if (any_improved) {
-      effort_since_improvement = 0;
-      for (int w = 0; w < N; ++w) {
-        workers[w]->reset_staleness();
-      }
-    } else {
-      effort_since_improvement += epoch_effort;
-    }
-  }
+  size_t total_effort = run_epoch_loop(
+      mipsolver, workers, max_effort, epoch_budget,
+      [](int) { /* PumpWorkers are not restartable */ },
+      max_effort >> 2);
 
   mipdata->heuristic_effort_used += total_effort;
 

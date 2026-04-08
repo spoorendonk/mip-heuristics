@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "Highs.h"
 #include "fpr_core.h"
 #include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
@@ -115,9 +116,15 @@ void perturb(std::vector<double> &x, const HighsLp &model,
 
 }  // namespace
 
+struct PumpWorker::Impl {
+  Highs highs;
+  HighsSolution warm_start;
+};
+
 PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
                        SolutionPool &pool, size_t total_budget, uint32_t seed)
-    : mipsolver_(mipsolver),
+    : impl_(std::make_unique<Impl>()),
+      mipsolver_(mipsolver),
       csc_(csc),
       pool_(pool),
       total_budget_(total_budget),
@@ -146,10 +153,10 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
   cost_scale_ = (norm_c > 1e-15) ? std::sqrt(num_integers) / norm_c : 1.0;
 
   auto lp = build_lp_relaxation(*model, *mipdata);
-  highs_.setOptionValue("solver", "pdlp");
-  highs_.setOptionValue("output_flag", false);
-  highs_.setOptionValue("pdlp_scaling", true);
-  highs_.setOptionValue("pdlp_e_restart_method", 2);
+  impl_->highs.setOptionValue("solver", "pdlp");
+  impl_->highs.setOptionValue("output_flag", false);
+  impl_->highs.setOptionValue("pdlp_scaling", true);
+  impl_->highs.setOptionValue("pdlp_e_restart_method", 2);
   nnz_lp_ = mipdata->ARindex_.size();
   if (nnz_lp_ == 0) {
     finished_ = true;
@@ -159,14 +166,16 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
   auto pdlp_iter_cap =
       static_cast<HighsInt>((total_budget_ >> 2) / nnz_lp_);
   if (pdlp_iter_cap < 100) pdlp_iter_cap = 100;
-  highs_.setOptionValue("pdlp_iteration_limit", pdlp_iter_cap);
-  highs_.passModel(std::move(lp));
+  impl_->highs.setOptionValue("pdlp_iteration_limit", pdlp_iter_cap);
+  impl_->highs.passModel(std::move(lp));
 
   stale_budget_ = total_budget_ >> 2;
   scores_.resize(ncol_);
   modified_cost_.resize(ncol_);
   cycle_history_.reserve(kCycleWindow);
 }
+
+PumpWorker::~PumpWorker() = default;
 
 EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
   if (finished_) return {};
@@ -191,22 +200,22 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
 
     ++K_;
 
-    highs_.setOptionValue("pdlp_optimality_tolerance", epsilon_);
+    impl_->highs.setOptionValue("pdlp_optimality_tolerance", epsilon_);
     double remaining = time_limit - mipsolver_.timer_.read();
     if (remaining <= 0.0) {
       finished_ = true;
       break;
     }
-    highs_.setOptionValue("time_limit", remaining);
+    impl_->highs.setOptionValue("time_limit", remaining);
 
-    if (warm_start_.value_valid && warm_start_.dual_valid) {
-      highs_.setSolution(warm_start_);
+    if (impl_->warm_start.value_valid && impl_->warm_start.dual_valid) {
+      impl_->highs.setSolution(impl_->warm_start);
     }
 
-    HighsStatus status = highs_.run();
+    HighsStatus status = impl_->highs.run();
 
     HighsInt pdlp_iters = 0;
-    highs_.getInfoValue("pdlp_iteration_count", pdlp_iters);
+    impl_->highs.getInfoValue("pdlp_iteration_count", pdlp_iters);
     size_t iter_effort = static_cast<size_t>(pdlp_iters) * nnz_lp_;
     total_effort_ += iter_effort;
     effort_since_improvement_ += iter_effort;
@@ -216,7 +225,7 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
       finished_ = true;
       break;
     }
-    if (highs_.getModelStatus() == HighsModelStatus::kInfeasible) {
+    if (impl_->highs.getModelStatus() == HighsModelStatus::kInfeasible) {
       finished_ = true;
       break;
     }
@@ -230,16 +239,16 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
     } else {
       pdlp_stall_count_ = 0;
     }
-    const auto &sol = highs_.getSolution();
+    const auto &sol = impl_->highs.getSolution();
     if (sol.col_value.empty()) {
       finished_ = true;
       break;
     }
 
-    warm_start_.col_value = sol.col_value;
-    warm_start_.row_dual = sol.row_dual;
-    warm_start_.value_valid = sol.value_valid;
-    warm_start_.dual_valid = sol.dual_valid;
+    impl_->warm_start.col_value = sol.col_value;
+    impl_->warm_start.row_dual = sol.row_dual;
+    impl_->warm_start.value_valid = sol.value_valid;
+    impl_->warm_start.dual_valid = sol.dual_valid;
 
     const auto &x_bar = sol.col_value;
 
@@ -330,7 +339,7 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
     compute_pump_objective(orig_cost, x_hat, x_bar, integrality,
                            model->col_lower_, model->col_upper_, alpha_K_,
                            cost_scale_, ncol_, modified_cost_);
-    highs_.changeColsCost(0, ncol_ - 1, modified_cost_.data());
+    impl_->highs.changeColsCost(0, ncol_ - 1, modified_cost_.data());
 
     epsilon_ = std::max(kBeta * epsilon_, kEpsilonFloor);
   }
