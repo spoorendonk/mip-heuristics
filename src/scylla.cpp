@@ -172,7 +172,7 @@ class PumpWorker {
       if (is_integer(integrality, j)) ++num_integers;
       norm_c_sq += orig_cost[j] * orig_cost[j];
     }
-    if (num_integers == 0) {
+    if (num_integers == 0 || ncol_ == 0) {
       finished_ = true;
       return;
     }
@@ -187,6 +187,10 @@ class PumpWorker {
     highs_.setOptionValue("pdlp_scaling", true);
     highs_.setOptionValue("pdlp_e_restart_method", 2);
     nnz_lp_ = mipdata->ARindex_.size();
+    if (nnz_lp_ == 0) {
+      finished_ = true;
+      return;
+    }
     HighsInt pdlp_iter_cap =
         (nnz_lp_ > 0)
             ? static_cast<HighsInt>((total_budget_ >> 2) / nnz_lp_)
@@ -370,7 +374,7 @@ class PumpWorker {
       }
 
       // Objective update
-      alpha_K_ = std::pow(kAlpha, K_);
+      alpha_K_ *= kAlpha;
       compute_pump_objective(orig_cost, x_hat, x_bar, integrality,
                              model->col_lower_, model->col_upper_, alpha_K_,
                              cost_scale_, ncol_, modified_cost_);
@@ -393,8 +397,8 @@ class PumpWorker {
   HighsMipSolver &mipsolver_;
   const CscMatrix &csc_;
   SolutionPool &pool_;
-  size_t total_budget_;
-  uint32_t seed_;
+  const size_t total_budget_;
+  const uint32_t seed_;
 
   HighsInt ncol_ = 0;
   HighsInt nrow_ = 0;

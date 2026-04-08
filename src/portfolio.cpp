@@ -49,14 +49,12 @@ constexpr FprArmConfig kFprArms[] = {
     {kArmFprDivepropRandom, kStratRandom, FrameworkMode::kDiveprop},
     {kArmFprRepairSearchLocks, kStratLocks, FrameworkMode::kRepairSearch},
 };
-constexpr int kNumFprArms =
-    static_cast<int>(sizeof(kFprArms) / sizeof(kFprArms[0]));
+constexpr int kNumFprArms = static_cast<int>(std::size(kFprArms));
 
 // Returns the FprArmConfig for the given arm_type, or nullptr if not FPR.
+// Arm IDs are contiguous 0..kNumFprArms-1, so direct index suffices.
 const FprArmConfig *find_fpr_arm(int arm_type) {
-  for (int i = 0; i < kNumFprArms; ++i) {
-    if (kFprArms[i].arm_id == arm_type) return &kFprArms[i];
-  }
+  if (arm_type >= 0 && arm_type < kNumFprArms) return &kFprArms[arm_type];
   return nullptr;
 }
 
@@ -107,29 +105,24 @@ int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot after,
   return improved ? 3 : 1;
 }
 
+constexpr const char* kArmNames[] = {
+    "FprDfsBadobjcl",      // kArmFprDfsBadobjcl
+    "FprDfsLocks2",        // kArmFprDfsLocks2
+    "FprDiveLocks2",       // kArmFprDiveLocks2
+    "FprDfsrepLocks",      // kArmFprDfsrepLocks
+    "FprDfsrepBadobjcl",   // kArmFprDfsrepBadobjcl
+    "FprDivepropRandom",   // kArmFprDivepropRandom
+    "FprRepairSearchLocks",// kArmFprRepairSearchLocks
+    "LocalMIP",            // kArmLocalMIP
+    "FJ",                  // kArmFJ
+};
+static_assert(std::size(kArmNames) == kArmFJ + 1,
+              "kArmNames must match PresolveArm enum");
+
 const char* arm_name(int arm_type) {
-  switch (arm_type) {
-  case kArmFprDfsBadobjcl:
-    return "FprDfsBadobjcl";
-  case kArmFprDfsLocks2:
-    return "FprDfsLocks2";
-  case kArmFprDiveLocks2:
-    return "FprDiveLocks2";
-  case kArmFprDfsrepLocks:
-    return "FprDfsrepLocks";
-  case kArmFprDfsrepBadobjcl:
-    return "FprDfsrepBadobjcl";
-  case kArmFprDivepropRandom:
-    return "FprDivepropRandom";
-  case kArmFprRepairSearchLocks:
-    return "FprRepairSearchLocks";
-  case kArmLocalMIP:
-    return "LocalMIP";
-  case kArmFJ:
-    return "FJ";
-  default:
-    return "Unknown";
-  }
+  if (arm_type >= 0 && arm_type < static_cast<int>(std::size(kArmNames)))
+    return kArmNames[arm_type];
+  return "Unknown";
 }
 
 // Pre-computed variable orders for FPR arms (avoids cliquePartition data race).
@@ -429,6 +422,7 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   std::vector<int> arms(N);
   std::vector<HeuristicResult> results(N);
   std::vector<double> wall_ms_vec(N);
+  std::vector<std::vector<double>> restarts(N);
 
   for (int epoch = 0; total_effort < budget; ++epoch) {
     if (mipdata->terminatorTerminated() ||
@@ -441,8 +435,8 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
 
     // Pre-epoch: snapshot + get restarts (sequential, deterministic)
     auto pool_snap = pool.snapshot();
-    std::vector<std::vector<double>> restarts(N);
     for (int w = 0; w < N; ++w) {
+      restarts[w].clear();
       pool.get_restart(rngs[w], restarts[w]);
     }
 
