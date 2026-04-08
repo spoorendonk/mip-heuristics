@@ -60,7 +60,7 @@ string(FIND "${MIPDATA_H}" "feasibilityJumpCapture" _fj_h_found)
 if(_fj_h_found EQUAL -1)
     string(REPLACE
       "HighsModelStatus feasibilityJump();"
-      "HighsModelStatus feasibilityJump();\n  HighsModelStatus feasibilityJumpCapture(std::vector<double>& captured_solution, double& captured_obj, size_t& captured_effort, size_t max_effort = 0, const std::vector<double>* hint_incumbent = nullptr);"
+      "HighsModelStatus feasibilityJump();\n  HighsModelStatus feasibilityJumpCapture(std::vector<double>& captured_solution, double& captured_obj, size_t& captured_effort, size_t max_effort = 0, const std::vector<double>* hint_incumbent = nullptr, int seed_override = -1);"
       MIPDATA_H "${MIPDATA_H}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
@@ -116,7 +116,7 @@ if(_fj_found EQUAL -1)
 HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
     std::vector<double>& captured_solution, double& captured_obj,\n\
     size_t& captured_effort, size_t max_effort,\n\
-    const std::vector<double>* hint_incumbent) {\n\
+    const std::vector<double>* hint_incumbent, int seed_override) {\n\
   const HighsLp* model = this->mipsolver.model_;\n\
   const HighsLogOptions& log_options = mipsolver.options_mip_->log_options;\n\
   double sense_multiplier = static_cast<double>(model->sense_);\n\
@@ -135,9 +135,10 @@ HighsModelStatus HighsMipSolverData::feasibilityJumpCapture(\n\
   const auto& inc = hint_incumbent ? *hint_incumbent : incumbent;\n\
   const bool use_incumbent = !inc.empty();\n\
 \n\
+  const int fj_seed = (seed_override >= 0) ? seed_override : mipsolver.options_mip_->random_seed;\n\
   auto solver = external_feasibilityjump::FeasibilityJumpSolver(\n\
       log_options,\n\
-      mipsolver.options_mip_->random_seed,\n\
+      fj_seed,\n\
       epsilon,\n\
       feastol);\n\
 \n\

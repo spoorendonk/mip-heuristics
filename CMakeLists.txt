@@ -9,6 +9,7 @@ include(cmake/FetchHiGHS.cmake)
 
 add_library(mip_heuristics OBJECT
     src/fj.cpp
+    src/fj_worker.cpp
     src/fpr.cpp
     src/fpr_core.cpp
     src/fpr_lp.cpp
