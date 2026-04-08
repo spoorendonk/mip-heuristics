@@ -64,3 +64,6 @@ class PumpWorker {
   std::vector<double> modified_cost_;
   std::mt19937 rng_;
 };
+
+static_assert(EpochWorker<PumpWorker>,
+              "PumpWorker must satisfy EpochWorker concept");

@@ -155,10 +155,9 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
     finished_ = true;
     return;
   }
-  HighsInt pdlp_iter_cap =
-      (nnz_lp_ > 0)
-          ? static_cast<HighsInt>((total_budget_ >> 2) / nnz_lp_)
-          : 10000;
+  // nnz_lp_ > 0 guaranteed by the early return above.
+  auto pdlp_iter_cap =
+      static_cast<HighsInt>((total_budget_ >> 2) / nnz_lp_);
   if (pdlp_iter_cap < 100) pdlp_iter_cap = 100;
   highs_.setOptionValue("pdlp_iteration_limit", pdlp_iter_cap);
   highs_.passModel(std::move(lp));
