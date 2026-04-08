@@ -18,8 +18,6 @@ namespace scylla {
 
 namespace {
 
-constexpr int kPoolCapacity = 10;
-
 // Algorithm 1.1 parameters (Mexi et al. 2023, §2)
 constexpr double kAlpha = 0.9;
 constexpr double kEpsilonInit = 0.01;
@@ -29,20 +27,6 @@ constexpr int kCycleWindow = 3;
 constexpr double kPerturbFraction = 0.2;
 constexpr double kCycleTol = 0.5; // integer values differ by >= 1.0
 constexpr int kMaxPdlpStalls = 3;
-
-void seed_pool(SolutionPool &pool, const HighsMipSolver &mipsolver) {
-  const auto *model = mipsolver.model_;
-  auto *mipdata = mipsolver.mipdata_.get();
-  if (mipdata->incumbent.empty()) {
-    return;
-  }
-  const HighsInt ncol = model->num_col_;
-  double obj = model->offset_;
-  for (HighsInt j = 0; j < ncol; ++j) {
-    obj += model->col_cost_[j] * mipdata->incumbent[j];
-  }
-  pool.try_add(obj, mipdata->incumbent);
-}
 
 // Build LP relaxation from the presolved MIP model (strip integrality).
 // Uses row-wise storage from mipdata since that's readily available.
@@ -484,14 +468,14 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
       std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
 
   uint32_t base_seed =
-      static_cast<uint32_t>(mipdata->numImprovingSols + 42);
+      static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
 
   // Create per-worker PumpWorker instances (sequential — deterministic
   // initialization order with deterministic seeds).
   std::vector<std::unique_ptr<PumpWorker>> workers;
   workers.reserve(N);
   for (int w = 0; w < N; ++w) {
-    uint32_t seed = base_seed + static_cast<uint32_t>(w) * 997;
+    uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
     workers.push_back(
         std::make_unique<PumpWorker>(mipsolver, csc, pool, worker_budget, seed));
   }

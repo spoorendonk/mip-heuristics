@@ -15,8 +15,6 @@ namespace fpr {
 
 namespace {
 
-constexpr int kPoolCapacity = 10;
-
 // Paper Section 6.3, Class 1 — LP-free strategies.
 // These are the strategies selected in the paper's portfolio for the LP-free
 // class (run before any LP is solved).

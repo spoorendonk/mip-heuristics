@@ -16,8 +16,6 @@ namespace fpr_lp {
 
 namespace {
 
-constexpr int kPoolCapacity = 10;
-
 struct NamedConfig {
   FprStrategyConfig strat;
   FrameworkMode mode;

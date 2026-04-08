@@ -5,6 +5,10 @@
 
 #include "parallel/HighsSpinMutex.h"
 
+class HighsMipSolver;
+
+inline constexpr int kPoolCapacity = 10;
+
 // Thread-safe solution pool. Keeps top-K solutions sorted by objective.
 // Supports restart strategies: crossover and copy.
 class SolutionPool {
@@ -42,3 +46,8 @@ class SolutionPool {
   int capacity_;
   bool minimize_;
 };
+
+// Seed a pool with the current incumbent (if any). Defined inline to
+// avoid pulling HighsMipSolver includes into the header — callers
+// already include both solution_pool.h and HighsMipSolver.h.
+void seed_pool(SolutionPool &pool, const HighsMipSolver &mipsolver);

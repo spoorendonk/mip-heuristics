@@ -63,22 +63,6 @@ constexpr double kFjAlpha = 1.0;
 constexpr double kFprArmAlpha = 1.0;
 constexpr double kLocalMipAlpha = 1.0;
 
-constexpr int kPoolCapacity = 10;
-
-void seed_pool(SolutionPool &pool, const HighsMipSolver &mipsolver) {
-  const auto *model = mipsolver.model_;
-  auto *mipdata = mipsolver.mipdata_.get();
-  if (mipdata->incumbent.empty()) {
-    return;
-  }
-  const HighsInt ncol = model->num_col_;
-  double obj = model->offset_;
-  for (HighsInt j = 0; j < ncol; ++j) {
-    obj += model->col_cost_[j] * mipdata->incumbent[j];
-  }
-  pool.try_add(obj, mipdata->incumbent);
-}
-
 bool objective_better(bool minimize, double lhs, double rhs) {
   constexpr double kTol = 1e-9;
   return minimize ? lhs < rhs - kTol : lhs > rhs + kTol;
@@ -245,13 +229,14 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
   std::atomic<size_t> effort_since_improvement{0};
   std::atomic<bool> stop{false};
 
-  uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + 42);
+  uint32_t base_seed =
+      static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
 
   highs::parallel::for_each(
       0, static_cast<HighsInt>(N),
       [&](HighsInt lo, HighsInt hi) {
         for (HighsInt w = lo; w < hi; ++w) {
-          std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * 997);
+          std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
           int attempt_counter = 0;
 
           while (!stop.load(std::memory_order_relaxed)) {
@@ -409,10 +394,11 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   const double time_limit = mipsolver.options_mip_->time_limit;
 
   // Deterministic per-worker state
-  uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + 42);
+  uint32_t base_seed =
+      static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
   std::vector<std::mt19937> rngs(N);
   for (int w = 0; w < N; ++w) {
-    rngs[w].seed(base_seed + w * 997);
+    rngs[w].seed(base_seed + w * kSeedStride);
   }
   std::vector<int> attempt_counters(N, 0);
 

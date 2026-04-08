@@ -90,6 +90,10 @@ inline double clamp_round(double val, double lb, double ub, bool integer) {
   return std::max(lb, std::min(ub, val));
 }
 
+// Seed constants for deterministic per-worker RNG seeding.
+constexpr uint32_t kBaseSeedOffset = 42;
+constexpr uint32_t kSeedStride = 997;
+
 // Effort budget for presolve heuristics, scaled by mip_heuristic_effort.
 // Base budget nnz << 12 at default effort 0.05; scales linearly.
 inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {

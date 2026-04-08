@@ -82,3 +82,18 @@ int SolutionPool::size() {
   std::lock_guard<HighsSpinMutex> lock(mtx_);
   return static_cast<int>(entries_.size());
 }
+
+#include "mip/HighsMipSolver.h"
+#include "mip/HighsMipSolverData.h"
+
+void seed_pool(SolutionPool &pool, const HighsMipSolver &mipsolver) {
+  const auto *model = mipsolver.model_;
+  auto *mipdata = mipsolver.mipdata_.get();
+  if (mipdata->incumbent.empty()) return;
+  const HighsInt ncol = model->num_col_;
+  double obj = model->offset_;
+  for (HighsInt j = 0; j < ncol; ++j) {
+    obj += model->col_cost_[j] * mipdata->incumbent[j];
+  }
+  pool.try_add(obj, mipdata->incumbent);
+}
