@@ -51,5 +51,5 @@ class FjWorker {
   bool finished_ = false;
 };
 
-static_assert(EpochWorker<FjWorker>,
-              "FjWorker must satisfy EpochWorker concept");
+// static_assert in fj_worker.cpp to avoid leaking C++23 concepts into
+// headers that HiGHS (C++17) might transitively include.

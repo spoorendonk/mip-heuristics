@@ -1,10 +1,12 @@
 #include "fpr.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <random>
 #include <vector>
 
+#include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
@@ -14,6 +16,42 @@
 #include "solution_pool.h"
 
 namespace fpr {
+
+// Worker that wraps a single fpr_attempt call per epoch.  Satisfies
+// the EpochWorker concept from epoch_runner.h.
+class FprWorker {
+ public:
+  FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
+            SolutionPool &pool, FprStrategyConfig strat, FrameworkMode mode,
+            uint32_t seed);
+
+  EpochResult run_epoch(size_t epoch_budget);
+
+  // FPR can always retry with a new attempt — never "finished".
+  bool finished() const { return false; }
+
+  void reset_staleness() { epochs_without_improvement_ = 0; }
+
+ private:
+  void randomize_config();
+  void recompute_var_order();
+
+  HighsMipSolver &mipsolver_;
+  const CscMatrix &csc_;
+  SolutionPool &pool_;
+
+  FprStrategyConfig strat_;
+  FrameworkMode mode_;
+
+  int attempt_idx_ = 0;
+  int epochs_without_improvement_ = 0;
+
+  std::vector<HighsInt> var_order_;
+  std::mt19937 rng_;
+};
+
+static_assert(EpochWorker<FprWorker>,
+              "FprWorker must satisfy EpochWorker concept");
 
 namespace {
 
