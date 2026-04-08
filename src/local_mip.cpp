@@ -3,13 +3,17 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <random>
 #include <vector>
 
+#include "epoch_runner.h"
 #include "heuristic_common.h"
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "parallel/HighsParallel.h"
+#include "solution_pool.h"
 
 namespace {
 
@@ -1219,6 +1223,397 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
   }
 
   return result;
+}
+
+// --- LocalMipWorker: EpochWorker wrapping WorkerCtx ---
+
+namespace {
+
+constexpr double kPerturbBinaryFraction = 0.2;
+constexpr size_t kEpochsPerWorker = 10;
+
+// Perturb solution: flip ~20% of binary vars, randomly shift general integers.
+void perturb_solution(std::vector<double> &solution,
+                      const HighsMipSolverData &mipdata,
+                      const std::vector<HighsVarType> &integrality,
+                      const std::vector<double> &col_lb,
+                      const std::vector<double> &col_ub, HighsInt ncol,
+                      std::mt19937 &rng) {
+  std::uniform_real_distribution<double> coin(0.0, 1.0);
+  for (HighsInt j = 0; j < ncol; ++j) {
+    if (!is_integer(integrality, j)) continue;
+    if (coin(rng) > kPerturbBinaryFraction) continue;
+    if (mipdata.domain.isBinary(j)) {
+      solution[j] = (solution[j] < 0.5) ? 1.0 : 0.0;
+    } else {
+      double lo = std::ceil(col_lb[j]);
+      double hi = std::floor(col_ub[j]);
+      if (hi <= lo) continue;
+      auto irange = static_cast<int64_t>(hi - lo);
+      int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
+      double current = std::round(solution[j]);
+      solution[j] = lo + std::fmod(current - lo + shift, irange + 1.0);
+      solution[j] = std::max(col_lb[j], std::min(col_ub[j], solution[j]));
+    }
+  }
+}
+
+}  // namespace
+
+class LocalMipWorker {
+ public:
+  LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
+                 SolutionPool &pool, size_t total_budget, uint32_t seed,
+                 const double *initial_solution)
+      : mipsolver_(mipsolver),
+        csc_(csc),
+        pool_(pool),
+        total_budget_(total_budget),
+        stale_budget_(total_budget >> 2),
+        rng_(seed),
+        ctx_(mipsolver, csc) {
+    const HighsInt ncol = mipsolver.model_->num_col_;
+    auto *mipdata = ctx_.mipdata;
+
+    // Precompute variable subsets
+    for (HighsInt j = 0; j < ncol; ++j) {
+      if (std::abs(ctx_.col_cost[j]) >= kEpsZero) {
+        costed_vars_.push_back(j);
+      }
+      if (mipdata->domain.isBinary(j)) {
+        binary_vars_.push_back(j);
+      }
+    }
+    ctx_.lift.costed_vars = &costed_vars_;
+
+    // Initialize solution
+    const double *src = initial_solution
+                            ? initial_solution
+                            : (!mipdata->incumbent.empty()
+                                   ? mipdata->incumbent.data()
+                                   : nullptr);
+    if (src) {
+      for (HighsInt j = 0; j < ncol; ++j) {
+        double v = src[j];
+        if (ctx_.is_int(j)) v = std::round(v);
+        ctx_.solution[j] =
+            std::max(ctx_.col_lb[j], std::min(ctx_.col_ub[j], v));
+      }
+    } else {
+      for (HighsInt j = 0; j < ncol; ++j) {
+        double v = std::clamp(0.0, ctx_.col_lb[j], ctx_.col_ub[j]);
+        if (ctx_.is_int(j)) v = std::round(v);
+        ctx_.solution[j] = v;
+      }
+    }
+
+    ctx_.rebuild_state();
+    best_objective_ = ctx_.minimize
+                          ? std::numeric_limits<double>::infinity()
+                          : -std::numeric_limits<double>::infinity();
+    best_solution_.resize(ncol);
+  }
+
+  EpochResult run_epoch(size_t epoch_budget) {
+    if (finished_) return {};
+
+    const HighsInt ncol = mipsolver_.model_->num_col_;
+    const double time_limit = mipsolver_.options_mip_->time_limit;
+
+    EpochResult epoch{};
+    size_t effort_start = ctx_.effort;
+    size_t effort_at_last_improvement = effort_start;
+
+    while (ctx_.effort - effort_start < epoch_budget &&
+           total_effort_ + (ctx_.effort - effort_start) < total_budget_) {
+      if (mipsolver_.timer_.read() >= time_limit) {
+        finished_ = true;
+        break;
+      }
+      if (effort_since_improvement_ + (ctx_.effort - effort_start) >
+          stale_budget_) {
+        finished_ = true;
+        break;
+      }
+
+      bool feasible_mode = ctx_.violated.empty();
+
+      if (feasible_mode) {
+        bool need_full_recheck =
+            ctx_.was_infeasible ||
+            (ctx_.feasible_recheck_counter % kFeasibleRecheckPeriod == 0);
+        ctx_.was_infeasible = false;
+        ++ctx_.feasible_recheck_counter;
+
+        bool truly_feasible = true;
+        if (need_full_recheck) {
+          truly_feasible =
+              ctx_.full_recheck(/*update_sets=*/true, /*early_exit=*/false);
+        }
+        if (!truly_feasible) {
+          ++step_;
+          continue;
+        }
+
+        double obj = ctx_.current_obj;
+        bool improved = false;
+        if (!best_feasible_) {
+          improved = true;
+        } else if (ctx_.minimize) {
+          improved = (obj < best_objective_ - ctx_.epsilon);
+        } else {
+          improved = (obj > best_objective_ + ctx_.epsilon);
+        }
+
+        if (improved) {
+          if (!need_full_recheck) {
+            if (!ctx_.full_recheck(/*update_sets=*/false,
+                                   /*early_exit=*/true)) {
+              ctx_.rebuild_state();
+              ++step_;
+              continue;
+            }
+          }
+          best_feasible_ = true;
+          best_objective_ = obj;
+          best_solution_ = ctx_.solution;
+          steps_since_improvement_ = 0;
+          epoch.found_improvement = true;
+
+          pool_.try_add(obj, ctx_.solution);
+          effort_since_improvement_ = 0;
+          effort_at_last_improvement = ctx_.effort;
+        }
+
+        ctx_.lift.recompute_all(ctx_);
+        Candidate lift_best;
+        lift_best.score = 0.0;
+        {
+          HighsInt write = 0;
+          for (HighsInt read = 0;
+               read <
+               static_cast<HighsInt>(ctx_.lift.positive_list.size());
+               ++read) {
+            HighsInt j = ctx_.lift.positive_list[read];
+            if (!ctx_.lift.in_positive[j]) continue;
+            ctx_.lift.positive_list[write++] = j;
+            if (ctx_.lift.score[j] <= lift_best.score) continue;
+            double lo = ctx_.lift.lo[j], hi = ctx_.lift.hi[j];
+            if (lo > hi) continue;
+            double target;
+            if (ctx_.minimize) {
+              target = (ctx_.col_cost[j] > 0) ? lo : hi;
+            } else {
+              target = (ctx_.col_cost[j] > 0) ? hi : lo;
+            }
+            target = ctx_.clamp_and_round(j, target);
+            if (std::abs(target - ctx_.solution[j]) < kEpsZero) continue;
+            lift_best = {j, target, ctx_.lift.score[j], 0.0};
+          }
+          ctx_.lift.positive_list.resize(write);
+        }
+
+        if (lift_best.var_idx != -1) {
+          ctx_.apply_move_with_tabu(lift_best.var_idx, lift_best.new_val,
+                                   step_, rng_);
+        } else {
+          ctx_.update_weights(rng_, /*is_feasible=*/true, best_feasible_,
+                              best_objective_);
+        }
+
+        ++steps_since_improvement_;
+        if (steps_since_improvement_ >= kFeasiblePlateau) {
+          finished_ = true;
+          break;
+        }
+      } else {
+        Candidate cand =
+            infeasible_step(ctx_, rng_, step_, best_feasible_,
+                            best_objective_, costed_vars_, binary_vars_);
+
+        if (cand.var_idx != -1) {
+          ctx_.apply_move_with_tabu(cand.var_idx, cand.new_val, step_,
+                                   rng_);
+        }
+
+        ++steps_since_improvement_;
+        if (ctx_.violated.empty()) {
+          steps_since_improvement_ = 0;
+        }
+      }
+
+      // Activity refresh
+      if (step_ % kActivityPeriod == 0 && step_ > 0) {
+        ctx_.rebuild_state();
+      }
+
+      // Restart logic
+      if (steps_since_improvement_ >= kRestartInterval) {
+        steps_since_improvement_ = 0;
+        ++restart_count_;
+
+        if (best_feasible_ && (restart_count_ % 2 == 1)) {
+          ctx_.solution = best_solution_;
+        } else {
+          for (HighsInt j = 0; j < ncol; ++j) {
+            if (ctx_.mipdata->domain.isBinary(j)) {
+              ctx_.solution[j] = (rng_() % 2 == 0) ? 0.0 : 1.0;
+            } else if (ctx_.is_int(j)) {
+              double lo = std::max(ctx_.col_lb[j], -1e8);
+              double hi = std::min(ctx_.col_ub[j], lo + 100.0);
+              ctx_.solution[j] = std::max(
+                  ctx_.col_lb[j],
+                  std::min(ctx_.col_ub[j],
+                           std::round(
+                               std::uniform_real_distribution<double>(
+                                   lo, hi)(rng_))));
+            } else {
+              double lo =
+                  ctx_.col_lb[j] > -kHighsInf ? ctx_.col_lb[j] : -1e6;
+              double hi =
+                  ctx_.col_ub[j] < kHighsInf ? ctx_.col_ub[j] : lo + 1e6;
+              if (hi > lo) {
+                ctx_.solution[j] =
+                    std::uniform_real_distribution<double>(lo, hi)(rng_);
+              } else {
+                ctx_.solution[j] = lo;
+              }
+            }
+          }
+        }
+
+        ctx_.rebuild_state();
+        std::fill(ctx_.tabu_inc_until.begin(), ctx_.tabu_inc_until.end(),
+                  0);
+        std::fill(ctx_.tabu_dec_until.begin(), ctx_.tabu_dec_until.end(),
+                  0);
+      }
+
+      ++step_;
+    }
+
+    size_t epoch_effort = ctx_.effort - effort_start;
+    total_effort_ += epoch_effort;
+    // Only add effort consumed since the last improvement within this
+    // epoch (avoid double-counting when improvement resets the counter).
+    effort_since_improvement_ += ctx_.effort - effort_at_last_improvement;
+    epoch.effort = epoch_effort;
+
+    return epoch;
+  }
+
+  bool finished() const { return finished_; }
+
+  void reset_staleness() { effort_since_improvement_ = 0; }
+
+ private:
+  HighsMipSolver &mipsolver_;
+  const CscMatrix &csc_;
+  SolutionPool &pool_;
+  const size_t total_budget_;
+  const size_t stale_budget_;
+  std::mt19937 rng_;
+
+  WorkerCtx ctx_;
+  std::vector<HighsInt> costed_vars_;
+  std::vector<HighsInt> binary_vars_;
+
+  bool best_feasible_ = false;
+  double best_objective_ = 0.0;
+  std::vector<double> best_solution_;
+
+  size_t total_effort_ = 0;
+  size_t effort_since_improvement_ = 0;
+  HighsInt steps_since_improvement_ = 0;
+  HighsInt restart_count_ = 0;
+  HighsInt step_ = 0;
+  bool finished_ = false;
+};
+
+static_assert(EpochWorker<LocalMipWorker>,
+              "LocalMipWorker must satisfy EpochWorker concept");
+
+void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
+  const auto *model = mipsolver.model_;
+  auto *mipdata = mipsolver.mipdata_.get();
+  const HighsInt ncol = model->num_col_;
+  const HighsInt nrow = model->num_row_;
+  if (ncol == 0 || nrow == 0) return;
+  if (mipdata->incumbent.empty()) return;
+
+  const bool minimize = (model->sense_ == ObjSense::kMinimize);
+  const int N = highs::parallel::num_threads();
+
+  auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
+                       mipdata->ARvalue_);
+
+  SolutionPool pool(kPoolCapacity, minimize);
+  seed_pool(pool, mipsolver);
+
+  const size_t worker_budget = max_effort / static_cast<size_t>(N);
+  const size_t epoch_budget =
+      std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
+
+  uint32_t base_seed =
+      static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+
+  // Create per-worker LocalMipWorker instances.
+  // Worker 0: unperturbed incumbent.
+  // Workers 1..N-1: perturbed incumbent.
+  std::vector<std::unique_ptr<LocalMipWorker>> workers;
+  workers.reserve(N);
+
+  for (int w = 0; w < N; ++w) {
+    uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
+
+    if (w == 0) {
+      // Worker 0: unperturbed incumbent
+      workers.push_back(std::make_unique<LocalMipWorker>(
+          mipsolver, csc, pool, worker_budget, seed, nullptr));
+    } else {
+      // Workers 1..N-1: perturbed incumbent
+      std::vector<double> perturbed = mipdata->incumbent;
+      std::mt19937 perturb_rng(seed);
+      perturb_solution(perturbed, *mipdata, model->integrality_,
+                       model->col_lower_, model->col_upper_, ncol,
+                       perturb_rng);
+      workers.push_back(std::make_unique<LocalMipWorker>(
+          mipsolver, csc, pool, worker_budget, seed, perturbed.data()));
+    }
+  }
+
+  // Track restart seed counter for deterministic restart seeding.
+  uint32_t restart_seed_counter = static_cast<uint32_t>(N);
+
+  size_t total_effort = run_epoch_loop(
+      mipsolver, workers, max_effort, epoch_budget,
+      [&](int w) {
+        // Restart stalled worker from pool's best solution + new
+        // perturbation + new seed.
+        uint32_t new_seed =
+            base_seed +
+            static_cast<uint32_t>(restart_seed_counter++) * kSeedStride;
+
+        std::vector<double> restart_sol;
+        std::mt19937 restart_rng(new_seed);
+        if (!pool.get_restart(restart_rng, restart_sol)) {
+          // No pool solution; use incumbent
+          restart_sol = mipdata->incumbent;
+        }
+        perturb_solution(restart_sol, *mipdata, model->integrality_,
+                         model->col_lower_, model->col_upper_, ncol,
+                         restart_rng);
+        workers[w] = std::make_unique<LocalMipWorker>(
+            mipsolver, csc, pool, worker_budget, new_seed,
+            restart_sol.data());
+      },
+      max_effort >> 2);
+
+  mipdata->heuristic_effort_used += total_effort;
+
+  for (auto &entry : pool.sorted_entries()) {
+    mipdata->trySolution(entry.solution, kSolutionSourceLocalMIP);
+  }
 }
 
 } // namespace local_mip
