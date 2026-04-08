@@ -134,7 +134,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
   }
 
   // Capture state for the callback closure.
-  const bool resume = (total_effort_ > 0);
+  const bool resume = first_solve_done_;
   size_t epoch_effort_consumed = 0;
   bool found_solution = false;
   double best_obj = 0.0;
@@ -169,6 +169,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
 
   impl_->solver.solve(resume ? nullptr : impl_->col_value.data(), callback,
                       resume);
+  first_solve_done_ = true;
 
   EpochResult result{};
   result.effort = epoch_effort_consumed;

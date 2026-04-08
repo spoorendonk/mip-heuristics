@@ -347,9 +347,15 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
     // --- Parallel FPR rounding: try M configs on same x_bar ---
     size_t remaining_budget =
         max_effort > total_effort ? max_effort - total_effort : 0;
+    if (remaining_budget == 0) break;
     size_t per_config_budget = remaining_budget / std::max(M, 1);
 
-    for (auto &r : results) r = {};
+    // Clear results without deallocating solution vectors.
+    for (auto &r : results) {
+      r.found_feasible = false;
+      r.effort = 0;
+      r.solution.clear();
+    }
 
     highs::parallel::for_each(
         0, static_cast<HighsInt>(M),

@@ -306,9 +306,11 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
   uint32_t base_seed =
       static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
 
-  // Create workers sequentially (deterministic initialization order).
-  // First N workers get the curated configs (wrapping if N > 8);
-  // each starts at attempt_idx = 0 (use hint, ordered variable ranking).
+  // Create workers sequentially — construction MUST stay sequential because
+  // initial curated configs may use clique-based VarStrategy (e.g.,
+  // kStratBadobjcl) whose compute_var_order calls cliquePartition (not
+  // thread-safe).  Subsequent randomize_config() in run_epoch() only picks
+  // from kSafeLpFreeStrategies which excludes clique strategies.
   std::vector<std::unique_ptr<FprWorker>> workers;
   workers.reserve(N);
   for (int w = 0; w < N; ++w) {

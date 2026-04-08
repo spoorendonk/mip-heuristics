@@ -48,6 +48,7 @@ class FjWorker {
   size_t effort_since_improvement_ = 0;
   size_t stale_budget_ = 0;
   bool initialized_ = false;
+  bool first_solve_done_ = false;
   bool finished_ = false;
 };
 
