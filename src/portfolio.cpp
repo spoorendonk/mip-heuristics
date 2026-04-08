@@ -12,6 +12,8 @@
 #include "local_mip.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include <optional>
+
 #include "parallel/HighsParallel.h"
 #include "solution_pool.h"
 #include "thompson_sampler.h"
@@ -123,6 +125,61 @@ void log_arm_effort(const HighsLogOptions &log_options, int arm_type,
 // Indexed by FprArmConfig index (0..kNumFprArms-1), not by arm_type enum.
 using FprVarOrders = std::vector<std::vector<HighsInt>>;
 
+FprVarOrders precompute_fpr_var_orders(const HighsMipSolver &mipsolver);
+
+// Setup state shared between deterministic and opportunistic portfolio modes.
+struct PresolveSetup {
+  std::vector<int> enabled_arms;
+  std::vector<double> priors;
+  CscMatrix csc;
+  FprVarOrders fpr_var_orders;
+  std::vector<double> incumbent_snapshot;
+  size_t budget;
+  size_t stale_budget;
+  bool minimize;
+};
+
+std::optional<PresolveSetup> build_presolve_setup(
+    HighsMipSolver &mipsolver, size_t max_effort) {
+  const auto *model = mipsolver.model_;
+  auto *mipdata = mipsolver.mipdata_.get();
+  const auto *options = mipsolver.options_mip_;
+  const HighsInt ncol = model->num_col_;
+  const HighsInt nrow = model->num_row_;
+  if (ncol == 0 || nrow == 0) return std::nullopt;
+
+  PresolveSetup s;
+  s.minimize = (model->sense_ == ObjSense::kMinimize);
+  s.budget = max_effort;
+  s.stale_budget = max_effort >> 2;
+
+  if (options->mip_heuristic_run_feasibility_jump) {
+    s.enabled_arms.push_back(kArmFJ);
+    s.priors.push_back(kFjAlpha);
+  }
+  if (options->mip_heuristic_run_fpr) {
+    for (int i = 0; i < kNumFprArms; ++i) {
+      s.enabled_arms.push_back(kFprArms[i].arm_id);
+      s.priors.push_back(kFprArmAlpha);
+    }
+  }
+  if (options->mip_heuristic_run_local_mip) {
+    s.enabled_arms.push_back(kArmLocalMIP);
+    s.priors.push_back(kLocalMipAlpha);
+  }
+  if (s.enabled_arms.empty()) return std::nullopt;
+
+  s.csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
+                     mipdata->ARvalue_);
+
+  if (options->mip_heuristic_run_fpr) {
+    s.fpr_var_orders = precompute_fpr_var_orders(mipsolver);
+  }
+
+  s.incumbent_snapshot = mipdata->incumbent;
+  return s;
+}
+
 FprVarOrders precompute_fpr_var_orders(const HighsMipSolver &mipsolver) {
   FprVarOrders orders(kNumFprArms);
   for (int i = 0; i < kNumFprArms; ++i) {
@@ -213,25 +270,24 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type,
 }
 
 void run_presolve_opportunistic(HighsMipSolver &mipsolver,
-                                const std::vector<int> &enabled_arms,
-                                const std::vector<double> &priors,
-                                const CscMatrix &csc, bool minimize,
-                                size_t budget,
-                                const FprVarOrders &fpr_var_orders) {
+                                const PresolveSetup &setup) {
   auto *mipdata = mipsolver.mipdata_.get();
   const HighsLogOptions &log_options =
       mipsolver.options_mip_->log_options;
   const int N = highs::parallel::num_threads();
-  const int num_arms = static_cast<int>(enabled_arms.size());
+  const int num_arms = static_cast<int>(setup.enabled_arms.size());
 
-  ThompsonSampler bandit(num_arms, priors.data(), true); // mutex-protected
-  SolutionPool pool(kPoolCapacity, minimize);
+  ThompsonSampler bandit(num_arms, setup.priors.data(), true);
+  SolutionPool pool(kPoolCapacity, setup.minimize);
   seed_pool(pool, mipsolver);
 
-  // Snapshot incumbent once (read-only for all workers)
-  std::vector<double> incumbent_snapshot = mipdata->incumbent;
-
-  const size_t stale_budget = budget >> 2;
+  const auto &enabled_arms = setup.enabled_arms;
+  const auto &incumbent_snapshot = setup.incumbent_snapshot;
+  const auto &csc = setup.csc;
+  const auto &fpr_var_orders = setup.fpr_var_orders;
+  const bool minimize = setup.minimize;
+  const size_t budget = setup.budget;
+  const size_t stale_budget = setup.stale_budget;
 
   const double time_limit = mipsolver.options_mip_->time_limit;
 
@@ -331,73 +387,35 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver,
 } // namespace
 
 void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
-  const auto *model = mipsolver.model_;
-  auto *mipdata = mipsolver.mipdata_.get();
-  const auto *options = mipsolver.options_mip_;
-  const HighsInt ncol = model->num_col_;
-  const HighsInt nrow = model->num_row_;
-  if (ncol == 0 || nrow == 0) {
-    return;
-  }
-
-  const bool minimize = (model->sense_ == ObjSense::kMinimize);
-  const int N = highs::parallel::num_threads();
-
-  // Determine enabled arms
-  std::vector<int> enabled_arms;
-  std::vector<double> priors;
-  if (options->mip_heuristic_run_feasibility_jump) {
-    enabled_arms.push_back(kArmFJ);
-    priors.push_back(kFjAlpha);
-  }
-  if (options->mip_heuristic_run_fpr) {
-    for (int i = 0; i < kNumFprArms; ++i) {
-      enabled_arms.push_back(kFprArms[i].arm_id);
-      priors.push_back(kFprArmAlpha);
-    }
-  }
-  if (options->mip_heuristic_run_local_mip) {
-    enabled_arms.push_back(kArmLocalMIP);
-    priors.push_back(kLocalMipAlpha);
-  }
-  if (enabled_arms.empty()) {
-    return;
-  }
-
-  // Build CSC once for all workers
-  auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
-                       mipdata->ARvalue_);
-
-  // Pre-compute FPR variable orders sequentially to avoid data races on
-  // HighsCliqueTable::cliquePartition (which mutates internal state).
-  FprVarOrders fpr_var_orders;
-  if (options->mip_heuristic_run_fpr) {
-    fpr_var_orders = precompute_fpr_var_orders(mipsolver);
-  }
+  auto setup_opt = build_presolve_setup(mipsolver, max_effort);
+  if (!setup_opt) return;
+  auto &setup = *setup_opt;
 
   // Dispatch to opportunistic mode if requested
-  if (options->mip_heuristic_portfolio_opportunistic) {
-    run_presolve_opportunistic(mipsolver, enabled_arms, priors, csc, minimize,
-                               max_effort, fpr_var_orders);
+  if (mipsolver.options_mip_->mip_heuristic_portfolio_opportunistic) {
+    run_presolve_opportunistic(mipsolver, setup);
     return;
   }
 
-  ThompsonSampler bandit(static_cast<int>(enabled_arms.size()), priors.data(),
-                         false);
+  auto *mipdata = mipsolver.mipdata_.get();
+  const int N = highs::parallel::num_threads();
+
+  const auto &enabled_arms = setup.enabled_arms;
+  const auto &incumbent_snapshot = setup.incumbent_snapshot;
+  const auto &csc = setup.csc;
+  const auto &fpr_var_orders = setup.fpr_var_orders;
+  const bool minimize = setup.minimize;
+
+  ThompsonSampler bandit(static_cast<int>(enabled_arms.size()),
+                         setup.priors.data(), false);
   SolutionPool pool(kPoolCapacity, minimize);
   seed_pool(pool, mipsolver);
 
-  // Snapshot incumbent before parallel work (read-only for all workers)
-  std::vector<double> incumbent_snapshot = mipdata->incumbent;
-
-  const size_t budget = max_effort;
-  const size_t stale_budget = budget >> 2;
   size_t total_effort = 0;
   size_t effort_since_improvement = 0;
 
   const double time_limit = mipsolver.options_mip_->time_limit;
 
-  // Deterministic per-worker state
   uint32_t base_seed =
       static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
   std::vector<std::mt19937> rngs(N);
@@ -406,7 +424,7 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   }
   std::vector<int> attempt_counters(N, 0);
 
-  const HighsLogOptions &log_options = options->log_options;
+  const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
 
   // Pre-allocate per-worker vectors outside epoch loop
   std::vector<int> arms(N);
@@ -414,12 +432,12 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
   std::vector<double> wall_ms_vec(N);
   std::vector<std::vector<double>> restarts(N);
 
-  for (int epoch = 0; total_effort < budget; ++epoch) {
+  for (int epoch = 0; total_effort < setup.budget; ++epoch) {
     if (mipdata->terminatorTerminated() ||
         mipsolver.timer_.read() >= time_limit) {
       break;
     }
-    if (effort_since_improvement > stale_budget) {
+    if (effort_since_improvement > setup.stale_budget) {
       break;
     }
 
@@ -441,7 +459,7 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
           for (HighsInt w = lo; w < hi; ++w) {
             const double *restart_ptr =
                 restarts[w].empty() ? nullptr : restarts[w].data();
-            size_t remaining = budget - std::min(budget, total_effort);
+            size_t remaining = setup.budget - std::min(setup.budget, total_effort);
             auto t0 = std::chrono::steady_clock::now();
             results[w] = run_presolve_arm(
                 mipsolver, enabled_arms[arms[w]], rngs[w], attempt_counters[w],
