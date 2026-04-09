@@ -255,14 +255,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
     SolutionPool pool(kPoolCapacity, minimize);
 
-    // Seed pool with incumbent if available
-    if (!mipdata->incumbent.empty()) {
-        double obj = model->offset_;
-        for (HighsInt j = 0; j < ncol; ++j) {
-            obj += model->col_cost_[j] * mipdata->incumbent[j];
-        }
-        pool.try_add(obj, mipdata->incumbent);
-    }
+    seed_pool(pool, mipsolver);
 
     // Build CSC once
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
