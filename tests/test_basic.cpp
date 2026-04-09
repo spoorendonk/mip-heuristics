@@ -780,9 +780,9 @@ TEST_CASE("Scylla standalone: egout mixed integers", "[heuristic][scylla]") {
     REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
-// ── Scylla + other heuristics: independent presolve budgets ──
+// ── Sequential orchestrator: weighted effort allocation ──
 
-TEST_CASE("Sequential + Scylla: flugpl independent budgets", "[heuristic][scylla]") {
+TEST_CASE("Sequential orchestrator: flugpl weighted effort", "[heuristic][sequential]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", true);
@@ -794,6 +794,21 @@ TEST_CASE("Sequential + Scylla: flugpl independent budgets", "[heuristic][scylla
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+    highs.setOptionValue("mip_heuristic_run_fpr", true);
+    highs.setOptionValue("mip_heuristic_run_local_mip", true);
+    highs.setOptionValue("mip_heuristic_run_scylla", true);
+    highs.setOptionValue("mip_heuristic_portfolio", false);
+    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
 TEST_CASE("Portfolio + Scylla: flugpl bandit then Scylla", "[portfolio][scylla]") {
