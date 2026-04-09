@@ -39,7 +39,7 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `fpr` — Fix, Propagate, and Repair. DFS tree search that fixes integers, propagates bounds, backtracks on infeasibility, then runs WalkSAT/RepairSearch to fix remaining violations. `fpr_core` contains the shared single-attempt logic. Sub-algorithms: `prop_engine` (bound propagation), `walksat`, `repair_search`, `fpr_strategies` (strategy variants).
 - `fpr_lp` — LP-dependent FPR (paper Classes 2–3) using root LP solution. Called during B&B dive, not presolve.
 - `fj` — Feasibility Jump. Thin wrapper that delegates to HiGHS's built-in FJ implementation. Has sequential and epoch-gated parallel modes.
-- `local_mip` — weighted local search (MIP neighborhood search).
+- `local_mip` — weighted local search (MIP neighborhood search). Has sequential and epoch-gated parallel modes.
 - `scylla` — feasibility pump: alternates PDLP approximate LP solves with FPR rounding, progressive objective blending, and cycling perturbation. Has sequential mode and parallel mode (single PDLP + parallel FPR rounding).
 - `portfolio` — adaptive bandit (Thompson sampling) that selects among FPR, LocalMIP, and FeasibilityJump arms. Has deterministic and opportunistic (parallel) modes.
 
@@ -58,6 +58,7 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `mip_heuristic_effort` — effort budget multiplier for all custom heuristics.
 - `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla` — enable/disable individual heuristics.
 - `mip_heuristic_run_feasibility_jump` — enable FJ (used as standalone or as portfolio arm).
+- `mip_heuristic_local_mip_parallel` — run LocalMIP workers in parallel (independent of portfolio mode).
 - `mip_heuristic_scylla_parallel` — run Scylla pump chains in parallel (independent of portfolio mode).
 - `mip_heuristic_portfolio`, `mip_heuristic_portfolio_opportunistic` — enable portfolio mode / parallel opportunistic mode.
 
