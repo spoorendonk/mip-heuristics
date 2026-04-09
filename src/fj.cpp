@@ -20,7 +20,7 @@ bool run(HighsMipSolver &mipsolver, size_t max_effort) {
   auto status =
       mipdata->feasibilityJumpCapture(sol, obj, effort, max_effort, nullptr);
   if (!sol.empty()) {
-    mipdata->trySolution(sol, kSolutionSourceHeuristic);
+    mipdata->trySolution(sol, kSolutionSourceFJ);
   }
   mipdata->heuristic_effort_used += effort;
   return status == HighsModelStatus::kInfeasible;
@@ -71,7 +71,7 @@ bool run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
   mipdata->heuristic_effort_used += total_effort;
 
   for (auto &entry : pool.sorted_entries()) {
-    mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
+    mipdata->trySolution(entry.solution, kSolutionSourceFJ);
   }
 
   return false;

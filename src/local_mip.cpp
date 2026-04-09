@@ -951,6 +951,11 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step,
 
 namespace local_mip {
 
+// Forward declaration — worker() is defined after LocalMipWorker.
+HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
+                       uint32_t seed, const double *initial_solution,
+                       size_t max_effort);
+
 void run(HighsMipSolver &mipsolver, size_t max_effort) {
   const auto *model = mipsolver.model_;
   auto *mipdata = mipsolver.mipdata_.get();
@@ -965,264 +970,14 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
 
   auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_,
                        mipdata->ARvalue_);
-  std::mt19937 rng(mipdata->numImprovingSols + 137);
+  uint32_t seed =
+      static_cast<uint32_t>(mipdata->numImprovingSols + 137);
 
-  auto result = worker(mipsolver, csc, rng, nullptr, max_effort);
+  auto result = worker(mipsolver, csc, seed, nullptr, max_effort);
   mipdata->heuristic_effort_used += result.effort;
   if (result.found_feasible) {
     mipdata->trySolution(result.solution, kSolutionSourceLocalMIP);
   }
-}
-
-HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
-                       std::mt19937 &rng, const double *initial_solution,
-                       size_t max_effort) {
-  const HighsInt ncol = mipsolver.model_->num_col_;
-  const HighsInt nrow = mipsolver.model_->num_row_;
-
-  HeuristicResult result;
-  if (ncol == 0 || nrow == 0) {
-    return result;
-  }
-
-  WorkerCtx ctx(mipsolver, csc);
-
-  // Best solution tracking
-  bool best_feasible = false;
-  double best_objective = ctx.minimize
-                              ? std::numeric_limits<double>::infinity()
-                              : -std::numeric_limits<double>::infinity();
-  std::vector<double> best_solution(ncol);
-
-  // Precompute variable subsets for breakthrough moves and Boolean flips
-  auto *mipdata = ctx.mipdata;
-  std::vector<HighsInt> costed_vars;
-  std::vector<HighsInt> binary_vars;
-  for (HighsInt j = 0; j < ncol; ++j) {
-    if (std::abs(ctx.col_cost[j]) >= kEpsZero) {
-      costed_vars.push_back(j);
-    }
-    if (mipdata->domain.isBinary(j)) {
-      binary_vars.push_back(j);
-    }
-  }
-  ctx.lift.costed_vars = &costed_vars;
-
-  // --- Initialize solution ---
-  const double *src = initial_solution
-                          ? initial_solution
-                          : (!mipdata->incumbent.empty()
-                                 ? mipdata->incumbent.data()
-                                 : nullptr);
-  if (src) {
-    for (HighsInt j = 0; j < ncol; ++j) {
-      double v = src[j];
-      if (ctx.is_int(j)) {
-        v = std::round(v);
-      }
-      ctx.solution[j] = std::max(ctx.col_lb[j], std::min(ctx.col_ub[j], v));
-    }
-  } else {
-    // Paper's closest-to-0 initialization (Algorithm 1, line 1).
-    for (HighsInt j = 0; j < ncol; ++j) {
-      double v = std::clamp(0.0, ctx.col_lb[j], ctx.col_ub[j]);
-      if (ctx.is_int(j)) {
-        v = std::round(v);
-      }
-      ctx.solution[j] = v;
-    }
-  }
-
-  // Build initial LHS and violated/satisfied lists
-  ctx.rebuild_state();
-
-  HighsInt steps_since_improvement = 0;
-  HighsInt restart_count = 0;
-  const double time_limit = mipsolver.options_mip_->time_limit;
-
-  // --- Main loop ---
-  for (HighsInt step = 0;; ++step) {
-    if (step % kTermCheckInterval == 0) {
-      if (mipdata->terminatorTerminated() ||
-          mipsolver.timer_.read() >= time_limit) {
-        break;
-      }
-      if (ctx.effort >= max_effort) {
-        break;
-      }
-    }
-
-    bool feasible_mode = ctx.violated.empty();
-
-    if (feasible_mode) {
-      // Full O(nnz) recheck on infeasible->feasible transition or periodically;
-      // otherwise trust incremental lhs[] (O(nrow) check only).
-      bool need_full_recheck =
-          ctx.was_infeasible ||
-          (ctx.feasible_recheck_counter % kFeasibleRecheckPeriod == 0);
-      ctx.was_infeasible = false;
-      ++ctx.feasible_recheck_counter;
-
-      bool truly_feasible = true;
-      if (need_full_recheck) {
-        truly_feasible =
-            ctx.full_recheck(/*update_sets=*/true, /*early_exit=*/false);
-      }
-      // When !need_full_recheck, trust incremental state: apply_move's
-      // update_violated() already maintains the violated set for every
-      // row touched by each move, so no row can become violated without
-      // being caught.  The periodic full recheck guards against FP drift.
-      if (!truly_feasible) {
-        continue;
-      }
-
-      // Track best solution
-      double obj = ctx.current_obj;
-      bool improved = false;
-      if (!best_feasible) {
-        improved = true;
-      } else if (ctx.minimize) {
-        improved = (obj < best_objective - ctx.epsilon);
-      } else {
-        improved = (obj > best_objective + ctx.epsilon);
-      }
-
-      if (improved) {
-        // Full recheck before recording best (guard against FP drift)
-        if (!need_full_recheck) {
-          if (!ctx.full_recheck(/*update_sets=*/false, /*early_exit=*/true)) {
-            ctx.rebuild_state();
-            continue;
-          }
-        }
-        best_feasible = true;
-        best_objective = obj;
-        best_solution = ctx.solution;
-        steps_since_improvement = 0;
-      }
-
-      // Lift move: find variable giving best feasible objective improvement
-      ctx.lift.recompute_all(ctx);
-      Candidate lift_best;
-      lift_best.score = 0.0; // must strictly improve
-      // Compact stale entries and find best lift in a single pass
-      {
-        HighsInt write = 0;
-        for (HighsInt read = 0;
-             read < static_cast<HighsInt>(ctx.lift.positive_list.size());
-             ++read) {
-          HighsInt j = ctx.lift.positive_list[read];
-          if (!ctx.lift.in_positive[j]) {
-            continue;
-          }
-          ctx.lift.positive_list[write++] = j;
-          if (ctx.lift.score[j] <= lift_best.score) {
-            continue;
-          }
-          double lo = ctx.lift.lo[j], hi = ctx.lift.hi[j];
-          if (lo > hi) {
-            continue;
-          }
-          double target;
-          if (ctx.minimize) {
-            target = (ctx.col_cost[j] > 0) ? lo : hi;
-          } else {
-            target = (ctx.col_cost[j] > 0) ? hi : lo;
-          }
-          target = ctx.clamp_and_round(j, target);
-          if (std::abs(target - ctx.solution[j]) < kEpsZero) {
-            continue;
-          }
-          lift_best = {j, target, ctx.lift.score[j], 0.0};
-        }
-        ctx.lift.positive_list.resize(write);
-      }
-
-      if (lift_best.var_idx != -1) {
-        ctx.apply_move_with_tabu(lift_best.var_idx, lift_best.new_val,
-                                 step, rng);
-      } else {
-        ctx.update_weights(rng, /*is_feasible=*/true, best_feasible,
-                           best_objective);
-      }
-
-      // Count every feasible step toward the plateau — only genuine
-      // improvements (recorded above) reset the counter.  When stuck,
-      // exit so the caller sees only the effort actually consumed.
-      ++steps_since_improvement;
-      if (steps_since_improvement >= kFeasiblePlateau) {
-        break;
-      }
-    } else {
-      // --- Infeasible mode ---
-      Candidate cand = infeasible_step(ctx, rng, step, best_feasible,
-                                       best_objective, costed_vars,
-                                       binary_vars);
-
-      // Apply move
-      if (cand.var_idx != -1) {
-        ctx.apply_move_with_tabu(cand.var_idx, cand.new_val, step, rng);
-      }
-
-      ++steps_since_improvement;
-      if (ctx.violated.empty()) {
-        steps_since_improvement = 0;
-      }
-    }
-
-    // Activity refresh: recompute all LHS to prevent FP drift
-    if (step % kActivityPeriod == 0 && step > 0) {
-      ctx.rebuild_state();
-    }
-
-    // Restart logic
-    if (steps_since_improvement >= kRestartInterval) {
-      steps_since_improvement = 0;
-      ++restart_count;
-
-      // Try incumbent on odd restarts
-      if (best_feasible && (restart_count % 2 == 1)) {
-        ctx.solution = best_solution;
-      } else {
-        // Random restart
-        for (HighsInt j = 0; j < ncol; ++j) {
-          if (mipdata->domain.isBinary(j)) {
-            ctx.solution[j] = (rng() % 2 == 0) ? 0.0 : 1.0;
-          } else if (ctx.is_int(j)) {
-            double lo = std::max(ctx.col_lb[j], -1e8);
-            double hi = std::min(ctx.col_ub[j], lo + 100.0);
-            ctx.solution[j] = std::max(
-                ctx.col_lb[j],
-                std::min(ctx.col_ub[j],
-                         std::round(std::uniform_real_distribution<double>(
-                             lo, hi)(rng))));
-          } else {
-            double lo = ctx.col_lb[j] > -kHighsInf ? ctx.col_lb[j] : -1e6;
-            double hi = ctx.col_ub[j] < kHighsInf ? ctx.col_ub[j] : lo + 1e6;
-            if (hi > lo) {
-              ctx.solution[j] =
-                  std::uniform_real_distribution<double>(lo, hi)(rng);
-            } else {
-              ctx.solution[j] = lo;
-            }
-          }
-        }
-      }
-
-      ctx.rebuild_state();
-      std::fill(ctx.tabu_inc_until.begin(), ctx.tabu_inc_until.end(), 0);
-      std::fill(ctx.tabu_dec_until.begin(), ctx.tabu_dec_until.end(), 0);
-    }
-  }
-
-  result.effort = ctx.effort;
-  if (best_feasible) {
-    result.found_feasible = true;
-    result.objective = best_objective;
-    result.solution = std::move(best_solution);
-  }
-
-  return result;
 }
 
 // --- LocalMipWorker: EpochWorker wrapping WorkerCtx ---
@@ -1264,12 +1019,13 @@ class LocalMipWorker {
  public:
   LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc,
                  SolutionPool &pool, size_t total_budget, uint32_t seed,
-                 const double *initial_solution)
+                 const double *initial_solution,
+                 size_t stale_budget = 0)
       : mipsolver_(mipsolver),
         csc_(csc),
         pool_(pool),
         total_budget_(total_budget),
-        stale_budget_(total_budget >> 2),
+        stale_budget_(stale_budget > 0 ? stale_budget : total_budget >> 2),
         rng_(seed),
         ctx_(mipsolver, csc) {
     const HighsInt ncol = mipsolver.model_->num_col_;
@@ -1532,6 +1288,43 @@ class LocalMipWorker {
 
 static_assert(EpochWorker<LocalMipWorker>,
               "LocalMipWorker must satisfy EpochWorker concept");
+
+HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc,
+                       uint32_t seed, const double *initial_solution,
+                       size_t max_effort) {
+  const HighsInt ncol = mipsolver.model_->num_col_;
+  const HighsInt nrow = mipsolver.model_->num_row_;
+
+  HeuristicResult result;
+  if (ncol == 0 || nrow == 0) {
+    return result;
+  }
+
+  const bool minimize = (mipsolver.model_->sense_ == ObjSense::kMinimize);
+  SolutionPool pool(1, minimize);
+
+  // Disable stale_budget: pass max_effort so it can never fire before
+  // the total budget is exhausted (original worker() had no stale_budget).
+  LocalMipWorker w(mipsolver, csc, pool, max_effort, seed, initial_solution,
+                   /*stale_budget=*/max_effort);
+
+  size_t total_effort = 0;
+  while (!w.finished()) {
+    auto epoch = w.run_epoch(max_effort);
+    total_effort += epoch.effort;
+    if (epoch.effort == 0) break;
+  }
+
+  result.effort = total_effort;
+  auto entries = pool.sorted_entries();
+  if (!entries.empty()) {
+    result.found_feasible = true;
+    result.objective = entries[0].objective;
+    result.solution = std::move(entries[0].solution);
+  }
+
+  return result;
+}
 
 void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
   const auto *model = mipsolver.model_;

@@ -129,6 +129,15 @@ inline constexpr FprStrategyConfig kStratLp{VarStrategy::kTypecl,
                                             ValStrategy::kLp};
 
 // ---------------------------------------------------------------------------
+// Named configuration (strategy + framework mode pair)
+// ---------------------------------------------------------------------------
+
+struct NamedConfig {
+  FprStrategyConfig strat;
+  FrameworkMode mode;
+};
+
+// ---------------------------------------------------------------------------
 // Variable ranking
 // ---------------------------------------------------------------------------
 

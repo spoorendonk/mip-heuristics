@@ -232,7 +232,8 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type,
     if (!init && !incumbent_snapshot.empty()) {
       init = incumbent_snapshot.data();
     }
-    return local_mip::worker(mipsolver, csc, rng, init, max_effort);
+    uint32_t seed = static_cast<uint32_t>(rng());
+    return local_mip::worker(mipsolver, csc, seed, init, max_effort);
   }
   case kArmFJ: {
     auto *mipdata = mipsolver.mipdata_.get();

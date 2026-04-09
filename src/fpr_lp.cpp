@@ -16,11 +16,6 @@ namespace fpr_lp {
 
 namespace {
 
-struct NamedConfig {
-  FprStrategyConfig strat;
-  FrameworkMode mode;
-};
-
 // Paper Section 6.3, Class 2 — zero-obj LP strategies
 constexpr NamedConfig kClass2Configs[] = {
     {kStratZerocore, FrameworkMode::kDfs},
