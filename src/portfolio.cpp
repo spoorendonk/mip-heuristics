@@ -171,9 +171,7 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
         s.enabled_arms.push_back(kArmLocalMIP);
         s.priors.push_back(kLocalMipAlpha);
     }
-    // Scylla is a deterministic portfolio arm only.  The opportunistic path
-    // uses run_presolve_arm() which has no kArmScylla handler (yet — #45).
-    if (options->mip_heuristic_run_scylla && !options->mip_heuristic_portfolio_opportunistic) {
+    if (options->mip_heuristic_run_scylla) {
         s.enabled_arms.push_back(kArmScylla);
         s.priors.push_back(kScyllaAlpha);
     }
@@ -386,6 +384,21 @@ private:
 
 static_assert(EpochWorker<PortfolioWorker>, "PortfolioWorker must satisfy EpochWorker concept");
 
+// Effort-proportional budget cap for a single arm pull in opportunistic mode.
+// Uses k * avg_effort (EMA) when available; falls back to total_budget / (N*10)
+// for arms with no history yet.
+constexpr double kBudgetCapMultiplier = 2.5;
+
+size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t total_budget,
+                          int num_arms) {
+    auto st = bandit.stats(arm);
+    if (st.pulls > 0 && st.avg_effort > 0.0) {
+        return static_cast<size_t>(kBudgetCapMultiplier * st.avg_effort);
+    }
+    // Default cap for first pull: budget / (N * 10)
+    return std::max<size_t>(total_budget / (static_cast<size_t>(num_arms) * 10), 1);
+}
+
 void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &setup) {
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
@@ -418,6 +431,7 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
             for (HighsInt w = lo; w < hi; ++w) {
                 std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
                 int attempt_counter = 0;
+                std::unique_ptr<PumpWorker> pump;
 
                 while (!stop.load(std::memory_order_relaxed)) {
                     // Worker 0 periodically checks termination (not thread-safe
@@ -433,23 +447,42 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                     }
 
                     int arm = bandit.select_effort_aware(rng);
+                    int arm_type = enabled_arms[arm];
                     auto before = pool.snapshot();
-
-                    std::vector<double> restart;
-                    pool.get_restart(rng, restart);
-                    const double *restart_ptr = restart.empty() ? nullptr : restart.data();
 
                     size_t remaining =
                         budget - std::min(budget, total_effort.load(std::memory_order_relaxed));
-                    auto t0 = std::chrono::steady_clock::now();
-                    auto result = run_presolve_arm(mipsolver, enabled_arms[arm], rng,
-                                                   attempt_counter++, restart_ptr, csc,
-                                                   incumbent_snapshot, remaining, fpr_var_orders);
-                    auto t1 = std::chrono::steady_clock::now();
+                    size_t cap = compute_budget_cap(bandit, arm, budget, num_arms);
+                    size_t arm_budget = std::min(cap, remaining);
 
-                    if (result.found_feasible) {
-                        pool.try_add(result.objective, result.solution);
+                    HeuristicResult result{};
+                    auto t0 = std::chrono::steady_clock::now();
+
+                    if (arm_type == kArmScylla) {
+                        if (!pump || pump->finished()) {
+                            pump = std::make_unique<PumpWorker>(mipsolver, csc, pool, budget,
+                                                                static_cast<uint32_t>(rng()));
+                        }
+                        auto epoch = pump->run_epoch(arm_budget);
+                        result.effort = epoch.effort;
+                        if (epoch.found_improvement) {
+                            result.found_feasible = true;
+                            result.objective = pool.snapshot().best_objective;
+                        }
+                    } else {
+                        std::vector<double> restart;
+                        pool.get_restart(rng, restart);
+                        const double *restart_ptr = restart.empty() ? nullptr : restart.data();
+
+                        result = run_presolve_arm(mipsolver, arm_type, rng, attempt_counter++,
+                                                  restart_ptr, csc, incumbent_snapshot, arm_budget,
+                                                  fpr_var_orders);
+                        if (result.found_feasible) {
+                            pool.try_add(result.objective, result.solution);
+                        }
                     }
+
+                    auto t1 = std::chrono::steady_clock::now();
 
                     auto after = pool.snapshot();
                     int reward = compute_reward(before, after, result, minimize);
@@ -458,11 +491,14 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
 
                     if (result.effort > 0) {
                         double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-                        log_arm_effort(log_options, enabled_arms[arm], result.effort, wall_ms);
+                        log_arm_effort(log_options, arm_type, result.effort, wall_ms);
                     }
 
                     if (reward >= 2) {
                         effort_since_improvement.store(0, std::memory_order_relaxed);
+                        if (pump) {
+                            pump->reset_staleness();
+                        }
                     } else {
                         effort_since_improvement.fetch_add(result.effort,
                                                            std::memory_order_relaxed);

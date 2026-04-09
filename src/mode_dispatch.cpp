@@ -72,15 +72,6 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
 
     if (options->mip_heuristic_portfolio) {
         portfolio::run_presolve(mipsolver, budget);
-        // In opportunistic mode, Scylla is not yet a portfolio arm — run
-        // standalone.  Deterministic portfolio includes Scylla as an arm.
-        if (options->mip_heuristic_portfolio_opportunistic && options->mip_heuristic_run_scylla) {
-            if (options->mip_heuristic_scylla_parallel) {
-                scylla::run_parallel(mipsolver, budget);
-            } else {
-                scylla::run(mipsolver, budget);
-            }
-        }
     } else {
         if (run_sequential(mipsolver, budget)) {
             return true;
