@@ -126,7 +126,8 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
     HighsSolution warm_start;
 
     // --- Parallel FPR config setup ---
-    const int M = std::min(highs::parallel::num_threads(), 4);
+    const int mem_cap = max_workers_for_memory(estimate_worker_memory_scylla(ncol, 1));
+    const int M = std::min({highs::parallel::num_threads(), 4, mem_cap});
 
     // Pre-compute variable orders sequentially (avoids data races on
     // HighsCliqueTable::cliquePartition).  Only kNumFprConfigs unique
