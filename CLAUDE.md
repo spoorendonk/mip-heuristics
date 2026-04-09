@@ -40,7 +40,7 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `fpr_lp` — LP-dependent FPR (paper Classes 2–3) using root LP solution. Called during B&B dive, not presolve.
 - `fj` — Feasibility Jump. Thin wrapper that delegates to HiGHS's built-in FJ implementation. Has sequential and epoch-gated parallel modes.
 - `local_mip` — weighted local search (MIP neighborhood search).
-- `scylla` — feasibility pump: alternates PDLP approximate LP solves with FPR rounding, progressive objective blending, and cycling perturbation. Has sequential and epoch-gated parallel modes.
+- `scylla` — feasibility pump: alternates PDLP approximate LP solves with FPR rounding, progressive objective blending, and cycling perturbation. Has sequential mode and parallel mode (single PDLP + parallel FPR rounding).
 - `portfolio` — adaptive bandit (Thompson sampling) that selects among FPR, LocalMIP, and FeasibilityJump arms. Has deterministic and opportunistic (parallel) modes.
 
 **Dispatch and parallel infrastructure** (`src/`):
