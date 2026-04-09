@@ -691,6 +691,7 @@ TEST_CASE("LocalMIP parallel: flugpl finds solution", "[heuristic][local_mip][op
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_local_mip_parallel", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
@@ -706,6 +707,7 @@ TEST_CASE("LocalMIP parallel: egout finds solution", "[heuristic][local_mip][opp
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_local_mip_parallel", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
