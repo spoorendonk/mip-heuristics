@@ -471,6 +471,7 @@ TEST_CASE("Portfolio: all presolve arms disabled still solves", "[portfolio][edg
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    highs.setOptionValue("mip_heuristic_run_scylla", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -487,6 +488,7 @@ TEST_CASE("Portfolio opportunistic: all arms disabled still solves",
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    highs.setOptionValue("mip_heuristic_run_scylla", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -811,7 +813,7 @@ TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") 
     REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
-TEST_CASE("Portfolio + Scylla: flugpl bandit then Scylla", "[portfolio][scylla]") {
+TEST_CASE("Portfolio: Scylla arm finds solution on flugpl", "[portfolio][scylla]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
@@ -823,7 +825,7 @@ TEST_CASE("Portfolio + Scylla: flugpl bandit then Scylla", "[portfolio][scylla]"
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-TEST_CASE("Portfolio + Scylla: egout independent budgets", "[portfolio][scylla]") {
+TEST_CASE("Portfolio: Scylla arm finds solution on egout", "[portfolio][scylla]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
@@ -833,6 +835,37 @@ TEST_CASE("Portfolio + Scylla: egout independent budgets", "[portfolio][scylla]"
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+}
+
+TEST_CASE("Portfolio: Scylla-only single arm", "[portfolio][scylla][single-arm]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_portfolio", true);
+    highs.setOptionValue("mip_heuristic_run_fpr", false);
+    highs.setOptionValue("mip_heuristic_run_local_mip", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    highs.setOptionValue("mip_heuristic_run_scylla", true);
+    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("Portfolio deterministic: Scylla arm same result", "[portfolio][scylla][determinism]") {
+    auto run_once = [](double& obj) {
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        highs.setOptionValue("mip_heuristic_portfolio", true);
+        highs.setOptionValue("mip_heuristic_run_scylla", true);
+        REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+        REQUIRE(highs.run() == HighsStatus::kOk);
+        highs.getInfoValue("objective_function_value", obj);
+    };
+    double obj1, obj2;
+    run_once(obj1);
+    run_once(obj2);
+    REQUIRE(obj1 == Catch::Approx(obj2).epsilon(1e-12));
 }
 
 // ── Scylla parallel: opportunistic flag enables parallel pump chains ──
