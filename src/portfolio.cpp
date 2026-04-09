@@ -171,7 +171,9 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
         s.enabled_arms.push_back(kArmLocalMIP);
         s.priors.push_back(kLocalMipAlpha);
     }
-    if (options->mip_heuristic_run_scylla) {
+    // Scylla is a deterministic portfolio arm only.  The opportunistic path
+    // uses run_presolve_arm() which has no kArmScylla handler (yet — #45).
+    if (options->mip_heuristic_run_scylla && !options->mip_heuristic_portfolio_opportunistic) {
         s.enabled_arms.push_back(kArmScylla);
         s.priors.push_back(kScyllaAlpha);
     }
@@ -298,14 +300,21 @@ public:
                 pump_ = std::make_unique<PumpWorker>(mipsolver_, setup_.csc, pool_, setup_.budget,
                                                      static_cast<uint32_t>(rng_()));
             }
+            auto t0 = std::chrono::steady_clock::now();
             epoch = pump_->run_epoch(epoch_budget);
+            auto t1 = std::chrono::steady_clock::now();
             finished_ = pump_->finished();
-            // Synthesize HeuristicResult for reward computation.
-            last_result_ = {};
-            last_result_.effort = epoch.effort;
+            // Accumulate HeuristicResult across Scylla epochs for reward computation.
+            // (last_result_ is reset in assign_arm(), not here.)
+            last_result_.effort += epoch.effort;
             if (epoch.found_improvement) {
                 last_result_.found_feasible = true;
                 last_result_.objective = pool_.snapshot().best_objective;
+            }
+            if (epoch.effort > 0) {
+                double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                log_arm_effort(mipsolver_.options_mip_->log_options, arm_type, epoch.effort,
+                               wall_ms);
             }
         } else {
             std::vector<double> restart;
@@ -350,6 +359,7 @@ public:
     void assign_arm(int bandit_arm_idx) {
         assigned_arm_ = bandit_arm_idx;
         finished_ = false;
+        last_result_ = {};
     }
 
     void set_pre_snapshot(SolutionPool::Snapshot snap) { pre_snap_ = snap; }
