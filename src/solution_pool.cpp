@@ -1,5 +1,8 @@
 #include "solution_pool.h"
 
+#include "mip/HighsMipSolver.h"
+#include "mip/HighsMipSolverData.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -67,11 +70,10 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol) {
 
         double best_obj = entries_.front().objective;
         double gap = std::abs(obj - best_obj);
-        double threshold = kDiversityObjTolerance * std::abs(best_obj);
-        // For zero best_obj, use absolute tolerance.
-        if (std::abs(best_obj) < 1e-10) {
-            threshold = kDiversityObjTolerance;
-        }
+        // Continuous fallback: fraction of |best_obj|, floored to avoid
+        // a discontinuous jump near zero.
+        double threshold =
+            std::max(kDiversityObjTolerance * std::abs(best_obj), kDiversityObjTolerance * 1e-6);
 
         if (gap > threshold) {
             return false;
@@ -199,9 +201,6 @@ int SolutionPool::size() {
     std::lock_guard<HighsSpinMutex> lock(mtx_);
     return static_cast<int>(entries_.size());
 }
-
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
 
 void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {
     const auto* model = mipsolver.model_;

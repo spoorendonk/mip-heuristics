@@ -114,23 +114,26 @@ inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {
 // Memory-aware worker count caps
 // ---------------------------------------------------------------------------
 
-// Total physical RAM in bytes (0 on failure).
+// Total physical RAM in bytes (0 on failure).  Cached after first call.
 inline size_t total_system_memory() {
+    static const size_t cached = []() -> size_t {
 #ifdef _WIN32
-    MEMORYSTATUSEX status;
-    status.dwLength = sizeof(status);
-    if (GlobalMemoryStatusEx(&status)) {
-        return static_cast<size_t>(status.ullTotalPhys);
-    }
-    return 0;
+        MEMORYSTATUSEX status;
+        status.dwLength = sizeof(status);
+        if (GlobalMemoryStatusEx(&status)) {
+            return static_cast<size_t>(status.ullTotalPhys);
+        }
+        return size_t{0};
 #else
-    long pages = sysconf(_SC_PHYS_PAGES);
-    long page_size = sysconf(_SC_PAGE_SIZE);
-    if (pages > 0 && page_size > 0) {
-        return static_cast<size_t>(pages) * static_cast<size_t>(page_size);
-    }
-    return 0;
+        long pages = sysconf(_SC_PHYS_PAGES);
+        long page_size = sysconf(_SC_PAGE_SIZE);
+        if (pages > 0 && page_size > 0) {
+            return static_cast<size_t>(pages) * static_cast<size_t>(page_size);
+        }
+        return size_t{0};
 #endif
+    }();
+    return cached;
 }
 
 // Fraction of system RAM available as budget for parallel workers.
@@ -160,9 +163,13 @@ inline size_t estimate_worker_memory_local_mip(HighsInt ncol, HighsInt nrow) {
                (2 * sizeof(double) + sizeof(uint64_t) + 5 * sizeof(HighsInt));
 }
 
-// Scylla parallel: M FPR result vectors, each holding ncol doubles.
+// Scylla parallel: M FPR result vectors (ncol doubles each) plus per-worker
+// FPR working set (var_order + VarState arrays).
 inline size_t estimate_worker_memory_scylla(HighsInt ncol, int num_results) {
-    return static_cast<size_t>(num_results) * static_cast<size_t>(ncol) * sizeof(double);
+    size_t result_vecs =
+        static_cast<size_t>(num_results) * static_cast<size_t>(ncol) * sizeof(double);
+    size_t fpr_working = static_cast<size_t>(ncol) * (sizeof(HighsInt) + sizeof(double));
+    return result_vecs + fpr_working;
 }
 
 // Max workers that fit within the memory budget for a given per-worker cost.
