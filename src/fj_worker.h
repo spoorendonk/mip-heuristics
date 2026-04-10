@@ -1,10 +1,10 @@
 #pragma once
 
+#include "epoch_runner.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-
-#include "epoch_runner.h"
 
 class HighsMipSolver;
 class SolutionPool;
@@ -21,35 +21,34 @@ class SolutionPool;
 //
 // Satisfies the EpochWorker concept from epoch_runner.h.
 class FjWorker {
- public:
-  FjWorker(HighsMipSolver &mipsolver, SolutionPool &pool, size_t total_budget,
-           uint32_t seed);
-  ~FjWorker();
+public:
+    FjWorker(HighsMipSolver &mipsolver, SolutionPool &pool, size_t total_budget, uint32_t seed);
+    ~FjWorker();
 
-  // Run FJ for up to epoch_budget effort, then pause via callback.
-  EpochResult run_epoch(size_t epoch_budget);
+    // Run FJ for up to epoch_budget effort, then pause via callback.
+    EpochResult run_epoch(size_t epoch_budget);
 
-  bool finished() const { return finished_; }
+    bool finished() const { return finished_; }
 
-  // Reset the improvement staleness counter (called at epoch boundary
-  // when another worker found an improvement).
-  void reset_staleness();
+    // Reset the improvement staleness counter (called at epoch boundary
+    // when another worker found an improvement).
+    void reset_staleness();
 
- private:
-  struct Impl;
-  std::unique_ptr<Impl> impl_;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 
-  HighsMipSolver &mipsolver_;
-  SolutionPool &pool_;
-  const size_t total_budget_;
-  const uint32_t seed_;
+    HighsMipSolver &mipsolver_;
+    SolutionPool &pool_;
+    const size_t total_budget_;
+    const uint32_t seed_;
 
-  size_t total_effort_ = 0;
-  size_t effort_since_improvement_ = 0;
-  size_t stale_budget_ = 0;
-  bool initialized_ = false;
-  bool first_solve_done_ = false;
-  bool finished_ = false;
+    size_t total_effort_ = 0;
+    size_t effort_since_improvement_ = 0;
+    size_t stale_budget_ = 0;
+    bool initialized_ = false;
+    bool first_solve_done_ = false;
+    bool finished_ = false;
 };
 
 // static_assert in fj_worker.cpp to avoid leaking C++23 concepts into

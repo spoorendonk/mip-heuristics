@@ -15,4 +15,4 @@ void run(HighsMipSolver &mipsolver, size_t max_effort);
 // contention and preserves warm-start chain.  Deterministic.
 void run_parallel(HighsMipSolver &mipsolver, size_t max_effort);
 
-} // namespace scylla
+}  // namespace scylla
