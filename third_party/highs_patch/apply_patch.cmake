@@ -14,24 +14,48 @@ endif()
 # ── Patch HighsOptions.h: register custom heuristic options ──
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_run_fpr" _opts_found)
+# Defensive check: if the stale pre-#59 patch is present, abort with a clean-rebuild hint.
+# The rename (portfolio_opportunistic → opportunistic) and the removal of the dead
+# mip_heuristic_scylla_parallel option are struct-layout changes; an in-place rewrite of
+# an already-patched source tree is fragile, so force the user to clean _deps/highs-src.
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_portfolio_opportunistic" _stale_opp_found)
+if(NOT _stale_opp_found EQUAL -1)
+    message(FATAL_ERROR
+        "HighsOptions.h contains the obsolete 'mip_heuristic_portfolio_opportunistic' identifier. "
+        "This was renamed to 'mip_heuristic_opportunistic' in #59. "
+        "Please clean the HiGHS source tree and rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_scylla_parallel" _stale_scylla_found)
+if(NOT _stale_scylla_found EQUAL -1)
+    message(FATAL_ERROR
+        "HighsOptions.h contains the obsolete 'mip_heuristic_scylla_parallel' identifier. "
+        "This dead option was removed in #59. "
+        "Please clean the HiGHS source tree and rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
+
+# Idempotency check: look for the ctor-init substring that is unique to the new version.
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_opportunistic(false)" _opts_found)
 if(_opts_found EQUAL -1)
     # Member variables: insert after mip_heuristic_run_shifting
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_local_mip_parallel;\n  bool mip_heuristic_run_scylla;\n  bool mip_heuristic_scylla_parallel;\n  bool mip_heuristic_portfolio;\n  bool mip_heuristic_portfolio_opportunistic;\n"
+      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_local_mip_parallel;\n  bool mip_heuristic_run_scylla;\n  bool mip_heuristic_portfolio;\n  bool mip_heuristic_opportunistic;\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer list: insert after mip_heuristic_run_shifting(false),
     string(REPLACE
       "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_local_mip_parallel(false),\n        mip_heuristic_run_scylla(false),\n        mip_heuristic_scylla_parallel(false),\n        mip_heuristic_portfolio(false),\n        mip_heuristic_portfolio_opportunistic(false),\n"
+      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_local_mip_parallel(false),\n        mip_heuristic_run_scylla(false),\n        mip_heuristic_portfolio(false),\n        mip_heuristic_opportunistic(false),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_local_mip_parallel\",\n                                       \"Run LocalMIP workers in parallel\", advanced,\n                                       &mip_heuristic_local_mip_parallel, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_scylla_parallel\",\n                                       \"Run Scylla pump chains in parallel\", advanced,\n                                       &mip_heuristic_scylla_parallel, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio\",\n                                       \"Use adaptive portfolio mode for custom heuristics\", advanced,\n                                       &mip_heuristic_portfolio, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio_opportunistic\",\n                                       \"Use opportunistic (non-deterministic) mode for presolve portfolio\", advanced,\n                                       &mip_heuristic_portfolio_opportunistic, false);\n    records.push_back(record_bool);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_local_mip_parallel\",\n                                       \"Run LocalMIP workers in parallel\", advanced,\n                                       &mip_heuristic_local_mip_parallel, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio\",\n                                       \"Use adaptive portfolio mode for custom heuristics\", advanced,\n                                       &mip_heuristic_portfolio, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")

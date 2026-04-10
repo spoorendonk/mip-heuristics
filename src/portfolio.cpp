@@ -531,15 +531,17 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
 
 }  // namespace
 
-void run_presolve(HighsMipSolver &mipsolver, size_t max_effort) {
+void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic) {
     auto setup_opt = build_presolve_setup(mipsolver, max_effort);
     if (!setup_opt) {
         return;
     }
     auto &setup = *setup_opt;
 
-    // Dispatch to opportunistic mode if requested
-    if (mipsolver.options_mip_->mip_heuristic_portfolio_opportunistic) {
+    // Dispatch to opportunistic mode if requested.  The opportunistic flag
+    // is passed in from mode_dispatch::run_presolve, which reads the new
+    // orthogonal `mip_heuristic_opportunistic` option.
+    if (opportunistic) {
         run_presolve_opportunistic(mipsolver, setup);
         return;
     }

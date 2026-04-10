@@ -14,7 +14,18 @@ namespace {
 
 // Weighted effort allocation: each heuristic runs in turn with its
 // proportional share of the budget and the full thread pool.
-bool run_sequential(HighsMipSolver &mipsolver, size_t budget) {
+//
+// The `opportunistic` flag is forwarded to fj/fpr/local_mip so each
+// heuristic can pick its deterministic vs continuous parallelism
+// strategy.  Scylla does NOT take the flag — its pump chain is
+// inherently sequential (PDLP → round → PDLP → …) and has no
+// det/opp distinction.
+//
+// TODO(#61): thread `opportunistic` through to the `run_parallel` calls
+// below once fj/fpr/local_mip have real opportunistic variants.  Until
+// then seq/opp falls through to seq/det via the `/*opportunistic=*/false`
+// literals below.
+bool run_sequential(HighsMipSolver &mipsolver, size_t budget, [[maybe_unused]] bool opportunistic) {
     const auto *options = mipsolver.options_mip_;
 
     constexpr double kWeightFj = 1.0;
@@ -48,15 +59,15 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget) {
     auto alloc = [&](double w) -> size_t { return static_cast<size_t>(budget * w / total_weight); };
 
     if (fj_on) {
-        if (fj::run_parallel(mipsolver, alloc(kWeightFj))) {
+        if (fj::run_parallel(mipsolver, alloc(kWeightFj), /*opportunistic=*/false)) {
             return true;  // proven infeasible
         }
     }
     if (fpr_on) {
-        fpr::run_parallel(mipsolver, alloc(kWeightFpr));
+        fpr::run_parallel(mipsolver, alloc(kWeightFpr), /*opportunistic=*/false);
     }
     if (lm_on) {
-        local_mip::run_parallel(mipsolver, alloc(kWeightLocalMip));
+        local_mip::run_parallel(mipsolver, alloc(kWeightLocalMip), /*opportunistic=*/false);
     }
     if (sc_on) {
         scylla::run_parallel(mipsolver, alloc(kWeightScylla));
@@ -69,16 +80,14 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget) {
 
 bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     const auto *options = mipsolver.options_mip_;
+    const bool portfolio = options->mip_heuristic_portfolio;
+    const bool opportunistic = options->mip_heuristic_opportunistic;
 
-    if (options->mip_heuristic_portfolio) {
-        portfolio::run_presolve(mipsolver, budget);
-    } else {
-        if (run_sequential(mipsolver, budget)) {
-            return true;
-        }
+    if (portfolio) {
+        portfolio::run_presolve(mipsolver, budget, opportunistic);
+        return false;
     }
-
-    return false;
+    return run_sequential(mipsolver, budget, opportunistic);
 }
 
 }  // namespace heuristics

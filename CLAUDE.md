@@ -59,8 +59,8 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla` — enable/disable individual heuristics.
 - `mip_heuristic_run_feasibility_jump` — enable FJ (used as standalone or as portfolio arm).
 - `mip_heuristic_local_mip_parallel` — run LocalMIP workers in parallel (independent of portfolio mode).
-- `mip_heuristic_scylla_parallel` — run Scylla pump chains in parallel (independent of portfolio mode).
-- `mip_heuristic_portfolio`, `mip_heuristic_portfolio_opportunistic` — enable portfolio mode / parallel opportunistic mode.
+- `mip_heuristic_portfolio` — enable Thompson-sampling portfolio bandit (orthogonal to `mip_heuristic_opportunistic`).
+- `mip_heuristic_opportunistic` — use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism. Combines with `mip_heuristic_portfolio` to form the 2×2 execution matrix (sequential/portfolio × deterministic/opportunistic).
 
 **Testing**: Catch2 v3. Tests use `.mps` instances from HiGHS's own `check/instances/` directory (path injected via `INSTANCES_DIR` compile definition). Characterization tests verify known-optimal objectives.
 

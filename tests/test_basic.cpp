@@ -298,20 +298,17 @@ TEST_CASE("SolutionPool: restart strategies", "[pool]") {
     }
 }
 
-TEST_CASE("Options: portfolio_opportunistic option exists", "[options][portfolio]") {
+TEST_CASE("Options: opportunistic option exists", "[options][portfolio]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    REQUIRE(highs.setOptionValue("mip_heuristic_portfolio_opportunistic", true) ==
-            HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_portfolio_opportunistic", false) ==
-            HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("mip_heuristic_opportunistic", true) == HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("mip_heuristic_opportunistic", false) == HighsStatus::kOk);
 }
 
 TEST_CASE("Portfolio opportunistic: flugpl finds solution", "[portfolio][opportunistic]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -323,7 +320,6 @@ TEST_CASE("Portfolio opportunistic: egout finds solution", "[portfolio][opportun
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -335,7 +331,6 @@ TEST_CASE("Portfolio opportunistic: bell5 finds solution", "[portfolio][opportun
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -403,7 +398,6 @@ TEST_CASE("Portfolio opportunistic: lseu finds solution", "[portfolio][opportuni
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/lseu.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -451,7 +445,6 @@ TEST_CASE("Portfolio opportunistic: FJ-only mode works", "[portfolio][opportunis
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", true);
@@ -484,7 +477,6 @@ TEST_CASE("Portfolio opportunistic: all arms disabled still solves",
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
@@ -496,14 +488,19 @@ TEST_CASE("Portfolio opportunistic: all arms disabled still solves",
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-// ── Opportunistic without portfolio flag is ignored ──
+// ── Sequential opportunistic mode (seq/opp cell of the 2x2 matrix) ──
 
-TEST_CASE("Options: opportunistic without portfolio is ignored", "[options][portfolio]") {
-    // opportunistic=true but portfolio=false: should behave like normal solve
+TEST_CASE("Sequential opportunistic: flugpl finds solution (falls back to det pending #61)",
+          "[options][opportunistic]") {
+    // portfolio=false + opportunistic=true: this is the seq/opp cell of the
+    // 2x2 execution matrix.  In #59 (this sub-issue) each heuristic's
+    // run_parallel accepts but ignores the opportunistic flag — the real
+    // opportunistic variants land in #61.  Verify the flag can be set and
+    // the solve still completes correctly (currently exercising seq/det).
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", false);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
+    highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -528,7 +525,6 @@ TEST_CASE("Portfolio opportunistic: infeasible MIP handled correctly",
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/infeasible-mip0.mps") == HighsStatus::kOk);
     highs.run();
     HighsModelStatus model_status = highs.getModelStatus();
@@ -543,7 +539,6 @@ TEST_CASE("Portfolio opportunistic: repeated runs on flugpl",
         Highs highs;
         highs.setOptionValue("output_flag", false);
         highs.setOptionValue("mip_heuristic_portfolio", true);
-        highs.setOptionValue("mip_heuristic_scylla_parallel", true);
         highs.setOptionValue("random_seed", i);
         REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
         REQUIRE(highs.run() == HighsStatus::kOk);
@@ -877,7 +872,6 @@ TEST_CASE("Scylla parallel: flugpl finds solution", "[heuristic][scylla][opportu
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
     highs.setOptionValue("mip_heuristic_portfolio", false);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -892,7 +886,6 @@ TEST_CASE("Scylla parallel: egout finds solution", "[heuristic][scylla][opportun
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
     highs.setOptionValue("mip_heuristic_portfolio", false);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -907,7 +900,6 @@ TEST_CASE("Scylla parallel: gt2 binary instance", "[heuristic][scylla][opportuni
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
     highs.setOptionValue("mip_heuristic_portfolio", false);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -923,7 +915,6 @@ TEST_CASE("Scylla sequential: flugpl characterization", "[scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", false);
     highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -938,7 +929,6 @@ TEST_CASE("Scylla parallel: flugpl characterization", "[scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -953,7 +943,6 @@ TEST_CASE("Scylla parallel: egout feasibility", "[scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -979,7 +968,6 @@ TEST_CASE("Portfolio opportunistic: gt2 binary instance", "[portfolio][opportuni
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -1004,7 +992,6 @@ TEST_CASE("Portfolio opportunistic: p0548 medium instance", "[portfolio][opportu
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     REQUIRE(highs.readModel(kInstancesDir + "/p0548.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -1150,7 +1137,6 @@ TEST_CASE("RepairSearch: opportunistic portfolio on flugpl",
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_scylla_parallel", true);
     highs.setOptionValue("mip_heuristic_run_fpr", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);

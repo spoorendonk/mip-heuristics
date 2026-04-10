@@ -1308,7 +1308,11 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     return result;
 }
 
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
+// TODO(#61): when opportunistic=true, dispatch to a new
+// run_parallel_opportunistic helper.  Currently the flag is accepted
+// but ignored; seq/opp falls through to seq/det.
+void run_parallel(HighsMipSolver &mipsolver, size_t max_effort,
+                  [[maybe_unused]] bool opportunistic) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;

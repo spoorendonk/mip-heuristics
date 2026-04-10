@@ -25,7 +25,11 @@ bool run(HighsMipSolver &mipsolver, size_t max_effort) {
     return status == HighsModelStatus::kInfeasible;
 }
 
-bool run_parallel(HighsMipSolver &mipsolver, size_t max_effort) {
+// TODO(#61): when opportunistic=true, dispatch to a new
+// run_parallel_opportunistic helper.  Currently the flag is accepted
+// but ignored; seq/opp falls through to seq/det.
+bool run_parallel(HighsMipSolver &mipsolver, size_t max_effort,
+                  [[maybe_unused]] bool opportunistic) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     if (model->num_col_ == 0 || model->num_row_ == 0) {

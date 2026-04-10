@@ -10,12 +10,15 @@ class HighsMipSolver;
 namespace local_mip {
 void run(HighsMipSolver &mipsolver, size_t max_effort);
 
-// Parallel mode with epoch-gated synchronization: N workers run local
-// search in parallel, synchronizing at epoch boundaries.  Worker 0 starts
-// from the unperturbed incumbent; workers 1..N-1 start from perturbed
-// incumbents.  Stalled workers are restarted from the pool's best
-// solution with fresh perturbation.
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort);
+// Parallel mode. When `opportunistic=false`, runs with epoch-gated
+// synchronization: N workers run local search in parallel, synchronizing
+// at epoch boundaries.  Worker 0 starts from the unperturbed incumbent;
+// workers 1..N-1 start from perturbed incumbents.  Stalled workers are
+// restarted from the pool's best solution with fresh perturbation.
+// When `opportunistic=true`, runs continuous `parallel::for_each`
+// workers with per-worker self-termination — added in #61; currently
+// accepted but ignored.
+void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic = false);
 
 // Single-worker variant for portfolio mode. Returns result without submitting.
 // If initial_solution is non-null, uses it as starting point.
