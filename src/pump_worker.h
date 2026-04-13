@@ -17,9 +17,9 @@ class SolutionPool;
 // with epoch-based execution.  Each worker owns its own PDLP solver
 // instance, warm-start vectors, cycling history, and RNG.
 //
-// When num_fpr_workers == 1 (default), uses the legacy single-fpr_attempt
-// path (strategy=nullptr, cont_fallback=x_bar).  When num_fpr_workers > 1,
-// runs M-way parallel FPR rounding with strategy-aware configs.
+// FPR rounding uses strategy-aware configs from kFprConfigs[].  When
+// num_fpr_workers > 1, rounding runs in parallel via parallel::for_each;
+// when num_fpr_workers == 1 (default), for_each executes sequentially.
 //
 // Satisfies the EpochWorker concept from epoch_runner.h.
 class PumpWorker {
@@ -47,7 +47,6 @@ private:
     const CscMatrix &csc_;
     SolutionPool &pool_;
     const size_t total_budget_;
-    const uint32_t seed_;
     const int num_fpr_workers_;
 
     HighsInt ncol_ = 0;

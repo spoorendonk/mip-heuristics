@@ -41,7 +41,6 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, Solution
       csc_(csc),
       pool_(pool),
       total_budget_(total_budget),
-      seed_(seed),
       num_fpr_workers_(num_fpr_workers),
       epsilon_(pump::kEpsilonInit),
       rng_(seed) {
@@ -94,14 +93,12 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, Solution
     assert(num_fpr_workers_ >= 1);
     rounding_results_.resize(num_fpr_workers_);
 
-    // Pre-compute variable orders for multi-worker FPR rounding.
-    if (num_fpr_workers_ > 1) {
-        var_orders_.resize(kNumFprConfigs);
-        for (int w = 0; w < kNumFprConfigs; ++w) {
-            std::mt19937 order_rng(kBaseSeedOffset + static_cast<uint32_t>(w));
-            var_orders_[w] = compute_var_order(mipsolver_, kFprConfigs[w].strat.var_strategy,
-                                               order_rng, nullptr);
-        }
+    // Pre-compute variable orders for strategy-aware FPR rounding.
+    var_orders_.resize(kNumFprConfigs);
+    for (int w = 0; w < kNumFprConfigs; ++w) {
+        std::mt19937 order_rng(kBaseSeedOffset + static_cast<uint32_t>(w));
+        var_orders_[w] =
+            compute_var_order(mipsolver_, kFprConfigs[w].strat.var_strategy, order_rng, nullptr);
     }
 }
 
@@ -232,121 +229,86 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             }
         }
 
-        // Fix-and-propagate to round PDLP solution.
-        // Two paths: legacy single-attempt (portfolio Scylla arm) vs
-        // M-way parallel rounding (standalone Scylla).
+        // Strategy-aware FPR rounding: N workers round in parallel
+        // (for N == 1, parallel::for_each runs sequentially).
         size_t remaining_budget = std::min(epoch_budget - std::min(epoch_budget, epoch.effort),
                                            total_budget_ - std::min(total_budget_, total_effort_));
+        if (remaining_budget == 0) {
+            break;
+        }
+        size_t per_config_budget = remaining_budget / num_fpr_workers_;
 
-        std::vector<double> *x_hat_ptr = nullptr;
+        // Clear results without deallocating solution vectors.
+        for (auto &r : rounding_results_) {
+            r.found_feasible = false;
+            r.effort = 0;
+            r.solution.clear();
+        }
 
-        if (num_fpr_workers_ == 1) {
-            // Legacy single-fpr_attempt path: strategy=nullptr,
-            // cont_fallback=x_bar.  Byte-identical to original PumpWorker.
-            FprConfig cfg{};
-            cfg.max_effort = remaining_budget;
-            cfg.rng_seed_offset = seed_ + K_;
-            cfg.hint = x_bar.data();
-            cfg.scores = scores_.data();
-            cfg.cont_fallback = x_bar.data();
-            cfg.csc = &csc_;
+        highs::parallel::for_each(
+            0, static_cast<HighsInt>(num_fpr_workers_),
+            [&](HighsInt lo, HighsInt hi) {
+                for (HighsInt w = lo; w < hi; ++w) {
+                    const int ci = static_cast<int>(w) % kNumFprConfigs;
 
-            auto result = fpr_attempt(mipsolver_, cfg, rng_, 0, nullptr);
-            total_effort_ += result.effort;
-            effort_since_improvement_ += result.effort;
-            epoch.effort += result.effort;
+                    std::mt19937 w_rng(kBaseSeedOffset + static_cast<uint32_t>(w) * kSeedStride +
+                                       static_cast<uint32_t>(K_));
 
-            if (result.found_feasible && !result.solution.empty()) {
-                pool_.try_add(result.objective, result.solution);
-                effort_since_improvement_ = 0;
-                epoch.found_improvement = true;
-            }
+                    FprConfig cfg{};
+                    cfg.max_effort = per_config_budget;
+                    cfg.rng_seed_offset = kBaseSeedOffset + static_cast<uint32_t>(w) + K_;
+                    cfg.hint = x_bar.data();
+                    cfg.scores = scores_.data();
+                    cfg.cont_fallback = x_bar.data();
+                    cfg.csc = &csc_;
+                    cfg.mode = kFprConfigs[ci].mode;
+                    cfg.strategy = &kFprConfigs[ci].strat;
+                    cfg.lp_ref = nullptr;
+                    cfg.precomputed_var_order = var_orders_[ci].data();
+                    cfg.precomputed_var_order_size = static_cast<HighsInt>(var_orders_[ci].size());
 
-            if (!result.solution.empty()) {
-                rounding_results_[0] = std::move(result);
-                x_hat_ptr = &rounding_results_[0].solution;
-            }
-        } else {
-            // M-way parallel FPR rounding with strategy-aware configs.
-            if (remaining_budget == 0) {
-                break;
-            }
-            size_t per_config_budget = remaining_budget / num_fpr_workers_;
+                    rounding_results_[w] = fpr_attempt(mipsolver_, cfg, w_rng, 0, nullptr);
+                }
+            },
+            1);
 
-            // Clear results without deallocating solution vectors.
-            for (auto &r : rounding_results_) {
-                r.found_feasible = false;
-                r.effort = 0;
-                r.solution.clear();
-            }
+        // Aggregate FPR effort and pick best feasible result.
+        int best_idx = -1;
+        double best_obj = minimize ? std::numeric_limits<double>::infinity()
+                                   : -std::numeric_limits<double>::infinity();
+        size_t fpr_effort = 0;
 
-            highs::parallel::for_each(
-                0, static_cast<HighsInt>(num_fpr_workers_),
-                [&](HighsInt lo, HighsInt hi) {
-                    for (HighsInt w = lo; w < hi; ++w) {
-                        const int ci = static_cast<int>(w) % kNumFprConfigs;
-
-                        std::mt19937 w_rng(kBaseSeedOffset +
-                                           static_cast<uint32_t>(w) * kSeedStride +
-                                           static_cast<uint32_t>(K_));
-
-                        FprConfig cfg{};
-                        cfg.max_effort = per_config_budget;
-                        cfg.rng_seed_offset = kBaseSeedOffset + static_cast<uint32_t>(w) + K_;
-                        cfg.hint = x_bar.data();
-                        cfg.scores = scores_.data();
-                        cfg.cont_fallback = x_bar.data();
-                        cfg.csc = &csc_;
-                        cfg.mode = kFprConfigs[ci].mode;
-                        cfg.strategy = &kFprConfigs[ci].strat;
-                        cfg.lp_ref = nullptr;
-                        cfg.precomputed_var_order = var_orders_[ci].data();
-                        cfg.precomputed_var_order_size =
-                            static_cast<HighsInt>(var_orders_[ci].size());
-
-                        rounding_results_[w] = fpr_attempt(mipsolver_, cfg, w_rng, 0, nullptr);
-                    }
-                },
-                1);
-
-            // Aggregate FPR effort and pick best feasible result.
-            int best_idx = -1;
-            double best_obj = minimize ? std::numeric_limits<double>::infinity()
-                                       : -std::numeric_limits<double>::infinity();
-            size_t fpr_effort = 0;
-
-            for (int w = 0; w < num_fpr_workers_; ++w) {
-                fpr_effort += rounding_results_[w].effort;
-                if (rounding_results_[w].found_feasible && !rounding_results_[w].solution.empty()) {
-                    pool_.try_add(rounding_results_[w].objective, rounding_results_[w].solution);
-                    bool is_better = minimize ? (rounding_results_[w].objective < best_obj)
-                                              : (rounding_results_[w].objective > best_obj);
-                    if (is_better) {
-                        best_obj = rounding_results_[w].objective;
-                        best_idx = w;
-                    }
+        for (int w = 0; w < num_fpr_workers_; ++w) {
+            fpr_effort += rounding_results_[w].effort;
+            if (rounding_results_[w].found_feasible && !rounding_results_[w].solution.empty()) {
+                pool_.try_add(rounding_results_[w].objective, rounding_results_[w].solution);
+                bool is_better = minimize ? (rounding_results_[w].objective < best_obj)
+                                          : (rounding_results_[w].objective > best_obj);
+                if (is_better) {
+                    best_obj = rounding_results_[w].objective;
+                    best_idx = w;
                 }
             }
+        }
 
-            total_effort_ += fpr_effort;
-            effort_since_improvement_ += fpr_effort;
-            epoch.effort += fpr_effort;
+        total_effort_ += fpr_effort;
+        effort_since_improvement_ += fpr_effort;
+        epoch.effort += fpr_effort;
 
-            if (best_idx >= 0) {
-                effort_since_improvement_ = 0;
-                epoch.found_improvement = true;
-            }
+        if (best_idx >= 0) {
+            effort_since_improvement_ = 0;
+            epoch.found_improvement = true;
+        }
 
-            // Use best x_hat for cycling detection and objective update.
-            // Fall back to first non-empty result if no feasible solution found.
-            if (best_idx >= 0) {
-                x_hat_ptr = &rounding_results_[best_idx].solution;
-            } else {
-                for (int w = 0; w < num_fpr_workers_; ++w) {
-                    if (!rounding_results_[w].solution.empty()) {
-                        x_hat_ptr = &rounding_results_[w].solution;
-                        break;
-                    }
+        // Use best x_hat for cycling detection and objective update.
+        std::vector<double> *x_hat_ptr = nullptr;
+        if (best_idx >= 0) {
+            x_hat_ptr = &rounding_results_[best_idx].solution;
+        } else {
+            for (int w = 0; w < num_fpr_workers_; ++w) {
+                if (!rounding_results_[w].solution.empty()) {
+                    x_hat_ptr = &rounding_results_[w].solution;
+                    break;
                 }
             }
         }
