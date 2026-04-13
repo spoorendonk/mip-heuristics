@@ -18,14 +18,9 @@ namespace {
 // The `opportunistic` flag is forwarded to fj/fpr/local_mip so each
 // heuristic can pick its deterministic vs continuous parallelism
 // strategy.  Scylla does NOT take the flag — its pump chain is
-// inherently sequential (PDLP → round → PDLP → …) and has no
+// inherently sequential (PDLP -> round -> PDLP -> ...) and has no
 // det/opp distinction.
-//
-// TODO(#61): thread `opportunistic` through to the `run_parallel` calls
-// below once fj/fpr/local_mip have real opportunistic variants.  Until
-// then seq/opp falls through to seq/det via the `/*opportunistic=*/false`
-// literals below.
-bool run_sequential(HighsMipSolver &mipsolver, size_t budget, [[maybe_unused]] bool opportunistic) {
+bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic) {
     const auto *options = mipsolver.options_mip_;
 
     constexpr double kWeightFj = 1.0;
@@ -59,15 +54,15 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, [[maybe_unused]] b
     auto alloc = [&](double w) -> size_t { return static_cast<size_t>(budget * w / total_weight); };
 
     if (fj_on) {
-        if (fj::run_parallel(mipsolver, alloc(kWeightFj), /*opportunistic=*/false)) {
+        if (fj::run_parallel(mipsolver, alloc(kWeightFj), opportunistic)) {
             return true;  // proven infeasible
         }
     }
     if (fpr_on) {
-        fpr::run_parallel(mipsolver, alloc(kWeightFpr), /*opportunistic=*/false);
+        fpr::run_parallel(mipsolver, alloc(kWeightFpr), opportunistic);
     }
     if (lm_on) {
-        local_mip::run_parallel(mipsolver, alloc(kWeightLocalMip), /*opportunistic=*/false);
+        local_mip::run_parallel(mipsolver, alloc(kWeightLocalMip), opportunistic);
     }
     if (sc_on) {
         scylla::run_parallel(mipsolver, alloc(kWeightScylla));

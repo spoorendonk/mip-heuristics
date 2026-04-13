@@ -490,15 +490,75 @@ TEST_CASE("Portfolio opportunistic: all arms disabled still solves",
 
 // ── Sequential opportunistic mode (seq/opp cell of the 2x2 matrix) ──
 
-TEST_CASE("Sequential opportunistic: flugpl finds solution (falls back to det pending #61)",
-          "[options][opportunistic]") {
+TEST_CASE("Sequential opportunistic: flugpl finds solution", "[options][opportunistic]") {
     // portfolio=false + opportunistic=true: this is the seq/opp cell of the
-    // 2x2 execution matrix.  In #59 (this sub-issue) each heuristic's
-    // run_parallel accepts but ignores the opportunistic flag — the real
-    // opportunistic variants land in #61.  Verify the flag can be set and
-    // the solve still completes correctly (currently exercising seq/det).
+    // 2x2 execution matrix.  Each heuristic's run_parallel dispatches to its
+    // opportunistic variant when the flag is set.
     Highs highs;
     highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_portfolio", false);
+    highs.setOptionValue("mip_heuristic_opportunistic", true);
+    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("Sequential opportunistic: egout finds solution", "[options][opportunistic]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_portfolio", false);
+    highs.setOptionValue("mip_heuristic_opportunistic", true);
+    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+}
+
+// ── Per-heuristic opportunistic smoke tests ──
+
+TEST_CASE("FJ opportunistic: flugpl finds solution", "[heuristic][fj][opportunistic]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_run_fpr", false);
+    highs.setOptionValue("mip_heuristic_run_local_mip", false);
+    highs.setOptionValue("mip_heuristic_run_scylla", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+    highs.setOptionValue("mip_heuristic_portfolio", false);
+    highs.setOptionValue("mip_heuristic_opportunistic", true);
+    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("FPR opportunistic: flugpl finds solution", "[heuristic][fpr][opportunistic]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_run_fpr", true);
+    highs.setOptionValue("mip_heuristic_run_local_mip", false);
+    highs.setOptionValue("mip_heuristic_run_scylla", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    highs.setOptionValue("mip_heuristic_portfolio", false);
+    highs.setOptionValue("mip_heuristic_opportunistic", true);
+    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+TEST_CASE("LocalMIP opportunistic: flugpl finds solution",
+          "[heuristic][local_mip][opportunistic]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_run_fpr", false);
+    highs.setOptionValue("mip_heuristic_run_local_mip", true);
+    highs.setOptionValue("mip_heuristic_run_scylla", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);

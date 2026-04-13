@@ -5,6 +5,7 @@
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
 #include "solution_pool.h"
 
@@ -1308,21 +1309,13 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     return result;
 }
 
-// TODO(#61): when opportunistic=true, dispatch to a new
-// run_parallel_opportunistic helper.  Currently the flag is accepted
-// but ignored; seq/opp falls through to seq/det.
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort,
-                  [[maybe_unused]] bool opportunistic) {
+namespace {
+
+void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
-    if (ncol == 0 || nrow == 0) {
-        return;
-    }
-    if (mipdata->incumbent.empty()) {
-        return;
-    }
 
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
     const int mem_cap = max_workers_for_memory(estimate_worker_memory_local_mip(ncol, nrow));
@@ -1390,6 +1383,96 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort,
 
     for (auto &entry : pool.sorted_entries()) {
         mipdata->trySolution(entry.solution, kSolutionSourceLocalMIP);
+    }
+}
+
+void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
+    const auto *model = mipsolver.model_;
+    auto *mipdata = mipsolver.mipdata_.get();
+    const HighsInt ncol = model->num_col_;
+    const HighsInt nrow = model->num_row_;
+
+    const bool minimize = (model->sense_ == ObjSense::kMinimize);
+    const int mem_cap = max_workers_for_memory(estimate_worker_memory_local_mip(ncol, nrow));
+    const int N = std::min(highs::parallel::num_threads(), mem_cap);
+
+    auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
+
+    SolutionPool pool(kPoolCapacity, minimize);
+    seed_pool(pool, mipsolver);
+
+    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    const size_t worker_budget = max_effort / static_cast<size_t>(N);
+    const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
+
+    struct LmState {
+        std::unique_ptr<LocalMipWorker> worker;
+    };
+
+    size_t total_effort = run_opportunistic_loop(
+        mipsolver, N, max_effort, /*stale_budget=*/max_effort >> 2, default_run_cap, base_seed,
+        [&](int worker_idx, std::mt19937 &rng) -> LmState {
+            // Worker 0: unperturbed incumbent; others: perturbed.
+            if (worker_idx == 0) {
+                uint32_t seed = static_cast<uint32_t>(rng());
+                return LmState{std::make_unique<LocalMipWorker>(mipsolver, csc, pool, worker_budget,
+                                                                seed, nullptr)};
+            }
+            std::vector<double> perturbed = mipdata->incumbent;
+            perturb_solution(perturbed, *mipdata, model->integrality_, model->col_lower_,
+                             model->col_upper_, ncol, rng);
+            uint32_t seed = static_cast<uint32_t>(rng());
+            return LmState{std::make_unique<LocalMipWorker>(mipsolver, csc, pool, worker_budget,
+                                                            seed, perturbed.data())};
+        },
+        [&](LmState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
+            if (!state.worker || state.worker->finished()) {
+                // Restart from pool or incumbent with fresh perturbation.
+                std::vector<double> restart_sol;
+                if (!pool.get_restart(rng, restart_sol)) {
+                    restart_sol = mipdata->incumbent;
+                }
+                perturb_solution(restart_sol, *mipdata, model->integrality_, model->col_lower_,
+                                 model->col_upper_, ncol, rng);
+                uint32_t seed = static_cast<uint32_t>(rng());
+                state.worker = std::make_unique<LocalMipWorker>(mipsolver, csc, pool, worker_budget,
+                                                                seed, restart_sol.data());
+            }
+            auto epoch = state.worker->run_epoch(run_cap);
+            HeuristicResult result;
+            result.effort = epoch.effort;
+            if (epoch.found_improvement) {
+                result.found_feasible = true;
+                result.objective = pool.snapshot().best_objective;
+            }
+            return result;
+        });
+
+    mipdata->heuristic_effort_used += total_effort;
+
+    for (auto &entry : pool.sorted_entries()) {
+        mipdata->trySolution(entry.solution, kSolutionSourceLocalMIP);
+    }
+}
+
+}  // namespace
+
+void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic) {
+    const auto *model = mipsolver.model_;
+    auto *mipdata = mipsolver.mipdata_.get();
+    const HighsInt ncol = model->num_col_;
+    const HighsInt nrow = model->num_row_;
+    if (ncol == 0 || nrow == 0) {
+        return;
+    }
+    if (mipdata->incumbent.empty()) {
+        return;
+    }
+
+    if (opportunistic) {
+        run_parallel_opportunistic(mipsolver, max_effort);
+    } else {
+        run_parallel_deterministic(mipsolver, max_effort);
     }
 }
 

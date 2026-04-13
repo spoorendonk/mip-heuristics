@@ -14,8 +14,7 @@ void run(HighsMipSolver &mipsolver, size_t max_effort);
 // random init, shuffled variable order).  After K stale epochs a
 // worker randomizes its config from the full strategy x mode space.
 // When `opportunistic=true`, runs continuous `parallel::for_each`
-// workers with per-worker self-termination — added in #61; currently
-// accepted but ignored.
+// workers with per-worker self-termination.
 void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic = false);
 
 }  // namespace fpr
