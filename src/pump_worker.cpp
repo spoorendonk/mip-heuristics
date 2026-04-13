@@ -1,15 +1,32 @@
 #include "pump_worker.h"
 
 #include "fpr_core.h"
+#include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "Highs.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "parallel/HighsParallel.h"
 #include "pump_common.h"
 #include "solution_pool.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+
+namespace {
+
+// LP-free FPR configs for parallel rounding (subset of fpr.cpp's configs).
+constexpr NamedConfig kFprConfigs[] = {
+    {kStratBadobjcl, FrameworkMode::kDfs},
+    {kStratLocks2, FrameworkMode::kDfs},
+    {kStratLocks2, FrameworkMode::kDive},
+    {kStratLocks, FrameworkMode::kDfsrep},
+};
+
+constexpr int kNumFprConfigs = static_cast<int>(sizeof(kFprConfigs) / sizeof(kFprConfigs[0]));
+
+}  // namespace
 
 struct PumpWorker::Impl {
     Highs highs;
@@ -17,13 +34,14 @@ struct PumpWorker::Impl {
 };
 
 PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
-                       size_t total_budget, uint32_t seed)
+                       size_t total_budget, uint32_t seed, int num_fpr_workers)
     : impl_(std::make_unique<Impl>()),
       mipsolver_(mipsolver),
       csc_(csc),
       pool_(pool),
       total_budget_(total_budget),
       seed_(seed),
+      num_fpr_workers_(num_fpr_workers),
       epsilon_(pump::kEpsilonInit),
       rng_(seed) {
     const auto *model = mipsolver_.model_;
@@ -71,6 +89,17 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, Solution
     scores_.resize(ncol_);
     modified_cost_.resize(ncol_);
     cycle_history_.reserve(pump::kCycleWindow);
+
+    // Pre-compute variable orders for multi-worker FPR rounding.
+    if (num_fpr_workers_ > 1) {
+        var_orders_.resize(kNumFprConfigs);
+        for (int w = 0; w < kNumFprConfigs; ++w) {
+            std::mt19937 order_rng(kBaseSeedOffset + static_cast<uint32_t>(w));
+            var_orders_[w] = compute_var_order(mipsolver_, kFprConfigs[w].strat.var_strategy,
+                                               order_rng, nullptr);
+        }
+        rounding_results_.resize(num_fpr_workers_);
+    }
 }
 
 PumpWorker::~PumpWorker() = default;
@@ -85,6 +114,7 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
     const auto &integrality = model->integrality_;
     const auto &orig_cost = model->col_cost_;
     const double time_limit = mipsolver_.options_mip_->time_limit;
+    const bool minimize = (model->sense_ == ObjSense::kMinimize);
 
     EpochResult epoch{};
 
@@ -199,31 +229,134 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             }
         }
 
-        // Fix-and-propagate to round PDLP solution
-        FprConfig cfg{};
-        cfg.max_effort = std::min(epoch_budget - std::min(epoch_budget, epoch.effort),
-                                  total_budget_ - std::min(total_budget_, total_effort_));
-        cfg.rng_seed_offset = seed_ + K_;
-        cfg.hint = x_bar.data();
-        cfg.scores = scores_.data();
-        cfg.cont_fallback = x_bar.data();
-        cfg.csc = &csc_;
+        // Fix-and-propagate to round PDLP solution.
+        // Two paths: legacy single-attempt (portfolio Scylla arm) vs
+        // M-way parallel rounding (standalone Scylla).
+        size_t remaining_budget = std::min(epoch_budget - std::min(epoch_budget, epoch.effort),
+                                           total_budget_ - std::min(total_budget_, total_effort_));
 
-        auto result = fpr_attempt(mipsolver_, cfg, rng_, 0, nullptr);
-        total_effort_ += result.effort;
-        effort_since_improvement_ += result.effort;
-        epoch.effort += result.effort;
+        std::vector<double> *x_hat_ptr = nullptr;
 
-        if (result.found_feasible && !result.solution.empty()) {
-            pool_.try_add(result.objective, result.solution);
-            effort_since_improvement_ = 0;
-            epoch.found_improvement = true;
+        if (num_fpr_workers_ == 1) {
+            // Legacy single-fpr_attempt path: strategy=nullptr,
+            // cont_fallback=x_bar.  Byte-identical to original PumpWorker.
+            FprConfig cfg{};
+            cfg.max_effort = remaining_budget;
+            cfg.rng_seed_offset = seed_ + K_;
+            cfg.hint = x_bar.data();
+            cfg.scores = scores_.data();
+            cfg.cont_fallback = x_bar.data();
+            cfg.csc = &csc_;
+
+            auto result = fpr_attempt(mipsolver_, cfg, rng_, 0, nullptr);
+            total_effort_ += result.effort;
+            effort_since_improvement_ += result.effort;
+            epoch.effort += result.effort;
+
+            if (result.found_feasible && !result.solution.empty()) {
+                pool_.try_add(result.objective, result.solution);
+                effort_since_improvement_ = 0;
+                epoch.found_improvement = true;
+            }
+
+            if (!result.solution.empty()) {
+                // Store into rounding_results_[0] for x_hat access below.
+                // (Legacy path reuses index 0 as scratch.)
+                if (rounding_results_.empty()) {
+                    rounding_results_.resize(1);
+                }
+                rounding_results_[0] = std::move(result);
+                x_hat_ptr = &rounding_results_[0].solution;
+            }
+        } else {
+            // M-way parallel FPR rounding with strategy-aware configs.
+            if (remaining_budget == 0) {
+                break;
+            }
+            size_t per_config_budget = remaining_budget / std::max(num_fpr_workers_, 1);
+
+            // Clear results without deallocating solution vectors.
+            for (auto &r : rounding_results_) {
+                r.found_feasible = false;
+                r.effort = 0;
+                r.solution.clear();
+            }
+
+            highs::parallel::for_each(
+                0, static_cast<HighsInt>(num_fpr_workers_),
+                [&](HighsInt lo, HighsInt hi) {
+                    for (HighsInt w = lo; w < hi; ++w) {
+                        const int ci = static_cast<int>(w) % kNumFprConfigs;
+
+                        std::mt19937 w_rng(kBaseSeedOffset +
+                                           static_cast<uint32_t>(w) * kSeedStride +
+                                           static_cast<uint32_t>(K_));
+
+                        FprConfig cfg{};
+                        cfg.max_effort = per_config_budget;
+                        cfg.rng_seed_offset = kBaseSeedOffset + static_cast<uint32_t>(w) + K_;
+                        cfg.hint = x_bar.data();
+                        cfg.scores = scores_.data();
+                        cfg.cont_fallback = x_bar.data();
+                        cfg.csc = &csc_;
+                        cfg.mode = kFprConfigs[ci].mode;
+                        cfg.strategy = &kFprConfigs[ci].strat;
+                        cfg.lp_ref = nullptr;
+                        cfg.precomputed_var_order = var_orders_[ci].data();
+                        cfg.precomputed_var_order_size =
+                            static_cast<HighsInt>(var_orders_[ci].size());
+
+                        rounding_results_[w] = fpr_attempt(mipsolver_, cfg, w_rng, 0, nullptr);
+                    }
+                },
+                1);
+
+            // Aggregate FPR effort and pick best feasible result.
+            int best_idx = -1;
+            double best_obj = minimize ? std::numeric_limits<double>::infinity()
+                                       : -std::numeric_limits<double>::infinity();
+            size_t fpr_effort = 0;
+
+            for (int w = 0; w < num_fpr_workers_; ++w) {
+                fpr_effort += rounding_results_[w].effort;
+                if (rounding_results_[w].found_feasible && !rounding_results_[w].solution.empty()) {
+                    pool_.try_add(rounding_results_[w].objective, rounding_results_[w].solution);
+                    bool is_better = minimize ? (rounding_results_[w].objective < best_obj)
+                                              : (rounding_results_[w].objective > best_obj);
+                    if (is_better) {
+                        best_obj = rounding_results_[w].objective;
+                        best_idx = w;
+                    }
+                }
+            }
+
+            total_effort_ += fpr_effort;
+            effort_since_improvement_ += fpr_effort;
+            epoch.effort += fpr_effort;
+
+            if (best_idx >= 0) {
+                effort_since_improvement_ = 0;
+                epoch.found_improvement = true;
+            }
+
+            // Use best x_hat for cycling detection and objective update.
+            // Fall back to first non-empty result if no feasible solution found.
+            if (best_idx >= 0) {
+                x_hat_ptr = &rounding_results_[best_idx].solution;
+            } else {
+                for (int w = 0; w < num_fpr_workers_; ++w) {
+                    if (!rounding_results_[w].solution.empty()) {
+                        x_hat_ptr = &rounding_results_[w].solution;
+                        break;
+                    }
+                }
+            }
         }
 
-        auto &x_hat = result.solution;
-        if (x_hat.empty()) {
+        if (x_hat_ptr == nullptr) {
             continue;
         }
+        auto &x_hat = *x_hat_ptr;
 
         // Cycling detection + perturbation
         if (pump::detect_cycling(cycle_history_, x_hat, integrality, ncol_)) {
