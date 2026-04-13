@@ -11,7 +11,6 @@
 #include <vector>
 
 class HighsMipSolver;
-struct CscMatrix;
 class SolutionPool;
 
 // Encapsulates a PDLP pump chain (Mexi et al. 2023, Algorithm 1.1)

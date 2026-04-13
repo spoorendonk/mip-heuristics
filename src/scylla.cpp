@@ -3,7 +3,6 @@
 #include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "parallel/HighsParallel.h"
 #include "pump_worker.h"
 #include "solution_pool.h"
 

@@ -11,6 +11,7 @@
 #include "solution_pool.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 
@@ -24,7 +25,7 @@ constexpr NamedConfig kFprConfigs[] = {
     {kStratLocks, FrameworkMode::kDfsrep},
 };
 
-constexpr int kNumFprConfigs = static_cast<int>(sizeof(kFprConfigs) / sizeof(kFprConfigs[0]));
+constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 
 }  // namespace
 
@@ -90,6 +91,9 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, Solution
     modified_cost_.resize(ncol_);
     cycle_history_.reserve(pump::kCycleWindow);
 
+    assert(num_fpr_workers_ >= 1);
+    rounding_results_.resize(num_fpr_workers_);
+
     // Pre-compute variable orders for multi-worker FPR rounding.
     if (num_fpr_workers_ > 1) {
         var_orders_.resize(kNumFprConfigs);
@@ -98,7 +102,6 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, Solution
             var_orders_[w] = compute_var_order(mipsolver_, kFprConfigs[w].strat.var_strategy,
                                                order_rng, nullptr);
         }
-        rounding_results_.resize(num_fpr_workers_);
     }
 }
 
@@ -260,11 +263,6 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             }
 
             if (!result.solution.empty()) {
-                // Store into rounding_results_[0] for x_hat access below.
-                // (Legacy path reuses index 0 as scratch.)
-                if (rounding_results_.empty()) {
-                    rounding_results_.resize(1);
-                }
                 rounding_results_[0] = std::move(result);
                 x_hat_ptr = &rounding_results_[0].solution;
             }
@@ -273,7 +271,7 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             if (remaining_budget == 0) {
                 break;
             }
-            size_t per_config_budget = remaining_budget / std::max(num_fpr_workers_, 1);
+            size_t per_config_budget = remaining_budget / num_fpr_workers_;
 
             // Clear results without deallocating solution vectors.
             for (auto &r : rounding_results_) {
