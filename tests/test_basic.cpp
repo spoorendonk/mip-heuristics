@@ -812,7 +812,7 @@ double solve_fpr_lp_mode(const char* inst, bool portfolio, bool opp) {
     h.setOptionValue("mip_heuristic_run_fpr", true);
     h.setOptionValue("mip_heuristic_portfolio", portfolio);
     h.setOptionValue("mip_heuristic_opportunistic", opp);
-    REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;
     h.getInfoValue("objective_function_value", obj);

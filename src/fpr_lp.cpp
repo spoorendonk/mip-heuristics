@@ -83,15 +83,6 @@ struct LpArm {
     const double *lp_ref;
 };
 
-// Hard stale threshold for LP-FPR workers in opportunistic mode.
-// Mirrors FprWorker::kHardStaleThreshold so the worker signals
-// "finished" to trigger replacement instead of spinning.
-constexpr int kHardStaleThreshold = 15;
-
-// Number of stale epochs before a worker randomizes its arm.
-// Mirrors fpr.cpp's kStaleEpochThreshold.
-constexpr int kStaleEpochThreshold = 3;
-
 // Max workers for parallel LP-FPR modes.
 constexpr int kMaxLpFprWorkers = 8;
 
@@ -343,6 +334,15 @@ private:
     SolutionPool::Snapshot pre_snap_{};
 
     std::mt19937 rng_;
+
+    // Hard stale threshold for LP-FPR workers in opportunistic mode.
+    // Mirrors FprWorker::kHardStaleThreshold so the worker signals
+    // "finished" to trigger replacement instead of spinning.
+    static constexpr int kHardStaleThreshold = 15;
+
+    // Number of stale epochs before a worker randomizes its arm.
+    // Mirrors fpr.cpp's kStaleEpochThreshold.
+    static constexpr int kStaleEpochThreshold = 3;
 };
 
 static_assert(EpochWorker<LpFprWorker>, "LpFprWorker must satisfy EpochWorker concept");
