@@ -70,8 +70,8 @@ size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers, size_t
                 auto state = make_state(static_cast<int>(w), rng);
 
                 while (!stop.load(std::memory_order_relaxed)) {
-                    // Worker 0 periodically checks termination (not
-                    // thread-safe to call from multiple workers).
+                    // Worker 0 polls termination every 8 attempts to amortize
+                    // the (non-thread-safe) timer/terminator query.
                     if (w == 0 && attempt_counter % 8 == 0) {
                         if (mipdata->terminatorTerminated() ||
                             mipsolver.timer_.read() >= time_limit) {
