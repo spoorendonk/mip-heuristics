@@ -1183,7 +1183,9 @@ TEST_CASE("Portfolio deterministic: Scylla arm same result", "[portfolio][scylla
     REQUIRE(obj1 == Catch::Approx(obj2).epsilon(1e-12));
 }
 
-// ── Scylla parallel: opportunistic flag enables parallel pump chains ──
+// ── Scylla parallel: run_parallel is the unified entry for pump chains ──
+// Scylla has no det/opp distinction (see #60) — scylla::run_parallel is
+// always used when Scylla is enabled, regardless of mip_heuristic_opportunistic.
 
 TEST_CASE("Scylla parallel: flugpl finds solution", "[heuristic][scylla]") {
     Highs highs;
