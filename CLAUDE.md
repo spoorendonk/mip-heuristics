@@ -64,7 +64,12 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `portfolio` — adaptive bandit (Thompson sampling) that selects among FPR, LocalMIP, and FeasibilityJump arms. Has deterministic and opportunistic (parallel) modes.
 
 **Dispatch and parallel infrastructure** (`src/`):
-- `mode_dispatch` — top-level presolve entry point. Reads `mip_heuristic_*` options and routes to sequential, portfolio deterministic, or portfolio opportunistic mode. The `opportunistic` flag is threaded to all four heuristics (FJ, FPR, LocalMIP, Scylla), each of which picks its epoch-gated or continuous runner.
+- `mode_dispatch` — top-level presolve entry point. Reads `mip_heuristic_*` options and routes to one of four cells of the execution matrix. Two orthogonal flags — `mip_heuristic_portfolio` and `mip_heuristic_opportunistic` — form a 2×2:
+  - **seq/det** (`portfolio=false`, `opportunistic=false`): `run_sequential` runs FJ → FPR → LocalMIP → Scylla one after another with a weighted effort budget.
+  - **seq/opp** (`portfolio=false`, `opportunistic=true`): same sequence but each heuristic's `run_parallel` dispatches to its opportunistic variant (continuous parallel workers rather than epoch-gated).
+  - **port/det** (`portfolio=true`, `opportunistic=false`): `portfolio::run_presolve` runs the Thompson-sampling bandit with deterministic epoch-gated parallel workers.
+  - **port/opp** (`portfolio=true`, `opportunistic=true`): bandit with continuous/opportunistic parallelism.
+  The `opportunistic` flag is threaded to all four heuristics (FJ, FPR, LocalMIP, Scylla) and to `fpr_lp`; each picks its epoch-gated or continuous runner.
 - `epoch_runner.h` — generic epoch loop: workers run in parallel within each epoch and synchronize at the barrier. `EpochWorker` concept defines the interface.
 - `opportunistic_runner.h` — generic continuous parallel loop for the opportunistic branch of the 2×2 matrix.
 - `contested_pdlp` — mutex-guarded `Highs` PDLP wrapper shared by all Scylla pump chains. One-shot `solve(modified_cost, warm_start, epsilon, time_limit)` API holds the mutex for the full `changeColsCost → setSolution → run → getSolution` path, guaranteeing at most one PDLP solve is in flight (critical for cuPDLP GPU state).
