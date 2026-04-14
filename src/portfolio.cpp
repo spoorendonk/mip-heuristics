@@ -179,20 +179,10 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
         s.enabled_arms.push_back(kArmLocalMIP);
         s.priors.push_back(kLocalMipAlpha);
     }
-    if (options->mip_heuristic_run_scylla) {
-        s.enabled_arms.push_back(kArmScylla);
-        s.priors.push_back(kScyllaAlpha);
-    }
-    if (s.enabled_arms.empty()) {
-        return std::nullopt;
-    }
-
-    s.csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
-
-    if (options->mip_heuristic_run_fpr) {
-        s.fpr_var_orders = precompute_fpr_var_orders(mipsolver);
-    }
-
+    // Scylla arm: attempt to build the shared ContestedPdlp first.  If
+    // the instance lacks the structure PDLP needs (no rows or zero
+    // nonzeros) the arm is silently omitted from the portfolio so that
+    // no bandit pull can ever land on a no-op path.
     if (options->mip_heuristic_run_scylla) {
         const size_t nnz_lp = mipdata->ARindex_.size();
         HighsInt pdlp_iter_cap = 100;
@@ -203,7 +193,18 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
         auto pdlp = std::make_unique<ContestedPdlp>(mipsolver, pdlp_iter_cap);
         if (pdlp->initialized()) {
             s.scylla_pdlp = std::move(pdlp);
+            s.enabled_arms.push_back(kArmScylla);
+            s.priors.push_back(kScyllaAlpha);
         }
+    }
+    if (s.enabled_arms.empty()) {
+        return std::nullopt;
+    }
+
+    s.csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
+
+    if (options->mip_heuristic_run_fpr) {
+        s.fpr_var_orders = precompute_fpr_var_orders(mipsolver);
     }
 
     s.incumbent_snapshot = mipdata->incumbent;
@@ -315,12 +316,6 @@ public:
         EpochResult epoch{};
 
         if (arm_type == kArmScylla) {
-            if (!setup_.scylla_pdlp) {
-                // Scylla was requested but the instance lacks structure
-                // (e.g. empty constraint matrix).  Treat as a no-op arm.
-                finished_ = true;
-                return epoch;
-            }
             if (!pump_ || pump_->finished()) {
                 pump_ = std::make_unique<PumpWorker>(mipsolver_, *setup_.scylla_pdlp, setup_.csc,
                                                      pool_, setup_.budget,
@@ -490,17 +485,11 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                     auto t0 = std::chrono::steady_clock::now();
 
                     if (enabled_arms[arm] == kArmScylla) {
-                        if (!setup.scylla_pdlp) {
-                            // Instance lacks structure for Scylla; record a
-                            // no-op result so the bandit stops picking it.
-                            bandit.update(arm, 0);
-                            bandit.record_effort(arm, 0);
-                            ++attempt_counter;
-                            continue;
-                        }
                         // Scylla: lazy-init PumpWorker, preserves PDLP warm-start.
                         // All workers share the single setup.scylla_pdlp
-                        // instance; its mutex serializes PDLP runs.
+                        // instance; its mutex serializes PDLP runs.  The arm
+                        // is only present when the shared PDLP initialized,
+                        // so the dereference is always safe.
                         if (!pump || pump->finished()) {
                             pump = std::make_unique<PumpWorker>(
                                 mipsolver, *setup.scylla_pdlp, csc, pool, budget,

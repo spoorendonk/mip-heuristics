@@ -85,7 +85,6 @@ private:
     bool warm_start_valid_ = false;
 
     std::vector<std::vector<double>> cycle_history_;
-    std::vector<double> scores_;
     std::vector<double> modified_cost_;
     std::mt19937 rng_;
 

@@ -56,7 +56,6 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const Csc
     }
 
     stale_budget_ = total_budget_ >> 2;
-    scores_.resize(ncol_);
     modified_cost_ = orig_cost;
     cycle_history_.reserve(pump::kCycleWindow);
 
@@ -128,8 +127,8 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             break;
         }
 
-        warm_start_col_value_ = solve.col_value;
-        warm_start_row_dual_ = solve.row_dual;
+        warm_start_col_value_ = std::move(solve.col_value);
+        warm_start_row_dual_ = std::move(solve.row_dual);
         warm_start_valid_ = solve.value_valid && solve.dual_valid;
 
         const auto &x_bar = warm_start_col_value_;
@@ -172,16 +171,6 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             }
         }
 
-        // Fractionality scores retained for parity with the pre-rewrite
-        // implementation; strategy-based rounding uses its own ranking.
-        for (HighsInt j = 0; j < ncol_; ++j) {
-            if (!is_integer(integrality, j)) {
-                scores_[j] = -1.0;
-            } else {
-                scores_[j] = std::abs(x_bar[j] - std::round(x_bar[j]));
-            }
-        }
-
         size_t remaining_budget = std::min(epoch_budget - std::min(epoch_budget, epoch.effort),
                                            total_budget_ - std::min(total_budget_, total_effort_));
         if (remaining_budget == 0) {
@@ -194,7 +183,9 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
         cfg.rng_seed_offset =
             kBaseSeedOffset + static_cast<uint32_t>(fpr_config_index_) + static_cast<uint32_t>(K_);
         cfg.hint = x_bar.data();
-        cfg.scores = scores_.data();
+        // scores is read only when strategy + precomputed_var_order are
+        // null; both are always set below, so leave scores unset.
+        cfg.scores = nullptr;
         cfg.cont_fallback = x_bar.data();
         cfg.csc = &csc_;
         cfg.mode = named.mode;
