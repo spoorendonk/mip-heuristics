@@ -29,6 +29,26 @@ cd build && ./mip_heuristics_tests "[portfolio]"
 
 First build is slow (~5 min) because it fetches and builds HiGHS via FetchContent.
 
+## Build & Test
+
+Used by the devkit pre-push hook.  The `unset GIT_DIR GIT_WORK_TREE`
+prefix is required: `git push` leaks `GIT_DIR=.git` into the hook
+subshell, and CMake's nested `git clone` inside FetchContent then
+treats that as the target git directory and fails with `fatal: invalid
+reference: v1.14.0` when trying to check out the HiGHS tag.
+
+```clean
+rm -rf build
+```
+
+```build
+unset GIT_DIR GIT_WORK_TREE && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
+```
+
+```test
+ctest --test-dir build --output-on-failure -j"$(nproc)"
+```
+
 GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver used by Scylla. Falls back to CPU if no CUDA compiler is found.
 
 ## Architecture
