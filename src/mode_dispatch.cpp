@@ -15,11 +15,11 @@ namespace {
 // Weighted effort allocation: each heuristic runs in turn with its
 // proportional share of the budget and the full thread pool.
 //
-// The `opportunistic` flag is forwarded to fj/fpr/local_mip so each
-// heuristic can pick its deterministic vs continuous parallelism
-// strategy.  Scylla does NOT take the flag — its pump chain is
-// inherently sequential (PDLP -> round -> PDLP -> ...) and has no
-// det/opp distinction.
+// The `opportunistic` flag is forwarded to all heuristics so each
+// picks its deterministic vs continuous parallelism strategy.  Scylla
+// uses N independent pump chains sharing a mutex-guarded PDLP solver
+// (see `ContestedPdlp`), so its det/opp distinction is the same epoch
+// vs opportunistic runner split used by FJ/FPR/LocalMIP.
 bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic) {
     const auto *options = mipsolver.options_mip_;
 
@@ -65,7 +65,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
         local_mip::run_parallel(mipsolver, alloc(kWeightLocalMip), opportunistic);
     }
     if (sc_on) {
-        scylla::run_parallel(mipsolver, alloc(kWeightScylla));
+        scylla::run_parallel(mipsolver, alloc(kWeightScylla), opportunistic);
     }
 
     return false;

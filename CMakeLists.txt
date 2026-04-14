@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(cmake/FetchHiGHS.cmake)
 
 add_library(mip_heuristics OBJECT
+    src/contested_pdlp.cpp
     src/fj.cpp
     src/fj_worker.cpp
     src/fpr.cpp

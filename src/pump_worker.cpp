@@ -1,51 +1,33 @@
 #include "pump_worker.h"
 
+#include "contested_pdlp.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
-#include "Highs.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "parallel/HighsParallel.h"
 #include "pump_common.h"
 #include "solution_pool.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <limits>
 
-namespace {
-
-// LP-free FPR configs for parallel rounding (subset of fpr.cpp's configs).
-constexpr NamedConfig kFprConfigs[] = {
-    {kStratBadobjcl, FrameworkMode::kDfs},
-    {kStratLocks2, FrameworkMode::kDfs},
-    {kStratLocks2, FrameworkMode::kDive},
-    {kStratLocks, FrameworkMode::kDfsrep},
-};
-
-constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
-
-}  // namespace
-
-struct PumpWorker::Impl {
-    Highs highs;
-    HighsSolution warm_start;
-};
-
-PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
-                       size_t total_budget, uint32_t seed, int num_fpr_workers)
-    : impl_(std::make_unique<Impl>()),
-      mipsolver_(mipsolver),
+PumpWorker::PumpWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
+                       SolutionPool &pool, size_t total_budget, uint32_t seed, int fpr_config_index)
+    : mipsolver_(mipsolver),
+      pdlp_(pdlp),
       csc_(csc),
       pool_(pool),
       total_budget_(total_budget),
-      num_fpr_workers_(num_fpr_workers),
       epsilon_(pump::kEpsilonInit),
-      rng_(seed) {
+      rng_(seed),
+      fpr_config_index_(((fpr_config_index % kNumFprConfigs) + kNumFprConfigs) % kNumFprConfigs) {
+    if (!pdlp_.initialized()) {
+        finished_ = true;
+        return;
+    }
     const auto *model = mipsolver_.model_;
-    auto *mipdata = mipsolver_.mipdata_.get();
     ncol_ = model->num_col_;
     nrow_ = model->num_row_;
 
@@ -67,42 +49,22 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, Solution
     double norm_c = std::sqrt(norm_c_sq);
     cost_scale_ = (norm_c > 1e-15) ? std::sqrt(num_integers) / norm_c : 1.0;
 
-    auto lp = pump::build_lp_relaxation(*model, *mipdata);
-    impl_->highs.setOptionValue("solver", "pdlp");
-    impl_->highs.setOptionValue("output_flag", false);
-    impl_->highs.setOptionValue("pdlp_scaling", true);
-    impl_->highs.setOptionValue("pdlp_e_restart_method", 2);
-    nnz_lp_ = mipdata->ARindex_.size();
+    nnz_lp_ = pdlp_.nnz_lp();
     if (nnz_lp_ == 0) {
         finished_ = true;
         return;
     }
-    // nnz_lp_ > 0 guaranteed by the early return above.
-    auto pdlp_iter_cap = static_cast<HighsInt>((total_budget_ >> 2) / nnz_lp_);
-    if (pdlp_iter_cap < 100) {
-        pdlp_iter_cap = 100;
-    }
-    impl_->highs.setOptionValue("pdlp_iteration_limit", pdlp_iter_cap);
-    impl_->highs.passModel(std::move(lp));
 
     stale_budget_ = total_budget_ >> 2;
     scores_.resize(ncol_);
-    modified_cost_.resize(ncol_);
+    modified_cost_ = orig_cost;
     cycle_history_.reserve(pump::kCycleWindow);
 
-    assert(num_fpr_workers_ >= 1);
-    rounding_results_.resize(num_fpr_workers_);
-
-    // Pre-compute variable orders for strategy-aware FPR rounding.
-    var_orders_.resize(kNumFprConfigs);
-    for (int w = 0; w < kNumFprConfigs; ++w) {
-        std::mt19937 order_rng(kBaseSeedOffset + static_cast<uint32_t>(w));
-        var_orders_[w] =
-            compute_var_order(mipsolver_, kFprConfigs[w].strat.var_strategy, order_rng, nullptr);
-    }
+    // Pre-compute variable order for the chain's static strategy.
+    std::mt19937 order_rng(kBaseSeedOffset + static_cast<uint32_t>(fpr_config_index_));
+    var_order_ = compute_var_order(mipsolver_, kFprConfigs[fpr_config_index_].strat.var_strategy,
+                                   order_rng, nullptr);
 }
-
-PumpWorker::~PumpWorker() = default;
 
 EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
     if (finished_) {
@@ -114,7 +76,6 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
     const auto &integrality = model->integrality_;
     const auto &orig_cost = model->col_cost_;
     const double time_limit = mipsolver_.options_mip_->time_limit;
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
 
     EpochResult epoch{};
 
@@ -130,37 +91,30 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
 
         ++K_;
 
-        impl_->highs.setOptionValue("pdlp_optimality_tolerance", epsilon_);
         double remaining = time_limit - mipsolver_.timer_.read();
         if (remaining <= 0.0) {
             finished_ = true;
             break;
         }
-        impl_->highs.setOptionValue("time_limit", remaining);
 
-        if (impl_->warm_start.value_valid && impl_->warm_start.dual_valid) {
-            impl_->highs.setSolution(impl_->warm_start);
-        }
+        auto solve = pdlp_.solve(modified_cost_, warm_start_col_value_, warm_start_row_dual_,
+                                 warm_start_valid_, epsilon_, remaining);
 
-        HighsStatus status = impl_->highs.run();
-
-        HighsInt pdlp_iters = 0;
-        impl_->highs.getInfoValue("pdlp_iteration_count", pdlp_iters);
-        size_t iter_effort = static_cast<size_t>(pdlp_iters) * nnz_lp_;
+        size_t iter_effort = static_cast<size_t>(solve.pdlp_iters) * nnz_lp_;
         total_effort_ += iter_effort;
         effort_since_improvement_ += iter_effort;
         epoch.effort += iter_effort;
 
-        if (status == HighsStatus::kError) {
+        if (solve.status == HighsStatus::kError) {
             finished_ = true;
             break;
         }
-        if (impl_->highs.getModelStatus() == HighsModelStatus::kInfeasible) {
+        if (solve.model_status == HighsModelStatus::kInfeasible) {
             finished_ = true;
             break;
         }
 
-        if (pdlp_iters == 0) {
+        if (solve.pdlp_iters == 0) {
             ++pdlp_stall_count_;
             if (pdlp_stall_count_ >= pump::kMaxPdlpStalls) {
                 finished_ = true;
@@ -169,20 +123,18 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
         } else {
             pdlp_stall_count_ = 0;
         }
-        const auto &sol = impl_->highs.getSolution();
-        if (sol.col_value.empty()) {
+        if (solve.col_value.empty()) {
             finished_ = true;
             break;
         }
 
-        impl_->warm_start.col_value = sol.col_value;
-        impl_->warm_start.row_dual = sol.row_dual;
-        impl_->warm_start.value_valid = sol.value_valid;
-        impl_->warm_start.dual_valid = sol.dual_valid;
+        warm_start_col_value_ = solve.col_value;
+        warm_start_row_dual_ = solve.row_dual;
+        warm_start_valid_ = solve.value_valid && solve.dual_valid;
 
-        const auto &x_bar = sol.col_value;
+        const auto &x_bar = warm_start_col_value_;
 
-        // Check if PDLP solution is already MIP-feasible (fast path)
+        // Fast path: PDLP solution already MIP-feasible.
         {
             bool mip_feasible = true;
             const double feastol = mipsolver_.options_mip_->mip_feasibility_tolerance;
@@ -220,7 +172,8 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             }
         }
 
-        // Compute fractionality scores for fix-and-propagate ranking
+        // Fractionality scores retained for parity with the pre-rewrite
+        // implementation; strategy-based rounding uses its own ranking.
         for (HighsInt j = 0; j < ncol_; ++j) {
             if (!is_integer(integrality, j)) {
                 scores_[j] = -1.0;
@@ -229,100 +182,45 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             }
         }
 
-        // Strategy-aware FPR rounding: N workers round in parallel
-        // (for N == 1, parallel::for_each runs sequentially).
         size_t remaining_budget = std::min(epoch_budget - std::min(epoch_budget, epoch.effort),
                                            total_budget_ - std::min(total_budget_, total_effort_));
         if (remaining_budget == 0) {
             break;
         }
-        // Assign the integer-division remainder to the last worker so the full
-        // budget is spent across the N parallel rounding configs.
-        size_t per_config_budget = remaining_budget / num_fpr_workers_;
-        size_t last_config_budget = per_config_budget + (remaining_budget % num_fpr_workers_);
 
-        // Clear results without deallocating solution vectors.
-        for (auto &r : rounding_results_) {
-            r.found_feasible = false;
-            r.effort = 0;
-            r.solution.clear();
-        }
+        const auto &named = kFprConfigs[fpr_config_index_];
+        FprConfig cfg{};
+        cfg.max_effort = remaining_budget;
+        cfg.rng_seed_offset =
+            kBaseSeedOffset + static_cast<uint32_t>(fpr_config_index_) + static_cast<uint32_t>(K_);
+        cfg.hint = x_bar.data();
+        cfg.scores = scores_.data();
+        cfg.cont_fallback = x_bar.data();
+        cfg.csc = &csc_;
+        cfg.mode = named.mode;
+        cfg.strategy = &named.strat;
+        cfg.lp_ref = nullptr;
+        cfg.precomputed_var_order = var_order_.data();
+        cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_.size());
 
-        highs::parallel::for_each(
-            0, static_cast<HighsInt>(num_fpr_workers_),
-            [&](HighsInt lo, HighsInt hi) {
-                for (HighsInt w = lo; w < hi; ++w) {
-                    const int ci = static_cast<int>(w) % kNumFprConfigs;
+        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0, nullptr);
 
-                    std::mt19937 w_rng(kBaseSeedOffset + static_cast<uint32_t>(w) * kSeedStride +
-                                       static_cast<uint32_t>(K_));
+        total_effort_ += rounded.effort;
+        effort_since_improvement_ += rounded.effort;
+        epoch.effort += rounded.effort;
 
-                    FprConfig cfg{};
-                    cfg.max_effort =
-                        (w == num_fpr_workers_ - 1) ? last_config_budget : per_config_budget;
-                    cfg.rng_seed_offset = kBaseSeedOffset + static_cast<uint32_t>(w) + K_;
-                    cfg.hint = x_bar.data();
-                    cfg.scores = scores_.data();
-                    cfg.cont_fallback = x_bar.data();
-                    cfg.csc = &csc_;
-                    cfg.mode = kFprConfigs[ci].mode;
-                    cfg.strategy = &kFprConfigs[ci].strat;
-                    cfg.lp_ref = nullptr;
-                    cfg.precomputed_var_order = var_orders_[ci].data();
-                    cfg.precomputed_var_order_size = static_cast<HighsInt>(var_orders_[ci].size());
-
-                    rounding_results_[w] = fpr_attempt(mipsolver_, cfg, w_rng, 0, nullptr);
-                }
-            },
-            1);
-
-        // Aggregate FPR effort and pick best feasible result.
-        int best_idx = -1;
-        double best_obj = minimize ? std::numeric_limits<double>::infinity()
-                                   : -std::numeric_limits<double>::infinity();
-        size_t fpr_effort = 0;
-
-        for (int w = 0; w < num_fpr_workers_; ++w) {
-            fpr_effort += rounding_results_[w].effort;
-            if (rounding_results_[w].found_feasible && !rounding_results_[w].solution.empty()) {
-                pool_.try_add(rounding_results_[w].objective, rounding_results_[w].solution);
-                bool is_better = minimize ? (rounding_results_[w].objective < best_obj)
-                                          : (rounding_results_[w].objective > best_obj);
-                if (is_better) {
-                    best_obj = rounding_results_[w].objective;
-                    best_idx = w;
-                }
-            }
-        }
-
-        total_effort_ += fpr_effort;
-        effort_since_improvement_ += fpr_effort;
-        epoch.effort += fpr_effort;
-
-        if (best_idx >= 0) {
+        if (rounded.found_feasible && !rounded.solution.empty()) {
+            pool_.try_add(rounded.objective, rounded.solution);
             effort_since_improvement_ = 0;
             epoch.found_improvement = true;
         }
 
-        // Use best x_hat for cycling detection and objective update.
-        std::vector<double> *x_hat_ptr = nullptr;
-        if (best_idx >= 0) {
-            x_hat_ptr = &rounding_results_[best_idx].solution;
-        } else {
-            for (int w = 0; w < num_fpr_workers_; ++w) {
-                if (!rounding_results_[w].solution.empty()) {
-                    x_hat_ptr = &rounding_results_[w].solution;
-                    break;
-                }
-            }
-        }
-
-        if (x_hat_ptr == nullptr) {
+        if (rounded.solution.empty()) {
             continue;
         }
-        auto &x_hat = *x_hat_ptr;
 
-        // Cycling detection + perturbation
+        auto &x_hat = rounded.solution;
+
         if (pump::detect_cycling(cycle_history_, x_hat, integrality, ncol_)) {
             pump::perturb(x_hat, *model, rng_);
         }
@@ -332,12 +230,10 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
             cycle_history_[(K_ - 1) % pump::kCycleWindow] = x_hat;
         }
 
-        // Objective update
         alpha_K_ *= pump::kAlpha;
         pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality, model->col_lower_,
                                      model->col_upper_, alpha_K_, cost_scale_, ncol_,
                                      modified_cost_);
-        impl_->highs.changeColsCost(0, ncol_ - 1, modified_cost_.data());
 
         epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
     }

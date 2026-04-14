@@ -1,5 +1,6 @@
 #include "portfolio.h"
 
+#include "contested_pdlp.h"
 #include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
@@ -15,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <optional>
 #include <random>
 #include <vector>
@@ -140,6 +142,12 @@ struct PresolveSetup {
     size_t budget;
     size_t stale_budget;
     bool minimize;
+    // Shared Scylla PDLP solver; non-null when the Scylla arm is
+    // enabled and the instance has non-trivial structure.  All
+    // PortfolioWorkers that build a PumpWorker route their PDLP solves
+    // through this instance's internal mutex, so at most one PDLP
+    // solve is in flight at a time across the whole portfolio.
+    std::unique_ptr<ContestedPdlp> scylla_pdlp;
 };
 
 std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, size_t max_effort) {
@@ -183,6 +191,19 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
 
     if (options->mip_heuristic_run_fpr) {
         s.fpr_var_orders = precompute_fpr_var_orders(mipsolver);
+    }
+
+    if (options->mip_heuristic_run_scylla) {
+        const size_t nnz_lp = mipdata->ARindex_.size();
+        HighsInt pdlp_iter_cap = 100;
+        if (nnz_lp > 0) {
+            auto cap = static_cast<HighsInt>((max_effort >> 2) / nnz_lp);
+            pdlp_iter_cap = cap < 100 ? 100 : cap;
+        }
+        auto pdlp = std::make_unique<ContestedPdlp>(mipsolver, pdlp_iter_cap);
+        if (pdlp->initialized()) {
+            s.scylla_pdlp = std::move(pdlp);
+        }
     }
 
     s.incumbent_snapshot = mipdata->incumbent;
@@ -282,8 +303,8 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, std::m
 class PortfolioWorker {
 public:
     PortfolioWorker(HighsMipSolver &mipsolver, const PresolveSetup &setup, SolutionPool &pool,
-                    uint32_t seed)
-        : mipsolver_(mipsolver), setup_(setup), pool_(pool), rng_(seed) {}
+                    uint32_t seed, int worker_idx)
+        : mipsolver_(mipsolver), setup_(setup), pool_(pool), rng_(seed), worker_idx_(worker_idx) {}
 
     EpochResult run_epoch(size_t epoch_budget) {
         if (finished_) {
@@ -294,9 +315,16 @@ public:
         EpochResult epoch{};
 
         if (arm_type == kArmScylla) {
+            if (!setup_.scylla_pdlp) {
+                // Scylla was requested but the instance lacks structure
+                // (e.g. empty constraint matrix).  Treat as a no-op arm.
+                finished_ = true;
+                return epoch;
+            }
             if (!pump_ || pump_->finished()) {
-                pump_ = std::make_unique<PumpWorker>(mipsolver_, setup_.csc, pool_, setup_.budget,
-                                                     static_cast<uint32_t>(rng_()));
+                pump_ = std::make_unique<PumpWorker>(mipsolver_, *setup_.scylla_pdlp, setup_.csc,
+                                                     pool_, setup_.budget,
+                                                     static_cast<uint32_t>(rng_()), worker_idx_);
             }
             auto t0 = std::chrono::steady_clock::now();
             epoch = pump_->run_epoch(epoch_budget);
@@ -371,6 +399,7 @@ private:
     const PresolveSetup &setup_;
     SolutionPool &pool_;
     std::mt19937 rng_;
+    int worker_idx_ = 0;
 
     int assigned_arm_ = -1;
     int attempt_counter_ = 0;
@@ -461,10 +490,21 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                     auto t0 = std::chrono::steady_clock::now();
 
                     if (enabled_arms[arm] == kArmScylla) {
-                        // Scylla: lazy-init PumpWorker, preserves PDLP warm-start
+                        if (!setup.scylla_pdlp) {
+                            // Instance lacks structure for Scylla; record a
+                            // no-op result so the bandit stops picking it.
+                            bandit.update(arm, 0);
+                            bandit.record_effort(arm, 0);
+                            ++attempt_counter;
+                            continue;
+                        }
+                        // Scylla: lazy-init PumpWorker, preserves PDLP warm-start.
+                        // All workers share the single setup.scylla_pdlp
+                        // instance; its mutex serializes PDLP runs.
                         if (!pump || pump->finished()) {
-                            pump = std::make_unique<PumpWorker>(mipsolver, csc, pool, budget,
-                                                                static_cast<uint32_t>(rng()));
+                            pump = std::make_unique<PumpWorker>(
+                                mipsolver, *setup.scylla_pdlp, csc, pool, budget,
+                                static_cast<uint32_t>(rng()), static_cast<int>(w));
                         }
                         auto epoch = pump->run_epoch(arm_budget);
                         result.effort = epoch.effort;
@@ -574,7 +614,7 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     workers.reserve(N);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<PortfolioWorker>(mipsolver, setup, pool, seed));
+        workers.push_back(std::make_unique<PortfolioWorker>(mipsolver, setup, pool, seed, w));
     }
 
     constexpr int kEpochsPerWorker = 20;
