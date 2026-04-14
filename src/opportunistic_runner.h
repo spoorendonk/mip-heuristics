@@ -32,10 +32,12 @@
 //     (Scylla uses PumpWorker directly and does not go through this template.)
 //   - Worker-0-only terminator polling: only worker 0 polls
 //     `terminatorTerminated()` / `timer_.read()` (not guaranteed
-//     thread-safe for concurrent callers).  Other workers rely on the
-//     atomic `stop` flag set by worker 0.  Worst-case latency before
-//     non-zero workers observe the stop signal is bounded by one
-//     `default_run_cap` worth of effort per worker.
+//     thread-safe for concurrent callers), and it batches the check to
+//     once every 8 attempts to reduce overhead.  Other workers rely on
+//     the atomic `stop` flag set by worker 0 and observe it within one
+//     `default_run_cap` worth of effort after it is set.  Worst-case
+//     detection latency is therefore ~8 worker-0 attempts plus one
+//     `default_run_cap` per peer worker.
 //   - Budget overshoot: concurrent workers can overshoot `budget` by
 //     up to `N * default_run_cap` effort because each worker checks
 //     the atomic total before starting an attempt.  This bounded
