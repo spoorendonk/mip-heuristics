@@ -94,6 +94,12 @@ size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers, size_t
                     auto result = run_attempt(state, rng, run_cap);
                     ++attempt_counter;
 
+                    // Guard against workers that make no progress: a zero-effort
+                    // return means this worker is done, stop it rather than spin.
+                    if (result.effort == 0) {
+                        break;
+                    }
+
                     // Update staleness tracking.
                     if (result.found_feasible) {
                         effort_since_improvement.store(0, std::memory_order_relaxed);

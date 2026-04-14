@@ -236,7 +236,10 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
         if (remaining_budget == 0) {
             break;
         }
+        // Assign the integer-division remainder to the last worker so the full
+        // budget is spent across the N parallel rounding configs.
         size_t per_config_budget = remaining_budget / num_fpr_workers_;
+        size_t last_config_budget = per_config_budget + (remaining_budget % num_fpr_workers_);
 
         // Clear results without deallocating solution vectors.
         for (auto &r : rounding_results_) {
@@ -255,7 +258,8 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
                                        static_cast<uint32_t>(K_));
 
                     FprConfig cfg{};
-                    cfg.max_effort = per_config_budget;
+                    cfg.max_effort =
+                        (w == num_fpr_workers_ - 1) ? last_config_budget : per_config_budget;
                     cfg.rng_seed_offset = kBaseSeedOffset + static_cast<uint32_t>(w) + K_;
                     cfg.hint = x_bar.data();
                     cfg.scores = scores_.data();
