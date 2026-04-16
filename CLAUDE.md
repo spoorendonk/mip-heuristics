@@ -37,6 +37,12 @@ subshell, and CMake's nested `git clone` inside FetchContent then
 treats that as the target git directory and fails with `fatal: invalid
 reference: v1.14.0` when trying to check out the HiGHS tag.
 
+TODO(devkit): this block is an in-project workaround for an upstream
+devkit hook bug.  `.devkit/standards/common.md` says local hook
+workarounds should be raised upstream — remove this whole section
+once devkit's pre-push wrapper clears `GIT_DIR` before running nested
+build commands.
+
 ```clean
 rm -rf build
 ```
