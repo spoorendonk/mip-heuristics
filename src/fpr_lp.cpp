@@ -469,22 +469,19 @@ void run_portfolio_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &se
         bandit_rngs[w].seed(base_seed + static_cast<uint32_t>(w) * kSeedStride + 1);
     }
 
+    // Seed each worker with an initial arm and pre-snapshot so the first
+    // bandit reward is computed against a valid baseline.  The restart
+    // callback then updates the bandit and reassigns on every subsequent
+    // epoch boundary.
     std::vector<std::unique_ptr<LpFprWorker>> workers;
     workers.reserve(N);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<LpFprWorker>(mipsolver, setup, pool, /*arm_idx=*/0, seed,
-                                                        /*one_shot=*/true));
-    }
-
-    // Seed each worker with an initial pre-snapshot and arm so the first
-    // bandit reward is computed against a valid baseline.  The restart
-    // callback then updates the bandit and reassigns on every subsequent
-    // epoch boundary.
-    for (int w = 0; w < N; ++w) {
-        workers[w]->set_pre_snapshot(pool.snapshot());
         int arm = bandit.select_effort_aware(bandit_rngs[w]);
-        workers[w]->assign_arm(arm);
+        auto worker = std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed,
+                                                    /*one_shot=*/true);
+        worker->set_pre_snapshot(pool.snapshot());
+        workers.push_back(std::move(worker));
     }
 
     constexpr int kEpochsPerWorker = 20;

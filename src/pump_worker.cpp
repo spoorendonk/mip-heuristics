@@ -183,8 +183,6 @@ EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
         cfg.rng_seed_offset =
             kBaseSeedOffset + static_cast<uint32_t>(fpr_config_index_) + static_cast<uint32_t>(K_);
         cfg.hint = x_bar.data();
-        // scores is read only when strategy + precomputed_var_order are
-        // null; both are always set below, so leave scores unset.
         cfg.scores = nullptr;
         cfg.cont_fallback = x_bar.data();
         cfg.csc = &csc_;

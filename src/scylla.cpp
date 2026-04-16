@@ -50,8 +50,10 @@ struct ScyllaSetup {
                         mipdata->ARvalue_);
         seed_pool(pool, mipsolver);
 
+        // Per chain: warm_start (col+row), modified_cost, cycle_history
+        // (~kCycleWindow * ncol), var_order — approximate with ~6 * ncol doubles.
         const int mem_cap =
-            max_workers_for_memory(estimate_worker_memory_scylla(model->num_col_, 1));
+            max_workers_for_memory(estimate_worker_memory_scylla(model->num_col_, 6));
         num_chains = std::min({highs::parallel::num_threads(), kMaxChains, mem_cap});
         if (num_chains < 1) {
             num_chains = 1;
@@ -144,7 +146,11 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
                 return result;
             }
             auto epoch = worker->run_epoch(run_cap);
-            result.effort = epoch.effort;
+            // Report a nominal 1 unit when the chain is still alive but the
+            // epoch produced no measurable effort (e.g. a PDLP stall that has
+            // not yet hit kMaxPdlpStalls). Prevents run_opportunistic_loop's
+            // zero-effort guard from permanently retiring a live chain.
+            result.effort = (epoch.effort == 0 && !worker->finished()) ? 1 : epoch.effort;
             if (epoch.found_improvement) {
                 result.found_feasible = true;
                 result.objective = setup.pool.snapshot().best_objective;

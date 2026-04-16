@@ -4,6 +4,8 @@
 #include "mip/HighsMipSolverData.h"
 #include "pump_common.h"
 
+#include <cassert>
+
 namespace {
 
 constexpr HighsInt kMinPdlpIterCap = 100;
@@ -41,6 +43,7 @@ ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double> &modif
     if (!initialized_) {
         return result;
     }
+    assert(static_cast<HighsInt>(modified_cost.size()) == ncol_);
 
     std::lock_guard<std::mutex> lock(mu_);
 
