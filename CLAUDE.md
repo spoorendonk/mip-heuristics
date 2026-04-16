@@ -72,8 +72,8 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
   The `opportunistic` flag is threaded to all four heuristics (FJ, FPR, LocalMIP, Scylla) and to `fpr_lp`; each picks its epoch-gated or continuous runner.
 - `epoch_runner.h` — generic epoch loop: workers run in parallel within each epoch and synchronize at the barrier. `EpochWorker` concept defines the interface.
 - `opportunistic_runner.h` — generic continuous parallel loop for the opportunistic branch of the 2×2 matrix.
-- `contested_pdlp` — mutex-guarded `Highs` PDLP wrapper shared by all Scylla pump chains. One-shot `solve(modified_cost, warm_start, epsilon, time_limit)` API holds the mutex for the full `changeColsCost → setSolution → run → getSolution` path, guaranteeing at most one PDLP solve is in flight (critical for cuPDLP GPU state).
-- `pump_worker` / `pump_common.h` — Scylla pump chain worker and shared pump parameters (Mexi et al. 2023). Each chain is one `PumpWorker` conforming to `EpochWorker`.
+- `contested_pdlp` — mutex-guarded `Highs` PDLP wrapper shared by all Scylla workers. One-shot `solve(modified_cost, warm_start, epsilon, time_limit)` API holds the mutex for the full `changeColsCost → setSolution → run → getSolution` path, guaranteeing at most one PDLP solve is in flight (critical for cuPDLP GPU state).
+- `scylla_worker` / `pump_common.h` — Scylla worker class and shared feasibility-pump primitives (Mexi et al. 2023). Each worker is one `ScyllaWorker` conforming to `EpochWorker` and runs its own chain of PDLP→FPR iterations.
 - `fj_worker` / `fpr_worker` (inside fpr) — epoch-gated workers for FJ and FPR respectively.
 
 **Shared utilities** (`src/`):

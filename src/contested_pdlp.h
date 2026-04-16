@@ -11,7 +11,7 @@
 class HighsMipSolver;
 
 // Thread-safe wrapper around a single PDLP `Highs` instance shared by N
-// Scylla pump chains.  One mutex guards the entire `changeColsCost →
+// Scylla workers.  One mutex guards the entire `changeColsCost →
 // setSolution → run → getSolution` critical section so only one PDLP
 // solve is in flight at a time.  This eliminates concurrency questions
 // around the underlying (possibly GPU-backed cuPDLP) solver and keeps

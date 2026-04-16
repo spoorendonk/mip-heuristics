@@ -1,4 +1,4 @@
-#include "pump_worker.h"
+#include "scylla_worker.h"
 
 #include "contested_pdlp.h"
 #include "fpr_core.h"
@@ -13,8 +13,9 @@
 #include <cmath>
 #include <limits>
 
-PumpWorker::PumpWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                       SolutionPool &pool, size_t total_budget, uint32_t seed, int fpr_config_index)
+ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
+                           SolutionPool &pool, size_t total_budget, uint32_t seed,
+                           int fpr_config_index)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
       csc_(csc),
@@ -59,13 +60,13 @@ PumpWorker::PumpWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const Csc
     modified_cost_ = orig_cost;
     cycle_history_.reserve(pump::kCycleWindow);
 
-    // Pre-compute variable order for the chain's static strategy.
+    // Pre-compute variable order for this worker's static strategy.
     std::mt19937 order_rng(kBaseSeedOffset + static_cast<uint32_t>(fpr_config_index_));
     var_order_ = compute_var_order(mipsolver_, kFprConfigs[fpr_config_index_].strat.var_strategy,
                                    order_rng, nullptr);
 }
 
-EpochResult PumpWorker::run_epoch(size_t epoch_budget) {
+EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
     if (finished_) {
         return {};
     }

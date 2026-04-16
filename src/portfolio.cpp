@@ -10,7 +10,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
-#include "pump_worker.h"
+#include "scylla_worker.h"
 #include "solution_pool.h"
 #include "thompson_sampler.h"
 
@@ -144,7 +144,7 @@ struct PresolveSetup {
     bool minimize;
     // Shared Scylla PDLP solver; non-null when the Scylla arm is
     // enabled and the instance has non-trivial structure.  All
-    // PortfolioWorkers that build a PumpWorker route their PDLP solves
+    // PortfolioWorkers that build a ScyllaWorker route their PDLP solves
     // through this instance's internal mutex, so at most one PDLP
     // solve is in flight at a time across the whole portfolio.
     std::unique_ptr<ContestedPdlp> scylla_pdlp;
@@ -299,7 +299,7 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, std::m
 //
 // Each worker runs whichever arm the bandit assigns.  Non-Scylla arms
 // are stateless (one invocation per epoch, then finished=true triggers
-// reassignment).  Scylla arms delegate to a persistent PumpWorker that
+// reassignment).  Scylla arms delegate to a persistent ScyllaWorker that
 // preserves PDLP warm-start state across epochs.
 class PortfolioWorker {
 public:
@@ -317,9 +317,9 @@ public:
 
         if (arm_type == kArmScylla) {
             if (!pump_ || pump_->finished()) {
-                pump_ = std::make_unique<PumpWorker>(mipsolver_, *setup_.scylla_pdlp, setup_.csc,
-                                                     pool_, setup_.budget,
-                                                     static_cast<uint32_t>(rng_()), worker_idx_);
+                pump_ = std::make_unique<ScyllaWorker>(mipsolver_, *setup_.scylla_pdlp, setup_.csc,
+                                                       pool_, setup_.budget,
+                                                       static_cast<uint32_t>(rng_()), worker_idx_);
             }
             auto t0 = std::chrono::steady_clock::now();
             epoch = pump_->run_epoch(epoch_budget);
@@ -403,7 +403,7 @@ private:
     HeuristicResult last_result_{};
     SolutionPool::Snapshot pre_snap_{};
 
-    std::unique_ptr<PumpWorker> pump_;  // lazy-init, persists across reassignments
+    std::unique_ptr<ScyllaWorker> pump_;  // lazy-init, persists across reassignments
 };
 
 static_assert(EpochWorker<PortfolioWorker>, "PortfolioWorker must satisfy EpochWorker concept");
@@ -458,7 +458,7 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
             for (HighsInt w = lo; w < hi; ++w) {
                 std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
                 int attempt_counter = 0;
-                std::unique_ptr<PumpWorker> pump;
+                std::unique_ptr<ScyllaWorker> pump;
 
                 while (!stop.load(std::memory_order_relaxed)) {
                     // Worker 0 periodically checks termination (not thread-safe
@@ -485,13 +485,13 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                     auto t0 = std::chrono::steady_clock::now();
 
                     if (enabled_arms[arm] == kArmScylla) {
-                        // Scylla: lazy-init PumpWorker, preserves PDLP warm-start.
+                        // Scylla: lazy-init ScyllaWorker, preserves PDLP warm-start.
                         // All workers share the single setup.scylla_pdlp
                         // instance; its mutex serializes PDLP runs.  The arm
                         // is only present when the shared PDLP initialized,
                         // so the dereference is always safe.
                         if (!pump || pump->finished()) {
-                            pump = std::make_unique<PumpWorker>(
+                            pump = std::make_unique<ScyllaWorker>(
                                 mipsolver, *setup.scylla_pdlp, csc, pool, budget,
                                 static_cast<uint32_t>(rng()), static_cast<int>(w));
                         }
@@ -529,8 +529,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
 
                     if (reward >= 2) {
                         effort_since_improvement.store(0, std::memory_order_relaxed);
-                        // Reset staleness on all workers' PumpWorkers would require
-                        // cross-worker access; each PumpWorker tracks its own.
+                        // Reset staleness on all workers' ScyllaWorkers would require
+                        // cross-worker access; each ScyllaWorker tracks its own.
                     } else {
                         effort_since_improvement.fetch_add(result.effort,
                                                            std::memory_order_relaxed);

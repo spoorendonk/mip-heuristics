@@ -29,7 +29,7 @@
 //
 // Thread-safety constraints:
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
-//     (Scylla uses PumpWorker directly and does not go through this template.)
+//     (Scylla uses ScyllaWorker directly and does not go through this template.)
 //   - Worker-0-only terminator polling: only worker 0 polls
 //     `terminatorTerminated()` / `timer_.read()` (not guaranteed
 //     thread-safe for concurrent callers), and it batches the check to

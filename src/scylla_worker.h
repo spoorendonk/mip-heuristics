@@ -15,11 +15,11 @@ class HighsMipSolver;
 class SolutionPool;
 class ContestedPdlp;
 
-// Static FPR strategy assignment for Scylla pump chains.  Chain `w`
-// receives `kFprConfigs[w % kNumFprConfigs]`.  This preserves the
-// rounding-strategy diversity that the old intra-iteration parallel
-// rounding provided (one strategy per config), redistributed across
-// the N chains rather than sampled per iteration.
+// Static FPR strategy assignment for Scylla workers.  Worker `w`
+// receives `kFprConfigs[w % kNumFprConfigs]`, redistributing the
+// rounding-strategy diversity the old intra-iteration parallel
+// rounding provided (one strategy per config) across N workers
+// rather than sampling per iteration.
 inline constexpr NamedConfig kFprConfigs[] = {
     {kStratBadobjcl, FrameworkMode::kDfs},
     {kStratLocks2, FrameworkMode::kDfs},
@@ -28,25 +28,25 @@ inline constexpr NamedConfig kFprConfigs[] = {
 };
 inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 
-// One pump chain of the Scylla feasibility pump (Mexi et al. 2023,
-// Algorithm 1.1).  Each worker owns its per-chain state (warm-start,
-// α_K decay, ε schedule, cycle history, modified-cost buffer, RNG)
-// but shares a single `ContestedPdlp` instance with its peers.  The
-// shared solver serializes PDLP runs via a mutex so at most one LP
-// solve is in flight at a time; the chains parallelize over
+// One worker of the Scylla feasibility-pump heuristic (Mexi et al.
+// 2023, Algorithm 1.1).  Each worker owns its per-worker state
+// (warm-start, α_K decay, ε schedule, cycle history, modified-cost
+// buffer, RNG) but shares a single `ContestedPdlp` instance with its
+// peers.  The shared solver serializes PDLP runs via a mutex so at
+// most one LP solve is in flight at a time; workers parallelize over
 // `fpr_attempt` rounding, cycling detection, and objective updates.
 //
-// FPR rounding uses a single strategy per chain: worker `w` is
+// FPR rounding uses a single strategy per worker: worker `w` is
 // assigned `kFprConfigs[w % kNumFprConfigs]` at construction time.
 //
 // Satisfies the EpochWorker concept from epoch_runner.h.
-class PumpWorker {
+class ScyllaWorker {
 public:
-    PumpWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-               SolutionPool &pool, size_t total_budget, uint32_t seed, int fpr_config_index);
+    ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
+                 SolutionPool &pool, size_t total_budget, uint32_t seed, int fpr_config_index);
 
-    // Run pump chain iterations until epoch_budget effort is consumed.
-    // Sets finished_ when the worker cannot make further progress.
+    // Run iterations until epoch_budget effort is consumed.  Sets
+    // finished_ when the worker cannot make further progress.
     EpochResult run_epoch(size_t epoch_budget);
 
     bool finished() const { return finished_; }
@@ -79,7 +79,7 @@ private:
     size_t effort_since_improvement_ = 0;
     bool finished_ = false;
 
-    // Per-chain state.
+    // Per-worker state.
     std::vector<double> warm_start_col_value_;
     std::vector<double> warm_start_row_dual_;
     bool warm_start_valid_ = false;
@@ -88,9 +88,9 @@ private:
     std::vector<double> modified_cost_;
     std::mt19937 rng_;
 
-    // FPR strategy assignment (static, one per chain).
+    // FPR strategy assignment (static, one per worker).
     int fpr_config_index_ = 0;
     std::vector<HighsInt> var_order_;
 };
 
-static_assert(EpochWorker<PumpWorker>, "PumpWorker must satisfy EpochWorker concept");
+static_assert(EpochWorker<ScyllaWorker>, "ScyllaWorker must satisfy EpochWorker concept");

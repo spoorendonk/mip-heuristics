@@ -20,7 +20,7 @@ add_library(mip_heuristics OBJECT
     src/repair_search.cpp
     src/thompson_sampler.cpp
     src/mode_dispatch.cpp
-    src/pump_worker.cpp
+    src/scylla_worker.cpp
     src/solution_pool.cpp
     src/portfolio.cpp
     src/scylla.cpp

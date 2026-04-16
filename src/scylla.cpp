@@ -7,7 +7,7 @@
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
-#include "pump_worker.h"
+#include "scylla_worker.h"
 #include "solution_pool.h"
 
 #include <algorithm>
@@ -17,10 +17,10 @@ namespace scylla {
 
 namespace {
 
-// Upper bound on the number of concurrent pump chains.  Set by the
-// PDLP-vs-FPR runtime ratio: too many chains waste cores waiting on
-// the single PDLP lock, too few forgo strategy diversity.
-constexpr int kMaxChains = 4;
+// Upper bound on the number of concurrent Scylla workers.  Set by
+// the PDLP-vs-FPR runtime ratio: too many workers waste cores waiting
+// on the single PDLP lock, too few forgo strategy diversity.
+constexpr int kMaxScyllaWorkers = 4;
 
 // Epoch granularity for deterministic mode: each worker takes ~10 turns
 // inside the total budget, matching the other heuristics.
@@ -37,7 +37,7 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
 struct ScyllaSetup {
     CscMatrix csc;
     SolutionPool pool;
-    int num_chains;
+    int num_workers;
     size_t stale_budget;
     uint32_t base_seed;
     HighsInt pdlp_iter_cap;
@@ -54,9 +54,9 @@ struct ScyllaSetup {
         // (~kCycleWindow * ncol), var_order — approximate with ~6 * ncol doubles.
         const int mem_cap =
             max_workers_for_memory(estimate_worker_memory_scylla(model->num_col_, 6));
-        num_chains = std::min({highs::parallel::num_threads(), kMaxChains, mem_cap});
-        if (num_chains < 1) {
-            num_chains = 1;
+        num_workers = std::min({highs::parallel::num_threads(), kMaxScyllaWorkers, mem_cap});
+        if (num_workers < 1) {
+            num_workers = 1;
         }
 
         stale_budget = max_effort >> 2;
@@ -80,16 +80,16 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
         return;
     }
 
-    std::vector<std::unique_ptr<PumpWorker>> workers;
-    workers.reserve(setup.num_chains);
-    for (int w = 0; w < setup.num_chains; ++w) {
+    std::vector<std::unique_ptr<ScyllaWorker>> workers;
+    workers.reserve(setup.num_workers);
+    for (int w = 0; w < setup.num_workers; ++w) {
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<PumpWorker>(mipsolver, pdlp, setup.csc, setup.pool,
-                                                       max_effort, seed, w));
+        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, setup.pool,
+                                                         max_effort, seed, w));
     }
 
     const size_t epoch_budget = std::max<size_t>(
-        max_effort / (static_cast<size_t>(setup.num_chains) * kEpochsPerWorker), 1);
+        max_effort / (static_cast<size_t>(setup.num_workers) * kEpochsPerWorker), 1);
 
     size_t total_effort = run_epoch_loop(
         mipsolver, workers, max_effort, epoch_budget, [](int) { /* no restart */ },
@@ -111,7 +111,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
 
     ScyllaSetup setup(mipsolver, max_effort, minimize);
-    const int N = setup.num_chains;
+    const int N = setup.num_workers;
 
     ContestedPdlp pdlp(mipsolver, setup.pdlp_iter_cap);
     if (!pdlp.initialized()) {
@@ -122,12 +122,12 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
 
     // Pre-construct workers outside the parallel region so MakeState
     // can hand them back by index without racing on std::make_unique.
-    std::vector<std::unique_ptr<PumpWorker>> workers;
+    std::vector<std::unique_ptr<ScyllaWorker>> workers;
     workers.reserve(N);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<PumpWorker>(mipsolver, pdlp, setup.csc, setup.pool,
-                                                       max_effort, seed, w));
+        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, setup.pool,
+                                                         max_effort, seed, w));
     }
 
     struct ScyllaOppState {
