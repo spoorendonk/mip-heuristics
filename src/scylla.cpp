@@ -127,11 +127,17 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
         [](int worker_idx, std::mt19937 & /*rng*/) -> ScyllaOppState {
             return ScyllaOppState{worker_idx};
         },
-        [&](ScyllaOppState &state, std::mt19937 & /*rng*/, size_t run_cap) -> HeuristicResult {
+        [&](ScyllaOppState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
             auto &worker = workers[state.worker_idx];
             HeuristicResult result;
             if (worker->finished()) {
-                return result;
+                // Rebuild stale worker with a fresh seed so the opportunistic
+                // loop doesn't lose parallelism over time (mirrors the
+                // fpr_lp opp path).  `pdlp` is shared, so warm-start etc. are
+                // reinitialized from scratch but the underlying LP stays.
+                uint32_t new_seed = static_cast<uint32_t>(rng());
+                worker = std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, setup.pool,
+                                                        max_effort, new_seed, state.worker_idx, N);
             }
             auto epoch = worker->run_epoch(run_cap);
             // Report a nominal 1 unit when the chain is still alive but the
