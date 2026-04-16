@@ -1,19 +1,13 @@
 #pragma once
 
+#include "lp_data/HConst.h"
+#include "util/HighsInt.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <vector>
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
-
-#include "lp_data/HConst.h"
-#include "util/HighsInt.h"
 
 // Variable state used during fix-and-propagate.
 struct VarState {
@@ -108,82 +102,4 @@ inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {
     constexpr int kBaseShift = 12;
     double scale = mip_heuristic_effort / 0.05;
     return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);
-}
-
-// ---------------------------------------------------------------------------
-// Memory-aware worker count caps
-// ---------------------------------------------------------------------------
-
-// Total physical RAM in bytes (0 on failure).  Cached after first call.
-inline size_t total_system_memory() {
-    static const size_t cached = []() -> size_t {
-#ifdef _WIN32
-        MEMORYSTATUSEX status;
-        status.dwLength = sizeof(status);
-        if (GlobalMemoryStatusEx(&status)) {
-            return static_cast<size_t>(status.ullTotalPhys);
-        }
-        return size_t{0};
-#else
-        long pages = sysconf(_SC_PHYS_PAGES);
-        long page_size = sysconf(_SC_PAGE_SIZE);
-        if (pages > 0 && page_size > 0) {
-            return static_cast<size_t>(pages) * static_cast<size_t>(page_size);
-        }
-        return size_t{0};
-#endif
-    }();
-    return cached;
-}
-
-// Fraction of system RAM available as budget for parallel workers.
-constexpr double kMemoryBudgetFraction = 0.5;
-
-// Per-worker memory estimates (bytes).
-// FJ: FeasibilityJumpSolver duplicates cols, rows, and constraint matrix.
-inline size_t estimate_worker_memory_fj(HighsInt ncol, HighsInt nrow, size_t nnz) {
-    // col_value, bounds, costs, score arrays ~ 6*ncol doubles
-    // row state ~ 2*nrow doubles
-    // constraint matrix indices + values ~ nnz*(sizeof(int)+sizeof(double))
-    return static_cast<size_t>(ncol) * 6 * sizeof(double) +
-           static_cast<size_t>(nrow) * 2 * sizeof(double) +
-           nnz * (sizeof(HighsInt) + sizeof(double));
-}
-
-// LocalMIP: WorkerCtx owns solution, lhs, weight, tabu, lift cache, index sets.
-inline size_t estimate_worker_memory_local_mip(HighsInt ncol, HighsInt nrow) {
-    // solution(ncol) + lhs(nrow) + weight(nrow*8) = ncol*8 + nrow*16
-    // tabu_inc_until(ncol) + tabu_dec_until(ncol) = 2*ncol*sizeof(HighsInt)
-    // LiftCache: lo,hi,score(ncol doubles) + dirty,in_positive(ncol bools) = 3*ncol*8 + 2*ncol
-    // ViolCache: cache(nrow doubles) + used(nrow ints) = nrow*8 + nrow*sizeof(HighsInt)
-    // IndexedSet violated + satisfied: 2*(elements(nrow) + pos(nrow)) = 4*nrow*sizeof(HighsInt)
-    // best_solution(ncol) + costed_vars + binary_vars ~ 2*ncol*sizeof(HighsInt)
-    return static_cast<size_t>(ncol) * (4 * sizeof(double) + 2 * sizeof(HighsInt)) +
-           static_cast<size_t>(nrow) *
-               (2 * sizeof(double) + sizeof(uint64_t) + 5 * sizeof(HighsInt));
-}
-
-// Scylla parallel: M FPR result vectors (ncol doubles each) plus per-worker
-// FPR working set (var_order + VarState arrays).
-inline size_t estimate_worker_memory_scylla(HighsInt ncol, int num_results) {
-    size_t result_vecs =
-        static_cast<size_t>(num_results) * static_cast<size_t>(ncol) * sizeof(double);
-    size_t fpr_working = static_cast<size_t>(ncol) * (sizeof(HighsInt) + sizeof(double));
-    return result_vecs + fpr_working;
-}
-
-// Max workers that fit within the memory budget for a given per-worker cost.
-// Returns at least 1 (always allow one worker).
-inline int max_workers_for_memory(size_t per_worker_bytes) {
-    if (per_worker_bytes == 0) {
-        return std::numeric_limits<int>::max();
-    }
-    size_t total = total_system_memory();
-    if (total == 0) {
-        // Cannot determine RAM — don't cap.
-        return std::numeric_limits<int>::max();
-    }
-    auto budget = static_cast<size_t>(static_cast<double>(total) * kMemoryBudgetFraction);
-    int max_w = static_cast<int>(budget / per_worker_bytes);
-    return std::max(max_w, 1);
 }

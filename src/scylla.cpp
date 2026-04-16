@@ -17,11 +17,6 @@ namespace scylla {
 
 namespace {
 
-// Upper bound on the number of concurrent Scylla workers.  Set by
-// the PDLP-vs-FPR runtime ratio: too many workers waste cores waiting
-// on the single PDLP lock, too few forgo strategy diversity.
-constexpr int kMaxScyllaWorkers = 4;
-
 // Epoch granularity for deterministic mode: each worker takes ~10 turns
 // inside the total budget, matching the other heuristics.
 constexpr int kEpochsPerWorker = 10;
@@ -50,14 +45,7 @@ struct ScyllaSetup {
                         mipdata->ARvalue_);
         seed_pool(pool, mipsolver);
 
-        // Per chain: warm_start (col+row), modified_cost, cycle_history
-        // (~kCycleWindow * ncol), var_order — approximate with ~6 * ncol doubles.
-        const int mem_cap =
-            max_workers_for_memory(estimate_worker_memory_scylla(model->num_col_, 6));
-        num_workers = std::min({highs::parallel::num_threads(), kMaxScyllaWorkers, mem_cap});
-        if (num_workers < 1) {
-            num_workers = 1;
-        }
+        num_workers = highs::parallel::num_threads();
 
         stale_budget = max_effort >> 2;
         base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);

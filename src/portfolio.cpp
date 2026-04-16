@@ -425,11 +425,7 @@ size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t total_b
 void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &setup) {
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
-    // Cap by worst-case per-worker memory (FJ arm is heaviest).
-    const auto *model = mipsolver.model_;
-    const int mem_cap = max_workers_for_memory(
-        estimate_worker_memory_fj(model->num_col_, model->num_row_, mipdata->ARindex_.size()));
-    const int N = std::min(highs::parallel::num_threads(), mem_cap);
+    const int N = highs::parallel::num_threads();
     const int num_arms = static_cast<int>(setup.enabled_arms.size());
 
     ThompsonSampler bandit(num_arms, setup.priors.data(), true);
@@ -576,11 +572,7 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     }
 
     auto *mipdata = mipsolver.mipdata_.get();
-    // Cap by worst-case per-worker memory (FJ arm is heaviest).
-    const auto *model = mipsolver.model_;
-    const int mem_cap = max_workers_for_memory(
-        estimate_worker_memory_fj(model->num_col_, model->num_row_, mipdata->ARindex_.size()));
-    const int N = std::min(highs::parallel::num_threads(), mem_cap);
+    const int N = highs::parallel::num_threads();
     const int num_arms = static_cast<int>(setup.enabled_arms.size());
     const bool minimize = setup.minimize;
     const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;

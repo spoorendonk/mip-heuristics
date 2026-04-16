@@ -33,9 +33,7 @@ bool run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     auto *mipdata = mipsolver.mipdata_.get();
 
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
-    const int mem_cap = max_workers_for_memory(
-        estimate_worker_memory_fj(model->num_col_, model->num_row_, mipdata->ARindex_.size()));
-    const int N = std::min(highs::parallel::num_threads(), mem_cap);
+    const int N = highs::parallel::num_threads();
 
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
@@ -80,9 +78,7 @@ bool run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     auto *mipdata = mipsolver.mipdata_.get();
 
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
-    const int mem_cap = max_workers_for_memory(
-        estimate_worker_memory_fj(model->num_col_, model->num_row_, mipdata->ARindex_.size()));
-    const int N = std::min(highs::parallel::num_threads(), mem_cap);
+    const int N = highs::parallel::num_threads();
 
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);

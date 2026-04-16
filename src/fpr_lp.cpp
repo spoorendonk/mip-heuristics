@@ -83,9 +83,6 @@ struct LpArm {
     const double *lp_ref;
 };
 
-// Max workers for parallel LP-FPR modes.
-constexpr int kMaxLpFprWorkers = 8;
-
 // Effort-proportional budget cap for opportunistic arm pulls.
 // Mirrors portfolio.cpp::kBudgetCapMultiplier.
 constexpr double kBudgetCapMultiplier = 2.5;
@@ -353,14 +350,8 @@ namespace {
 // Worker count for LP-FPR parallel modes
 // ---------------------------------------------------------------------------
 
-int compute_worker_count(const HighsMipSolver &mipsolver) {
-    const auto *model = mipsolver.model_;
-    // Each LP-FPR worker carries a var_order vector (ncol HighsInt) plus
-    // working FPR state; mirror fpr.cpp's estimate.
-    const size_t per_worker_mem =
-        static_cast<size_t>(model->num_col_) * (sizeof(HighsInt) + sizeof(double));
-    const int mem_cap = max_workers_for_memory(per_worker_mem);
-    return std::min({highs::parallel::num_threads(), kMaxLpFprWorkers, mem_cap});
+int compute_worker_count(const HighsMipSolver & /*mipsolver*/) {
+    return highs::parallel::num_threads();
 }
 
 uint32_t base_seed_for(const HighsMipSolver &mipsolver) {

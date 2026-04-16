@@ -1318,8 +1318,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     const HighsInt nrow = model->num_row_;
 
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
-    const int mem_cap = max_workers_for_memory(estimate_worker_memory_local_mip(ncol, nrow));
-    const int N = std::min(highs::parallel::num_threads(), mem_cap);
+    const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
@@ -1393,8 +1392,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     const HighsInt nrow = model->num_row_;
 
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
-    const int mem_cap = max_workers_for_memory(estimate_worker_memory_local_mip(ncol, nrow));
-    const int N = std::min(highs::parallel::num_threads(), mem_cap);
+    const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 

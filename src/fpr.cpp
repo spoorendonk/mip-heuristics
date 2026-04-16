@@ -116,9 +116,6 @@ constexpr int kNumAllModes = static_cast<int>(std::size(kAllModes));
 // Number of stale epochs before a worker randomizes its config.
 constexpr int kStaleEpochThreshold = 3;
 
-// Max workers for parallel mode.
-constexpr int kMaxFprWorkers = 8;
-
 // Compute variable orders for every strategy in kFprStrategies.  MUST be
 // called from a sequential context: clique-based var_strategies invoke
 // HighsCliqueTable::cliquePartition which mutates internal state and is
@@ -294,11 +291,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     const HighsInt nrow = model->num_row_;
 
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
-    // FPR workers are lightweight (CscMatrix ref + var_order + RNG), but
-    // still cap at kMaxFprWorkers and by available memory.
-    const size_t fpr_worker_mem = static_cast<size_t>(ncol) * sizeof(HighsInt);  // var_order vector
-    const int mem_cap = max_workers_for_memory(fpr_worker_mem);
-    const int N = std::min({highs::parallel::num_threads(), kMaxFprWorkers, mem_cap});
+    const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
@@ -344,9 +337,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     const HighsInt nrow = model->num_row_;
 
     const bool minimize = (model->sense_ == ObjSense::kMinimize);
-    const size_t fpr_worker_mem = static_cast<size_t>(ncol) * sizeof(HighsInt);
-    const int mem_cap = max_workers_for_memory(fpr_worker_mem);
-    const int N = std::min({highs::parallel::num_threads(), kMaxFprWorkers, mem_cap});
+    const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
