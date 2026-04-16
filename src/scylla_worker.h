@@ -43,7 +43,8 @@ inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 class ScyllaWorker {
 public:
     ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                 SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx);
+                 SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx,
+                 int num_workers);
 
     // Run iterations until epoch_budget effort is consumed.  Sets
     // finished_ when the worker cannot make further progress.
@@ -68,6 +69,11 @@ private:
     double cost_scale_ = 1.0;
     size_t nnz_lp_ = 0;
     size_t stale_budget_ = 0;
+
+    // Number of concurrent ScyllaWorkers sharing the contested PDLP; used
+    // to amortize per-iteration effort so each worker charges its fair
+    // share of the (serialized) PDLP work rather than the full cost.
+    int num_workers_ = 1;
 
     int pdlp_stall_count_ = 0;
 

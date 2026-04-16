@@ -35,12 +35,14 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 }  // namespace
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                           SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx)
+                           SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx,
+                           int num_workers)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
       csc_(csc),
       pool_(pool),
       total_budget_(total_budget),
+      num_workers_(std::max(num_workers, 1)),
       epsilon_(pump::kEpsilonInit),
       rng_(seed),
       fpr_config_index_(select_fpr_config(worker_idx, seed)) {
@@ -120,7 +122,14 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         auto solve = pdlp_.solve(modified_cost_, warm_start_col_value_, warm_start_row_dual_,
                                  warm_start_valid_, epsilon_, remaining);
 
-        size_t iter_effort = static_cast<size_t>(solve.pdlp_iters) * nnz_lp_;
+        // Amortize PDLP iteration cost across the N concurrent workers
+        // sharing the contested solver: only one PDLP solve runs at a
+        // time, so a chain that holds the mutex for K iters contributes
+        // K / N iters worth of shared PDLP work to the global effort
+        // accounting.  Keeps per-worker staleness from firing after a
+        // single large LP-heavy solve.
+        size_t iter_effort =
+            (static_cast<size_t>(solve.pdlp_iters) * nnz_lp_) / static_cast<size_t>(num_workers_);
         total_effort_ += iter_effort;
         effort_since_improvement_ += iter_effort;
         epoch.effort += iter_effort;

@@ -317,9 +317,9 @@ public:
 
         if (arm_type == kArmScylla) {
             if (!pump_ || pump_->finished()) {
-                pump_ = std::make_unique<ScyllaWorker>(mipsolver_, *setup_.scylla_pdlp, setup_.csc,
-                                                       pool_, setup_.budget,
-                                                       static_cast<uint32_t>(rng_()), worker_idx_);
+                pump_ = std::make_unique<ScyllaWorker>(
+                    mipsolver_, *setup_.scylla_pdlp, setup_.csc, pool_, setup_.budget,
+                    static_cast<uint32_t>(rng_()), worker_idx_, highs::parallel::num_threads());
             }
             auto t0 = std::chrono::steady_clock::now();
             epoch = pump_->run_epoch(epoch_budget);
@@ -489,7 +489,7 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                         if (!pump || pump->finished()) {
                             pump = std::make_unique<ScyllaWorker>(
                                 mipsolver, *setup.scylla_pdlp, csc, pool, budget,
-                                static_cast<uint32_t>(rng()), static_cast<int>(w));
+                                static_cast<uint32_t>(rng()), static_cast<int>(w), N);
                         }
                         auto epoch = pump->run_epoch(arm_budget);
                         result.effort = epoch.effort;
