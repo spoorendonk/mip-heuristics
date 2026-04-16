@@ -15,11 +15,11 @@ class HighsMipSolver;
 class SolutionPool;
 class ContestedPdlp;
 
-// Static FPR strategy assignment for Scylla workers.  Worker `w`
-// receives `kFprConfigs[w % kNumFprConfigs]`, redistributing the
-// rounding-strategy diversity the old intra-iteration parallel
-// rounding provided (one strategy per config) across N workers
-// rather than sampling per iteration.
+// FPR strategy assignment for Scylla workers.  Workers `0..kNumFprConfigs-1`
+// receive `kFprConfigs[w]` (deterministic round-robin, guaranteeing each
+// strategy is covered once when N >= kNumFprConfigs).  Additional workers
+// receive a seed-driven pseudo-random choice so redundant workers do not
+// cluster on the same strategy — still deterministic per (seed, worker_idx).
 inline constexpr NamedConfig kFprConfigs[] = {
     {kStratBadobjcl, FrameworkMode::kDfs},
     {kStratLocks2, FrameworkMode::kDfs},
@@ -36,14 +36,14 @@ inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 // most one LP solve is in flight at a time; workers parallelize over
 // `fpr_attempt` rounding, cycling detection, and objective updates.
 //
-// FPR rounding uses a single strategy per worker: worker `w` is
-// assigned `kFprConfigs[w % kNumFprConfigs]` at construction time.
+// FPR rounding uses a single strategy per worker, assigned at
+// construction time by `select_fpr_config(worker_idx, seed)`.
 //
 // Satisfies the EpochWorker concept from epoch_runner.h.
 class ScyllaWorker {
 public:
     ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                 SolutionPool &pool, size_t total_budget, uint32_t seed, int fpr_config_index);
+                 SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx);
 
     // Run iterations until epoch_budget effort is consumed.  Sets
     // finished_ when the worker cannot make further progress.

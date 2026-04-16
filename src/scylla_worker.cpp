@@ -13,9 +13,29 @@
 #include <cmath>
 #include <limits>
 
+namespace {
+
+// Workers 0..kNumFprConfigs-1 cover every FPR config exactly once
+// (deterministic round-robin, preserving strategy diversity when
+// N >= kNumFprConfigs).  Additional workers draw a pseudo-random
+// config from their own seed, avoiding the "16 workers, 4 copies of
+// each config" pathology while keeping assignment deterministic per
+// (seed, worker_idx).
+int select_fpr_config(int worker_idx, uint32_t seed) {
+    if (worker_idx >= 0 && worker_idx < kNumFprConfigs) {
+        return worker_idx;
+    }
+    if (worker_idx < 0) {
+        return ((worker_idx % kNumFprConfigs) + kNumFprConfigs) % kNumFprConfigs;
+    }
+    std::mt19937 cfg_rng(seed);
+    return static_cast<int>(cfg_rng() % static_cast<uint32_t>(kNumFprConfigs));
+}
+
+}  // namespace
+
 ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                           SolutionPool &pool, size_t total_budget, uint32_t seed,
-                           int fpr_config_index)
+                           SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
       csc_(csc),
@@ -23,7 +43,7 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
       total_budget_(total_budget),
       epsilon_(pump::kEpsilonInit),
       rng_(seed),
-      fpr_config_index_(((fpr_config_index % kNumFprConfigs) + kNumFprConfigs) % kNumFprConfigs) {
+      fpr_config_index_(select_fpr_config(worker_idx, seed)) {
     if (!pdlp_.initialized()) {
         finished_ = true;
         return;
