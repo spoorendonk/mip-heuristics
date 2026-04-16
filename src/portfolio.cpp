@@ -195,6 +195,10 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
             s.scylla_pdlp = std::move(pdlp);
             s.enabled_arms.push_back(kArmScylla);
             s.priors.push_back(kScyllaAlpha);
+        } else {
+            highsLogDev(options->log_options, HighsLogType::kVerbose,
+                        "[Portfolio] Scylla arm requested but ContestedPdlp failed to "
+                        "initialize (no rows or zero nonzeros); arm omitted.\n");
         }
     }
     if (s.enabled_arms.empty()) {

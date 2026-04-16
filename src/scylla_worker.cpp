@@ -102,6 +102,9 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
     EpochResult epoch{};
 
     while (epoch.effort < epoch_budget && total_effort_ < total_budget_) {
+        // HiGHS's timer is not guaranteed thread-safe for concurrent
+        // readers; races here are benign (stale reads by ~ms, not data
+        // corruption) and the cost of a formal gate isn't worth it.
         if (mipsolver_.timer_.read() >= time_limit) {
             finished_ = true;
             break;

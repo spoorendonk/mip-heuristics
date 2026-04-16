@@ -16,6 +16,14 @@ class HighsMipSolver;
 // solve is in flight at a time.  This eliminates concurrency questions
 // around the underlying (possibly GPU-backed cuPDLP) solver and keeps
 // memory to a single LP copy + single iterate regardless of N.
+//
+// Lifetime invariant: the wrapped LP is built once from
+// `mipsolver.mipdata_->AR*` at construction time via
+// `pump::build_lp_relaxation`.  The LP rows / constraint matrix are
+// frozen for the lifetime of the instance — only column costs change
+// on each `solve()`.  Safe for presolve-time use (HiGHS internals are
+// immutable there); NOT safe for B&B-dive use where node bounds mutate
+// between calls.
 class ContestedPdlp {
 public:
     struct SolveResult {

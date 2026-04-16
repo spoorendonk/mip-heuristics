@@ -389,7 +389,8 @@ void run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &s
 
     size_t total_effort = run_epoch_loop(
         mipsolver, workers, setup.budget, epoch_budget,
-        [](int) { /* LpFprWorkers rarely hit hard stale in det mode */ }, setup.stale_budget);
+        [](int) { /* seq/det: finished workers stay finished; loop exits on all-finished */ },
+        setup.stale_budget);
 
     mipdata->heuristic_effort_used += total_effort;
 }
