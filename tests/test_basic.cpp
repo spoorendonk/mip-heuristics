@@ -1,4 +1,5 @@
 #include "fpr_core.h"
+#include "fpr_lp.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "Highs.h"
@@ -1032,25 +1033,51 @@ double solve_fpr_lp_mode(const char* inst, bool portfolio, bool opp) {
 }
 }  // namespace
 
-TEST_CASE("fpr_lp seq/det: bell5 finds optimum", "[fpr_lp][mode-matrix]") {
+TEST_CASE("fpr_lp seq/det: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]") {
+    fpr_lp::reset_dispatch_counts();
     REQUIRE(solve_fpr_lp_mode("bell5.mps", false, false) ==
             Catch::Approx(8966406.49152).epsilon(1e-4));
+    const auto counts = fpr_lp::dispatch_counts();
+    REQUIRE(counts.seq_det >= 1);
+    REQUIRE(counts.seq_opp == 0);
+    REQUIRE(counts.port_det == 0);
+    REQUIRE(counts.port_opp == 0);
 }
 
-TEST_CASE("fpr_lp seq/opp: bell5 finds optimum", "[fpr_lp][mode-matrix][opportunistic]") {
+TEST_CASE("fpr_lp seq/opp: bell5 finds optimum and dispatches",
+          "[fpr_lp][mode-matrix][opportunistic]") {
+    fpr_lp::reset_dispatch_counts();
     REQUIRE(solve_fpr_lp_mode("bell5.mps", false, true) ==
             Catch::Approx(8966406.49152).epsilon(1e-4));
+    const auto counts = fpr_lp::dispatch_counts();
+    REQUIRE(counts.seq_opp >= 1);
+    REQUIRE(counts.seq_det == 0);
+    REQUIRE(counts.port_det == 0);
+    REQUIRE(counts.port_opp == 0);
 }
 
-TEST_CASE("fpr_lp port/det: bell5 finds optimum", "[fpr_lp][mode-matrix][portfolio]") {
+TEST_CASE("fpr_lp port/det: bell5 finds optimum and dispatches",
+          "[fpr_lp][mode-matrix][portfolio]") {
+    fpr_lp::reset_dispatch_counts();
     REQUIRE(solve_fpr_lp_mode("bell5.mps", true, false) ==
             Catch::Approx(8966406.49152).epsilon(1e-4));
+    const auto counts = fpr_lp::dispatch_counts();
+    REQUIRE(counts.port_det >= 1);
+    REQUIRE(counts.seq_det == 0);
+    REQUIRE(counts.seq_opp == 0);
+    REQUIRE(counts.port_opp == 0);
 }
 
-TEST_CASE("fpr_lp port/opp: bell5 finds optimum",
+TEST_CASE("fpr_lp port/opp: bell5 finds optimum and dispatches",
           "[fpr_lp][mode-matrix][portfolio][opportunistic]") {
+    fpr_lp::reset_dispatch_counts();
     REQUIRE(solve_fpr_lp_mode("bell5.mps", true, true) ==
             Catch::Approx(8966406.49152).epsilon(1e-4));
+    const auto counts = fpr_lp::dispatch_counts();
+    REQUIRE(counts.port_opp >= 1);
+    REQUIRE(counts.seq_det == 0);
+    REQUIRE(counts.seq_opp == 0);
+    REQUIRE(counts.port_det == 0);
 }
 
 // ── Scylla standalone: PDLP pump finds feasible solution ──

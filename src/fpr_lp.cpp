@@ -26,6 +26,14 @@ namespace fpr_lp {
 
 namespace {
 
+// Test hook counters; see fpr_lp.h.  std::atomic so concurrent entry
+// points don't race; relaxed is fine (monotonic, not used for
+// synchronization).
+std::atomic<size_t> g_seq_det_count{0};
+std::atomic<size_t> g_seq_opp_count{0};
+std::atomic<size_t> g_port_det_count{0};
+std::atomic<size_t> g_port_opp_count{0};
+
 // ---------------------------------------------------------------------------
 // LP-dependent arms (paper Section 6.3, Classes 2 and 3)
 // ---------------------------------------------------------------------------
@@ -373,6 +381,7 @@ void run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &s
     if (N <= 0) {
         return;
     }
+    g_seq_det_count.fetch_add(1, std::memory_order_relaxed);
 
     const uint32_t base_seed = base_seed_for(mipsolver);
 
@@ -402,6 +411,7 @@ void run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &s
     if (N <= 0) {
         return;
     }
+    g_seq_opp_count.fetch_add(1, std::memory_order_relaxed);
 
     const uint32_t base_seed = base_seed_for(mipsolver);
     const size_t default_run_cap =
@@ -447,6 +457,7 @@ void run_portfolio_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &se
     if (N <= 0) {
         return;
     }
+    g_port_det_count.fetch_add(1, std::memory_order_relaxed);
     const int num_arms = kNumLpArms;
 
     // Uniform priors (α=1): let the bandit learn from scratch.
@@ -512,6 +523,7 @@ void run_portfolio_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &se
     if (N <= 0) {
         return;
     }
+    g_port_opp_count.fetch_add(1, std::memory_order_relaxed);
     const int num_arms = kNumLpArms;
 
     std::vector<double> priors(num_arms, 1.0);
@@ -663,6 +675,20 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     for (auto &entry : pool.sorted_entries()) {
         mipdata->trySolution(entry.solution, kSolutionSourceFPR);
     }
+}
+
+DispatchCounts dispatch_counts() {
+    return {g_seq_det_count.load(std::memory_order_relaxed),
+            g_seq_opp_count.load(std::memory_order_relaxed),
+            g_port_det_count.load(std::memory_order_relaxed),
+            g_port_opp_count.load(std::memory_order_relaxed)};
+}
+
+void reset_dispatch_counts() {
+    g_seq_det_count.store(0, std::memory_order_relaxed);
+    g_seq_opp_count.store(0, std::memory_order_relaxed);
+    g_port_det_count.store(0, std::memory_order_relaxed);
+    g_port_opp_count.store(0, std::memory_order_relaxed);
 }
 
 }  // namespace fpr_lp
