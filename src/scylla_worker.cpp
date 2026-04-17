@@ -225,7 +225,11 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         cfg.precomputed_var_order = var_order_.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_.size());
 
-        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0, nullptr);
+        std::vector<double> restart;
+        pool_.get_restart(rng_, restart);
+        const double *restart_ptr = restart.empty() ? nullptr : restart.data();
+
+        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0, restart_ptr);
 
         total_effort_ += rounded.effort;
         effort_since_improvement_ += rounded.effort;
