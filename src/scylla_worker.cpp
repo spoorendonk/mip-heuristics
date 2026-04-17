@@ -36,7 +36,7 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
                            SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx,
-                           int num_workers)
+                           int num_workers, std::atomic<uint64_t> *improvement_gen)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
       csc_(csc),
@@ -45,7 +45,8 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
       num_workers_(std::max(num_workers, 1)),
       epsilon_(pump::kEpsilonInit),
       rng_(seed),
-      fpr_config_index_(select_fpr_config(worker_idx, seed)) {
+      fpr_config_index_(select_fpr_config(worker_idx, seed)),
+      improvement_gen_(improvement_gen) {
     if (!pdlp_.initialized()) {
         finished_ = true;
         return;
@@ -108,6 +109,13 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         if (mipsolver_.timer_.read() >= time_limit) {
             finished_ = true;
             break;
+        }
+        if (improvement_gen_) {
+            uint64_t gen = improvement_gen_->load(std::memory_order_relaxed);
+            if (gen != last_seen_gen_) {
+                last_seen_gen_ = gen;
+                effort_since_improvement_ = 0;
+            }
         }
         if (effort_since_improvement_ > stale_budget_) {
             finished_ = true;
@@ -199,6 +207,9 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                 }
                 pool_.try_add(obj, x_bar);
                 effort_since_improvement_ = 0;
+                if (improvement_gen_ != nullptr) {
+                    improvement_gen_->fetch_add(1, std::memory_order_relaxed);
+                }
                 epoch.found_improvement = true;
                 continue;
             }
@@ -238,6 +249,9 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         if (rounded.found_feasible && !rounded.solution.empty()) {
             pool_.try_add(rounded.objective, rounded.solution);
             effort_since_improvement_ = 0;
+            if (improvement_gen_ != nullptr) {
+                improvement_gen_->fetch_add(1, std::memory_order_relaxed);
+            }
             epoch.found_improvement = true;
         }
 

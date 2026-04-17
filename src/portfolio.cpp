@@ -406,6 +406,11 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
 
     uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
 
+    // Shared cross-worker improvement broadcast for Scylla arms: when
+    // any ScyllaWorker finds a feasible, bump the generation so peers
+    // reset their staleness counters (A.5 fix).
+    std::atomic<uint64_t> scylla_improvement_gen{0};
+
     // Per-worker run_arm with its own persistent ScyllaWorker state.
     auto make_run_arm = [&](int worker_idx) {
         return [&, worker_idx, pump = std::unique_ptr<ScyllaWorker>{}](
@@ -413,13 +418,10 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                    size_t arm_budget) mutable -> HeuristicResult {
             HeuristicResult result{};
             if (enabled_arms[arm] == kArmScylla) {
-                // Lazy-init / rebuild on finished so the PDLP warm-start
-                // persists across pulls.  The shared ContestedPdlp guarantees
-                // only one PDLP solve is in flight globally.
                 if (!pump || pump->finished()) {
                     pump = std::make_unique<ScyllaWorker>(
                         mipsolver, *setup.scylla_pdlp, csc, pool, setup.budget,
-                        static_cast<uint32_t>(rng()), worker_idx, N);
+                        static_cast<uint32_t>(rng()), worker_idx, N, &scylla_improvement_gen);
                 }
                 auto epoch = pump->run_epoch(arm_budget);
                 result.effort = epoch.effort;

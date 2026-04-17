@@ -5,6 +5,7 @@
 #include "heuristic_common.h"
 #include "util/HighsInt.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -44,7 +45,7 @@ class ScyllaWorker {
 public:
     ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
                  SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx,
-                 int num_workers);
+                 int num_workers, std::atomic<uint64_t> *improvement_gen = nullptr);
 
     // Run iterations until epoch_budget effort is consumed.  Sets
     // finished_ when the worker cannot make further progress.
@@ -97,6 +98,14 @@ private:
     // FPR strategy assignment (static, one per worker).
     int fpr_config_index_ = 0;
     std::vector<HighsInt> var_order_;
+
+    // Cross-worker improvement broadcast (opp mode).  When any worker
+    // bumps the generation, all peers reset their local staleness on the
+    // next loop iteration — prevents workers from dying on stale_budget_
+    // while a peer just improved.  Null in det mode (epoch_runner handles
+    // the reset at the barrier instead).
+    std::atomic<uint64_t> *improvement_gen_ = nullptr;
+    uint64_t last_seen_gen_ = 0;
 };
 
 static_assert(EpochWorker<ScyllaWorker>, "ScyllaWorker must satisfy EpochWorker concept");
