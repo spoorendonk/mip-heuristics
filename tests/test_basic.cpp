@@ -789,7 +789,11 @@ TEST_CASE("mode-matrix port/opp: FJ-only flugpl", "[mode-matrix]") {
 // Opportunistic cells are intentionally non-deterministic so no determinism
 // guarantee is asserted for them.
 
-TEST_CASE("mode-matrix seq/det: same seed → same objective", "[mode-matrix]") {
+TEST_CASE("mode-matrix seq/det: same seed → same objective and node count", "[mode-matrix]") {
+    struct RunResult {
+        double obj;
+        HighsInt nodes;
+    };
     auto run_seeded = [](int seed) {
         Highs h;
         h.setOptionValue("output_flag", false);
@@ -798,14 +802,22 @@ TEST_CASE("mode-matrix seq/det: same seed → same objective", "[mode-matrix]") 
         h.setOptionValue("random_seed", seed);
         REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/flugpl.mps") == HighsStatus::kOk);
         REQUIRE(h.run() == HighsStatus::kOk);
-        double obj;
-        h.getInfoValue("objective_function_value", obj);
-        return obj;
+        RunResult res;
+        h.getInfoValue("objective_function_value", res.obj);
+        h.getInfoValue("mip_node_count", res.nodes);
+        return res;
     };
-    REQUIRE(run_seeded(42) == Catch::Approx(run_seeded(42)).epsilon(1e-12));
+    auto first = run_seeded(42);
+    auto second = run_seeded(42);
+    REQUIRE(first.obj == Catch::Approx(second.obj).epsilon(1e-12));
+    REQUIRE(first.nodes == second.nodes);
 }
 
-TEST_CASE("mode-matrix port/det: same seed → same objective", "[mode-matrix]") {
+TEST_CASE("mode-matrix port/det: same seed → same objective and node count", "[mode-matrix]") {
+    struct RunResult {
+        double obj;
+        HighsInt nodes;
+    };
     auto run_seeded = [](int seed) {
         Highs h;
         h.setOptionValue("output_flag", false);
@@ -814,11 +826,15 @@ TEST_CASE("mode-matrix port/det: same seed → same objective", "[mode-matrix]")
         h.setOptionValue("random_seed", seed);
         REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/flugpl.mps") == HighsStatus::kOk);
         REQUIRE(h.run() == HighsStatus::kOk);
-        double obj;
-        h.getInfoValue("objective_function_value", obj);
-        return obj;
+        RunResult res;
+        h.getInfoValue("objective_function_value", res.obj);
+        h.getInfoValue("mip_node_count", res.nodes);
+        return res;
     };
-    REQUIRE(run_seeded(42) == Catch::Approx(run_seeded(42)).epsilon(1e-12));
+    auto first = run_seeded(42);
+    auto second = run_seeded(42);
+    REQUIRE(first.obj == Catch::Approx(second.obj).epsilon(1e-12));
+    REQUIRE(first.nodes == second.nodes);
 }
 
 // ── SolutionPool: thread-safety stress test ──
