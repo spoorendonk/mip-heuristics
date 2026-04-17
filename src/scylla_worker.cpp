@@ -133,17 +133,19 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         auto solve = pdlp_.solve(modified_cost_, warm_start_col_value_, warm_start_row_dual_,
                                  warm_start_valid_, epsilon_, remaining);
 
-        // Amortize PDLP iteration cost across the N concurrent workers
-        // sharing the contested solver: only one PDLP solve runs at a
-        // time, so a chain that holds the mutex for K iters contributes
-        // K / N iters worth of shared PDLP work to the global effort
-        // accounting.  Keeps per-worker staleness from firing after a
-        // single large LP-heavy solve.
-        size_t iter_effort =
-            (static_cast<size_t>(solve.pdlp_iters) * nnz_lp_) / static_cast<size_t>(num_workers_);
-        total_effort_ += iter_effort;
-        effort_since_improvement_ += iter_effort;
-        epoch.effort += iter_effort;
+        // Split PDLP effort accounting:
+        //  - epoch.effort gets the FULL cost (iters * nnz) so the outer
+        //    run_epoch_loop / run_opportunistic_loop budget check sees
+        //    actual aggregate work and stops on time.
+        //  - Per-worker counters (total_effort_, effort_since_improvement_)
+        //    get the amortized cost (÷ num_workers) so each worker's
+        //    staleness threshold reflects its fair share of the serialized
+        //    PDLP pipeline rather than the full cost.
+        size_t actual_effort = static_cast<size_t>(solve.pdlp_iters) * nnz_lp_;
+        size_t local_effort = actual_effort / static_cast<size_t>(num_workers_);
+        total_effort_ += local_effort;
+        effort_since_improvement_ += local_effort;
+        epoch.effort += actual_effort;
 
         if (solve.status == HighsStatus::kError) {
             finished_ = true;
