@@ -110,7 +110,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             finished_ = true;
             break;
         }
-        if (improvement_gen_) {
+        if (improvement_gen_ != nullptr) {
             uint64_t gen = improvement_gen_->load(std::memory_order_relaxed);
             if (gen != last_seen_gen_) {
                 last_seen_gen_ = gen;

@@ -142,7 +142,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
                 // reinitialized from scratch but the underlying LP stays.
                 uint32_t new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, setup.pool,
-                                                        max_effort, new_seed, state.worker_idx, N);
+                                                        max_effort, new_seed, state.worker_idx, N,
+                                                        &improvement_gen);
             }
             auto epoch = worker->run_epoch(run_cap);
             // Report a nominal 1 unit when the chain is still alive but the
