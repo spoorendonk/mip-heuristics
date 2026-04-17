@@ -1,5 +1,6 @@
 #include "portfolio.h"
 
+#include "bandit_runner.h"
 #include "contested_pdlp.h"
 #include "epoch_runner.h"
 #include "fpr_core.h"
@@ -71,30 +72,6 @@ constexpr double kFjAlpha = 1.0;
 constexpr double kFprArmAlpha = 1.0;
 constexpr double kLocalMipAlpha = 1.0;
 constexpr double kScyllaAlpha = 1.0;
-
-bool objective_better(bool minimize, double lhs, double rhs) {
-    constexpr double kTol = 1e-9;
-    return minimize ? lhs < rhs - kTol : lhs > rhs + kTol;
-}
-
-int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot after,
-                   const HeuristicResult &result, bool minimize) {
-    if (!result.found_feasible) {
-        return 0;
-    }
-    if (!before.has_solution) {
-        // First feasible ever
-        return after.has_solution &&
-                       !objective_better(minimize, after.best_objective, result.objective)
-                   ? 2
-                   : 1;
-    }
-    // Had solution before — check if we improved global best
-    bool improved = after.has_solution &&
-                    objective_better(minimize, after.best_objective, before.best_objective) &&
-                    !objective_better(minimize, after.best_objective, result.objective);
-    return improved ? 3 : 1;
-}
 
 constexpr const char *kArmNames[] = {
     "FprDfsBadobjcl",        // kArmFprDfsBadobjcl
@@ -412,20 +389,6 @@ private:
 
 static_assert(EpochWorker<PortfolioWorker>, "PortfolioWorker must satisfy EpochWorker concept");
 
-// Effort-proportional budget cap for opportunistic arm pulls.
-// Each pull gets at most kBudgetCapMultiplier * avg_effort for that arm.
-// First pull (no history) uses total_budget / (num_arms * 10).
-constexpr double kBudgetCapMultiplier = 2.5;
-
-size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t total_budget,
-                          int num_arms) {
-    auto stats = bandit.stats(arm);
-    if (stats.pulls > 0 && stats.avg_effort > 0.0) {
-        return static_cast<size_t>(kBudgetCapMultiplier * stats.avg_effort);
-    }
-    return total_budget / static_cast<size_t>(std::max(num_arms * 10, 1));
-}
-
 void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &setup) {
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
@@ -440,119 +403,58 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
     const auto &incumbent_snapshot = setup.incumbent_snapshot;
     const auto &csc = setup.csc;
     const auto &fpr_var_orders = setup.fpr_var_orders;
-    const bool minimize = setup.minimize;
-    const size_t budget = setup.budget;
-    const size_t stale_budget = setup.stale_budget;
-
-    const double time_limit = mipsolver.options_mip_->time_limit;
-
-    std::atomic<size_t> total_effort{0};
-    std::atomic<size_t> effort_since_improvement{0};
-    std::atomic<bool> stop{false};
 
     uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
 
-    highs::parallel::for_each(
-        0, static_cast<HighsInt>(N),
-        [&](HighsInt lo, HighsInt hi) {
-            for (HighsInt w = lo; w < hi; ++w) {
-                std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
-                int attempt_counter = 0;
-                std::unique_ptr<ScyllaWorker> pump;
+    // Per-worker run_arm with its own persistent ScyllaWorker state.
+    auto make_run_arm = [&](int worker_idx) {
+        return [&, worker_idx, pump = std::unique_ptr<ScyllaWorker>{}](
+                   int arm, std::mt19937 &rng, int attempt,
+                   size_t arm_budget) mutable -> HeuristicResult {
+            HeuristicResult result{};
+            if (enabled_arms[arm] == kArmScylla) {
+                // Lazy-init / rebuild on finished so the PDLP warm-start
+                // persists across pulls.  The shared ContestedPdlp guarantees
+                // only one PDLP solve is in flight globally.
+                if (!pump || pump->finished()) {
+                    pump = std::make_unique<ScyllaWorker>(
+                        mipsolver, *setup.scylla_pdlp, csc, pool, setup.budget,
+                        static_cast<uint32_t>(rng()), worker_idx, N);
+                }
+                auto epoch = pump->run_epoch(arm_budget);
+                result.effort = epoch.effort;
+                if (epoch.found_improvement) {
+                    result.found_feasible = true;
+                    result.objective = pool.snapshot().best_objective;
+                }
+            } else {
+                std::vector<double> restart;
+                pool.get_restart(rng, restart);
+                const double *restart_ptr = restart.empty() ? nullptr : restart.data();
 
-                while (!stop.load(std::memory_order_relaxed)) {
-                    // Worker 0 periodically checks termination (not thread-safe
-                    // to call from multiple workers)
-                    if (w == 0 && attempt_counter % 8 == 0) {
-                        if (mipdata->terminatorTerminated() ||
-                            mipsolver.timer_.read() >= time_limit) {
-                            stop.store(true, std::memory_order_relaxed);
-                        }
-                    }
-                    if (stop.load(std::memory_order_relaxed)) {
-                        break;
-                    }
+                result = run_presolve_arm(mipsolver, enabled_arms[arm], rng, attempt, restart_ptr,
+                                          csc, incumbent_snapshot, arm_budget, fpr_var_orders);
 
-                    int arm = bandit.select_effort_aware(rng);
-                    auto before = pool.snapshot();
-
-                    size_t remaining =
-                        budget - std::min(budget, total_effort.load(std::memory_order_relaxed));
-                    size_t arm_budget =
-                        std::min(compute_budget_cap(bandit, arm, budget, num_arms), remaining);
-
-                    HeuristicResult result{};
-                    auto t0 = std::chrono::steady_clock::now();
-
-                    if (enabled_arms[arm] == kArmScylla) {
-                        // Scylla: lazy-init ScyllaWorker, preserves PDLP warm-start.
-                        // All workers share the single setup.scylla_pdlp
-                        // instance; its mutex serializes PDLP runs.  The arm
-                        // is only present when the shared PDLP initialized,
-                        // so the dereference is always safe.
-                        if (!pump || pump->finished()) {
-                            pump = std::make_unique<ScyllaWorker>(
-                                mipsolver, *setup.scylla_pdlp, csc, pool, budget,
-                                static_cast<uint32_t>(rng()), static_cast<int>(w), N);
-                        }
-                        auto epoch = pump->run_epoch(arm_budget);
-                        result.effort = epoch.effort;
-                        if (epoch.found_improvement) {
-                            result.found_feasible = true;
-                            result.objective = pool.snapshot().best_objective;
-                        }
-                    } else {
-                        std::vector<double> restart;
-                        pool.get_restart(rng, restart);
-                        const double *restart_ptr = restart.empty() ? nullptr : restart.data();
-
-                        result = run_presolve_arm(mipsolver, enabled_arms[arm], rng,
-                                                  attempt_counter++, restart_ptr, csc,
-                                                  incumbent_snapshot, arm_budget, fpr_var_orders);
-
-                        if (result.found_feasible) {
-                            pool.try_add(result.objective, result.solution);
-                        }
-                    }
-
-                    auto t1 = std::chrono::steady_clock::now();
-
-                    auto after = pool.snapshot();
-                    int reward = compute_reward(before, after, result, minimize);
-                    bandit.update(arm, reward);
-                    bandit.record_effort(arm, result.effort);
-
-                    if (result.effort > 0) {
-                        double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-                        log_arm_effort(log_options, enabled_arms[arm], result.effort, wall_ms);
-                    }
-
-                    if (reward >= 2) {
-                        effort_since_improvement.store(0, std::memory_order_relaxed);
-                        // Reset staleness on all workers' ScyllaWorkers would require
-                        // cross-worker access; each ScyllaWorker tracks its own.
-                    } else {
-                        effort_since_improvement.fetch_add(result.effort,
-                                                           std::memory_order_relaxed);
-                    }
-
-                    if (effort_since_improvement.load(std::memory_order_relaxed) >= stale_budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
-
-                    size_t new_total = total_effort.fetch_add(result.effort) + result.effort;
-                    if (new_total >= budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
+                if (result.found_feasible) {
+                    pool.try_add(result.objective, result.solution);
                 }
             }
-        },
-        1);
+            return result;
+        };
+    };
 
-    mipdata->heuristic_effort_used += total_effort.load(std::memory_order_relaxed);
+    auto log_arm = [&](int arm, size_t effort, int /*reward*/, double wall_ms) {
+        log_arm_effort(log_options, enabled_arms[arm], effort, wall_ms);
+    };
+
+    size_t total_effort = run_bandit_opportunistic_loop(mipsolver, bandit, pool, N, num_arms,
+                                                        setup.budget, setup.stale_budget, base_seed,
+                                                        setup.minimize, make_run_arm, log_arm);
+
+    mipdata->heuristic_effort_used += total_effort;
 
     // Flush pool solutions to HiGHS (sequential, use generic H tag since
-    // pool mixes arms)
+    // pool mixes arms).
     for (auto &entry : pool.sorted_entries()) {
         mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
     }

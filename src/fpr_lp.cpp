@@ -1,5 +1,6 @@
 #include "fpr_lp.h"
 
+#include "bandit_runner.h"
 #include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
@@ -90,10 +91,6 @@ struct LpArm {
     const NamedConfig *config;
     const double *lp_ref;
 };
-
-// Effort-proportional budget cap for opportunistic arm pulls.
-// Mirrors portfolio.cpp::kBudgetCapMultiplier.
-constexpr double kBudgetCapMultiplier = 2.5;
 
 // ---------------------------------------------------------------------------
 // Shared setup: LP references, CSC matrix, precomputed var_orders
@@ -190,41 +187,6 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     }
 
     return s;
-}
-
-// ---------------------------------------------------------------------------
-// Bandit reward helpers (shared with the portfolio paths)
-// ---------------------------------------------------------------------------
-
-bool objective_better(bool minimize, double lhs, double rhs) {
-    constexpr double kTol = 1e-9;
-    return minimize ? lhs < rhs - kTol : lhs > rhs + kTol;
-}
-
-int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot after,
-                   const HeuristicResult &result, bool minimize) {
-    if (!result.found_feasible) {
-        return 0;
-    }
-    if (!before.has_solution) {
-        return after.has_solution &&
-                       !objective_better(minimize, after.best_objective, result.objective)
-                   ? 2
-                   : 1;
-    }
-    bool improved = after.has_solution &&
-                    objective_better(minimize, after.best_objective, before.best_objective) &&
-                    !objective_better(minimize, after.best_objective, result.objective);
-    return improved ? 3 : 1;
-}
-
-size_t compute_opportunistic_budget_cap(const ThompsonSampler &bandit, int arm, size_t total_budget,
-                                        int num_arms) {
-    auto stats = bandit.stats(arm);
-    if (stats.pulls > 0 && stats.avg_effort > 0.0) {
-        return static_cast<size_t>(kBudgetCapMultiplier * stats.avg_effort);
-    }
-    return total_budget / static_cast<size_t>(std::max(num_arms * 10, 1));
 }
 
 }  // namespace
@@ -524,120 +486,51 @@ void run_portfolio_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &se
         return;
     }
     g_port_opp_count.fetch_add(1, std::memory_order_relaxed);
-    const int num_arms = kNumLpArms;
 
-    std::vector<double> priors(num_arms, 1.0);
-    ThompsonSampler bandit(num_arms, priors.data(), /*use_mutex=*/true);
-
+    std::vector<double> priors(kNumLpArms, 1.0);
+    ThompsonSampler bandit(kNumLpArms, priors.data(), /*use_mutex=*/true);
     const uint32_t base_seed = base_seed_for(mipsolver);
-    const double time_limit = mipsolver.options_mip_->time_limit;
-    const bool minimize = setup.minimize;
-    const size_t budget = setup.budget;
-    const size_t stale_budget = setup.stale_budget;
 
-    std::atomic<size_t> total_effort{0};
-    std::atomic<size_t> effort_since_improvement{0};
-    std::atomic<bool> stop{false};
+    auto make_run_arm = [&](int /*worker_idx*/) {
+        return [&](int arm, std::mt19937 &rng, int attempt, size_t arm_budget) -> HeuristicResult {
+            std::vector<double> restart;
+            pool.get_restart(rng, restart);
+            const double *restart_ptr = restart.empty() ? nullptr : restart.data();
 
-    highs::parallel::for_each(
-        0, static_cast<HighsInt>(N),
-        [&](HighsInt lo, HighsInt hi) {
-            for (HighsInt w = lo; w < hi; ++w) {
-                std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
-                int attempt_counter = 0;
+            const LpArm &lp_arm = setup.arms[arm];
+            const auto &var_order = setup.var_orders[arm];
 
-                while (!stop.load(std::memory_order_relaxed)) {
-                    // Worker 0 polls termination every 8 attempts (timer
-                    // and terminator are not thread-safe for concurrent
-                    // callers).  Mirrors opportunistic_runner.h.
-                    if (w == 0 && attempt_counter % 8 == 0) {
-                        if (mipdata->terminatorTerminated() ||
-                            mipsolver.timer_.read() >= time_limit) {
-                            stop.store(true, std::memory_order_relaxed);
-                        }
-                    }
-                    if (stop.load(std::memory_order_relaxed)) {
-                        break;
-                    }
+            FprConfig cfg{};
+            cfg.max_effort = arm_budget;
+            cfg.hint = setup.incumbent_snapshot.empty() ? nullptr : setup.incumbent_snapshot.data();
+            cfg.scores = nullptr;
+            cfg.cont_fallback = nullptr;
+            cfg.csc = &setup.csc;
+            cfg.mode = lp_arm.config->mode;
+            cfg.strategy = &lp_arm.config->strat;
+            cfg.lp_ref = lp_arm.lp_ref;
+            cfg.precomputed_var_order = var_order.data();
+            cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
 
-                    int arm = bandit.select_effort_aware(rng);
-                    auto before = pool.snapshot();
-
-                    size_t current = total_effort.load(std::memory_order_relaxed);
-                    size_t remaining = budget - std::min(budget, current);
-                    size_t arm_budget = std::min(
-                        compute_opportunistic_budget_cap(bandit, arm, budget, num_arms), remaining);
-                    if (arm_budget == 0) {
-                        stop.store(true, std::memory_order_relaxed);
-                        break;
-                    }
-
-                    std::vector<double> restart;
-                    pool.get_restart(rng, restart);
-                    const double *restart_ptr = restart.empty() ? nullptr : restart.data();
-
-                    const LpArm &lp_arm = setup.arms[arm];
-                    const auto &var_order = setup.var_orders[arm];
-
-                    FprConfig cfg{};
-                    cfg.max_effort = arm_budget;
-                    cfg.hint = setup.incumbent_snapshot.empty() ? nullptr
-                                                                : setup.incumbent_snapshot.data();
-                    cfg.scores = nullptr;
-                    cfg.cont_fallback = nullptr;
-                    cfg.csc = &setup.csc;
-                    cfg.mode = lp_arm.config->mode;
-                    cfg.strategy = &lp_arm.config->strat;
-                    cfg.lp_ref = lp_arm.lp_ref;
-                    cfg.precomputed_var_order = var_order.data();
-                    cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
-
-                    auto t0 = std::chrono::steady_clock::now();
-                    auto result = fpr_attempt(mipsolver, cfg, rng, attempt_counter++, restart_ptr);
-                    auto t1 = std::chrono::steady_clock::now();
-
-                    if (result.found_feasible) {
-                        pool.try_add(result.objective, result.solution);
-                    }
-
-                    auto after = pool.snapshot();
-                    int reward = compute_reward(before, after, result, minimize);
-                    bandit.update(arm, reward);
-                    bandit.record_effort(arm, result.effort);
-
-                    if (result.effort > 0) {
-                        double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-                        highsLogDev(log_options, HighsLogType::kVerbose,
-                                    "[FprLpPortfolio] arm=%s effort=%zu reward=%d wall_ms=%.1f\n",
-                                    kLpArmNames[arm], result.effort, reward, wall_ms);
-                    }
-
-                    if (reward >= 2) {
-                        effort_since_improvement.store(0, std::memory_order_relaxed);
-                    } else {
-                        effort_since_improvement.fetch_add(result.effort,
-                                                           std::memory_order_relaxed);
-                    }
-
-                    if (effort_since_improvement.load(std::memory_order_relaxed) >= stale_budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
-
-                    // Guard against zero-effort returns (prevents spin).
-                    if (result.effort == 0) {
-                        break;
-                    }
-
-                    size_t new_total = total_effort.fetch_add(result.effort) + result.effort;
-                    if (new_total >= budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
-                }
+            auto result = fpr_attempt(mipsolver, cfg, rng, attempt, restart_ptr);
+            if (result.found_feasible) {
+                pool.try_add(result.objective, result.solution);
             }
-        },
-        1);
+            return result;
+        };
+    };
 
-    mipdata->heuristic_effort_used += total_effort.load(std::memory_order_relaxed);
+    auto log_arm = [&](int arm, size_t effort, int reward, double wall_ms) {
+        highsLogDev(log_options, HighsLogType::kVerbose,
+                    "[FprLpPortfolio] arm=%s effort=%zu reward=%d wall_ms=%.1f\n", kLpArmNames[arm],
+                    effort, reward, wall_ms);
+    };
+
+    size_t total_effort = run_bandit_opportunistic_loop(mipsolver, bandit, pool, N, kNumLpArms,
+                                                        setup.budget, setup.stale_budget, base_seed,
+                                                        setup.minimize, make_run_arm, log_arm);
+
+    mipdata->heuristic_effort_used += total_effort;
 }
 
 }  // namespace
