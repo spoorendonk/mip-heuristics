@@ -325,7 +325,8 @@ int compute_worker_count(const HighsMipSolver & /*mipsolver*/) {
 }
 
 uint32_t base_seed_for(const HighsMipSolver &mipsolver) {
-    return static_cast<uint32_t>(mipsolver.mipdata_->numImprovingSols + kBaseSeedOffset);
+    return compute_base_seed(mipsolver.mipdata_->numImprovingSols,
+                             mipsolver.options_mip_->random_seed);
 }
 
 // ---------------------------------------------------------------------------

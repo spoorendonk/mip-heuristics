@@ -132,81 +132,6 @@ VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Original sequential run (unchanged)
-// ---------------------------------------------------------------------------
-
-void run(HighsMipSolver &mipsolver, size_t max_effort) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
-    const HighsInt ncol = model->num_col_;
-    const HighsInt nrow = model->num_row_;
-    if (ncol == 0 || nrow == 0) {
-        return;
-    }
-
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
-    SolutionPool pool(kPoolCapacity, minimize);
-
-    seed_pool(pool, mipsolver);
-
-    // Build CSC once for all workers
-    auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
-
-    const double *hint = mipdata->incumbent.empty() ? nullptr : mipdata->incumbent.data();
-
-    // Precompute var_orders sequentially (required before any parallel
-    // region — see precompute_var_orders comment).
-    VarOrderTable var_orders = precompute_var_orders(mipsolver);
-
-    size_t total_effort = 0;
-    const int num_configs = kNumInitialFprConfigs;
-
-    // Run all LP-free initial configs in parallel (paper Section 6.3, Class 1)
-    std::vector<HeuristicResult> results(num_configs);
-
-    highs::parallel::for_each(
-        0, static_cast<HighsInt>(num_configs),
-        [&](HighsInt lo, HighsInt hi) {
-            for (HighsInt w = lo; w < hi; ++w) {
-                std::mt19937 rng(42 + static_cast<uint32_t>(w));
-
-                const auto &init = kInitialFprConfigs[w];
-                const auto &strat = kFprStrategies[init.strat_idx];
-                const auto &var_order = var_orders[init.strat_idx];
-
-                FprConfig cfg{};
-                cfg.max_effort = max_effort;
-                cfg.hint = hint;
-                cfg.scores = nullptr;
-                cfg.cont_fallback = nullptr;
-                cfg.csc = &csc;
-                cfg.mode = init.mode;
-                cfg.strategy = &strat;
-                cfg.lp_ref = nullptr;
-                cfg.precomputed_var_order = var_order.data();
-                cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
-
-                results[w] = fpr_attempt(mipsolver, cfg, rng, 0, nullptr);
-            }
-        },
-        1);
-
-    for (int w = 0; w < num_configs; ++w) {
-        total_effort += results[w].effort;
-        if (results[w].found_feasible) {
-            pool.try_add(results[w].objective, results[w].solution);
-        }
-    }
-
-    mipdata->heuristic_effort_used += total_effort;
-
-    // Submit best solutions to solver
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceFPR);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
@@ -307,7 +232,8 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     const size_t per_worker = max_effort / static_cast<size_t>(N);
     const size_t epoch_budget = std::max<size_t>(per_worker / kEpochsPerWorker, 1);
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
 
     std::vector<std::unique_ptr<FprWorker>> workers;
     workers.reserve(N);
@@ -347,7 +273,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
     const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
 
     std::vector<std::unique_ptr<FprWorker>> workers;

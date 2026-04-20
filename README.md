@@ -4,15 +4,16 @@ Custom MIP primal heuristics compiled directly into a patched build of [HiGHS](h
 
 ## Overview
 
-This project implements primal heuristics for finding feasible solutions to mixed-integer programs. The heuristics are compiled as a static object library whose objects are injected into the HiGHS `highs` library target. HiGHS v1.13.1 is fetched via CMake FetchContent and patched at build time. The result is a single `highs` binary with the custom heuristics running alongside HiGHS's built-in ones during presolve and branch-and-bound.
+This project implements primal heuristics for finding feasible solutions to mixed-integer programs. The heuristics are compiled as a static object library whose objects are injected into the HiGHS `highs` library target. HiGHS v1.14.0 is fetched via CMake FetchContent and patched at build time. The result is a single `highs` binary with the custom heuristics running alongside HiGHS's built-in ones during presolve and branch-and-bound.
 
 ## Heuristics
 
-- **FPR (Fix-Propagate-Repair)** -- Fix-and-propagate framework with multiple variable-ranking and value-selection strategies, plus WalkSAT-based repair search. LP-free and LP-based variants run in separate phases. Based on Salvagnin et al. [1].
+- **FPR (Fix-Propagate-Repair)** -- Fix-and-propagate framework with multiple variable-ranking and value-selection strategies, plus WalkSAT-based repair search. The LP-free variant runs during presolve. Based on Salvagnin et al. [1].
+- **FPR_LP** -- LP-dependent FPR (paper Classes 2–3) driven by the root LP solution, dispatched during the branch-and-bound dive. Exposes the full 2×2 execution matrix (see below).
 - **LocalMIP** -- Tabu-based neighborhood search with constraint-violation tracking, lifting moves, and backtracking multiple starts. Based on Lin et al. [2].
 - **Scylla** -- Matrix-free fix-propagate-and-project using PDLP as an approximate LP oracle, with objective perturbation and solution-pool crossover restarts. Based on Mexi et al. [3].
 - **FeasibilityJump** -- LP-free Lagrangian heuristic. Wraps HiGHS's built-in implementation with effort budgeting and portfolio integration. Based on Luteberget and Sartor [4].
-- **Portfolio** -- Thompson sampling (Beta-Bernoulli) bandit that adaptively selects among FPR, LocalMIP, and FeasibilityJump arms. Has deterministic and opportunistic (parallel) modes.
+- **Portfolio** -- Thompson sampling (Beta-Bernoulli) bandit that adaptively selects among FPR, LocalMIP, FeasibilityJump, and Scylla arms. Has deterministic and opportunistic (parallel) modes.
 
 Reference papers are in `docs/`.
 
@@ -26,6 +27,14 @@ cmake --build build -j$(nproc)
 ```
 
 First build is slow (~5 min) because HiGHS is fetched and built via FetchContent.
+
+### GPU acceleration
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_CUDA=ON
+```
+
+Enables CUDA for the PDLP solver used by Scylla (cuPDLP). Falls back to CPU if no CUDA compiler is found.
 
 ## Usage
 
@@ -41,17 +50,28 @@ Enable portfolio mode (Thompson sampling arm selection):
 ./build/bin/highs --mip_heuristic_portfolio true model.mps
 ```
 
+### Execution modes (2×2 matrix)
+
+`mip_heuristic_portfolio` and `mip_heuristic_opportunistic` are orthogonal flags that form a 2×2 matrix:
+
+| portfolio / opportunistic | `opportunistic = false` (deterministic, epoch-gated) | `opportunistic = true` (continuous) |
+|---|---|---|
+| `portfolio = false` (sequential) | **seq/det**: FJ → FPR → LocalMIP → Scylla in order, each with N epoch-synchronized workers | **seq/opp**: same sequence, each heuristic uses its continuous-parallel runner |
+| `portfolio = true`  (bandit)     | **port/det**: Thompson-sampling bandit across arms, workers synchronize at epoch barriers | **port/opp**: bandit with continuous workers, no barriers |
+
+FPR_LP exposes the same 2×2 matrix during the branch-and-bound dive.
+
 ### Custom options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `mip_heuristic_run_fpr` | `false` | Enable FPR heuristic |
+| `mip_heuristic_effort` | `0.05` | Multiplier on the nnz-derived base effort budget shared across custom heuristics |
+| `mip_heuristic_run_fpr` | `false` | Enable FPR (and LP-dependent FPR_LP) |
 | `mip_heuristic_run_local_mip` | `false` | Enable LocalMIP heuristic |
 | `mip_heuristic_run_scylla` | `false` | Enable Scylla heuristic |
 | `mip_heuristic_run_feasibility_jump` | `false` | Enable Feasibility Jump (standalone or portfolio arm) |
-| `mip_heuristic_local_mip_parallel` | `false` | Run LocalMIP workers in parallel |
 | `mip_heuristic_portfolio` | `false` | Adaptive Thompson-sampling portfolio over arms |
-| `mip_heuristic_opportunistic` | `false` | Use continuous (opportunistic) parallelism instead of epoch-gated deterministic parallelism; combines with `mip_heuristic_portfolio` to form the 2×2 execution matrix |
+| `mip_heuristic_opportunistic` | `false` | Continuous (opportunistic) parallelism instead of epoch-gated deterministic parallelism |
 
 ## Benchmarking
 
@@ -78,6 +98,8 @@ Catch2 v3 characterization tests against MIPLIB instances bundled with HiGHS:
 
 ```bash
 cd build && ctest --output-on-failure
+cd build && ctest -R "Portfolio: flugpl" --output-on-failure   # single test by name
+cd build && ./mip_heuristics_tests "[portfolio]"                # by Catch2 tag
 ```
 
 ## References

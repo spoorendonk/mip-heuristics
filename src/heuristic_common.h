@@ -93,6 +93,18 @@ inline double clamp_round(double val, double lb, double ub, bool integer) {
 constexpr uint32_t kBaseSeedOffset = 42;
 constexpr uint32_t kSeedStride = 997;
 
+// Compute the per-presolve-call base seed for heuristic workers.
+//
+// Mixes `numImprovingSols` (advances each time HiGHS finds a new incumbent,
+// giving fresh randomness across reruns within one solve) with the
+// user-facing `random_seed` option (so explicit seed changes actually flow
+// into heuristic RNGs).  Knuth's multiplicative hash spreads small
+// `random_seed` increments across the 32-bit output space.
+inline uint32_t compute_base_seed(HighsInt num_improving_sols, HighsInt random_seed) {
+    const uint32_t base = static_cast<uint32_t>(num_improving_sols) + kBaseSeedOffset;
+    return base ^ (static_cast<uint32_t>(random_seed) * 2654435761u);
+}
+
 // Effort budget for presolve heuristics, scaled by mip_heuristic_effort.
 // Base budget nnz << 12 at default effort 0.05; scales linearly.
 inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {

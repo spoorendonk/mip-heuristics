@@ -2,9 +2,6 @@
 #include <cstddef>
 class HighsMipSolver;
 namespace fj {
-// Returns true if FJ detected proven infeasibility (empty integer domain).
-bool run(HighsMipSolver &mipsolver, size_t max_effort);
-
 // Parallel mode. When `opportunistic=false`, runs with epoch-gated
 // synchronization: N FjWorkers run in parallel, each with a different
 // seed, and finished workers are restarted with a new seed.  When

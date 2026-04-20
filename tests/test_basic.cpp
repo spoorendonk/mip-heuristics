@@ -84,7 +84,6 @@ TEST_CASE("Options: disable custom heuristics", "[options]") {
     // Verify options exist and can be set
     REQUIRE(highs.setOptionValue("mip_heuristic_run_fpr", false) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("mip_heuristic_run_local_mip", false) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_local_mip_parallel", false) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("mip_heuristic_run_scylla", false) == HighsStatus::kOk);
     // Solve still works with all custom heuristics disabled
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
@@ -979,7 +978,6 @@ TEST_CASE("LocalMIP parallel: flugpl finds solution", "[heuristic][local_mip]") 
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_local_mip_parallel", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
     highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
@@ -995,7 +993,6 @@ TEST_CASE("LocalMIP parallel: egout finds solution", "[heuristic][local_mip]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_local_mip_parallel", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
     highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
@@ -1005,7 +1002,7 @@ TEST_CASE("LocalMIP parallel: egout finds solution", "[heuristic][local_mip]") {
     REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
-// ── FJ standalone: exercises fj::run() wrapper in sequential mode ──
+// ── FJ standalone: HiGHS dispatches FJ via fj::run_parallel ──
 
 TEST_CASE("FJ standalone: flugpl", "[heuristic][fj]") {
     Highs highs;
@@ -1227,8 +1224,8 @@ TEST_CASE("Portfolio deterministic: Scylla arm same result", "[portfolio][scylla
 }
 
 // ── Scylla parallel: run_parallel is the unified entry for pump chains ──
-// Scylla has no det/opp distinction (see #60) — scylla::run_parallel is
-// always used when Scylla is enabled, regardless of mip_heuristic_opportunistic.
+// Scylla has both det and opp variants, selected by mip_heuristic_opportunistic
+// via scylla::run_parallel_deterministic / scylla::run_parallel_opportunistic.
 
 TEST_CASE("Scylla parallel: flugpl finds solution", "[heuristic][scylla]") {
     Highs highs;

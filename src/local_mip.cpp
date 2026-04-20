@@ -936,32 +936,6 @@ Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step, bool
 
 namespace local_mip {
 
-// Forward declaration — worker() is defined after LocalMipWorker.
-HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t seed,
-                       const double *initial_solution, size_t max_effort);
-
-void run(HighsMipSolver &mipsolver, size_t max_effort) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
-    const HighsInt ncol = model->num_col_;
-    const HighsInt nrow = model->num_row_;
-    if (ncol == 0 || nrow == 0) {
-        return;
-    }
-    if (mipdata->incumbent.empty()) {
-        return;
-    }
-
-    auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
-    uint32_t seed = static_cast<uint32_t>(mipdata->numImprovingSols + 137);
-
-    auto result = worker(mipsolver, csc, seed, nullptr, max_effort);
-    mipdata->heuristic_effort_used += result.effort;
-    if (result.found_feasible) {
-        mipdata->trySolution(result.solution, kSolutionSourceLocalMIP);
-    }
-}
-
 // --- LocalMipWorker: EpochWorker wrapping WorkerCtx ---
 
 namespace {
@@ -1328,7 +1302,8 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
     const size_t epoch_budget = std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
 
     // Create per-worker LocalMipWorker instances.
     // Worker 0: unperturbed incumbent.
@@ -1399,7 +1374,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
     const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
 

@@ -13,19 +13,6 @@
 
 namespace fj {
 
-bool run(HighsMipSolver &mipsolver, size_t max_effort) {
-    auto *mipdata = mipsolver.mipdata_.get();
-    std::vector<double> sol;
-    double obj = 0.0;
-    size_t effort = 0;
-    auto status = mipdata->feasibilityJumpCapture(sol, obj, effort, max_effort, nullptr);
-    if (!sol.empty()) {
-        mipdata->trySolution(sol, kSolutionSourceFJ);
-    }
-    mipdata->heuristic_effort_used += effort;
-    return status == HighsModelStatus::kInfeasible;
-}
-
 namespace {
 
 bool run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
@@ -42,7 +29,8 @@ bool run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     constexpr int kEpochsPerWorker = 20;
     const size_t epoch_budget = std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
 
     // Restart counter for generating fresh seeds when workers finish.
     uint32_t restart_counter = 0;
@@ -83,7 +71,8 @@ bool run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
     const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
 

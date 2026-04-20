@@ -6,8 +6,6 @@ class HighsMipSolver;
 
 namespace fpr {
 
-void run(HighsMipSolver &mipsolver, size_t max_effort);
-
 // Parallel mode. When `opportunistic=false`, runs with epoch-gated
 // synchronization: N FprWorkers run in parallel, synchronizing at
 // epoch boundaries.  Each epoch increments the attempt index (new

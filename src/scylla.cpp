@@ -48,7 +48,8 @@ struct ScyllaSetup {
         num_workers = highs::parallel::num_threads();
 
         stale_budget = max_effort >> 2;
-        base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+        base_seed =
+            compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
         pdlp_iter_cap = compute_pdlp_iter_cap(max_effort, mipdata->ARindex_.size());
     }
 };

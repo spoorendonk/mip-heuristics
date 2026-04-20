@@ -8,8 +8,6 @@ struct HeuristicResult;
 class HighsMipSolver;
 
 namespace local_mip {
-void run(HighsMipSolver &mipsolver, size_t max_effort);
-
 // Parallel mode. When `opportunistic=false`, runs with epoch-gated
 // synchronization: N workers run local search in parallel, synchronizing
 // at epoch boundaries.  Worker 0 starts from the unperturbed incumbent;

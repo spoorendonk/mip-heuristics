@@ -507,7 +507,10 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
 
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("time_limit", 30.0);
+    // Respect the outer MIP time limit: never exceed what remains, and cap at 30s.
+    const double outer_limit = mipsolver.options_mip_->time_limit;
+    const double remaining = outer_limit - mipsolver.timer_.read();
+    highs.setOptionValue("time_limit", std::max(0.0, std::min(30.0, remaining)));
     if (use_ipm) {
         highs.setOptionValue("solver", "ipm");
     }

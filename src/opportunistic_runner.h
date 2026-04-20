@@ -30,14 +30,18 @@
 // Thread-safety constraints:
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
 //     (Scylla uses ScyllaWorker directly and does not go through this template.)
-//   - Worker-0-only terminator polling: only worker 0 polls
-//     `terminatorTerminated()` / `timer_.read()` (not guaranteed
-//     thread-safe for concurrent callers), and it batches the check to
-//     once every 8 attempts to reduce overhead.  Other workers rely on
-//     the atomic `stop` flag set by worker 0 and observe it within one
-//     `default_run_cap` worth of effort after it is set.  Worst-case
-//     detection latency is therefore ~8 worker-0 attempts plus one
-//     `default_run_cap` per peer worker.
+//   - Worker-0-only terminator polling: `terminatorTerminated()` mutates
+//     `mipsolver.termination_status_` as a side effect, so concurrent
+//     calls from multiple workers would race.  Only worker 0 polls it,
+//     and it batches the check to once every 8 attempts.  Other workers
+//     observe the atomic `stop` flag set by worker 0 within one
+//     `default_run_cap` worth of effort.  Worst-case detection latency
+//     is ~8 worker-0 attempts plus one `default_run_cap` per peer worker.
+//   - `timer_.read()` reads stopped clock state during the presolve hook
+//     and is safe to call from any worker (the benign-stale-read
+//     race is documented in scylla_worker.cpp, which polls directly
+//     from every worker).  The runner still gates it behind worker 0
+//     simply because it is cheaper to pair with the terminator poll.
 //   - Budget overshoot: concurrent workers can overshoot `budget` by
 //     up to `N * default_run_cap` effort because each worker checks
 //     the atomic total before starting an attempt.  This bounded

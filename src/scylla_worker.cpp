@@ -226,8 +226,6 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         const auto &named = kFprConfigs[fpr_config_index_];
         FprConfig cfg{};
         cfg.max_effort = remaining_budget;
-        cfg.rng_seed_offset =
-            kBaseSeedOffset + static_cast<uint32_t>(fpr_config_index_) + static_cast<uint32_t>(K_);
         cfg.hint = x_bar.data();
         cfg.scores = nullptr;
         cfg.cont_fallback = x_bar.data();

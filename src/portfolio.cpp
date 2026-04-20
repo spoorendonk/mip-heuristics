@@ -285,8 +285,14 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, std::m
 class PortfolioWorker {
 public:
     PortfolioWorker(HighsMipSolver &mipsolver, const PresolveSetup &setup, SolutionPool &pool,
-                    uint32_t seed, int worker_idx)
-        : mipsolver_(mipsolver), setup_(setup), pool_(pool), rng_(seed), worker_idx_(worker_idx) {}
+                    uint32_t seed, int worker_idx,
+                    std::atomic<uint64_t> *scylla_improvement_gen = nullptr)
+        : mipsolver_(mipsolver),
+          setup_(setup),
+          pool_(pool),
+          rng_(seed),
+          worker_idx_(worker_idx),
+          scylla_improvement_gen_(scylla_improvement_gen) {}
 
     EpochResult run_epoch(size_t epoch_budget) {
         if (finished_) {
@@ -297,10 +303,17 @@ public:
         EpochResult epoch{};
 
         if (arm_type == kArmScylla) {
+            // pump_ persists across bandit reassignments so PDLP warm-start
+            // and α_K decay survive while the pump is healthy.  We rebuild
+            // only when the pump has declared itself finished (time limit
+            // or stale budget exhausted); the bandit is telling us to try
+            // Scylla again, so a fresh worker with a new seed is the
+            // intended behaviour.  Mirrors the port/opp path below.
             if (!pump_ || pump_->finished()) {
                 pump_ = std::make_unique<ScyllaWorker>(
                     mipsolver_, *setup_.scylla_pdlp, setup_.csc, pool_, setup_.budget,
-                    static_cast<uint32_t>(rng_()), worker_idx_, highs::parallel::num_threads());
+                    static_cast<uint32_t>(rng_()), worker_idx_, highs::parallel::num_threads(),
+                    scylla_improvement_gen_);
             }
             auto t0 = std::chrono::steady_clock::now();
             epoch = pump_->run_epoch(epoch_budget);
@@ -385,6 +398,12 @@ private:
     SolutionPool::Snapshot pre_snap_{};
 
     std::unique_ptr<ScyllaWorker> pump_;  // lazy-init, persists across reassignments
+
+    // Cross-worker Scylla improvement broadcast (non-null iff Scylla arm
+    // is enabled).  Mirrors the opp-mode wiring in run_presolve_opportunistic
+    // so peer improvements reset Scylla staleness within an epoch rather than
+    // waiting for the barrier.
+    std::atomic<uint64_t> *scylla_improvement_gen_ = nullptr;
 };
 
 static_assert(EpochWorker<PortfolioWorker>, "PortfolioWorker must satisfy EpochWorker concept");
@@ -404,7 +423,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
     const auto &csc = setup.csc;
     const auto &fpr_var_orders = setup.fpr_var_orders;
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
 
     // Shared cross-worker improvement broadcast for Scylla arms: when
     // any ScyllaWorker finds a feasible, bump the generation so peers
@@ -489,7 +509,8 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
 
-    uint32_t base_seed = static_cast<uint32_t>(mipdata->numImprovingSols + kBaseSeedOffset);
+    uint32_t base_seed =
+        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
 
     // Separate RNGs for bandit selection in the restart callback (sequential).
     std::vector<std::mt19937> bandit_rngs(N);
@@ -497,13 +518,19 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
         bandit_rngs[w].seed(base_seed + static_cast<uint32_t>(w) * kSeedStride + 1);
     }
 
+    // Shared cross-worker improvement broadcast for Scylla arms (mirrors the
+    // opp-mode wiring).  Only meaningful when the Scylla arm is enabled, but
+    // cheap enough to create unconditionally.
+    std::atomic<uint64_t> scylla_improvement_gen{0};
+
     // Workers start with finished_=true so the first restart callback assigns
     // their initial arms.
     std::vector<std::unique_ptr<PortfolioWorker>> workers;
     workers.reserve(N);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<PortfolioWorker>(mipsolver, setup, pool, seed, w));
+        workers.push_back(std::make_unique<PortfolioWorker>(mipsolver, setup, pool, seed, w,
+                                                            &scylla_improvement_gen));
     }
 
     constexpr int kEpochsPerWorker = 20;

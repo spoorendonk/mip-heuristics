@@ -14,62 +14,6 @@
 #include <random>
 #include <vector>
 
-FprConfig build_default_fpr_config(const HighsMipSolver &mipsolver, const CscMatrix &csc,
-                                   std::vector<double> &scores_buf,
-                                   std::vector<double> &cont_fallback_buf) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
-    const auto &integrality = model->integrality_;
-    const auto &col_cost = model->col_cost_;
-    const HighsInt ncol = model->num_col_;
-
-    // Ranking: degree * (1 + |cost|)
-    scores_buf.resize(ncol);
-    for (HighsInt j = 0; j < ncol; ++j) {
-        if (!is_integer(integrality, j)) {
-            scores_buf[j] = -1.0;
-        } else {
-            double degree = static_cast<double>(csc.col_start[j + 1] - csc.col_start[j]);
-            scores_buf[j] = degree * (1.0 + std::abs(col_cost[j]));
-        }
-    }
-
-    cont_fallback_buf.assign(ncol, 0.0);
-
-    const double *hint = mipdata->incumbent.empty() ? nullptr : mipdata->incumbent.data();
-
-    FprConfig cfg{};
-    cfg.max_effort = 0;  // caller must set budget
-    cfg.rng_seed_offset = 42;
-    cfg.hint = hint;
-    cfg.scores = scores_buf.data();
-    cfg.cont_fallback = cont_fallback_buf.data();
-    cfg.csc = &csc;
-    return cfg;
-}
-
-size_t fpr_core(HighsMipSolver &mipsolver, const FprConfig &cfg) {
-    auto *mipdata = mipsolver.mipdata_.get();
-    std::mt19937 rng(cfg.rng_seed_offset);
-    size_t cumulative_effort = 0;
-
-    for (int attempt = 0;; ++attempt) {
-        if (mipdata->terminatorTerminated()) {
-            return cumulative_effort;
-        }
-        if (cumulative_effort >= cfg.max_effort) {
-            return cumulative_effort;
-        }
-        auto result = fpr_attempt(mipsolver, cfg, rng, attempt, nullptr);
-        cumulative_effort += result.effort;
-        if (result.found_feasible) {
-            if (mipdata->trySolution(result.solution, kSolutionSourceFPR)) {
-                return cumulative_effort;
-            }
-        }
-    }
-}
-
 HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std::mt19937 &rng,
                             int attempt_idx, const double *initial_solution) {
     const auto *model = mipsolver.model_;
