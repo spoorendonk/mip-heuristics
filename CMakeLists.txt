@@ -14,7 +14,9 @@ add_library(mip_heuristics OBJECT
     src/fpr.cpp
     src/fpr_core.cpp
     src/fpr_lp.cpp
-    src/fpr_strategies.cpp
+    src/fpr_lp_refs.cpp
+    src/fpr_val_select.cpp
+    src/fpr_var_order.cpp
     src/local_mip.cpp
     src/local_mip_core.cpp
     src/local_mip_search.cpp

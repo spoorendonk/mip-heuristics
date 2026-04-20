@@ -1,39 +1,24 @@
 #pragma once
 
-#include "heuristic_common.h"
-#include "util/HighsInt.h"
+// Umbrella header: re-exports the three split TUs so existing callers that
+// included "fpr_strategies.h" keep working unchanged.
+//
+// The actual implementations now live in:
+//   - fpr_var_order.{h,cpp}  — variable ranking (VarStrategy + compute_var_order)
+//   - fpr_val_select.{h,cpp} — value selection (ValStrategy + choose_value)
+//   - fpr_lp_refs.{h,cpp}    — LP reference solutions (only TU that pulls Highs.h)
 
-#include <cstdint>
-#include <random>
-#include <vector>
-
-class HighsMipSolver;
+#include "fpr_lp_refs.h"
+#include "fpr_val_select.h"
+#include "fpr_var_order.h"
 
 // ---------------------------------------------------------------------------
-// Strategy enums (paper Table 1, Table 2, Section 3)
+// Strategy configuration (paper Section 3)
 // ---------------------------------------------------------------------------
 
-enum class VarStrategy {
-    kLR,          // formulation order
-    kType,        // grouped by type: binary, integer, continuous
-    kRandom,      // random shuffle within each type bucket
-    kLocks,       // sorted by max(uplocks, downlocks) within type
-    kTypecl,      // clique cover for binaries, then type
-    kCliques,     // clique cover + analytic-center-weighted random sort
-    kCliques2,    // dynamic clique cover using LP solution
-    kDomainSize,  // dynamic: smallest domain first at each DFS node
-};
-
-enum class ValStrategy {
-    kUp,        // always upper bound
-    kRandom,    // random between lb and ub
-    kGoodobj,   // fix toward objective
-    kBadobj,    // fix against objective
-    kLoosedyn,  // dynamic locks based on current activities
-    kZerocore,  // zero-obj analytic center, fractional rounding
-    kZerolp,    // zero-obj LP vertex, fractional rounding
-    kCore,      // full-obj analytic center, fractional rounding
-    kLp,        // full-obj LP solution, fractional rounding
+struct FprStrategyConfig {
+    VarStrategy var_strategy = VarStrategy::kType;
+    ValStrategy val_strategy = ValStrategy::kGoodobj;
 };
 
 enum class FrameworkMode {
@@ -42,15 +27,6 @@ enum class FrameworkMode {
     kDive,          // propagation off, repair on (at end only), no backtrack
     kDiveprop,      // propagation on, repair on, no backtrack
     kRepairSearch,  // propagation on, DFS repair with secondary engine R (Fig. 5)
-};
-
-// ---------------------------------------------------------------------------
-// Strategy configuration
-// ---------------------------------------------------------------------------
-
-struct FprStrategyConfig {
-    VarStrategy var_strategy = VarStrategy::kType;
-    ValStrategy val_strategy = ValStrategy::kGoodobj;
 };
 
 // Framework mode properties
@@ -67,11 +43,6 @@ inline bool mode_repairs(FrameworkMode m) {
 inline bool mode_backtracks(FrameworkMode m) {
     return m == FrameworkMode::kDfs || m == FrameworkMode::kDfsrep ||
            m == FrameworkMode::kRepairSearch;
-}
-
-// Does this variable strategy recompute ordering dynamically at each DFS node?
-inline bool is_dynamic_var_strategy(VarStrategy s) {
-    return s == VarStrategy::kDomainSize;
 }
 
 // Does this strategy require an LP solution?
@@ -120,38 +91,3 @@ struct NamedConfig {
     FprStrategyConfig strat;
     FrameworkMode mode;
 };
-
-// ---------------------------------------------------------------------------
-// Variable ranking
-// ---------------------------------------------------------------------------
-
-// Produce a variable ordering for the given strategy.
-// Returns a permutation of [0, ncol) with integer variables first.
-// For clique-based strategies, `lp_ref` is the LP/analytic-center solution
-// (may be nullptr for LP-free strategies).
-std::vector<HighsInt> compute_var_order(const HighsMipSolver& mipsolver, VarStrategy strategy,
-                                        std::mt19937& rng, const double* lp_ref = nullptr);
-
-// ---------------------------------------------------------------------------
-// Value selection
-// ---------------------------------------------------------------------------
-
-// Choose a fixing value for variable j given the current domain [lb, ub].
-// For LP-based strategies, `lp_ref[j]` provides the reference LP value.
-// For loosedyn, precomputed row activities and bound arrays are needed.
-double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize, double cost,
-                    ValStrategy strategy, std::mt19937& rng, const double* lp_ref,
-                    // loosedyn support: nullable pointers
-                    const double* row_lo, const double* row_hi, const double* min_act,
-                    const double* max_act, const CscMatrix* csc);
-
-// ---------------------------------------------------------------------------
-// LP reference solutions
-// ---------------------------------------------------------------------------
-
-// Solve the LP relaxation without objective using barrier (no crossover)
-// to obtain the analytic center. Returns col_value vector.
-std::vector<double> compute_analytic_center(const HighsMipSolver& mipsolver, bool use_objective);
-
-// Solve the LP relaxation without objective using simplex to obtain a vertex.
-std::vector<double> compute_zero_obj_vertex(const HighsMipSolver& mipsolver);
