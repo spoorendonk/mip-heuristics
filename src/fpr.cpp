@@ -8,6 +8,7 @@
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
+#include "parallel_setup.h"
 #include "solution_pool.h"
 
 #include <algorithm>
@@ -211,65 +212,41 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
 namespace {
 
 void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
-    const HighsInt ncol = model->num_col_;
-    const HighsInt nrow = model->num_row_;
-
-    const int N = highs::parallel::num_threads();
-
-    auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
+    ParallelSetup setup(mipsolver, max_effort);
 
     // Precompute var_orders sequentially before any parallel region.
     VarOrderTable var_orders = precompute_var_orders(mipsolver);
 
-    // Per-worker epoch budget: divide total across workers and target
-    // ~10 epochs per worker for meaningful synchronization.
-    constexpr int kEpochsPerWorker = 10;
-    const size_t per_worker = max_effort / static_cast<size_t>(N);
-    const size_t epoch_budget = std::max<size_t>(per_worker / kEpochsPerWorker, 1);
-
-    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
-
     std::vector<std::unique_ptr<FprWorker>> workers;
-    workers.reserve(N);
-    for (int w = 0; w < N; ++w) {
-        int cfg_idx = w % kNumInitialFprConfigs;
-        uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(mipsolver, csc, pool, var_orders,
+    workers.reserve(setup.N);
+    for (size_t w = 0; w < setup.N; ++w) {
+        int cfg_idx = static_cast<int>(w) % kNumInitialFprConfigs;
+        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        workers.push_back(std::make_unique<FprWorker>(mipsolver, setup.csc, pool, var_orders,
                                                       kInitialFprConfigs[cfg_idx].strat_idx,
                                                       kInitialFprConfigs[cfg_idx].mode, seed));
     }
 
     size_t total_effort = run_epoch_loop(
-        mipsolver, workers, max_effort, epoch_budget,
-        [](int) { /* FprWorkers rarely hit hard stale threshold in det mode */ }, max_effort >> 2);
+        mipsolver, workers, max_effort, setup.epoch_budget,
+        [](int) { /* FprWorkers rarely hit hard stale threshold in det mode */ },
+        setup.stale_budget);
 
-    mipdata->heuristic_effort_used += total_effort;
+    setup.mipdata->heuristic_effort_used += total_effort;
 }
 
 void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
-    const HighsInt ncol = model->num_col_;
-    const HighsInt nrow = model->num_row_;
-
-    const int N = highs::parallel::num_threads();
-
-    auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
+    ParallelSetup setup(mipsolver, max_effort);
 
     // Precompute var_orders sequentially before any parallel region.
     VarOrderTable var_orders = precompute_var_orders(mipsolver);
 
-    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
-    const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
-
     std::vector<std::unique_ptr<FprWorker>> workers;
-    workers.reserve(N);
-    for (int w = 0; w < N; ++w) {
-        int cfg_idx = w % kNumInitialFprConfigs;
-        uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(mipsolver, csc, pool, var_orders,
+    workers.reserve(setup.N);
+    for (size_t w = 0; w < setup.N; ++w) {
+        int cfg_idx = static_cast<int>(w) % kNumInitialFprConfigs;
+        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        workers.push_back(std::make_unique<FprWorker>(mipsolver, setup.csc, pool, var_orders,
                                                       kInitialFprConfigs[cfg_idx].strat_idx,
                                                       kInitialFprConfigs[cfg_idx].mode, seed));
     }
@@ -279,7 +256,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     };
 
     size_t total_effort = run_opportunistic_loop(
-        mipsolver, N, max_effort, /*stale_budget=*/max_effort >> 2, default_run_cap, base_seed,
+        mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
+        setup.base_seed,
         [](int worker_idx, std::mt19937 & /*rng*/) -> FprOppState {
             return FprOppState{worker_idx};
         },
@@ -291,8 +269,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                 int strat_idx = std::uniform_int_distribution<int>(0, kNumFprStrategies - 1)(rng);
                 int m_idx = std::uniform_int_distribution<int>(0, kNumAllModes - 1)(rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
-                worker = std::make_unique<FprWorker>(mipsolver, csc, pool, var_orders, strat_idx,
-                                                     kAllModes[m_idx], seed);
+                worker = std::make_unique<FprWorker>(mipsolver, setup.csc, pool, var_orders,
+                                                     strat_idx, kAllModes[m_idx], seed);
             }
             auto epoch = worker->run_epoch(run_cap);
             HeuristicResult result;
@@ -304,7 +282,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             return result;
         });
 
-    mipdata->heuristic_effort_used += total_effort;
+    setup.mipdata->heuristic_effort_used += total_effort;
 }
 
 }  // namespace

@@ -6,6 +6,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
+#include "parallel_setup.h"
 #include "solution_pool.h"
 
 #include <memory>
@@ -16,56 +17,44 @@ namespace fj {
 namespace {
 
 bool run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
-    auto *mipdata = mipsolver.mipdata_.get();
-
-    const int N = highs::parallel::num_threads();
-
-    const size_t worker_budget = max_effort / static_cast<size_t>(N);
-    constexpr int kEpochsPerWorker = 20;
-    const size_t epoch_budget = std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
-
-    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
+    ParallelSetup setup(mipsolver, max_effort);
 
     // Restart counter for generating fresh seeds when workers finish.
     uint32_t restart_counter = 0;
 
     std::vector<std::unique_ptr<FjWorker>> workers;
-    workers.reserve(N);
-    for (int w = 0; w < N; ++w) {
-        uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FjWorker>(mipsolver, pool, worker_budget, seed));
+    workers.reserve(setup.N);
+    for (size_t w = 0; w < setup.N; ++w) {
+        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        workers.push_back(std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed));
     }
 
     size_t total_effort = run_epoch_loop(
-        mipsolver, workers, max_effort, epoch_budget,
+        mipsolver, workers, max_effort, setup.epoch_budget,
         [&](int w) {
             // Restart finished FjWorker with a new seed.
             ++restart_counter;
-            uint32_t seed = base_seed + (static_cast<uint32_t>(N) + restart_counter) * kSeedStride;
-            workers[w] = std::make_unique<FjWorker>(mipsolver, pool, worker_budget, seed);
+            uint32_t seed =
+                setup.base_seed + (static_cast<uint32_t>(setup.N) + restart_counter) * kSeedStride;
+            workers[w] = std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
         },
-        max_effort >> 2);
+        setup.stale_budget);
 
-    mipdata->heuristic_effort_used += total_effort;
+    setup.mipdata->heuristic_effort_used += total_effort;
 
     return false;
 }
 
 bool run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
-    auto *mipdata = mipsolver.mipdata_.get();
-
-    const int N = highs::parallel::num_threads();
-
-    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
-    const size_t worker_budget = max_effort / static_cast<size_t>(N);
-    const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
+    ParallelSetup setup(mipsolver, max_effort);
 
     struct FjState {
         std::unique_ptr<FjWorker> worker;
     };
 
     size_t total_effort = run_opportunistic_loop(
-        mipsolver, N, max_effort, /*stale_budget=*/max_effort >> 2, default_run_cap, base_seed,
+        mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
+        setup.base_seed,
         [](int /*worker_idx*/, std::mt19937 & /*rng*/) -> FjState {
             // Lazy init: worker is created on first run_attempt call.
             return FjState{};
@@ -73,7 +62,8 @@ bool run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         [&](FjState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
             if (!state.worker || state.worker->finished()) {
                 uint32_t seed = static_cast<uint32_t>(rng());
-                state.worker = std::make_unique<FjWorker>(mipsolver, pool, worker_budget, seed);
+                state.worker =
+                    std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
             }
             auto epoch = state.worker->run_epoch(run_cap);
             HeuristicResult result;
@@ -85,7 +75,7 @@ bool run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             return result;
         });
 
-    mipdata->heuristic_effort_used += total_effort;
+    setup.mipdata->heuristic_effort_used += total_effort;
 
     return false;
 }

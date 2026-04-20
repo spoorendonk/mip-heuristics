@@ -17,7 +17,6 @@
 namespace local_mip_detail {
 
 inline constexpr double kPerturbBinaryFraction = 0.2;
-inline constexpr size_t kEpochsPerWorker = 10;
 
 // Perturb solution: flip ~20% of binary vars, randomly shift general integers.
 void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &mipdata,
