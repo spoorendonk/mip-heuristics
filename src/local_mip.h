@@ -6,6 +6,7 @@
 struct CscMatrix;
 struct HeuristicResult;
 class HighsMipSolver;
+class SolutionPool;
 
 namespace local_mip {
 // Parallel mode. When `opportunistic=false`, runs with epoch-gated
@@ -15,7 +16,13 @@ namespace local_mip {
 // restarted from the pool's best solution with fresh perturbation.
 // When `opportunistic=true`, runs continuous `parallel::for_each`
 // workers with per-worker self-termination.
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic = false);
+//
+// `pool` is owned by the caller (mode_dispatch::run_sequential).  Workers
+// insert solutions with kSolutionSourceLocalMIP and may pull restarts
+// from the pool; the caller flushes the pool once all sequential
+// heuristics have run.
+void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                  bool opportunistic = false);
 
 // Single-worker variant for portfolio mode. Returns result without submitting.
 // If initial_solution is non-null, uses it as starting point.

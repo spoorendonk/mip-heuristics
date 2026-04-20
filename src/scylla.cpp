@@ -29,21 +29,21 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
     return cap < 100 ? 100 : cap;
 }
 
+// Setup that does NOT own the pool.  The caller passes the pool in by
+// reference; ScyllaSetup just wraps the derived/cached values (csc,
+// stale_budget, iter cap, seed).
 struct ScyllaSetup {
     CscMatrix csc;
-    SolutionPool pool;
     int num_workers;
     size_t stale_budget;
     uint32_t base_seed;
     HighsInt pdlp_iter_cap;
 
-    ScyllaSetup(HighsMipSolver &mipsolver, size_t max_effort, bool minimize)
-        : pool(kPoolCapacity, minimize) {
+    ScyllaSetup(HighsMipSolver &mipsolver, size_t max_effort) {
         auto *mipdata = mipsolver.mipdata_.get();
         const auto *model = mipsolver.model_;
         csc = build_csc(model->num_col_, model->num_row_, mipdata->ARstart_, mipdata->ARindex_,
                         mipdata->ARvalue_);
-        seed_pool(pool, mipsolver);
 
         num_workers = highs::parallel::num_threads();
 
@@ -53,15 +53,14 @@ struct ScyllaSetup {
     }
 };
 
-void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
+void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return;
     }
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
 
-    ScyllaSetup setup(mipsolver, max_effort, minimize);
+    ScyllaSetup setup(mipsolver, max_effort);
 
     ContestedPdlp pdlp(mipsolver, setup.pdlp_iter_cap);
     if (!pdlp.initialized()) {
@@ -74,7 +73,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     workers.reserve(setup.num_workers);
     for (int w = 0; w < setup.num_workers; ++w) {
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, setup.pool,
+        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool,
                                                          max_effort, seed, w, setup.num_workers,
                                                          &improvement_gen));
     }
@@ -87,21 +86,16 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
         setup.stale_budget);
 
     mipdata->heuristic_effort_used += total_effort;
-
-    for (auto &entry : setup.pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceScylla);
-    }
 }
 
-void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
+void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return;
     }
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
 
-    ScyllaSetup setup(mipsolver, max_effort, minimize);
+    ScyllaSetup setup(mipsolver, max_effort);
     const int N = setup.num_workers;
 
     ContestedPdlp pdlp(mipsolver, setup.pdlp_iter_cap);
@@ -119,7 +113,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     workers.reserve(N);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, setup.pool,
+        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool,
                                                          max_effort, seed, w, N, &improvement_gen));
     }
 
@@ -141,9 +135,9 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
                 // fpr_lp opp path).  `pdlp` is shared, so warm-start etc. are
                 // reinitialized from scratch but the underlying LP stays.
                 uint32_t new_seed = static_cast<uint32_t>(rng());
-                worker = std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, setup.pool,
-                                                        max_effort, new_seed, state.worker_idx, N,
-                                                        &improvement_gen);
+                worker =
+                    std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool, max_effort,
+                                                   new_seed, state.worker_idx, N, &improvement_gen);
             }
             auto epoch = worker->run_epoch(run_cap);
             // Report a nominal 1 unit when the chain is still alive but the
@@ -153,29 +147,26 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
             result.effort = (epoch.effort == 0 && !worker->finished()) ? 1 : epoch.effort;
             if (epoch.found_improvement) {
                 result.found_feasible = true;
-                result.objective = setup.pool.snapshot().best_objective;
+                result.objective = pool.snapshot().best_objective;
             }
             return result;
         });
 
     mipdata->heuristic_effort_used += total_effort;
-
-    for (auto &entry : setup.pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceScylla);
-    }
 }
 
 }  // namespace
 
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic) {
+void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                  bool opportunistic) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return;
     }
     if (opportunistic) {
-        run_parallel_opportunistic(mipsolver, max_effort);
+        run_parallel_opportunistic(mipsolver, pool, max_effort);
     } else {
-        run_parallel_deterministic(mipsolver, max_effort);
+        run_parallel_deterministic(mipsolver, pool, max_effort);
     }
 }
 

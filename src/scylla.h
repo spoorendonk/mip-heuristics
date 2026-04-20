@@ -3,6 +3,7 @@
 #include <cstddef>
 
 class HighsMipSolver;
+class SolutionPool;
 
 namespace scylla {
 
@@ -16,6 +17,11 @@ namespace scylla {
 // `opportunistic=false` runs epoch-gated barrier synchronization
 // (`run_epoch_loop`); `opportunistic=true` runs continuous parallelism
 // (`run_opportunistic_loop`).  Both share the same `ScyllaWorker` body.
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic);
+//
+// `pool` is owned by the caller (mode_dispatch::run_sequential).
+// Workers insert feasible pumps with kSolutionSourceScylla; the caller
+// flushes the pool once all sequential heuristics have run.
+void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                  bool opportunistic);
 
 }  // namespace scylla

@@ -64,19 +64,15 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
 
 namespace {
 
-void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
+void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
 
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
     const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
-
-    SolutionPool pool(kPoolCapacity, minimize);
-    seed_pool(pool, mipsolver);
 
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
     const size_t epoch_budget = std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
@@ -132,25 +128,17 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
         max_effort >> 2);
 
     mipdata->heuristic_effort_used += total_effort;
-
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceLocalMIP);
-    }
 }
 
-void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
+void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
 
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
     const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
-
-    SolutionPool pool(kPoolCapacity, minimize);
-    seed_pool(pool, mipsolver);
 
     uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
@@ -200,15 +188,12 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
         });
 
     mipdata->heuristic_effort_used += total_effort;
-
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceLocalMIP);
-    }
 }
 
 }  // namespace
 
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic) {
+void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                  bool opportunistic) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
@@ -221,9 +206,9 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     }
 
     if (opportunistic) {
-        run_parallel_opportunistic(mipsolver, max_effort);
+        run_parallel_opportunistic(mipsolver, pool, max_effort);
     } else {
-        run_parallel_deterministic(mipsolver, max_effort);
+        run_parallel_deterministic(mipsolver, pool, max_effort);
     }
 }
 

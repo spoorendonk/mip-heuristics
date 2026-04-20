@@ -210,22 +210,18 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
 
 namespace {
 
-void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
+void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
 
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
     const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
     // Precompute var_orders sequentially before any parallel region.
     VarOrderTable var_orders = precompute_var_orders(mipsolver);
-
-    SolutionPool pool(kPoolCapacity, minimize);
-    seed_pool(pool, mipsolver);
 
     // Per-worker epoch budget: divide total across workers and target
     // ~10 epochs per worker for meaningful synchronization.
@@ -250,28 +246,20 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
         [](int) { /* FprWorkers rarely hit hard stale threshold in det mode */ }, max_effort >> 2);
 
     mipdata->heuristic_effort_used += total_effort;
-
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceFPR);
-    }
 }
 
-void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
+void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
 
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
     const int N = highs::parallel::num_threads();
 
     auto csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
     // Precompute var_orders sequentially before any parallel region.
     VarOrderTable var_orders = precompute_var_orders(mipsolver);
-
-    SolutionPool pool(kPoolCapacity, minimize);
-    seed_pool(pool, mipsolver);
 
     uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
@@ -317,15 +305,12 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
         });
 
     mipdata->heuristic_effort_used += total_effort;
-
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceFPR);
-    }
 }
 
 }  // namespace
 
-void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic) {
+void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                  bool opportunistic) {
     const auto *model = mipsolver.model_;
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
@@ -334,9 +319,9 @@ void run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     }
 
     if (opportunistic) {
-        run_parallel_opportunistic(mipsolver, max_effort);
+        run_parallel_opportunistic(mipsolver, pool, max_effort);
     } else {
-        run_parallel_deterministic(mipsolver, max_effort);
+        run_parallel_deterministic(mipsolver, pool, max_effort);
     }
 }
 

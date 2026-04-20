@@ -7,6 +7,7 @@
 #include "mip/HighsMipSolverData.h"
 #include "portfolio.h"
 #include "scylla.h"
+#include "solution_pool.h"
 
 namespace heuristics {
 
@@ -20,6 +21,15 @@ namespace {
 // uses N independent pump chains sharing a mutex-guarded PDLP solver
 // (see `ContestedPdlp`), so its det/opp distinction is the same epoch
 // vs opportunistic runner split used by FJ/FPR/LocalMIP.
+//
+// A single `SolutionPool` is constructed here and threaded through all
+// heuristics so that solutions found by an earlier heuristic (e.g. FJ)
+// become available as pool-restart seeds for later heuristics (FPR,
+// LocalMIP).  The pool is seeded once from the incumbent and flushed
+// to HiGHS once at the end; each entry carries its originating
+// heuristic's source tag (see solution_pool.h / #73).  The portfolio
+// modes already manage their own pool inside `portfolio::run_presolve`
+// and are not affected.
 bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic) {
     const auto *options = mipsolver.options_mip_;
 
@@ -54,45 +64,52 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     auto alloc = [&](double w) -> size_t { return static_cast<size_t>(budget * w / total_weight); };
 
     // Each heuristic's inner loops also poll the deadline, but their setup
-    // (build_csc, precompute_var_orders, seed_pool) runs before that first
-    // inner poll; checking out here skips the setup entirely once the
-    // budget is exhausted.  `terminatorTerminated` is called only from
-    // this sequential outer loop — the previous heuristic's parallel
-    // region has already joined, so there is no concurrent access.
+    // (build_csc, precompute_var_orders) runs before that first inner poll;
+    // checking out here skips the setup entirely once the budget is
+    // exhausted.  `terminatorTerminated` is called only from this
+    // sequential outer loop — the previous heuristic's parallel region has
+    // already joined, so there is no concurrent access.
     const double time_limit = options->time_limit;
-    const auto *mipdata = mipsolver.mipdata_.get();
+    auto *mipdata = mipsolver.mipdata_.get();
     auto deadline_hit = [&]() {
         return mipdata->terminatorTerminated() || mipsolver.timer_.read() >= time_limit;
     };
 
-    if (fj_on) {
-        if (deadline_hit()) {
-            return false;
-        }
-        if (fj::run_parallel(mipsolver, alloc(kWeightFj), opportunistic)) {
-            return true;  // proven infeasible
+    // Shared pool across the whole sequential chain.  One seed_pool call
+    // tags the incumbent with kSolutionSourceHeuristic; each heuristic
+    // worker adds its own entries with a per-heuristic source tag; a
+    // single flush at the end lets HiGHS pick up cross-heuristic finds
+    // (e.g. FJ solution landing in FPR's restart pool).
+    const bool minimize = (mipsolver.model_->sense_ == ObjSense::kMinimize);
+    SolutionPool pool(kPoolCapacity, minimize);
+    seed_pool(pool, mipsolver);
+
+    bool infeasible = false;
+
+    if (fj_on && !deadline_hit()) {
+        if (fj::run_parallel(mipsolver, pool, alloc(kWeightFj), opportunistic)) {
+            infeasible = true;
         }
     }
-    if (fpr_on) {
-        if (deadline_hit()) {
-            return false;
-        }
-        fpr::run_parallel(mipsolver, alloc(kWeightFpr), opportunistic);
+    if (!infeasible && fpr_on && !deadline_hit()) {
+        fpr::run_parallel(mipsolver, pool, alloc(kWeightFpr), opportunistic);
     }
-    if (lm_on) {
-        if (deadline_hit()) {
-            return false;
-        }
-        local_mip::run_parallel(mipsolver, alloc(kWeightLocalMip), opportunistic);
+    if (!infeasible && lm_on && !deadline_hit()) {
+        local_mip::run_parallel(mipsolver, pool, alloc(kWeightLocalMip), opportunistic);
     }
-    if (sc_on) {
-        if (deadline_hit()) {
-            return false;
-        }
-        scylla::run_parallel(mipsolver, alloc(kWeightScylla), opportunistic);
+    if (!infeasible && sc_on && !deadline_hit()) {
+        scylla::run_parallel(mipsolver, pool, alloc(kWeightScylla), opportunistic);
     }
 
-    return false;
+    // Flush pool to HiGHS (best first).  Each entry carries its
+    // originating heuristic's source tag (FJ/FPR/LocalMIP/Scylla or
+    // the generic kSolutionSourceHeuristic for the seeded incumbent),
+    // so HiGHS logs per-heuristic provenance instead of a generic tag.
+    for (auto &entry : pool.sorted_entries()) {
+        mipdata->trySolution(entry.solution, entry.source);
+    }
+
+    return infeasible;
 }
 
 }  // namespace

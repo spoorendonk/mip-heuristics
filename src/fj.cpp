@@ -15,15 +15,10 @@ namespace fj {
 
 namespace {
 
-bool run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
-    const auto *model = mipsolver.model_;
+bool run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     auto *mipdata = mipsolver.mipdata_.get();
 
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
     const int N = highs::parallel::num_threads();
-
-    SolutionPool pool(kPoolCapacity, minimize);
-    seed_pool(pool, mipsolver);
 
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
     constexpr int kEpochsPerWorker = 20;
@@ -53,22 +48,13 @@ bool run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
 
     mipdata->heuristic_effort_used += total_effort;
 
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceFJ);
-    }
-
     return false;
 }
 
-bool run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
-    const auto *model = mipsolver.model_;
+bool run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     auto *mipdata = mipsolver.mipdata_.get();
 
-    const bool minimize = (model->sense_ == ObjSense::kMinimize);
     const int N = highs::parallel::num_threads();
-
-    SolutionPool pool(kPoolCapacity, minimize);
-    seed_pool(pool, mipsolver);
 
     uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
@@ -101,25 +87,22 @@ bool run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
 
     mipdata->heuristic_effort_used += total_effort;
 
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceFJ);
-    }
-
     return false;
 }
 
 }  // namespace
 
-bool run_parallel(HighsMipSolver &mipsolver, size_t max_effort, bool opportunistic) {
+bool run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                  bool opportunistic) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return false;
     }
 
     if (opportunistic) {
-        return run_parallel_opportunistic(mipsolver, max_effort);
+        return run_parallel_opportunistic(mipsolver, pool, max_effort);
     }
-    return run_parallel_deterministic(mipsolver, max_effort);
+    return run_parallel_deterministic(mipsolver, pool, max_effort);
 }
 
 }  // namespace fj

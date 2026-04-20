@@ -3,7 +3,9 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <mutex>
 #include <string>
+#include <vector>
 
 // ===================================================================
 // 2x2 mode-matrix correctness tests
@@ -191,4 +193,87 @@ TEST_CASE("mode-matrix port/det: same seed → same objective and node count", "
     auto second = run_seeded(42);
     REQUIRE(first.obj == Catch::Approx(second.obj).epsilon(1e-12));
     REQUIRE(first.nodes == second.nodes);
+}
+
+namespace {
+
+// Helper used by the shared-pool tests.  Runs a Highs solve with the
+// given (portfolio × opportunistic) cell and only FJ enabled, captures
+// MIP display log lines via the kCallbackLogging callback, and returns
+// whether a `J` source-code line was emitted.  `J` appearing for lseu
+// proves that FJ's pool entry round-tripped through the shared flush in
+// mode_dispatch::run_sequential with kSolutionSourceFJ preserved.
+bool lseu_seq_emits_fj_tag(bool opportunistic) {
+    struct LogCapture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+    };
+    LogCapture capture;
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    h.setOptionValue("mip_heuristic_portfolio", false);
+    h.setOptionValue("mip_heuristic_opportunistic", opportunistic);
+    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+    h.setOptionValue("mip_heuristic_run_fpr", false);
+    h.setOptionValue("mip_heuristic_run_local_mip", false);
+    h.setOptionValue("mip_heuristic_run_scylla", false);
+
+    auto log_cb = [](int callback_type, const std::string& message,
+                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                     void* user_data) {
+        if (callback_type != kCallbackLogging) {
+            return;
+        }
+        auto* cap = static_cast<LogCapture*>(user_data);
+        std::lock_guard<std::mutex> lock(cap->mtx);
+        cap->lines.emplace_back(message);
+    };
+
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/lseu.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    std::lock_guard<std::mutex> lock(capture.mtx);
+    for (const auto& line : capture.lines) {
+        // MIP display line format: " <CODE> <nodes> ..." with the single
+        // source letter at offset 1 followed by a space.
+        if (line.size() >= 3 && line[0] == ' ' && line[2] == ' ' && line[1] == 'J') {
+            return true;
+        }
+    }
+    return false;
+}
+}  // namespace
+
+// ── 2 tests: shared pool round-trip in seq/det and seq/opp (#72) ──
+// Verifies that in both sequential cells of the 2×2 mode matrix, FJ's
+// pool entries survive the end-of-chain flush in
+// mode_dispatch::run_sequential and reach HiGHS tagged as
+// kSolutionSourceFJ (`J`).
+//
+// Pre-#72, each heuristic (FJ/FPR/LocalMIP/Scylla) owned a private
+// SolutionPool and emitted its own trySolution loop inside
+// <heuristic>::run_parallel.  The tags on that path were correct, but
+// FPR/LocalMIP/Scylla could not see FJ's entries as pool-restart seeds:
+// each pool was destroyed at the end of its heuristic.
+//
+// Post-#72, mode_dispatch::run_sequential owns one shared SolutionPool,
+// seeds it from the incumbent once, hands it to every heuristic's
+// run_parallel as an `&` parameter, and flushes it once at
+// end-of-chain.  The per-entry source tag (#73) lets that single flush
+// emit `J`/`A`/`M`/`G` accordingly.  These tests prove the new flush
+// path round-trips FJ's tag; the pool-restart semantic for downstream
+// heuristics is exercised transitively (FPR's get_restart now reads
+// from the same pool that FJ wrote to, as audited by the refactor's
+// signature changes).
+
+TEST_CASE("mode-matrix seq/det: FJ entries survive shared pool flush", "[mode-matrix]") {
+    REQUIRE(lseu_seq_emits_fj_tag(/*opportunistic=*/false));
+}
+
+TEST_CASE("mode-matrix seq/opp: FJ entries survive shared pool flush", "[mode-matrix]") {
+    REQUIRE(lseu_seq_emits_fj_tag(/*opportunistic=*/true));
 }
