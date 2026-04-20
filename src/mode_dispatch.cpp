@@ -53,6 +53,12 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
 
     auto alloc = [&](double w) -> size_t { return static_cast<size_t>(budget * w / total_weight); };
 
+    // Each heuristic's inner loops also poll the deadline, but their setup
+    // (build_csc, precompute_var_orders, seed_pool) runs before that first
+    // inner poll; checking out here skips the setup entirely once the
+    // budget is exhausted.  `terminatorTerminated` is called only from
+    // this sequential outer loop — the previous heuristic's parallel
+    // region has already joined, so there is no concurrent access.
     const double time_limit = options->time_limit;
     const auto *mipdata = mipsolver.mipdata_.get();
     auto deadline_hit = [&]() {

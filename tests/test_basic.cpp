@@ -58,6 +58,27 @@ TEST_CASE("Characterization: flugpl", "[heuristic][fpr]") {
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
+TEST_CASE("compute_base_seed: random_seed flows into the hash", "[primitive][seed]") {
+    // Regression test for a previously-silent bug: every heuristic's worker
+    // RNG was seeded from `numImprovingSols + kBaseSeedOffset` alone and
+    // ignored HiGHS's `random_seed` option.  `compute_base_seed` mixes
+    // `random_seed` in.  A regression that drops the XOR would reintroduce
+    // the bug without failing any existing determinism test.
+
+    // Default seed (random_seed == 0, HiGHS's default) must reproduce the
+    // old behaviour exactly so prior characterization tests remain stable.
+    REQUIRE(compute_base_seed(0, 0) == kBaseSeedOffset);
+    REQUIRE(compute_base_seed(7, 0) == 7 + kBaseSeedOffset);
+
+    // Non-zero random_seed must change the output.
+    REQUIRE(compute_base_seed(0, 0) != compute_base_seed(0, 1));
+    REQUIRE(compute_base_seed(0, 1) != compute_base_seed(0, 2));
+    REQUIRE(compute_base_seed(0, 12345) != compute_base_seed(0, 12346));
+
+    // numImprovingSols must still vary the output independently.
+    REQUIRE(compute_base_seed(0, 42) != compute_base_seed(1, 42));
+}
+
 TEST_CASE("Characterization: egout", "[heuristic][fpr]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);

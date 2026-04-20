@@ -36,6 +36,17 @@ if(NOT _stale_scylla_found EQUAL -1)
         "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
         "cmake -B build && cmake --build build")
 endif()
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_local_mip_parallel" _stale_lmp_found)
+if(NOT _stale_lmp_found EQUAL -1)
+    message(FATAL_ERROR
+        "HighsOptions.h contains the obsolete 'mip_heuristic_local_mip_parallel' identifier. "
+        "This dead option was removed from the patch after an audit showed no src/ file "
+        "ever read it; the idempotency sentinel ('mip_heuristic_opportunistic(false)') "
+        "is present in both the old and new layouts so it cannot tell them apart. "
+        "Please clean the HiGHS source tree and rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
 
 # Idempotency check: look for the ctor-init substring that is unique to the new version.
 string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_opportunistic(false)" _opts_found)

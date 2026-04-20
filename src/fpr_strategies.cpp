@@ -505,12 +505,20 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
         lp.col_cost_.assign(ncol, 0.0);
     }
 
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    // Respect the outer MIP time limit: never exceed what remains, and cap at 30s.
+    // Respect the outer MIP time limit: never exceed what remains, cap at 30s.
+    // HiGHS treats `time_limit == 0.0` as "no limit" (the guard in Highs.cpp is
+    // `time_limit > 0 && time_limit < kHighsInf`), so when we have already
+    // blown past the outer deadline we must short-circuit before constructing
+    // `Highs`; otherwise we would accidentally disable the cap and let the
+    // analytic-center LP run unbounded.
     const double outer_limit = mipsolver.options_mip_->time_limit;
     const double remaining = outer_limit - mipsolver.timer_.read();
-    highs.setOptionValue("time_limit", std::max(0.0, std::min(30.0, remaining)));
+    if (remaining <= 0.0) {
+        return {};
+    }
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("time_limit", std::min(30.0, remaining));
     if (use_ipm) {
         highs.setOptionValue("solver", "ipm");
     }

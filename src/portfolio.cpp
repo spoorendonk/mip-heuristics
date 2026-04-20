@@ -194,8 +194,12 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
 
 FprVarOrders precompute_fpr_var_orders(const HighsMipSolver &mipsolver) {
     FprVarOrders orders(kNumFprArms);
+    const HighsInt random_seed = mipsolver.options_mip_->random_seed;
     for (int i = 0; i < kNumFprArms; ++i) {
-        std::mt19937 rng(42 + static_cast<uint32_t>(i));
+        // Mix `random_seed` into the var-order RNG; matches the worker RNG
+        // mix-in in compute_base_seed so the user's seed reaches every
+        // heuristic RNG, not just the per-worker ones.
+        std::mt19937 rng(compute_base_seed(i, random_seed));
         orders[i] = compute_var_order(mipsolver, kFprArms[i].strat.var_strategy, rng, nullptr);
     }
     return orders;
@@ -285,8 +289,7 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, std::m
 class PortfolioWorker {
 public:
     PortfolioWorker(HighsMipSolver &mipsolver, const PresolveSetup &setup, SolutionPool &pool,
-                    uint32_t seed, int worker_idx,
-                    std::atomic<uint64_t> *scylla_improvement_gen = nullptr)
+                    uint32_t seed, int worker_idx, std::atomic<uint64_t> *scylla_improvement_gen)
         : mipsolver_(mipsolver),
           setup_(setup),
           pool_(pool),

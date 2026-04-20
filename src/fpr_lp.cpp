@@ -181,7 +181,10 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     // HighsCliqueTable::cliquePartition which mutates internal state.
     s.var_orders.resize(kNumLpArms);
     for (int i = 0; i < kNumLpArms; ++i) {
-        std::mt19937 rng(kBaseSeedOffset + static_cast<uint32_t>(i) + 200);
+        // Mix `random_seed` into each var-order RNG so the user's seed
+        // reaches this precompute step too (matches the worker RNG mix-in
+        // in compute_base_seed).
+        std::mt19937 rng(compute_base_seed(i + 200, mipsolver.options_mip_->random_seed));
         s.var_orders[i] = compute_var_order(mipsolver, s.arms[i].config->strat.var_strategy, rng,
                                             s.arms[i].lp_ref);
     }

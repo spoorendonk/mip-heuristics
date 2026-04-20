@@ -99,11 +99,15 @@ private:
     int fpr_config_index_ = 0;
     std::vector<HighsInt> var_order_;
 
-    // Cross-worker improvement broadcast (opp mode).  When any worker
-    // bumps the generation, all peers reset their local staleness on the
-    // next loop iteration — prevents workers from dying on stale_budget_
-    // while a peer just improved.  Null in det mode (epoch_runner handles
-    // the reset at the barrier instead).
+    // Cross-worker improvement broadcast.  When any worker bumps the
+    // generation, peers reset their local staleness on the next loop
+    // iteration — prevents workers from dying on `stale_budget_` while a
+    // peer just improved.  Plumbed by every path that can run multiple
+    // Scylla workers concurrently: standalone Scylla det + opp, and port/det
+    // (via PortfolioWorker, see portfolio.cpp) + port/opp.  The epoch_runner
+    // barrier also calls `reset_staleness()` in det modes, but that is
+    // coarser than this atomic, which kicks in mid-epoch.  Null only in
+    // single-worker contexts (LpFprWorker).
     std::atomic<uint64_t> *improvement_gen_ = nullptr;
     uint64_t last_seen_gen_ = 0;
 };

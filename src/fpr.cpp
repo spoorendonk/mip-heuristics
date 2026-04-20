@@ -122,8 +122,12 @@ constexpr int kStaleEpochThreshold = 3;
 // not thread-safe.
 VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
     VarOrderTable orders(kNumFprStrategies);
+    const HighsInt random_seed = mipsolver.options_mip_->random_seed;
     for (int i = 0; i < kNumFprStrategies; ++i) {
-        std::mt19937 rng(42 + static_cast<uint32_t>(i));
+        // Mix `random_seed` into the var-order RNG; matches the worker RNG
+        // mix-in in compute_base_seed so the user's seed reaches every
+        // heuristic RNG, not just the per-worker ones.
+        std::mt19937 rng(compute_base_seed(i, random_seed));
         orders[i] = compute_var_order(mipsolver, kFprStrategies[i].var_strategy, rng, nullptr);
     }
     return orders;
