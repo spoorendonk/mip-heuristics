@@ -46,7 +46,18 @@ list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(CTest)
 include(Catch)
 
-add_executable(mip_heuristics_tests tests/test_basic.cpp)
+add_executable(mip_heuristics_tests
+    tests/test_smoke.cpp
+    tests/test_fpr.cpp
+    tests/test_fj.cpp
+    tests/test_local_mip.cpp
+    tests/test_scylla.cpp
+    tests/test_portfolio.cpp
+    tests/test_fpr_lp.cpp
+    tests/test_primitives.cpp
+    tests/test_mode_matrix.cpp
+    tests/test_prop_engine.cpp
+)
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
 target_compile_definitions(mip_heuristics_tests PRIVATE
