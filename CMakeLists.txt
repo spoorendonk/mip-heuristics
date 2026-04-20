@@ -16,6 +16,9 @@ add_library(mip_heuristics OBJECT
     src/fpr_lp.cpp
     src/fpr_strategies.cpp
     src/local_mip.cpp
+    src/local_mip_core.cpp
+    src/local_mip_search.cpp
+    src/local_mip_worker.cpp
     src/prop_engine.cpp
     src/repair_search.cpp
     src/thompson_sampler.cpp
