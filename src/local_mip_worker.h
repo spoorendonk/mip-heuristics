@@ -36,17 +36,19 @@ public:
 
     EpochResult run_epoch(size_t epoch_budget);
 
-    bool finished() const { return finished_; }
+    bool finished() const { return base_.finished; }
 
-    void reset_staleness() { effort_since_improvement_ = 0; }
+    void reset_staleness() { base_.reset_staleness(); }
 
 private:
     HighsMipSolver &mipsolver_;
     const CscMatrix &csc_;
     SolutionPool &pool_;
-    const size_t total_budget_;
-    const size_t stale_budget_;
     std::mt19937 rng_;
+
+    // Effort / staleness / finished bookkeeping.  `total_budget` and
+    // `stale_budget` are set in the constructor.
+    EpochWorkerBase base_;
 
     WorkerCtx ctx_;
     std::vector<HighsInt> costed_vars_;
@@ -56,12 +58,9 @@ private:
     double best_objective_ = 0.0;
     std::vector<double> best_solution_;
 
-    size_t total_effort_ = 0;
-    size_t effort_since_improvement_ = 0;
     HighsInt steps_since_improvement_ = 0;
     HighsInt restart_count_ = 0;
     HighsInt step_ = 0;
-    bool finished_ = false;
 };
 
 static_assert(EpochWorker<LocalMipWorker>, "LocalMipWorker must satisfy EpochWorker concept");

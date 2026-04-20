@@ -28,16 +28,18 @@ struct FjWorker::Impl {
 
 FjWorker::FjWorker(HighsMipSolver& mipsolver, SolutionPool& pool, size_t total_budget,
                    uint32_t seed)
-    : mipsolver_(mipsolver), pool_(pool), total_budget_(total_budget), seed_(seed) {}
+    : mipsolver_(mipsolver), pool_(pool), seed_(seed) {
+    base_.total_budget = total_budget;
+}
 
 FjWorker::~FjWorker() = default;
 
 void FjWorker::reset_staleness() {
-    effort_since_improvement_ = 0;
+    base_.reset_staleness();
 }
 
 EpochResult FjWorker::run_epoch(size_t epoch_budget) {
-    if (finished_) {
+    if (base_.finished) {
         return {};
     }
 
@@ -52,7 +54,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
         initialized_ = true;
 
 #ifdef HIGHSINT64
-        finished_ = true;
+        base_.finished = true;
         return {};
 #endif
 
@@ -80,7 +82,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
             const bool legal_bounds = lower <= upper && lower < kHighsInf && upper > -kHighsInf &&
                                       !std::isnan(lower) && !std::isnan(upper);
             if (!legal_bounds) {
-                finished_ = true;
+                base_.finished = true;
                 return {};
             }
             impl_->solver.addVar(fjVarType, lower, upper, sense_multiplier * model->col_cost_[col]);
@@ -119,13 +121,18 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
             }
         }
 
+        // FJ counts "step-units" rather than coefficient accesses, so its
+        // staleness budget is derived from the constraint-matrix nonzero
+        // count instead of the generic `total_budget >> 2` default from
+        // EpochWorkerBase.  Coefficient-access vs step-unit semantics stays
+        // heuristic-specific — see issue #71.
         const HighsInt nnz = a_matrix.numNz();
-        stale_budget_ =
-            std::min(static_cast<size_t>(nnz) << 8, total_budget_ > 0 ? total_budget_ : SIZE_MAX);
+        base_.stale_budget = std::min(static_cast<size_t>(nnz) << 8,
+                                      base_.total_budget > 0 ? base_.total_budget : SIZE_MAX);
     }
 
     if (!impl_) {
-        finished_ = true;
+        base_.finished = true;
         return {};
     }
 
@@ -137,7 +144,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
     std::vector<double> best_sol;
 
     auto callback = [&](FJStatus status) -> CallbackControlFlow {
-        epoch_effort_consumed = status.totalEffort - total_effort_;
+        epoch_effort_consumed = status.totalEffort - base_.total_effort;
 
         if (status.solution != nullptr) {
             found_solution = true;
@@ -150,12 +157,12 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
             return CallbackControlFlow::Terminate;
         }
         // Total budget exceeded.
-        if (status.totalEffort > total_budget_) {
+        if (status.totalEffort > base_.total_budget) {
             return CallbackControlFlow::Terminate;
         }
         // Stall detection.
         size_t esi = status.effortSinceLastImprovement;
-        if (esi > stale_budget_) {
+        if (esi > base_.stale_budget) {
             return CallbackControlFlow::Terminate;
         }
 
@@ -167,19 +174,20 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
 
     EpochResult result{};
     result.effort = epoch_effort_consumed;
-    total_effort_ += epoch_effort_consumed;
+    base_.total_effort += epoch_effort_consumed;
 
     if (found_solution) {
         pool_.try_add(best_obj, best_sol, kSolutionSourceFJ);
         result.found_improvement = true;
-        effort_since_improvement_ = 0;
+        base_.effort_since_improvement = 0;
     } else {
-        effort_since_improvement_ += epoch_effort_consumed;
+        base_.effort_since_improvement += epoch_effort_consumed;
     }
 
     // Mark finished if stalled or total budget exceeded.
-    if (total_effort_ >= total_budget_ || effort_since_improvement_ > stale_budget_) {
-        finished_ = true;
+    if (base_.total_effort >= base_.total_budget ||
+        base_.effort_since_improvement > base_.stale_budget) {
+        base_.finished = true;
     }
 
     return result;

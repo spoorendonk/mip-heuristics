@@ -3,6 +3,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
+#include "util/HighsTimer.h"
 
 #include <concepts>
 #include <cstddef>
@@ -21,6 +22,42 @@ concept EpochWorker = requires(T w, size_t budget) {
     { w.run_epoch(budget) } -> std::same_as<EpochResult>;
     { w.finished() } -> std::convertible_to<bool>;
     { w.reset_staleness() } -> std::same_as<void>;
+};
+
+// Shared per-worker bookkeeping for epoch-gated heuristics.
+//
+// Embed (composition, NOT inheritance) into workers that track cumulative
+// effort + staleness + a hard total budget — currently `FjWorker`,
+// `LocalMipWorker`, and `ScyllaWorker`.  `FprWorker`, `LpFprWorker`, and
+// `PortfolioWorker` count stale *epochs* rather than effort so they only
+// need a `finished_` flag and do not embed this struct.
+//
+// Fields are plain (non-atomic) because each worker's inner loop accesses
+// them single-threaded.  The continuous-parallel runners own their own
+// atomic counters; see `ContinuousLoop` in `continuous_loop.h`.
+struct EpochWorkerBase {
+    size_t total_budget = 0;
+    size_t stale_budget = 0;
+    size_t total_effort = 0;
+    size_t effort_since_improvement = 0;
+    bool finished = false;
+
+    // True if the worker should stop because the solver timer elapsed or
+    // the staleness budget is exhausted.  Callers still need to check the
+    // per-epoch effort cap separately.
+    bool check_termination(double time_limit, const HighsTimer &timer) const {
+        if (timer.read() >= time_limit) {
+            return true;
+        }
+        if (effort_since_improvement > stale_budget) {
+            return true;
+        }
+        return false;
+    }
+
+    // Clear the staleness counter; called at epoch barrier when any peer
+    // worker found an improvement in the prior epoch.
+    void reset_staleness() { effort_since_improvement = 0; }
 };
 
 // Generic epoch loop shared by sequential parallel modes and portfolio

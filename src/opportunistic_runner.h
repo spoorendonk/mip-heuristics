@@ -1,21 +1,21 @@
 #pragma once
 
+#include "continuous_loop.h"
 #include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
 
-#include <atomic>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <random>
 
 // Generic opportunistic (continuous) parallel loop.
 //
-// Encapsulates the `parallel::for_each` + `while(!stop)` + atomic
-// budget/staleness/termination pattern.  Each worker runs in a tight
-// loop calling `run_attempt` until the global budget, stale budget,
-// or external termination signal is reached.
+// Thin adapter over `ContinuousLoopState` (see `continuous_loop.h`).  Each
+// worker runs in a tight loop calling `run_attempt` until the global
+// budget, stale budget, or external termination signal is reached.
 //
 // Template parameters:
 //   MakeState(int worker_idx, std::mt19937&) -> State
@@ -30,26 +30,11 @@
 // Thread-safety constraints:
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
 //     (Scylla uses ScyllaWorker directly and does not go through this template.)
-//   - Worker-0-only terminator polling: `terminatorTerminated()` mutates
-//     `mipsolver.termination_status_` as a side effect, so concurrent
-//     calls from multiple workers would race.  Only worker 0 polls it,
-//     and it batches the check to once every 8 attempts.  Other workers
-//     observe the atomic `stop` flag set by worker 0 within one
-//     `default_run_cap` worth of effort.  Worst-case detection latency
-//     is ~8 worker-0 attempts plus one `default_run_cap` per peer worker.
-//   - `timer_.read()` is a const member: it only reads the `clock_start` /
-//     `clock_time` arrays and calls `getWallTime()` (which wraps
-//     `steady_clock::now()`).  It performs no writes, so concurrent reads
-//     are race-free regardless of whether the underlying clock is running
-//     or stopped.  (The benign-stale-read comment in scylla_worker.cpp is
-//     the load-bearing documentation of this reasoning; several heuristic
-//     workers poll `timer_.read()` directly.)  The runner still gates it
-//     behind worker 0 simply because it is cheaper to pair with the
-//     terminator poll.
+//   - Worker-0-only terminator polling: see `ContinuousLoopState`.
 //   - Budget overshoot: concurrent workers can overshoot `budget` by
 //     up to `N * default_run_cap` effort because each worker checks
-//     the atomic total before starting an attempt.  This bounded
-//     overshoot is acceptable for heuristic effort accounting.
+//     the atomic total before starting an attempt.  Bounded overshoot
+//     is acceptable for heuristic effort accounting.
 //
 // Returns total effort consumed across all workers.
 template <typename MakeState, typename RunAttempt>
@@ -60,13 +45,8 @@ size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers, size_t
         return 0;
     }
 
-    auto *mipdata = mipsolver.mipdata_.get();
-    const double time_limit = mipsolver.options_mip_->time_limit;
     const int N = num_workers;
-
-    std::atomic<size_t> total_effort{0};
-    std::atomic<size_t> effort_since_improvement{0};
-    std::atomic<bool> stop{false};
+    ContinuousLoopState loop;
 
     highs::parallel::for_each(
         0, static_cast<HighsInt>(N),
@@ -77,25 +57,19 @@ size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers, size_t
 
                 auto state = make_state(static_cast<int>(w), rng);
 
-                while (!stop.load(std::memory_order_relaxed)) {
-                    // Worker 0 polls termination every 8 attempts to amortize
-                    // the (non-thread-safe) timer/terminator query.
+                while (!loop.stopped()) {
                     if (w == 0 && attempt_counter % 8 == 0) {
-                        if (mipdata->terminatorTerminated() ||
-                            mipsolver.timer_.read() >= time_limit) {
-                            stop.store(true, std::memory_order_relaxed);
-                        }
+                        loop.poll_termination(mipsolver);
                     }
-                    if (stop.load(std::memory_order_relaxed)) {
+                    if (loop.stopped()) {
                         break;
                     }
 
-                    // Compute remaining budget and per-attempt cap.
-                    size_t current = total_effort.load(std::memory_order_relaxed);
+                    size_t current = loop.total_effort.load(std::memory_order_relaxed);
                     size_t remaining = budget - std::min(budget, current);
                     size_t run_cap = std::min(default_run_cap, remaining);
                     if (run_cap == 0) {
-                        stop.store(true, std::memory_order_relaxed);
+                        loop.request_stop();
                         break;
                     }
 
@@ -108,27 +82,12 @@ size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers, size_t
                         break;
                     }
 
-                    // Update staleness tracking.
-                    if (result.found_feasible) {
-                        effort_since_improvement.store(0, std::memory_order_relaxed);
-                    } else {
-                        effort_since_improvement.fetch_add(result.effort,
-                                                           std::memory_order_relaxed);
-                    }
-
-                    if (effort_since_improvement.load(std::memory_order_relaxed) >= stale_budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
-
-                    // Update total effort and check budget.
-                    size_t new_total = total_effort.fetch_add(result.effort) + result.effort;
-                    if (new_total >= budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
+                    loop.note_staleness(result.effort, result.found_feasible, stale_budget);
+                    loop.add_effort(result.effort, budget);
                 }
             }
         },
         1);
 
-    return total_effort.load(std::memory_order_relaxed);
+    return loop.total_effort.load(std::memory_order_relaxed);
 }

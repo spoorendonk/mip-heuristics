@@ -41,14 +41,14 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
       pdlp_(pdlp),
       csc_(csc),
       pool_(pool),
-      total_budget_(total_budget),
       num_workers_(std::max(num_workers, 1)),
       epsilon_(pump::kEpsilonInit),
       rng_(seed),
       fpr_config_index_(select_fpr_config(worker_idx, seed)),
       improvement_gen_(improvement_gen) {
+    base_.total_budget = total_budget;
     if (!pdlp_.initialized()) {
-        finished_ = true;
+        base_.finished = true;
         return;
     }
     const auto *model = mipsolver_.model_;
@@ -66,7 +66,7 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
         norm_c_sq += orig_cost[j] * orig_cost[j];
     }
     if (num_integers == 0 || ncol_ == 0) {
-        finished_ = true;
+        base_.finished = true;
         return;
     }
 
@@ -75,11 +75,11 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
 
     nnz_lp_ = pdlp_.nnz_lp();
     if (nnz_lp_ == 0) {
-        finished_ = true;
+        base_.finished = true;
         return;
     }
 
-    stale_budget_ = total_budget_ >> 2;
+    base_.stale_budget = base_.total_budget >> 2;
     modified_cost_ = orig_cost;
     cycle_history_.reserve(pump::kCycleWindow);
 
@@ -91,7 +91,7 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
 }
 
 EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
-    if (finished_) {
+    if (base_.finished) {
         return {};
     }
 
@@ -103,23 +103,23 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
 
     EpochResult epoch{};
 
-    while (epoch.effort < epoch_budget && total_effort_ < total_budget_) {
+    while (epoch.effort < epoch_budget && base_.total_effort < base_.total_budget) {
         // HiGHS's timer is not guaranteed thread-safe for concurrent
         // readers; races here are benign (stale reads by ~ms, not data
         // corruption) and the cost of a formal gate isn't worth it.
         if (mipsolver_.timer_.read() >= time_limit) {
-            finished_ = true;
+            base_.finished = true;
             break;
         }
         if (improvement_gen_ != nullptr) {
             uint64_t gen = improvement_gen_->load(std::memory_order_relaxed);
             if (gen != last_seen_gen_) {
                 last_seen_gen_ = gen;
-                effort_since_improvement_ = 0;
+                base_.effort_since_improvement = 0;
             }
         }
-        if (effort_since_improvement_ > stale_budget_) {
-            finished_ = true;
+        if (base_.effort_since_improvement > base_.stale_budget) {
+            base_.finished = true;
             break;
         }
 
@@ -127,7 +127,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
 
         double remaining = time_limit - mipsolver_.timer_.read();
         if (remaining <= 0.0) {
-            finished_ = true;
+            base_.finished = true;
             break;
         }
 
@@ -138,36 +138,36 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         //  - epoch.effort gets the FULL cost (iters * nnz) so the outer
         //    run_epoch_loop / run_opportunistic_loop budget check sees
         //    actual aggregate work and stops on time.
-        //  - Per-worker counters (total_effort_, effort_since_improvement_)
+        //  - Per-worker counters (base_.total_effort, base_.effort_since_improvement)
         //    get the amortized cost (÷ num_workers) so each worker's
         //    staleness threshold reflects its fair share of the serialized
         //    PDLP pipeline rather than the full cost.
         size_t actual_effort = static_cast<size_t>(solve.pdlp_iters) * nnz_lp_;
         size_t local_effort = actual_effort / static_cast<size_t>(num_workers_);
-        total_effort_ += local_effort;
-        effort_since_improvement_ += local_effort;
+        base_.total_effort += local_effort;
+        base_.effort_since_improvement += local_effort;
         epoch.effort += actual_effort;
 
         if (solve.status == HighsStatus::kError) {
-            finished_ = true;
+            base_.finished = true;
             break;
         }
         if (solve.model_status == HighsModelStatus::kInfeasible) {
-            finished_ = true;
+            base_.finished = true;
             break;
         }
 
         if (solve.pdlp_iters == 0) {
             ++pdlp_stall_count_;
             if (pdlp_stall_count_ >= pump::kMaxPdlpStalls) {
-                finished_ = true;
+                base_.finished = true;
                 break;
             }
         } else {
             pdlp_stall_count_ = 0;
         }
         if (solve.col_value.empty()) {
-            finished_ = true;
+            base_.finished = true;
             break;
         }
 
@@ -209,7 +209,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                     obj += orig_cost[j] * x_bar[j];
                 }
                 pool_.try_add(obj, x_bar, kSolutionSourceScylla);
-                effort_since_improvement_ = 0;
+                base_.effort_since_improvement = 0;
                 if (improvement_gen_ != nullptr) {
                     improvement_gen_->fetch_add(1, std::memory_order_relaxed);
                 }
@@ -218,8 +218,9 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             }
         }
 
-        size_t remaining_budget = std::min(epoch_budget - std::min(epoch_budget, epoch.effort),
-                                           total_budget_ - std::min(total_budget_, total_effort_));
+        size_t remaining_budget =
+            std::min(epoch_budget - std::min(epoch_budget, epoch.effort),
+                     base_.total_budget - std::min(base_.total_budget, base_.total_effort));
         if (remaining_budget == 0) {
             break;
         }
@@ -243,13 +244,13 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
 
         HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0, restart_ptr);
 
-        total_effort_ += rounded.effort;
-        effort_since_improvement_ += rounded.effort;
+        base_.total_effort += rounded.effort;
+        base_.effort_since_improvement += rounded.effort;
         epoch.effort += rounded.effort;
 
         if (rounded.found_feasible && !rounded.solution.empty()) {
             pool_.try_add(rounded.objective, rounded.solution, kSolutionSourceScylla);
-            effort_since_improvement_ = 0;
+            base_.effort_since_improvement = 0;
             if (improvement_gen_ != nullptr) {
                 improvement_gen_->fetch_add(1, std::memory_order_relaxed);
             }

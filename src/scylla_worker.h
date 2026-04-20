@@ -48,28 +48,31 @@ public:
                  int num_workers, std::atomic<uint64_t> *improvement_gen = nullptr);
 
     // Run iterations until epoch_budget effort is consumed.  Sets
-    // finished_ when the worker cannot make further progress.
+    // base_.finished when the worker cannot make further progress.
     EpochResult run_epoch(size_t epoch_budget);
 
-    bool finished() const { return finished_; }
-    size_t total_effort() const { return total_effort_; }
+    bool finished() const { return base_.finished; }
+    size_t total_effort() const { return base_.total_effort; }
 
     // Reset the improvement staleness counter (called at epoch boundary
     // when another worker found an improvement).
-    void reset_staleness() { effort_since_improvement_ = 0; }
+    void reset_staleness() { base_.reset_staleness(); }
 
 private:
     HighsMipSolver &mipsolver_;
     ContestedPdlp &pdlp_;
     const CscMatrix &csc_;
     SolutionPool &pool_;
-    const size_t total_budget_;
 
     HighsInt ncol_ = 0;
     HighsInt nrow_ = 0;
     double cost_scale_ = 1.0;
     size_t nnz_lp_ = 0;
-    size_t stale_budget_ = 0;
+
+    // Effort / staleness / finished bookkeeping.  `total_budget` is set
+    // in the constructor; `stale_budget` derives from `total_budget >> 2`
+    // at init time.
+    EpochWorkerBase base_;
 
     // Number of concurrent ScyllaWorkers sharing the contested PDLP; used
     // to amortize per-iteration effort so each worker charges its fair
@@ -81,10 +84,6 @@ private:
     double epsilon_;
     double alpha_K_ = 1.0;
     int K_ = 0;
-
-    size_t total_effort_ = 0;
-    size_t effort_since_improvement_ = 0;
-    bool finished_ = false;
 
     // Per-worker state.
     std::vector<double> warm_start_col_value_;
@@ -101,7 +100,7 @@ private:
 
     // Cross-worker improvement broadcast.  When any worker bumps the
     // generation, peers reset their local staleness on the next loop
-    // iteration — prevents workers from dying on `stale_budget_` while a
+    // iteration — prevents workers from dying on `base_.stale_budget` while a
     // peer just improved.  Plumbed by every path that can run multiple
     // Scylla workers concurrently: standalone Scylla det + opp, and port/det
     // (via PortfolioWorker, see portfolio.cpp) + port/opp.  The epoch_runner

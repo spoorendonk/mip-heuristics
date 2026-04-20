@@ -49,13 +49,9 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
 LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
                                size_t total_budget, uint32_t seed, const double *initial_solution,
                                size_t stale_budget)
-    : mipsolver_(mipsolver),
-      csc_(csc),
-      pool_(pool),
-      total_budget_(total_budget),
-      stale_budget_(stale_budget > 0 ? stale_budget : total_budget >> 2),
-      rng_(seed),
-      ctx_(mipsolver, csc) {
+    : mipsolver_(mipsolver), csc_(csc), pool_(pool), rng_(seed), ctx_(mipsolver, csc) {
+    base_.total_budget = total_budget;
+    base_.stale_budget = stale_budget > 0 ? stale_budget : total_budget >> 2;
     const HighsInt ncol = mipsolver.model_->num_col_;
     auto *mipdata = ctx_.mipdata;
 
@@ -99,7 +95,7 @@ LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, 
 }
 
 EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
-    if (finished_) {
+    if (base_.finished) {
         return {};
     }
 
@@ -111,13 +107,13 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
     size_t effort_at_last_improvement = effort_start;
 
     while (ctx_.effort - effort_start < epoch_budget &&
-           total_effort_ + (ctx_.effort - effort_start) < total_budget_) {
+           base_.total_effort + (ctx_.effort - effort_start) < base_.total_budget) {
         if (mipsolver_.timer_.read() >= time_limit) {
-            finished_ = true;
+            base_.finished = true;
             break;
         }
-        if (effort_since_improvement_ + (ctx_.effort - effort_start) > stale_budget_) {
-            finished_ = true;
+        if (base_.effort_since_improvement + (ctx_.effort - effort_start) > base_.stale_budget) {
+            base_.finished = true;
             break;
         }
 
@@ -164,7 +160,7 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
                 epoch.found_improvement = true;
 
                 pool_.try_add(obj, ctx_.solution, kSolutionSourceLocalMIP);
-                effort_since_improvement_ = 0;
+                base_.effort_since_improvement = 0;
                 effort_at_last_improvement = ctx_.effort;
             }
 
@@ -210,7 +206,7 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
 
             ++steps_since_improvement_;
             if (steps_since_improvement_ >= kFeasiblePlateau) {
-                finished_ = true;
+                base_.finished = true;
                 break;
             }
         } else {
@@ -272,10 +268,10 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
     }
 
     size_t epoch_effort = ctx_.effort - effort_start;
-    total_effort_ += epoch_effort;
+    base_.total_effort += epoch_effort;
     // Only add effort consumed since the last improvement within this
     // epoch (avoid double-counting when improvement resets the counter).
-    effort_since_improvement_ += ctx_.effort - effort_at_last_improvement;
+    base_.effort_since_improvement += ctx_.effort - effort_at_last_improvement;
     epoch.effort = epoch_effort;
 
     return epoch;

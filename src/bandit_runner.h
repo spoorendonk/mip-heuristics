@@ -1,5 +1,6 @@
 #pragma once
 
+#include "continuous_loop.h"
 #include "heuristic_common.h"
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
@@ -9,7 +10,6 @@
 #include "thompson_sampler.h"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -113,12 +113,7 @@ size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver, ThompsonSampler 
                                      SolutionPool &pool, int num_workers, int num_arms,
                                      size_t budget, size_t stale_budget, uint32_t base_seed,
                                      bool minimize, MakeRunArm make_run_arm, LogArm log_arm) {
-    auto *mipdata = mipsolver.mipdata_.get();
-    const double time_limit = mipsolver.options_mip_->time_limit;
-
-    std::atomic<size_t> total_effort{0};
-    std::atomic<size_t> effort_since_improvement{0};
-    std::atomic<bool> stop{false};
+    ContinuousLoopState loop;
 
     highs::parallel::for_each(
         0, static_cast<HighsInt>(num_workers),
@@ -128,17 +123,11 @@ size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver, ThompsonSampler 
                 auto run_arm = make_run_arm(static_cast<int>(w));
                 int attempt_counter = 0;
 
-                while (!stop.load(std::memory_order_relaxed)) {
-                    // Worker 0 polls the terminator / timer every 8 attempts.
-                    // These calls are not guaranteed thread-safe for concurrent
-                    // callers.  Other workers observe `stop` atomically.
+                while (!loop.stopped()) {
                     if (w == 0 && attempt_counter % 8 == 0) {
-                        if (mipdata->terminatorTerminated() ||
-                            mipsolver.timer_.read() >= time_limit) {
-                            stop.store(true, std::memory_order_relaxed);
-                        }
+                        loop.poll_termination(mipsolver);
                     }
-                    if (stop.load(std::memory_order_relaxed)) {
+                    if (loop.stopped()) {
                         break;
                     }
 
@@ -146,11 +135,12 @@ size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver, ThompsonSampler 
                     auto before = pool.snapshot();
 
                     size_t remaining =
-                        budget - std::min(budget, total_effort.load(std::memory_order_relaxed));
+                        budget -
+                        std::min(budget, loop.total_effort.load(std::memory_order_relaxed));
                     size_t arm_budget =
                         std::min(compute_budget_cap(bandit, arm, budget, num_arms), remaining);
                     if (arm_budget == 0) {
-                        stop.store(true, std::memory_order_relaxed);
+                        loop.request_stop();
                         break;
                     }
 
@@ -170,33 +160,24 @@ size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver, ThompsonSampler 
                         log_arm(arm, result.effort, reward, wall_ms);
                     }
 
-                    if (reward >= 2) {
-                        effort_since_improvement.store(0, std::memory_order_relaxed);
-                    } else {
-                        effort_since_improvement.fetch_add(result.effort,
-                                                           std::memory_order_relaxed);
-                    }
-
-                    if (effort_since_improvement.load(std::memory_order_relaxed) >= stale_budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
-
-                    // Zero-effort return: guard against spinning on an arm
-                    // that made no progress.
+                    // Order preserved from pre-factor inline code:
+                    //   1. note_staleness — bandit bails on stale budget *before*
+                    //      the zero-effort check, so a zero-effort attempt still
+                    //      accumulates staleness for peer workers.
+                    //   2. zero-effort guard — breaks *this* worker's loop
+                    //      without bumping total_effort.
+                    //   3. add_effort — only non-zero effort grows the budget.
+                    loop.note_staleness(result.effort, /*improved=*/reward >= 2, stale_budget);
                     if (result.effort == 0) {
                         break;
                     }
-
-                    size_t new_total = total_effort.fetch_add(result.effort) + result.effort;
-                    if (new_total >= budget) {
-                        stop.store(true, std::memory_order_relaxed);
-                    }
+                    loop.add_effort(result.effort, budget);
                 }
             }
         },
         1);
 
-    return total_effort.load(std::memory_order_relaxed);
+    return loop.total_effort.load(std::memory_order_relaxed);
 }
 
 // -----------------------------------------------------------------------------

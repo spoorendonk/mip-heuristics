@@ -28,7 +28,7 @@ public:
     // Run FJ for up to epoch_budget effort, then pause via callback.
     EpochResult run_epoch(size_t epoch_budget);
 
-    bool finished() const { return finished_; }
+    bool finished() const { return base_.finished; }
 
     // Reset the improvement staleness counter (called at epoch boundary
     // when another worker found an improvement).
@@ -40,15 +40,14 @@ private:
 
     HighsMipSolver &mipsolver_;
     SolutionPool &pool_;
-    const size_t total_budget_;
     const uint32_t seed_;
 
-    size_t total_effort_ = 0;
-    size_t effort_since_improvement_ = 0;
-    size_t stale_budget_ = 0;
+    // Effort / staleness / finished bookkeeping.  FJ's `stale_budget` is
+    // derived from the constraint matrix nonzero count (see run_epoch)
+    // rather than the generic `total_budget >> 2` default.
+    EpochWorkerBase base_;
     bool initialized_ = false;
     bool first_solve_done_ = false;
-    bool finished_ = false;
 };
 
 // static_assert in fj_worker.cpp to avoid leaking C++23 concepts into
