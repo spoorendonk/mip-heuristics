@@ -170,7 +170,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
     total_effort_ += epoch_effort_consumed;
 
     if (found_solution) {
-        pool_.try_add(best_obj, best_sol);
+        pool_.try_add(best_obj, best_sol, kSolutionSourceFJ);
         result.found_improvement = true;
         effort_since_improvement_ = 0;
     } else {

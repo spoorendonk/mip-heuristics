@@ -163,7 +163,7 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
                 steps_since_improvement_ = 0;
                 epoch.found_improvement = true;
 
-                pool_.try_add(obj, ctx_.solution);
+                pool_.try_add(obj, ctx_.solution, kSolutionSourceLocalMIP);
                 effort_since_improvement_ = 0;
                 effort_at_last_improvement = ctx_.effort;
             }

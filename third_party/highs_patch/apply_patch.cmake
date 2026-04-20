@@ -104,12 +104,22 @@ else()
     message(STATUS "feasibilityJumpCapture patch already applied, skipping")
 endif()
 
-# Add per-heuristic solution source enum entries
-string(FIND "${MIPDATA_H}" "kSolutionSourceFPR" _src_enum_found)
+# Add per-heuristic solution source enum entries.
+# Idempotency key includes kSolutionSourceFprLp (added after the initial
+# four so the patch can detect a stale checkout that has the first four
+# but is missing FprLp and still re-apply only the missing entry).  The
+# older sentinel kSolutionSourceFPR alone is not sufficient.
+string(FIND "${MIPDATA_H}" "kSolutionSourceFprLp" _src_enum_found)
 if(_src_enum_found EQUAL -1)
+    # If the stale first-four patch is present, strip it so the full
+    # replacement below inserts the complete set in one go.
+    string(REPLACE
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceCleanup,"
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
+      MIPDATA_H "${MIPDATA_H}")
     string(REPLACE
       "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
-      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceCleanup,"
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceFprLp,               // D (LP-dependent FPR, B&B dive)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceCleanup,"
       MIPDATA_H "${MIPDATA_H}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
@@ -121,18 +131,32 @@ endif()
 # ── Patch HighsMipSolverData.cpp: add source strings + fix key display ──
 file(READ "${MIP_DIR}/HighsMipSolverData.cpp" MIPDATA_CPP)
 
-string(FIND "${MIPDATA_CPP}" "kSolutionSourceFPR" _src_cpp_found)
+# Idempotency key on kSolutionSourceFprLp so the patch re-applies on
+# top of the stale first-four-sources layout when upgrading in place.
+string(FIND "${MIPDATA_CPP}" "kSolutionSourceFprLp" _src_cpp_found)
 if(_src_cpp_found EQUAL -1)
+    # If the stale first-four-sources patch is present, strip the
+    # source-to-string chain and the 4-group limits back to pristine so
+    # the replacements below insert the complete set in one go.
+    string(REPLACE
+      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
+      "} else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
+      MIPDATA_CPP "${MIPDATA_CPP}")
+    string(REPLACE
+      "std::vector<int> limits = {4, 9, 14, 18, last_enum};"
+      "std::vector<int> limits = {4, 9, 14, last_enum};"
+      MIPDATA_CPP "${MIPDATA_CPP}")
+
     # Add source-to-string entries before kSolutionSourceCleanup
     string(REPLACE
       "} else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
-      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
+      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceFprLp) {\n    if (code) return \"D\";\n    return \"FPR LP\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
-    # Update printSolutionSourceKey limits for the 3 new entries
+    # Update printSolutionSourceKey limits for the 5 new entries (one extra group).
     string(REPLACE
       "std::vector<int> limits = {4, 9, 14, last_enum};"
-      "std::vector<int> limits = {4, 9, 14, 18, last_enum};"
+      "std::vector<int> limits = {4, 9, 14, 19, last_enum};"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")

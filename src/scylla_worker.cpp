@@ -208,7 +208,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                 for (HighsInt j = 0; j < ncol_; ++j) {
                     obj += orig_cost[j] * x_bar[j];
                 }
-                pool_.try_add(obj, x_bar);
+                pool_.try_add(obj, x_bar, kSolutionSourceScylla);
                 effort_since_improvement_ = 0;
                 if (improvement_gen_ != nullptr) {
                     improvement_gen_->fetch_add(1, std::memory_order_relaxed);
@@ -248,7 +248,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         epoch.effort += rounded.effort;
 
         if (rounded.found_feasible && !rounded.solution.empty()) {
-            pool_.try_add(rounded.objective, rounded.solution);
+            pool_.try_add(rounded.objective, rounded.solution, kSolutionSourceScylla);
             effort_since_improvement_ = 0;
             if (improvement_gen_ != nullptr) {
                 improvement_gen_->fetch_add(1, std::memory_order_relaxed);

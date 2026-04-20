@@ -40,7 +40,7 @@ int SolutionPool::num_integers() const {
     return num_integers_;
 }
 
-bool SolutionPool::try_add(double obj, const std::vector<double>& sol) {
+bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int source) {
     std::lock_guard<HighsSpinMutex> lock(mtx_);
 
     // Find insertion point (entries_ kept sorted, best first)
@@ -57,7 +57,7 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol) {
             // Standard path: improves on worst — replace worst.
             entries_.pop_back();
             pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
-            entries_.insert(pos, {obj, sol});
+            entries_.insert(pos, {obj, sol, source});
             return true;
         }
 
@@ -99,11 +99,11 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol) {
         // Replace the most similar entry.
         entries_.erase(entries_.begin() + most_similar_idx);
         pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
-        entries_.insert(pos, {obj, sol});
+        entries_.insert(pos, {obj, sol, source});
         return true;
     }
 
-    entries_.insert(pos, {obj, sol});
+    entries_.insert(pos, {obj, sol, source});
     return true;
 }
 
@@ -221,5 +221,9 @@ void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {
     for (HighsInt j = 0; j < ncol; ++j) {
         obj += model->col_cost_[j] * mipdata->incumbent[j];
     }
-    pool.try_add(obj, mipdata->incumbent);
+    // The incumbent came from HiGHS itself (or a prior heuristic that has
+    // already been attributed), so on flush HiGHS will recognize it as a
+    // duplicate and drop it before logging.  Tag it with the generic
+    // kSolutionSourceHeuristic so nothing downstream misattributes it.
+    pool.try_add(obj, mipdata->incumbent, kSolutionSourceHeuristic);
 }

@@ -189,7 +189,7 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     epoch.effort = result.effort;
 
     if (result.found_feasible) {
-        pool_.try_add(result.objective, result.solution);
+        pool_.try_add(result.objective, result.solution, kSolutionSourceFPR);
         epoch.found_improvement = true;
         epochs_without_improvement_ = 0;
     } else {

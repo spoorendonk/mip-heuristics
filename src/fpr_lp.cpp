@@ -253,7 +253,7 @@ public:
         epoch.effort = last_result_.effort;
 
         if (last_result_.found_feasible) {
-            pool_.try_add(last_result_.objective, last_result_.solution);
+            pool_.try_add(last_result_.objective, last_result_.solution, kSolutionSourceFprLp);
             epoch.found_improvement = true;
             epochs_without_improvement_ = 0;
         } else {
@@ -520,7 +520,7 @@ void run_portfolio_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &se
 
             auto result = fpr_attempt(mipsolver, cfg, rng, attempt, restart_ptr);
             if (result.found_feasible) {
-                pool.try_add(result.objective, result.solution);
+                pool.try_add(result.objective, result.solution, kSolutionSourceFprLp);
             }
             return result;
         };
@@ -567,10 +567,12 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
         }
     }
 
-    // Submit best solutions to solver (sequential).
+    // Submit best solutions to solver (sequential).  Each entry carries
+    // its own per-heuristic source tag so HiGHS logs the correct origin
+    // (`D` for the LP-dependent FPR arms) rather than a generic `A`.
     auto *mipdata = mipsolver.mipdata_.get();
     for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceFPR);
+        mipdata->trySolution(entry.solution, entry.source);
     }
 }
 

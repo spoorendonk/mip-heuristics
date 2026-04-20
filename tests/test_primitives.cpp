@@ -1,3 +1,4 @@
+#include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
 #include "solution_pool.h"
 #include "thompson_sampler.h"
 
@@ -129,9 +130,9 @@ TEST_CASE("SolutionPool: basic operations", "[pool]") {
     REQUIRE(pool.size() == 0);
 
     // Add solutions
-    REQUIRE(pool.try_add(10.0, {1.0, 2.0}));
-    REQUIRE(pool.try_add(5.0, {3.0, 4.0}));
-    REQUIRE(pool.try_add(8.0, {5.0, 6.0}));
+    REQUIRE(pool.try_add(10.0, {1.0, 2.0}, kSolutionSourceFPR));
+    REQUIRE(pool.try_add(5.0, {3.0, 4.0}, kSolutionSourceFJ));
+    REQUIRE(pool.try_add(8.0, {5.0, 6.0}, kSolutionSourceLocalMIP));
 
     snap = pool.snapshot();
     REQUIRE(snap.has_solution);
@@ -139,10 +140,10 @@ TEST_CASE("SolutionPool: basic operations", "[pool]") {
     REQUIRE(pool.size() == 3);
 
     // Adding worse solution when full should fail
-    REQUIRE_FALSE(pool.try_add(15.0, {7.0, 8.0}));
+    REQUIRE_FALSE(pool.try_add(15.0, {7.0, 8.0}, kSolutionSourceScylla));
 
     // Adding better solution when full should replace worst
-    REQUIRE(pool.try_add(3.0, {9.0, 10.0}));
+    REQUIRE(pool.try_add(3.0, {9.0, 10.0}, kSolutionSourceScylla));
     snap = pool.snapshot();
     REQUIRE(snap.best_objective == Catch::Approx(3.0));
 
@@ -151,13 +152,21 @@ TEST_CASE("SolutionPool: basic operations", "[pool]") {
     REQUIRE(entries.size() == 3);
     REQUIRE(entries[0].objective <= entries[1].objective);
     REQUIRE(entries[1].objective <= entries[2].objective);
+
+    // Per-entry source tags must be preserved across inserts.  Best (obj=3)
+    // was the Scylla replacement; second-best (obj=5) came in tagged FJ;
+    // third (obj=8) came in tagged LocalMIP.  obj=10 was dropped when the
+    // better obj=3 entry replaced the worst.
+    REQUIRE(entries[0].source == kSolutionSourceScylla);
+    REQUIRE(entries[1].source == kSolutionSourceFJ);
+    REQUIRE(entries[2].source == kSolutionSourceLocalMIP);
 }
 
 TEST_CASE("SolutionPool: restart strategies", "[pool]") {
     SolutionPool pool(5, true);
-    pool.try_add(10.0, {0.0, 1.0, 0.0});
-    pool.try_add(5.0, {1.0, 0.0, 1.0});
-    pool.try_add(7.0, {0.0, 0.0, 1.0});
+    pool.try_add(10.0, {0.0, 1.0, 0.0}, kSolutionSourceFPR);
+    pool.try_add(5.0, {1.0, 0.0, 1.0}, kSolutionSourceFPR);
+    pool.try_add(7.0, {0.0, 0.0, 1.0}, kSolutionSourceFPR);
 
     std::mt19937 rng(42);
     std::vector<double> restart;
@@ -176,7 +185,7 @@ TEST_CASE("SolutionPool: restart strategies", "[pool]") {
 
 TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-safety]") {
     SolutionPool pool(10, true);
-    pool.try_add(100.0, {1.0, 2.0, 3.0});
+    pool.try_add(100.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR);
 
     constexpr int kNumThreads = 4;
     constexpr int kOpsPerThread = 200;
@@ -187,7 +196,7 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
             std::mt19937 rng(42 + t);
             for (int i = 0; i < kOpsPerThread; ++i) {
                 double obj = std::uniform_real_distribution<double>(1.0, 200.0)(rng);
-                pool.try_add(obj, {obj, obj + 1.0, obj + 2.0});
+                pool.try_add(obj, {obj, obj + 1.0, obj + 2.0}, kSolutionSourceFPR);
 
                 std::vector<double> restart;
                 pool.get_restart(rng, restart);
@@ -261,7 +270,7 @@ TEST_CASE("SolutionPool: empty pool restart returns false", "[pool][edge]") {
 
 TEST_CASE("SolutionPool: single-entry restart is always copy", "[pool][edge]") {
     SolutionPool pool(5, true);
-    pool.try_add(10.0, {1.0, 2.0, 3.0});
+    pool.try_add(10.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR);
 
     std::mt19937 rng(42);
     for (int i = 0; i < 20; ++i) {

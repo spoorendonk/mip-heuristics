@@ -94,6 +94,27 @@ const char *arm_name(int arm_type) {
     return "Unknown";
 }
 
+// Map a presolve arm_type onto the HiGHS kSolutionSource* tag for the
+// originating heuristic, so pool entries carry correct per-arm provenance.
+// FPR arms (0..kNumFprArms-1) all originate from the FPR heuristic.
+int arm_source_tag(int arm_type) {
+    if (find_fpr_arm(arm_type) != nullptr) {
+        return kSolutionSourceFPR;
+    }
+    switch (arm_type) {
+        case kArmLocalMIP:
+            return kSolutionSourceLocalMIP;
+        case kArmFJ:
+            return kSolutionSourceFJ;
+        case kArmScylla:
+            return kSolutionSourceScylla;
+        default:
+            // Fallback for future arms; the generic tag matches pre-#73
+            // behaviour if anyone forgets to update this switch.
+            return kSolutionSourceHeuristic;
+    }
+}
+
 // Tag used for the unified per-arm log line (see log_bandit_arm).
 constexpr const char *kLogTag = "Portfolio";
 
@@ -344,7 +365,8 @@ public:
 
             epoch.effort = last_result_.effort;
             if (last_result_.found_feasible) {
-                pool_.try_add(last_result_.objective, last_result_.solution);
+                pool_.try_add(last_result_.objective, last_result_.solution,
+                              arm_source_tag(arm_type));
                 epoch.found_improvement = true;
             }
 
@@ -459,7 +481,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                                           csc, incumbent_snapshot, arm_budget, fpr_var_orders);
 
                 if (result.found_feasible) {
-                    pool.try_add(result.objective, result.solution);
+                    pool.try_add(result.objective, result.solution,
+                                 arm_source_tag(enabled_arms[arm]));
                 }
             }
             return result;
@@ -476,13 +499,13 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
 
     mipdata->heuristic_effort_used += total_effort;
 
-    // Flush pool solutions to HiGHS (sequential).  The pool mixes entries
-    // from every bandit arm and does not carry per-entry provenance, so
-    // we can't attribute individual solutions to their originating arm
-    // here.  Per-arm attribution at pool-insertion time requires
-    // extending SolutionPool — tracked as #73.
+    // Flush pool solutions to HiGHS (sequential).  Each entry carries the
+    // originating arm's source tag (set at pool-insertion time by
+    // arm_source_tag in the make_run_arm lambda and by ScyllaWorker
+    // directly), so HiGHS logs per-arm provenance (`A` FPR, `J` FJ,
+    // `M` LocalMIP, `G` Scylla) instead of a generic `H`.
     for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
+        mipdata->trySolution(entry.solution, entry.source);
     }
 }
 
@@ -550,11 +573,12 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
 
     mipdata->heuristic_effort_used += total_effort;
 
-    // Flush pool solutions to HiGHS (best first).  See the opportunistic
-    // flush comment above for why the generic kSolutionSourceHeuristic
-    // tag is used rather than per-arm attribution.
+    // Flush pool solutions to HiGHS (best first).  Each entry carries its
+    // originating arm's source tag so HiGHS logs per-arm provenance (`A`
+    // FPR, `J` FJ, `M` LocalMIP, `G` Scylla) rather than the generic `H`.
+    // See arm_source_tag for the arm_type → source mapping.
     for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
+        mipdata->trySolution(entry.solution, entry.source);
     }
 }
 

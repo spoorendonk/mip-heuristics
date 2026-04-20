@@ -31,6 +31,12 @@ public:
     struct Entry {
         double objective;
         std::vector<double> solution;
+        // Per-entry provenance tag (one of the kSolutionSource* constants
+        // from HiGHS's HighsMipSolverData.h).  Carried so portfolio flushes
+        // can attribute each solution to the bandit arm / heuristic that
+        // produced it, rather than falling back on the generic
+        // kSolutionSourceHeuristic tag.
+        int source;
     };
 
     SolutionPool(int capacity, bool minimize);
@@ -41,11 +47,13 @@ public:
     void set_integer_mask(std::vector<bool> mask);
 
     // Try to add a solution. Returns true if added.
+    // `source` is one of the kSolutionSource* constants and is stored on
+    // the inserted entry for later provenance-aware flushing.
     // Insertion policy (when pool is full):
     //   1. If obj improves on worst: replace worst (standard).
     //   2. Else if obj is within kDiversityObjTolerance of best and Hamming
     //      diversity exceeds kDiversityMinHammingFrac: replace most similar.
-    bool try_add(double obj, const std::vector<double>& sol);
+    bool try_add(double obj, const std::vector<double>& sol, int source);
 
     // Atomically snapshot feasibility and current best objective.
     Snapshot snapshot();
