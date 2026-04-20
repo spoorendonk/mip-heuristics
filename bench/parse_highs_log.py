@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Incumbent:
     """A single incumbent solution update."""
+
     time: float
     objective: float
     source: str  # Single character: H, J, B, T, L, R, etc.
@@ -19,15 +20,18 @@ class Incumbent:
 @dataclass
 class EffortSample:
     """A single portfolio arm effort/wall-clock observation."""
+
     arm: str
     effort: int
     wall_ms: float
     effort_per_ms: float
+    reward: int | None = None  # None for legacy logs without a reward= field
 
 
 @dataclass
 class SolveResult:
     """Parsed result from a HiGHS MIP solve."""
+
     status: str = ""
     primal_bound: float = float("inf")
     dual_bound: float = float("-inf")
@@ -46,7 +50,9 @@ class SolveResult:
             return self.incumbents[0].time
         return None
 
-    def primal_gap_at(self, time_cutoff: float, best_known: float | None = None) -> float | None:
+    def primal_gap_at(
+        self, time_cutoff: float, best_known: float | None = None
+    ) -> float | None:
         """Primal gap at a given time cutoff.
 
         If best_known is provided, gap = (obj - best_known) / max(|best_known|, 1).
@@ -65,7 +71,9 @@ class SolveResult:
         denom = max(abs(ref), 1.0)
         return abs(last_inc.objective - ref) / denom
 
-    def primal_gap_curve(self, best_known: float | None = None) -> list[tuple[float, float]]:
+    def primal_gap_curve(
+        self, best_known: float | None = None
+    ) -> list[tuple[float, float]]:
         """Return (time, gap) points for primal integral computation."""
         points = []
         for inc in self.incumbents:
@@ -75,7 +83,9 @@ class SolveResult:
             points.append((inc.time, gap))
         return points
 
-    def primal_integral(self, time_limit: float, best_known: float | None = None) -> float:
+    def primal_integral(
+        self, time_limit: float, best_known: float | None = None
+    ) -> float:
         """Compute primal integral (area under primal gap curve).
 
         Uses the P-D integral from HiGHS if available, otherwise computes
@@ -101,19 +111,19 @@ class SolveResult:
 # Source char (or space) at position 0, then fields separated by whitespace.
 # Format: Src  Proc. InQueue |  Leaves   Expl. | BestBound  BestSol  Gap | Cuts InLp Confl. | LpIters Time
 _LOG_LINE_RE = re.compile(
-    r"^[ ]?([A-Za-z ])"     # source code (pos 0 or 1, e.g. "H " or " B")
-    r"\s+([\d.]+[kMG]?)"    # nodes processed
-    r"\s+([\d.]+[kMG]?)"    # nodes in queue
-    r"\s+([\d.]+[kMG]?)"    # leaves
-    r"\s+([\d.]+)%"         # explored %
-    r"\s+(\S+)"             # best bound
-    r"\s+(\S+)"             # best solution
-    r"\s+(\S+)"             # gap
-    r"\s+(\d+)"             # cuts
-    r"\s+(\d+)"             # in lp
-    r"\s+(\d+)"             # conflicts
-    r"\s+([\d.]+[kMG]?)"    # lp iters
-    r"\s+([\d.]+)s"         # time
+    r"^[ ]?([A-Za-z ])"  # source code (pos 0 or 1, e.g. "H " or " B")
+    r"\s+([\d.]+[kMG]?)"  # nodes processed
+    r"\s+([\d.]+[kMG]?)"  # nodes in queue
+    r"\s+([\d.]+[kMG]?)"  # leaves
+    r"\s+([\d.]+)%"  # explored %
+    r"\s+(\S+)"  # best bound
+    r"\s+(\S+)"  # best solution
+    r"\s+(\S+)"  # gap
+    r"\s+(\d+)"  # cuts
+    r"\s+(\d+)"  # in lp
+    r"\s+(\d+)"  # conflicts
+    r"\s+([\d.]+[kMG]?)"  # lp iters
+    r"\s+([\d.]+)s"  # time
 )
 
 # Solving report patterns
@@ -127,9 +137,13 @@ _NODES_RE = re.compile(r"^\s+Nodes\s+(\d+)$")
 _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 
 # Portfolio effort calibration line:
-#   [Portfolio] arm=FprDfsLocks2 effort=123456 wall_ms=45.2 effort_per_ms=2731
+#   [Portfolio] arm=FprDfsLocks2 effort=123456 wall_ms=45.2 effort_per_ms=2731 reward=3
+# The `reward=<N>` suffix was added in the bandit-dispatch consolidation
+# (issue #68); it is optional to keep the parser back-compatible with
+# historical logs predating that change.
 _EFFORT_RE = re.compile(
     r"^\s*\[Portfolio\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
+    r"(?: reward=(\d+))?"
 )
 
 
@@ -179,15 +193,19 @@ def parse_log(log_text: str) -> SolveResult:
             if src.strip() and src.strip() in _INCUMBENT_SOURCES:
                 # This line has a new incumbent — only record if objective improved
                 if best_sol != float("inf") and best_sol != float("-inf"):
-                    prev_obj = result.incumbents[-1].objective if result.incumbents else None
+                    prev_obj = (
+                        result.incumbents[-1].objective if result.incumbents else None
+                    )
                     if prev_obj is None or best_sol != prev_obj:
-                        result.incumbents.append(Incumbent(
-                            time=time_s,
-                            objective=best_sol,
-                            source=src.strip(),
-                            nodes=nodes,
-                            dual_bound=best_bound,
-                        ))
+                        result.incumbents.append(
+                            Incumbent(
+                                time=time_s,
+                                objective=best_sol,
+                                source=src.strip(),
+                                nodes=nodes,
+                                dual_bound=best_bound,
+                            )
+                        )
             continue
 
         # Solving report lines
@@ -236,12 +254,16 @@ def parse_log(log_text: str) -> SolveResult:
         # Portfolio effort calibration line
         m = _EFFORT_RE.match(line)
         if m:
-            result.effort_samples.append(EffortSample(
-                arm=m.group(1),
-                effort=int(m.group(2)),
-                wall_ms=float(m.group(3)),
-                effort_per_ms=float(m.group(4)),
-            ))
+            reward = int(m.group(5)) if m.group(5) is not None else None
+            result.effort_samples.append(
+                EffortSample(
+                    arm=m.group(1),
+                    effort=int(m.group(2)),
+                    wall_ms=float(m.group(3)),
+                    effort_per_ms=float(m.group(4)),
+                    reward=reward,
+                )
+            )
             continue
 
     return result

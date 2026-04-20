@@ -94,14 +94,8 @@ const char *arm_name(int arm_type) {
     return "Unknown";
 }
 
-void log_arm_effort(const HighsLogOptions &log_options, int arm_type, size_t effort,
-                    double wall_ms) {
-    double effort_per_ms = wall_ms > 0.0 ? static_cast<double>(effort) / wall_ms : 0.0;
-    highsLogDev(log_options, HighsLogType::kVerbose,
-                "[Portfolio] arm=%s effort=%zu wall_ms=%.1f "
-                "effort_per_ms=%.0f\n",
-                arm_name(arm_type), effort, wall_ms, effort_per_ms);
-}
+// Tag used for the unified per-arm log line (see log_bandit_arm).
+constexpr const char *kLogTag = "Portfolio";
 
 // Pre-computed variable orders for FPR arms (avoids cliquePartition data race).
 // Indexed by FprArmConfig index (0..kNumFprArms-1), not by arm_type enum.
@@ -327,18 +321,16 @@ public:
             epoch = pump_->run_epoch(epoch_budget);
             auto t1 = std::chrono::steady_clock::now();
             finished_ = pump_->finished();
-            // Accumulate HeuristicResult across Scylla epochs for reward computation.
-            // (last_result_ is reset in assign_arm(), not here.)
+            // Accumulate HeuristicResult and wall_ms across Scylla epochs so
+            // the shared restart callback sees the full-residency totals
+            // when it logs and computes the reward.  Both are reset in
+            // assign_arm(), not here.
             last_result_.effort += epoch.effort;
             if (epoch.found_improvement) {
                 last_result_.found_feasible = true;
                 last_result_.objective = pool_.snapshot().best_objective;
             }
-            if (epoch.effort > 0) {
-                double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-                log_arm_effort(mipsolver_.options_mip_->log_options, arm_type, epoch.effort,
-                               wall_ms);
-            }
+            last_wall_ms_ += std::chrono::duration<double, std::milli>(t1 - t0).count();
         } else {
             std::vector<double> restart;
             pool_.get_restart(rng_, restart);
@@ -356,11 +348,7 @@ public:
                 epoch.found_improvement = true;
             }
 
-            if (last_result_.effort > 0) {
-                double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-                log_arm_effort(mipsolver_.options_mip_->log_options, arm_type, last_result_.effort,
-                               wall_ms);
-            }
+            last_wall_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
             // Non-Scylla arms: mark finished so restart callback reassigns.
             finished_ = true;
@@ -383,12 +371,14 @@ public:
         assigned_arm_ = bandit_arm_idx;
         finished_ = false;
         last_result_ = {};
+        last_wall_ms_ = 0.0;
     }
 
     void set_pre_snapshot(SolutionPool::Snapshot snap) { pre_snap_ = snap; }
 
     int assigned_arm() const { return assigned_arm_; }
     const HeuristicResult &last_result() const { return last_result_; }
+    double last_wall_ms() const { return last_wall_ms_; }
     SolutionPool::Snapshot pre_snapshot() const { return pre_snap_; }
 
 private:
@@ -403,6 +393,7 @@ private:
     bool finished_ = true;  // starts finished → restart fires on epoch 0
 
     HeuristicResult last_result_{};
+    double last_wall_ms_ = 0.0;
     SolutionPool::Snapshot pre_snap_{};
 
     std::unique_ptr<ScyllaWorker> pump_;  // lazy-init, persists across reassignments
@@ -415,6 +406,7 @@ private:
 };
 
 static_assert(EpochWorker<PortfolioWorker>, "PortfolioWorker must satisfy EpochWorker concept");
+static_assert(BanditWorker<PortfolioWorker>, "PortfolioWorker must satisfy BanditWorker concept");
 
 void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &setup) {
     auto *mipdata = mipsolver.mipdata_.get();
@@ -474,8 +466,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
         };
     };
 
-    auto log_arm = [&](int arm, size_t effort, int /*reward*/, double wall_ms) {
-        log_arm_effort(log_options, enabled_arms[arm], effort, wall_ms);
+    auto log_arm = [&](int arm, size_t effort, int reward, double wall_ms) {
+        log_bandit_arm(log_options, kLogTag, arm_name(enabled_arms[arm]), effort, wall_ms, reward);
     };
 
     size_t total_effort = run_bandit_opportunistic_loop(mipsolver, bandit, pool, N, num_arms,
@@ -549,25 +541,12 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     const size_t epoch_budget =
         std::max<size_t>(setup.budget / (static_cast<size_t>(N) * kEpochsPerWorker), 1);
 
-    size_t total_effort = run_epoch_loop(
-        mipsolver, workers, setup.budget, epoch_budget,
-        [&](int w) {
-            auto &worker = *workers[w];
-            // Update bandit from previous epoch (skip initial assignment).
-            if (worker.assigned_arm() >= 0) {
-                auto after_snap = pool.snapshot();
-                int reward = compute_reward(worker.pre_snapshot(), after_snap, worker.last_result(),
-                                            minimize);
-                bandit.update(worker.assigned_arm(), reward);
-                bandit.record_effort(worker.assigned_arm(), worker.last_result().effort);
-            }
-            // Snapshot pool before next epoch (sequential, deterministic).
-            worker.set_pre_snapshot(pool.snapshot());
-            // Select next arm.
-            int arm = bandit.select_effort_aware(bandit_rngs[w]);
-            worker.assign_arm(arm);
-        },
-        setup.stale_budget);
+    auto restart_cb = make_bandit_restart_callback(
+        bandit, pool, workers, bandit_rngs, minimize, log_options, kLogTag,
+        [&](int arm) { return arm_name(setup.enabled_arms[arm]); });
+
+    size_t total_effort = run_epoch_loop(mipsolver, workers, setup.budget, epoch_budget,
+                                         std::move(restart_cb), setup.stale_budget);
 
     mipdata->heuristic_effort_used += total_effort;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "heuristic_common.h"
+#include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
@@ -10,19 +11,51 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <random>
+#include <vector>
 
-// Shared infrastructure for the opportunistic Thompson-sampling bandit
-// loop used by `portfolio::run_presolve_opportunistic` (presolve-time
-// multi-arm bandit over FJ / FPR / LocalMIP / Scylla) and
-// `fpr_lp::run_portfolio_opportunistic` (dive-time bandit over the 10
-// LP-dependent FPR arms).  Both variants share the same control-flow
-// skeleton (N workers sample arms, apply effort-proportional pulls,
-// update bandit, stop on staleness or budget exhaustion); the only
-// per-caller differences are how a single arm pull executes and what
-// tag the per-pull log line uses.
+// Shared infrastructure for Thompson-sampling bandit dispatch.
+//
+// Two complementary primitives live here:
+//
+//   - `run_bandit_opportunistic_loop` — continuous N-worker loop used by
+//     `portfolio::run_presolve_opportunistic` (presolve-time multi-arm
+//     bandit over FJ / FPR / LocalMIP / Scylla) and
+//     `fpr_lp::run_portfolio_opportunistic` (dive-time bandit over the
+//     10 LP-dependent FPR arms).
+//
+//   - `BanditWorker` concept + `make_bandit_restart_callback` — the
+//     epoch-gated deterministic counterpart, used by
+//     `portfolio::run_presolve` (det branch) and
+//     `fpr_lp::run_portfolio_deterministic`.  Both portfolios spawn one
+//     worker per thread, each worker runs whichever arm the bandit
+//     currently assigned, and at each epoch boundary the restart
+//     callback computes reward, updates the bandit, and reassigns the
+//     arm for the next epoch.
+//
+// All four call sites share the same "select arm, snapshot pool, run
+// arm, snapshot pool, compute reward, update bandit" skeleton; the
+// primitives here factor that out so the portfolios only provide what
+// genuinely differs (per-arm run logic, arm-name mapping, and the log
+// tag).
+
+// Unified per-arm log line used by both the deterministic and
+// opportunistic bandit paths.  Format:
+//   [<tag>] arm=<name> effort=<N> wall_ms=<X.X> effort_per_ms=<X> reward=<R>
+// The `[Portfolio]` tag is parsed by `bench/parse_highs_log.py`; the
+// parser accepts the trailing `reward=<N>` as an optional field so
+// historical logs without a reward suffix still parse.
+inline void log_bandit_arm(const HighsLogOptions &log_options, const char *tag,
+                           const char *arm_name, size_t effort, double wall_ms, int reward) {
+    double effort_per_ms = wall_ms > 0.0 ? static_cast<double>(effort) / wall_ms : 0.0;
+    highsLogDev(log_options, HighsLogType::kVerbose,
+                "[%s] arm=%s effort=%zu wall_ms=%.1f effort_per_ms=%.0f reward=%d\n", tag, arm_name,
+                effort, wall_ms, effort_per_ms, reward);
+}
 
 // Compare two objective values under the model's optimization sense.
 inline bool objective_better(bool minimize, double lhs, double rhs) {
@@ -164,4 +197,73 @@ size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver, ThompsonSampler 
         1);
 
     return total_effort.load(std::memory_order_relaxed);
+}
+
+// -----------------------------------------------------------------------------
+// Deterministic bandit dispatch (epoch-gated)
+// -----------------------------------------------------------------------------
+//
+// Counterpart to `run_bandit_opportunistic_loop` for the deterministic
+// portfolio path.  The caller still drives `run_epoch_loop` directly
+// (because worker construction and per-worker state differ), but the
+// restart callback — "compute reward from pre/post snapshot, update
+// bandit, pick next arm, reassign" — is the same for both portfolios
+// and lives here.
+//
+// Workers cooperating with this callback must expose the portfolio-
+// side contract below in addition to the `EpochWorker` concept.
+
+template <typename T>
+concept BanditWorker = requires(T w, int arm, SolutionPool::Snapshot snap) {
+    { w.assigned_arm() } -> std::convertible_to<int>;
+    { w.last_result() } -> std::convertible_to<const HeuristicResult &>;
+    { w.last_wall_ms() } -> std::convertible_to<double>;
+    { w.pre_snapshot() } -> std::convertible_to<SolutionPool::Snapshot>;
+    { w.set_pre_snapshot(snap) } -> std::same_as<void>;
+    { w.assign_arm(arm) } -> std::same_as<void>;
+};
+
+// Build the epoch-boundary restart callback shared by
+// `portfolio::run_presolve` (det) and
+// `fpr_lp::run_portfolio_deterministic`.
+//
+// `arm_name_fn(int arm)` returns a C-string name for logging.
+// `tag` is the log tag ("Portfolio" or "FprLpPortfolio").  Logging
+// only fires when the prior epoch actually ran (i.e. the worker had
+// a previously assigned arm); this avoids a spurious zero-effort log
+// line for workers whose initial arm assignment comes from the
+// callback itself.
+template <BanditWorker W, typename ArmNameFn>
+auto make_bandit_restart_callback(ThompsonSampler &bandit, SolutionPool &pool,
+                                  std::vector<std::unique_ptr<W>> &workers,
+                                  std::vector<std::mt19937> &bandit_rngs, bool minimize,
+                                  const HighsLogOptions &log_options, const char *tag,
+                                  ArmNameFn arm_name_fn) {
+    // The returned lambda outlives this factory's stack frame.  Reference
+    // captures bind to the referent of each reference parameter (all
+    // caller-owned and long-lived), while value-typed parameters
+    // (`minimize`, `tag`, `arm_name_fn`) must be captured by value.  The
+    // `[&]` + `tag, arm_name_fn` mixture below does exactly that —
+    // `minimize` is implicitly captured by reference to the bool
+    // parameter's alias, which would dangle once this factory returns,
+    // so it must be listed by value explicitly.
+    return [&bandit, &pool, &workers, &bandit_rngs, &log_options, minimize, tag,
+            arm_name_fn = std::move(arm_name_fn)](int w) mutable {
+        auto &worker = *workers[w];
+        const int prev_arm = worker.assigned_arm();
+        if (prev_arm >= 0) {
+            auto after_snap = pool.snapshot();
+            const auto &result = worker.last_result();
+            int reward = compute_reward(worker.pre_snapshot(), after_snap, result, minimize);
+            bandit.update(prev_arm, reward);
+            bandit.record_effort(prev_arm, result.effort);
+            if (result.effort > 0) {
+                log_bandit_arm(log_options, tag, arm_name_fn(prev_arm), result.effort,
+                               worker.last_wall_ms(), reward);
+            }
+        }
+        worker.set_pre_snapshot(pool.snapshot());
+        int next_arm = bandit.select_effort_aware(bandit_rngs[w]);
+        worker.assign_arm(next_arm);
+    };
 }

@@ -244,7 +244,10 @@ public:
         cfg.precomputed_var_order = var_order.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
 
+        auto t0 = std::chrono::steady_clock::now();
         last_result_ = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
+        auto t1 = std::chrono::steady_clock::now();
+        last_wall_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
         ++attempt_idx_;
 
         epoch.effort = last_result_.effort;
@@ -281,10 +284,15 @@ public:
         finished_ = false;
         epochs_without_improvement_ = 0;
         last_result_ = {};
+        last_wall_ms_ = 0.0;
     }
 
-    int arm_idx() const { return arm_idx_; }
+    // Portfolio-side accessors (BanditWorker concept).  `assigned_arm()`
+    // mirrors `PortfolioWorker`'s API so bandit_runner.h's shared
+    // restart callback works against both workers.
+    int assigned_arm() const { return arm_idx_; }
     const HeuristicResult &last_result() const { return last_result_; }
+    double last_wall_ms() const { return last_wall_ms_; }
     void set_pre_snapshot(SolutionPool::Snapshot snap) { pre_snap_ = snap; }
     SolutionPool::Snapshot pre_snapshot() const { return pre_snap_; }
 
@@ -302,6 +310,7 @@ private:
     bool one_shot_ = false;
 
     HeuristicResult last_result_{};
+    double last_wall_ms_ = 0.0;
     SolutionPool::Snapshot pre_snap_{};
 
     std::mt19937 rng_;
@@ -317,6 +326,7 @@ private:
 };
 
 static_assert(EpochWorker<LpFprWorker>, "LpFprWorker must satisfy EpochWorker concept");
+static_assert(BanditWorker<LpFprWorker>, "LpFprWorker must satisfy BanditWorker concept");
 
 namespace {
 
@@ -463,26 +473,12 @@ void run_portfolio_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &se
     const size_t epoch_budget =
         std::max<size_t>(setup.budget / (static_cast<size_t>(N) * kEpochsPerWorker), 1);
 
-    size_t total_effort = run_epoch_loop(
-        mipsolver, workers, setup.budget, epoch_budget,
-        [&](int w) {
-            auto &worker = *workers[w];
-            // Update bandit from the just-finished epoch.
-            auto after_snap = pool.snapshot();
-            int reward = compute_reward(worker.pre_snapshot(), after_snap, worker.last_result(),
-                                        setup.minimize);
-            bandit.update(worker.arm_idx(), reward);
-            bandit.record_effort(worker.arm_idx(), worker.last_result().effort);
+    auto restart_cb = make_bandit_restart_callback(bandit, pool, workers, bandit_rngs,
+                                                   setup.minimize, log_options, "FprLpPortfolio",
+                                                   [](int arm) { return kLpArmNames[arm]; });
 
-            highsLogDev(log_options, HighsLogType::kVerbose,
-                        "[FprLpPortfolio] arm=%s effort=%zu reward=%d\n",
-                        kLpArmNames[worker.arm_idx()], worker.last_result().effort, reward);
-
-            worker.set_pre_snapshot(pool.snapshot());
-            int next_arm = bandit.select_effort_aware(bandit_rngs[w]);
-            worker.assign_arm(next_arm);
-        },
-        setup.stale_budget);
+    size_t total_effort = run_epoch_loop(mipsolver, workers, setup.budget, epoch_budget,
+                                         std::move(restart_cb), setup.stale_budget);
 
     mipdata->heuristic_effort_used += total_effort;
 }
@@ -531,9 +527,7 @@ void run_portfolio_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &se
     };
 
     auto log_arm = [&](int arm, size_t effort, int reward, double wall_ms) {
-        highsLogDev(log_options, HighsLogType::kVerbose,
-                    "[FprLpPortfolio] arm=%s effort=%zu reward=%d wall_ms=%.1f\n", kLpArmNames[arm],
-                    effort, reward, wall_ms);
+        log_bandit_arm(log_options, "FprLpPortfolio", kLpArmNames[arm], effort, wall_ms, reward);
     };
 
     size_t total_effort = run_bandit_opportunistic_loop(mipsolver, bandit, pool, N, kNumLpArms,
