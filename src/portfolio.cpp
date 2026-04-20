@@ -309,6 +309,14 @@ public:
             // or stale budget exhausted); the bandit is telling us to try
             // Scylla again, so a fresh worker with a new seed is the
             // intended behaviour.  Mirrors the port/opp path below.
+            //
+            // We pass the full worker pool size as ScyllaWorker's
+            // `num_workers` so its per-worker effort amortization matches
+            // the standalone Scylla paths.  Inside a portfolio, actual
+            // Scylla concurrency is lower (typically one arm among many),
+            // which means per-worker staleness is slightly under-counted.
+            // Accepted — staleness is a soft heuristic and the bandit's
+            // own selection dominates.
             if (!pump_ || pump_->finished()) {
                 pump_ = std::make_unique<ScyllaWorker>(
                     mipsolver_, *setup_.scylla_pdlp, setup_.csc, pool_, setup_.budget,
@@ -475,8 +483,11 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
 
     mipdata->heuristic_effort_used += total_effort;
 
-    // Flush pool solutions to HiGHS (sequential, use generic H tag since
-    // pool mixes arms).
+    // Flush pool solutions to HiGHS (sequential).  The pool mixes entries
+    // from every bandit arm and does not carry per-entry provenance, so
+    // we can't attribute individual solutions to their originating arm
+    // here.  Per-arm attribution at pool-insertion time would require
+    // extending SolutionPool; left for a dedicated refactor.
     for (auto &entry : pool.sorted_entries()) {
         mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
     }
@@ -559,7 +570,9 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
 
     mipdata->heuristic_effort_used += total_effort;
 
-    // Flush pool solutions to HiGHS (best first).
+    // Flush pool solutions to HiGHS (best first).  See the opportunistic
+    // flush comment above for why the generic kSolutionSourceHeuristic
+    // tag is used rather than per-arm attribution.
     for (auto &entry : pool.sorted_entries()) {
         mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
     }

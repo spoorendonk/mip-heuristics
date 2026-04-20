@@ -339,6 +339,12 @@ void run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &s
     // let run_epoch_loop drive them.  The number of threads caps total
     // parallelism; excess arms still get worker slots because each
     // worker is lightweight and runs sequentially inside its slot.
+    //
+    // This cap is deliberate and specific to seq/det: arm-aligned workers
+    // give each LP arm exactly one slot, so there is no point in spawning
+    // more workers than arms.  The other three cells (seq/opp, port/det,
+    // port/opp) use full `compute_worker_count(mipsolver)` because their
+    // workers randomize or bandit-select arms instead of being arm-aligned.
     auto *mipdata = mipsolver.mipdata_.get();
     const int N = std::min(kNumLpArms, compute_worker_count(mipsolver));
     if (N <= 0) {

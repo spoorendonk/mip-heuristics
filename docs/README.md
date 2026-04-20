@@ -1,0 +1,13 @@
+# Reference papers
+
+The PDFs in this directory are the source papers that each custom heuristic is based on. Each heuristic's C++ entry point lives in `src/` and deviates from the paper only where explicitly noted in code comments.
+
+| Heuristic | Paper (file in this directory) | Primary sources | Citation |
+|-----------|--------------------------------|-----------------|----------|
+| **FPR** (Fix, Propagate, Repair) | [`A fix-propagate-repair heuristic for mixed integer programming.pdf`](./A%20fix-propagate-repair%20heuristic%20for%20mixed%20integer%20programming.pdf) | `src/fpr.cpp`, `src/fpr_core.cpp`, `src/fpr_strategies.cpp`, `src/prop_engine.cpp`, `src/walksat.cpp`, `src/repair_search.cpp` | Salvagnin, Roberti, Fischetti, *Mathematical Programming Computation* 17, 111–139, 2025. [doi:10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5) |
+| **FPR_LP** (LP-dependent FPR, paper Classes 2–3) | Same paper as FPR | `src/fpr_lp.cpp` | Same citation as FPR; runs during B&B dive using the root LP solution |
+| **LocalMIP** | [`An Efficient Local Search Solver for Mixed Integer Programming.pdf`](./An%20Efficient%20Local%20Search%20Solver%20for%20Mixed%20Integer%20Programming.pdf) | `src/local_mip.cpp` | Lin, Zou, Cai, *Proc. CP 2024*, Article 19. [doi:10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19) |
+| **Scylla** (feasibility pump with PDLP) | [`Scylla: a matrix-free fix-propagate-and-project heuristic for mixed-integer optimization.pdf`](./Scylla:%20a%20matrix-free%20fix-propagate-and-project%20heuristic%20for%20mixed-integer%20optimization.pdf) | `src/scylla.cpp`, `src/scylla_worker.cpp`, `src/pump_common.h`, `src/contested_pdlp.cpp` | Mexi, Besançon, Bolusani, Chmiela, Hoen, Gleixner, *OR Proceedings 2023*, 57–63. [doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9) |
+| **FeasibilityJump** | [`Feasibility Jump_ an LP-free Lagrangian MIP heuristic.pdf`](./Feasibility%20Jump_%20an%20LP-free%20Lagrangian%20MIP%20heuristic.pdf) | `src/fj.cpp`, `src/fj_worker.cpp` (thin wrapper around HiGHS's built-in FJ) | Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023. [doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8) |
+
+**Portfolio** (`src/portfolio.cpp`) is not paper-faithful to any single source — it's a Thompson sampling (Beta-Bernoulli) bandit that adaptively selects among the FPR, LocalMIP, FeasibilityJump, and Scylla arms. The bandit itself follows the standard Beta-Bernoulli formulation from the multi-armed-bandit literature.
