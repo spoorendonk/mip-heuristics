@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @.devkit/standards/cpp.md
 
+**Testing override**: `.devkit/standards/cpp.md` currently documents the testing story in GoogleTest terms. Ignore that section — this project uses Catch2 v3 (`TEST_CASE(...)` with `[tag]` filters). Tracked upstream as [spoorendonk/devkit#1](https://github.com/spoorendonk/devkit/issues/1).
+
 ## Project Overview
 
 Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solver via a patched fork. The heuristics run during HiGHS's presolve phase and are compiled as object files linked directly into the `highs` library target.
@@ -94,8 +96,6 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `mip_heuristic_portfolio` — enable Thompson-sampling portfolio bandit (orthogonal to `mip_heuristic_opportunistic`).
 - `mip_heuristic_opportunistic` — use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism. Combines with `mip_heuristic_portfolio` to form the 2×2 execution matrix (sequential/portfolio × deterministic/opportunistic).
 
-**Testing**: Catch2 v3 (`TEST_CASE(...)` with `[tag]` filters — not GoogleTest). Tests use `.mps` instances from HiGHS's own `check/instances/` directory (path injected via `INSTANCES_DIR` compile definition). Characterization tests verify known-optimal objectives.
-
-Note: `.devkit/standards/cpp.md` currently describes the testing story in GoogleTest terms. Ignore that section for this project; we use Catch2. Tracked upstream as [spoorendonk/devkit#1](https://github.com/spoorendonk/devkit/issues/1).
+**Testing**: Catch2 v3. Tests use `.mps` instances from HiGHS's own `check/instances/` directory (path injected via `INSTANCES_DIR` compile definition). Characterization tests verify known-optimal objectives. (See the testing override near the top of this file — we do not use GoogleTest.)
 
 **Benchmarking**: `bench/` has scripts for MIPLIB benchmarks — `run_benchmark.py` runs instances, `analyze_results.py` parses results.

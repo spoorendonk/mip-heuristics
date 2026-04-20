@@ -1302,8 +1302,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
     const size_t epoch_budget = std::max<size_t>(worker_budget / kEpochsPerWorker, 1);
 
-    uint32_t base_seed =
-        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
+    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
 
     // Create per-worker LocalMipWorker instances.
     // Worker 0: unperturbed incumbent.
@@ -1374,8 +1373,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
 
-    uint32_t base_seed =
-        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
+    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     const size_t worker_budget = max_effort / static_cast<size_t>(N);
     const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
 

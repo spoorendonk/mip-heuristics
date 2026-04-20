@@ -180,11 +180,12 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     // region because clique-based var_strategies call
     // HighsCliqueTable::cliquePartition which mutates internal state.
     s.var_orders.resize(kNumLpArms);
+    const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumLpArms; ++i) {
-        // Mix `random_seed` into each var-order RNG so the user's seed
-        // reaches this precompute step too (matches the worker RNG mix-in
-        // in compute_base_seed).
-        std::mt19937 rng(compute_base_seed(i + 200, mipsolver.options_mip_->random_seed));
+        // +200 offset spaces these seeds away from the presolve-FPR
+        // var-order seeds (also derived from the same base) so the two
+        // heuristics' RNG streams don't collide on small seed values.
+        std::mt19937 rng(base + static_cast<uint32_t>(i) + 200);
         s.var_orders[i] = compute_var_order(mipsolver, s.arms[i].config->strat.var_strategy, rng,
                                             s.arms[i].lp_ref);
     }
@@ -328,8 +329,7 @@ int compute_worker_count(const HighsMipSolver & /*mipsolver*/) {
 }
 
 uint32_t base_seed_for(const HighsMipSolver &mipsolver) {
-    return compute_base_seed(mipsolver.mipdata_->numImprovingSols,
-                             mipsolver.options_mip_->random_seed);
+    return heuristic_base_seed(mipsolver.options_mip_->random_seed);
 }
 
 // ---------------------------------------------------------------------------

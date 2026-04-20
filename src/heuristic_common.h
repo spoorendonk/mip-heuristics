@@ -90,20 +90,23 @@ inline double clamp_round(double val, double lb, double ub, bool integer) {
     return std::max(lb, std::min(ub, val));
 }
 
-// Seed constants for deterministic per-worker RNG seeding.
+// Deterministic per-worker RNG seeding.
+//
+// `kBaseSeedOffset` keeps the final seed non-zero when the user leaves
+// `random_seed` at its default of 0 (mt19937 accepts zero, but a non-zero
+// seed makes the first sampled bits less uniform-looking in small RNG probes).
+// `kSeedStride` is a large prime that spaces adjacent workers' seeds far
+// apart in the mt19937 state space so their draws don't immediately
+// correlate.
 constexpr uint32_t kBaseSeedOffset = 42;
 constexpr uint32_t kSeedStride = 997;
 
-// Compute the per-presolve-call base seed for heuristic workers.
-//
-// Mixes `numImprovingSols` (advances each time HiGHS finds a new incumbent,
-// giving fresh randomness across reruns within one solve) with the
-// user-facing `random_seed` option (so explicit seed changes actually flow
-// into heuristic RNGs).  Knuth's multiplicative hash spreads small
-// `random_seed` increments across the 32-bit output space.
-inline uint32_t compute_base_seed(HighsInt num_improving_sols, HighsInt random_seed) {
-    const uint32_t base = static_cast<uint32_t>(num_improving_sols) + kBaseSeedOffset;
-    return base ^ (static_cast<uint32_t>(random_seed) * 2654435761u);
+// Base seed for heuristic workers: direct propagation of the user-facing
+// `random_seed` option, plus the constant offset above.  Every heuristic
+// should derive its per-worker seeds from this so that changing
+// `random_seed` observably changes heuristic behaviour.
+inline uint32_t heuristic_base_seed(HighsInt random_seed) {
+    return static_cast<uint32_t>(random_seed) + kBaseSeedOffset;
 }
 
 // Effort budget for presolve heuristics, scaled by mip_heuristic_effort.

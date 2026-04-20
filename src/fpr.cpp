@@ -122,12 +122,9 @@ constexpr int kStaleEpochThreshold = 3;
 // not thread-safe.
 VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
     VarOrderTable orders(kNumFprStrategies);
-    const HighsInt random_seed = mipsolver.options_mip_->random_seed;
+    const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprStrategies; ++i) {
-        // Mix `random_seed` into the var-order RNG; matches the worker RNG
-        // mix-in in compute_base_seed so the user's seed reaches every
-        // heuristic RNG, not just the per-worker ones.
-        std::mt19937 rng(compute_base_seed(i, random_seed));
+        std::mt19937 rng(base + static_cast<uint32_t>(i));
         orders[i] = compute_var_order(mipsolver, kFprStrategies[i].var_strategy, rng, nullptr);
     }
     return orders;
@@ -236,8 +233,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, size_t max_effort) {
     const size_t per_worker = max_effort / static_cast<size_t>(N);
     const size_t epoch_budget = std::max<size_t>(per_worker / kEpochsPerWorker, 1);
 
-    uint32_t base_seed =
-        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
+    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
 
     std::vector<std::unique_ptr<FprWorker>> workers;
     workers.reserve(N);
@@ -277,8 +273,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, size_t max_effort) {
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
 
-    uint32_t base_seed =
-        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
+    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     const size_t default_run_cap = std::max<size_t>(max_effort / (static_cast<size_t>(N) * 10), 1);
 
     std::vector<std::unique_ptr<FprWorker>> workers;

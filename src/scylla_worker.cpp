@@ -84,10 +84,8 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
     cycle_history_.reserve(pump::kCycleWindow);
 
     // Pre-compute variable order for this worker's static strategy.
-    // Mix `random_seed` in so the user's seed reaches this precompute too
-    // (matches the worker RNG mix-in in compute_base_seed).
-    std::mt19937 order_rng(
-        compute_base_seed(fpr_config_index_, mipsolver_.options_mip_->random_seed));
+    std::mt19937 order_rng(heuristic_base_seed(mipsolver_.options_mip_->random_seed) +
+                           static_cast<uint32_t>(fpr_config_index_));
     var_order_ = compute_var_order(mipsolver_, kFprConfigs[fpr_config_index_].strat.var_strategy,
                                    order_rng, nullptr);
 }

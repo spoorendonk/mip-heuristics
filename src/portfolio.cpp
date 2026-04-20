@@ -194,12 +194,9 @@ std::optional<PresolveSetup> build_presolve_setup(HighsMipSolver &mipsolver, siz
 
 FprVarOrders precompute_fpr_var_orders(const HighsMipSolver &mipsolver) {
     FprVarOrders orders(kNumFprArms);
-    const HighsInt random_seed = mipsolver.options_mip_->random_seed;
+    const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprArms; ++i) {
-        // Mix `random_seed` into the var-order RNG; matches the worker RNG
-        // mix-in in compute_base_seed so the user's seed reaches every
-        // heuristic RNG, not just the per-worker ones.
-        std::mt19937 rng(compute_base_seed(i, random_seed));
+        std::mt19937 rng(base + static_cast<uint32_t>(i));
         orders[i] = compute_var_order(mipsolver, kFprArms[i].strat.var_strategy, rng, nullptr);
     }
     return orders;
@@ -434,13 +431,14 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
     const auto &csc = setup.csc;
     const auto &fpr_var_orders = setup.fpr_var_orders;
 
-    uint32_t base_seed =
-        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
+    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
 
     // Shared cross-worker improvement broadcast for Scylla arms: when
     // any ScyllaWorker finds a feasible, bump the generation so peers
-    // reset their staleness counters (A.5 fix).
+    // reset their staleness counters (A.5 fix).  Allocate only when the
+    // Scylla arm is actually in the portfolio.
     std::atomic<uint64_t> scylla_improvement_gen{0};
+    auto *scylla_gen_ptr = setup.scylla_pdlp ? &scylla_improvement_gen : nullptr;
 
     // Per-worker run_arm with its own persistent ScyllaWorker state.
     auto make_run_arm = [&](int worker_idx) {
@@ -452,7 +450,7 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                 if (!pump || pump->finished()) {
                     pump = std::make_unique<ScyllaWorker>(
                         mipsolver, *setup.scylla_pdlp, csc, pool, setup.budget,
-                        static_cast<uint32_t>(rng()), worker_idx, N, &scylla_improvement_gen);
+                        static_cast<uint32_t>(rng()), worker_idx, N, scylla_gen_ptr);
                 }
                 auto epoch = pump->run_epoch(arm_budget);
                 result.effort = epoch.effort;
@@ -489,8 +487,8 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
     // Flush pool solutions to HiGHS (sequential).  The pool mixes entries
     // from every bandit arm and does not carry per-entry provenance, so
     // we can't attribute individual solutions to their originating arm
-    // here.  Per-arm attribution at pool-insertion time would require
-    // extending SolutionPool; left for a dedicated refactor.
+    // here.  Per-arm attribution at pool-insertion time requires
+    // extending SolutionPool — tracked as #73.
     for (auto &entry : pool.sorted_entries()) {
         mipdata->trySolution(entry.solution, kSolutionSourceHeuristic);
     }
@@ -523,8 +521,7 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
 
-    uint32_t base_seed =
-        compute_base_seed(mipdata->numImprovingSols, mipsolver.options_mip_->random_seed);
+    uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
 
     // Separate RNGs for bandit selection in the restart callback (sequential).
     std::vector<std::mt19937> bandit_rngs(N);
@@ -533,9 +530,10 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     }
 
     // Shared cross-worker improvement broadcast for Scylla arms (mirrors the
-    // opp-mode wiring).  Only meaningful when the Scylla arm is enabled, but
-    // cheap enough to create unconditionally.
+    // opp-mode wiring).  Allocate only when the Scylla arm is actually in the
+    // portfolio; workers that never touch it receive a nullptr.
     std::atomic<uint64_t> scylla_improvement_gen{0};
+    auto *scylla_gen_ptr = setup.scylla_pdlp ? &scylla_improvement_gen : nullptr;
 
     // Workers start with finished_=true so the first restart callback assigns
     // their initial arms.
@@ -543,8 +541,8 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     workers.reserve(N);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<PortfolioWorker>(mipsolver, setup, pool, seed, w,
-                                                            &scylla_improvement_gen));
+        workers.push_back(
+            std::make_unique<PortfolioWorker>(mipsolver, setup, pool, seed, w, scylla_gen_ptr));
     }
 
     constexpr int kEpochsPerWorker = 20;
