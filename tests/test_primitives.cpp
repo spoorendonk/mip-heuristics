@@ -162,6 +162,72 @@ TEST_CASE("SolutionPool: basic operations", "[pool]") {
     REQUIRE(entries[2].source == kSolutionSourceLocalMIP);
 }
 
+TEST_CASE("SolutionPool: diversity replacement preserves source tag", "[pool]") {
+    // Regression guard for #73's "source round-trips through diversity
+    // replacements" claim.  Under the shared-pool model from #72, one
+    // heuristic can diversity-replace another's entry; the replacement's
+    // source tag must be the new entry's (not the evicted entry's).
+    //
+    // Triggering the *diversity-replacement* branch (not worst-replacement)
+    // requires: pool full, new obj does not improve on worst, new obj within
+    // kDiversityObjTolerance * |best_obj| of best, and new solution Hamming-
+    // distant from the most similar existing entry by at least
+    // kDiversityMinHammingFrac of the integer-var count.
+    SolutionPool pool(kPoolCapacity, /*minimize=*/true);
+
+    // 20 integer vars: 1 flip = 5% Hamming fraction exactly, which satisfies
+    // the `min_frac < kDiversityMinHammingFrac` rejection (strict <).  Use
+    // 2+ flips for a comfortable margin.
+    constexpr int kNumIntVars = 20;
+    std::vector<bool> mask(kNumIntVars, true);
+    pool.set_integer_mask(mask);
+
+    // Fill to capacity with FJ-tagged entries.  Each entry is the zero
+    // vector with a single distinct bit set (positions 0..kPoolCapacity-1),
+    // so any two existing entries differ by Hamming distance 2.  All share
+    // the same objective so best == worst; this guarantees the new entry's
+    // obj can be made to (a) not improve on worst yet (b) stay within the
+    // diversity objective tolerance of best.
+    constexpr double kObj = 10.0;
+    for (int i = 0; i < kPoolCapacity; ++i) {
+        std::vector<double> sol(kNumIntVars, 0.0);
+        sol[i] = 1.0;
+        REQUIRE(pool.try_add(kObj, sol, kSolutionSourceFJ));
+    }
+    REQUIRE(pool.size() == kPoolCapacity);
+
+    // Build the challenger:
+    //   - obj slightly worse than worst (so standard worst-replacement path
+    //     is skipped: `obj >= worst.objective` -> dominated)
+    //   - obj within kDiversityObjTolerance * |best_obj| (= 1.0) of best
+    //   - solution flips bits at positions kPoolCapacity (=10) and 11, so
+    //     Hamming distance to every existing entry is 3 (differ at entry's
+    //     set bit + positions 10 and 11) = 15% > 5% threshold
+    //   - tagged kSolutionSourceFPR -- the round-trip probe
+    const double new_obj = kObj + 0.5;  // gap 0.5, threshold = 0.10*10 = 1.0
+    std::vector<double> new_sol(kNumIntVars, 0.0);
+    new_sol[kPoolCapacity] = 1.0;
+    new_sol[kPoolCapacity + 1] = 1.0;
+
+    REQUIRE(pool.try_add(new_obj, new_sol, kSolutionSourceFPR));
+
+    // The new entry must land in the pool with its own source tag intact.
+    auto entries = pool.sorted_entries();
+    REQUIRE(entries.size() == kPoolCapacity);
+
+    bool found_fpr = false;
+    for (const auto& e : entries) {
+        if (e.objective == Catch::Approx(new_obj)) {
+            REQUIRE(e.source == kSolutionSourceFPR);
+            found_fpr = true;
+        } else {
+            // Surviving pre-existing entries keep their original FJ tag.
+            REQUIRE(e.source == kSolutionSourceFJ);
+        }
+    }
+    REQUIRE(found_fpr);
+}
+
 TEST_CASE("SolutionPool: restart strategies", "[pool]") {
     SolutionPool pool(5, true);
     pool.try_add(10.0, {0.0, 1.0, 0.0}, kSolutionSourceFPR);
