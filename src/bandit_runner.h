@@ -20,28 +20,25 @@
 
 // Shared infrastructure for Thompson-sampling bandit dispatch.
 //
-// Two complementary primitives live here:
+// Two complementary primitives live here, both used by `portfolio` (the
+// presolve-time meta-bandit over FJ / FPR / LocalMIP / Scylla).  `fpr_lp`
+// dispatches without a bandit — it's a single heuristic family, not a
+// meta-portfolio — so these primitives no longer have fpr_lp call sites.
 //
 //   - `run_bandit_opportunistic_loop` — continuous N-worker loop used by
-//     `portfolio::run_presolve_opportunistic` (presolve-time multi-arm
-//     bandit over FJ / FPR / LocalMIP / Scylla) and
-//     `fpr_lp::run_portfolio_opportunistic` (dive-time bandit over the
-//     10 LP-dependent FPR arms).
+//     `portfolio::run_presolve_opportunistic`.
 //
 //   - `BanditWorker` concept + `make_bandit_restart_callback` — the
 //     epoch-gated deterministic counterpart, used by
-//     `portfolio::run_presolve` (det branch) and
-//     `fpr_lp::run_portfolio_deterministic`.  Both portfolios spawn one
-//     worker per thread, each worker runs whichever arm the bandit
-//     currently assigned, and at each epoch boundary the restart
-//     callback computes reward, updates the bandit, and reassigns the
-//     arm for the next epoch.
+//     `portfolio::run_presolve` (det branch).  Workers spawn one per
+//     thread; each runs whichever arm the bandit currently assigned, and
+//     at each epoch boundary the restart callback computes reward,
+//     updates the bandit, and reassigns the arm for the next epoch.
 //
-// All four call sites share the same "select arm, snapshot pool, run
-// arm, snapshot pool, compute reward, update bandit" skeleton; the
-// primitives here factor that out so the portfolios only provide what
-// genuinely differs (per-arm run logic, arm-name mapping, and the log
-// tag).
+// Both call sites share the same "select arm, snapshot pool, run arm,
+// snapshot pool, compute reward, update bandit" skeleton; the primitives
+// here factor that out so the portfolios only provide what genuinely
+// differs (per-arm run logic, arm-name mapping, and the log tag).
 
 // Unified per-arm log line used by both the deterministic and
 // opportunistic bandit paths.  Format:
