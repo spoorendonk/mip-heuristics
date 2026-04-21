@@ -30,7 +30,7 @@ bool run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     }
 
     size_t total_effort = run_epoch_loop(
-        mipsolver, workers, max_effort, setup.epoch_budget,
+        mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorkerFj),
         [&](int w) {
             // Restart finished FjWorker with a new seed.
             ++restart_counter;

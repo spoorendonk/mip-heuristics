@@ -48,8 +48,8 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     }
 
     size_t total_effort = run_epoch_loop(
-        mipsolver, workers, max_effort, setup.epoch_budget, [](int) { /* no restart */ },
-        setup.stale_budget);
+        mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
+        [](int) { /* no restart */ }, setup.stale_budget);
 
     setup.mipdata->heuristic_effort_used += total_effort;
 }

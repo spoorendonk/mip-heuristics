@@ -94,7 +94,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     uint32_t restart_seed_counter = static_cast<uint32_t>(setup.N);
 
     size_t total_effort = run_epoch_loop(
-        mipsolver, workers, max_effort, setup.epoch_budget,
+        mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
         [&](int w) {
             // Restart stalled worker from pool's best solution + new
             // perturbation + new seed.
