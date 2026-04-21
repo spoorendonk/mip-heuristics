@@ -26,6 +26,11 @@ class EffortSample:
     wall_ms: float
     effort_per_ms: float
     reward: int | None = None  # None for legacy logs without a reward= field
+    # Log tag identifying which bandit emitted the sample. "Portfolio" is the
+    # presolve bandit (src/portfolio.cpp); "FprLpPortfolio" is the B&B-dive
+    # bandit (src/fpr_lp.cpp). Defaults to "Portfolio" for backward
+    # compatibility with historical logs that only had one bandit.
+    portfolio_tag: str = "Portfolio"
 
 
 @dataclass
@@ -136,13 +141,19 @@ _TIMING_RE = re.compile(r"^\s+Timing\s+([\d.]+)$")
 _NODES_RE = re.compile(r"^\s+Nodes\s+(\d+)$")
 _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 
-# Portfolio effort calibration line:
+# Portfolio effort calibration line, emitted by both bandits via the shared
+# log_bandit_arm helper in src/bandit_runner.h:
 #   [Portfolio] arm=FprDfsLocks2 effort=123456 wall_ms=45.2 effort_per_ms=2731 reward=3
+#   [FprLpPortfolio] arm=lp_center effort=5678 wall_ms=10.2 effort_per_ms=557 reward=1
+# `[Portfolio]` is the presolve bandit (src/portfolio.cpp); `[FprLpPortfolio]`
+# is the B&B-dive bandit (src/fpr_lp.cpp). Both tags share an identical line
+# layout so a single regex captures them and a separate tag group records
+# which bandit emitted the sample.
 # The `reward=<N>` suffix was added in the bandit-dispatch consolidation
 # (issue #68); it is optional to keep the parser back-compatible with
 # historical logs predating that change.
 _EFFORT_RE = re.compile(
-    r"^\s*\[Portfolio\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
+    r"^\s*\[(Portfolio|FprLpPortfolio)\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
     r"(?: reward=(\d+))?"
 )
 
@@ -254,14 +265,15 @@ def parse_log(log_text: str) -> SolveResult:
         # Portfolio effort calibration line
         m = _EFFORT_RE.match(line)
         if m:
-            reward = int(m.group(5)) if m.group(5) is not None else None
+            reward = int(m.group(6)) if m.group(6) is not None else None
             result.effort_samples.append(
                 EffortSample(
-                    arm=m.group(1),
-                    effort=int(m.group(2)),
-                    wall_ms=float(m.group(3)),
-                    effort_per_ms=float(m.group(4)),
+                    arm=m.group(2),
+                    effort=int(m.group(3)),
+                    wall_ms=float(m.group(4)),
+                    effort_per_ms=float(m.group(5)),
                     reward=reward,
+                    portfolio_tag=m.group(1),
                 )
             )
             continue
