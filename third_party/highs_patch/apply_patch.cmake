@@ -75,6 +75,23 @@ else()
     message(STATUS "Option patches already applied to HighsOptions.h, skipping")
 endif()
 
+# ── Raise mip_heuristic_effort default 0.05 → 0.30 ──
+# Our portfolio heuristics are starved at 0.05; a 10-instance sweep showed
+# monotone SGM-gap improvement up to 0.30 (see bench/results_effort_sweep/REPORT.md).
+# Idempotent: the search pattern disappears once we've rewritten it.
+file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
+string(FIND "${OPTIONS_CONTENT}" "&mip_heuristic_effort, 0.0, 0.05, 1.0" _effort_default_found)
+if(NOT _effort_default_found EQUAL -1)
+    string(REPLACE
+      "&mip_heuristic_effort, 0.0, 0.05, 1.0"
+      "&mip_heuristic_effort, 0.0, 0.30, 1.0"
+      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
+    message(STATUS "Raised mip_heuristic_effort default to 0.30")
+else()
+    message(STATUS "mip_heuristic_effort default already raised, skipping")
+endif()
+
 # ── Patch HighsMipSolverData.h: add capture overload + custom solution source enums ──
 file(READ "${MIP_DIR}/HighsMipSolverData.h" MIPDATA_H)
 
@@ -414,17 +431,6 @@ if(_found EQUAL -1)
     string(REPLACE
       "    }\n    // End of pre-root-node heuristics"
       "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      if (heuristics::run_presolve(*this, budget)) {\n        modelstatus_ = HighsModelStatus::kInfeasible;\n        cleanupSolve();\n        return;\n      }\n    }\n\n    // End of pre-root-node heuristics"
-      CONTENT "${CONTENT}")
-
-    # Patch B: guard standalone RINS/RENS when portfolio is on (B&B dive)
-    # In portfolio mode, RINS/RENS run as bandit arms inside run_lp_based.
-    string(REPLACE
-      "if (options_mip_->mip_heuristic_run_rens) {"
-      "if (options_mip_->mip_heuristic_run_rens && !options_mip_->mip_heuristic_portfolio) {"
-      CONTENT "${CONTENT}")
-    string(REPLACE
-      "if (options_mip_->mip_heuristic_run_rins) {"
-      "if (options_mip_->mip_heuristic_run_rins && !options_mip_->mip_heuristic_portfolio) {"
       CONTENT "${CONTENT}")
 
     # Patch C: after RINS/RENS block, insert LP-dependent FPR (Scylla moved to presolve)

@@ -17,6 +17,19 @@ VANILLA_OPTIONS = {
     "mip_heuristic_run_scylla": "false",
 }
 
+# Default patched options: port/opp cell — Thompson bandit over the four
+# presolve heuristics (FPR/LocalMIP/FJ/Scylla) with continuous parallelism.
+# mip_heuristic_opportunistic=true also routes fpr_lp through its
+# opportunistic arm-aligned parallel runner at B&B dive time.
+PATCHED_OPTIONS = {
+    "mip_heuristic_portfolio": "true",
+    "mip_heuristic_opportunistic": "true",
+    "mip_heuristic_run_fpr": "true",
+    "mip_heuristic_run_local_mip": "true",
+    "mip_heuristic_run_scylla": "true",
+    "mip_heuristic_run_feasibility_jump": "true",
+}
+
 
 def load_instances(path: str) -> list[str]:
     """Load instance names from a file (one per line, # comments)."""
@@ -147,7 +160,13 @@ def main() -> None:
 
     # Sequential loop: config → seed → instance
     for config in args.configs:
-        extra_opts = {**base_opts, **(VANILLA_OPTIONS if config == "vanilla" else {})}
+        if config == "vanilla":
+            config_opts = VANILLA_OPTIONS
+        elif config == "patched":
+            config_opts = PATCHED_OPTIONS
+        else:
+            config_opts = {}
+        extra_opts = {**base_opts, **config_opts}
         for seed in args.seeds:
             print(f"\n{'='*60}")
             print(f"Config: {config}, seed: {seed} ({len(instances)} instances, {args.time_limit}s limit)")
