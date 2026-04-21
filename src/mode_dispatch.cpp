@@ -72,7 +72,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     //   2. Run seq/det (`mip_heuristic_portfolio=false`,
     //      `mip_heuristic_opportunistic=false`) on MIPLIB with all four
     //      heuristics on (see `bench/run_benchmark.py`).
-    //   3. `python bench/check_effort_drift.py bench/results/`.
+    //   3. `python bench/check_effort_drift.py bench/results/calibration`.
     //   4. Copy each heuristic's suggested weight into the constants
     //      below.  Normalise so the lowest weight rounds to a tidy value
     //      (0.5 or 1.0) — absolute scale does not matter, only ratios.
