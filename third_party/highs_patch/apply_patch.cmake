@@ -124,6 +124,21 @@ if(_src_enum_found EQUAL -1)
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
     message(STATUS "Applied custom solution source enums to HighsMipSolverData.h")
+
+    # Sanity check: the source-enum insert must produce exactly one occurrence
+    # of kSolutionSourceFprLp. If it does not, an upstream reformat likely
+    # broke the REPLACE pattern above, leaving the file malformed.
+    string(REGEX MATCHALL "kSolutionSourceFprLp" _h_fprlp_hits "${MIPDATA_H}")
+    list(LENGTH _h_fprlp_hits _h_fprlp_count)
+    if(NOT _h_fprlp_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolverData.h post-patch sanity check failed: "
+            "expected exactly 1 occurrence of 'kSolutionSourceFprLp', got ${_h_fprlp_count}. "
+            "Upstream HiGHS likely reformatted the source-enum block so the exact-string "
+            "REPLACE patterns no longer match. Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
 else()
     message(STATUS "Custom solution source enums already applied, skipping")
 endif()
@@ -161,6 +176,45 @@ if(_src_cpp_found EQUAL -1)
 
     file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")
     message(STATUS "Applied solution source strings to HighsMipSolverData.cpp")
+
+    # Sanity checks: the source-to-string insert must produce exactly one
+    # kSolutionSourceFprLp branch, one "FPR LP" display string, and one
+    # updated printSolutionSourceKey limits vector. If any count is wrong,
+    # an upstream reformat likely broke the strip-and-restore REPLACEs,
+    # leaving the file with a missing or duplicated insert.
+    string(REGEX MATCHALL "kSolutionSourceFprLp" _cpp_fprlp_hits "${MIPDATA_CPP}")
+    list(LENGTH _cpp_fprlp_hits _cpp_fprlp_count)
+    if(NOT _cpp_fprlp_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolverData.cpp post-patch sanity check failed: "
+            "expected exactly 1 occurrence of 'kSolutionSourceFprLp', got ${_cpp_fprlp_count}. "
+            "Upstream HiGHS likely reformatted the source-to-string chain so the exact-string "
+            "REPLACE patterns no longer match. Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+    string(REGEX MATCHALL "\"FPR LP\"" _cpp_fprlp_str_hits "${MIPDATA_CPP}")
+    list(LENGTH _cpp_fprlp_str_hits _cpp_fprlp_str_count)
+    if(NOT _cpp_fprlp_str_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolverData.cpp post-patch sanity check failed: "
+            "expected exactly 1 occurrence of '\"FPR LP\"', got ${_cpp_fprlp_str_count}. "
+            "Upstream HiGHS likely reformatted the source-to-string chain so the exact-string "
+            "REPLACE patterns no longer match. Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+    string(REGEX MATCHALL "\\{4, 9, 14, 19, last_enum\\}" _cpp_limits_hits "${MIPDATA_CPP}")
+    list(LENGTH _cpp_limits_hits _cpp_limits_count)
+    if(NOT _cpp_limits_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolverData.cpp post-patch sanity check failed: "
+            "expected exactly 1 occurrence of '{4, 9, 14, 19, last_enum}', got ${_cpp_limits_count}. "
+            "Upstream HiGHS likely reformatted printSolutionSourceKey so the limits-vector "
+            "REPLACE pattern no longer matches. Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
 else()
     message(STATUS "Solution source strings already applied, skipping")
 endif()
