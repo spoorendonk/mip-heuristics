@@ -1,7 +1,8 @@
 build*/
 .cache/
 __pycache__/
-bench/results/
+bench/results*/
+.venv/
 *.pyc
 Highs.log
 .claude/settings.local.json
