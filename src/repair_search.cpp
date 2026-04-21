@@ -284,7 +284,15 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
 
     HighsInt nodes_visited = 0;
 
-    while (!Q.empty() && nodes_visited < repair_iterations && total_effort < max_effort) {
+    // The budget gate must include PropEngine propagation effort; `total_effort`
+    // only tracks WalkSAT move counters, so without the `E.effort()`/`R.effort()`
+    // deltas the AC-3 fixpoints below (one per node on `R` in apply_branch_to_r,
+    // one on `E` in sync_changes) would be unbounded.  The same compound sum is
+    // charged to `effort_out` below, so guard and report stay consistent.
+    auto effort_spent = [&]() -> size_t {
+        return total_effort + (E.effort() - e_effort_baseline) + (R.effort() - r_effort_baseline);
+    };
+    while (!Q.empty() && nodes_visited < repair_iterations && effort_spent() < max_effort) {
         RepairNode node = Q.back();
         Q.pop_back();
         ++nodes_visited;
@@ -324,8 +332,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
 
         if (violated.empty()) {
             // Feasible! (paper lines 15-16)
-            effort_out =
-                total_effort + (E.effort() - e_effort_baseline) + (R.effort() - r_effort_baseline);
+            effort_out = effort_spent();
             return true;
         }
 
@@ -386,6 +393,6 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         rebuild_violated();
     }
 
-    effort_out = total_effort + (E.effort() - e_effort_baseline) + (R.effort() - r_effort_baseline);
+    effort_out = effort_spent();
     return violated.empty();
 }

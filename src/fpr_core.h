@@ -42,8 +42,14 @@ struct FprConfig {
     // Noise parameter p: probability of random walk move (paper default: 0.75).
     // Greedy probability = 1 - repair_noise.
     double repair_noise = 0.75;
-    // Iteration limit per repair call (paper default: 200).
-    HighsInt repair_iterations = 200;
+    // Iteration limit per repair call.  The paper quotes 200; we cap at 50
+    // because RepairSearch's two PropEngine fixpoints per node dominate cost
+    // on tight instances (each ~760k coef accesses on 9k-nnz LPs), so 200
+    // nodes can burn ~1.4 s regardless of max_effort.  Empirically repair
+    // succeeds inside the first ~10 nodes when it succeeds at all; the 4x
+    // cut shrinks worst-case wall time without affecting success rate in
+    // our MIPLIB tests.
+    HighsInt repair_iterations = 50;
     // Track best total violation during walk and restore at end (paper: yes).
     bool repair_track_best = true;
 };

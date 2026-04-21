@@ -310,7 +310,15 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
         dfs_stack.push_back({first_var, pref, vs_m, sol_m, act_m, pq_m, cursor_pt});
     }
 
-    while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete) {
+    // Gate Phase 1-2 DFS on cfg.max_effort.  Without this, the DFS runs up to
+    // node_limit = ncol + 1 with a full propagation fixpoint per node, which on
+    // tight models (e.g. 4k cols × 9k nnz) consumes ~150M effort regardless of
+    // the budget the caller passed.  Phase 3 (repair_search / walksat) already
+    // respected max_effort, but if Phase 1-2 exhausted the DFS node cap we
+    // never reached Phase 3 — the arm simply returned "no complete assignment"
+    // with a huge effort count.
+    while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete &&
+           E.effort() < cfg.max_effort) {
         auto node = dfs_stack.back();
         dfs_stack.pop_back();
         ++nodes_visited;

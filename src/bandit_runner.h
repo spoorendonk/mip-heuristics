@@ -85,8 +85,18 @@ inline int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot 
 
 // Effort-proportional budget cap for a single opportunistic arm pull.
 // Each pull gets at most kBudgetCapMultiplier * avg_effort for that arm.
-// First pull (no history) uses total_budget / (num_arms * 10).
+// First pull (no history) uses total_budget / (num_arms * 10), clamped by
+// kFirstPullEffortCap so a single cold-start arm cannot burn more than
+// ~100-200 ms wall time on large instances (effort_per_ms ≈ 100k-200k
+// across FPR/LocalMIP arms, so 20M effort ≈ 100-200 ms).  Without this
+// clamp, an arm like FprRepairSearchLocks on a 9k-nnz instance at
+// mip_heuristic_effort=0.30 gets a ~150 M effort first-pull budget and
+// burns ~1.4 s before the bandit has any observation to throttle it.
+// The repair_search loop only honours the budget after the effort-counter
+// fix in repair_search.cpp:287 (it was previously ignoring PropEngine
+// work), so this cap is the other half of the T1st-regression fix.
 inline constexpr double kBudgetCapMultiplier = 2.5;
+inline constexpr size_t kFirstPullEffortCap = 20'000'000;
 
 inline size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t total_budget,
                                  int num_arms) {
@@ -94,7 +104,8 @@ inline size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t 
     if (stats.pulls > 0 && stats.avg_effort > 0.0) {
         return static_cast<size_t>(kBudgetCapMultiplier * stats.avg_effort);
     }
-    return total_budget / static_cast<size_t>(std::max(num_arms * 10, 1));
+    const size_t proportional = total_budget / static_cast<size_t>(std::max(num_arms * 10, 1));
+    return std::min(proportional, kFirstPullEffortCap);
 }
 
 // Generic opportunistic Thompson-sampling bandit loop.
