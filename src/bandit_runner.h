@@ -109,10 +109,12 @@ inline size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t 
 //
 // Returns aggregate effort consumed across workers.
 template <typename MakeRunArm, typename LogArm>
-size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver, ThompsonSampler &bandit,
-                                     SolutionPool &pool, int num_workers, int num_arms,
-                                     size_t budget, size_t stale_budget, uint32_t base_seed,
-                                     bool minimize, MakeRunArm make_run_arm, LogArm log_arm) {
+[[nodiscard]] size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver,
+                                                   ThompsonSampler &bandit, SolutionPool &pool,
+                                                   int num_workers, int num_arms, size_t budget,
+                                                   size_t stale_budget, uint32_t base_seed,
+                                                   bool minimize, MakeRunArm make_run_arm,
+                                                   LogArm log_arm) {
     ContinuousLoopState loop;
 
     highs::parallel::for_each(

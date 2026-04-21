@@ -37,7 +37,7 @@ struct ContinuousLoopState {
     std::atomic<size_t> effort_since_improvement{0};
     std::atomic<bool> stop{false};
 
-    bool stopped() const { return stop.load(std::memory_order_relaxed); }
+    [[nodiscard]] bool stopped() const { return stop.load(std::memory_order_relaxed); }
 
     void request_stop() { stop.store(true, std::memory_order_relaxed); }
 

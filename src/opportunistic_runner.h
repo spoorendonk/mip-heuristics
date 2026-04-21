@@ -38,9 +38,10 @@
 //
 // Returns total effort consumed across all workers.
 template <typename MakeState, typename RunAttempt>
-size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers, size_t budget,
-                              size_t stale_budget, size_t default_run_cap, uint32_t base_seed,
-                              MakeState make_state, RunAttempt run_attempt) {
+[[nodiscard]] size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers,
+                                            size_t budget, size_t stale_budget,
+                                            size_t default_run_cap, uint32_t base_seed,
+                                            MakeState make_state, RunAttempt run_attempt) {
     if (num_workers <= 0 || budget == 0) {
         return 0;
     }

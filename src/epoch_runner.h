@@ -59,9 +59,10 @@ struct EpochWorkerBase {
 //
 // Returns total effort consumed.
 template <EpochWorker W, typename RestartFn>
-size_t run_epoch_loop(HighsMipSolver &mipsolver, std::vector<std::unique_ptr<W>> &workers,
-                      size_t budget, size_t epoch_budget, RestartFn restart_finished,
-                      size_t stale_budget = 0) {
+[[nodiscard]] size_t run_epoch_loop(HighsMipSolver &mipsolver,
+                                    std::vector<std::unique_ptr<W>> &workers, size_t budget,
+                                    size_t epoch_budget, RestartFn restart_finished,
+                                    size_t stale_budget = 0) {
     if (stale_budget == 0) {
         stale_budget = budget >> 2;
     }
