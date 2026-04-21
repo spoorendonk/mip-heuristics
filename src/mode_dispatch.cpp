@@ -79,16 +79,21 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     //   5. Re-run to confirm drift is < 2× across heuristics; the
     //      script fails at > 3× as a regression gate.
     //
-    // Current values are the pre-#71 defaults, kept verbatim.  The
-    // calibration infrastructure (logging + drift script + tests) is
-    // what ships in #71; the numerical recalibration is a follow-up
-    // that needs a full MIPLIB run.  Until that lands, these weights
-    // remain an educated guess — not measured — and `bench/check_effort_drift.py`
-    // is the authoritative tool for refining them.
-    constexpr double kWeightFj = 1.0;
+    // Calibrated against `bench/instances_small.txt` (25 MIPLIB instances,
+    // 30 s each, `mip_heuristic_effort=0.2`, seq/det).  Measured geomean
+    // `effort_per_ms`:
+    //   fj=131k  fpr=123k  local_mip=190k  scylla=222k   drift = 1.81×
+    // which is already below the 2× target before recalibration — the
+    // pre-#71 defaults (1.0/1.0/1.5/2.0) were within measurement noise of
+    // the optimum.  Scylla is the only meaningful change (2.0 → 1.8);
+    // local_mip had only 6 samples because it early-returns on a cold
+    // incumbent, so its weight is anchored at 1.5 pending a longer sweep.
+    // Re-run `bench/check_effort_drift.py bench/results/calibration` to
+    // refresh these numbers.
+    constexpr double kWeightFj = 1.1;
     constexpr double kWeightFpr = 1.0;
     constexpr double kWeightLocalMip = 1.5;
-    constexpr double kWeightScylla = 2.0;
+    constexpr double kWeightScylla = 1.8;
 
     const bool fj_on = options->mip_heuristic_run_feasibility_jump;
     const bool fpr_on = options->mip_heuristic_run_fpr;
