@@ -1,6 +1,5 @@
 #include "fpr_lp.h"
 
-#include "bandit_runner.h"
 #include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
@@ -12,7 +11,6 @@
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
 #include "solution_pool.h"
-#include "thompson_sampler.h"
 
 #include <algorithm>
 #include <atomic>
@@ -32,8 +30,6 @@ namespace {
 // synchronization).
 std::atomic<size_t> g_seq_det_count{0};
 std::atomic<size_t> g_seq_opp_count{0};
-std::atomic<size_t> g_port_det_count{0};
-std::atomic<size_t> g_port_opp_count{0};
 
 // ---------------------------------------------------------------------------
 // LP-dependent arms (paper Section 6.3, Classes 2 and 3)
@@ -326,7 +322,6 @@ private:
 };
 
 static_assert(EpochWorker<LpFprWorker>, "LpFprWorker must satisfy EpochWorker concept");
-static_assert(BanditWorker<LpFprWorker>, "LpFprWorker must satisfy BanditWorker concept");
 
 namespace {
 
@@ -348,18 +343,11 @@ uint32_t base_seed_for(const HighsMipSolver &mipsolver) {
 
 void run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
                                   SolutionPool &pool) {
-    // In seq/det we spawn one worker per LP arm (up to kNumLpArms) and
-    // let run_epoch_loop drive them.  The number of threads caps total
-    // parallelism; excess arms still get worker slots because each
-    // worker is lightweight and runs sequentially inside its slot.
-    //
-    // This cap is deliberate and specific to seq/det: arm-aligned workers
-    // give each LP arm exactly one slot, so there is no point in spawning
-    // more workers than arms.  The other three cells (seq/opp, port/det,
-    // port/opp) use full `compute_worker_count(mipsolver)` because their
-    // workers randomize or bandit-select arms instead of being arm-aligned.
+    // Spawn `num_threads` workers; worker w binds to arm `w % kNumLpArms`.
+    // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
+    // wrap around the curated config list with distinct seeds for diversity.
     auto *mipdata = mipsolver.mipdata_.get();
-    const int N = std::min(kNumLpArms, compute_worker_count(mipsolver));
+    const int N = compute_worker_count(mipsolver);
     if (N <= 0) {
         return;
     }
@@ -371,7 +359,8 @@ void run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &s
     workers.reserve(N);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<LpFprWorker>(mipsolver, setup, pool, w, seed));
+        int arm = w % kNumLpArms;
+        workers.push_back(std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed));
     }
 
     constexpr int kEpochsPerWorker = 10;
@@ -431,117 +420,6 @@ void run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &s
     mipdata->heuristic_effort_used += total_effort;
 }
 
-void run_portfolio_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
-                                 SolutionPool &pool) {
-    auto *mipdata = mipsolver.mipdata_.get();
-    const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
-    const int N = compute_worker_count(mipsolver);
-    if (N <= 0) {
-        return;
-    }
-    g_port_det_count.fetch_add(1, std::memory_order_relaxed);
-    const int num_arms = kNumLpArms;
-
-    // Uniform priors (α=1): let the bandit learn from scratch.
-    std::vector<double> priors(num_arms, 1.0);
-    ThompsonSampler bandit(num_arms, priors.data(), /*use_mutex=*/false);
-
-    const uint32_t base_seed = base_seed_for(mipsolver);
-
-    // Separate RNGs for bandit selection in the restart callback (sequential).
-    std::vector<std::mt19937> bandit_rngs(N);
-    for (int w = 0; w < N; ++w) {
-        bandit_rngs[w].seed(base_seed + static_cast<uint32_t>(w) * kSeedStride + 1);
-    }
-
-    // Seed each worker with an initial arm and pre-snapshot so the first
-    // bandit reward is computed against a valid baseline.  The restart
-    // callback then updates the bandit and reassigns on every subsequent
-    // epoch boundary.
-    std::vector<std::unique_ptr<LpFprWorker>> workers;
-    workers.reserve(N);
-    for (int w = 0; w < N; ++w) {
-        uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        int arm = bandit.select_effort_aware(bandit_rngs[w]);
-        auto worker = std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed,
-                                                    /*one_shot=*/true);
-        worker->set_pre_snapshot(pool.snapshot());
-        workers.push_back(std::move(worker));
-    }
-
-    // Dive-time LP portfolio keeps kEpochsPerWorker=20 (bandit-arm
-    // residency cadence, separate from the per-chain kEpochsPerWorker=10
-    // used at :377 for seq/det).  Presolve sibling in portfolio.cpp also
-    // uses 20; parallel_setup.h's 10 is the value for the 4 presolve
-    // heuristics only.  See issue #71 for effort-unit normalisation.
-    constexpr int kEpochsPerWorker = 20;
-    const size_t epoch_budget =
-        std::max<size_t>(setup.budget / (static_cast<size_t>(N) * kEpochsPerWorker), 1);
-
-    auto restart_cb = make_bandit_restart_callback(bandit, pool, workers, bandit_rngs,
-                                                   setup.minimize, log_options, "FprLpPortfolio",
-                                                   [](int arm) { return kLpArmNames[arm]; });
-
-    size_t total_effort = run_epoch_loop(mipsolver, workers, setup.budget, epoch_budget,
-                                         std::move(restart_cb), setup.stale_budget);
-
-    mipdata->heuristic_effort_used += total_effort;
-}
-
-void run_portfolio_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
-                                 SolutionPool &pool) {
-    auto *mipdata = mipsolver.mipdata_.get();
-    const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
-    const int N = compute_worker_count(mipsolver);
-    if (N <= 0) {
-        return;
-    }
-    g_port_opp_count.fetch_add(1, std::memory_order_relaxed);
-
-    std::vector<double> priors(kNumLpArms, 1.0);
-    ThompsonSampler bandit(kNumLpArms, priors.data(), /*use_mutex=*/true);
-    const uint32_t base_seed = base_seed_for(mipsolver);
-
-    auto make_run_arm = [&](int /*worker_idx*/) {
-        return [&](int arm, std::mt19937 &rng, int attempt, size_t arm_budget) -> HeuristicResult {
-            std::vector<double> restart;
-            pool.get_restart(rng, restart);
-            const double *restart_ptr = restart.empty() ? nullptr : restart.data();
-
-            const LpArm &lp_arm = setup.arms[arm];
-            const auto &var_order = setup.var_orders[arm];
-
-            FprConfig cfg{};
-            cfg.max_effort = arm_budget;
-            cfg.hint = setup.incumbent_snapshot.empty() ? nullptr : setup.incumbent_snapshot.data();
-            cfg.scores = nullptr;
-            cfg.cont_fallback = nullptr;
-            cfg.csc = &setup.csc;
-            cfg.mode = lp_arm.config->mode;
-            cfg.strategy = &lp_arm.config->strat;
-            cfg.lp_ref = lp_arm.lp_ref;
-            cfg.precomputed_var_order = var_order.data();
-            cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
-
-            auto result = fpr_attempt(mipsolver, cfg, rng, attempt, restart_ptr);
-            if (result.found_feasible) {
-                pool.try_add(result.objective, result.solution, kSolutionSourceFprLp);
-            }
-            return result;
-        };
-    };
-
-    auto log_arm = [&](int arm, size_t effort, int reward, double wall_ms) {
-        log_bandit_arm(log_options, "FprLpPortfolio", kLpArmNames[arm], effort, wall_ms, reward);
-    };
-
-    size_t total_effort = run_bandit_opportunistic_loop(mipsolver, bandit, pool, N, kNumLpArms,
-                                                        setup.budget, setup.stale_budget, base_seed,
-                                                        setup.minimize, make_run_arm, log_arm);
-
-    mipdata->heuristic_effort_used += total_effort;
-}
-
 }  // namespace
 
 void run(HighsMipSolver &mipsolver, size_t max_effort) {
@@ -554,22 +432,17 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     SolutionPool pool(kPoolCapacity, setup.minimize);
     seed_pool(pool, mipsolver);
 
-    const auto *options = mipsolver.options_mip_;
-    const bool portfolio = options->mip_heuristic_portfolio;
-    const bool opportunistic = options->mip_heuristic_opportunistic;
-
-    if (portfolio) {
-        if (opportunistic) {
-            run_portfolio_opportunistic(mipsolver, setup, pool);
-        } else {
-            run_portfolio_deterministic(mipsolver, setup, pool);
-        }
+    // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
+    // it always runs arm-aligned parallel workers — num_threads workers
+    // bound to the top-N arms from kClass2/3a/3b, sharing the solution
+    // pool.  The mip_heuristic_portfolio flag (a meta-portfolio over
+    // different heuristic families) does not apply here; only
+    // mip_heuristic_opportunistic picks between epoch-gated and continuous
+    // parallelism.
+    if (mipsolver.options_mip_->mip_heuristic_opportunistic) {
+        run_sequential_opportunistic(mipsolver, setup, pool);
     } else {
-        if (opportunistic) {
-            run_sequential_opportunistic(mipsolver, setup, pool);
-        } else {
-            run_sequential_deterministic(mipsolver, setup, pool);
-        }
+        run_sequential_deterministic(mipsolver, setup, pool);
     }
 
     // Submit best solutions to solver (sequential).  Each entry carries
@@ -583,16 +456,12 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
 
 DispatchCounts dispatch_counts() {
     return {g_seq_det_count.load(std::memory_order_relaxed),
-            g_seq_opp_count.load(std::memory_order_relaxed),
-            g_port_det_count.load(std::memory_order_relaxed),
-            g_port_opp_count.load(std::memory_order_relaxed)};
+            g_seq_opp_count.load(std::memory_order_relaxed)};
 }
 
 void reset_dispatch_counts() {
     g_seq_det_count.store(0, std::memory_order_relaxed);
     g_seq_opp_count.store(0, std::memory_order_relaxed);
-    g_port_det_count.store(0, std::memory_order_relaxed);
-    g_port_opp_count.store(0, std::memory_order_relaxed);
 }
 
 }  // namespace fpr_lp
