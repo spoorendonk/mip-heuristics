@@ -3,6 +3,9 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <mutex>
+#include <string>
+#include <vector>
 
 TEST_CASE("Portfolio: flugpl finds solution", "[portfolio]") {
     Highs highs;
@@ -400,4 +403,86 @@ TEST_CASE("Portfolio opportunistic: p0548 medium instance", "[portfolio][opportu
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(8691.0).epsilon(1e-3));
+}
+
+// ── #73 regression: portfolio flush emits per-arm source tags ──
+//
+// Pre-#73, portfolio mode's end-of-presolve flush called
+// `mipdata->trySolution(entry.solution, kSolutionSourceHeuristic)` — a
+// generic `H` tag — because the pool mixed entries from every bandit
+// arm and the source wasn't tracked per entry.  #73 extended
+// SolutionPool::Entry with a `source` field so the flush can forward
+// the originating arm's tag (`A` for FPR, `J` for FJ, `M` for
+// LocalMIP, `G` for Scylla).  That issue's acceptance test was a
+// manual grep for letters in the HiGHS log — this test automates it.
+//
+// Assertion approach (same pattern as test_mode_matrix.cpp's
+// `lseu_seq_emits_fj_tag`): install a `kCallbackLogging` callback
+// that captures every log line, solve a small instance in portfolio
+// mode with FJ + FPR both enabled, and grep the MIP-display lines
+// (format: " <CODE> <nodes> ...") for their single-letter source
+// code at offset 1.  We require at least one of {A, J} to appear
+// (proving a per-arm tag was forwarded) and require that NO display
+// line ever carries the generic `H` (proving no arm fell back to
+// kSolutionSourceHeuristic).
+TEST_CASE("Portfolio flush emits per-arm source tags", "[portfolio]") {
+    struct LogCapture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+    };
+    LogCapture capture;
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    h.setOptionValue("mip_heuristic_portfolio", true);
+    h.setOptionValue("mip_heuristic_run_fpr", true);
+    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+    h.setOptionValue("mip_heuristic_run_local_mip", false);
+    h.setOptionValue("mip_heuristic_run_scylla", false);
+
+    auto log_cb = [](int callback_type, const std::string& message,
+                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                     void* user_data) {
+        if (callback_type != kCallbackLogging) {
+            return;
+        }
+        auto* cap = static_cast<LogCapture*>(user_data);
+        std::lock_guard<std::mutex> lock(cap->mtx);
+        cap->lines.emplace_back(message);
+    };
+
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    REQUIRE(h.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    // Scan captured lines for MIP-display rows.  The HiGHS MIP display
+    // format is " %s %7s %7s ..." — leading space, one-char source
+    // code, space — so a display line has `line[0] == ' '`,
+    // `line[2] == ' '`, and `line[1]` is the source-code letter.
+    bool saw_per_arm_tag = false;
+    bool saw_generic_h = false;
+    {
+        std::lock_guard<std::mutex> lock(capture.mtx);
+        for (const auto& line : capture.lines) {
+            if (line.size() < 3 || line[0] != ' ' || line[2] != ' ') {
+                continue;
+            }
+            const char code = line[1];
+            if (code == 'A' || code == 'J') {
+                saw_per_arm_tag = true;
+            }
+            if (code == 'H') {
+                saw_generic_h = true;
+            }
+        }
+    }
+
+    // At least one per-arm tag must surface (proves the flush forwards
+    // the originating arm's source, not the generic fallback).
+    REQUIRE(saw_per_arm_tag);
+    // The generic `H` (kSolutionSourceHeuristic) must never appear —
+    // every portfolio pool entry now carries its arm's tag.
+    REQUIRE_FALSE(saw_generic_h);
 }
