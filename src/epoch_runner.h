@@ -3,7 +3,6 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
-#include "util/HighsTimer.h"
 
 #include <concepts>
 #include <cstddef>
@@ -41,19 +40,6 @@ struct EpochWorkerBase {
     size_t total_effort = 0;
     size_t effort_since_improvement = 0;
     bool finished = false;
-
-    // True if the worker should stop because the solver timer elapsed or
-    // the staleness budget is exhausted.  Callers still need to check the
-    // per-epoch effort cap separately.
-    bool check_termination(double time_limit, const HighsTimer &timer) const {
-        if (timer.read() >= time_limit) {
-            return true;
-        }
-        if (effort_since_improvement > stale_budget) {
-            return true;
-        }
-        return false;
-    }
 
     // Clear the staleness counter; called at epoch barrier when any peer
     // worker found an improvement in the prior epoch.

@@ -72,17 +72,3 @@ inline ParallelSetup::ParallelSetup(HighsMipSolver &mipsolver, size_t max_effort
       epoch_budget(std::max<size_t>(worker_budget / kEpochsPerWorker, 1)),
       default_run_cap(std::max<size_t>(max_effort / (N * 10), 1)),
       stale_budget(max_effort >> 2) {}
-
-// FJ counts "step-units" (coefficient accesses vs row-violation work) at
-// a different granularity from the other heuristics, so it overrides
-// `stale_budget` inside `FjWorker` based on the constraint-matrix nonzero
-// count.  This free function exposes that derivation to callers that want
-// to plumb a consistent budget into external runners — currently unused
-// because `FjWorker` recomputes the value itself in its first epoch.
-// See `fj_worker.cpp::run_epoch` for the authoritative site, and issue
-// #71 for the effort-unit normalisation plan.
-inline size_t fj_stale_budget(size_t nnz, size_t total_budget) {
-    const size_t from_nnz = nnz << 8;
-    const size_t cap = total_budget > 0 ? total_budget : SIZE_MAX;
-    return std::min(from_nnz, cap);
-}
