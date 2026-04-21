@@ -217,16 +217,16 @@ concept BanditWorker = requires(T w, int arm, SolutionPool::Snapshot snap) {
     { w.assign_arm(arm) } -> std::same_as<void>;
 };
 
-// Build the epoch-boundary restart callback shared by
-// `portfolio::run_presolve` (det) and
-// `fpr_lp::run_portfolio_deterministic`.
+// Build the epoch-boundary restart callback used by
+// `portfolio::run_presolve` (det).  (Historically also used by
+// `fpr_lp::run_portfolio_deterministic`, which was removed when
+// fpr_lp stopped being a meta-portfolio.)
 //
 // `arm_name_fn(int arm)` returns a C-string name for logging.
-// `tag` is the log tag ("Portfolio" or "FprLpPortfolio").  Logging
-// only fires when the prior epoch actually ran (i.e. the worker had
-// a previously assigned arm); this avoids a spurious zero-effort log
-// line for workers whose initial arm assignment comes from the
-// callback itself.
+// `tag` is the log tag ("Portfolio").  Logging only fires when the
+// prior epoch actually ran (i.e. the worker had a previously assigned
+// arm); this avoids a spurious zero-effort log line for workers whose
+// initial arm assignment comes from the callback itself.
 template <BanditWorker W, typename ArmNameFn>
 auto make_bandit_restart_callback(ThompsonSampler &bandit, SolutionPool &pool,
                                   std::vector<std::unique_ptr<W>> &workers,

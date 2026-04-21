@@ -73,6 +73,13 @@ def build_best_known(
         solu_value = None
         if inst in solu_refs:
             tag, val = solu_refs[inst]
+            # =opt= is proven optimal; =best= is best known (may be beatable);
+            # =fea= is a feasible objective that is NOT optimal.  We still
+            # treat =fea= as a reference because `resolve_reference` takes
+            # min(solu_value, min(observed)) — any config that finds better
+            # raises the virtual best — so a gap computed against a =fea=
+            # reference is a pessimistic lower bound on the true gap.  Skip
+            # =unkn= / =inf= / =unbd=.
             if tag in ("=opt=", "=best=", "=fea=") and val is not None:
                 solu_value = val
         refs[inst] = resolve_reference(solu_value, observed)

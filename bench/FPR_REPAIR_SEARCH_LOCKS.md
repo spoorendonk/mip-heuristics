@@ -35,7 +35,8 @@ cols, 9083 nnz, binding "≥" capacity rows).
 
 ## Root cause hypothesis
 
-`repair_search()` caps DFS nodes at `repair_iterations=200` and terminates on
+`repair_search()` caps DFS nodes at `repair_iterations=50` (post-fix; was 200
+when this report was written) and terminates on
 `total_effort >= max_effort` (`src/repair_search.cpp:287`). **But
 `total_effort` only accumulates `apply_move`/`walksat_select_move` counters
 (lines 313, 320, 356)** — it does **not** include the two PropEngines'

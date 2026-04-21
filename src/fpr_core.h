@@ -45,10 +45,13 @@ struct FprConfig {
     // Iteration limit per repair call.  The paper quotes 200; we cap at 50
     // because RepairSearch's two PropEngine fixpoints per node dominate cost
     // on tight instances (each ~760k coef accesses on 9k-nnz LPs), so 200
-    // nodes can burn ~1.4 s regardless of max_effort.  Empirically repair
-    // succeeds inside the first ~10 nodes when it succeeds at all; the 4x
-    // cut shrinks worst-case wall time without affecting success rate in
-    // our MIPLIB tests.
+    // nodes can burn ~1.4s regardless of max_effort (see
+    // `bench/FPR_REPAIR_SEARCH_LOCKS.md` for the neos-3426085-ticino profile).
+    // Note: this value is also consumed by `walksat_repair` at fpr_core.cpp
+    // ~427 as its step cap — the paper's 200 was tuned for WalkSAT, and
+    // shrinking to 50 may prematurely terminate flat WalkSAT chains on harder
+    // instances.  The walksat-side effect has not been isolated in the
+    // effort sweep; splitting this into two knobs is a follow-up.
     HighsInt repair_iterations = 50;
     // Track best total violation during walk and restore at end (paper: yes).
     bool repair_track_best = true;

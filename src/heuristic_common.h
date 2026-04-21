@@ -110,12 +110,17 @@ inline uint32_t heuristic_base_seed(HighsInt random_seed) {
 }
 
 // Effort budget for presolve heuristics, scaled by mip_heuristic_effort.
-// Base budget nnz << 12 at default effort 0.05; scales linearly.
+// `nnz << 12` is the reference base budget at the historical anchor effort
+// 0.05; the formula scales linearly in `mip_heuristic_effort`.  The patched
+// HiGHS default is 0.30 (raised from upstream's 0.05 by
+// third_party/highs_patch/apply_patch.cmake), i.e. 6x the reference base
+// budget at default.
 inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {
     if (mip_heuristic_effort <= 0.0) {
         return 0;
     }
     constexpr int kBaseShift = 12;
-    double scale = mip_heuristic_effort / 0.05;
+    constexpr double kEffortAnchor = 0.05;
+    double scale = mip_heuristic_effort / kEffortAnchor;
     return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);
 }

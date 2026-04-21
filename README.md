@@ -9,7 +9,7 @@ This project implements primal heuristics for finding feasible solutions to mixe
 ## Heuristics
 
 - **FPR (Fix-Propagate-Repair)** -- Fix-and-propagate framework with multiple variable-ranking and value-selection strategies, plus WalkSAT-based repair search. The LP-free variant runs during presolve. Based on Salvagnin et al. [1].
-- **FPR_LP** -- LP-dependent FPR (paper Classes 2–3) driven by the root LP solution, dispatched during the branch-and-bound dive. Exposes the full 2×2 execution matrix (see below).
+- **FPR_LP** -- LP-dependent FPR (paper Classes 2–3) driven by the root LP solution, dispatched during the branch-and-bound dive (after RENS/RINS). Single heuristic family, so only `mip_heuristic_opportunistic` selects between its two execution variants.
 - **LocalMIP** -- Tabu-based neighborhood search with constraint-violation tracking, lifting moves, and backtracking multiple starts. Based on Lin et al. [2].
 - **Scylla** -- Matrix-free fix-propagate-and-project using PDLP as an approximate LP oracle, with objective perturbation and solution-pool crossover restarts. Based on Mexi et al. [3].
 - **FeasibilityJump** -- LP-free Lagrangian heuristic. Wraps HiGHS's built-in implementation with effort budgeting and portfolio integration. Based on Luteberget and Sartor [4].
@@ -59,13 +59,13 @@ Enable portfolio mode (Thompson sampling arm selection):
 | `portfolio = false` (sequential) | **seq/det**: FJ → FPR → LocalMIP → Scylla in order, each with N epoch-synchronized workers | **seq/opp**: same sequence, each heuristic uses its continuous-parallel runner |
 | `portfolio = true`  (bandit)     | **port/det**: Thompson-sampling bandit across arms, workers synchronize at epoch barriers | **port/opp**: bandit with continuous workers, no barriers |
 
-FPR_LP exposes the same 2×2 matrix during the branch-and-bound dive.
+FPR_LP (a single heuristic family, not a meta-portfolio) dispatches only on `mip_heuristic_opportunistic` — `mip_heuristic_portfolio` is a presolve-only flag and has no effect on the dive-time LP-FPR runner.
 
 ### Custom options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `mip_heuristic_effort` | `0.05` | Multiplier on the nnz-derived base effort budget shared across custom heuristics |
+| `mip_heuristic_effort` | `0.30` | Multiplier on the nnz-derived base effort budget shared across custom heuristics (raised from upstream's 0.05 by our patch; see `bench/REPORT_effort_sweep.md`) |
 | `mip_heuristic_run_fpr` | `false` | Enable FPR (and LP-dependent FPR_LP) |
 | `mip_heuristic_run_local_mip` | `false` | Enable LocalMIP heuristic |
 | `mip_heuristic_run_scylla` | `false` | Enable Scylla heuristic |

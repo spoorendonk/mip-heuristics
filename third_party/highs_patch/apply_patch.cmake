@@ -77,10 +77,14 @@ endif()
 
 # ── Raise mip_heuristic_effort default 0.05 → 0.30 ──
 # Our portfolio heuristics are starved at 0.05; a 10-instance sweep showed
-# monotone SGM-gap improvement up to 0.30 (see bench/results_effort_sweep/REPORT.md).
-# Idempotent: the search pattern disappears once we've rewritten it.
+# monotone SGM-gap improvement up to 0.30 (see bench/REPORT_effort_sweep.md).
+# Idempotent: the search pattern disappears once we've rewritten it.  A
+# FATAL_ERROR fires if upstream ever reformats the OptionRecordDouble line
+# and neither the pristine nor the patched substring matches — we'd silently
+# ship the wrong default otherwise.
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 string(FIND "${OPTIONS_CONTENT}" "&mip_heuristic_effort, 0.0, 0.05, 1.0" _effort_default_found)
+string(FIND "${OPTIONS_CONTENT}" "&mip_heuristic_effort, 0.0, 0.30, 1.0" _effort_patched_found)
 if(NOT _effort_default_found EQUAL -1)
     string(REPLACE
       "&mip_heuristic_effort, 0.0, 0.05, 1.0"
@@ -88,8 +92,18 @@ if(NOT _effort_default_found EQUAL -1)
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
     message(STATUS "Raised mip_heuristic_effort default to 0.30")
-else()
+elseif(NOT _effort_patched_found EQUAL -1)
     message(STATUS "mip_heuristic_effort default already raised, skipping")
+else()
+    message(FATAL_ERROR
+        "HighsOptions.h post-patch sanity check failed: neither the pristine "
+        "'&mip_heuristic_effort, 0.0, 0.05, 1.0' nor the patched "
+        "'&mip_heuristic_effort, 0.0, 0.30, 1.0' substring was found. "
+        "Upstream HiGHS likely reformatted the option-record block so the "
+        "exact-string REPLACE pattern no longer matches. "
+        "Please clean the HiGHS source tree and rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
 endif()
 
 # ── Patch HighsMipSolverData.h: add capture overload + custom solution source enums ──
@@ -412,6 +426,25 @@ endif()
 
 # ── Patch HighsMipSolver.cpp: insert heuristic call sites ──
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
+
+# Defensive check: detect a previously-applied Patch B RENS/RINS guard and
+# force a clean rebuild.  That guard (`mip_heuristic_run_rens &&
+# !options_mip_->mip_heuristic_portfolio`) was removed when RENS/RINS became
+# unconditional — if a developer upgrades an existing build tree without
+# blowing away build/_deps/highs-src, the idempotency sentinel below skips
+# the whole block and the stale guarded code persists, silently disabling
+# RENS/RINS in portfolio mode (the opposite of what the fix intends).
+string(FIND "${CONTENT}" "mip_heuristic_run_rens && !options_mip_->mip_heuristic_portfolio" _stale_rens_guard)
+if(NOT _stale_rens_guard EQUAL -1)
+    message(FATAL_ERROR
+        "HighsMipSolver.cpp contains a stale RENS/RINS portfolio guard that "
+        "was removed from the patch.  RENS/RINS must now run unconditionally "
+        "— an upgraded-in-place build would otherwise continue to suppress "
+        "them under `mip_heuristic_portfolio=true`.  Clean the HiGHS source "
+        "tree and rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
 
 string(FIND "${CONTENT}" "heuristics::run_presolve" _found)
 if(_found EQUAL -1)

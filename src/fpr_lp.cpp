@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -198,23 +197,16 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
 class LpFprWorker {
 public:
     LpFprWorker(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionPool &pool, int arm_idx,
-                uint32_t seed, bool one_shot = false)
-        : mipsolver_(mipsolver),
-          setup_(setup),
-          pool_(pool),
-          arm_idx_(arm_idx),
-          one_shot_(one_shot),
-          rng_(seed) {}
+                uint32_t seed)
+        : mipsolver_(mipsolver), setup_(setup), pool_(pool), arm_idx_(arm_idx), rng_(seed) {}
 
     EpochResult run_epoch(size_t epoch_budget) {
         EpochResult epoch{};
 
-        // Persistent (non-portfolio) mode only: after K stale epochs
-        // randomize to another LP arm from the full 10-element pool.
-        // var_orders are precomputed for every arm so the switch is
-        // race-free.  In one-shot (portfolio) mode the bandit picks
-        // the next arm via assign_arm() — never touch arm_idx_ here.
-        if (!one_shot_ && epochs_without_improvement_ >= kStaleEpochThreshold) {
+        // After K stale epochs, randomize to another LP arm from the full
+        // 10-element pool.  var_orders are precomputed for every arm so the
+        // switch is race-free.
+        if (epochs_without_improvement_ >= kStaleEpochThreshold) {
             randomize_arm();
             epochs_without_improvement_ = 0;
         }
@@ -240,16 +232,13 @@ public:
         cfg.precomputed_var_order = var_order.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
 
-        auto t0 = std::chrono::steady_clock::now();
-        last_result_ = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
-        auto t1 = std::chrono::steady_clock::now();
-        last_wall_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
         ++attempt_idx_;
 
-        epoch.effort = last_result_.effort;
+        epoch.effort = result.effort;
 
-        if (last_result_.found_feasible) {
-            pool_.try_add(last_result_.objective, last_result_.solution, kSolutionSourceFprLp);
+        if (result.found_feasible) {
+            pool_.try_add(result.objective, result.solution, kSolutionSourceFprLp);
             epoch.found_improvement = true;
             epochs_without_improvement_ = 0;
         } else {
@@ -259,38 +248,12 @@ public:
             }
         }
 
-        // One-shot portfolio mode: mark finished so run_epoch_loop's
-        // restart callback fires and the bandit can reassign the next
-        // arm.  Mirrors PortfolioWorker in portfolio.cpp.
-        if (one_shot_) {
-            finished_ = true;
-        }
-
         return epoch;
     }
 
     bool finished() const { return finished_; }
 
     void reset_staleness() { epochs_without_improvement_ = 0; }
-
-    // --- Portfolio-specific interface (used by restart callback) ---
-
-    void assign_arm(int new_arm_idx) {
-        arm_idx_ = new_arm_idx;
-        finished_ = false;
-        epochs_without_improvement_ = 0;
-        last_result_ = {};
-        last_wall_ms_ = 0.0;
-    }
-
-    // Portfolio-side accessors (BanditWorker concept).  `assigned_arm()`
-    // mirrors `PortfolioWorker`'s API so bandit_runner.h's shared
-    // restart callback works against both workers.
-    int assigned_arm() const { return arm_idx_; }
-    const HeuristicResult &last_result() const { return last_result_; }
-    double last_wall_ms() const { return last_wall_ms_; }
-    void set_pre_snapshot(SolutionPool::Snapshot snap) { pre_snap_ = snap; }
-    SolutionPool::Snapshot pre_snapshot() const { return pre_snap_; }
 
 private:
     void randomize_arm() { arm_idx_ = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng_); }
@@ -303,11 +266,6 @@ private:
     int attempt_idx_ = 0;
     int epochs_without_improvement_ = 0;
     bool finished_ = false;
-    bool one_shot_ = false;
-
-    HeuristicResult last_result_{};
-    double last_wall_ms_ = 0.0;
-    SolutionPool::Snapshot pre_snap_{};
 
     std::mt19937 rng_;
 

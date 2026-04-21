@@ -317,6 +317,14 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
     // respected max_effort, but if Phase 1-2 exhausted the DFS node cap we
     // never reached Phase 3 — the arm simply returned "no complete assignment"
     // with a huge effort count.
+    //
+    // The pre-loop `E.propagate(-1)` during DFS seeding is intentionally not
+    // gated; the initial fixpoint is required to place the root node.  If
+    // cfg.max_effort is 0 (caller asked for zero budget), the comparison
+    // `E.effort() < 0` is false as a size_t, so the loop never iterates —
+    // the arm returns "no complete assignment" with effort ≈ initial
+    // propagation cost.  That matches the rest of the solver's "best effort"
+    // budget contract.
     while (!dfs_stack.empty() && nodes_visited < node_limit && !found_complete &&
            E.effort() < cfg.max_effort) {
         auto node = dfs_stack.back();
