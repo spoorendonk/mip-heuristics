@@ -1,0 +1,16 @@
+# Head-to-head pilot: patched vs vanilla HiGHS
+# 10 smallest MIPLIB 2017 open instances with a =best= reference in .solu.
+# Small .mps.gz (<90 KB) keeps read overhead negligible.
+# All are unsolved — vanilla HiGHS cannot close them in 300s, giving a clean
+# primal-heuristic comparison via #Feas, #Win, primal gap vs =best=, and
+# primal integral.
+milo-v13-4-3d-4-0
+neos-3426085-ticino
+neos-3009394-lami
+liu
+neos-1420790
+set3-09
+set3-16
+dfn-bwin-DBE
+ger50-17-ptp-pop-3t
+neos-5045105-creuse

@@ -1,0 +1,7 @@
+# 3-instance diagnostic subset
+# - liu: most active FPR-LP firing in earlier verbose runs
+# - set3-16: patched had big early-gap miss (20.8 @10s vs 1.83 vanilla)
+# - neos-3426085-ticino: patched 7.8s T1st vs vanilla 0.2s
+liu
+set3-16
+neos-3426085-ticino

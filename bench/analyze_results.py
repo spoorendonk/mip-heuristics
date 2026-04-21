@@ -14,6 +14,71 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_highs_log import SolveResult, parse_log_file
 
 
+def parse_solu_file(path: str) -> dict[str, tuple[str, float | None]]:
+    """Parse a MIPLIB .solu file into {instance: (tag, value)}.
+
+    Tags: "=opt=", "=best=", "=unkn=", "=fea=".  Value is None for =unkn=.
+    """
+    refs: dict[str, tuple[str, float | None]] = {}
+    with open(path) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 2 or not parts[0].startswith("="):
+                continue
+            tag, name = parts[0], parts[1]
+            val: float | None = None
+            if len(parts) >= 3:
+                try:
+                    val = float(parts[2])
+                except ValueError:
+                    val = None
+            refs[name] = (tag, val)
+    return refs
+
+
+def resolve_reference(
+    solu_value: float | None,
+    observed_primals: list[float],
+    sense: str = "min",
+) -> float | None:
+    """Pick reference objective for primal-gap computation.
+
+    When observed primals beat the published =best=, use the virtual best
+    instead so we don't punish configs that found better solutions.
+    `sense` is "min" (default, MIPLIB convention) or "max".
+    """
+    finite = [p for p in observed_primals if math.isfinite(p)]
+    if solu_value is None:
+        return (min(finite) if sense == "min" else max(finite)) if finite else None
+    if not finite:
+        return solu_value
+    return min(solu_value, min(finite)) if sense == "min" else max(solu_value, max(finite))
+
+
+def build_best_known(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    configs: list[str],
+    instances: list[str],
+    solu_refs: dict[str, tuple[str, float | None]],
+) -> dict[str, float | None]:
+    """Build {instance: reference_objective} from .solu + observed primals."""
+    refs: dict[str, float | None] = {}
+    for inst in instances:
+        observed: list[float] = []
+        for c in configs:
+            for seed_data in results.get(c, {}).values():
+                r = seed_data.get(inst)
+                if r and r.primal_bound != float("inf"):
+                    observed.append(r.primal_bound)
+        solu_value = None
+        if inst in solu_refs:
+            tag, val = solu_refs[inst]
+            if tag in ("=opt=", "=best=", "=fea=") and val is not None:
+                solu_value = val
+        refs[inst] = resolve_reference(solu_value, observed)
+    return refs
+
+
 def load_results(
     results_dir: str, configs: list[str]
 ) -> dict[str, dict[int, dict[str, SolveResult]]]:
@@ -186,6 +251,7 @@ def print_comparison_table(
     agg_results: dict[str, dict[str, SolveResult]],
     configs: list[str],
     time_cutoffs: list[float] | None = None,
+    best_known: dict[str, float | None] | None = None,
 ) -> None:
     """Print per-instance comparison table using seed-aggregated values."""
     if time_cutoffs is None:
@@ -246,9 +312,10 @@ def print_comparison_table(
                 ties["t1st"] += 1
 
         # Gap at cutoffs
+        ref = best_known.get(inst) if best_known else None
         for tc in active_cutoffs:
-            g1 = r1.primal_gap_at(tc)
-            g2 = r2.primal_gap_at(tc)
+            g1 = r1.primal_gap_at(tc, ref)
+            g2 = r2.primal_gap_at(tc, ref)
             print(f"{format_float(g1, 12, 6)} {format_float(g2, 12, 6)} ", end="")
             if g1 is not None and g2 is not None:
                 gap_vals[tc][c1].append(g1)
@@ -305,6 +372,7 @@ def print_paper_metrics(
     agg_results: dict[str, dict[str, SolveResult]],
     configs: list[str],
     time_limit: float,
+    best_known: dict[str, float | None] | None = None,
 ) -> None:
     """Print paper-standard metrics: #Feas, #Win, SGM of T1st, SGM of gap@cutoff."""
     instances = get_common_instances(results, configs)
@@ -357,11 +425,31 @@ def print_paper_metrics(
         for inst in instances:
             r = agg_results.get(c, {}).get(inst)
             if r:
-                g = r.primal_gap_at(time_limit)
+                ref = best_known.get(inst) if best_known else None
+                g = r.primal_gap_at(time_limit, ref)
                 if g is not None:
                     gaps.append(g)
         print(f" {format_float(shifted_geomean(gaps, 0.01), 12, 6)}", end="")
     print()
+
+    # --- SGM of primal integral (shift=1.0) ---
+    print(f"{'SGM Primal Integral':<25}", end="")
+    for c in configs:
+        pis = []
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            if r:
+                ref = best_known.get(inst) if best_known else None
+                pi = r.primal_integral(time_limit, ref)
+                if math.isfinite(pi):
+                    pis.append(pi)
+        print(f" {format_float(shifted_geomean(pis, 1.0), 12, 4)}", end="")
+    print()
+
+    # --- Reference coverage ---
+    if best_known is not None:
+        covered = sum(1 for inst in instances if best_known.get(inst) is not None)
+        print(f"\n(reference objective available for {covered}/{len(instances)} instances)")
 
 
 def generate_survival_plot(
@@ -506,6 +594,9 @@ def main() -> None:
                         help="Gap threshold for survival plot (default: 0.01 = 1%%)")
     parser.add_argument("--time-limit", type=float, default=600.0,
                         help="Time limit used in the benchmark (for gap@cutoff metric)")
+    parser.add_argument("--solu", default=os.path.join(os.path.dirname(__file__),
+                                                       "miplib2017-v22.solu"),
+                        help="MIPLIB .solu file with reference objectives")
     args = parser.parse_args()
 
     results = load_results(args.results_dir, args.configs)
@@ -516,8 +607,16 @@ def main() -> None:
     active_configs = [c for c in args.configs if c in results]
     agg_results = aggregate_results(results, active_configs)
 
-    print_comparison_table(agg_results, active_configs)
-    print_paper_metrics(results, agg_results, active_configs, args.time_limit)
+    solu_refs: dict[str, tuple[str, float | None]] = {}
+    if args.solu and os.path.exists(args.solu):
+        solu_refs = parse_solu_file(args.solu)
+
+    common = get_common_instances(results, active_configs)
+    best_known = build_best_known(results, active_configs, common, solu_refs)
+
+    print_comparison_table(agg_results, active_configs, best_known=best_known)
+    print_paper_metrics(results, agg_results, active_configs, args.time_limit,
+                        best_known=best_known)
     print_effort_calibration(results, active_configs)
 
     if args.plot:
