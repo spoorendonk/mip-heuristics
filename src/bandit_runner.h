@@ -165,10 +165,13 @@ size_t run_bandit_opportunistic_loop(HighsMipSolver &mipsolver, ThompsonSampler 
                     //      the zero-effort check, so a zero-effort attempt still
                     //      accumulates staleness for peer workers.
                     //   2. zero-effort guard — breaks *this* worker's loop
-                    //      without bumping total_effort.
+                    //      without bumping total_effort.  Request global stop
+                    //      so peers don't keep running past a solver timeout
+                    //      between worker-0's next polling tick.
                     //   3. add_effort — only non-zero effort grows the budget.
                     loop.note_staleness(result.effort, /*improved=*/reward >= 2, stale_budget);
                     if (result.effort == 0) {
+                        loop.request_stop();
                         break;
                     }
                     loop.add_effort(result.effort, budget);
@@ -220,14 +223,15 @@ auto make_bandit_restart_callback(ThompsonSampler &bandit, SolutionPool &pool,
                                   std::vector<std::mt19937> &bandit_rngs, bool minimize,
                                   const HighsLogOptions &log_options, const char *tag,
                                   ArmNameFn arm_name_fn) {
-    // The returned lambda outlives this factory's stack frame.  Reference
-    // captures bind to the referent of each reference parameter (all
-    // caller-owned and long-lived), while value-typed parameters
-    // (`minimize`, `tag`, `arm_name_fn`) must be captured by value.  The
-    // `[&]` + `tag, arm_name_fn` mixture below does exactly that —
-    // `minimize` is implicitly captured by reference to the bool
-    // parameter's alias, which would dangle once this factory returns,
-    // so it must be listed by value explicitly.
+    // The returned lambda outlives this factory's stack frame, so
+    // captures must not bind to local parameter aliases.  The explicit
+    // capture list below binds reference parameters (`bandit`, `pool`,
+    // `workers`, `bandit_rngs`, `log_options`) to their caller-owned
+    // referents by reference, and captures value-typed parameters
+    // (`minimize`, `tag`) by value; `arm_name_fn` is moved in via init
+    // capture.  Do not switch this to default-capture `[&]`: that would
+    // capture `minimize` and `tag` by reference to the local parameter
+    // slots, which dangle once this factory returns.
     return [&bandit, &pool, &workers, &bandit_rngs, &log_options, minimize, tag,
             arm_name_fn = std::move(arm_name_fn)](int w) mutable {
         auto &worker = *workers[w];

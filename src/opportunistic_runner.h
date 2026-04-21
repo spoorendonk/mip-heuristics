@@ -77,8 +77,12 @@ size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers, size_t
                     ++attempt_counter;
 
                     // Guard against workers that make no progress: a zero-effort
-                    // return means this worker is done, stop it rather than spin.
+                    // return means this worker is done.  Request global stop so
+                    // peers don't keep running past a solver timeout between
+                    // worker-0's next polling tick (worker 0 is the only one that
+                    // polls `mipsolver_.timer_` / `terminatorTerminated`).
                     if (result.effort == 0) {
+                        loop.request_stop();
                         break;
                     }
 

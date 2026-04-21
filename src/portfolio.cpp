@@ -560,6 +560,10 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
             std::make_unique<PortfolioWorker>(mipsolver, setup, pool, seed, w, scylla_gen_ptr));
     }
 
+    // Portfolio keeps its historical kEpochsPerWorker=20 (the presolve
+    // bandit's per-arm residency is a different unit than the epoch
+    // cadence of FJ/FPR/LocalMIP/Scylla where parallel_setup.h sets 10).
+    // See issue #71 for effort-unit normalisation.
     constexpr int kEpochsPerWorker = 20;
     const size_t epoch_budget =
         std::max<size_t>(setup.budget / (static_cast<size_t>(N) * kEpochsPerWorker), 1);

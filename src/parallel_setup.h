@@ -1,7 +1,6 @@
 #pragma once
 
 #include "heuristic_common.h"
-#include "lp_data/HConst.h"
 #include "lp_data/HighsLp.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -39,7 +38,6 @@
 struct ParallelSetup {
     const HighsLp &model;
     HighsMipSolverData *mipdata;
-    bool minimize;
     CscMatrix csc;
     size_t N;                // num_threads
     uint32_t base_seed;      // seeded from `random_seed` via heuristic_base_seed
@@ -63,7 +61,6 @@ inline constexpr size_t kEpochsPerWorker = 10;
 inline ParallelSetup::ParallelSetup(HighsMipSolver &mipsolver, size_t max_effort)
     : model(*mipsolver.model_),
       mipdata(mipsolver.mipdata_.get()),
-      minimize(model.sense_ == ObjSense::kMinimize),
       csc(build_csc(model.num_col_, model.num_row_, mipdata->ARstart_, mipdata->ARindex_,
                     mipdata->ARvalue_)),
       N(static_cast<size_t>(std::max(1, highs::parallel::num_threads()))),

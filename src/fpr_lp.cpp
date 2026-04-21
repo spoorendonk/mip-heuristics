@@ -469,6 +469,11 @@ void run_portfolio_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &se
         workers.push_back(std::move(worker));
     }
 
+    // Dive-time LP portfolio keeps kEpochsPerWorker=20 (bandit-arm
+    // residency cadence, separate from the per-chain kEpochsPerWorker=10
+    // used at :377 for seq/det).  Presolve sibling in portfolio.cpp also
+    // uses 20; parallel_setup.h's 10 is the value for the 4 presolve
+    // heuristics only.  See issue #71 for effort-unit normalisation.
     constexpr int kEpochsPerWorker = 20;
     const size_t epoch_budget =
         std::max<size_t>(setup.budget / (static_cast<size_t>(N) * kEpochsPerWorker), 1);
