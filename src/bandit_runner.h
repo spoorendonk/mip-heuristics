@@ -82,18 +82,16 @@ inline int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot 
 
 // Effort-proportional budget cap for a single opportunistic arm pull.
 // Each pull gets at most kBudgetCapMultiplier * avg_effort for that arm.
-// First pull (no history) uses total_budget / (num_arms * 10), clamped by
-// kFirstPullEffortCap so a single cold-start arm cannot burn more than
-// ~100-200 ms wall time on large instances (effort_per_ms ≈ 100k-200k
-// across FPR/LocalMIP arms, so 20M effort ≈ 100-200 ms).  Without this
-// clamp, an arm like FprRepairSearchLocks on a 9k-nnz instance at
-// mip_heuristic_effort=0.30 gets a ~150 M effort first-pull budget and
-// burns ~1.4 s before the bandit has any observation to throttle it.
-// The repair_search loop only honours the budget after the effort-counter
-// fix in repair_search.cpp:287 (it was previously ignoring PropEngine
-// work), so this cap is the other half of the T1st-regression fix.
+// First pull (no history) uses total_budget / (num_arms * 10).  This
+// proportional formula already scales with nnz because total_budget
+// itself is `nnz << 12 * (effort / 0.05)` (see `heuristic_effort_budget`
+// in heuristic_common.h), so a cold-start arm on a large instance
+// gets proportionally more budget than on a small instance without an
+// absolute ceiling.  The primary T1st-regression source — Phase 1-2 DFS
+// in fpr_core.cpp ignoring `max_effort` — was fixed by the
+// `E.effort() < cfg.max_effort` gate, so an absolute belt-and-
+// suspenders cap is no longer needed.
 inline constexpr double kBudgetCapMultiplier = 2.5;
-inline constexpr size_t kFirstPullEffortCap = 20'000'000;
 
 inline size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t total_budget,
                                  int num_arms) {
@@ -101,8 +99,7 @@ inline size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t 
     if (stats.pulls > 0 && stats.avg_effort > 0.0) {
         return static_cast<size_t>(kBudgetCapMultiplier * stats.avg_effort);
     }
-    const size_t proportional = total_budget / static_cast<size_t>(std::max(num_arms * 10, 1));
-    return std::min(proportional, kFirstPullEffortCap);
+    return total_budget / static_cast<size_t>(std::max(num_arms * 10, 1));
 }
 
 // Generic opportunistic Thompson-sampling bandit loop.

@@ -9,12 +9,17 @@ import subprocess
 import sys
 
 
-# Default vanilla options: disable all custom heuristics
+# Default vanilla options: disable all custom heuristics AND pin
+# mip_heuristic_effort back to upstream HiGHS's 0.05 default.  Our patch
+# raises that default to 0.30 for patched runs, but vanilla should
+# represent the upstream-HiGHS baseline so its RENS/RINS/LP budgets
+# don't inherit our bump and bias the comparison.
 VANILLA_OPTIONS = {
     "mip_heuristic_portfolio": "false",
     "mip_heuristic_run_fpr": "false",
     "mip_heuristic_run_local_mip": "false",
     "mip_heuristic_run_scylla": "false",
+    "mip_heuristic_effort": "0.05",
 }
 
 # Default patched options: port/opp cell — Thompson bandit over the four

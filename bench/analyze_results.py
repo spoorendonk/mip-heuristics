@@ -46,6 +46,12 @@ def resolve_reference(
     When observed primals beat the published =best=, use the virtual best
     instead so we don't punish configs that found better solutions.
     `sense` is "min" (default, MIPLIB convention) or "max".
+
+    NOTE: `build_best_known` below only calls this with sense='min'.  That
+    matches the current MIPLIB benchmark subsets (head-to-head instances
+    are all minimization); adding a maximization instance to a benchmark
+    requires threading sense detection from the HiGHS log or .mps file.
+    The assumption is guarded here so a future caller can opt in.
     """
     finite = [p for p in observed_primals if math.isfinite(p)]
     if solu_value is None:

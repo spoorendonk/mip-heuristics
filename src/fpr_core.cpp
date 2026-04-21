@@ -83,7 +83,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
 
     std::vector<double> lhs_cache(nrow);
 
-    const HighsInt repair_budget = cfg.repair_iterations;
+    const HighsInt repair_budget = cfg.walksat_iterations;
 
     auto is_violated = [&](HighsInt i, double lhs) -> bool {
         return is_row_violated(lhs, row_lo[i], row_hi[i], feastol);
