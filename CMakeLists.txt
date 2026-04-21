@@ -66,3 +66,36 @@ target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
 target_compile_definitions(mip_heuristics_tests PRIVATE
     "INSTANCES_DIR=\"${highs_SOURCE_DIR}/check/instances\"")
 catch_discover_tests(mip_heuristics_tests)
+
+# Python bench tests — unit tests for the log parser and
+# `check_effort_drift.py` (issue #71 AC#3).  The actual drift measurement
+# runs off a real MIPLIB results tree and stays a manual/CI step; these
+# tests only cover the script's own logic (regex, aggregation, exit codes,
+# error paths) so it's kept honest as the calibration gate evolves.
+#
+# Prefer `.venv/bin/python` (where `pip install pytest` typically lands in
+# this project) over the system interpreter.  Skip silently when neither
+# has pytest so `ctest` on a fresh clone stays green.
+set(_bench_py "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+    set(_bench_py "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+else()
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        set(_bench_py "${Python3_EXECUTABLE}")
+    endif()
+endif()
+if(_bench_py)
+    execute_process(
+        COMMAND ${_bench_py} -c "import pytest"
+        RESULT_VARIABLE _have_pytest
+        OUTPUT_QUIET ERROR_QUIET
+    )
+    if(_have_pytest EQUAL 0)
+        add_test(
+            NAME bench_python_tests
+            COMMAND ${_bench_py} -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/bench
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+    endif()
+endif()

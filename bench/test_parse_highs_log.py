@@ -49,3 +49,40 @@ def test_effort_line_without_reward_is_backward_compatible():
     assert sample.arm == "LocalMIP"
     assert sample.reward is None
     assert sample.portfolio_tag == "Portfolio"
+
+
+def test_sequential_lines_parse_into_sequential_samples():
+    """`[Sequential]` lines feed kWeight* calibration (issue #71).
+
+    They share no regex with `[Portfolio]` lines (different field names,
+    no reward, no arm) and must not leak into `effort_samples`.
+    """
+    log = (
+        "[Sequential] heur=fj effort=1000 wall_ms=5.0 effort_per_ms=200\n"
+        "[Sequential] heur=fpr effort=2500 wall_ms=50.0 effort_per_ms=50\n"
+        "[Sequential] heur=local_mip effort=3000 wall_ms=90.0 effort_per_ms=33\n"
+        "[Sequential] heur=scylla effort=4000 wall_ms=800.0 effort_per_ms=5\n"
+    )
+    result = parse_log(log)
+    assert result.effort_samples == []
+    assert len(result.sequential_samples) == 4
+
+    names = [s.heuristic for s in result.sequential_samples]
+    assert names == ["fj", "fpr", "local_mip", "scylla"]
+    scylla = result.sequential_samples[-1]
+    assert scylla.effort == 4000
+    assert scylla.wall_ms == 800.0
+    assert scylla.effort_per_ms == 5.0
+
+
+def test_sequential_zero_effort_line_parses():
+    """Zero-effort [Sequential] lines (e.g. local_mip skipping a cold
+    solve) are emitted so a human reader sees the skip; the drift script
+    filters them before aggregation. The parser must accept them."""
+    log = "[Sequential] heur=local_mip effort=0 wall_ms=0.1 effort_per_ms=0.000\n"
+    result = parse_log(log)
+    assert len(result.sequential_samples) == 1
+    sample = result.sequential_samples[0]
+    assert sample.heuristic == "local_mip"
+    assert sample.effort == 0
+    assert sample.effort_per_ms == 0.0

@@ -34,6 +34,22 @@ class EffortSample:
 
 
 @dataclass
+class SequentialSample:
+    """A single [Sequential] per-heuristic wall-clock observation.
+
+    Emitted by `run_sequential` in `src/mode_dispatch.cpp` when the
+    presolve dispatch runs in seq/det (or seq/opp) mode.  One sample
+    per heuristic per solve; used by `bench/check_effort_drift.py` to
+    calibrate `kWeight*` (see issue #71).
+    """
+
+    heuristic: str  # fj, fpr, local_mip, scylla
+    effort: int
+    wall_ms: float
+    effort_per_ms: float
+
+
+@dataclass
 class SolveResult:
     """Parsed result from a HiGHS MIP solve."""
 
@@ -47,6 +63,7 @@ class SolveResult:
     lp_iterations: int = 0
     incumbents: list[Incumbent] = field(default_factory=list)
     effort_samples: list[EffortSample] = field(default_factory=list)
+    sequential_samples: list[SequentialSample] = field(default_factory=list)
 
     @property
     def time_to_first_feasible(self) -> float | None:
@@ -155,6 +172,15 @@ _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 _EFFORT_RE = re.compile(
     r"^\s*\[(Portfolio|FprLpPortfolio)\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
     r"(?: reward=(\d+))?"
+)
+
+# [Sequential] per-heuristic calibration line emitted from
+# src/mode_dispatch.cpp `log_sequential` (issue #71):
+#   [Sequential] heur=fpr effort=12345 wall_ms=67.8 effort_per_ms=182
+# There is one line per heuristic per solve, feeding
+# `bench/check_effort_drift.py` to calibrate `kWeight*`.
+_SEQUENTIAL_RE = re.compile(
+    r"^\s*\[Sequential\] heur=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
 )
 
 
@@ -274,6 +300,19 @@ def parse_log(log_text: str) -> SolveResult:
                     effort_per_ms=float(m.group(5)),
                     reward=reward,
                     portfolio_tag=m.group(1),
+                )
+            )
+            continue
+
+        # Sequential per-heuristic calibration line
+        m = _SEQUENTIAL_RE.match(line)
+        if m:
+            result.sequential_samples.append(
+                SequentialSample(
+                    heuristic=m.group(1),
+                    effort=int(m.group(2)),
+                    wall_ms=float(m.group(3)),
+                    effort_per_ms=float(m.group(4)),
                 )
             )
             continue
