@@ -211,16 +211,16 @@ FprVarOrders precompute_fpr_var_orders(const HighsMipSolver &mipsolver) {
     FprVarOrders orders(kNumFprArms);
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprArms; ++i) {
-        std::mt19937 rng(base + static_cast<uint32_t>(i));
+        Rng rng(base + static_cast<uint32_t>(i));
         orders[i] = compute_var_order(mipsolver, kFprArms[i].strat.var_strategy, rng, nullptr);
     }
     return orders;
 }
 
-HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, std::mt19937 &rng,
-                                 int attempt_idx, const double *restart_sol, const CscMatrix &csc,
+HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, Rng &rng, int attempt_idx,
+                                 const double *restart_sol, const CscMatrix &csc,
                                  const std::vector<double> &incumbent_snapshot, size_t max_effort,
-                                 const FprVarOrders &fpr_var_orders) {
+                                 const FprVarOrders &fpr_var_orders, FprScratch &fpr_scratch) {
     if (mipsolver.mipdata_->terminatorTerminated()) {
         return {};
     }
@@ -245,6 +245,7 @@ HeuristicResult run_presolve_arm(HighsMipSolver &mipsolver, int arm_type, std::m
         // Use pre-computed var order to avoid cliquePartition data race
         cfg.precomputed_var_order = fpr_var_orders[fpr_idx].data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(fpr_var_orders[fpr_idx].size());
+        cfg.scratch = &fpr_scratch;
         return fpr_attempt(mipsolver, cfg, rng, attempt_idx, restart_sol);
     }
 
@@ -360,7 +361,7 @@ public:
             auto t0 = std::chrono::steady_clock::now();
             last_result_ = run_presolve_arm(mipsolver_, arm_type, rng_, attempt_counter_++,
                                             restart_ptr, setup_.csc, setup_.incumbent_snapshot,
-                                            epoch_budget, setup_.fpr_var_orders);
+                                            epoch_budget, setup_.fpr_var_orders, fpr_scratch_);
             auto t1 = std::chrono::steady_clock::now();
 
             epoch.effort = last_result_.effort;
@@ -407,7 +408,7 @@ private:
     HighsMipSolver &mipsolver_;
     const PresolveSetup &setup_;
     SolutionPool &pool_;
-    std::mt19937 rng_;
+    Rng rng_;
     int worker_idx_ = 0;
 
     int assigned_arm_ = -1;
@@ -419,6 +420,9 @@ private:
     SolutionPool::Snapshot pre_snap_{};
 
     std::unique_ptr<ScyllaWorker> pump_;  // lazy-init, persists across reassignments
+
+    // Per-worker scratch for FPR arms, reused across epochs.
+    FprScratch fpr_scratch_;
 
     // Cross-worker Scylla improvement broadcast (non-null iff Scylla arm
     // is enabled).  Mirrors the opp-mode wiring in run_presolve_opportunistic
@@ -454,11 +458,15 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
     std::atomic<uint64_t> scylla_improvement_gen{0};
     auto *scylla_gen_ptr = setup.scylla_pdlp ? &scylla_improvement_gen : nullptr;
 
-    // Per-worker run_arm with its own persistent ScyllaWorker state.
+    // Per-worker run_arm with its own persistent ScyllaWorker state and
+    // FprScratch.  The lambda captures both by move, so per-worker buffers
+    // persist across arm pulls without malloc churn.  The FprScratch is
+    // shared across consecutive FPR arm pulls on the same worker; each arm
+    // clears the scratch at entry so arm-to-arm content leakage is
+    // impossible.
     auto make_run_arm = [&](int worker_idx) {
-        return [&, worker_idx, pump = std::unique_ptr<ScyllaWorker>{}](
-                   int arm, std::mt19937 &rng, int attempt,
-                   size_t arm_budget) mutable -> HeuristicResult {
+        return [&, worker_idx, pump = std::unique_ptr<ScyllaWorker>{}, fpr_scratch = FprScratch{}](
+                   int arm, Rng &rng, int attempt, size_t arm_budget) mutable -> HeuristicResult {
             HeuristicResult result{};
             if (enabled_arms[arm] == kArmScylla) {
                 if (!pump || pump->finished()) {
@@ -477,8 +485,9 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                 pool.get_restart(rng, restart);
                 const double *restart_ptr = restart.empty() ? nullptr : restart.data();
 
-                result = run_presolve_arm(mipsolver, enabled_arms[arm], rng, attempt, restart_ptr,
-                                          csc, incumbent_snapshot, arm_budget, fpr_var_orders);
+                result =
+                    run_presolve_arm(mipsolver, enabled_arms[arm], rng, attempt, restart_ptr, csc,
+                                     incumbent_snapshot, arm_budget, fpr_var_orders, fpr_scratch);
 
                 if (result.found_feasible) {
                     pool.try_add(result.objective, result.solution,
@@ -539,9 +548,9 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
 
     // Separate RNGs for bandit selection in the restart callback (sequential).
-    std::vector<std::mt19937> bandit_rngs(N);
+    std::vector<Rng> bandit_rngs(N);
     for (int w = 0; w < N; ++w) {
-        bandit_rngs[w].seed(base_seed + static_cast<uint32_t>(w) * kSeedStride + 1);
+        bandit_rngs[w].reseed(base_seed + static_cast<uint32_t>(w) * kSeedStride + 1);
     }
 
     // Shared cross-worker improvement broadcast for Scylla arms (mirrors the

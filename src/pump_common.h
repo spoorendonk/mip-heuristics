@@ -90,7 +90,7 @@ inline bool detect_cycling(const std::vector<std::vector<double>> &history,
 }
 
 // Perturb a rounded solution to break cycling (Algorithm 1.1, line 14).
-inline void perturb(std::vector<double> &x, const HighsLp &model, std::mt19937 &rng) {
+inline void perturb(std::vector<double> &x, const HighsLp &model, Rng &rng) {
     const HighsInt ncol = model.num_col_;
     const auto &integrality = model.integrality_;
     const auto &lb = model.col_lower_;

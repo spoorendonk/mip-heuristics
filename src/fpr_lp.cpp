@@ -180,7 +180,7 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
         // +200 offset spaces these seeds away from the presolve-FPR
         // var-order seeds (also derived from the same base) so the two
         // heuristics' RNG streams don't collide on small seed values.
-        std::mt19937 rng(base + static_cast<uint32_t>(i) + 200);
+        Rng rng(base + static_cast<uint32_t>(i) + 200);
         s.var_orders[i] = compute_var_order(mipsolver, s.arms[i].config->strat.var_strategy, rng,
                                             s.arms[i].lp_ref);
     }
@@ -231,6 +231,7 @@ public:
         cfg.lp_ref = arm.lp_ref;
         cfg.precomputed_var_order = var_order.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
+        cfg.scratch = &scratch_;
 
         auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
         ++attempt_idx_;
@@ -267,7 +268,10 @@ private:
     int epochs_without_improvement_ = 0;
     bool finished_ = false;
 
-    std::mt19937 rng_;
+    Rng rng_;
+    // Per-worker scratch reused across fpr_attempt calls to avoid malloc
+    // churn on the DFS + WalkSAT repair hot path.
+    FprScratch scratch_;
 
     // Hard stale threshold for LP-FPR workers in opportunistic mode.
     // Mirrors FprWorker::kHardStaleThreshold so the worker signals
@@ -353,13 +357,13 @@ void run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &s
 
     size_t total_effort = run_opportunistic_loop(
         mipsolver, N, setup.budget, setup.stale_budget, default_run_cap, base_seed,
-        [&](int worker_idx, std::mt19937 & /*rng*/) -> LpFprOppState {
+        [&](int worker_idx, Rng & /*rng*/) -> LpFprOppState {
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
             uint32_t seed = base_seed + static_cast<uint32_t>(worker_idx) * kSeedStride;
             return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed)};
         },
-        [&](LpFprOppState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
+        [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
             if (state.worker->finished()) {
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
                 uint32_t seed = static_cast<uint32_t>(rng());

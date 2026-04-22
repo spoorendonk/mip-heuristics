@@ -1,5 +1,6 @@
 #include "repair_search.h"
 
+#include "fpr_core.h"
 #include "heuristic_common.h"
 #include "lp_data/HConst.h"
 #include "prop_engine.h"
@@ -57,26 +58,6 @@ bool sync_changes(PropEngine& E, const PropEngine& R) {
     return true;
 }
 
-// DFS node for repair disjunctions (paper Fig. 5).
-struct RepairNode {
-    HighsInt var;        // variable to branch on (-1 for root)
-    double val;          // fix value or bound value
-    bool is_fix;         // true = fix(var, val), false = tighten bound
-    bool is_lb;          // if !is_fix: true = tighten_lb, false = tighten_ub
-    HighsInt e_vs_mark;  // E undo marks
-    HighsInt e_sol_mark;
-    HighsInt r_vs_mark;  // R undo marks
-    HighsInt r_sol_mark;
-    HighsInt sol_undo_mark;  // solution undo mark
-    HighsInt lhs_undo_mark;  // lhs_cache undo mark
-    double violation;        // total violation at parent (for BacktrackBestOpen)
-};
-
-struct UndoEntry {
-    HighsInt idx;
-    double old_val;
-};
-
 // MoveToDisjunction (paper p.128).
 struct Branch {
     HighsInt var;
@@ -113,13 +94,14 @@ std::pair<Branch, Branch> move_to_disjunction(const PropEngine& E, const PropEng
 }
 
 // BacktrackBestOpen: swap the lowest-violation node to the back of Q.
-void backtrack_best_open(std::vector<RepairNode>& Q) {
+void backtrack_best_open(std::vector<RepairSearchNode>& Q) {
     if (Q.empty()) {
         return;
     }
-    auto best = std::min_element(Q.begin(), Q.end(), [](const RepairNode& a, const RepairNode& b) {
-        return a.violation < b.violation;
-    });
+    auto best = std::min_element(Q.begin(), Q.end(),
+                                 [](const RepairSearchNode& a, const RepairSearchNode& b) {
+                                     return a.violation < b.violation;
+                                 });
     if (best != Q.end() - 1) {
         std::iter_swap(best, Q.end() - 1);
     }
@@ -127,7 +109,7 @@ void backtrack_best_open(std::vector<RepairNode>& Q) {
 
 // Apply a branch to R: fix or tighten, then propagate.
 // Returns false if infeasible.
-bool apply_branch_to_r(PropEngine& R, const RepairNode& node) {
+bool apply_branch_to_r(PropEngine& R, const RepairSearchNode& node) {
     if (node.var < 0) {
         return true;  // root node — no branch
     }
@@ -156,8 +138,8 @@ bool apply_branch_to_r(PropEngine& R, const RepairNode& node) {
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
                    const double* row_hi, HighsInt repair_iterations, double repair_noise,
-                   bool repair_track_best, size_t max_effort, std::mt19937& rng,
-                   size_t& effort_out) {
+                   bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
+                   FprScratch& scratch) {
     const HighsInt ncol = E.ncol();
     const HighsInt nrow = E.nrow();
     const double feastol = E.feastol();
@@ -172,10 +154,20 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         return lhs > row_hi[i] + feastol || lhs < row_lo[i] - feastol;
     };
 
-    // --- Violated set ---
-    std::vector<HighsInt> violated;
-    std::vector<HighsInt> violated_pos(nrow, -1);
-    violated.reserve(nrow);
+    // --- Violated set (reuses WalkSatScratch buffers; never runs concurrently
+    // with walksat_repair — the two functions are alternative Phase 3 paths
+    // at the same call site in fpr_attempt). ---
+    auto& violated = scratch.walksat.violated;
+    auto& violated_pos = scratch.walksat.violated_pos;
+    violated.clear();
+    if (static_cast<HighsInt>(violated_pos.size()) < nrow) {
+        violated_pos.assign(nrow, -1);
+    } else {
+        std::fill(violated_pos.begin(), violated_pos.begin() + nrow, -1);
+    }
+    if (violated.capacity() < static_cast<size_t>(nrow)) {
+        violated.reserve(nrow);
+    }
 
     auto add_violated = [&](HighsInt i) {
         if (violated_pos[i] != -1) {
@@ -218,9 +210,11 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         return true;
     }
 
-    // --- Solution/LHS undo stacks ---
-    std::vector<UndoEntry> sol_undo;
-    std::vector<UndoEntry> lhs_undo;
+    // --- Solution/LHS undo stacks (reuse WalkSatScratch buffers) ---
+    auto& sol_undo = scratch.walksat.sol_undo;
+    auto& lhs_undo = scratch.walksat.lhs_undo;
+    sol_undo.clear();
+    lhs_undo.clear();
 
     // apply_move updates solution, lhs_cache, total_viol, and violated set
     // incrementally (O(column_degree) instead of O(nrow)).
@@ -259,26 +253,54 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         lhs_undo.resize(l_mark);
     };
     double best_viol = total_viol;
-    std::vector<double> best_solution;
-    std::vector<double> best_lhs;
+    auto& best_solution = scratch.repair_best_solution;
+    auto& best_lhs = scratch.repair_best_lhs;
     if (repair_track_best) {
-        best_solution = solution;
-        best_lhs = lhs_cache;
+        best_solution.assign(solution.begin(), solution.end());
+        best_lhs.assign(lhs_cache.begin(), lhs_cache.end());
+    } else {
+        best_solution.clear();
+        best_lhs.clear();
     }
 
     // --- Secondary engine R from global bounds ---
-    PropEngine R(ncol, nrow, E.ar_start(), E.ar_index(), E.ar_value(), E.csc_start(), E.csc_row(),
-                 E.csc_val(), col_lb, col_ub, row_lo, row_hi, E.integrality(), feastol);
+    // Reused across calls via FprScratch to eliminate the per-call allocation
+    // (vs_/solution_/prop_in_wl_/undo reserves) that mirrors the primary
+    // engine's reuse pattern.  Guard: R is always constructed from E's
+    // problem-data pointers, so any cached R built against a prior E is
+    // safe to reuse iff every pointer E exposes still matches.  Since E
+    // is itself pooled with a pointer-identity guard in fpr_attempt, the
+    // only way to invalidate R mid-solve is to swap E's underlying
+    // problem data — which implies fpr_attempt already re-emplaced E;
+    // in that case R's guard below also mismatches and R is re-emplaced.
+    auto& engine_r_opt = scratch.repair_prop_engine_r;
+    const bool r_valid =
+        engine_r_opt.has_value() && engine_r_opt->ncol() == ncol && engine_r_opt->nrow() == nrow &&
+        engine_r_opt->ar_start() == E.ar_start() && engine_r_opt->ar_index() == E.ar_index() &&
+        engine_r_opt->ar_value() == E.ar_value() && engine_r_opt->csc_start() == E.csc_start() &&
+        engine_r_opt->csc_row() == E.csc_row() && engine_r_opt->csc_val() == E.csc_val() &&
+        engine_r_opt->col_lb() == col_lb && engine_r_opt->col_ub() == col_ub &&
+        engine_r_opt->row_lo() == row_lo && engine_r_opt->row_hi() == row_hi &&
+        engine_r_opt->integrality() == E.integrality() && engine_r_opt->feastol() == feastol;
+    if (r_valid) {
+        engine_r_opt->reset();
+    } else {
+        engine_r_opt.emplace(ncol, nrow, E.ar_start(), E.ar_index(), E.ar_value(), E.csc_start(),
+                             E.csc_row(), E.csc_val(), col_lb, col_ub, row_lo, row_hi,
+                             E.integrality(), feastol);
+    }
+    PropEngine& R = *engine_r_opt;
 
     size_t total_effort = 0;
     size_t e_effort_baseline = E.effort();
     size_t r_effort_baseline = R.effort();
-    WalkSatScratch scratch;
     HighsInt nodes_without_progress = 0;
     constexpr HighsInt kProgressThreshold = 10;
 
-    // --- DFS stack (paper Fig. 5, lines 3-4) ---
-    std::vector<RepairNode> Q;
+    // --- DFS stack (paper Fig. 5, lines 3-4).  Reused across calls via
+    // scratch to avoid per-call allocations. ---
+    auto& Q = scratch.repair_dfs_stack;
+    Q.clear();
     Q.push_back({-1, 0.0, true, false, E.vs_mark(), E.sol_mark(), R.vs_mark(), R.sol_mark(), 0, 0,
                  total_viol});
 
@@ -293,7 +315,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         return total_effort + (E.effort() - e_effort_baseline) + (R.effort() - r_effort_baseline);
     };
     while (!Q.empty() && nodes_visited < repair_iterations && effort_spent() < max_effort) {
-        RepairNode node = Q.back();
+        RepairSearchNode node = Q.back();
         Q.pop_back();
         ++nodes_visited;
 
@@ -340,8 +362,8 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         if (total_viol < best_viol - feastol) {
             best_viol = total_viol;
             if (repair_track_best) {
-                best_solution = solution;
-                best_lhs = lhs_cache;
+                best_solution.assign(solution.begin(), solution.end());
+                best_lhs.assign(lhs_cache.begin(), lhs_cache.end());
             }
             nodes_without_progress = 0;
         } else {
@@ -360,7 +382,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         HighsInt row = violated[pick];
 
         auto move = walksat_select_move(row, solution.data(), lhs_cache.data(), col_lb, col_ub, E,
-                                        repair_noise, rng, total_effort, scratch);
+                                        repair_noise, rng, total_effort, scratch.walksat);
         if (move.var < 0) {
             continue;  // no valid move (paper lines 21-22)
         }
@@ -388,8 +410,8 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
 
     // Restore best state (paper line 28)
     if (repair_track_best && best_viol < total_viol) {
-        solution = best_solution;
-        lhs_cache = best_lhs;
+        solution.assign(best_solution.begin(), best_solution.end());
+        lhs_cache.assign(best_lhs.begin(), best_lhs.end());
         rebuild_violated();
     }
 

@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <random>
 
 // Generic opportunistic (continuous) parallel loop.
 //
@@ -18,11 +17,11 @@
 // budget, stale budget, or external termination signal is reached.
 //
 // Template parameters:
-//   MakeState(int worker_idx, std::mt19937&) -> State
+//   MakeState(int worker_idx, Rng&) -> State
 //     Called once per worker (inside the parallel region) to create
 //     initial per-worker state.
 //
-//   RunAttempt(State&, std::mt19937&, size_t run_cap) -> HeuristicResult
+//   RunAttempt(State&, Rng&, size_t run_cap) -> HeuristicResult
 //     Called repeatedly.  Should execute one heuristic attempt with at
 //     most `run_cap` effort.  When the underlying worker is finished
 //     (stalled), the callback should rebuild/restart the worker in-place.
@@ -53,13 +52,13 @@ template <typename MakeState, typename RunAttempt>
         0, static_cast<HighsInt>(N),
         [&](HighsInt lo, HighsInt hi) {
             for (HighsInt w = lo; w < hi; ++w) {
-                std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
+                Rng rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
                 int attempt_counter = 0;
 
                 auto state = make_state(static_cast<int>(w), rng);
 
                 while (!loop.stopped()) {
-                    if (w == 0 && attempt_counter % 8 == 0) {
+                    if (w == 0 && (attempt_counter & 1) == 0) {
                         loop.poll_termination(mipsolver);
                     }
                     if (loop.stopped()) {

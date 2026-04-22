@@ -28,7 +28,7 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
     if (worker_idx < 0) {
         return ((worker_idx % kNumFprConfigs) + kNumFprConfigs) % kNumFprConfigs;
     }
-    std::mt19937 cfg_rng(seed);
+    Rng cfg_rng(seed);
     return static_cast<int>(cfg_rng() % static_cast<uint32_t>(kNumFprConfigs));
 }
 
@@ -84,8 +84,8 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
     cycle_history_.reserve(pump::kCycleWindow);
 
     // Pre-compute variable order for this worker's static strategy.
-    std::mt19937 order_rng(heuristic_base_seed(mipsolver_.options_mip_->random_seed) +
-                           static_cast<uint32_t>(fpr_config_index_));
+    Rng order_rng(heuristic_base_seed(mipsolver_.options_mip_->random_seed) +
+                  static_cast<uint32_t>(fpr_config_index_));
     var_order_ = compute_var_order(mipsolver_, kFprConfigs[fpr_config_index_].strat.var_strategy,
                                    order_rng, nullptr);
 }
@@ -104,13 +104,12 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
     EpochResult epoch{};
 
     while (epoch.effort < epoch_budget && base_.total_effort < base_.total_budget) {
-        // HiGHS's timer is not guaranteed thread-safe for concurrent
-        // readers; races here are benign (stale reads by ~ms, not data
-        // corruption) and the cost of a formal gate isn't worth it.
-        if (mipsolver_.timer_.read() >= time_limit) {
-            base_.finished = true;
-            break;
-        }
+        // Wall-clock `time_limit` is enforced by the outer loop between
+        // epochs and by the `remaining <= 0` guard below (which also
+        // computes PDLP's input time_limit from the same timer read).
+        // A redundant worker-level check before that guard would just
+        // double the clock_gettime cost per iteration for no extra
+        // precision.
         if (improvement_gen_ != nullptr) {
             uint64_t gen = improvement_gen_->load(std::memory_order_relaxed);
             if (gen != last_seen_gen_) {
@@ -237,6 +236,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         cfg.lp_ref = nullptr;
         cfg.precomputed_var_order = var_order_.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_.size());
+        cfg.scratch = &fpr_scratch_;
 
         std::vector<double> restart;
         pool_.get_restart(rng_, restart);

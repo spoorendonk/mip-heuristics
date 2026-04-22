@@ -100,7 +100,7 @@ void WorkerCtx::apply_move(HighsInt j, double new_val) {
     }
 }
 
-void WorkerCtx::apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, std::mt19937 &rng) {
+void WorkerCtx::apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, Rng &rng) {
     double delta = new_val - solution[j];
     apply_move(j, new_val);
     HighsInt tabu_len = kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
@@ -197,8 +197,7 @@ double WorkerCtx::compute_tight_delta(HighsInt i, HighsInt j, double coeff) cons
     return delta;
 }
 
-void WorkerCtx::update_weights(std::mt19937 &rng, bool is_feasible, bool best_feasible,
-                               double best_obj) {
+void WorkerCtx::update_weights(Rng &rng, bool is_feasible, bool best_feasible, double best_obj) {
     std::uniform_real_distribution<double> coin(0.0, 1.0);
     if (coin(rng) >= kSmoothProb) {
         // With probability 1 - sp: strengthen

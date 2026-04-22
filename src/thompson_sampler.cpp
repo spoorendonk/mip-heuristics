@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <mutex>
+#include <random>
 
 ThompsonSampler::ThompsonSampler(int num_arms, const double* prior_alpha, bool use_mutex)
     : use_mutex_(use_mutex) {
@@ -11,7 +12,7 @@ ThompsonSampler::ThompsonSampler(int num_arms, const double* prior_alpha, bool u
     }
 }
 
-int ThompsonSampler::select_unlocked(std::mt19937& rng) {
+int ThompsonSampler::select_unlocked(Rng& rng) {
     int best_arm = 0;
     double best_sample = -1.0;
 
@@ -29,7 +30,7 @@ int ThompsonSampler::select_unlocked(std::mt19937& rng) {
     return best_arm;
 }
 
-int ThompsonSampler::select(std::mt19937& rng) {
+int ThompsonSampler::select(Rng& rng) {
     if (use_mutex_) {
         std::lock_guard<HighsSpinMutex> lock(mtx_);
         return select_unlocked(rng);
@@ -37,7 +38,7 @@ int ThompsonSampler::select(std::mt19937& rng) {
     return select_unlocked(rng);
 }
 
-int ThompsonSampler::select_effort_aware(std::mt19937& rng) {
+int ThompsonSampler::select_effort_aware(Rng& rng) {
     auto impl = [&]() -> int {
         // Check if all arms have effort observations
         bool all_have_effort = true;

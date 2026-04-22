@@ -3,8 +3,74 @@
 #include "heuristic_common.h"
 #include "util/HighsInt.h"
 
-#include <set>
+#include <cstddef>
 #include <vector>
+
+// Indexed min-heap keyed by (domain_size, var) — replaces the
+// std::set<pair<double,HighsInt>> that PropEngine previously used for its
+// domain-size priority queue.  std::set is a node-based rb-tree: clear()
+// frees every node and init_domain_pq() then re-heap-allocates one node
+// per unfixed integer variable, so reset+reuse paid the full allocation
+// cost on every attempt.  The indexed heap is backed by two std::vector
+// members whose capacities persist across clear()/reset() — the same
+// capacity-retention property the rest of FprScratch now relies on.
+//
+// Ordering matches the prior std::set<pair<double,HighsInt>>: ascending
+// key, with var index as tiebreak.  The std::set tiebreak was load-bearing
+// for determinism tests (same-seed → same solve path depends on which
+// equal-domain variable is picked); preserving it keeps those tests green.
+//
+// Cost model: insert / erase / update-key are O(log N).  top is O(1).
+// contains is O(1).  clear is O(|heap|) — only touches pos_ slots that
+// are actually occupied, not the whole ncol array.
+class IndexedMinHeap {
+public:
+    // Preallocate capacity for `ncol` variables.  Called once per engine;
+    // subsequent clear() / reset() cycles reuse the allocation.
+    void reserve(HighsInt ncol);
+
+    // Reset to empty.  Only touches pos_ for currently-heaped entries; the
+    // pos_ array's capacity (= ncol) is retained.
+    void clear();
+
+    [[nodiscard]] bool empty() const { return heap_.empty(); }
+    [[nodiscard]] std::size_t size() const { return heap_.size(); }
+    [[nodiscard]] bool contains(HighsInt var) const {
+        return var >= 0 && var < static_cast<HighsInt>(pos_.size()) && pos_[var] != kNotPresent;
+    }
+
+    // Precondition: !empty().
+    [[nodiscard]] HighsInt top_var() const { return heap_.front().var; }
+
+    // Precondition: !contains(var).
+    void insert(double key, HighsInt var);
+
+    // Precondition: contains(var).
+    void erase(HighsInt var);
+
+    // Precondition: contains(var).  Moves `var` to a new key, re-heapifying.
+    void update(HighsInt var, double new_key);
+
+private:
+    struct Entry {
+        double key;
+        HighsInt var;
+    };
+
+    static constexpr HighsInt kNotPresent = -1;
+
+    // Compare equivalent to std::pair<double, HighsInt> — breaks ties by
+    // var index to match the prior std::set ordering.
+    static bool entry_less(const Entry& a, const Entry& b) {
+        return a.key < b.key || (a.key == b.key && a.var < b.var);
+    }
+
+    void sift_up(HighsInt idx);
+    void sift_down(HighsInt idx);
+
+    std::vector<Entry> heap_;
+    std::vector<HighsInt> pos_;  // pos_[var] = heap index, or kNotPresent.
+};
 
 // Reusable AC-3 constraint propagation engine.
 // Owns its own VarState, solution, and undo stacks.
@@ -151,9 +217,11 @@ private:
     };
     std::vector<ActUndo> act_undo_;
 
-    // Domain priority queue for dynamic variable selection
+    // Domain priority queue for dynamic variable selection.
+    // See IndexedMinHeap above for the rationale behind the vector-backed
+    // replacement of the prior std::set<pair<double,HighsInt>>.
     bool pq_active_ = false;
-    std::set<std::pair<double, HighsInt>> domain_pq_;
+    IndexedMinHeap domain_pq_;
     struct PqUndo {
         HighsInt var;
         double old_dom;    // domain size before change

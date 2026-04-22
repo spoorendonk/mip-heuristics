@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <random>
 #include <vector>
 
 // Shared infrastructure for Thompson-sampling bandit dispatch.
@@ -105,7 +104,7 @@ inline size_t compute_budget_cap(const ThompsonSampler &bandit, int arm, size_t 
 // Generic opportunistic Thompson-sampling bandit loop.
 //
 // `make_run_arm(worker_idx)` returns a per-worker callable of signature
-//   HeuristicResult(int arm, std::mt19937 &rng, int attempt, size_t arm_budget)
+//   HeuristicResult(int arm, Rng &rng, int attempt, size_t arm_budget)
 // Returning a fresh callable per worker lets callers thread per-worker
 // state (e.g. a persistent ScyllaWorker) through the closure.
 //
@@ -126,12 +125,12 @@ template <typename MakeRunArm, typename LogArm>
         0, static_cast<HighsInt>(num_workers),
         [&](HighsInt lo, HighsInt hi) {
             for (HighsInt w = lo; w < hi; ++w) {
-                std::mt19937 rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
+                Rng rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
                 auto run_arm = make_run_arm(static_cast<int>(w));
                 int attempt_counter = 0;
 
                 while (!loop.stopped()) {
-                    if (w == 0 && attempt_counter % 8 == 0) {
+                    if (w == 0 && (attempt_counter & 1) == 0) {
                         loop.poll_termination(mipsolver);
                     }
                     if (loop.stopped()) {
@@ -227,7 +226,7 @@ concept BanditWorker = requires(T w, int arm, SolutionPool::Snapshot snap) {
 template <BanditWorker W, typename ArmNameFn>
 auto make_bandit_restart_callback(ThompsonSampler &bandit, SolutionPool &pool,
                                   std::vector<std::unique_ptr<W>> &workers,
-                                  std::vector<std::mt19937> &bandit_rngs, bool minimize,
+                                  std::vector<Rng> &bandit_rngs, bool minimize,
                                   const HighsLogOptions &log_options, const char *tag,
                                   ArmNameFn arm_name_fn) {
     // The returned lambda outlives this factory's stack frame, so

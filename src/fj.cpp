@@ -55,11 +55,11 @@ bool run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     size_t total_effort = run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
-        [](int /*worker_idx*/, std::mt19937 & /*rng*/) -> FjState {
+        [](int /*worker_idx*/, Rng & /*rng*/) -> FjState {
             // Lazy init: worker is created on first run_attempt call.
             return FjState{};
         },
-        [&](FjState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
+        [&](FjState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
             if (!state.worker || state.worker->finished()) {
                 uint32_t seed = static_cast<uint32_t>(rng());
                 state.worker =

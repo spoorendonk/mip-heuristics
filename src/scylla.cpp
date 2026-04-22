@@ -83,10 +83,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
 
     size_t total_effort = run_opportunistic_loop(
         mipsolver, N, max_effort, setup.stale_budget, setup.default_run_cap, setup.base_seed,
-        [](int worker_idx, std::mt19937 & /*rng*/) -> ScyllaOppState {
-            return ScyllaOppState{worker_idx};
-        },
-        [&](ScyllaOppState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
+        [](int worker_idx, Rng & /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
+        [&](ScyllaOppState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
             auto &worker = workers[state.worker_idx];
             HeuristicResult result;
             if (worker->finished()) {

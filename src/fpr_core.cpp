@@ -14,7 +14,7 @@
 #include <random>
 #include <vector>
 
-HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std::mt19937 &rng,
+HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng &rng,
                             int attempt_idx, const double *initial_solution) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
@@ -35,6 +35,12 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
     if (ncol == 0 || nrow == 0) {
         return {};
     }
+
+    // Fall back to a local scratch when the caller didn't supply one, so
+    // one-shot call sites (tests, seldom-used paths) still work.  Hot per-
+    // worker callers pass their own FprScratch to avoid per-attempt allocs.
+    FprScratch local_scratch;
+    FprScratch &scratch = cfg.scratch ? *cfg.scratch : local_scratch;
 
     // Use caller's CSC if provided, otherwise build our own
     CscMatrix owned_csc;
@@ -63,13 +69,21 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
         return std::max(-kBox, std::min(kBox, val));
     };
 
-    // Phase 1: Rank variables
-    std::vector<HighsInt> var_order;
+    // Phase 1: Rank variables.  Reuses scratch.var_order to retain capacity
+    // across attempts.
+    auto &var_order = scratch.var_order;
+    var_order.clear();
     if (cfg.precomputed_var_order != nullptr) {
         // Use pre-computed order (avoids data races on cliquePartition)
         var_order.assign(cfg.precomputed_var_order,
                          cfg.precomputed_var_order + cfg.precomputed_var_order_size);
     } else if (cfg.strategy) {
+        // compute_var_order returns a fresh vector by value; move-assigning it
+        // replaces scratch.var_order's storage with the fresh one.  This does
+        // not reuse scratch's capacity, but strategy-based callers in hot paths
+        // all pass a precomputed_var_order (see fpr.cpp, fpr_lp.cpp,
+        // scylla_worker.cpp, portfolio.cpp), so this branch runs only when the
+        // scratch path isn't critical.
         var_order = compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
     } else {
         // Legacy: sort by caller-provided scores
@@ -81,7 +95,11 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
                   [&](HighsInt a, HighsInt b) { return cfg.scores[a] > cfg.scores[b]; });
     }
 
-    std::vector<double> lhs_cache(nrow);
+    auto &lhs_cache = scratch.lhs_cache;
+    // resize(nrow) suffices: every entry is unconditionally overwritten by
+    // the ARvalue-sum loop after DFS (line ~425), and nothing reads lhs_cache
+    // on the early-exit path before that loop runs.
+    lhs_cache.resize(nrow);
 
     const HighsInt repair_budget = cfg.walksat_iterations;
 
@@ -89,9 +107,35 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
         return is_row_violated(lhs, row_lo[i], row_hi[i], feastol);
     };
 
-    // --- Create PropEngine for Phase 2 ---
-    PropEngine E(ncol, nrow, ARstart.data(), ARindex.data(), ARvalue.data(), csc_ref, col_lb.data(),
-                 col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
+    // --- Obtain PropEngine for Phase 2 ---
+    // Lazy-construct into scratch.prop_engine on the first call for this
+    // worker; reset() on every subsequent call to retain vs_/solution_/
+    // prop_in_wl_/undo capacity.  PropEngine holds raw pointers into the
+    // caller's problem data (ARstart/ARindex/ARvalue, col bounds, row
+    // bounds, integrality, CSC), so we re-emplace whenever ANY of those
+    // pointers differs from what the cached engine stored — not just on
+    // a shape change.  This matters for the cfg.csc == nullptr path
+    // (one-shot callers) where owned_csc is a function-local CscMatrix
+    // whose .data() pointers die at return; the persistent-worker paths
+    // all pass a stable cfg.csc so the fast reset() branch fires for
+    // them.
+    std::optional<PropEngine> &engine_opt = scratch.prop_engine;
+    const bool engine_valid =
+        engine_opt.has_value() && engine_opt->ncol() == ncol && engine_opt->nrow() == nrow &&
+        engine_opt->ar_start() == ARstart.data() && engine_opt->ar_index() == ARindex.data() &&
+        engine_opt->ar_value() == ARvalue.data() && engine_opt->csc_start() == col_start.data() &&
+        engine_opt->csc_row() == col_row.data() && engine_opt->csc_val() == col_val.data() &&
+        engine_opt->col_lb() == col_lb.data() && engine_opt->col_ub() == col_ub.data() &&
+        engine_opt->row_lo() == row_lo.data() && engine_opt->row_hi() == row_hi.data() &&
+        engine_opt->integrality() == integrality.data() && engine_opt->feastol() == feastol;
+    if (!engine_valid) {
+        engine_opt.emplace(ncol, nrow, ARstart.data(), ARindex.data(), ARvalue.data(), csc_ref,
+                           col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
+                           integrality.data(), feastol);
+    } else {
+        engine_opt->reset();
+    }
+    PropEngine &E = *engine_opt;
 
     // --- Initialize solution in E ---
     if (initial_solution) {
@@ -271,22 +315,22 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
         return alt;
     };
 
-    struct DfsNode {
-        HighsInt var;
-        double val;
-        HighsInt vs_mark;
-        HighsInt sol_mark;
-        HighsInt act_mark;
-        HighsInt pq_mark;
-        HighsInt cursor_reset;  // backtrack point: reset var_order_cursor here
-    };
+    // FprDfsNode is declared in fpr_core.h so the reusable stack can live on
+    // FprScratch; `cursor_reset` is the backtrack point that resets the
+    // var_order cursor.
+    using DfsNode = FprDfsNode;
 
     const bool do_propagate = mode_propagates(cfg.mode);
     const bool do_backtrack = mode_backtracks(cfg.mode);
     const HighsInt node_limit = ncol + 1;
 
-    std::vector<DfsNode> dfs_stack;
-    dfs_stack.reserve(do_backtrack ? 2 * static_cast<size_t>(ncol) : ncol);
+    auto &dfs_stack = scratch.dfs_stack;
+    dfs_stack.clear();
+    const size_t dfs_reserve =
+        do_backtrack ? 2 * static_cast<size_t>(ncol) : static_cast<size_t>(ncol);
+    if (dfs_stack.capacity() < dfs_reserve) {
+        dfs_stack.reserve(dfs_reserve);
+    }
     HighsInt nodes_visited = 0;
     bool found_complete = false;
 
@@ -399,7 +443,9 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
     }
 
     // --- Copy solution out of E for Phase 3 and result ---
-    std::vector<double> solution(E.sol_data(), E.sol_data() + ncol);
+    // Reuse scratch.solution to retain capacity; assign overwrites in place.
+    auto &solution = scratch.solution;
+    solution.assign(E.sol_data(), E.sol_data() + ncol);
     size_t total_prop_work = E.effort();
 
     // --- Compute LHS cache ---
@@ -426,8 +472,8 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
         feasible = repair_search(
             E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
             cfg.repair_iterations, cfg.repair_noise, cfg.repair_track_best,
-            cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0, rng,
-            rs_effort);
+            cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0, rng, rs_effort,
+            scratch);
         total_prop_work += rs_effort;
     } else if (!feasible && mode_repairs(cfg.mode)) {
         size_t walk_effort = 0;
@@ -435,7 +481,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
             walksat_repair(E, solution, lhs_cache, col_lb.data(), col_ub.data(), repair_budget,
                            cfg.repair_noise, cfg.repair_track_best,
                            cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0,
-                           rng, walk_effort);
+                           rng, walk_effort, scratch.walksat);
         total_prop_work += walk_effort;
     }
 
@@ -460,6 +506,11 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, std
 
     HeuristicResult result;
     result.found_feasible = true;
+    // Move out of scratch.solution: the next fpr_attempt call issues
+    // `solution.assign(E.sol_data(), E.sol_data()+ncol)` which reallocates
+    // and memcpies ncol regardless of starting capacity, so retaining the
+    // scratch buffer here only costs one extra O(ncol) memcpy without
+    // saving any allocation.
     result.solution = std::move(solution);
     result.objective = obj;
     result.effort = total_prop_work;

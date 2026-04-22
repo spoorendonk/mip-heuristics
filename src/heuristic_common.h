@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lp_data/HConst.h"
+#include "rng.h"
 #include "util/HighsInt.h"
 
 #include <algorithm>
@@ -93,10 +94,11 @@ inline double clamp_round(double val, double lb, double ub, bool integer) {
 // Deterministic per-worker RNG seeding.
 //
 // `kBaseSeedOffset` keeps the final seed non-zero when the user leaves
-// `random_seed` at its default of 0 (mt19937 accepts zero, but a non-zero
-// seed makes the first sampled bits less uniform-looking in small RNG probes).
+// `random_seed` at its default of 0 (xoshiro256++'s SplitMix64 seeding
+// accepts zero, but a non-zero seed makes the first sampled bits less
+// uniform-looking in small RNG probes).
 // `kSeedStride` is a large prime that spaces adjacent workers' seeds far
-// apart in the mt19937 state space so their draws don't immediately
+// apart in the SplitMix64 expansion so their draws don't immediately
 // correlate.
 constexpr uint32_t kBaseSeedOffset = 42;
 constexpr uint32_t kSeedStride = 997;

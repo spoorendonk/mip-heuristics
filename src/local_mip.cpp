@@ -82,7 +82,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         } else {
             // Workers 1..N-1: perturbed incumbent
             std::vector<double> perturbed = setup.mipdata->incumbent;
-            std::mt19937 perturb_rng(seed);
+            Rng perturb_rng(seed);
             perturb_solution(perturbed, *setup.mipdata, setup.model.integrality_,
                              setup.model.col_lower_, setup.model.col_upper_, ncol, perturb_rng);
             workers.push_back(std::make_unique<LocalMipWorker>(
@@ -102,7 +102,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                 setup.base_seed + static_cast<uint32_t>(restart_seed_counter++) * kSeedStride;
 
             std::vector<double> restart_sol;
-            std::mt19937 restart_rng(new_seed);
+            Rng restart_rng(new_seed);
             if (!pool.get_restart(restart_rng, restart_sol)) {
                 // No pool solution; use incumbent
                 restart_sol = setup.mipdata->incumbent;
@@ -128,7 +128,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     size_t total_effort = run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
-        [&](int worker_idx, std::mt19937 &rng) -> LmState {
+        [&](int worker_idx, Rng &rng) -> LmState {
             // Worker 0: unperturbed incumbent; others: perturbed.
             if (worker_idx == 0) {
                 uint32_t seed = static_cast<uint32_t>(rng());
@@ -142,7 +142,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             return LmState{std::make_unique<LocalMipWorker>(
                 mipsolver, setup.csc, pool, setup.worker_budget, seed, perturbed.data())};
         },
-        [&](LmState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
+        [&](LmState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
             if (!state.worker || state.worker->finished()) {
                 // Restart from pool or incumbent with fresh perturbation.
                 std::vector<double> restart_sol;

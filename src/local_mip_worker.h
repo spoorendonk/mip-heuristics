@@ -11,7 +11,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <random>
 #include <vector>
 
 namespace local_mip_detail {
@@ -22,7 +21,7 @@ inline constexpr double kPerturbBinaryFraction = 0.2;
 void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &mipdata,
                       const std::vector<HighsVarType> &integrality,
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
-                      HighsInt ncol, std::mt19937 &rng);
+                      HighsInt ncol, Rng &rng);
 
 // EpochWorker wrapping WorkerCtx. Runs weighted local search against the
 // supplied SolutionPool, accumulating effort and submitting improving
@@ -43,7 +42,7 @@ private:
     HighsMipSolver &mipsolver_;
     const CscMatrix &csc_;
     SolutionPool &pool_;
-    std::mt19937 rng_;
+    Rng rng_;
 
     // Effort / staleness / finished bookkeeping.  `total_budget` and
     // `stale_budget` are set in the constructor.

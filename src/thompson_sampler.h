@@ -1,8 +1,8 @@
 #pragma once
 
 #include "parallel/HighsSpinMutex.h"
+#include "rng.h"
 
-#include <random>
 #include <vector>
 
 // Beta-Bernoulli Thompson Sampling bandit for adaptive heuristic selection.
@@ -27,12 +27,12 @@ public:
     ThompsonSampler(int num_arms, const double* prior_alpha, bool use_mutex);
 
     // Sample from each arm's Beta distribution, return arm with highest sample.
-    int select(std::mt19937& rng);
+    int select(Rng& rng);
 
     // Effort-aware selection: sample from Beta, then weight by 1/avg_effort.
     // Falls back to plain select() until every arm has at least one effort
     // observation.
-    int select_effort_aware(std::mt19937& rng);
+    int select_effort_aware(Rng& rng);
 
     // Update arm with reward in {0, 1, 2, 3}.
     // 0 (infeasible)       → beta  += 1.0
@@ -58,7 +58,7 @@ private:
     };
 
     // Core sampling logic (no locking — caller must hold mtx_ if needed).
-    int select_unlocked(std::mt19937& rng);
+    int select_unlocked(Rng& rng);
 
     std::vector<ArmState> arms_;
     mutable HighsSpinMutex mtx_;

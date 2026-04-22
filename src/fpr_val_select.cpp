@@ -16,7 +16,7 @@ double val_up(double ub) {
     return ub;
 }
 
-double val_random(double lb, double ub, bool is_int, std::mt19937& rng) {
+double val_random(double lb, double ub, bool is_int, Rng& rng) {
     double v = std::uniform_real_distribution<double>(lb, ub)(rng);
     if (is_int) {
         v = std::round(v);
@@ -47,7 +47,7 @@ double val_badobj(double lb, double ub, bool minimize, double cost) {
 
 // LP-based probabilistic rounding (paper Section 4.2):
 // v_j = ceil(x^LP_j) with probability f_j = frac(x^LP_j), else floor(x^LP_j)
-double val_lp_based(double lb, double ub, bool is_int, double lp_val, std::mt19937& rng) {
+double val_lp_based(double lb, double ub, bool is_int, double lp_val, Rng& rng) {
     double clamped = std::max(lb, std::min(ub, lp_val));
     if (!is_int) {
         return clamped;
@@ -134,9 +134,9 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */, bool mi
 }  // namespace
 
 double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize, double cost,
-                    ValStrategy strategy, std::mt19937& rng, const double* lp_ref,
-                    const double* row_lo, const double* row_hi, const double* min_act,
-                    const double* max_act, const CscMatrix* csc) {
+                    ValStrategy strategy, Rng& rng, const double* lp_ref, const double* row_lo,
+                    const double* row_hi, const double* min_act, const double* max_act,
+                    const CscMatrix* csc) {
     double v;
     switch (strategy) {
         case ValStrategy::kUp:

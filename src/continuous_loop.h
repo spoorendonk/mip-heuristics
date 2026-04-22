@@ -17,9 +17,12 @@
 // hit.  The stop conditions they share:
 //
 //   - Worker 0 polls `terminatorTerminated()` and `timer_.read() >=
-//     time_limit` once every 8 attempts (the HiGHS timer and terminator
+//     time_limit` on every other attempt (the HiGHS timer and terminator
 //     are not thread-safe for concurrent callers) and sets the shared
 //     atomic `stop` flag; other workers observe it within one attempt.
+//     Since inner-loop timer polling was removed from the workers
+//     themselves, the overshoot on time_limit trip is bounded by
+//     ~2 attempts per worker.
 //
 //   - `total_effort >= budget` — may be overshot by up to
 //     `N * per_attempt_cap` due to the lock-free increment.
@@ -42,8 +45,8 @@ struct ContinuousLoopState {
     void request_stop() { stop.store(true, std::memory_order_relaxed); }
 
     // Worker 0 only — the underlying HiGHS calls are not thread-safe for
-    // concurrent callers.  Callers batch the poll to once every 8
-    // attempts.  Peers observe the `stop` flag atomically.
+    // concurrent callers.  Callers batch the poll to every other
+    // attempt.  Peers observe the `stop` flag atomically.
     void poll_termination(HighsMipSolver &mipsolver) {
         auto *mipdata = mipsolver.mipdata_.get();
         const double time_limit = mipsolver.options_mip_->time_limit;

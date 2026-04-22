@@ -1,8 +1,8 @@
 #pragma once
 
+#include "rng.h"
 #include "util/HighsInt.h"
 
-#include <random>
 #include <vector>
 
 class HighsMipSolver;
@@ -32,4 +32,4 @@ inline bool is_dynamic_var_strategy(VarStrategy s) {
 // For clique-based strategies, `lp_ref` is the LP/analytic-center solution
 // (may be nullptr for LP-free strategies).
 std::vector<HighsInt> compute_var_order(const HighsMipSolver& mipsolver, VarStrategy strategy,
-                                        std::mt19937& rng, const double* lp_ref = nullptr);
+                                        Rng& rng, const double* lp_ref = nullptr);

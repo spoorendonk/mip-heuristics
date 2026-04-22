@@ -1,4 +1,5 @@
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
+#include "rng.h"
 #include "solution_pool.h"
 #include "thompson_sampler.h"
 
@@ -12,7 +13,7 @@ TEST_CASE("ThompsonSampler: basic operation", "[bandit]") {
     double priors[] = {2.0, 3.0, 2.5};
     ThompsonSampler sampler(3, priors, false);
 
-    std::mt19937 rng(42);
+    Rng rng(42);
 
     // Select should return valid arm indices
     for (int i = 0; i < 100; ++i) {
@@ -45,7 +46,7 @@ TEST_CASE("ThompsonSampler: thread-safe mode", "[bandit]") {
     double priors[] = {2.0, 2.0};
     ThompsonSampler sampler(2, priors, true);
 
-    std::mt19937 rng(123);
+    Rng rng(123);
     int arm = sampler.select(rng);
     REQUIRE(arm >= 0);
     REQUIRE(arm < 2);
@@ -80,7 +81,7 @@ TEST_CASE("ThompsonSampler: effort-aware select falls back without effort", "[ba
     double priors[] = {2.0, 2.0};
     ThompsonSampler sampler(2, priors, false);
 
-    std::mt19937 rng(42);
+    Rng rng(42);
 
     // Without effort observations, select_effort_aware behaves like select
     for (int i = 0; i < 50; ++i) {
@@ -104,7 +105,7 @@ TEST_CASE("ThompsonSampler: effort-aware select prefers cheap arms", "[bandit]")
     sampler.record_effort(0, 100);
     sampler.record_effort(1, 10000);
 
-    std::mt19937 rng(42);
+    Rng rng(42);
     int arm0_count = 0;
     constexpr int kTrials = 200;
     for (int i = 0; i < kTrials; ++i) {
@@ -234,7 +235,7 @@ TEST_CASE("SolutionPool: restart strategies", "[pool]") {
     pool.try_add(5.0, {1.0, 0.0, 1.0}, kSolutionSourceFPR);
     pool.try_add(7.0, {0.0, 0.0, 1.0}, kSolutionSourceFPR);
 
-    std::mt19937 rng(42);
+    Rng rng(42);
     std::vector<double> restart;
 
     // Simple restart (crossover or copy)
@@ -259,7 +260,7 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
 
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&pool, t]() {
-            std::mt19937 rng(42 + t);
+            Rng rng(42 + t);
             for (int i = 0; i < kOpsPerThread; ++i) {
                 double obj = std::uniform_real_distribution<double>(1.0, 200.0)(rng);
                 pool.try_add(obj, {obj, obj + 1.0, obj + 2.0}, kSolutionSourceFPR);
@@ -297,7 +298,7 @@ TEST_CASE("ThompsonSampler: concurrent select and update", "[bandit][thread-safe
 
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&sampler, t]() {
-            std::mt19937 rng(123 + t);
+            Rng rng(123 + t);
             for (int i = 0; i < kOpsPerThread; ++i) {
                 int arm = sampler.select(rng);
                 REQUIRE(arm >= 0);
@@ -326,7 +327,7 @@ TEST_CASE("ThompsonSampler: concurrent select and update", "[bandit][thread-safe
 
 TEST_CASE("SolutionPool: empty pool restart returns false", "[pool][edge]") {
     SolutionPool pool(5, true);
-    std::mt19937 rng(42);
+    Rng rng(42);
     std::vector<double> out;
     REQUIRE_FALSE(pool.get_restart(rng, out));
     REQUIRE(out.empty());
@@ -338,7 +339,7 @@ TEST_CASE("SolutionPool: single-entry restart is always copy", "[pool][edge]") {
     SolutionPool pool(5, true);
     pool.try_add(10.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR);
 
-    std::mt19937 rng(42);
+    Rng rng(42);
     for (int i = 0; i < 20; ++i) {
         std::vector<double> out;
         REQUIRE(pool.get_restart(rng, out));

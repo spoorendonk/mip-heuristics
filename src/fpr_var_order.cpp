@@ -65,7 +65,7 @@ std::vector<HighsInt> rank_type(const HighsMipSolver& mipsolver) {
 }
 
 // --- random: type buckets, random within ---
-std::vector<HighsInt> rank_random(const HighsMipSolver& mipsolver, std::mt19937& rng) {
+std::vector<HighsInt> rank_random(const HighsMipSolver& mipsolver, Rng& rng) {
     auto b = bucket_by_type(mipsolver);
     std::shuffle(b.bin.begin(), b.bin.end(), rng);
     std::shuffle(b.gen_int.begin(), b.gen_int.end(), rng);
@@ -134,7 +134,7 @@ std::vector<HighsInt> rank_typecl(const HighsMipSolver& mipsolver) {
 // --- cliques: clique partition + analytic-center-weighted random sort ---
 // Paper's Fig. 2: within each clique, sort using weighted discrete distribution
 // based on analytic center values.
-std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, std::mt19937& rng,
+std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
                                    const double* lp_ref) {
     auto* mipdata = mipsolver.mipdata_.get();
     const auto& col_lb = mipsolver.model_->col_lower_;
@@ -269,7 +269,7 @@ std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver, const doubl
 }  // namespace
 
 std::vector<HighsInt> compute_var_order(const HighsMipSolver& mipsolver, VarStrategy strategy,
-                                        std::mt19937& rng, const double* lp_ref) {
+                                        Rng& rng, const double* lp_ref) {
     switch (strategy) {
         case VarStrategy::kLR:
             return rank_lr(mipsolver);

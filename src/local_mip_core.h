@@ -8,7 +8,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <random>
 #include <utility>
 #include <vector>
 
@@ -95,7 +94,7 @@ struct WorkerCtx {
 
     void apply_move(HighsInt j, double new_val);
 
-    void apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, std::mt19937 &rng);
+    void apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, Rng &rng);
 
     // Recompute all LHS from scratch and check feasibility.
     // update_sets: rebuild violated/satisfied partition from scratch.
@@ -109,7 +108,7 @@ struct WorkerCtx {
 
     // Paper Section 4.1: weighting scheme for MIP.
     // Called when at a local optimum (no positive operation found).
-    void update_weights(std::mt19937 &rng, bool is_feasible, bool best_feasible, double best_obj);
+    void update_weights(Rng &rng, bool is_feasible, bool best_feasible, double best_obj);
 };
 
 // --- Candidate selection / scoring ---
@@ -139,7 +138,7 @@ Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch, 
 // Additional (our engineering additions):
 // 5. Perturbation (generalizes Boolean flip to non-binary)
 // 6. Easy moves
-Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step, bool best_feasible,
+Candidate infeasible_step(WorkerCtx &ctx, Rng &rng, HighsInt step, bool best_feasible,
                           double best_objective, const std::vector<HighsInt> &costed_vars,
                           const std::vector<HighsInt> &binary_vars);
 

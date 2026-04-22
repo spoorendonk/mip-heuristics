@@ -3,119 +3,148 @@
 #include "heuristic_common.h"
 #include "prop_engine.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <random>
 #include <vector>
 
 WalkSatMove walksat_select_move(HighsInt row, const double* solution, const double* lhs_cache,
                                 const double* col_lb, const double* col_ub, const PropEngine& data,
-                                double noise, std::mt19937& rng, size_t& effort,
-                                WalkSatScratch& scratch) {
-    const HighsInt* ar_start = data.ar_start();
-    const HighsInt* ar_index = data.ar_index();
-    const double* ar_value = data.ar_value();
-    const HighsInt* csc_start = data.csc_start();
-    const HighsInt* csc_row = data.csc_row();
-    const double* csc_val = data.csc_val();
-    const double* row_lo = data.row_lo();
-    const double* row_hi = data.row_hi();
+                                double noise, Rng& rng, size_t& effort, WalkSatScratch& scratch) {
+    // Pull PropEngine pointer accessors into local __restrict copies. The
+    // `__restrict` assertions let the compiler keep these in registers and
+    // skip aliasing reloads across the hot inner loops below — writes via
+    // `scratch.cand` / `scratch.best_indices` would otherwise conservatively
+    // force reloads of these const pointers through the accessor.
+    const HighsInt* __restrict ar_start = data.ar_start();
+    const HighsInt* __restrict ar_index = data.ar_index();
+    const double* __restrict ar_value = data.ar_value();
+    const HighsInt* __restrict csc_start = data.csc_start();
+    const HighsInt* __restrict csc_row = data.csc_row();
+    const double* __restrict csc_val = data.csc_val();
+    const double* __restrict row_lo = data.row_lo();
+    const double* __restrict row_hi = data.row_hi();
+    const HighsVarType* __restrict integrality = data.integrality();
     const double feastol = data.feastol();
 
-    auto viol = [&](HighsInt i, double lhs) -> double {
-        return row_violation(lhs, row_lo[i], row_hi[i]);
-    };
-
-    HighsInt row_len = ar_start[row + 1] - ar_start[row];
-    if (row_len == 0) {
+    const HighsInt row_begin = ar_start[row];
+    const HighsInt row_end = ar_start[row + 1];
+    const HighsInt row_len = row_end - row_begin;
+    if (row_len == 0) [[unlikely]] {
         return {};
     }
 
-    double ci_lhs = lhs_cache[row];
-    double ci_viol = viol(row, ci_lhs);
+    // Loop-invariant row metadata.
+    const double row_lo_r = row_lo[row];
+    const double row_hi_r = row_hi[row];
+    const double ci_lhs = lhs_cache[row];
+    const double ci_viol = row_violation(ci_lhs, row_lo_r, row_hi_r);
+    const bool overshoot_above = ci_lhs > row_hi_r + feastol;
+    const double target_rhs = overshoot_above ? row_hi_r : row_lo_r;
+    const double ci_viol_threshold = ci_viol - feastol;  // early-reject bound
 
     auto& cand = scratch.cand;
     cand.clear();
+    cand.reserve(static_cast<size_t>(row_len));
     double best_damage = std::numeric_limits<double>::infinity();
 
-    effort += row_len;
-    for (HighsInt k = ar_start[row]; k < ar_start[row + 1]; ++k) {
-        HighsInt j = ar_index[k];
-        double a = ar_value[k];
-        if (std::abs(a) < 1e-15) {
+    effort += static_cast<size_t>(row_len);
+    for (HighsInt k = row_begin; k < row_end; ++k) {
+        const HighsInt j = ar_index[k];
+        const double a = ar_value[k];
+        if (std::abs(a) < 1e-15) [[unlikely]] {
             continue;
         }
 
-        double target_rhs;
-        if (ci_lhs > row_hi[row] + feastol) {
-            target_rhs = row_hi[row];
-        } else {
-            target_rhs = row_lo[row];
-        }
-        double old_val = solution[j];
+        const double old_val = solution[j];
         double new_val = old_val + (target_rhs - ci_lhs) / a;
 
-        if (data.is_int(j)) {
-            if (ci_lhs > row_hi[row] + feastol) {
-                new_val = (a > 0) ? std::floor(new_val + feastol) : std::ceil(new_val - feastol);
-            } else {
-                new_val = (a > 0) ? std::ceil(new_val - feastol) : std::floor(new_val + feastol);
-            }
+        if (integrality[j] != HighsVarType::kContinuous) {
+            // Rounding direction depends on (overshoot_above) XOR (a < 0):
+            //   overshoot_above && a > 0: floor to decrease lhs
+            //   overshoot_above && a < 0: ceil  to decrease lhs
+            //   undershoot    && a > 0: ceil  to increase lhs
+            //   undershoot    && a < 0: floor to increase lhs
+            const bool floor_it = overshoot_above == (a > 0);
+            new_val = floor_it ? std::floor(new_val + feastol) : std::ceil(new_val - feastol);
         }
-        new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
+        const double lb = col_lb[j];
+        const double ub = col_ub[j];
+        if (new_val < lb) {
+            new_val = lb;
+        } else if (new_val > ub) {
+            new_val = ub;
+        }
 
-        if (std::abs(new_val - old_val) < 1e-15) {
+        const double delta_change = new_val - old_val;
+        if (std::abs(delta_change) < 1e-15) {
             continue;
         }
 
-        double delta_change = new_val - old_val;
-        double new_ci_lhs = ci_lhs + a * delta_change;
-        double new_ci_viol = viol(row, new_ci_lhs);
-        if (new_ci_viol >= ci_viol - feastol) {
+        const double new_ci_lhs = ci_lhs + a * delta_change;
+        const double new_ci_viol = row_violation(new_ci_lhs, row_lo_r, row_hi_r);
+        if (new_ci_viol >= ci_viol_threshold) {
             continue;
         }
 
-        HighsInt col_deg = csc_start[j + 1] - csc_start[j];
-        effort += col_deg;
+        const HighsInt col_begin = csc_start[j];
+        const HighsInt col_end = csc_start[j + 1];
+        effort += static_cast<size_t>(col_end - col_begin);
+
         double damage = 0.0;
-        for (HighsInt p = csc_start[j]; p < csc_start[j + 1]; ++p) {
-            HighsInt i2 = csc_row[p];
-            if (i2 == row) {
+        const HighsInt* __restrict csc_row_p = csc_row + col_begin;
+        const double* __restrict csc_val_p = csc_val + col_begin;
+        const HighsInt col_deg = col_end - col_begin;
+        for (HighsInt p = 0; p < col_deg; ++p) {
+            const HighsInt i2 = csc_row_p[p];
+            if (i2 == row) [[unlikely]] {
                 continue;
             }
-            double coeff = csc_val[p];
-            double old_lhs = lhs_cache[i2];
-            double new_lhs = old_lhs + coeff * delta_change;
-            double dv = viol(i2, new_lhs) - viol(i2, old_lhs);
-            if (dv > 0) {
+            const double coeff = csc_val_p[p];
+            const double old_lhs = lhs_cache[i2];
+            const double new_lhs = old_lhs + coeff * delta_change;
+            const double lo_i = row_lo[i2];
+            const double hi_i = row_hi[i2];
+            const double dv =
+                row_violation(new_lhs, lo_i, hi_i) - row_violation(old_lhs, lo_i, hi_i);
+            if (dv > 0.0) {
                 damage += dv;
             }
         }
 
-        best_damage = std::min(best_damage, damage);
+        if (damage < best_damage) {
+            best_damage = damage;
+        }
         cand.push_back({j, new_val, damage});
     }
 
-    if (cand.empty()) {
+    const size_t ncand = cand.size();
+    if (ncand == 0) {
         return {};
     }
 
+    const WalkSatScratch::Candidate* __restrict cand_p = cand.data();
+
     // WalkSAT selection (paper Fig. 4, lines 17-21)
     if (best_damage > feastol && std::uniform_real_distribution<double>(0.0, 1.0)(rng) < noise) {
-        HighsInt idx =
-            std::uniform_int_distribution<HighsInt>(0, static_cast<HighsInt>(cand.size()) - 1)(rng);
-        return {cand[idx].var, cand[idx].new_val};
+        const HighsInt idx =
+            std::uniform_int_distribution<HighsInt>(0, static_cast<HighsInt>(ncand) - 1)(rng);
+        return {cand_p[idx].var, cand_p[idx].new_val};
     }
     auto& best_indices = scratch.best_indices;
     best_indices.clear();
-    for (HighsInt ci = 0; ci < static_cast<HighsInt>(cand.size()); ++ci) {
-        if (cand[ci].damage <= best_damage + feastol) {
-            best_indices.push_back(ci);
+    best_indices.reserve(ncand);
+    const double damage_threshold = best_damage + feastol;
+    for (size_t ci = 0; ci < ncand; ++ci) {
+        if (cand_p[ci].damage <= damage_threshold) {
+            best_indices.push_back(static_cast<HighsInt>(ci));
         }
     }
-    HighsInt idx = best_indices[std::uniform_int_distribution<HighsInt>(
+    const HighsInt idx = best_indices[std::uniform_int_distribution<HighsInt>(
         0, static_cast<HighsInt>(best_indices.size()) - 1)(rng)];
-    return {cand[idx].var, cand[idx].new_val};
+    return {cand_p[idx].var, cand_p[idx].new_val};
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +154,7 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
 bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
                     std::vector<double>& lhs_cache, const double* col_lb, const double* col_ub,
                     HighsInt max_iterations, double noise, bool track_best, size_t max_effort,
-                    std::mt19937& rng, size_t& effort) {
+                    Rng& rng, size_t& effort, WalkSatScratch& scratch) {
     const HighsInt nrow = data.nrow();
     const double feastol = data.feastol();
     const double* row_lo = data.row_lo();
@@ -134,10 +163,24 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
     const HighsInt* csc_row = data.csc_row();
     const double* csc_val = data.csc_val();
 
-    // Violated set
-    std::vector<HighsInt> violated;
-    std::vector<HighsInt> violated_pos(nrow, -1);
-    violated.reserve(nrow);
+    // Reuse scratch's violated / violated_pos / sol_undo / lhs_undo to avoid
+    // per-call heap allocations.  clear() retains capacity; violated_pos must
+    // be sized to nrow and reset to -1 before use.
+    auto& violated = scratch.violated;
+    auto& violated_pos = scratch.violated_pos;
+    auto& sol_undo = scratch.sol_undo;
+    auto& lhs_undo = scratch.lhs_undo;
+    violated.clear();
+    sol_undo.clear();
+    lhs_undo.clear();
+    if (static_cast<HighsInt>(violated_pos.size()) < nrow) {
+        violated_pos.assign(nrow, -1);
+    } else {
+        std::fill(violated_pos.begin(), violated_pos.begin() + nrow, -1);
+    }
+    if (violated.capacity() < static_cast<size_t>(nrow)) {
+        violated.reserve(nrow);
+    }
 
     auto add_violated = [&](HighsInt i) {
         if (violated_pos[i] != -1) {
@@ -176,17 +219,9 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
     // vectors on each improvement (O(ncol + nrow)), we keep an undo log of
     // changed entries and record a mark at each improvement. Restore replays
     // only the entries after the best mark — O(changes_since_best).
-    struct UndoEntry {
-        HighsInt idx;
-        double old_val;
-    };
-    std::vector<UndoEntry> sol_undo;
-    std::vector<UndoEntry> lhs_undo;
     double best_viol = total_viol;
     HighsInt best_sol_mark = 0;
     HighsInt best_lhs_mark = 0;
-
-    WalkSatScratch scratch;
 
     for (HighsInt step = 0; step < max_iterations && !violated.empty(); ++step) {
         if (effort >= max_effort) {
@@ -271,41 +306,56 @@ void greedy_1opt(const PropEngine& data, std::vector<double>& solution,
                  std::vector<double>& lhs_cache, const double* col_cost, bool minimize,
                  size_t& effort) {
     const HighsInt ncol = data.ncol();
-    const HighsInt* csc_start = data.csc_start();
-    const HighsInt* csc_row = data.csc_row();
-    const double* csc_val = data.csc_val();
-    const double* col_lb = data.col_lb();
-    const double* col_ub = data.col_ub();
-    const double* row_lo = data.row_lo();
-    const double* row_hi = data.row_hi();
+    const HighsInt* __restrict csc_start = data.csc_start();
+    const HighsInt* __restrict csc_row = data.csc_row();
+    const double* __restrict csc_val = data.csc_val();
+    const double* __restrict col_lb = data.col_lb();
+    const double* __restrict col_ub = data.col_ub();
+    const double* __restrict row_lo = data.row_lo();
+    const double* __restrict row_hi = data.row_hi();
+    const HighsVarType* __restrict integrality = data.integrality();
     const double feastol = data.feastol();
 
+    double* __restrict sol_p = solution.data();
+    double* __restrict lhs_p = lhs_cache.data();
+
     for (HighsInt j = 0; j < ncol; ++j) {
-        if (!data.is_int(j)) {
+        if (integrality[j] == HighsVarType::kContinuous) {
             continue;
         }
-        if (std::abs(col_cost[j]) < 1e-15) {
-            continue;
-        }
-
-        double direction;
-        if (minimize) {
-            direction = (col_cost[j] > 0) ? -1.0 : 1.0;
-        } else {
-            direction = (col_cost[j] > 0) ? 1.0 : -1.0;
-        }
-        double new_val = solution[j] + direction;
-        new_val = std::max(col_lb[j], std::min(col_ub[j], new_val));
-        if (std::abs(new_val - solution[j]) < 1e-15) {
+        const double cj = col_cost[j];
+        if (std::abs(cj) < 1e-15) {
             continue;
         }
 
-        double delta = new_val - solution[j];
+        // direction = -sign(cj) when minimizing, +sign(cj) when maximizing.
+        const double direction = (cj > 0) == minimize ? -1.0 : 1.0;
+        const double old_val = sol_p[j];
+        double new_val = old_val + direction;
+        const double lb = col_lb[j];
+        const double ub = col_ub[j];
+        if (new_val < lb) {
+            new_val = lb;
+        } else if (new_val > ub) {
+            new_val = ub;
+        }
+        const double delta = new_val - old_val;
+        if (std::abs(delta) < 1e-15) {
+            continue;
+        }
+
+        const HighsInt col_begin = csc_start[j];
+        const HighsInt col_end = csc_start[j + 1];
+        const HighsInt col_deg = col_end - col_begin;
+        effort += static_cast<size_t>(col_deg);
+
+        const HighsInt* __restrict csc_row_p = csc_row + col_begin;
+        const double* __restrict csc_val_p = csc_val + col_begin;
+
         bool shift_feasible = true;
-        effort += csc_start[j + 1] - csc_start[j];
-        for (HighsInt p = csc_start[j]; p < csc_start[j + 1]; ++p) {
-            HighsInt row = csc_row[p];
-            double new_lhs = lhs_cache[row] + csc_val[p] * delta;
+        for (HighsInt p = 0; p < col_deg; ++p) {
+            const HighsInt row = csc_row_p[p];
+            const double new_lhs = lhs_p[row] + csc_val_p[p] * delta;
             if (is_row_violated(new_lhs, row_lo[row], row_hi[row], feastol)) {
                 shift_feasible = false;
                 break;
@@ -313,10 +363,10 @@ void greedy_1opt(const PropEngine& data, std::vector<double>& solution,
         }
 
         if (shift_feasible) {
-            for (HighsInt p = csc_start[j]; p < csc_start[j + 1]; ++p) {
-                lhs_cache[csc_row[p]] += csc_val[p] * delta;
+            for (HighsInt p = 0; p < col_deg; ++p) {
+                lhs_p[csc_row_p[p]] += csc_val_p[p] * delta;
             }
-            solution[j] = new_val;
+            sol_p[j] = new_val;
         }
     }
 }

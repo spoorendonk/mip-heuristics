@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <random>
 
 SolutionPool::SolutionPool(int capacity, bool minimize)
     : capacity_(capacity), minimize_(minimize) {}
@@ -116,7 +117,7 @@ SolutionPool::Snapshot SolutionPool::snapshot() {
     return {true, entries_[0].objective};
 }
 
-bool SolutionPool::get_restart(std::mt19937& rng, std::vector<double>& out) {
+bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
     std::lock_guard<HighsSpinMutex> lock(mtx_);
     if (entries_.empty()) {
         return false;

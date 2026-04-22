@@ -177,7 +177,7 @@ Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch, 
     return best;
 }
 
-Candidate infeasible_step(WorkerCtx &ctx, std::mt19937 &rng, HighsInt step, bool best_feasible,
+Candidate infeasible_step(WorkerCtx &ctx, Rng &rng, HighsInt step, bool best_feasible,
                           double best_objective, const std::vector<HighsInt> &costed_vars,
                           const std::vector<HighsInt> &binary_vars) {
     ctx.was_infeasible = true;

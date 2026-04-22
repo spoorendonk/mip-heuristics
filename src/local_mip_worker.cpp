@@ -20,7 +20,7 @@ namespace local_mip_detail {
 void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &mipdata,
                       const std::vector<HighsVarType> &integrality,
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
-                      HighsInt ncol, std::mt19937 &rng) {
+                      HighsInt ncol, Rng &rng) {
     std::uniform_real_distribution<double> coin(0.0, 1.0);
     for (HighsInt j = 0; j < ncol; ++j) {
         if (!is_integer(integrality, j)) {
@@ -100,18 +100,19 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
     }
 
     const HighsInt ncol = mipsolver_.model_->num_col_;
-    const double time_limit = mipsolver_.options_mip_->time_limit;
 
     EpochResult epoch{};
     size_t effort_start = ctx_.effort;
     size_t effort_at_last_improvement = effort_start;
 
+    // Effort is the deterministic work signal; wall-clock `time_limit` is
+    // enforced by the outer loop (epoch_runner.h / continuous_loop.h)
+    // between epochs.  Inner-loop polling would buy sub-epoch deadline
+    // precision at the cost of a clock_gettime per iteration, which on
+    // small instances was ~3% of total instruction refs.  One epoch of
+    // overshoot on time_limit trip is the accepted trade.
     while (ctx_.effort - effort_start < epoch_budget &&
            base_.total_effort + (ctx_.effort - effort_start) < base_.total_budget) {
-        if (mipsolver_.timer_.read() >= time_limit) {
-            base_.finished = true;
-            break;
-        }
         if (base_.effort_since_improvement + (ctx_.effort - effort_start) > base_.stale_budget) {
             base_.finished = true;
             break;

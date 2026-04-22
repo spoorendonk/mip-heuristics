@@ -1,6 +1,7 @@
 #pragma once
 
 #include "epoch_runner.h"
+#include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "util/HighsInt.h"
@@ -9,7 +10,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
-#include <random>
 #include <vector>
 
 class HighsMipSolver;
@@ -92,11 +92,15 @@ private:
 
     std::vector<std::vector<double>> cycle_history_;
     std::vector<double> modified_cost_;
-    std::mt19937 rng_;
+    Rng rng_;
 
     // FPR strategy assignment (static, one per worker).
     int fpr_config_index_ = 0;
     std::vector<HighsInt> var_order_;
+
+    // Persistent scratch reused across fpr_attempt calls inside run_epoch
+    // to avoid per-iteration malloc/free churn on the DFS + WalkSAT path.
+    FprScratch fpr_scratch_;
 
     // Cross-worker improvement broadcast.  When any worker bumps the
     // generation, peers reset their local staleness on the next loop

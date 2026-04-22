@@ -62,7 +62,10 @@ private:
     // config randomization before this point.
     static constexpr int kHardStaleThreshold = 15;
 
-    std::mt19937 rng_;
+    Rng rng_;
+    // Per-worker scratch reused across fpr_attempt calls to avoid malloc
+    // churn on the DFS + WalkSAT repair hot path.
+    FprScratch scratch_;
 };
 
 static_assert(EpochWorker<FprWorker>, "FprWorker must satisfy EpochWorker concept");
@@ -125,7 +128,7 @@ VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
     VarOrderTable orders(kNumFprStrategies);
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprStrategies; ++i) {
-        std::mt19937 rng(base + static_cast<uint32_t>(i));
+        Rng rng(base + static_cast<uint32_t>(i));
         orders[i] = compute_var_order(mipsolver, kFprStrategies[i].var_strategy, rng, nullptr);
     }
     return orders;
@@ -185,6 +188,7 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     cfg.lp_ref = nullptr;
     cfg.precomputed_var_order = var_order.data();
     cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
+    cfg.scratch = &scratch_;
 
     auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
     epoch.effort = result.effort;
@@ -258,10 +262,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     size_t total_effort = run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
-        [](int worker_idx, std::mt19937 & /*rng*/) -> FprOppState {
-            return FprOppState{worker_idx};
-        },
-        [&](FprOppState &state, std::mt19937 &rng, size_t run_cap) -> HeuristicResult {
+        [](int worker_idx, Rng & /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
+        [&](FprOppState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
             auto &worker = workers[state.worker_idx];
             if (worker->finished()) {
                 // Replace with a random (strategy, mode) from the full pool.

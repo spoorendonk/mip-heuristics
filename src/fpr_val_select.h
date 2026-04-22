@@ -3,8 +3,6 @@
 #include "heuristic_common.h"
 #include "util/HighsInt.h"
 
-#include <random>
-
 // ---------------------------------------------------------------------------
 // Value selection strategies (paper Table 2, Section 4.2)
 // ---------------------------------------------------------------------------
@@ -25,7 +23,7 @@ enum class ValStrategy {
 // For LP-based strategies, `lp_ref[j]` provides the reference LP value.
 // For loosedyn, precomputed row activities and bound arrays are needed.
 double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize, double cost,
-                    ValStrategy strategy, std::mt19937& rng, const double* lp_ref,
+                    ValStrategy strategy, Rng& rng, const double* lp_ref,
                     // loosedyn support: nullable pointers
                     const double* row_lo, const double* row_hi, const double* min_act,
                     const double* max_act, const CscMatrix* csc);

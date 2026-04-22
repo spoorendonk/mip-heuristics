@@ -1,8 +1,8 @@
 #pragma once
 
 #include "parallel/HighsSpinMutex.h"
+#include "rng.h"
 
-#include <random>
 #include <vector>
 
 class HighsMipSolver;
@@ -68,7 +68,7 @@ public:
     // Post-crossover repair is handled naturally by the calling heuristic
     // (FPR, LocalMIP, etc.) which treats the restart as an initial solution
     // and runs its own feasibility restoration.
-    bool get_restart(std::mt19937& rng, std::vector<double>& out);
+    bool get_restart(Rng& rng, std::vector<double>& out);
 
     // Return sorted entries (best first). Caller should hold no lock.
     std::vector<Entry> sorted_entries();
