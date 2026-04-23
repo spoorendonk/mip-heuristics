@@ -23,12 +23,14 @@ class HighsMipSolver;
 // Overlap design (issue #76): workers that cannot grab the mutex fall
 // back to rounding against the most-recent *completed* PDLP snapshot,
 // published via a `std::atomic<std::shared_ptr<const Snapshot>>` slot.
-// Readers see a consistent snapshot with a lock-free acquire load;
-// writers serialise through the mutex but release-store the new
-// snapshot atomically so stale readers never tear.  This lets N-1
-// workers keep producing useful FPR work while one worker is inside
-// the PDLP solve, without breaking the one-solve-in-flight invariant
-// (cuPDLP GPU state safety).
+// Readers acquire-load the shared_ptr (libstdc++ implements the
+// specialisation with a brief internal spinlock rather than truly
+// lock-free, but contention on reads is bounded and far shorter than
+// the PDLP solve itself).  Writers serialise through the mutex and
+// release-store the new snapshot atomically so stale readers never
+// tear.  This lets N-1 workers keep producing useful FPR work while
+// one worker is inside the PDLP solve, without breaking the one-
+// solve-in-flight invariant (cuPDLP GPU state safety).
 //
 // Lifetime invariant: the wrapped LP is built once from
 // `mipsolver.mipdata_->AR*` at construction time via
@@ -118,9 +120,11 @@ public:
                                          bool warm_start_valid, double epsilon, double time_limit);
 
     // Latest completed Snapshot (shared ownership) or null if no solve
-    // has completed yet.  Lock-free read; callers may hold the returned
-    // pointer across iterations since a Snapshot is immutable after
-    // publication.
+    // has completed yet.  Read via `std::atomic<std::shared_ptr<>>`
+    // acquire-load (libstdc++ uses a brief internal spinlock — not
+    // strictly lock-free, but well below PDLP solve latency).  Callers
+    // may hold the returned pointer across iterations since a Snapshot
+    // is immutable after publication.
     std::shared_ptr<const Snapshot> latest_snapshot() const {
         return snapshot_.load(std::memory_order_acquire);
     }

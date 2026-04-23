@@ -73,6 +73,18 @@ public:
     void reset_staleness() { base_.reset_staleness(); }
 
 private:
+    // Shared handling of a completed PDLP solve result used by both the
+    // blocking (`must_force_fresh`) branch and the non-blocking
+    // `try_solve_or_snapshot` fresh branch of `run_epoch`.  Moves from
+    // `result.col_value` / `result.row_dual` into warm-start state and
+    // updates `pdlp_stall_count_`.  Returns true when the worker must
+    // break out of the run loop (error / infeasible / stall cap /
+    // empty primal), false to continue with `iters_out` set and
+    // `x_bar_ptr` pointing at `warm_start_col_value_`.  Kept on the
+    // header so tests can call it independently if needed.
+    bool absorb_fresh_solve(ContestedPdlp::SolveResult &result, HighsInt &iters_out,
+                            const std::vector<double> *&x_bar_ptr);
+
     HighsMipSolver &mipsolver_;
     ContestedPdlp &pdlp_;
     const CscMatrix &csc_;

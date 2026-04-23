@@ -3,6 +3,11 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
+#include <mutex>
+#include <regex>
+#include <string>
+#include <vector>
 
 // ── Scylla standalone: PDLP pump finds feasible solution ──
 
@@ -217,4 +222,75 @@ TEST_CASE("Scylla opportunistic: gt2 pure binary", "[scylla][opportunistic]") {
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(21166.0).epsilon(1e-3));
+}
+
+// ── Scylla stale-snapshot overlap (issue #76) ──
+//
+// Regression guard for the new `[ScyllaOverlap] fresh=<F> stale=<S>
+// ratio=<R>` trace line emitted at the end of Scylla's parallel
+// runners.  The line surfaces the #76 acceptance criterion — operators
+// running with `log_dev_level=3` can read the overlap ratio from the
+// log.  We assert the line is emitted at all and that `fresh >= 1`
+// (Scylla ran at least one real solve).  Stale rounds are environment-
+// dependent (contention between N workers fighting the PDLP mutex);
+// on small instances the PDLP solve is fast enough that a single
+// worker can finish before peers retry, so we don't require
+// `stale > 0` as a hard assertion.  Coverage of the full stale
+// branches is via the `ContestedPdlp` unit tests in
+// `tests/test_contested_pdlp.cpp` plus MIPLIB bench runs.
+TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][scylla][overlap]") {
+    struct LogCapture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+    };
+    LogCapture capture;
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    h.setOptionValue("log_dev_level", 3);
+    h.setOptionValue("mip_heuristic_run_fpr", false);
+    h.setOptionValue("mip_heuristic_run_local_mip", false);
+    h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    h.setOptionValue("mip_heuristic_run_scylla", true);
+    h.setOptionValue("mip_heuristic_portfolio", false);
+    h.setOptionValue("mip_heuristic_opportunistic", false);
+
+    auto log_cb = [](int callback_type, const std::string& message,
+                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                     void* user_data) {
+        if (callback_type != kCallbackLogging) {
+            return;
+        }
+        auto* cap = static_cast<LogCapture*>(user_data);
+        std::lock_guard<std::mutex> lock(cap->mtx);
+        cap->lines.emplace_back(message);
+    };
+
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    // Parse out the fresh / stale counts from the [ScyllaOverlap] line
+    // so we assert the plumbing, not just the presence of a substring.
+    const std::regex re("\\[ScyllaOverlap\\] fresh=(\\d+) stale=(\\d+) ratio=([0-9.]+)");
+    std::uint64_t fresh = 0;
+    std::uint64_t stale = 0;
+    bool seen = false;
+    {
+        std::lock_guard<std::mutex> lock(capture.mtx);
+        for (const auto& line : capture.lines) {
+            std::smatch match;
+            if (std::regex_search(line, match, re)) {
+                fresh = std::stoull(match[1].str());
+                stale = std::stoull(match[2].str());
+                seen = true;
+                break;
+            }
+        }
+    }
+    REQUIRE(seen);        // Line was emitted — closes #76's "new trace lines" ask.
+    REQUIRE(fresh >= 1);  // Scylla actually ran at least one solve.
+    (void)stale;          // Best-effort — see comment above.
 }

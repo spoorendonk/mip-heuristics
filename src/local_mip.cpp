@@ -13,6 +13,7 @@
 #include "rng.h"
 #include "solution_pool.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -26,6 +27,61 @@ using local_mip_detail::construct_initial_solution;
 using local_mip_detail::construction_effort_cap;
 using local_mip_detail::LocalMipWorker;
 using local_mip_detail::perturb_solution;
+
+namespace {
+
+// Row + integer feasibility check for a candidate solution. Used once
+// per cold-construct branch so a feasible construction lands in the
+// shared pool with the LocalMIP source tag; if infeasible the caller
+// still uses it as the search's starting point (paper's intended
+// behaviour).
+bool is_solution_feasible(const HighsMipSolver &mipsolver, const std::vector<double> &solution) {
+    const auto *model = mipsolver.model_;
+    const auto *mipdata = mipsolver.mipdata_.get();
+    const HighsInt ncol = model->num_col_;
+    const HighsInt nrow = model->num_row_;
+    const double feastol = mipdata->feastol;
+    const double inttol = mipdata->epsilon;
+    if (static_cast<HighsInt>(solution.size()) != ncol) {
+        return false;
+    }
+    // Integer feasibility.
+    for (HighsInt j = 0; j < ncol; ++j) {
+        if (model->integrality_[j] == HighsVarType::kInteger ||
+            model->integrality_[j] == HighsVarType::kImplicitInteger) {
+            if (std::abs(solution[j] - std::round(solution[j])) > inttol) {
+                return false;
+            }
+        }
+        if (solution[j] < model->col_lower_[j] - feastol ||
+            solution[j] > model->col_upper_[j] + feastol) {
+            return false;
+        }
+    }
+    // Row feasibility — walk ARstart/ARindex/ARvalue once.
+    for (HighsInt i = 0; i < nrow; ++i) {
+        double lhs = 0.0;
+        for (HighsInt k = mipdata->ARstart_[i]; k < mipdata->ARstart_[i + 1]; ++k) {
+            lhs += mipdata->ARvalue_[k] * solution[mipdata->ARindex_[k]];
+        }
+        if (lhs < model->row_lower_[i] - feastol || lhs > model->row_upper_[i] + feastol) {
+            return false;
+        }
+    }
+    return true;
+}
+
+double compute_solution_objective(const HighsMipSolver &mipsolver,
+                                  const std::vector<double> &solution) {
+    const auto *model = mipsolver.model_;
+    double obj = model->offset_;
+    for (HighsInt j = 0; j < model->num_col_; ++j) {
+        obj += model->col_cost_[j] * solution[j];
+    }
+    return obj;
+}
+
+}  // namespace
 
 HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t seed,
                        const double *initial_solution, size_t max_effort) {
@@ -109,6 +165,17 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     std::vector<double> constructed;
     construct_initial_solution(mipsolver, csc, rng, construction_effort_cap(max_effort),
                                constructed);
+    // If the construction happens to land on a feasible integer point,
+    // publish it to the shared pool so downstream heuristics (and
+    // HiGHS's own incumbent path) pick it up.  Tag as `LocalMIP`
+    // (source char 'M') — we don't mint a new `Construction` source
+    // tag because that would require an upstream HiGHS patch.
+    // Infeasible constructions are the paper's intended input to the
+    // search phase and are not inserted.
+    if (!constructed.empty() && is_solution_feasible(mipsolver, constructed)) {
+        double obj = compute_solution_objective(mipsolver, constructed);
+        pool.try_add(obj, constructed, kSolutionSourceLocalMIP);
+    }
     return constructed;
 }
 

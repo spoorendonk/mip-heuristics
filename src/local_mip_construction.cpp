@@ -180,18 +180,26 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
 // variables.
 std::vector<HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng) {
     std::vector<HighsInt> order(ncol);
+    std::vector<uint32_t> tiebreak(ncol);
     for (HighsInt j = 0; j < ncol; ++j) {
         order[j] = j;
+        tiebreak[j] = static_cast<uint32_t>(rng());
     }
-    // Shuffle first so ties resolve randomly (different per worker seed).
-    for (HighsInt k = ncol - 1; k > 0; --k) {
-        HighsInt idx = static_cast<HighsInt>(rng() % static_cast<uint32_t>(k + 1));
-        std::swap(order[k], order[idx]);
-    }
-    // Stable sort by decreasing col-nnz.
-    std::stable_sort(order.begin(), order.end(), [&](HighsInt a, HighsInt b) {
-        return (csc.col_start[a + 1] - csc.col_start[a]) >
-               (csc.col_start[b + 1] - csc.col_start[b]);
+    // Primary key: descending col-nnz (high-coverage variables first).
+    // Secondary key: a per-variable RNG draw, so two workers with
+    // different seeds see different orderings even when many
+    // variables share the same col-nnz value.  Using stable_sort
+    // with a post-shuffle did *not* actually diversify across
+    // workers — the shuffle's randomness is overwritten by the
+    // deterministic col-nnz comparison for any two variables with
+    // different nnz.  Review R2 flagged this.
+    std::sort(order.begin(), order.end(), [&](HighsInt a, HighsInt b) {
+        auto nnz_a = csc.col_start[a + 1] - csc.col_start[a];
+        auto nnz_b = csc.col_start[b + 1] - csc.col_start[b];
+        if (nnz_a != nnz_b) {
+            return nnz_a > nnz_b;
+        }
+        return tiebreak[a] < tiebreak[b];
     });
     return order;
 }
