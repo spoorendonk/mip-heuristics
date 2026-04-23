@@ -75,6 +75,42 @@ def test_sequential_lines_parse_into_sequential_samples():
     assert scylla.effort_per_ms == 5.0
 
 
+def test_time_to_best_returns_last_incumbent_time():
+    """time_to_best is the time of the last incumbent update, for SGM T_best."""
+    from parse_highs_log import Incumbent, SolveResult
+    r = SolveResult()
+    assert r.time_to_best is None
+    r.incumbents.append(Incumbent(time=1.5, objective=10.0, source="H", nodes=0))
+    assert r.time_to_best == 1.5
+    r.incumbents.append(Incumbent(time=7.2, objective=8.0, source="B", nodes=3))
+    assert r.time_to_first_feasible == 1.5
+    assert r.time_to_best == 7.2
+
+
+def test_model_header_sets_dimensions_and_category():
+    """Category classifier follows Local-MIP §6.1.1 (BP/IP/MBP/MIP)."""
+    # BP: all 650 integer, all binary, no continuous
+    bp_log = "MIP ex-bp has 91 rows; 500 cols; 1968 nonzeros; 500 integer variables (500 binary)\n"
+    r = parse_log(bp_log)
+    assert r.num_rows == 91 and r.num_cols == 500 and r.num_binary == 500
+    assert r.category == "BP"
+
+    # IP: all integer, not all binary, no continuous
+    ip_log = "MIP ex-ip has 50 rows; 100 cols; 200 nonzeros; 100 integer variables (20 binary)\n"
+    assert parse_log(ip_log).category == "IP"
+
+    # MBP: binary + continuous, no general integer
+    mbp_log = "MIP ex-mbp has 50 rows; 100 cols; 200 nonzeros; 60 integer variables (60 binary)\n"
+    assert parse_log(mbp_log).category == "MBP"
+
+    # MIP: general integer + continuous
+    mip_log = "MIP ex-mip has 50 rows; 100 cols; 200 nonzeros; 60 integer variables (40 binary)\n"
+    assert parse_log(mip_log).category == "MIP"
+
+    # Missing header -> no category
+    assert parse_log("").category is None
+
+
 def test_sequential_zero_effort_line_parses():
     """Zero-effort [Sequential] lines (e.g. local_mip skipping a cold
     solve) are emitted so a human reader sees the skip; the drift script

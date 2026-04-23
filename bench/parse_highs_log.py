@@ -61,15 +61,52 @@ class SolveResult:
     solve_time: float = 0.0
     nodes: int = 0
     lp_iterations: int = 0
+    # Model stats parsed from `MIP <name> has R rows; C cols; NZ nonzeros;
+    # I integer variables (B binary)`; None means the line was absent.
+    num_rows: int | None = None
+    num_cols: int | None = None
+    num_nonzeros: int | None = None
+    num_integer: int | None = None
+    num_binary: int | None = None
     incumbents: list[Incumbent] = field(default_factory=list)
     effort_samples: list[EffortSample] = field(default_factory=list)
     sequential_samples: list[SequentialSample] = field(default_factory=list)
+
+    @property
+    def category(self) -> str | None:
+        """Local-MIP §6.1.1 category: BP / IP / MBP / MIP / None.
+
+        BP  — all variables binary.
+        IP  — all variables integer (no continuous), some non-binary integer.
+        MBP — all integers are binary AND some continuous variables exist.
+        MIP — some non-binary integer AND some continuous.
+        """
+        if self.num_cols is None or self.num_integer is None or self.num_binary is None:
+            return None
+        cont = self.num_cols - self.num_integer
+        gen_int = self.num_integer - self.num_binary
+        if cont == 0 and gen_int == 0 and self.num_binary > 0:
+            return "BP"
+        if cont == 0 and gen_int > 0:
+            return "IP"
+        if cont > 0 and gen_int == 0 and self.num_binary > 0:
+            return "MBP"
+        if cont > 0 and gen_int > 0:
+            return "MIP"
+        return None
 
     @property
     def time_to_first_feasible(self) -> float | None:
         """Time when the first feasible solution was found."""
         if self.incumbents:
             return self.incumbents[0].time
+        return None
+
+    @property
+    def time_to_best(self) -> float | None:
+        """Time when the last (best) incumbent was recorded."""
+        if self.incumbents:
+            return self.incumbents[-1].time
         return None
 
     def primal_gap_at(
@@ -181,6 +218,14 @@ _EFFORT_RE = re.compile(
 # `bench/check_effort_drift.py` to calibrate `kWeight*`.
 _SEQUENTIAL_RE = re.compile(
     r"^\s*\[Sequential\] heur=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
+)
+
+# Model header emitted by HiGHS right after reading the MPS, e.g.
+#   MIP fhnw-sq2 has 91 rows; 650 cols; 1968 nonzeros; 650 integer variables (625 binary)
+# Used to classify instances into BP / IP / MBP / MIP (Local-MIP §6.1.1).
+_MODEL_HEADER_RE = re.compile(
+    r"^MIP\s+\S+\s+has\s+(\d+)\s+rows;\s+(\d+)\s+cols;\s+(\d+)\s+nonzeros;"
+    r"\s+(\d+)\s+integer variables\s*\((\d+)\s*binary\)"
 )
 
 
@@ -316,6 +361,17 @@ def parse_log(log_text: str) -> SolveResult:
                 )
             )
             continue
+
+        # Model header line (first occurrence wins; HiGHS prints it once).
+        if result.num_rows is None:
+            m = _MODEL_HEADER_RE.match(line)
+            if m:
+                result.num_rows = int(m.group(1))
+                result.num_cols = int(m.group(2))
+                result.num_nonzeros = int(m.group(3))
+                result.num_integer = int(m.group(4))
+                result.num_binary = int(m.group(5))
+                continue
 
     return result
 

@@ -235,6 +235,34 @@ def count_feasible(
     return {"per_seed": per_seed, "any": any_seed_count}
 
 
+def count_first(
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    instances: list[str],
+    tie_tol: float = 0.1,
+) -> dict[str, float]:
+    """Count #First: instances where config finds first feasible strictly
+    earliest (all others later by > tie_tol seconds). Ties within tie_tol
+    split the credit evenly across the tied configs. Returns fractional
+    counts per config.
+    """
+    firsts: dict[str, float] = {c: 0.0 for c in configs}
+    for inst in instances:
+        times: dict[str, float] = {}
+        for c in configs:
+            r = agg_results.get(c, {}).get(inst)
+            if r and r.time_to_first_feasible is not None:
+                times[c] = r.time_to_first_feasible
+        if not times:
+            continue
+        best = min(times.values())
+        leaders = [c for c, t in times.items() if t <= best + tie_tol]
+        share = 1.0 / len(leaders)
+        for c in leaders:
+            firsts[c] += share
+    return firsts
+
+
 def count_wins(
     agg_results: dict[str, dict[str, SolveResult]],
     configs: list[str],
@@ -380,6 +408,55 @@ def print_comparison_table(
           f"{format_float(shifted_geomean(pd_vals[c2], 1.0), 12, 4)}")
 
 
+def _categorize_instances(
+    agg_results: dict[str, dict[str, SolveResult]],
+    instances: list[str],
+) -> dict[str, str]:
+    """Return {instance: category} using the first config that parsed model stats."""
+    cats: dict[str, str] = {}
+    for inst in instances:
+        for cfg_results in agg_results.values():
+            r = cfg_results.get(inst)
+            if r and r.category is not None:
+                cats[inst] = r.category
+                break
+    return cats
+
+
+def _print_category_breakdown(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    instances: list[str],
+    time_limit: float,
+    best_known: dict[str, float | None] | None,
+) -> None:
+    """Local-MIP Table 1 style: #Feas / #Win per category × per time cutoff."""
+    cats = _categorize_instances(agg_results, instances)
+    ordered = ["BP", "IP", "MBP", "MIP"]
+    buckets = {c: [i for i in instances if cats.get(i) == c] for c in ordered}
+    uncls = [i for i in instances if i not in cats]
+    if uncls:
+        buckets["?"] = uncls
+
+    print("\n### Category breakdown (#Feas / #Win)\n")
+    header = f"{'Category':<8} {'#Inst':>6}"
+    for c in configs:
+        header += f"  {'Feas(' + c[:4] + ')':>11} {'Win(' + c[:4] + ')':>11}"
+    print(header)
+    print("-" * len(header))
+
+    for cat, insts_in_cat in buckets.items():
+        if not insts_in_cat:
+            continue
+        feas = {c: count_feasible(results, c, insts_in_cat)["any"] for c in configs}
+        wins = count_wins(agg_results, configs, insts_in_cat)
+        row = f"{cat:<8} {len(insts_in_cat):>6}"
+        for c in configs:
+            row += f"  {feas[c]:>11} {wins[c]:>11}"
+        print(row)
+
+
 def print_paper_metrics(
     results: dict[str, dict[int, dict[str, SolveResult]]],
     agg_results: dict[str, dict[str, SolveResult]],
@@ -420,6 +497,13 @@ def print_paper_metrics(
         print(f" {win_counts[c]:<12}", end="")
     print()
 
+    # --- #First (fastest to feasible, tie-split within 0.1s) ---
+    first_counts = count_first(agg_results, configs, instances)
+    print(f"{'#First (fastest T1st)':<25}", end="")
+    for c in configs:
+        print(f" {first_counts[c]:<12.1f}", end="")
+    print()
+
     # --- SGM of time-to-first-feasible (shift=1s, matching FJ/FPR) ---
     print(f"\n{'SGM T1st (s=1)':<25}", end="")
     for c in configs:
@@ -429,6 +513,17 @@ def print_paper_metrics(
             if r and r.time_to_first_feasible is not None:
                 t1st.append(r.time_to_first_feasible)
         print(f" {format_float(shifted_geomean(t1st, 1.0), 12, 4)}", end="")
+    print()
+
+    # --- SGM of time-to-best incumbent (shift=1s) ---
+    print(f"{'SGM Tbest (s=1)':<25}", end="")
+    for c in configs:
+        tbest = []
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            if r and r.time_to_best is not None:
+                tbest.append(r.time_to_best)
+        print(f" {format_float(shifted_geomean(tbest, 1.0), 12, 4)}", end="")
     print()
 
     # --- SGM of primal gap at cutoff (shift=0.01, matching FPR/Scylla) ---
@@ -458,6 +553,23 @@ def print_paper_metrics(
                     pis.append(pi)
         print(f" {format_float(shifted_geomean(pis, 1.0), 12, 4)}", end="")
     print()
+
+    # --- SGM of HiGHS-reported primal-dual integral (shift=1.0) ---
+    print(f"{'SGM P-D Integral':<25}", end="")
+    for c in configs:
+        pdis = []
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            if r and math.isfinite(r.pd_integral):
+                pdis.append(r.pd_integral)
+        print(f" {format_float(shifted_geomean(pdis, 1.0), 12, 4)}", end="")
+    print()
+
+    # --- Category breakdown (Local-MIP Table 1 style) ---
+    if len(configs) >= 1:
+        _print_category_breakdown(
+            results, agg_results, configs, instances, time_limit, best_known
+        )
 
     # --- Reference coverage ---
     if best_known is not None:

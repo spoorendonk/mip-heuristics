@@ -37,13 +37,14 @@ PATCHED_OPTIONS = {
 
 
 def load_instances(path: str) -> list[str]:
-    """Load instance names from a file (one per line, # comments)."""
+    """Load instance names from a file (one per line; `#` starts a comment,
+    whether at the start of the line or inline after the name)."""
     instances = []
     with open(path) as f:
         for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                instances.append(line)
+            name = line.split("#", 1)[0].strip()
+            if name:
+                instances.append(name)
     return instances
 
 

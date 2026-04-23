@@ -100,4 +100,4 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 
 **Testing**: Catch2 v3. Tests use `.mps` instances from HiGHS's own `check/instances/` directory (path injected via `INSTANCES_DIR` compile definition). Characterization tests verify known-optimal objectives. (See the testing override near the top of this file — we do not use GoogleTest.)
 
-**Benchmarking**: `bench/` has scripts for MIPLIB benchmarks — `run_benchmark.py` runs instances, `analyze_results.py` parses results.
+**Benchmarking**: `bench/` has scripts for MIPLIB benchmarks — `run_benchmark.py` runs instances, `analyze_results.py` parses results. Don't pass `--threads` (or set `threads=` in an `.opts` file) unless asked — let HiGHS use its default; forcing `threads=1` collapses epoch-gated / opportunistic parallelism to one worker per epoch.
