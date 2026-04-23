@@ -1,0 +1,55 @@
+# MIPLIB 2017 primal-hard subset — 25 instances (stage 1 of gh#16)
+#
+# Every instance satisfies both:
+#   (a) HiGHS (vanilla, 1 thread, seed 0) does not solve it in 300s, AND
+#   (b) finding / improving primal solutions is the dominant difficulty.
+#
+# Selection procedure:
+#   1. Probed ~40 MIPLIB-hard candidates with vanilla HiGHS @ 60s.
+#   2. Dropped any that solved in 60s or hit gap < 1% early (none did).
+#   3. Dropped two "*-i" instances that use MPS INDICATORS (HiGHS parser fails).
+#   4. Picked 25, balanced roughly to Local-MIP Table 1 category ratios.
+#
+# Probe source data: bench/results_hard_probe_60s/ (re-runnable via
+# run_benchmark.py --instances instances_hard_probe.txt --time-limit 60).
+#
+# Category codes follow Local-MIP §6.1.1 (BP, IP, MBP, MIP).
+# Provenance per instance (tag/paper signal → observed 60s behavior):
+#   FT   = MIPLIB "feasibility" tag ∩ "hard" tag
+#   FPR  = Salvagnin et al. 2025 §6.1 "only one strategy finds feasible"
+#   LMR  = Lin, Zou, Cai 2024/25 — new MIPLIB record set by Local-MIP
+#   SCY  = Mexi et al. 2023 — hard-LP-relaxation target
+#   HT   = generic MIPLIB "hard" tag, picked for category balance
+
+# --- BP: binary programs (7) ---
+ds                             # SCY;   T1st=34s, huge degenerate LP
+neos-3237086-abava             # FT;    no feasible in 60s
+peg-solitaire-a3               # FPR;   no feasible in 60s, only "cliques" finds it per FPR
+pythago7824                    # FT;    no feasible in 60s
+rail01                         # FPR;   no feasible in 60s, only "locks2" finds it per FPR
+stp3d                          # HT;    no feasible in 60s, 3D Steiner tree, large
+tbfp-network                   # FPR;   T1st=17s but gap ~40 — strategy-sensitive
+
+# --- IP: pure integer (4) ---
+cryptanalysiskb128n5obj14      # FT;    no feasible in 60s
+fhnw-sq2                       # FT;    no feasible in 60s, magic-square feasibility
+fhnw-sq3                       # FT;    no feasible in 60s, magic-square feasibility
+neos-3211096-shag              # FT;    no feasible in 60s
+
+# --- MBP: mixed-binary (8) ---
+atm20-100                      # HT;    no feasible in 60s
+moj-mining                     # HT;    T1st=60s, gap=inf — barely feasible
+neos-5223573-tarwin            # FT;    no feasible in 60s, huge (560k rows)
+neos-5251015-ogosta            # FT;    no feasible in 60s, huge (486k rows)
+probportfolio                  # HT;    T1st=20s, primal gap wide
+set3-20                        # HT+FT; T1st=60s, primal gap wide
+swath                          # HT;    T1st=60s
+unitcal_7                      # FPR;   T1st=12s but huge gap, "cliques"-only per FPR
+
+# --- MIP: general mixed-integer (6) ---
+genus-g61-25                   # LMR;   new-record, T1st=60s
+genus-sym-g31-8                # LMR;   new-record
+genus-sym-g62-2                # LMR;   new-record
+neos-4232544-orira             # LMR;   new-record, no feasible in 60s
+neos-4335793-snake             # HT;    no feasible in 60s
+shs1023                        # HT;    no feasible in 60s, 133k rows × 444k cols
