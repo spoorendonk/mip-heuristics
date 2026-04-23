@@ -188,7 +188,11 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                                                        warm_start_row_dual_, warm_start_valid_,
                                                        epsilon_, remaining);
             if (try_res.fresh) {
-                const auto &solve_res = try_res.solve;
+                // `try_res` is a stack-local, so move-from its `solve`
+                // payload instead of copying the col_value / row_dual
+                // vectors (each sized ncol / nrow) into this worker's
+                // warm-start.  R3 flagged the missed move.
+                auto &solve_res = try_res.solve;
                 if (solve_res.status == HighsStatus::kError) {
                     base_.finished = true;
                     break;
@@ -211,8 +215,8 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                     base_.finished = true;
                     break;
                 }
-                warm_start_col_value_ = solve_res.col_value;
-                warm_start_row_dual_ = solve_res.row_dual;
+                warm_start_col_value_ = std::move(solve_res.col_value);
+                warm_start_row_dual_ = std::move(solve_res.row_dual);
                 warm_start_valid_ = solve_res.value_valid && solve_res.dual_valid;
                 fresh = true;
                 x_bar_ptr = &warm_start_col_value_;

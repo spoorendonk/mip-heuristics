@@ -3,6 +3,7 @@
 #include "contested_pdlp.h"
 #include "epoch_runner.h"
 #include "heuristic_common.h"
+#include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
@@ -17,6 +18,29 @@
 namespace scylla {
 
 namespace {
+
+// Emit the PDLP/FPR overlap metrics that issue #76 asks for as the
+// acceptance signal.  Sum per-worker fresh / stale counters before
+// the workers are destroyed so operators running with log_dev_level=3
+// can see whether the stale-snapshot path actually kept peer workers
+// busy during a held mutex.
+void log_overlap_ratio(const HighsLogOptions &log_options,
+                       const std::vector<std::unique_ptr<ScyllaWorker>> &workers) {
+    std::uint64_t fresh = 0;
+    std::uint64_t stale = 0;
+    for (const auto &w : workers) {
+        if (!w) {
+            continue;
+        }
+        fresh += w->fresh_solves();
+        stale += w->stale_rounds();
+    }
+    const std::uint64_t total = fresh + stale;
+    const double ratio = total == 0 ? 0.0 : static_cast<double>(stale) / static_cast<double>(total);
+    highsLogDev(
+        log_options, HighsLogType::kDetailed, "[ScyllaOverlap] fresh=%llu stale=%llu ratio=%.3f\n",
+        static_cast<unsigned long long>(fresh), static_cast<unsigned long long>(stale), ratio);
+}
 
 HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
     if (nnz_lp == 0) {
@@ -51,6 +75,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
         [](int) { /* no restart */ }, setup.stale_budget);
 
+    log_overlap_ratio(mipsolver.options_mip_->log_options, workers);
     setup.mipdata->heuristic_effort_used += total_effort;
 }
 
@@ -110,6 +135,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             return result;
         });
 
+    log_overlap_ratio(mipsolver.options_mip_->log_options, workers);
     setup.mipdata->heuristic_effort_used += total_effort;
 }
 

@@ -259,6 +259,12 @@ TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74
     h.setOptionValue("mip_heuristic_run_fpr", false);
     h.setOptionValue("mip_heuristic_run_local_mip", true);
     h.setOptionValue("mip_heuristic_run_scylla", false);
+    // Force HiGHS to run the full root-presolve chain (fj → local_mip)
+    // before any branching, so the [Sequential] lines are guaranteed
+    // to appear regardless of whether HiGHS would otherwise shortcut
+    // into B&B.  Reviewers (R3) flagged that the test would silently
+    // fail if the chain never ran.
+    h.setOptionValue("mip_root_presolve_only", true);
 
     auto log_cb = [](int callback_type, const std::string& message,
                      const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,

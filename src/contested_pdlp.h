@@ -83,7 +83,6 @@ public:
     bool initialized() const { return initialized_; }
     size_t nnz_lp() const { return nnz_lp_; }
     HighsInt num_col() const { return ncol_; }
-    HighsInt num_row() const { return nrow_; }
 
     // Solve PDLP with the caller's objective and warm-start.  The mutex
     // is held for the full changeColsCost + setSolution + run +

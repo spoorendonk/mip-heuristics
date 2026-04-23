@@ -91,12 +91,13 @@ namespace {
 // that case.  That matches #75's out-of-scope note.
 std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMatrix &csc,
                                          SolutionPool &pool, size_t max_effort, uint32_t seed) {
-    auto snap = pool.snapshot();
-    if (snap.has_solution) {
-        auto entries = pool.sorted_entries();
-        if (!entries.empty()) {
-            return std::move(entries[0].solution);
-        }
+    // Single pool lookup: `sorted_entries` returns best-first, so the
+    // non-empty test replaces a separate `snapshot()` call (which
+    // would otherwise take the pool's lock twice in a row for no
+    // gain).  Reviewers flagged the double-lock across R1/R2/R3.
+    auto entries = pool.sorted_entries();
+    if (!entries.empty()) {
+        return std::move(entries[0].solution);
     }
     auto *mipdata = mipsolver.mipdata_.get();
     if (!mipdata->incumbent.empty()) {
@@ -126,7 +127,11 @@ std::vector<double> build_starting_solution_for_worker(HighsMipSolver &mipsolver
     if (w == 0) {
         return start;
     }
-    Rng perturb_rng(seed);
+    // Derive a distinct perturbation seed so it doesn't reproduce the
+    // RNG trajectory the construction already consumed when cold
+    // starting.  `0x9E3779B9u` is the golden-ratio 32-bit constant
+    // (same trick `boost::hash_combine` uses).  Flagged by R1/R2.
+    Rng perturb_rng(seed ^ 0x9E3779B9u);
     perturb_solution(start, *setup.mipdata, setup.model.integrality_, setup.model.col_lower_,
                      setup.model.col_upper_, setup.model.num_col_, perturb_rng);
     return start;
