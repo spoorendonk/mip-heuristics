@@ -147,11 +147,12 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     // exactly once at the end (see fj.cpp, fpr.cpp, local_mip.cpp,
     // scylla.cpp), on the main thread after its parallel region has joined.
     // We therefore read it here without synchronisation — do not move the
-    // `+=` inside a worker without revisiting this.  Note: local_mip is a
-    // de-facto no-op in cold seq/det because it early-returns when
-    // `mipdata->incumbent.empty()`, so its [Sequential] line is normally
-    // absent on a first solve; `check_effort_drift.py` warns on missing
-    // heuristics so calibration doesn't silently skip kWeightLocalMip.
+    // `+=` inside a worker without revisiting this.  (Historical note:
+    // local_mip used to early-return when `mipdata->incumbent.empty()`
+    // so its [Sequential] line was absent on a first solve.  Since
+    // issue #75 it runs the paper's construction phase on cold start
+    // and emits a non-zero effort even when no upstream heuristic
+    // produced a feasible solution.)
     //
     // Wall-ms is measured in this outer frame so all four measurements
     // share a clock and include setup (`build_csc`, `precompute_var_orders`,
