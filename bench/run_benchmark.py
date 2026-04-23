@@ -127,8 +127,17 @@ def main() -> None:
                         help="Random seeds to run (default: 0)")
     parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
                         help="Configs to run (default: patched vanilla)")
-    parser.add_argument("--threads", type=int, default=None,
-                        help="Number of solver threads (omit to use HiGHS default)")
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        help=(
+            "Number of solver threads — OMIT unless you specifically need to cap. "
+            "Forcing threads=1 collapses epoch-gated / opportunistic parallelism to "
+            "one worker per epoch and silently hides the parallelism the patched "
+            "heuristics are built for (see CLAUDE.md benchmarking note)."
+        ),
+    )
     args = parser.parse_args()
 
     binary = os.path.abspath(args.binary)

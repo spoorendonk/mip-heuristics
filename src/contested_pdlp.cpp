@@ -83,11 +83,18 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     const std::vector<double> &warm_start_row_dual, bool warm_start_valid, double epsilon,
     double time_limit) {
     // One-solve-in-flight invariant: this counter should see at most
-    // one concurrent writer.  `mu_` enforces that, but we surface the
-    // check as an assertion (+ atomic peak tracked for tests) so that
-    // any accidental re-entry or internal HiGHS threading issue trips
-    // loudly rather than corrupting cuPDLP GPU state silently.
+    // one concurrent writer.  `mu_` enforces the invariant; we track
+    // the counter as a debug assertion (and a peak the tests read).
+    // The RAII wrapper guarantees the decrement runs even if
+    // `solve_locked` or `publish_snapshot_locked` throws — without it
+    // a thrown exception would wedge `in_flight_count_ >= 1` and the
+    // next call's assert fires spuriously.  R2 flagged this.
+    struct InFlightGuard {
+        std::atomic<int> &counter;
+        ~InFlightGuard() { counter.fetch_sub(1, std::memory_order_acq_rel); }
+    };
     int observed = in_flight_count_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    InFlightGuard guard{in_flight_count_};
     int prev_peak = peak_in_flight_.load(std::memory_order_relaxed);
     while (observed > prev_peak &&
            !peak_in_flight_.compare_exchange_weak(prev_peak, observed, std::memory_order_relaxed)) {
@@ -98,7 +105,6 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     auto result = solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
                                warm_start_valid, epsilon, time_limit);
     publish_snapshot_locked(result);
-    in_flight_count_.fetch_sub(1, std::memory_order_acq_rel);
     return result;
 }
 

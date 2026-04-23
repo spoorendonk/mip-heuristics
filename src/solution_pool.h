@@ -73,6 +73,14 @@ public:
     // Return sorted entries (best first). Caller should hold no lock.
     std::vector<Entry> sorted_entries();
 
+    // Copy only the best entry's solution vector into `out`.  Acquires
+    // the pool lock once and copies one vector (vs `sorted_entries`,
+    // which copies the whole pool including up to kPoolCapacity - 1
+    // unused vectors).  Returns false when the pool is empty, with
+    // `out` untouched.  Preferred entry point when the caller only
+    // needs the top-ranked warm-start.
+    bool copy_best(std::vector<double>& out);
+
     int size();
 
 private:

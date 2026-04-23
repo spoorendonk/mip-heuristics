@@ -13,6 +13,8 @@
 #include "solution_pool.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 
 namespace scylla {
@@ -25,9 +27,10 @@ namespace {
 // can see whether the stale-snapshot path actually kept peer workers
 // busy during a held mutex.
 void log_overlap_ratio(const HighsLogOptions &log_options,
-                       const std::vector<std::unique_ptr<ScyllaWorker>> &workers) {
-    std::uint64_t fresh = 0;
-    std::uint64_t stale = 0;
+                       const std::vector<std::unique_ptr<ScyllaWorker>> &workers,
+                       std::uint64_t extra_fresh = 0, std::uint64_t extra_stale = 0) {
+    std::uint64_t fresh = extra_fresh;
+    std::uint64_t stale = extra_stale;
     for (const auto &w : workers) {
         if (!w) {
             continue;
@@ -106,6 +109,14 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         int worker_idx;
     };
 
+    // Retired-worker counters so `log_overlap_ratio` can include the
+    // contributions of workers that finished and were replaced mid-run
+    // — flagged by R3 in the round-2 review.  `std::atomic` because
+    // workers are rebuilt from the opportunistic loop's worker-pinned
+    // callback which may run on different task threads.
+    std::atomic<std::uint64_t> retired_fresh{0};
+    std::atomic<std::uint64_t> retired_stale{0};
+
     size_t total_effort = run_opportunistic_loop(
         mipsolver, N, max_effort, setup.stale_budget, setup.default_run_cap, setup.base_seed,
         [](int worker_idx, Rng & /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
@@ -113,6 +124,10 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             auto &worker = workers[state.worker_idx];
             HeuristicResult result;
             if (worker->finished()) {
+                // Harvest the retired worker's overlap counters before
+                // the rebuild drops its destructor on the floor.
+                retired_fresh.fetch_add(worker->fresh_solves(), std::memory_order_relaxed);
+                retired_stale.fetch_add(worker->stale_rounds(), std::memory_order_relaxed);
                 // Rebuild stale worker with a fresh seed so the opportunistic
                 // loop doesn't lose parallelism over time (mirrors the
                 // fpr_lp opp path).  `pdlp` is shared, so warm-start etc. are
@@ -135,7 +150,9 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             return result;
         });
 
-    log_overlap_ratio(mipsolver.options_mip_->log_options, workers);
+    log_overlap_ratio(mipsolver.options_mip_->log_options, workers,
+                      retired_fresh.load(std::memory_order_relaxed),
+                      retired_stale.load(std::memory_order_relaxed));
     setup.mipdata->heuristic_effort_used += total_effort;
 }
 

@@ -198,6 +198,15 @@ std::vector<SolutionPool::Entry> SolutionPool::sorted_entries() {
     return entries_;  // already kept sorted
 }
 
+bool SolutionPool::copy_best(std::vector<double>& out) {
+    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    if (entries_.empty()) {
+        return false;
+    }
+    out = entries_[0].solution;  // best — entries_ kept sorted by try_add.
+    return true;
+}
+
 int SolutionPool::size() {
     std::lock_guard<HighsSpinMutex> lock(mtx_);
     return static_cast<int>(entries_.size());

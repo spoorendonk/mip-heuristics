@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <utility>
 #include <vector>
@@ -145,22 +146,35 @@ namespace {
 // file's contract with #74: return the pool's best when
 // `snap.has_solution` is true, never fall through to incumbent in
 // that case.  That matches #75's out-of-scope note.
+// `cold_start_cache` lets a caller amortise cold-start construction across
+// N workers: the first worker that hits the construction branch writes
+// its result into the cache; subsequent workers re-use the same base
+// vector (they'll perturb it downstream, so diversity survives).  Pass
+// null to disable caching.  Flagged by review R3 — N full constructions
+// per presolve dispatch was wasteful on big MIPs.
 std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMatrix &csc,
-                                         SolutionPool &pool, size_t max_effort, uint32_t seed) {
-    // Single pool lookup: `sorted_entries` returns best-first, so the
-    // non-empty test replaces a separate `snapshot()` call (which
-    // would otherwise take the pool's lock twice in a row for no
-    // gain).  Reviewers flagged the double-lock across R1/R2/R3.
-    auto entries = pool.sorted_entries();
-    if (!entries.empty()) {
-        return std::move(entries[0].solution);
+                                         SolutionPool &pool, size_t max_effort, uint32_t seed,
+                                         std::vector<double> *cold_start_cache = nullptr) {
+    // `copy_best` takes the pool lock once and copies only the top
+    // entry's solution vector.  Previous versions used
+    // `sorted_entries()` which copies up to kPoolCapacity entries
+    // (each sized `ncol`) just to read entry 0 — round-2 reviewers R1,
+    // R2, R3 all flagged the waste on big MIPs.
+    std::vector<double> start;
+    if (pool.copy_best(start)) {
+        return start;
     }
     auto *mipdata = mipsolver.mipdata_.get();
     if (!mipdata->incumbent.empty()) {
         return mipdata->incumbent;
     }
     // Cold start: neither the pool nor the incumbent has a solution.
-    // Run the paper's construction phase.
+    // Re-use a cached construction if one was produced earlier in this
+    // dispatch; otherwise run the paper's construction phase and cache
+    // it for subsequent workers.
+    if (cold_start_cache != nullptr && !cold_start_cache->empty()) {
+        return *cold_start_cache;
+    }
     Rng rng(seed);
     std::vector<double> constructed;
     construct_initial_solution(mipsolver, csc, rng, construction_effort_cap(max_effort),
@@ -176,6 +190,9 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
         double obj = compute_solution_objective(mipsolver, constructed);
         pool.try_add(obj, constructed, kSolutionSourceLocalMIP);
     }
+    if (cold_start_cache != nullptr) {
+        *cold_start_cache = constructed;
+    }
     return constructed;
 }
 
@@ -187,10 +204,10 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
 // stay on the existing worker-diversity path.
 std::vector<double> build_starting_solution_for_worker(HighsMipSolver &mipsolver,
                                                        const ParallelSetup &setup,
-                                                       SolutionPool &pool, size_t w,
-                                                       uint32_t seed) {
-    std::vector<double> start =
-        resolve_worker_start(mipsolver, setup.csc, pool, setup.worker_budget, seed);
+                                                       SolutionPool &pool, size_t w, uint32_t seed,
+                                                       std::vector<double> *cold_start_cache) {
+    std::vector<double> start = resolve_worker_start(mipsolver, setup.csc, pool,
+                                                     setup.worker_budget, seed, cold_start_cache);
     if (w == 0) {
         return start;
     }
@@ -215,10 +232,18 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     std::vector<std::unique_ptr<LocalMipWorker>> workers;
     workers.reserve(setup.N);
 
+    // One cold-start cache shared across all workers: the first worker
+    // that falls through to the construction branch pays the full
+    // O(nnz) cost; peers re-use the cached base vector and diverge via
+    // perturbation.  Nets an N-fold reduction in cold-start setup on
+    // instances where neither FJ/FPR nor a prior incumbent populated
+    // the pool.
+    std::vector<double> cold_start_cache;
+
     for (size_t w = 0; w < setup.N; ++w) {
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
         std::vector<double> start =
-            build_starting_solution_for_worker(mipsolver, setup, pool, w, seed);
+            build_starting_solution_for_worker(mipsolver, setup, pool, w, seed, &cold_start_cache);
         workers.push_back(std::make_unique<LocalMipWorker>(
             mipsolver, setup.csc, pool, setup.worker_budget, seed, start.data()));
     }
@@ -268,13 +293,31 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         std::unique_ptr<LocalMipWorker> worker;
     };
 
+    // Cold-start cache shared across all workers of this dispatch: same
+    // motivation as the deterministic runner above.  `std::mutex`-
+    // protected because the opportunistic runner's MakeState callback
+    // runs on multiple task threads concurrently.
+    std::mutex cold_start_cache_mu;
+    std::vector<double> cold_start_cache;
+
     size_t total_effort = run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
         [&](int worker_idx, Rng &rng) -> LmState {
             uint32_t seed = static_cast<uint32_t>(rng());
-            std::vector<double> start =
-                resolve_worker_start(mipsolver, setup.csc, pool, setup.worker_budget, seed);
+            std::vector<double> local_cache;
+            {
+                std::lock_guard<std::mutex> lock(cold_start_cache_mu);
+                local_cache = cold_start_cache;  // cheap if empty, one copy if warm
+            }
+            std::vector<double> start = resolve_worker_start(
+                mipsolver, setup.csc, pool, setup.worker_budget, seed, &local_cache);
+            if (!local_cache.empty() && cold_start_cache.empty()) {
+                std::lock_guard<std::mutex> lock(cold_start_cache_mu);
+                if (cold_start_cache.empty()) {
+                    cold_start_cache = local_cache;
+                }
+            }
             if (worker_idx != 0) {
                 perturb_solution(start, *setup.mipdata, setup.model.integrality_,
                                  setup.model.col_lower_, setup.model.col_upper_, ncol, rng);
