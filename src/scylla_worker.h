@@ -1,5 +1,6 @@
 #pragma once
 
+#include "contested_pdlp.h"
 #include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
@@ -10,11 +11,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <vector>
 
 class HighsMipSolver;
 class SolutionPool;
-class ContestedPdlp;
+
+// Per-worker cap on consecutive stale-snapshot rounds before the worker
+// must force a blocking `solve()` to refresh its view.  Stale rounds are
+// cheap (no PDLP work, reuses the latest completed snapshot) but a
+// worker that has done too many in a row risks living forever on a
+// degenerate cached primal; this nudges it back to the lock at a bounded
+// rate.  Issue #76.
+inline constexpr int kMaxStaleRounds = 4;
 
 // FPR strategy assignment for Scylla workers.  Workers `0..kNumFprConfigs-1`
 // receive `kFprConfigs[w]` (deterministic round-robin, guaranteeing each
@@ -54,6 +63,11 @@ public:
     bool finished() const { return base_.finished; }
     size_t total_effort() const { return base_.total_effort; }
 
+    // Observability for issue #76: how many iterations used a fresh
+    // solve (held the mutex) vs rounded against a stale snapshot.
+    uint64_t fresh_solves() const { return fresh_solves_; }
+    uint64_t stale_rounds() const { return stale_rounds_; }
+
     // Reset the improvement staleness counter (called at epoch boundary
     // when another worker found an improvement).
     void reset_staleness() { base_.reset_staleness(); }
@@ -80,6 +94,20 @@ private:
     int num_workers_ = 1;
 
     int pdlp_stall_count_ = 0;
+
+    // Stale-snapshot overlap bookkeeping (issue #76).  `stale_snapshot_`
+    // caches the most-recent Snapshot this worker actually rounded
+    // against, so we can detect "nothing has been published since last
+    // time" and avoid blowing through kMaxStaleRounds on an unchanged
+    // view.  `consecutive_stale_rounds_` is reset whenever we manage a
+    // fresh solve or change snapshot identity; when it hits kMaxStaleRounds
+    // we issue a blocking `solve()` on the next iteration to guarantee
+    // forward progress.
+    std::shared_ptr<const ContestedPdlp::Snapshot> stale_snapshot_;
+    int consecutive_stale_rounds_ = 0;
+    // Counters exposed for tests / observability.
+    uint64_t fresh_solves_ = 0;
+    uint64_t stale_rounds_ = 0;
 
     double epsilon_;
     double alpha_K_ = 1.0;

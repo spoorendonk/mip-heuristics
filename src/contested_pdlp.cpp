@@ -5,6 +5,9 @@
 #include "pump_common.h"
 
 #include <cassert>
+#include <memory>
+#include <mutex>
+#include <utility>
 
 namespace {
 
@@ -34,18 +37,19 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver &mipsolver, HighsInt pdlp_iter_cap) 
     initialized_ = true;
 }
 
-ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double> &modified_cost,
-                                                const std::vector<double> &warm_start_col_value,
-                                                const std::vector<double> &warm_start_row_dual,
-                                                bool warm_start_valid, double epsilon,
-                                                double time_limit) {
-    SolveResult result;
-    if (!initialized_) {
-        return result;
-    }
-    assert(static_cast<HighsInt>(modified_cost.size()) == ncol_);
+ContestedPdlp::ContestedPdlp(ForTesting) {
+    // Minimal init for unit tests: the subclass overrides `solve_locked`
+    // so we never touch `highs_`.  ncol/nrow/nnz stay 0 by default;
+    // tests that care can set them via their own friends, but most just
+    // drive the lock / snapshot plumbing and don't need real shapes.
+    initialized_ = true;
+}
 
-    std::lock_guard<std::mutex> lock(mu_);
+ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
+    const std::vector<double> &modified_cost, const std::vector<double> &warm_start_col_value,
+    const std::vector<double> &warm_start_row_dual, bool warm_start_valid, double epsilon,
+    double time_limit) {
+    SolveResult result;
 
     highs_.changeColsCost(0, ncol_ - 1, modified_cost.data());
     highs_.setOptionValue("pdlp_optimality_tolerance", epsilon);
@@ -72,4 +76,99 @@ ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double> &modif
     result.dual_valid = sol.dual_valid;
 
     return result;
+}
+
+ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
+    const std::vector<double> &modified_cost, const std::vector<double> &warm_start_col_value,
+    const std::vector<double> &warm_start_row_dual, bool warm_start_valid, double epsilon,
+    double time_limit) {
+    // One-solve-in-flight invariant: this counter should see at most
+    // one concurrent writer.  `mu_` enforces that, but we surface the
+    // check as an assertion (+ atomic peak tracked for tests) so that
+    // any accidental re-entry or internal HiGHS threading issue trips
+    // loudly rather than corrupting cuPDLP GPU state silently.
+    int observed = in_flight_count_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    int prev_peak = peak_in_flight_.load(std::memory_order_relaxed);
+    while (observed > prev_peak &&
+           !peak_in_flight_.compare_exchange_weak(prev_peak, observed, std::memory_order_relaxed)) {
+        // retry
+    }
+    assert(observed == 1 && "ContestedPdlp: concurrent solve detected (cuPDLP GPU state unsafe)");
+
+    auto result = solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
+                               warm_start_valid, epsilon, time_limit);
+    publish_snapshot_locked(result);
+    in_flight_count_.fetch_sub(1, std::memory_order_acq_rel);
+    return result;
+}
+
+void ContestedPdlp::publish_snapshot_locked(const SolveResult &result) {
+    // Only publish usable snapshots (something a stale worker can round
+    // against).  Failed / empty-column solves leave the previous
+    // snapshot in place, which is the best we have.
+    if (result.status == HighsStatus::kError) {
+        return;
+    }
+    if (result.col_value.empty() || !result.value_valid) {
+        return;
+    }
+    auto snap = std::make_shared<Snapshot>();
+    snap->col_value = result.col_value;
+    snap->row_dual = result.row_dual;
+    snap->pdlp_iters = result.pdlp_iters;
+    snap->value_valid = result.value_valid;
+    snap->dual_valid = result.dual_valid;
+    snapshot_.store(std::shared_ptr<const Snapshot>(std::move(snap)), std::memory_order_release);
+    snapshot_generation_.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void ContestedPdlp::publish_snapshot_for_test(Snapshot snap) {
+    auto sp = std::make_shared<const Snapshot>(std::move(snap));
+    snapshot_.store(sp, std::memory_order_release);
+    snapshot_generation_.fetch_add(1, std::memory_order_acq_rel);
+}
+
+ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double> &modified_cost,
+                                                const std::vector<double> &warm_start_col_value,
+                                                const std::vector<double> &warm_start_row_dual,
+                                                bool warm_start_valid, double epsilon,
+                                                double time_limit) {
+    SolveResult result;
+    if (!initialized_) {
+        return result;
+    }
+    assert(static_cast<HighsInt>(modified_cost.size()) == ncol_ ||
+           ncol_ == 0 /* test-double allows empty shapes */);
+
+    std::lock_guard<std::mutex> lock(mu_);
+    return run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
+                                      warm_start_valid, epsilon, time_limit);
+}
+
+ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
+    const std::vector<double> &modified_cost, const std::vector<double> &warm_start_col_value,
+    const std::vector<double> &warm_start_row_dual, bool warm_start_valid, double epsilon,
+    double time_limit) {
+    TrySolveResult out;
+    if (!initialized_) {
+        out.stale_snapshot = latest_snapshot();
+        return out;
+    }
+    assert(static_cast<HighsInt>(modified_cost.size()) == ncol_ ||
+           ncol_ == 0 /* test-double allows empty shapes */);
+
+    std::unique_lock<std::mutex> lock(mu_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        // Contended — fall back to the most recent published snapshot.
+        // Note: this path touches NO Highs/PDLP state, so cuPDLP GPU
+        // memory is untouched while another worker is inside its solve.
+        out.fresh = false;
+        out.stale_snapshot = latest_snapshot();
+        return out;
+    }
+
+    out.solve = run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
+                                           warm_start_valid, epsilon, time_limit);
+    out.fresh = true;
+    return out;
 }

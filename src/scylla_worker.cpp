@@ -130,8 +130,139 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             break;
         }
 
-        auto solve = pdlp_.solve(modified_cost_, warm_start_col_value_, warm_start_row_dual_,
-                                 warm_start_valid_, epsilon_, remaining);
+        // Issue #76: overlap FPR rounding with PDLP solves.  Try to grab
+        // the PDLP mutex non-blockingly.  If successful, run a fresh
+        // solve (publishes the snapshot on the way out).  If contended,
+        // fall back to the most-recent published snapshot so the worker
+        // still produces useful FPR work while another chain holds the
+        // mutex.  After kMaxStaleRounds consecutive stale iterations we
+        // force a blocking solve() to guarantee forward progress.
+        bool fresh = false;
+        HighsInt iters_this_round = 0;
+        // x_bar_source refers to whichever vector we round against this
+        // iteration: either our freshly-updated warm-start (fresh path)
+        // or the current stale snapshot's col_value.
+        const std::vector<double> *x_bar_ptr = nullptr;
+
+        const bool must_force_fresh = consecutive_stale_rounds_ >= kMaxStaleRounds;
+        if (must_force_fresh) {
+            // Blocking path: either no one is solving (we take the
+            // mutex immediately) or we wait behind one worker.  This
+            // guarantees every worker eventually sees a fresh solve
+            // for its *own* modified_cost_, preventing a pathological
+            // "live on a stale snapshot that never matches my objective"
+            // regime.
+            auto solve_res =
+                pdlp_.solve(modified_cost_, warm_start_col_value_, warm_start_row_dual_,
+                            warm_start_valid_, epsilon_, remaining);
+
+            if (solve_res.status == HighsStatus::kError) {
+                base_.finished = true;
+                break;
+            }
+            if (solve_res.model_status == HighsModelStatus::kInfeasible) {
+                base_.finished = true;
+                break;
+            }
+            iters_this_round = solve_res.pdlp_iters;
+            if (iters_this_round == 0) {
+                ++pdlp_stall_count_;
+                if (pdlp_stall_count_ >= pump::kMaxPdlpStalls) {
+                    base_.finished = true;
+                    break;
+                }
+            } else {
+                pdlp_stall_count_ = 0;
+            }
+            if (solve_res.col_value.empty()) {
+                base_.finished = true;
+                break;
+            }
+            warm_start_col_value_ = std::move(solve_res.col_value);
+            warm_start_row_dual_ = std::move(solve_res.row_dual);
+            warm_start_valid_ = solve_res.value_valid && solve_res.dual_valid;
+            fresh = true;
+            x_bar_ptr = &warm_start_col_value_;
+        } else {
+            auto try_res = pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
+                                                       warm_start_row_dual_, warm_start_valid_,
+                                                       epsilon_, remaining);
+            if (try_res.fresh) {
+                const auto &solve_res = try_res.solve;
+                if (solve_res.status == HighsStatus::kError) {
+                    base_.finished = true;
+                    break;
+                }
+                if (solve_res.model_status == HighsModelStatus::kInfeasible) {
+                    base_.finished = true;
+                    break;
+                }
+                iters_this_round = solve_res.pdlp_iters;
+                if (iters_this_round == 0) {
+                    ++pdlp_stall_count_;
+                    if (pdlp_stall_count_ >= pump::kMaxPdlpStalls) {
+                        base_.finished = true;
+                        break;
+                    }
+                } else {
+                    pdlp_stall_count_ = 0;
+                }
+                if (solve_res.col_value.empty()) {
+                    base_.finished = true;
+                    break;
+                }
+                warm_start_col_value_ = solve_res.col_value;
+                warm_start_row_dual_ = solve_res.row_dual;
+                warm_start_valid_ = solve_res.value_valid && solve_res.dual_valid;
+                fresh = true;
+                x_bar_ptr = &warm_start_col_value_;
+            } else {
+                // Stale path: round against the most-recent published
+                // snapshot.  If no snapshot is available yet (cold
+                // start before any solve completed) or the snapshot is
+                // identical to the one we last consumed, skip this
+                // iteration cheaply — nothing new to round.
+                auto snap = try_res.stale_snapshot;
+                if (!snap || !snap->value_valid || snap->col_value.empty()) {
+                    // No cache yet.  Count this as a stale round so we
+                    // hit kMaxStaleRounds and force a blocking solve().
+                    ++consecutive_stale_rounds_;
+                    ++stale_rounds_;
+                    // Tiny effort charge so the outer budget loop keeps
+                    // moving; mirrors the "nominal 1 unit" convention
+                    // used in opportunistic_runner.
+                    base_.total_effort += 1;
+                    base_.effort_since_improvement += 1;
+                    epoch.effort += 1;
+                    continue;
+                }
+                if (snap.get() == stale_snapshot_.get()) {
+                    // Nothing new since last iteration — count toward
+                    // the stale-round cap but don't do duplicate work.
+                    ++consecutive_stale_rounds_;
+                    ++stale_rounds_;
+                    base_.total_effort += 1;
+                    base_.effort_since_improvement += 1;
+                    epoch.effort += 1;
+                    continue;
+                }
+                stale_snapshot_ = snap;
+                fresh = false;
+                // Do NOT overwrite this worker's warm_start_ — we only
+                // round, we don't update our own PDLP state.  The next
+                // blocking solve() will still use the last warm-start
+                // this worker personally got back from PDLP.
+                x_bar_ptr = &snap->col_value;
+            }
+        }
+
+        if (fresh) {
+            ++fresh_solves_;
+            consecutive_stale_rounds_ = 0;
+        } else {
+            ++stale_rounds_;
+            ++consecutive_stale_rounds_;
+        }
 
         // Split PDLP effort accounting:
         //  - epoch.effort gets the FULL cost (iters * nnz) so the outer
@@ -141,40 +272,17 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         //    get the amortized cost (÷ num_workers) so each worker's
         //    staleness threshold reflects its fair share of the serialized
         //    PDLP pipeline rather than the full cost.
-        size_t actual_effort = static_cast<size_t>(solve.pdlp_iters) * nnz_lp_;
+        //
+        // Stale rounds contribute zero PDLP effort (no iters were run)
+        // but the downstream FPR attempt still consumes effort and is
+        // charged below.
+        size_t actual_effort = static_cast<size_t>(iters_this_round) * nnz_lp_;
         size_t local_effort = actual_effort / static_cast<size_t>(num_workers_);
         base_.total_effort += local_effort;
         base_.effort_since_improvement += local_effort;
         epoch.effort += actual_effort;
 
-        if (solve.status == HighsStatus::kError) {
-            base_.finished = true;
-            break;
-        }
-        if (solve.model_status == HighsModelStatus::kInfeasible) {
-            base_.finished = true;
-            break;
-        }
-
-        if (solve.pdlp_iters == 0) {
-            ++pdlp_stall_count_;
-            if (pdlp_stall_count_ >= pump::kMaxPdlpStalls) {
-                base_.finished = true;
-                break;
-            }
-        } else {
-            pdlp_stall_count_ = 0;
-        }
-        if (solve.col_value.empty()) {
-            base_.finished = true;
-            break;
-        }
-
-        warm_start_col_value_ = std::move(solve.col_value);
-        warm_start_row_dual_ = std::move(solve.row_dual);
-        warm_start_valid_ = solve.value_valid && solve.dual_valid;
-
-        const auto &x_bar = warm_start_col_value_;
+        const auto &x_bar = *x_bar_ptr;
 
         // Fast path: PDLP solution already MIP-feasible.
         {

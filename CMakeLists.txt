@@ -61,6 +61,7 @@ add_executable(mip_heuristics_tests
     tests/test_mode_matrix.cpp
     tests/test_prop_engine.cpp
     tests/test_continuous_loop.cpp
+    tests/test_contested_pdlp.cpp
 )
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
