@@ -6,6 +6,8 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <mutex>
+#include <string>
 #include <vector>
 
 TEST_CASE("LocalMIP opportunistic: flugpl finds solution",
@@ -222,4 +224,71 @@ TEST_CASE("LocalMIP cold-start: finds flugpl optimum with all upstream heuristic
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+}
+
+// Regression guard for `local_mip::run_parallel`'s warm-start path
+// (issue #74).  The presolve chain in `mode_dispatch::run_sequential`
+// flushes the shared `SolutionPool` into `mipdata->incumbent` only after
+// all four heuristics have run.  Before #74 (and before the #75
+// construction cold-start), `local_mip::run_parallel` bailed out on
+// `mipdata->incumbent.empty()`, so an FJ solution sitting in the pool
+// was invisible and local_mip's `[Sequential]` line read
+// `effort=0 wall_ms=0`.  After the fix, `resolve_worker_start` prefers
+// the pool's best entry over `mipdata->incumbent`, so local_mip sees
+// FJ's fresh primal as its warm-start base.  The test runs FJ +
+// LocalMIP (FPR + Scylla disabled), captures the developer-level log
+// via HiGHS's logging callback, and asserts that both the `heur=fj`
+// and `heur=local_mip` `[Sequential]` lines report non-zero effort.
+// `lseu.mps` is chosen because FJ reliably produces a feasible for
+// it inside the presolve budget.
+TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74)",
+          "[heuristic][local_mip][pool-aware]") {
+    struct LogCapture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+    };
+    LogCapture capture;
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    h.setOptionValue("log_dev_level", 3);
+    h.setOptionValue("mip_heuristic_portfolio", false);
+    h.setOptionValue("mip_heuristic_opportunistic", false);
+    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+    h.setOptionValue("mip_heuristic_run_fpr", false);
+    h.setOptionValue("mip_heuristic_run_local_mip", true);
+    h.setOptionValue("mip_heuristic_run_scylla", false);
+
+    auto log_cb = [](int callback_type, const std::string& message,
+                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                     void* user_data) {
+        if (callback_type != kCallbackLogging) {
+            return;
+        }
+        auto* cap = static_cast<LogCapture*>(user_data);
+        std::lock_guard<std::mutex> lock(cap->mtx);
+        cap->lines.emplace_back(message);
+    };
+
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    REQUIRE(h.readModel(kInstancesDir + "/lseu.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    bool fj_ran = false;
+    bool local_mip_ran = false;
+    std::lock_guard<std::mutex> lock(capture.mtx);
+    for (const auto& line : capture.lines) {
+        if (line.find("[Sequential] heur=fj") != std::string::npos &&
+            line.find("effort=0 ") == std::string::npos) {
+            fj_ran = true;
+        }
+        if (line.find("[Sequential] heur=local_mip") != std::string::npos &&
+            line.find("effort=0 ") == std::string::npos) {
+            local_mip_ran = true;
+        }
+    }
+    REQUIRE(fj_ran);
+    REQUIRE(local_mip_ran);
 }
