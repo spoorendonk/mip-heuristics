@@ -79,21 +79,26 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     //   5. Re-run to confirm drift is < 2× across heuristics; the
     //      script fails at > 3× as a regression gate.
     //
-    // Calibrated against `bench/instances_small.txt` (25 MIPLIB instances,
-    // 30 s each, `mip_heuristic_effort=0.2`, seq/det).  Measured geomean
-    // `effort_per_ms`:
-    //   fj=131k  fpr=123k  local_mip=190k  scylla=222k   drift = 1.81×
-    // which is already below the 2× target before recalibration — the
-    // pre-#71 defaults (1.0/1.0/1.5/2.0) were within measurement noise of
-    // the optimum.  Scylla is the only meaningful change (2.0 → 1.8);
-    // local_mip had only 6 samples because it early-returns on a cold
-    // incumbent, so its weight is anchored at 1.5 pending a longer sweep.
-    // Re-run `bench/check_effort_drift.py bench/results/calibration` to
-    // refresh these numbers.
-    constexpr double kWeightFj = 1.1;
-    constexpr double kWeightFpr = 1.0;
-    constexpr double kWeightLocalMip = 1.5;
-    constexpr double kWeightScylla = 1.8;
+    // Recalibrated against `bench/instances_small.txt` (25 MIPLIB
+    // instances, 30 s each, mip_heuristic_effort default=0.30,
+    // seq/det, mip_root_presolve_only=true).  Measured geomean
+    // `effort_per_ms` with the #74/#75/#76 patches + multi-thread
+    // default (threads=16) in place:
+    //   fj=408k  fpr=599k  local_mip=1143k  scylla=282k   drift = 4.06×
+    // Weights are proportional to geomean `effort_per_ms` (scylla
+    // normalised to 1.0 as the slowest-per-effort heuristic).  The
+    // pre-#75 figures (fj=131k  fpr=123k  local_mip=190k  scylla=222k
+    // — drift 1.81×) are obsolete after the cold-start construction
+    // landed on local_mip (which now consumes real effort on every
+    // cold call instead of early-returning) and after the stale-
+    // PDLP overlap landed on scylla (which shifts its effort/ms
+    // down because stale rounds now burn FPR work against cached
+    // primals).  Re-run `bench/check_effort_drift.py
+    // bench/results/calibration_v2` to refresh.
+    constexpr double kWeightFj = 1.45;
+    constexpr double kWeightFpr = 2.13;
+    constexpr double kWeightLocalMip = 4.06;
+    constexpr double kWeightScylla = 1.00;
 
     const bool fj_on = options->mip_heuristic_run_feasibility_jump;
     const bool fpr_on = options->mip_heuristic_run_fpr;
