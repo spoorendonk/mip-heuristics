@@ -40,8 +40,11 @@ void log_overlap_ratio(const HighsLogOptions &log_options,
     }
     const std::uint64_t total = fresh + stale;
     const double ratio = total == 0 ? 0.0 : static_cast<double>(stale) / static_cast<double>(total);
+    // `kVerbose` matches the existing `[Sequential]` lines emitted from
+    // `mode_dispatch::log_sequential`; operators setting
+    // `log_dev_level=3` expect to see this alongside them.
     highsLogDev(
-        log_options, HighsLogType::kDetailed, "[ScyllaOverlap] fresh=%llu stale=%llu ratio=%.3f\n",
+        log_options, HighsLogType::kVerbose, "[ScyllaOverlap] fresh=%llu stale=%llu ratio=%.3f\n",
         static_cast<unsigned long long>(fresh), static_cast<unsigned long long>(stale), ratio);
 }
 
