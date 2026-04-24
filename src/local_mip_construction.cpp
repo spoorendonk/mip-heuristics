@@ -178,6 +178,25 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
 // warmth" hint: variables that hit many constraints get first pick so
 // their choice informs the per-variable decisions of narrower
 // variables.
+//
+// IMPORTANT — divergence from the paper.  Lin, Zou, Cai (CP 2024) and
+// the public reference implementation
+// (https://github.com/shaowei-cai-group/Local-MIP,
+// src/local_search/start/start.cpp) specify only the trivial
+// `zero_start` for the construction — every variable set to the value
+// closest to 0 within bounds, no greedy sweep, no variable ordering.
+// The coverage-weighted ordering + per-variable greedy refinement
+// below is our engineering extension, motivated by issue #75's
+// "greedy variable-ordering + per-variable minimise-weighted-violation"
+// prose (which is richer than the paper actually prescribes).
+// Round-2 reviewers (R1, R2, R3) flagged the gap; leaving the sweep
+// active because it empirically produces a less-infeasible starting
+// point than bare zero-start on the instances we've tested, but the
+// ordering key is not load-bearing and can be replaced by a plain
+// Fisher-Yates shuffle if a bench ever shows it matters.  Tracked for
+// validation against the 4 Local-MIP new-record instances
+// (`genus-sym-g31-8`, `genus-sym-g62-2`, `genus-g61-25`,
+// `neos-4232544-orira`) per issue #75's acceptance criterion.
 std::vector<HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng) {
     std::vector<HighsInt> order(ncol);
     std::vector<uint32_t> tiebreak(ncol);

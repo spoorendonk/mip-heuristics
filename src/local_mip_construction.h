@@ -1,10 +1,32 @@
 #pragma once
 
-// Construction phase for Local-MIP cold start (issue #75, paper Alg 1
-// Line 1 + §3.2 mtm operator).  Produces a (possibly infeasible)
-// starting assignment for the search loop when neither FJ nor FPR left
-// an incumbent behind and the shared SolutionPool is empty.  See
-// `local_mip_construction.cpp` for the algorithmic rationale and
+// Construction phase for Local-MIP cold start (issue #75).  Produces a
+// (possibly infeasible) starting assignment for the search loop when
+// neither FJ nor FPR left an incumbent behind and the shared
+// SolutionPool is empty.
+//
+// NOTE on paper fidelity.  Lin, Zou, Cai (CP 2024) and the public
+// reference implementation at
+// https://github.com/shaowei-cai-group/Local-MIP (src/local_search/
+// start/start.cpp) specify only the trivial `zero_start` construction
+// — every variable set to the value closest to 0 within its bounds,
+// with no greedy sweep and no variable ordering.  The construction
+// implemented here extends that: it starts from the paper's
+// zero-init (Phase A), then runs one coverage-weighted greedy pass
+// (Phase B) that reuses the paper's §3.2 mtm candidate generator to
+// drive per-variable moves minimising weighted row violation.  This
+// is an engineering extension motivated by issue #75's "greedy
+// variable-ordering + per-variable minimise-weighted-violation"
+// prose (which is richer than the paper actually prescribes) and
+// was flagged by all three round-2 reviewers.  The sweep can be
+// disabled (caller passes `max_effort == 0` → Phase A only) or the
+// ordering key replaced by a plain Fisher-Yates shuffle without
+// functional regressions on the small tests; its benefit on hard
+// instances (`genus-sym-*`, `neos-4232544-orira`, the 4 Local-MIP
+// new-record targets) is an empirical question that issue #75's
+// acceptance criterion calls out for validation.
+//
+// See `local_mip_construction.cpp` for the algorithmic details and
 // commentary on how closely this follows the paper.
 
 #include "heuristic_common.h"
