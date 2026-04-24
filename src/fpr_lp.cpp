@@ -274,9 +274,9 @@ private:
     FprScratch scratch_;
 
     // Hard stale threshold for LP-FPR workers in opportunistic mode.
-    // Mirrors FprWorker::kHardStaleThreshold so the worker signals
-    // "finished" to trigger replacement instead of spinning.
-    static constexpr int kHardStaleThreshold = 15;
+    // Mirrors FprWorker::kHardStaleThreshold — generous outer guard
+    // above the soft (config-randomising) threshold.
+    static constexpr int kHardStaleThreshold = 50;
 
     // Number of stale epochs before a worker randomizes its arm.
     // Mirrors fpr.cpp's kStaleEpochThreshold.

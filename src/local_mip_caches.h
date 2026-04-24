@@ -23,7 +23,15 @@ inline constexpr HighsInt kEasyBudget = 5;
 inline constexpr HighsInt kTabuBase = 3;
 inline constexpr HighsInt kTabuVar = 10;
 inline constexpr HighsInt kFeasibleRecheckPeriod = 100;
+// After `kFeasiblePlateau` steps without an improving feasible move,
+// trigger the paper-style random-walk diversification (perturb the
+// solution and keep searching) instead of immediately declaring the
+// worker finished.  `kFeasibleMaxRandomWalks` bounds how many such
+// perturbations we attempt before giving up — this matches Lin, Zou,
+// Cai §4.1's "random walk to escape plateau" recipe but puts a cap
+// on it so pathological cases still terminate.
 inline constexpr HighsInt kFeasiblePlateau = 5000;
+inline constexpr HighsInt kFeasibleMaxRandomWalks = 20;
 inline constexpr double kEpsZero = 1e-15;
 
 // Forward declaration: LiftCache::recompute_* take a WorkerCtx& (defined

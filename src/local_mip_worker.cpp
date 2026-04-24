@@ -207,8 +207,22 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
 
             ++steps_since_improvement_;
             if (steps_since_improvement_ >= kFeasiblePlateau) {
-                base_.finished = true;
-                break;
+                // Paper-style random-walk diversification (Lin, Zou,
+                // Cai §4.1): when feasible-mode search plateaus, the
+                // paper perturbs the current solution and keeps
+                // searching instead of terminating.  We cap the
+                // number of walks at `kFeasibleMaxRandomWalks` so
+                // pathological instances eventually stop.
+                if (feasible_random_walks_done_ < kFeasibleMaxRandomWalks) {
+                    perturb_solution(ctx_.solution, *ctx_.mipdata, ctx_.integrality, ctx_.col_lb,
+                                     ctx_.col_ub, ctx_.ncol, rng_);
+                    ctx_.rebuild_state();
+                    ++feasible_random_walks_done_;
+                    steps_since_improvement_ = 0;
+                } else {
+                    base_.finished = true;
+                    break;
+                }
             }
         } else {
             Candidate cand = infeasible_step(ctx_, rng_, step_, best_feasible_, best_objective_,

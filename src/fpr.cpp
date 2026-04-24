@@ -60,7 +60,20 @@ private:
     // consecutive epochs without improvement the worker signals finished.
     // The soft threshold (kStaleEpochThreshold = 3) still applies for
     // config randomization before this point.
-    static constexpr int kHardStaleThreshold = 15;
+    // Hard cap on consecutive no-improvement epochs before the worker
+    // declares itself finished.  The soft threshold
+    // (`kStaleEpochThreshold = 3`) already rotates to a random
+    // (strategy, mode) config on every triggering, so `kHardStaleThreshold`
+    // bounds how many *such* randomisations we chew through before
+    // giving up.  Salvagnin et al. 2025 don't prescribe an early
+    // finish — their portfolio keeps trying strategies until the
+    // outer time/effort budget is exhausted — so this cap is our
+    // engineering guard against pathological loops.  Set generously
+    // (50) since the randomize_config() space is 8 strategies × 5
+    // modes = 40 unique configs; at 50 hard-cap we expect to visit
+    // each one at least once on truly stubborn instances before
+    // declaring defeat.
+    static constexpr int kHardStaleThreshold = 50;
 
     Rng rng_;
     // Per-worker scratch reused across fpr_attempt calls to avoid malloc

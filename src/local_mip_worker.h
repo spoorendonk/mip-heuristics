@@ -59,6 +59,13 @@ private:
     HighsInt steps_since_improvement_ = 0;
     HighsInt restart_count_ = 0;
     HighsInt step_ = 0;
+
+    // Paper-style random-walk diversification (Lin, Zou, Cai §4.1):
+    // when a feasible-mode plateau triggers, perturb the solution
+    // and continue searching instead of declaring the worker finished.
+    // Bounded by `kFeasibleMaxRandomWalks` so we eventually stop on
+    // instances where perturbation can't break the plateau.
+    HighsInt feasible_random_walks_done_ = 0;
 };
 
 static_assert(EpochWorker<LocalMipWorker>, "LocalMipWorker must satisfy EpochWorker concept");
