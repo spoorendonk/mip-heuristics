@@ -158,7 +158,12 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             break;
         }
 
-        ++K_;
+        // `K_` was historically bumped here (before the solve path).  A
+        // stale round uses a peer's x_bar and does not correspond to
+        // this worker's paper-defined pump iteration, so we now advance
+        // `K_` only on fresh rounds — see the guarded block near the
+        // end of this loop where cycle_history_, alpha_K_, and
+        // modified_cost_ are also only updated when `fresh`.
 
         double remaining = time_limit - mipsolver_.timer_.read();
         if (remaining <= 0.0) {
@@ -369,21 +374,33 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
 
         auto &x_hat = rounded.solution;
 
-        if (pump::detect_cycling(cycle_history_, x_hat, integrality, ncol_)) {
-            pump::perturb(x_hat, *model, rng_);
-        }
-        if (static_cast<int>(cycle_history_.size()) < pump::kCycleWindow) {
-            cycle_history_.push_back(x_hat);
-        } else {
-            cycle_history_[(K_ - 1) % pump::kCycleWindow] = x_hat;
-        }
+        // Pump-state advance is guarded by `fresh`: a stale round
+        // rounds against a peer worker's x_bar and does not
+        // correspond to this chain's paper-defined pump iteration.
+        // Decaying `alpha_K_`, bumping `K_`, rewriting
+        // `modified_cost_`, and overwriting our cycle slot on stale
+        // rounds would drift this chain's schedule away from the
+        // paper's semantics.  Effort accounting for the FPR rounding
+        // is still charged above regardless, so the outer budget
+        // still stops on time.  (R2 flagged this; user-directed in
+        // review round 3.)
+        if (fresh) {
+            if (pump::detect_cycling(cycle_history_, x_hat, integrality, ncol_)) {
+                pump::perturb(x_hat, *model, rng_);
+            }
+            if (static_cast<int>(cycle_history_.size()) < pump::kCycleWindow) {
+                cycle_history_.push_back(x_hat);
+            } else {
+                cycle_history_[(K_ - 1) % pump::kCycleWindow] = x_hat;
+            }
 
-        alpha_K_ *= pump::kAlpha;
-        pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality, model->col_lower_,
-                                     model->col_upper_, alpha_K_, cost_scale_, ncol_,
-                                     modified_cost_);
-
-        epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
+            alpha_K_ *= pump::kAlpha;
+            pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality, model->col_lower_,
+                                         model->col_upper_, alpha_K_, cost_scale_, ncol_,
+                                         modified_cost_);
+            epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
+            ++K_;
+        }
     }
 
     return epoch;
