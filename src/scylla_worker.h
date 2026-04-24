@@ -17,13 +17,38 @@
 class HighsMipSolver;
 class SolutionPool;
 
-// Per-worker cap on consecutive stale-snapshot rounds before the worker
-// must force a blocking `solve()` to refresh its view.  Stale rounds are
-// cheap (no PDLP work, reuses the latest completed snapshot) but a
-// worker that has done too many in a row risks living forever on a
-// degenerate cached primal; this nudges it back to the lock at a bounded
-// rate.  Issue #76.
-inline constexpr int kMaxStaleRounds = 4;
+// Per-worker default cap on consecutive stale-snapshot rounds before the
+// worker must force a blocking `solve()` to refresh its view.  Stale
+// rounds are cheap (no PDLP work, reuses the latest completed snapshot)
+// but a worker that has done too many in a row risks living forever on
+// a degenerate cached primal; this nudges it back to the lock at a
+// bounded rate.  Issue #76.
+//
+// The cap is tunable per-worker via `compute_max_stale_rounds(nnz_lp)` —
+// on small LPs each PDLP solve is fast so we don't want to stall many
+// rounds (any one peer will refresh soon anyway); on large LPs the
+// inverse holds because a blocking solve may take seconds.  Reviewer
+// R3 flagged the old unconditional `4` as a tuning hole.
+inline constexpr int kMaxStaleRoundsDefault = 4;
+inline constexpr int kMaxStaleRoundsMin = 2;
+inline constexpr int kMaxStaleRoundsMax = 16;
+
+// Size threshold for scaling up the stale cap.  Chosen so a 10k-nnz LP
+// (tiny) sticks with the default 4 while a 1M-nnz LP (multi-second
+// PDLP solve) scales to ~16.  The exact ramp is less important than
+// avoiding the one-size-fits-all 4.
+inline constexpr size_t kNnzPerExtraStaleRound = 250'000;
+
+inline int compute_max_stale_rounds(size_t nnz_lp) {
+    const int extra = static_cast<int>(nnz_lp / kNnzPerExtraStaleRound);
+    const int cap = kMaxStaleRoundsDefault + extra;
+    return cap < kMaxStaleRoundsMin   ? kMaxStaleRoundsMin
+           : cap > kMaxStaleRoundsMax ? kMaxStaleRoundsMax
+                                      : cap;
+}
+
+// Compatibility alias for callers that don't have `nnz_lp_` in scope.
+inline constexpr int kMaxStaleRounds = kMaxStaleRoundsDefault;
 
 // FPR strategy assignment for Scylla workers.  Workers `0..kNumFprConfigs-1`
 // receive `kFprConfigs[w]` (deterministic round-robin, guaranteeing each
@@ -110,13 +135,18 @@ private:
     // Stale-snapshot overlap bookkeeping (issue #76).  `stale_snapshot_`
     // caches the most-recent Snapshot this worker actually rounded
     // against, so we can detect "nothing has been published since last
-    // time" and avoid blowing through kMaxStaleRounds on an unchanged
+    // time" and avoid blowing through the stale cap on an unchanged
     // view.  `consecutive_stale_rounds_` is reset whenever we manage a
-    // fresh solve or change snapshot identity; when it hits kMaxStaleRounds
-    // we issue a blocking `solve()` on the next iteration to guarantee
-    // forward progress.
+    // fresh solve or change snapshot identity; when it hits
+    // `max_stale_rounds_` we issue a blocking `solve()` on the next
+    // iteration to guarantee forward progress.  The cap is sized at
+    // construction from `nnz_lp_` (see `compute_max_stale_rounds`)
+    // rather than the historical flat `kMaxStaleRounds = 4`, because
+    // PDLP latency scales with LP size and flat-4 is too eager to
+    // force-fresh on large MIPs (R3).
     std::shared_ptr<const ContestedPdlp::Snapshot> stale_snapshot_;
     int consecutive_stale_rounds_ = 0;
+    int max_stale_rounds_ = kMaxStaleRoundsDefault;
     // Counters exposed for tests / observability.
     uint64_t fresh_solves_ = 0;
     uint64_t stale_rounds_ = 0;

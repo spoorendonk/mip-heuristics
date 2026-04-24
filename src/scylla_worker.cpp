@@ -78,6 +78,11 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
         base_.finished = true;
         return;
     }
+    // Size the per-worker stale-rounds cap from the LP (R3): small
+    // LPs → tight cap (PDLP is fast, forcing fresh doesn't cost much);
+    // large LPs → longer cap (blocking solve is expensive, stay on the
+    // snapshot longer).
+    max_stale_rounds_ = compute_max_stale_rounds(nnz_lp_);
 
     base_.stale_budget = base_.total_budget >> 2;
     modified_cost_ = orig_cost;
@@ -175,7 +180,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         // or the current stale snapshot's col_value.
         const std::vector<double> *x_bar_ptr = nullptr;
 
-        const bool must_force_fresh = consecutive_stale_rounds_ >= kMaxStaleRounds;
+        const bool must_force_fresh = consecutive_stale_rounds_ >= max_stale_rounds_;
         if (must_force_fresh) {
             // Blocking path: either no one is solving (we take the
             // mutex immediately) or we wait behind one worker.  This

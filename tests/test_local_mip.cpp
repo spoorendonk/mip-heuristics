@@ -1,7 +1,9 @@
 #include "heuristic_common.h"
 #include "Highs.h"
 #include "local_mip_construction.h"
+#include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
 #include "rng.h"
+#include "solution_pool.h"
 #include "test_common.h"
 
 #include <catch2/catch_approx.hpp>
@@ -297,4 +299,35 @@ TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74
     }
     REQUIRE(fj_ran);
     REQUIRE(local_mip_ran);
+}
+
+// Unit-level regression for #74's pool-aware helper (complements the
+// log-based integration test above).  `resolve_worker_start` prefers
+// the pool's best over `mipdata->incumbent` and over the cold-start
+// construction; the reasoning delegates to `SolutionPool::copy_best`
+// for that first branch.  Round-2 reviewers flagged that the
+// integration test can't distinguish pool-warm-start from cold-start
+// construction (both produce non-zero effort); testing `copy_best`
+// directly proves the pool-first branch returns exactly the seeded
+// vector, which is the cheap half of #74 to pin down.  The full
+// integration-level distinction (did the worker start from the pool
+// or construct fresh?) still relies on the `lseu.mps` test above.
+TEST_CASE("SolutionPool::copy_best returns exactly the seeded best entry (#74 unit)",
+          "[heuristic][local_mip][pool-aware][unit]") {
+    SolutionPool pool(/*capacity=*/4, /*minimize=*/true);
+    std::vector<double> probe;
+    // Empty pool: no best, copy_best returns false and leaves `probe`
+    // untouched.
+    probe.assign(3, 9.9);  // sentinel to confirm no write
+    REQUIRE_FALSE(pool.copy_best(probe));
+    REQUIRE(probe == std::vector<double>{9.9, 9.9, 9.9});
+
+    // Seed a worse and a better entry; copy_best must return the better.
+    const std::vector<double> worse_sol{1.0, 2.0, 3.0};
+    const std::vector<double> better_sol{4.0, 5.0, 6.0};
+    REQUIRE(pool.try_add(/*obj=*/100.0, worse_sol, kSolutionSourceFJ));
+    REQUIRE(pool.try_add(/*obj=*/10.0, better_sol, kSolutionSourceLocalMIP));
+    probe.clear();
+    REQUIRE(pool.copy_best(probe));
+    REQUIRE(probe == better_sol);
 }
