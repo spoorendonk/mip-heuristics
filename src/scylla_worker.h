@@ -33,11 +33,14 @@ inline constexpr int kMaxStaleRoundsDefault = 4;
 inline constexpr int kMaxStaleRoundsMin = 2;
 inline constexpr int kMaxStaleRoundsMax = 16;
 
-// Size threshold for scaling up the stale cap.  Chosen so a 10k-nnz LP
-// (tiny) sticks with the default 4 while a 1M-nnz LP (multi-second
-// PDLP solve) scales to ~16.  The exact ramp is less important than
-// avoiding the one-size-fits-all 4.
-inline constexpr size_t kNnzPerExtraStaleRound = 250'000;
+// Size threshold for scaling up the stale cap.  Tuned so a 10k-nnz LP
+// (tiny) sticks with the default 4, a 1M-nnz LP (multi-second PDLP
+// solve) scales to ~16 (= 4 + 12 extras at 83k each), and the
+// `kMaxStaleRoundsMax = 16` ceiling caps anything bigger.  The exact
+// ramp is less important than avoiding the one-size-fits-all 4.
+// (R2-4 round-3 review: previous 250'000 reached only ~8 at 1M nnz,
+// not the documented ~16.)
+inline constexpr size_t kNnzPerExtraStaleRound = 83'000;
 
 inline int compute_max_stale_rounds(size_t nnz_lp) {
     const int extra = static_cast<int>(nnz_lp / kNnzPerExtraStaleRound);

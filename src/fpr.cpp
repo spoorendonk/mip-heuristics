@@ -54,26 +54,26 @@ private:
 
     int attempt_idx_ = 0;
     int epochs_without_improvement_ = 0;
+    // Counts how many soft-threshold randomisations have happened
+    // without an improvement.  The previous "hard stale threshold" gated
+    // on `epochs_without_improvement_` directly, but the soft threshold
+    // resets that counter every 3 epochs, so the hard cap was never
+    // reached (R2-2 from round-3 review).  Tracking randomisations
+    // separately lets the hard cap actually fire after we've cycled
+    // through many distinct (strategy, mode) configs.
+    int randomizations_without_improvement_ = 0;
     bool finished_ = false;
 
-    // Hard stale threshold for opportunistic mode: after this many
-    // consecutive epochs without improvement the worker signals finished.
-    // The soft threshold (kStaleEpochThreshold = 3) still applies for
-    // config randomization before this point.
-    // Hard cap on consecutive no-improvement epochs before the worker
-    // declares itself finished.  The soft threshold
-    // (`kStaleEpochThreshold = 3`) already rotates to a random
-    // (strategy, mode) config on every triggering, so `kHardStaleThreshold`
-    // bounds how many *such* randomisations we chew through before
-    // giving up.  Salvagnin et al. 2025 don't prescribe an early
-    // finish — their portfolio keeps trying strategies until the
-    // outer time/effort budget is exhausted — so this cap is our
-    // engineering guard against pathological loops.  Set generously
-    // (50) since the randomize_config() space is 8 strategies × 5
-    // modes = 40 unique configs; at 50 hard-cap we expect to visit
-    // each one at least once on truly stubborn instances before
-    // declaring defeat.
-    static constexpr int kHardStaleThreshold = 50;
+    // Hard cap on the number of soft-threshold randomisations
+    // (`kStaleEpochThreshold` triggerings) without an improvement before
+    // the worker declares itself finished.  Salvagnin et al. 2025 don't
+    // prescribe an early finish — their portfolio runs until budget
+    // exhausts — so this is our engineering guard against pathological
+    // loops.  At 50 we expect to visit a substantial portion of the
+    // 8 strategies × 5 modes = 40 config space (uniform sampling →
+    // ~28 distinct after 50 draws by coupon-collector) on stubborn
+    // instances before giving up.
+    static constexpr int kHardRandomizationLimit = 50;
 
     Rng rng_;
     // Per-worker scratch reused across fpr_attempt calls to avoid malloc
@@ -174,10 +174,18 @@ void FprWorker::randomize_config() {
 EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     EpochResult epoch{};
 
-    // After K stale epochs, randomize config from full space.
+    // After K stale epochs, randomize config from full space.  Track
+    // total randomisations separately so the hard cap below can fire
+    // even though the soft threshold resets `epochs_without_improvement_`
+    // each time it triggers.
     if (epochs_without_improvement_ >= kStaleEpochThreshold) {
         randomize_config();
         epochs_without_improvement_ = 0;
+        ++randomizations_without_improvement_;
+        if (randomizations_without_improvement_ >= kHardRandomizationLimit) {
+            finished_ = true;
+            return epoch;
+        }
     }
 
     // Get pool restart solution if available.
@@ -210,11 +218,9 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         pool_.try_add(result.objective, result.solution, kSolutionSourceFPR);
         epoch.found_improvement = true;
         epochs_without_improvement_ = 0;
+        randomizations_without_improvement_ = 0;
     } else {
         ++epochs_without_improvement_;
-        if (epochs_without_improvement_ >= kHardStaleThreshold) {
-            finished_ = true;
-        }
     }
 
     ++attempt_idx_;

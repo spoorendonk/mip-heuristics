@@ -161,7 +161,13 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
     }
     double delta = -gap / coeff;
     if (integer) {
-        delta = (coeff > 0) ? std::floor(delta) : std::ceil(delta);
+        // Round in the direction that *reaches* the violated bound,
+        // i.e. away from zero (ceil for positive delta, floor for
+        // negative).  The previous coeff>0 → floor / coeff<0 → ceil
+        // rule was wrong for `lhs < row_lo` violations with positive
+        // coeff: there `delta > 0` and we need to push lhs upward,
+        // which requires `ceil(delta)`, not `floor`.  R1-15 round-3.
+        delta = (delta > 0) ? std::ceil(delta) : std::floor(delta);
     }
     double new_val = solution[j] + delta;
     if (new_val < col_lb[j]) {

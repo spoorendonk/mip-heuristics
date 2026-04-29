@@ -97,9 +97,30 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     const bool minimize = (mipsolver.model_->sense_ == ObjSense::kMinimize);
     SolutionPool pool(1, minimize);
 
+    // Resolve the worker's starting point with the same fallback chain
+    // as `run_parallel_*` (caller's `initial_solution` → mipdata
+    // incumbent → paper's cold-start construction).  Without this the
+    // portfolio dispatch (`port/det`, `port/opp`) silently regressed
+    // relative to seq/det for #75 — flagged by R1-4 in round-3 review.
+    std::vector<double> constructed;
+    const double *start = initial_solution;
+    if (start == nullptr) {
+        auto *mipdata = mipsolver.mipdata_.get();
+        if (!mipdata->incumbent.empty()) {
+            start = mipdata->incumbent.data();
+        } else {
+            Rng rng(seed);
+            construct_initial_solution(mipsolver, csc, rng, construction_effort_cap(max_effort),
+                                       constructed);
+            if (!constructed.empty()) {
+                start = constructed.data();
+            }
+        }
+    }
+
     // Disable stale_budget: pass max_effort so it can never fire before
     // the total budget is exhausted (original worker() had no stale_budget).
-    LocalMipWorker w(mipsolver, csc, pool, max_effort, seed, initial_solution,
+    LocalMipWorker w(mipsolver, csc, pool, max_effort, seed, start,
                      /*stale_budget=*/max_effort);
 
     size_t total_effort = 0;
@@ -312,7 +333,14 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             }
             std::vector<double> start = resolve_worker_start(
                 mipsolver, setup.csc, pool, setup.worker_budget, seed, &local_cache);
-            if (!local_cache.empty() && cold_start_cache.empty()) {
+            if (!local_cache.empty()) {
+                // R1/R2/R3 round-3 review: drop the lock-free outer
+                // `cold_start_cache.empty()` check — `std::vector::empty()`
+                // reads the size member which races concurrent writers
+                // under the mutex (textbook DCL UB on a non-atomic
+                // compound type).  The single locked check below is
+                // cheap; MakeState fires N times per dispatch, not per
+                // epoch.
                 std::lock_guard<std::mutex> lock(cold_start_cache_mu);
                 if (cold_start_cache.empty()) {
                     cold_start_cache = local_cache;

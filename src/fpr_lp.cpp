@@ -205,10 +205,17 @@ public:
 
         // After K stale epochs, randomize to another LP arm from the full
         // 10-element pool.  var_orders are precomputed for every arm so the
-        // switch is race-free.
+        // switch is race-free.  Track total randomisations separately so
+        // the hard cap can fire even though the soft threshold resets
+        // `epochs_without_improvement_` each trigger (R2-2 round-3 review).
         if (epochs_without_improvement_ >= kStaleEpochThreshold) {
             randomize_arm();
             epochs_without_improvement_ = 0;
+            ++randomizations_without_improvement_;
+            if (randomizations_without_improvement_ >= kHardRandomizationLimit) {
+                finished_ = true;
+                return epoch;
+            }
         }
 
         std::vector<double> initial_solution;
@@ -242,11 +249,9 @@ public:
             pool_.try_add(result.objective, result.solution, kSolutionSourceFprLp);
             epoch.found_improvement = true;
             epochs_without_improvement_ = 0;
+            randomizations_without_improvement_ = 0;
         } else {
             ++epochs_without_improvement_;
-            if (epochs_without_improvement_ >= kHardStaleThreshold) {
-                finished_ = true;
-            }
         }
 
         return epoch;
@@ -266,6 +271,7 @@ private:
     int arm_idx_;
     int attempt_idx_ = 0;
     int epochs_without_improvement_ = 0;
+    int randomizations_without_improvement_ = 0;
     bool finished_ = false;
 
     Rng rng_;
@@ -273,10 +279,11 @@ private:
     // churn on the DFS + WalkSAT repair hot path.
     FprScratch scratch_;
 
-    // Hard stale threshold for LP-FPR workers in opportunistic mode.
-    // Mirrors FprWorker::kHardStaleThreshold — generous outer guard
-    // above the soft (config-randomising) threshold.
-    static constexpr int kHardStaleThreshold = 50;
+    // Hard cap on the number of soft-threshold arm randomisations
+    // without an improvement before the worker declares itself
+    // finished.  See FprWorker::kHardRandomizationLimit for the same
+    // pattern (and rationale — R2-2 round-3 review).
+    static constexpr int kHardRandomizationLimit = 50;
 
     // Number of stale epochs before a worker randomizes its arm.
     // Mirrors fpr.cpp's kStaleEpochThreshold.

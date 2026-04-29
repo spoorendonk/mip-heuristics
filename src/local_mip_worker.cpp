@@ -158,6 +158,11 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
                 best_objective_ = obj;
                 best_solution_ = ctx_.solution;
                 steps_since_improvement_ = 0;
+                // Random walks that *led* to this improvement were
+                // productive — reset the lifetime counter so the cap
+                // doesn't cumulatively retire a worker that's still
+                // finding improvements.  R3-7 round-3 review.
+                feasible_random_walks_done_ = 0;
                 epoch.found_improvement = true;
 
                 pool_.try_add(obj, ctx_.solution, kSolutionSourceLocalMIP);

@@ -210,22 +210,59 @@ TEST_CASE("LocalMIP construction: zero-start respects bounds with lb > 0 / ub < 
 // search phase should progress (the key acceptance criterion of issue
 // #75).  Using flugpl (a small MIPLIB-like MIP) as the vehicle — the
 // optimal is known and the solver chain still has to find it.
-TEST_CASE("LocalMIP cold-start: finds flugpl optimum with all upstream heuristics off",
+TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuristics off",
           "[heuristic][local_mip][construction][cold-start]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    // Disable every non-LocalMIP custom heuristic so LocalMIP is the
-    // only primal-source in the presolve dispatch.
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    // Reviewer R3-2 (round-3) flagged that the previous version of
+    // this test ran full B&B and asserted `obj == 1201500.0` on
+    // flugpl — which HiGHS finds via its own LP-driven branching even
+    // if `construct_initial_solution` is a no-op.  Here we constrain
+    // the solve to the presolve chain via `mip_root_presolve_only` and
+    // assert directly on the `[Sequential] heur=local_mip effort=…`
+    // line with non-zero effort.  That's the real signal that #75's
+    // cold-start construction kicked in.
+    struct LogCapture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+    };
+    LogCapture capture;
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    h.setOptionValue("log_dev_level", 3);
+    h.setOptionValue("mip_root_presolve_only", true);
+    h.setOptionValue("mip_heuristic_run_fpr", false);
+    h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    h.setOptionValue("mip_heuristic_run_scylla", false);
+    h.setOptionValue("mip_heuristic_run_local_mip", true);
+    h.setOptionValue("mip_heuristic_portfolio", false);
+    h.setOptionValue("mip_heuristic_opportunistic", false);
+
+    auto log_cb = [](int callback_type, const std::string& message,
+                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                     void* user_data) {
+        if (callback_type != kCallbackLogging) {
+            return;
+        }
+        auto* cap = static_cast<LogCapture*>(user_data);
+        std::lock_guard<std::mutex> lock(cap->mtx);
+        cap->lines.emplace_back(message);
+    };
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    bool local_mip_ran = false;
+    std::lock_guard<std::mutex> lock(capture.mtx);
+    for (const auto& line : capture.lines) {
+        if (line.find("[Sequential] heur=local_mip") != std::string::npos &&
+            line.find("effort=0 ") == std::string::npos) {
+            local_mip_ran = true;
+            break;
+        }
+    }
+    REQUIRE(local_mip_ran);
 }
 
 // Regression guard for `local_mip::run_parallel`'s warm-start path
