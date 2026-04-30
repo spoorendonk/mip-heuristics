@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 namespace {
@@ -55,6 +57,23 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
     const auto *model = mipsolver_.model_;
     ncol_ = model->num_col_;
     nrow_ = model->num_row_;
+    // Release-safe guard against a 0-column model reaching this
+    // worker.  The `pdlp_.initialized()` short-circuit above already
+    // catches LPs with `ncol_==0` (ContestedPdlp's constructor refuses
+    // to build them), but if a future refactor decouples those checks
+    // — or wires Scylla directly to a model whose columns were all
+    // fixed out by presolve — the downstream loops `for (j; j < ncol_)`
+    // become no-ops while later index ops on `warm_start_col_value_`
+    // / `modified_cost_` would be UB.  An `assert` would be a no-op
+    // under `NDEBUG` (default for Release builds), so abort
+    // unconditionally: corrupt rounding from an undersized model is
+    // far worse than a loud crash.
+    if (ncol_ == 0) {
+        std::fprintf(stderr,
+                     "ScyllaWorker: model has 0 columns; refusing to construct (would yield "
+                     "UB on later index ops).\n");
+        std::abort();
+    }
 
     const auto &orig_cost = model->col_cost_;
     const auto &integrality = model->integrality_;
