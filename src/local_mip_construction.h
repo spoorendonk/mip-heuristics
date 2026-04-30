@@ -89,13 +89,19 @@ struct ConstructionInputs {
 // variable-coverage ordering.  `max_effort` caps the coefficient
 // accesses the construction is allowed to consume (callers should
 // pass `construction_effort_cap(max_effort)`).
-void construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size_t max_effort,
-                                std::vector<double> &out_solution);
+//
+// Returns the number of coefficient accesses the construction actually
+// charged.  Callers are expected to add this to
+// `mipdata->heuristic_effort_used` so cold-start work counts against
+// the global effort budget (R1-3 round-3 review).
+size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size_t max_effort,
+                                  std::vector<double> &out_solution);
 
 // Thin wrapper over the inputs form: extracts the refs from
 // `mipsolver` (model + mipdata).  Used by `local_mip.cpp`'s
-// cold-start fallback.
-void construct_initial_solution(HighsMipSolver &mipsolver, const CscMatrix &csc, Rng &rng,
-                                size_t max_effort, std::vector<double> &out_solution);
+// cold-start fallback.  Returns the construction effort (see overload
+// above); callers must book it into `mipdata->heuristic_effort_used`.
+size_t construct_initial_solution(HighsMipSolver &mipsolver, const CscMatrix &csc, Rng &rng,
+                                  size_t max_effort, std::vector<double> &out_solution);
 
 }  // namespace local_mip_detail

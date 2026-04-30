@@ -13,6 +13,7 @@
 #include "rng.h"
 #include "solution_pool.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -104,14 +105,19 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     // relative to seq/det for #75 — flagged by R1-4 in round-3 review.
     std::vector<double> constructed;
     const double *start = initial_solution;
+    // Track cold-start construction effort separately so the caller can
+    // see it surfaced via `result.effort` (R1-3 round-3 review): the
+    // construction sweep consumes wall time but its work signal was
+    // previously invisible to the global accountant.
+    size_t construction_effort = 0;
     if (start == nullptr) {
         auto *mipdata = mipsolver.mipdata_.get();
         if (!mipdata->incumbent.empty()) {
             start = mipdata->incumbent.data();
         } else {
             Rng rng(seed);
-            construct_initial_solution(mipsolver, csc, rng, construction_effort_cap(max_effort),
-                                       constructed);
+            construction_effort = construct_initial_solution(
+                mipsolver, csc, rng, construction_effort_cap(max_effort), constructed);
             if (!constructed.empty()) {
                 start = constructed.data();
             }
@@ -132,7 +138,10 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
         }
     }
 
-    result.effort = total_effort;
+    // R1-3: roll cold-start construction effort into the reported
+    // effort so the caller's accountant (portfolio bandit / mode
+    // dispatch) sees the full wall-clock-equivalent work.
+    result.effort = total_effort + construction_effort;
     auto entries = pool.sorted_entries();
     if (!entries.empty()) {
         result.found_feasible = true;
@@ -173,9 +182,14 @@ namespace {
 // vector (they'll perturb it downstream, so diversity survives).  Pass
 // null to disable caching.  Flagged by review R3 — N full constructions
 // per presolve dispatch was wasteful on big MIPs.
+// `effort_out` accumulates construction effort the call paid (0 if
+// the function returned via the pool or incumbent branches, or via the
+// cold-start cache hit).  Callers add it to
+// `mipdata->heuristic_effort_used` (R1-3 round-3 review).
 std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMatrix &csc,
                                          SolutionPool &pool, size_t max_effort, uint32_t seed,
-                                         std::vector<double> *cold_start_cache = nullptr) {
+                                         std::vector<double> *cold_start_cache = nullptr,
+                                         size_t *effort_out = nullptr) {
     // `copy_best` takes the pool lock once and copies only the top
     // entry's solution vector.  Previous versions used
     // `sorted_entries()` which copies up to kPoolCapacity entries
@@ -198,8 +212,11 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     }
     Rng rng(seed);
     std::vector<double> constructed;
-    construct_initial_solution(mipsolver, csc, rng, construction_effort_cap(max_effort),
-                               constructed);
+    size_t construction_effort = construct_initial_solution(
+        mipsolver, csc, rng, construction_effort_cap(max_effort), constructed);
+    if (effort_out != nullptr) {
+        *effort_out += construction_effort;
+    }
     // If the construction happens to land on a feasible integer point,
     // publish it to the shared pool so downstream heuristics (and
     // HiGHS's own incumbent path) pick it up.  Tag as `LocalMIP`
@@ -226,9 +243,10 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
 std::vector<double> build_starting_solution_for_worker(HighsMipSolver &mipsolver,
                                                        const ParallelSetup &setup,
                                                        SolutionPool &pool, size_t w, uint32_t seed,
-                                                       std::vector<double> *cold_start_cache) {
-    std::vector<double> start = resolve_worker_start(mipsolver, setup.csc, pool,
-                                                     setup.worker_budget, seed, cold_start_cache);
+                                                       std::vector<double> *cold_start_cache,
+                                                       size_t *effort_out = nullptr) {
+    std::vector<double> start = resolve_worker_start(
+        mipsolver, setup.csc, pool, setup.worker_budget, seed, cold_start_cache, effort_out);
     if (w == 0) {
         return start;
     }
@@ -261,10 +279,17 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     // the pool.
     std::vector<double> cold_start_cache;
 
+    // Cold-start construction effort booked into the global accountant
+    // alongside `total_effort` once the epoch loop returns.  R1-3
+    // round-3 review: the paper's construction sweep consumes wall time
+    // and must be visible to `mipdata->heuristic_effort_used` so the
+    // budget system's wall-clock-equivalent contract holds.
+    size_t construction_effort = 0;
+
     for (size_t w = 0; w < setup.N; ++w) {
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        std::vector<double> start =
-            build_starting_solution_for_worker(mipsolver, setup, pool, w, seed, &cold_start_cache);
+        std::vector<double> start = build_starting_solution_for_worker(
+            mipsolver, setup, pool, w, seed, &cold_start_cache, &construction_effort);
         workers.push_back(std::make_unique<LocalMipWorker>(
             mipsolver, setup.csc, pool, setup.worker_budget, seed, start.data()));
     }
@@ -289,11 +314,13 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                 if (!setup.mipdata->incumbent.empty()) {
                     restart_sol = setup.mipdata->incumbent;
                 } else {
-                    // Cold restart: rebuild via construction.
+                    // Cold restart: rebuild via construction.  Effort
+                    // booked into the same `construction_effort`
+                    // accumulator that the initial-setup loop fed.
                     Rng construct_rng(new_seed);
-                    construct_initial_solution(mipsolver, setup.csc, construct_rng,
-                                               construction_effort_cap(setup.worker_budget),
-                                               restart_sol);
+                    construction_effort += construct_initial_solution(
+                        mipsolver, setup.csc, construct_rng,
+                        construction_effort_cap(setup.worker_budget), restart_sol);
                 }
             }
             perturb_solution(restart_sol, *setup.mipdata, setup.model.integrality_,
@@ -303,7 +330,7 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         },
         setup.stale_budget);
 
-    setup.mipdata->heuristic_effort_used += total_effort;
+    setup.mipdata->heuristic_effort_used += total_effort + construction_effort;
 }
 
 void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
@@ -321,6 +348,13 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     std::mutex cold_start_cache_mu;
     std::vector<double> cold_start_cache;
 
+    // Per-thread-safe accumulator for cold-start construction effort.
+    // R1-3 round-3 review: the construction sweep is wall-time-visible
+    // and must be booked into `mipdata->heuristic_effort_used`.  Use
+    // `std::atomic<size_t>` so concurrent MakeState/Run callbacks can
+    // accumulate without holding the cold-start mutex.
+    std::atomic<size_t> construction_effort{0};
+
     size_t total_effort = run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
@@ -331,8 +365,13 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                 std::lock_guard<std::mutex> lock(cold_start_cache_mu);
                 local_cache = cold_start_cache;  // cheap if empty, one copy if warm
             }
-            std::vector<double> start = resolve_worker_start(
-                mipsolver, setup.csc, pool, setup.worker_budget, seed, &local_cache);
+            size_t my_construction_effort = 0;
+            std::vector<double> start =
+                resolve_worker_start(mipsolver, setup.csc, pool, setup.worker_budget, seed,
+                                     &local_cache, &my_construction_effort);
+            if (my_construction_effort > 0) {
+                construction_effort.fetch_add(my_construction_effort, std::memory_order_relaxed);
+            }
             if (!local_cache.empty()) {
                 // R1/R2/R3 round-3 review: drop the lock-free outer
                 // `cold_start_cache.empty()` check — `std::vector::empty()`
@@ -364,9 +403,11 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                     } else {
                         uint32_t cseed = static_cast<uint32_t>(rng());
                         Rng construct_rng(cseed);
-                        construct_initial_solution(mipsolver, setup.csc, construct_rng,
-                                                   construction_effort_cap(setup.worker_budget),
-                                                   restart_sol);
+                        size_t my_construction_effort = construct_initial_solution(
+                            mipsolver, setup.csc, construct_rng,
+                            construction_effort_cap(setup.worker_budget), restart_sol);
+                        construction_effort.fetch_add(my_construction_effort,
+                                                      std::memory_order_relaxed);
                     }
                 }
                 perturb_solution(restart_sol, *setup.mipdata, setup.model.integrality_,
@@ -385,7 +426,8 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             return result;
         });
 
-    setup.mipdata->heuristic_effort_used += total_effort;
+    setup.mipdata->heuristic_effort_used +=
+        total_effort + construction_effort.load(std::memory_order_relaxed);
 }
 
 }  // namespace

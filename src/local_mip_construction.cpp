@@ -231,14 +231,14 @@ std::vector<HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &r
 
 }  // namespace
 
-void construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size_t max_effort,
-                                std::vector<double> &out_solution) {
+size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size_t max_effort,
+                                  std::vector<double> &out_solution) {
     const HighsInt ncol = inputs.ncol;
     const HighsInt nrow = inputs.nrow;
 
     out_solution.assign(ncol, 0.0);
     if (ncol == 0) {
-        return;
+        return 0;
     }
 
     const auto &col_lb = *inputs.col_lb;
@@ -252,13 +252,19 @@ void construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size
     const CscMatrix &csc = *inputs.csc;
     const double feastol = inputs.feastol;
 
+    // Phase A is a single linear scan over `ncol` — charge it against
+    // the effort budget so even a Phase-A-only construction (nrow == 0
+    // or max_effort == 0) is visible to the global accountant.  Without
+    // this we'd silently consume O(ncol) work without booking it.
+    size_t effort_phase_a = static_cast<size_t>(ncol);
+
     // --- Phase A: zero-start (paper Alg 1 Line 1) -----------------------
     for (HighsInt j = 0; j < ncol; ++j) {
         out_solution[j] = zero_start_value(col_lb[j], col_ub[j], is_integer(integrality, j));
     }
 
     if (nrow == 0 || max_effort == 0) {
-        return;
+        return effort_phase_a;
     }
 
     // Compute initial lhs[] vector; this is the anchor the greedy sweep
@@ -383,12 +389,18 @@ void construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size
         }
         out_solution[j] = v;
     }
+
+    // Total effort = Phase A linear scan + Phase B greedy sweep.  The
+    // Phase B counter is the same coefficient-access signal LocalMIP's
+    // search loop uses (`WorkerCtx::effort`), so the two are directly
+    // comparable when summed into `mipdata->heuristic_effort_used`.
+    return effort_phase_a + effort;
 }
 
 // HighsMipSolver& thin wrapper: assemble ConstructionInputs from the
 // solver's model + mipdata and delegate.
-void construct_initial_solution(HighsMipSolver &mipsolver, const CscMatrix &csc, Rng &rng,
-                                size_t max_effort, std::vector<double> &out_solution) {
+size_t construct_initial_solution(HighsMipSolver &mipsolver, const CscMatrix &csc, Rng &rng,
+                                  size_t max_effort, std::vector<double> &out_solution) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     ConstructionInputs inputs;
@@ -404,7 +416,7 @@ void construct_initial_solution(HighsMipSolver &mipsolver, const CscMatrix &csc,
     inputs.integrality = &model->integrality_;
     inputs.csc = &csc;
     inputs.feastol = mipdata->feastol;
-    construct_initial_solution(inputs, rng, max_effort, out_solution);
+    return construct_initial_solution(inputs, rng, max_effort, out_solution);
 }
 
 }  // namespace local_mip_detail
