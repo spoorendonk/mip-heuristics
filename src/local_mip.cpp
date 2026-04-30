@@ -352,6 +352,23 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                     // Cold restart: rebuild via construction.  Effort
                     // booked into the same `construction_effort`
                     // accumulator that the initial-setup loop fed.
+                    //
+                    // note (R2-9 / R3-6 round-4 review): construction
+                    // effort here is added to the *global* accountant
+                    // (`mipdata->heuristic_effort_used` below) but not
+                    // to the inner `run_epoch_loop`'s per-iteration
+                    // budget cap.  Intentional: the inner loop budget
+                    // paces per-epoch wall spend, the outer global
+                    // budget is what bounds the heuristic.  Folding
+                    // construction into the inner cap would require a
+                    // layered refactor of the restart callback's
+                    // signature; the current split is permissive (a
+                    // worker can do construction work the inner cap
+                    // doesn't gate) but defensible because every cold
+                    // restart's construction is bounded by
+                    // `construction_effort_cap(worker_budget)`, so the
+                    // total over all restarts is at worst proportional
+                    // to the outer budget.
                     Rng construct_rng(new_seed);
                     construction_effort += construct_initial_solution(
                         mipsolver, setup.csc, construct_rng,
@@ -436,6 +453,18 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                     if (!setup.mipdata->incumbent.empty()) {
                         restart_sol = setup.mipdata->incumbent;
                     } else {
+                        // note (R2-9 / R3-6 round-4 review): same global-
+                        // only accounting as the deterministic restart
+                        // callback above — see that comment for the
+                        // rationale.  The construction effort here is
+                        // booked into `construction_effort` and added to
+                        // `mipdata->heuristic_effort_used` after the
+                        // opportunistic loop returns; it does not
+                        // participate in the inner per-iteration budget
+                        // checks.  Bounded by
+                        // `construction_effort_cap(worker_budget)` per
+                        // restart so total construction work scales
+                        // with the outer budget.
                         uint32_t cseed = static_cast<uint32_t>(rng());
                         Rng construct_rng(cseed);
                         size_t my_construction_effort = construct_initial_solution(
