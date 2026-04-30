@@ -112,6 +112,17 @@ void ContestedPdlp::publish_snapshot_locked(const SolveResult &result) {
     // Only publish usable snapshots (something a stale worker can round
     // against).  Failed / empty-column solves leave the previous
     // snapshot in place, which is the best we have.
+    //
+    // Status contract: publish on `kOk` and `kWarning`; suppress on
+    // `kError`.  `kWarning` typically means HiGHS hit the iteration or
+    // time limit before convergence — the returned primal is still a
+    // valid (just sub-optimal) PDLP iterate, and a stale-but-valid
+    // snapshot is strictly better than holding nothing for peer workers
+    // running through `try_solve_or_snapshot` (issue #76).  A `kError`
+    // result, by contrast, may have an undefined / partial primal, so
+    // we leave the previous snapshot in place.  The trailing
+    // `value_valid` guard is the fail-safe: any solve that flagged its
+    // primal unusable is suppressed regardless of status.
     if (result.status == HighsStatus::kError) {
         return;
     }
