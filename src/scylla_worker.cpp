@@ -440,12 +440,26 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             //     cycle_history_.size() == min(K_, kCycleWindow)
             //
             // holds across stale rounds without any extra bookkeeping.
-            // We assert it both before and after the slot write to
-            // catch any future refactor that decouples K_ from the
-            // history (e.g. advancing K_ on stale rounds without
-            // pushing, or vice versa) — that would silently corrupt
-            // cycling detection.
-            assert(static_cast<int>(cycle_history_.size()) == std::min(K_, pump::kCycleWindow));
+            //
+            // One pre-write check is enough — the slot-write + ++K_
+            // mechanics make the post-condition automatic, so the
+            // historical post-write assert here was redundant
+            // (R2-10 round-4 review).  Release-safe abort matches
+            // `b4dd29d` (in_flight) and `231a77e` (ncol_==0) so all
+            // three structural invariants share the same defensive
+            // style: `assert` is a no-op under `NDEBUG` (default for
+            // `-DCMAKE_BUILD_TYPE=Release`), and silently corrupted
+            // cycling detection would mask the very pump-state bug
+            // this guard exists to catch (R3-8 round-4 review).
+            const int expected_size = std::min(K_, pump::kCycleWindow);
+            if (static_cast<int>(cycle_history_.size()) != expected_size) {
+                std::fprintf(stderr,
+                             "ScyllaWorker: cycle_history invariant violated "
+                             "(size=%zu, expected=%d, K_=%d). Pump state corruption — "
+                             "aborting.\n",
+                             cycle_history_.size(), expected_size, K_);
+                std::abort();
+            }
             if (static_cast<int>(cycle_history_.size()) < pump::kCycleWindow) {
                 cycle_history_.push_back(x_hat);
             } else {
@@ -458,11 +472,6 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                                          modified_cost_);
             epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
             ++K_;
-            // Post-update: history is one larger if we just pushed; same
-            // size if we wrote into the ring; never larger than the
-            // window cap.  Equivalent to the pre-condition incremented
-            // by one on the not-yet-full path.
-            assert(static_cast<int>(cycle_history_.size()) == std::min(K_, pump::kCycleWindow));
         }
     }
 
