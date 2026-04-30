@@ -221,6 +221,10 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
                 if (feasible_random_walks_done_ < kFeasibleMaxRandomWalks) {
                     perturb_solution(ctx_.solution, *ctx_.mipdata, ctx_.integrality, ctx_.col_lb,
                                      ctx_.col_ub, ctx_.ncol, rng_);
+                    // Paper §4.1: random walk gets a clean weight state — otherwise
+                    // the worker just walks back toward the same plateau under the
+                    // existing bias.
+                    ctx_.reset_weights();
                     ctx_.rebuild_state();
                     ++feasible_random_walks_done_;
                     steps_since_improvement_ = 0;

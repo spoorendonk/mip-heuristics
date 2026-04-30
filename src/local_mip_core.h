@@ -6,6 +6,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -109,6 +110,16 @@ struct WorkerCtx {
     // Paper Section 4.1: weighting scheme for MIP.
     // Called when at a local optimum (no positive operation found).
     void update_weights(Rng &rng, bool is_feasible, bool best_feasible, double best_obj);
+
+    // Reset constraint and objective weights to their initial state.
+    // Used after a random-walk perturbation: a fresh restart point
+    // logically warrants a clean weighting state, otherwise the worker
+    // re-explores the same direction the existing weights bias it
+    // toward (Lin, Zou, Cai §4.1, R1-9 round-3 review).
+    void reset_weights() {
+        std::fill(weight.begin(), weight.end(), uint64_t{1});
+        obj_weight = 1;
+    }
 };
 
 // --- Candidate selection / scoring ---
