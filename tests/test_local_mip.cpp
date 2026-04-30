@@ -387,6 +387,18 @@ TEST_CASE("SolutionPool::copy_best returns exactly the seeded best entry (#74 un
 // Scenario A: nothing populates the pool/incumbent before LocalMIP, so
 // the cold-start construction must fire on every worker (#75 active,
 // #74 unreachable).
+//
+// State the test asserts on entry: with FJ, FPR, and Scylla disabled
+// and `mip_root_presolve_only` set, no upstream heuristic populates
+// either the shared pool or `mipdata->incumbent` before LocalMIP runs;
+// the construction branch is therefore the only reachable warm-start
+// path.  R2-6 / R3-4 round-4 review: assert *both* `pool == 0` AND
+// `incumbent == 0` so a future HiGHS presolve change that pre-populates
+// the incumbent surfaces as a clean test failure rather than silently
+// reaching cold-start through a different (no-op) branch.  The
+// `construction >= 1` assertion alone can't tell those apart; the
+// purpose of this scenario is the cold-start path is *reachable*, not
+// just "construction fired".
 TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are empty (#75)",
           "[heuristic][local_mip][cold-start][warm-start-counters]") {
     local_mip::reset_warm_start_counters();
@@ -409,6 +421,12 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
     // Pool was empty before LocalMIP fired (no upstream heuristic
     // populated it), so the pool branch must not have triggered.
     REQUIRE(counters.pool == 0);
+    // Likewise, `mipdata->incumbent` must have been empty: a future
+    // HiGHS presolve change that pre-populates the incumbent would
+    // otherwise let the warm-start fall into the (different) incumbent
+    // branch and silently bypass the cold-start construction this
+    // scenario is meant to exercise.
+    REQUIRE(counters.incumbent == 0);
 }
 
 // Scenario B: FJ runs first and populates the pool with a feasible
