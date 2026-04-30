@@ -5,6 +5,8 @@
 #include "pump_common.h"
 
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -100,7 +102,24 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
            !peak_in_flight_.compare_exchange_weak(prev_peak, observed, std::memory_order_relaxed)) {
         // retry
     }
+    // Release-mode invariant check (NOT just `assert`): a concurrent
+    // PDLP solve silently corrupts cuPDLP GPU state and yields
+    // garbage primals — a release-mode crash is far better than
+    // returning corrupt results that then drive downstream rounding
+    // and pollute the solution pool.  `assert` is a no-op under
+    // `NDEBUG` (the default for `-DCMAKE_BUILD_TYPE=Release`), so we
+    // also fire `std::abort` unconditionally.  The mutex `mu_` is
+    // supposed to make this unreachable; if it ever fires it's a
+    // structural bug (e.g. a future refactor that grew a second
+    // entry path bypassing the lock).
     assert(observed == 1 && "ContestedPdlp: concurrent solve detected (cuPDLP GPU state unsafe)");
+    if (observed != 1) {
+        std::fprintf(stderr,
+                     "ContestedPdlp: concurrent solve detected (in_flight=%d). cuPDLP GPU state "
+                     "is unsafe under overlap; aborting to avoid corrupt results.\n",
+                     observed);
+        std::abort();
+    }
 
     auto result = solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
                                warm_start_valid, epsilon, time_limit);
