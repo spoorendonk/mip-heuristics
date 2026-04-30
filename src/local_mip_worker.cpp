@@ -21,6 +21,13 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
                       const std::vector<HighsVarType> &integrality,
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
                       HighsInt ncol, Rng &rng) {
+    // Window for clamping the shift range when one or both bounds are
+    // non-finite (kHighsInf).  ±64 around the current value gives the
+    // perturbation enough room to actually move the variable without
+    // overflowing the int64_t cast that drives
+    // `uniform_int_distribution`.  Casting `kHighsInf - (-kHighsInf)`
+    // to int64_t is undefined behaviour (UB) — R2-5 round-3 review.
+    constexpr double kInfBoundShiftWindow = 64.0;
     std::uniform_real_distribution<double> coin(0.0, 1.0);
     for (HighsInt j = 0; j < ncol; ++j) {
         if (!is_integer(integrality, j)) {
@@ -34,12 +41,27 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
         } else {
             double lo = std::ceil(col_lb[j]);
             double hi = std::floor(col_ub[j]);
+            // Clamp `lo`/`hi` to a finite window around the current
+            // value when either bound is non-finite.  Without this
+            // guard the `static_cast<int64_t>(hi - lo)` below overflows
+            // (kHighsInf is ~1e30, which is far outside int64_t range)
+            // and `uniform_int_distribution<int64_t>(1, irange)` would
+            // see a garbage upper bound.
+            double current = std::round(solution[j]);
+            if (!std::isfinite(lo)) {
+                lo = current - kInfBoundShiftWindow;
+            }
+            if (!std::isfinite(hi)) {
+                hi = current + kInfBoundShiftWindow;
+            }
             if (hi <= lo) {
                 continue;
             }
             auto irange = static_cast<int64_t>(hi - lo);
+            if (irange < 1) {
+                continue;  // defensive: extreme rounding could yield 0
+            }
             int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
-            double current = std::round(solution[j]);
             solution[j] = lo + std::fmod(current - lo + shift, irange + 1.0);
             solution[j] = std::max(col_lb[j], std::min(col_ub[j], solution[j]));
         }
