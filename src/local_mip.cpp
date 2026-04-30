@@ -32,6 +32,29 @@ using local_mip_detail::perturb_solution;
 
 namespace {
 
+// Test-only branch counters for `resolve_worker_start`.  Atomic so the
+// opportunistic runner can increment from concurrent workers without
+// racing.  Reset and read via the API in `local_mip.h`.
+std::atomic<int> g_pool_count{0};
+std::atomic<int> g_incumbent_count{0};
+std::atomic<int> g_construction_count{0};
+
+}  // namespace
+
+void reset_warm_start_counters() {
+    g_pool_count.store(0, std::memory_order_relaxed);
+    g_incumbent_count.store(0, std::memory_order_relaxed);
+    g_construction_count.store(0, std::memory_order_relaxed);
+}
+
+WarmStartCounters warm_start_counters() {
+    return {g_pool_count.load(std::memory_order_relaxed),
+            g_incumbent_count.load(std::memory_order_relaxed),
+            g_construction_count.load(std::memory_order_relaxed)};
+}
+
+namespace {
+
 // Row + integer feasibility check for a candidate solution. Used once
 // per cold-construct branch so a feasible construction lands in the
 // shared pool with the LocalMIP source tag; if infeasible the caller
@@ -197,10 +220,12 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     // R2, R3 all flagged the waste on big MIPs.
     std::vector<double> start;
     if (pool.copy_best(start)) {
+        g_pool_count.fetch_add(1, std::memory_order_relaxed);
         return start;
     }
     auto *mipdata = mipsolver.mipdata_.get();
     if (!mipdata->incumbent.empty()) {
+        g_incumbent_count.fetch_add(1, std::memory_order_relaxed);
         return mipdata->incumbent;
     }
     // Cold start: neither the pool nor the incumbent has a solution.
@@ -208,8 +233,10 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     // dispatch; otherwise run the paper's construction phase and cache
     // it for subsequent workers.
     if (cold_start_cache != nullptr && !cold_start_cache->empty()) {
+        g_construction_count.fetch_add(1, std::memory_order_relaxed);
         return *cold_start_cache;
     }
+    g_construction_count.fetch_add(1, std::memory_order_relaxed);
     Rng rng(seed);
     std::vector<double> constructed;
     size_t construction_effort = construct_initial_solution(

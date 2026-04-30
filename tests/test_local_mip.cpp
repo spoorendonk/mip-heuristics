@@ -1,5 +1,6 @@
 #include "heuristic_common.h"
 #include "Highs.h"
+#include "local_mip.h"
 #include "local_mip_construction.h"
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
 #include "rng.h"
@@ -367,4 +368,73 @@ TEST_CASE("SolutionPool::copy_best returns exactly the seeded best entry (#74 un
     probe.clear();
     REQUIRE(pool.copy_best(probe));
     REQUIRE(probe == better_sol);
+}
+
+// ── Distinguish #74 (pool warm-start) vs #75 (cold-start construction) ──
+//
+// Reviewers R1-8, R2-7, R3-3 (round-3) flagged that the existing
+// integration tests assert "local_mip ran with non-zero effort", which
+// is true regardless of whether the warm-start came from the shared
+// pool (#74) or the paper's cold-start construction (#75).  These two
+// tests use the warm-start branch counters in `local_mip.h` to pin
+// down which path actually fired in each scenario.
+//
+// Counter contract (from `resolve_worker_start`):
+//   - `pool`: SolutionPool::copy_best returned a vector (warm).
+//   - `incumbent`: pool empty, mipdata->incumbent picked up.
+//   - `construction`: both empty → paper's Phase A/B ran.
+
+// Scenario A: nothing populates the pool/incumbent before LocalMIP, so
+// the cold-start construction must fire on every worker (#75 active,
+// #74 unreachable).
+TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are empty (#75)",
+          "[heuristic][local_mip][cold-start][warm-start-counters]") {
+    local_mip::reset_warm_start_counters();
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    h.setOptionValue("mip_root_presolve_only", true);
+    h.setOptionValue("mip_heuristic_run_fpr", false);
+    h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    h.setOptionValue("mip_heuristic_run_scylla", false);
+    h.setOptionValue("mip_heuristic_run_local_mip", true);
+    h.setOptionValue("mip_heuristic_portfolio", false);
+    h.setOptionValue("mip_heuristic_opportunistic", false);
+    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    auto counters = local_mip::warm_start_counters();
+    // Cold-start construction must have run at least once (one per
+    // worker, modulo the cold-start cache de-duplication).
+    REQUIRE(counters.construction >= 1);
+    // Pool was empty before LocalMIP fired (no upstream heuristic
+    // populated it), so the pool branch must not have triggered.
+    REQUIRE(counters.pool == 0);
+}
+
+// Scenario B: FJ runs first and populates the pool with a feasible
+// solution; LocalMIP must then warm-start from the pool (#74 active,
+// #75 unreachable for the worker setup paths).
+TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
+          "[heuristic][local_mip][pool-aware][warm-start-counters]") {
+    local_mip::reset_warm_start_counters();
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    h.setOptionValue("mip_root_presolve_only", true);
+    h.setOptionValue("mip_heuristic_run_fpr", false);
+    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+    h.setOptionValue("mip_heuristic_run_scylla", false);
+    h.setOptionValue("mip_heuristic_run_local_mip", true);
+    h.setOptionValue("mip_heuristic_portfolio", false);
+    h.setOptionValue("mip_heuristic_opportunistic", false);
+    // `lseu.mps` is the same instance the existing #74 regression test
+    // uses — FJ reliably finds a feasible inside the presolve budget,
+    // so the pool is non-empty by the time LocalMIP fires.
+    REQUIRE(h.readModel(kInstancesDir + "/lseu.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    auto counters = local_mip::warm_start_counters();
+    // The decisive assertion: at least one worker's start came from the
+    // pool, not construction.  Without #74's pool-aware lookup the only
+    // path that produces non-zero warm-start counts is `construction`.
+    REQUIRE(counters.pool >= 1);
 }
