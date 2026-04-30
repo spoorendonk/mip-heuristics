@@ -10,6 +10,7 @@
 #include "solution_pool.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 
@@ -404,6 +405,25 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             if (pump::detect_cycling(cycle_history_, x_hat, integrality, ncol_)) {
                 pump::perturb(x_hat, *model, rng_);
             }
+            // Cycle-history invariant (Mexi 2023 Algorithm 1.1, line 13):
+            // `cycle_history_` is a ring buffer of size at most
+            // `kCycleWindow`, indexed implicitly by `K_`.  The slot for
+            // iteration `K` is `(K - 1) % kCycleWindow` once the buffer
+            // is full; before that we just push_back.  Crucially, both
+            // `K_` AND `cycle_history_` are mutated only inside this
+            // `fresh` block — stale rounds (from issue #76's overlap
+            // refactor and commit 0c29d86's pump-state freeze) skip
+            // both, so the invariant
+            //
+            //     cycle_history_.size() == min(K_, kCycleWindow)
+            //
+            // holds across stale rounds without any extra bookkeeping.
+            // We assert it both before and after the slot write to
+            // catch any future refactor that decouples K_ from the
+            // history (e.g. advancing K_ on stale rounds without
+            // pushing, or vice versa) — that would silently corrupt
+            // cycling detection.
+            assert(static_cast<int>(cycle_history_.size()) == std::min(K_, pump::kCycleWindow));
             if (static_cast<int>(cycle_history_.size()) < pump::kCycleWindow) {
                 cycle_history_.push_back(x_hat);
             } else {
@@ -416,6 +436,11 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                                          modified_cost_);
             epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
             ++K_;
+            // Post-update: history is one larger if we just pushed; same
+            // size if we wrote into the ring; never larger than the
+            // window cap.  Equivalent to the pre-condition incremented
+            // by one on the not-yet-full path.
+            assert(static_cast<int>(cycle_history_.size()) == std::min(K_, pump::kCycleWindow));
         }
     }
 
