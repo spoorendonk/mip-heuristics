@@ -85,7 +85,10 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const
         }
         norm_c_sq += orig_cost[j] * orig_cost[j];
     }
-    if (num_integers == 0 || ncol_ == 0) {
+    // `ncol_ == 0` was already aborted above, so `num_integers` is the
+    // only remaining graceful-exit condition (a continuous LP with no
+    // integer variables — Scylla rounding has nothing to do).
+    if (num_integers == 0) {
         base_.finished = true;
         return;
     }

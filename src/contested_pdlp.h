@@ -173,6 +173,10 @@ protected:
 
     // Test hook: publish an arbitrary Snapshot without running a solve.
     // Bumps `snapshot_generation_` so tests can verify visibility.
+    // CONTRACT: caller MUST hold `mu_` (typically via
+    // `acquire_for_test()`); the function does not lock internally so
+    // it can be used inside a fixture that already simulates the
+    // production publish path's serialisation.
     void publish_snapshot_for_test(Snapshot snap);
 
 private:

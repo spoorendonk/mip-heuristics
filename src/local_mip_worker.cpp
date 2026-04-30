@@ -39,6 +39,13 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
         if (mipdata.domain.isBinary(j)) {
             solution[j] = (solution[j] < 0.5) ? 1.0 : 0.0;
         } else {
+            // Skip variables whose current value is non-finite (NaN or
+            // ±inf): casting NaN to int64_t is UB and `current ±
+            // kInfBoundShiftWindow` would propagate NaN through the
+            // shift arithmetic below.
+            if (!std::isfinite(solution[j])) {
+                continue;
+            }
             double lo = std::ceil(col_lb[j]);
             double hi = std::floor(col_ub[j]);
             // Clamp `lo`/`hi` to a finite window around the current
@@ -57,9 +64,15 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
             if (hi <= lo) {
                 continue;
             }
+            // `lo`/`hi` are integer-valued (ceil/floor or finite ±64
+            // window above), so `hi - lo` is an exact non-negative
+            // integer; the `hi <= lo` guard already eliminated the
+            // zero case.  Keep the post-cast guard purely as a safety
+            // net for any future refactor that drops the integer
+            // rounding above.
             auto irange = static_cast<int64_t>(hi - lo);
             if (irange < 1) {
-                continue;  // defensive: extreme rounding could yield 0
+                continue;
             }
             int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
             solution[j] = lo + std::fmod(current - lo + shift, irange + 1.0);

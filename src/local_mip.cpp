@@ -35,9 +35,9 @@ namespace {
 // Test-only branch counters for `resolve_worker_start`.  Atomic so the
 // opportunistic runner can increment from concurrent workers without
 // racing.  Reset and read via the API in `local_mip.h`.
-std::atomic<int> g_pool_count{0};
-std::atomic<int> g_incumbent_count{0};
-std::atomic<int> g_construction_count{0};
+std::atomic<int64_t> g_pool_count{0};
+std::atomic<int64_t> g_incumbent_count{0};
+std::atomic<int64_t> g_construction_count{0};
 
 }  // namespace
 
@@ -126,6 +126,12 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     // incumbent → paper's cold-start construction).  Without this the
     // portfolio dispatch (`port/det`, `port/opp`) silently regressed
     // relative to seq/det for #75 — flagged by R1-4 in round-3 review.
+    // When `initial_solution` is non-null the caller (typically the
+    // bandit) has already chosen a start; warm-start counters
+    // intentionally do NOT increment in that branch because the
+    // counter contract describes which branch THIS function chose,
+    // and the caller's source is opaque from here (R1-6 / R2-3 / R3-2
+    // round-4 review).
     std::vector<double> constructed;
     const double *start = initial_solution;
     // Track cold-start construction effort separately so the caller can
@@ -136,8 +142,10 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     if (start == nullptr) {
         auto *mipdata = mipsolver.mipdata_.get();
         if (!mipdata->incumbent.empty()) {
+            g_incumbent_count.fetch_add(1, std::memory_order_relaxed);
             start = mipdata->incumbent.data();
         } else {
+            g_construction_count.fetch_add(1, std::memory_order_relaxed);
             Rng rng(seed);
             construction_effort = construct_initial_solution(
                 mipsolver, csc, rng, construction_effort_cap(max_effort), constructed);

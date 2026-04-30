@@ -164,6 +164,16 @@ void ContestedPdlp::publish_snapshot_locked(const SolveResult &result) {
 }
 
 void ContestedPdlp::publish_snapshot_for_test(Snapshot snap) {
+    // Contract: the caller MUST hold `mu_` (typically via
+    // `acquire_for_test()`).  Test fixtures use the pattern
+    //   auto guard = pdlp.acquire_for_test();
+    //   pdlp.publish_snapshot_for_test(std::move(seed));
+    // to seed an initial snapshot while pretending to be inside a
+    // production publish path; locking here ourselves would be a
+    // recursive-lock deadlock against that fixture.  The lock-held
+    // precondition makes the `fetch_add` → `store` pair effectively
+    // atomic for any well-behaved test, matching the production
+    // path's serialisation discipline.
     snap.generation = snapshot_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
     auto sp = std::make_shared<const Snapshot>(std::move(snap));
     snapshot_.store(sp, std::memory_order_release);
