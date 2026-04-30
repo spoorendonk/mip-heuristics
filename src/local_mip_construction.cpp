@@ -271,19 +271,25 @@ size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, si
     const CscMatrix &csc = *inputs.csc;
     const double feastol = inputs.feastol;
 
-    // Phase A is a single linear scan over `ncol` — charge it against
-    // the effort budget so even a Phase-A-only construction (nrow == 0
-    // or max_effort == 0) is visible to the global accountant.  Without
-    // this we'd silently consume O(ncol) work without booking it.
-    size_t effort_phase_a = static_cast<size_t>(ncol);
-
     // --- Phase A: zero-start (paper Alg 1 Line 1) -----------------------
     for (HighsInt j = 0; j < ncol; ++j) {
         out_solution[j] = zero_start_value(col_lb[j], col_ub[j], is_integer(integrality, j));
     }
 
+    // Unit decision (R2-2 round-4 review): the rest of this function
+    // accounts effort in *coefficient-access* (nnz) units, matching
+    // `WorkerCtx::effort` and the system-wide `mode_dispatch::kWeight*`
+    // calibration.  Phase A is a single column-write loop (`ncol` writes,
+    // not nnz), so charging `+= ncol` on the normal path mixes units.
+    // We therefore drop the unconditional charge and only book a small
+    // `ncol` charge on the early-exit branch (nrow == 0 or
+    // max_effort == 0) so callers still see a non-zero effort
+    // representing the real wall-time spent (however small) when Phase B
+    // doesn't run.  The early-exit value is technically still in mixed
+    // units, but it's bounded by `ncol`, fires only on degenerate
+    // inputs, and the alternative (returning 0) would underreport work.
     if (nrow == 0 || max_effort == 0) {
-        return effort_phase_a;
+        return static_cast<size_t>(ncol);
     }
 
     // Compute initial lhs[] vector; this is the anchor the greedy sweep
@@ -409,11 +415,14 @@ size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, si
         out_solution[j] = v;
     }
 
-    // Total effort = Phase A linear scan + Phase B greedy sweep.  The
-    // Phase B counter is the same coefficient-access signal LocalMIP's
-    // search loop uses (`WorkerCtx::effort`), so the two are directly
-    // comparable when summed into `mipdata->heuristic_effort_used`.
-    return effort_phase_a + effort;
+    // Total effort = Phase B greedy sweep only.  Phase A's column-write
+    // loop (~ncol cheap writes) is dropped from the normal-path total
+    // for unit consistency: `effort` here is the coefficient-access
+    // signal LocalMIP's search loop uses (`WorkerCtx::effort`), and that
+    // is the same signal `mode_dispatch::kWeight*` is calibrated against.
+    // See the comment near the early-exit return above for the unit
+    // rationale.
+    return effort;
 }
 
 // HighsMipSolver& thin wrapper: assemble ConstructionInputs from the
