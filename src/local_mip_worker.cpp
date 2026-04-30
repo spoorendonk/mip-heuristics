@@ -27,6 +27,16 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
     // overflowing the int64_t cast that drives
     // `uniform_int_distribution`.  Casting `kHighsInf - (-kHighsInf)`
     // to int64_t is undefined behaviour (UB) — R2-5 round-3 review.
+    //
+    // Why 64 specifically (R3-9 round-4 review): a power of two chosen
+    // so the int64 cast `static_cast<int64_t>(hi - lo)` stays well
+    // clear of overflow even on stacked perturbations and the
+    // perturbation has enough room to actually move the variable.  Not
+    // benchmark-tuned; pick whatever finite window gives meaningful
+    // diversification.  Anything from O(10) to O(10^6) would equally
+    // satisfy the UB-avoidance requirement; 64 is a small-but-not-tiny
+    // choice that mirrors the "small jump" intent of a perturbation
+    // step rather than a global teleport.
     constexpr double kInfBoundShiftWindow = 64.0;
     std::uniform_real_distribution<double> coin(0.0, 1.0);
     for (HighsInt j = 0; j < ncol; ++j) {
