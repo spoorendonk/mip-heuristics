@@ -10,7 +10,6 @@
 #include "solution_pool.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -451,6 +450,10 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             // `-DCMAKE_BUILD_TYPE=Release`), and silently corrupted
             // cycling detection would mask the very pump-state bug
             // this guard exists to catch (R3-8 round-4 review).
+            // `std::abort()` skips RAII on sibling worker threads and
+            // any in-flight cuPDLP GPU state — the OS reclaims those
+            // on process exit, and "die loud" is the correct response
+            // to a structural invariant violation (R2-5 round-5).
             const int expected_size = std::min(K_, pump::kCycleWindow);
             if (static_cast<int>(cycle_history_.size()) != expected_size) {
                 std::fprintf(stderr,

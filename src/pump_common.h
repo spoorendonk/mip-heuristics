@@ -143,6 +143,12 @@ inline void perturb(std::vector<double> &x, const HighsLp &model, Rng &rng) {
         }
         int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
         x[j] = lo + std::fmod(current - lo + shift, irange + 1.0);
+        // Final clamp to the original bounds — mirrors the closing
+        // step of `local_mip_detail::perturb_solution` so the two
+        // patterns stay structurally identical.  Defensive against any
+        // fmod / cast roundoff escaping `[lb[j], ub[j]]` (R3-5
+        // round-5 review).
+        x[j] = std::max(lb[j], std::min(ub[j], x[j]));
     }
 }
 

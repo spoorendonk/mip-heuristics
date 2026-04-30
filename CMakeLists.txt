@@ -10,19 +10,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # but are only consumed by two tests.  When OFF the counter increments
 # compile out via `if constexpr` and the public API returns zeros; when
 # ON, the counters fire and the test suite uses them as regression
-# sentinels.  Defaults to ON when tests are being built (so the test
-# targets keep working out of the box) and OFF otherwise — production
-# builds that want zero counter overhead can pass
-# `-DMIP_HEURISTICS_INSTRUMENT=OFF` explicitly.  R3-1 round-4 review.
-if(BUILD_TESTING OR NOT DEFINED BUILD_TESTING)
-    option(MIP_HEURISTICS_INSTRUMENT
-           "Enable LocalMIP warm-start branch instrumentation counters"
-           ON)
-else()
-    option(MIP_HEURISTICS_INSTRUMENT
-           "Enable LocalMIP warm-start branch instrumentation counters"
-           OFF)
-endif()
+# sentinels.  Defaults ON because this project always builds tests
+# (BUILD_TESTING is force-set ON below); production builds wanting zero
+# counter overhead pass `-DMIP_HEURISTICS_INSTRUMENT=OFF` explicitly.
+# R3-1 round-4 review; R5 R1-1/R2-2/R3-2 dropped the dead else-branch
+# whose default was unreachable due to the BUILD_TESTING force later.
+option(MIP_HEURISTICS_INSTRUMENT
+       "Enable LocalMIP warm-start branch instrumentation counters" ON)
 
 include(cmake/FetchHiGHS.cmake)
 

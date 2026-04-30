@@ -216,18 +216,18 @@ struct WeightedOrderBuffers {
     std::vector<uint32_t> tiebreak;
 };
 
-// thread_local lifetime trade-off (R3-10 round-4 review): the buffers
-// persist for the thread's lifetime — fine for the current single-MIP-
-// per-process deployment (HiGHS solves one model per `Highs::run()`,
-// and the thread pool is short-lived).  Capacity is bounded by the
-// largest model the thread has constructed against.  If this code is
-// ever embedded in a long-running service that solves many models with
-// different sizes from the same persistent worker thread, revisit:
-// the high-water-mark capacity may stick around for the life of the
-// service.  The thread_local was deliberately chosen over per-call
-// allocation to avoid re-allocating on every cold-start (R1-12 round-3
-// review's profile showed allocation dominating on instances with
-// many cold restarts).
+// thread_local lifetime trade-off (R3-10 round-4 review, refined by
+// R3-4 round-5): the buffers persist for the lifetime of the HiGHS
+// worker thread — and that thread pool IS process-lifetime persistent
+// in the embedded-as-library deployment model HiGHS targets (a single
+// process can call `Highs::run()` repeatedly with different models).
+// So in practice, capacity is the high-water mark across every model
+// this thread has ever constructed against.  Acceptable because two
+// `vector<HighsInt>` + a `vector<uint32_t>` of size `ncol` is at most
+// a few MB even on the biggest MIPLIB instances (vs the rest of HiGHS
+// state), and the alternative is per-call allocation: R1-12 round-3
+// review's profile showed allocation dominating the construction hot
+// path on instances with many cold restarts.
 WeightedOrderBuffers &weighted_order_buffers() {
     thread_local WeightedOrderBuffers buffers;
     return buffers;

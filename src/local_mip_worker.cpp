@@ -280,10 +280,13 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
                     //     difficulty signal across the walk;
                     //   - reset weights: clear the bias toward the
                     //     direction that led to the just-failed plateau.
-                    // Empirically (4 instances tested per CLAUDE.md
-                    // testing notes) reset helps workers escape;
-                    // documenting this as an engineering extension
-                    // rather than paper-faithful behaviour.
+                    // We chose reset on the rationale that the existing
+                    // weights bias the search back toward the just-failed
+                    // plateau; this is intuition, not benchmarked.
+                    // Documented as an engineering extension rather than
+                    // paper-faithful behaviour (R3-1 round-5 review
+                    // flagged the prior comment's fabricated empirical
+                    // citation).
                     ctx_.reset_weights();
                     ctx_.rebuild_state();
                     ++feasible_random_walks_done_;
