@@ -91,6 +91,15 @@ inline bool detect_cycling(const std::vector<std::vector<double>> &history,
 
 // Perturb a rounded solution to break cycling (Algorithm 1.1, line 14).
 inline void perturb(std::vector<double> &x, const HighsLp &model, Rng &rng) {
+    // Window for clamping the shift range when one or both bounds are
+    // non-finite (kHighsInf).  Same UB pattern and same ±64 fix as
+    // `local_mip_detail::perturb_solution`: casting
+    // `kHighsInf - (-kHighsInf)` (~2e30) to int64_t is undefined
+    // behaviour, and a non-finite `current` would propagate NaN through
+    // the shift arithmetic.  Tracked as R1-3 round-4 review (and the
+    // analogous R2-5 round-3 fix in `src/local_mip_worker.cpp`).  Keep
+    // the value at 64.0 for parity with `kInfBoundShiftWindow` there.
+    constexpr double kInfBoundShiftWindow = 64.0;
     const HighsInt ncol = model.num_col_;
     const auto &integrality = model.integrality_;
     const auto &lb = model.col_lower_;
@@ -103,13 +112,35 @@ inline void perturb(std::vector<double> &x, const HighsLp &model, Rng &rng) {
         if (std::uniform_real_distribution<double>(0.0, 1.0)(rng) > kPerturbFraction) {
             continue;
         }
+        // Skip variables whose current value is non-finite (NaN or
+        // ±inf): casting NaN to int64_t is UB and `current ±
+        // kInfBoundShiftWindow` would propagate NaN through the shift
+        // arithmetic below.
+        if (!std::isfinite(x[j])) {
+            continue;
+        }
         double lo = std::ceil(lb[j]);
         double hi = std::floor(ub[j]);
+        double current = std::round(x[j]);
+        // Clamp `lo`/`hi` to a finite window around the current value
+        // when either bound is non-finite.  Without this guard the
+        // `static_cast<int64_t>(hi - lo)` below overflows (kHighsInf is
+        // ~1e30, far outside int64_t range) and
+        // `uniform_int_distribution<int64_t>(1, irange)` would see a
+        // garbage upper bound.
+        if (!std::isfinite(lo)) {
+            lo = current - kInfBoundShiftWindow;
+        }
+        if (!std::isfinite(hi)) {
+            hi = current + kInfBoundShiftWindow;
+        }
         if (hi <= lo) {
             continue;
         }
-        double current = std::round(x[j]);
         auto irange = static_cast<int64_t>(hi - lo);
+        if (irange < 1) {
+            continue;
+        }
         int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
         x[j] = lo + std::fmod(current - lo + shift, irange + 1.0);
     }
