@@ -201,8 +201,14 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
             }
             fresh = true;
             // `solve()` also publishes a fresh snapshot via
-            // `run_locked_with_accounting`; keep stale_snapshot_ in step.
+            // `run_locked_with_accounting`; keep stale_snapshot_ in step
+            // and update `last_seen_snapshot_gen_` so the identity check
+            // in the stale path next round compares against this fresh
+            // generation, not a stale one.
             stale_snapshot_ = pdlp_.latest_snapshot();
+            if (stale_snapshot_) {
+                last_seen_snapshot_gen_ = stale_snapshot_->generation;
+            }
         } else {
             auto try_res = pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
                                                        warm_start_row_dual_, warm_start_valid_,
@@ -213,12 +219,15 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                 }
                 fresh = true;
                 // Sync stale_snapshot_ to the snapshot this solve just
-                // published so the next iteration's "same pointer?"
+                // published so the next iteration's "same generation?"
                 // check correctly recognises it; otherwise the first
                 // stale round after our own fresh solve would round
                 // against our own just-published result — wasted FPR
                 // work.  Flagged by review R2.
                 stale_snapshot_ = pdlp_.latest_snapshot();
+                if (stale_snapshot_) {
+                    last_seen_snapshot_gen_ = stale_snapshot_->generation;
+                }
             } else {
                 // Stale path: round against the most-recent published
                 // snapshot.  If no snapshot is available yet (cold
@@ -239,9 +248,15 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                     epoch.effort += 1;
                     continue;
                 }
-                if (snap.get() == stale_snapshot_.get()) {
+                if (snap->generation == last_seen_snapshot_gen_) {
                     // Nothing new since last iteration — count toward
                     // the stale-round cap but don't do duplicate work.
+                    // Compare by generation rather than `shared_ptr`
+                    // address: a freed Snapshot's heap slot can be
+                    // recycled by the allocator, giving two distinct
+                    // publications the same `.get()` value, but
+                    // generations are strictly monotonic per
+                    // `ContestedPdlp` instance and cannot collide.
                     ++consecutive_stale_rounds_;
                     ++stale_rounds_;
                     base_.total_effort += 1;
@@ -250,6 +265,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
                     continue;
                 }
                 stale_snapshot_ = snap;
+                last_seen_snapshot_gen_ = snap->generation;
                 fresh = false;
                 // Do NOT overwrite this worker's warm_start_ — we only
                 // round, we don't update our own PDLP state.  The next

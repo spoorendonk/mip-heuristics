@@ -85,6 +85,42 @@ TEST_CASE("ContestedPdlp: try_solve_or_snapshot returns fresh when uncontended",
     REQUIRE(snap != nullptr);
     REQUIRE(snap->col_value.size() == 3);
     REQUIRE(snap->value_valid);
+    // Snapshot carries its own generation stamp matching the global
+    // counter — consumers should compare by generation, not pointer.
+    REQUIRE(snap->generation == 1);
+}
+
+TEST_CASE("ContestedPdlp: snapshot generation increases monotonically across solves",
+          "[contested_pdlp][overlap]") {
+    // Regression for R3-5: each fresh publish must stamp the Snapshot
+    // with a strictly-monotonic generation, so consumers (e.g.
+    // ScyllaWorker) can detect "is this a new snapshot?" without
+    // relying on `shared_ptr` address identity (heap addresses can be
+    // recycled).
+    FakePdlp pdlp;
+    std::vector<double> cost, ws_col, ws_row;
+
+    auto r1 = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    REQUIRE(r1.fresh);
+    auto s1 = pdlp.latest_snapshot();
+    REQUIRE(s1 != nullptr);
+    REQUIRE(s1->generation == 1);
+
+    auto r2 = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    REQUIRE(r2.fresh);
+    auto s2 = pdlp.latest_snapshot();
+    REQUIRE(s2 != nullptr);
+    REQUIRE(s2->generation == 2);
+    REQUIRE(s2->generation > s1->generation);
+
+    // The blocking `solve()` path must publish too and use the same
+    // counter (no separate channel for fresh-via-solve vs
+    // fresh-via-try).
+    (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    auto s3 = pdlp.latest_snapshot();
+    REQUIRE(s3 != nullptr);
+    REQUIRE(s3->generation == 3);
+    REQUIRE(pdlp.snapshot_generation() == 3);
 }
 
 TEST_CASE("ContestedPdlp: stale readers see last snapshot while peer holds mutex",

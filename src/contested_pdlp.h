@@ -55,12 +55,21 @@ public:
     // local `shared_ptr<const Snapshot>` so they can round against stale
     // data while a peer holds the mutex.  The object is never mutated
     // after publication — every completed solve produces a new instance.
+    //
+    // `generation` is a monotonic counter (per `ContestedPdlp` instance)
+    // assigned at publication time; the first published snapshot is
+    // generation 1, each subsequent fresh publish increments by one.
+    // Use it instead of `shared_ptr` address comparison for "did the
+    // upstream snapshot change since I last looked?" — addresses can
+    // be recycled if a freed Snapshot is replaced by a new allocation
+    // at the same heap slot, but generation numbers are unambiguous.
     struct Snapshot {
         std::vector<double> col_value;
         std::vector<double> row_dual;
         HighsInt pdlp_iters = 0;
         bool value_valid = false;
         bool dual_valid = false;
+        uint64_t generation = 0;
     };
 
     // Outcome of `try_solve_or_snapshot`: either a freshly computed

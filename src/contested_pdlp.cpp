@@ -154,14 +154,19 @@ void ContestedPdlp::publish_snapshot_locked(const SolveResult &result) {
     snap->pdlp_iters = result.pdlp_iters;
     snap->value_valid = result.value_valid;
     snap->dual_valid = result.dual_valid;
+    // Stamp the snapshot with its generation under the same mutex that
+    // serialises publishes, so generation values are strictly monotonic
+    // and pair 1:1 with `Snapshot` instances.  Consumers should compare
+    // by generation rather than `shared_ptr` address (heap addresses
+    // can be recycled; generations cannot).
+    snap->generation = snapshot_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
     snapshot_.store(std::shared_ptr<const Snapshot>(std::move(snap)), std::memory_order_release);
-    snapshot_generation_.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void ContestedPdlp::publish_snapshot_for_test(Snapshot snap) {
+    snap.generation = snapshot_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
     auto sp = std::make_shared<const Snapshot>(std::move(snap));
     snapshot_.store(sp, std::memory_order_release);
-    snapshot_generation_.fetch_add(1, std::memory_order_acq_rel);
 }
 
 ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double> &modified_cost,

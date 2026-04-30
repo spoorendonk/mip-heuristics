@@ -136,11 +136,17 @@ private:
     int pdlp_stall_count_ = 0;
 
     // Stale-snapshot overlap bookkeeping (issue #76).  `stale_snapshot_`
-    // caches the most-recent Snapshot this worker actually rounded
-    // against, so we can detect "nothing has been published since last
-    // time" and avoid blowing through the stale cap on an unchanged
-    // view.  `consecutive_stale_rounds_` is reset whenever we manage a
-    // fresh solve or change snapshot identity; when it hits
+    // keeps a `shared_ptr` to the most-recent Snapshot we rounded
+    // against (purely for ownership / lifetime — the upstream may
+    // replace its atomic slot underneath us at any time).
+    // `last_seen_snapshot_gen_` is the *identity* token: we compare
+    // generations, not shared_ptr addresses, because freed-and-recycled
+    // heap slots can give two distinct Snapshots the same `.get()`
+    // value, while monotonic generations cannot collide.  Generation 0
+    // is the "have not seen any snapshot yet" sentinel; the first
+    // published snapshot is generation 1 (see ContestedPdlp::Snapshot).
+    // `consecutive_stale_rounds_` is reset whenever we manage a fresh
+    // solve or observe a higher generation; when it hits
     // `max_stale_rounds_` we issue a blocking `solve()` on the next
     // iteration to guarantee forward progress.  The cap is sized at
     // construction from `nnz_lp_` (see `compute_max_stale_rounds`)
@@ -148,6 +154,7 @@ private:
     // PDLP latency scales with LP size and flat-4 is too eager to
     // force-fresh on large MIPs (R3).
     std::shared_ptr<const ContestedPdlp::Snapshot> stale_snapshot_;
+    uint64_t last_seen_snapshot_gen_ = 0;
     int consecutive_stale_rounds_ = 0;
     int max_stale_rounds_ = kMaxStaleRoundsDefault;
     // Counters exposed for tests / observability.
