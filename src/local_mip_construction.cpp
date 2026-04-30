@@ -203,12 +203,30 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
 // validation against the 4 Local-MIP new-record instances
 // (`genus-sym-g31-8`, `genus-sym-g62-2`, `genus-g61-25`,
 // `neos-4232544-orira`) per issue #75's acceptance criterion.
-std::vector<HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng) {
-    std::vector<HighsInt> order(ncol);
-    std::vector<uint32_t> tiebreak(ncol);
+// Hoisted scratch buffers for `weighted_order`.  Per-thread to keep
+// concurrent worker construction calls from racing.  R1-12 round-3
+// review: the previous version allocated `order` and `tiebreak` on
+// every call; on instances with thousands of cold-restarts this
+// dominated the construction profile.  Resized in-place each call so
+// memory stays bounded by the largest model the thread has constructed
+// against.
+struct WeightedOrderBuffers {
+    std::vector<HighsInt> order;
+    std::vector<uint32_t> tiebreak;
+};
+
+WeightedOrderBuffers &weighted_order_buffers() {
+    thread_local WeightedOrderBuffers buffers;
+    return buffers;
+}
+
+const std::vector<HighsInt> &weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng) {
+    auto &buffers = weighted_order_buffers();
+    buffers.order.resize(ncol);
+    buffers.tiebreak.resize(ncol);
     for (HighsInt j = 0; j < ncol; ++j) {
-        order[j] = j;
-        tiebreak[j] = static_cast<uint32_t>(rng());
+        buffers.order[j] = j;
+        buffers.tiebreak[j] = static_cast<uint32_t>(rng());
     }
     // Primary key: descending col-nnz (high-coverage variables first).
     // Secondary key: a per-variable RNG draw, so two workers with
@@ -218,7 +236,8 @@ std::vector<HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &r
     // workers — the shuffle's randomness is overwritten by the
     // deterministic col-nnz comparison for any two variables with
     // different nnz.  Review R2 flagged this.
-    std::sort(order.begin(), order.end(), [&](HighsInt a, HighsInt b) {
+    const auto &tiebreak = buffers.tiebreak;
+    std::sort(buffers.order.begin(), buffers.order.end(), [&](HighsInt a, HighsInt b) {
         auto nnz_a = csc.col_start[a + 1] - csc.col_start[a];
         auto nnz_b = csc.col_start[b + 1] - csc.col_start[b];
         if (nnz_a != nnz_b) {
@@ -226,7 +245,7 @@ std::vector<HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &r
         }
         return tiebreak[a] < tiebreak[b];
     });
-    return order;
+    return buffers.order;
 }
 
 }  // namespace
@@ -282,7 +301,7 @@ size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, si
     // containing the variable (paper §3.2 mtm operator on violated
     // constraints).  Uniform weights (1) during construction — dynamic
     // weighting only kicks in later inside the search loop (paper §4.1).
-    std::vector<HighsInt> order = weighted_order(csc, ncol, rng);
+    const std::vector<HighsInt> &order = weighted_order(csc, ncol, rng);
 
     // Small cap on candidates per variable — bounded so one variable
     // sweep stays O(col_nnz) coefficient accesses.
