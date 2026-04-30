@@ -44,7 +44,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <span>
 #include <utility>  // std::swap
 #include <vector>
 
@@ -204,53 +203,31 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
 // validation against the 4 Local-MIP new-record instances
 // (`genus-sym-g31-8`, `genus-sym-g62-2`, `genus-g61-25`,
 // `neos-4232544-orira`) per issue #75's acceptance criterion.
-// Hoisted scratch buffers for `weighted_order`.  Per-thread to keep
-// concurrent worker construction calls from racing.  R1-12 round-3
-// review: the previous version allocated `order` and `tiebreak` on
-// every call; on instances with thousands of cold-restarts this
-// dominated the construction profile.  Resized in-place each call so
-// memory stays bounded by the largest model the thread has constructed
-// against.
-struct WeightedOrderBuffers {
-    std::vector<HighsInt> order;
-    std::vector<uint32_t> tiebreak;
-};
-
-// thread_local lifetime trade-off (R3-10 round-4 review, refined by
-// R3-4 round-5): the buffers persist for the lifetime of the HiGHS
-// worker thread — and that thread pool IS process-lifetime persistent
-// in the embedded-as-library deployment model HiGHS targets (a single
-// process can call `Highs::run()` repeatedly with different models).
-// So in practice, capacity is the high-water mark across every model
-// this thread has ever constructed against.  Acceptable because two
-// `vector<HighsInt>` + a `vector<uint32_t>` of size `ncol` is at most
-// a few MB even on the biggest MIPLIB instances (vs the rest of HiGHS
-// state), and the alternative is per-call allocation: R1-12 round-3
-// review's profile showed allocation dominating the construction hot
-// path on instances with many cold restarts.
-WeightedOrderBuffers &weighted_order_buffers() {
-    thread_local WeightedOrderBuffers buffers;
-    return buffers;
-}
-
-// Returns a non-owning view into the thread_local `WeightedOrderBuffers`
-// owned by `weighted_order_buffers()`.  R2-7 round-4 review: we used to
-// return `const std::vector<HighsInt>&`, which silently relied on the
-// caller not invoking any sibling helper that touches the same
-// thread_local before the view goes out of scope.  Returning
-// `std::span` makes the lifetime contract visible in the type — a
-// future maintainer who wants to call this twice in a row, or
-// recursively from inside `construct_initial_solution`, will see the
-// view aliasing as part of the signature.  The span's payload is still
-// the same `WeightedOrderBuffers::order` vector; the view stays valid
-// until the next call to `weighted_order_buffers()` on the same thread.
-std::span<const HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng) {
-    auto &buffers = weighted_order_buffers();
-    buffers.order.resize(ncol);
-    buffers.tiebreak.resize(ncol);
+// Fills `out_order` with variable indices `[0, ncol)` sorted by
+// descending col-nnz (high-coverage variables first), tie-broken by a
+// per-variable RNG draw.  Caller owns `out_order`'s lifetime — there
+// is no shared/thread_local view to dangle, so re-entrant calls and
+// future sibling helpers cannot alias each other (R2-6 round-5 review
+// invertted the prior `std::span`-into-thread_local API for this).
+//
+// `tiebreak` scratch is kept thread_local internally for amortization
+// per R1-12 round-3 review (per-call allocation dominated the
+// construction profile on instances with thousands of cold restarts);
+// the thread_local is fully consumed inside this function and never
+// escapes, so it does not participate in the caller's lifetime story.
+// The thread_local persists for the lifetime of the HiGHS worker
+// thread (process-lifetime in the embedded-as-library deployment per
+// R3-4 round-5); peak capacity is bounded by the largest `ncol` this
+// thread has ever sorted, which on MIPLIB scales is at most a few MB
+// of `uint32_t`.
+void weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng,
+                    std::vector<HighsInt> &out_order) {
+    thread_local std::vector<uint32_t> tiebreak;
+    out_order.resize(ncol);
+    tiebreak.resize(ncol);
     for (HighsInt j = 0; j < ncol; ++j) {
-        buffers.order[j] = j;
-        buffers.tiebreak[j] = static_cast<uint32_t>(rng());
+        out_order[j] = j;
+        tiebreak[j] = static_cast<uint32_t>(rng());
     }
     // Primary key: descending col-nnz (high-coverage variables first).
     // Secondary key: a per-variable RNG draw, so two workers with
@@ -260,8 +237,7 @@ std::span<const HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rn
     // workers — the shuffle's randomness is overwritten by the
     // deterministic col-nnz comparison for any two variables with
     // different nnz.  Review R2 flagged this.
-    const auto &tiebreak = buffers.tiebreak;
-    std::sort(buffers.order.begin(), buffers.order.end(), [&](HighsInt a, HighsInt b) {
+    std::sort(out_order.begin(), out_order.end(), [&](HighsInt a, HighsInt b) {
         auto nnz_a = csc.col_start[a + 1] - csc.col_start[a];
         auto nnz_b = csc.col_start[b + 1] - csc.col_start[b];
         if (nnz_a != nnz_b) {
@@ -269,7 +245,6 @@ std::span<const HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rn
         }
         return tiebreak[a] < tiebreak[b];
     });
-    return std::span<const HighsInt>(buffers.order);
 }
 
 }  // namespace
@@ -331,7 +306,8 @@ size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, si
     // containing the variable (paper §3.2 mtm operator on violated
     // constraints).  Uniform weights (1) during construction — dynamic
     // weighting only kicks in later inside the search loop (paper §4.1).
-    std::span<const HighsInt> order = weighted_order(csc, ncol, rng);
+    std::vector<HighsInt> order;
+    weighted_order(csc, ncol, rng, order);
 
     // Small cap on candidates per variable — bounded so one variable
     // sweep stays O(col_nnz) coefficient accesses.

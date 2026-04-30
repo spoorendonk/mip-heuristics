@@ -58,9 +58,10 @@ WarmStartCounters warm_start_counters() {
     return {0, 0, 0};
 }
 
+namespace {
+
 // Helper to bump a warm-start counter only when instrumentation is
 // enabled.  Compiles to a no-op in production builds.
-namespace {
 inline void bump_counter(std::atomic<int64_t> &counter) {
     if constexpr (kInstrumented) {
         counter.fetch_add(1, std::memory_order_relaxed);
@@ -68,9 +69,6 @@ inline void bump_counter(std::atomic<int64_t> &counter) {
         (void)counter;
     }
 }
-}  // namespace
-
-namespace {
 
 // Row + integer feasibility check for a candidate solution. Used once
 // per cold-construct branch so a feasible construction lands in the

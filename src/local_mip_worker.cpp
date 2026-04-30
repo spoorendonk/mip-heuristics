@@ -21,23 +21,10 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
                       const std::vector<HighsVarType> &integrality,
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
                       HighsInt ncol, Rng &rng) {
-    // Window for clamping the shift range when one or both bounds are
-    // non-finite (kHighsInf).  ±64 around the current value gives the
-    // perturbation enough room to actually move the variable without
-    // overflowing the int64_t cast that drives
-    // `uniform_int_distribution`.  Casting `kHighsInf - (-kHighsInf)`
-    // to int64_t is undefined behaviour (UB) — R2-5 round-3 review.
-    //
-    // Why 64 specifically (R3-9 round-4 review): a power of two chosen
-    // so the int64 cast `static_cast<int64_t>(hi - lo)` stays well
-    // clear of overflow even on stacked perturbations and the
-    // perturbation has enough room to actually move the variable.  Not
-    // benchmark-tuned; pick whatever finite window gives meaningful
-    // diversification.  Anything from O(10) to O(10^6) would equally
-    // satisfy the UB-avoidance requirement; 64 is a small-but-not-tiny
-    // choice that mirrors the "small jump" intent of a perturbation
-    // step rather than a global teleport.
-    constexpr double kInfBoundShiftWindow = 64.0;
+    // `kInfBoundShiftWindow` and `kSafeInt64DoubleRange` are shared
+    // with `pump::perturb` via `heuristic_common.h` (R1-4 / R3-11
+    // round-5 review): the two perturbation paths must use the same
+    // window so cross-heuristic behaviour stays in lock-step.
     std::uniform_real_distribution<double> coin(0.0, 1.0);
     for (HighsInt j = 0; j < ncol; ++j) {
         if (!is_integer(integrality, j)) {
@@ -59,16 +46,16 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
             double lo = std::ceil(col_lb[j]);
             double hi = std::floor(col_ub[j]);
             // Clamp `lo`/`hi` to a finite window around the current
-            // value when either bound is non-finite.  Without this
-            // guard the `static_cast<int64_t>(hi - lo)` below overflows
-            // (kHighsInf is ~1e30, which is far outside int64_t range)
-            // and `uniform_int_distribution<int64_t>(1, irange)` would
-            // see a garbage upper bound.
+            // value when either bound is non-finite OR finite-but-huge.
+            // Without this guard the `static_cast<int64_t>(hi - lo)`
+            // below overflows: `kHighsInf` (== std::infinity per HiGHS
+            // HConst.h) is caught by `!std::isfinite`, but adversarial
+            // user-supplied bounds at e.g. ±1e20 satisfy isfinite yet
+            // still overflow int64_t (R1-3 round-5 review).  The
+            // `kSafeInt64DoubleRange` check catches both cases at once.
             double current = std::round(solution[j]);
-            if (!std::isfinite(lo)) {
+            if (!std::isfinite(lo) || !std::isfinite(hi) || hi - lo > kSafeInt64DoubleRange) {
                 lo = current - kInfBoundShiftWindow;
-            }
-            if (!std::isfinite(hi)) {
                 hi = current + kInfBoundShiftWindow;
             }
             if (hi <= lo) {

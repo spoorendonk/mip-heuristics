@@ -91,6 +91,24 @@ inline double clamp_round(double val, double lb, double ub, bool integer) {
     return std::max(lb, std::min(ub, val));
 }
 
+// Window for clamping the integer perturbation shift range when one or
+// both variable bounds are non-finite (kHighsInf, which IS infinity per
+// HiGHS HConst.h) or finite-but-huge.  Used by both
+// `local_mip_detail::perturb_solution` and `pump::perturb`; sharing the
+// constant keeps the two perturbation paths in lock-step (R1-4 / R3-11
+// round-5 review).  ±64 around the current value gives the perturbation
+// enough room to actually move the variable without overflowing the
+// `static_cast<int64_t>(hi - lo)` that drives `uniform_int_distribution`.
+constexpr double kInfBoundShiftWindow = 64.0;
+
+// Threshold for treating a finite-but-huge `hi - lo` range as
+// effectively unbounded.  `int64_t::max()` is ~9.2e18; a user-supplied
+// model with bounds at `±1e18` would produce a `static_cast<int64_t>`
+// at or beyond that limit, which is UB even though `std::isfinite`
+// returns true (R1-3 round-5 review).  Comparing the double range
+// against this threshold catches the case before the cast.
+constexpr double kSafeInt64DoubleRange = 1e18;
+
 // Deterministic per-worker RNG seeding.
 //
 // `kBaseSeedOffset` keeps the final seed non-zero when the user leaves
