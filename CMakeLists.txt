@@ -5,6 +5,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Optional instrumentation for the LocalMIP warm-start branch counters.
+# These atomic counters fire on every dispatch in the production binary
+# but are only consumed by two tests.  When OFF the counter increments
+# compile out via `if constexpr` and the public API returns zeros; when
+# ON, the counters fire and the test suite uses them as regression
+# sentinels.  Defaults to ON when tests are being built (so the test
+# targets keep working out of the box) and OFF otherwise — production
+# builds that want zero counter overhead can pass
+# `-DMIP_HEURISTICS_INSTRUMENT=OFF` explicitly.  R3-1 round-4 review.
+if(BUILD_TESTING OR NOT DEFINED BUILD_TESTING)
+    option(MIP_HEURISTICS_INSTRUMENT
+           "Enable LocalMIP warm-start branch instrumentation counters"
+           ON)
+else()
+    option(MIP_HEURISTICS_INSTRUMENT
+           "Enable LocalMIP warm-start branch instrumentation counters"
+           OFF)
+endif()
+
 include(cmake/FetchHiGHS.cmake)
 
 add_library(mip_heuristics OBJECT
@@ -33,6 +52,9 @@ add_library(mip_heuristics OBJECT
     src/walksat.cpp
 )
 target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
+if(MIP_HEURISTICS_INSTRUMENT)
+    target_compile_definitions(mip_heuristics PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
+endif()
 
 target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics>)
 target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -67,6 +89,13 @@ target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/high
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
 target_compile_definitions(mip_heuristics_tests PRIVATE
     "INSTANCES_DIR=\"${highs_SOURCE_DIR}/check/instances\"")
+# Mirror the instrumentation flag onto the tests target so
+# `local_mip::kInstrumented` has a consistent value across TUs (ODR).
+# When MIP_HEURISTICS_INSTRUMENT=OFF the tests that consume the
+# counters will simply read zeros — see the per-test guards below.
+if(MIP_HEURISTICS_INSTRUMENT)
+    target_compile_definitions(mip_heuristics_tests PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
+endif()
 catch_discover_tests(mip_heuristics_tests)
 
 # Python bench tests — unit tests for the log parser and

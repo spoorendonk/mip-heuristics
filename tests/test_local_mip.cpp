@@ -401,6 +401,9 @@ TEST_CASE("SolutionPool::copy_best returns exactly the seeded best entry (#74 un
 // just "construction fired".
 TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are empty (#75)",
           "[heuristic][local_mip][cold-start][warm-start-counters]") {
+    if constexpr (!local_mip::kInstrumented) {
+        SKIP("Built with MIP_HEURISTICS_INSTRUMENT=OFF — counters compiled out");
+    }
     local_mip::reset_warm_start_counters();
     Highs h;
     h.setOptionValue("output_flag", false);
@@ -434,6 +437,9 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
 // #75 unreachable for the worker setup paths).
 TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
           "[heuristic][local_mip][pool-aware][warm-start-counters]") {
+    if constexpr (!local_mip::kInstrumented) {
+        SKIP("Built with MIP_HEURISTICS_INSTRUMENT=OFF — counters compiled out");
+    }
     local_mip::reset_warm_start_counters();
     Highs h;
     h.setOptionValue("output_flag", false);

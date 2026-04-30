@@ -42,16 +42,33 @@ std::atomic<int64_t> g_construction_count{0};
 }  // namespace
 
 void reset_warm_start_counters() {
-    g_pool_count.store(0, std::memory_order_relaxed);
-    g_incumbent_count.store(0, std::memory_order_relaxed);
-    g_construction_count.store(0, std::memory_order_relaxed);
+    if constexpr (kInstrumented) {
+        g_pool_count.store(0, std::memory_order_relaxed);
+        g_incumbent_count.store(0, std::memory_order_relaxed);
+        g_construction_count.store(0, std::memory_order_relaxed);
+    }
 }
 
 WarmStartCounters warm_start_counters() {
-    return {g_pool_count.load(std::memory_order_relaxed),
-            g_incumbent_count.load(std::memory_order_relaxed),
-            g_construction_count.load(std::memory_order_relaxed)};
+    if constexpr (kInstrumented) {
+        return {g_pool_count.load(std::memory_order_relaxed),
+                g_incumbent_count.load(std::memory_order_relaxed),
+                g_construction_count.load(std::memory_order_relaxed)};
+    }
+    return {0, 0, 0};
 }
+
+// Helper to bump a warm-start counter only when instrumentation is
+// enabled.  Compiles to a no-op in production builds.
+namespace {
+inline void bump_counter(std::atomic<int64_t> &counter) {
+    if constexpr (kInstrumented) {
+        counter.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        (void)counter;
+    }
+}
+}  // namespace
 
 namespace {
 
@@ -142,10 +159,10 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     if (start == nullptr) {
         auto *mipdata = mipsolver.mipdata_.get();
         if (!mipdata->incumbent.empty()) {
-            g_incumbent_count.fetch_add(1, std::memory_order_relaxed);
+            bump_counter(g_incumbent_count);
             start = mipdata->incumbent.data();
         } else {
-            g_construction_count.fetch_add(1, std::memory_order_relaxed);
+            bump_counter(g_construction_count);
             Rng rng(seed);
             construction_effort = construct_initial_solution(
                 mipsolver, csc, rng, construction_effort_cap(max_effort), constructed);
@@ -228,12 +245,12 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     // R2, R3 all flagged the waste on big MIPs.
     std::vector<double> start;
     if (pool.copy_best(start)) {
-        g_pool_count.fetch_add(1, std::memory_order_relaxed);
+        bump_counter(g_pool_count);
         return start;
     }
     auto *mipdata = mipsolver.mipdata_.get();
     if (!mipdata->incumbent.empty()) {
-        g_incumbent_count.fetch_add(1, std::memory_order_relaxed);
+        bump_counter(g_incumbent_count);
         return mipdata->incumbent;
     }
     // Cold start: neither the pool nor the incumbent has a solution.
@@ -241,10 +258,10 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     // dispatch; otherwise run the paper's construction phase and cache
     // it for subsequent workers.
     if (cold_start_cache != nullptr && !cold_start_cache->empty()) {
-        g_construction_count.fetch_add(1, std::memory_order_relaxed);
+        bump_counter(g_construction_count);
         return *cold_start_cache;
     }
-    g_construction_count.fetch_add(1, std::memory_order_relaxed);
+    bump_counter(g_construction_count);
     Rng rng(seed);
     std::vector<double> constructed;
     size_t construction_effort = construct_initial_solution(

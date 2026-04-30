@@ -10,6 +10,21 @@ class SolutionPool;
 
 namespace local_mip {
 
+// Compile-time instrumentation switch (R3-1 round-4 review).  Driven
+// by the `MIP_HEURISTICS_INSTRUMENT` CMake option, which defaults to
+// ON when tests are being built and OFF otherwise.  When false, the
+// warm-start counter increments below compile out via
+// `if constexpr (kInstrumented)` in `local_mip.cpp` and the API calls
+// become no-ops (`reset_*` writes nothing, `warm_start_counters` just
+// returns zeros).  The tests then exercise the counters under their
+// own translation unit which sees `kInstrumented == true`.  Production
+// release builds can opt out with `-DMIP_HEURISTICS_INSTRUMENT=OFF`.
+#if defined(MIP_HEURISTICS_INSTRUMENT_ENABLED) && MIP_HEURISTICS_INSTRUMENT_ENABLED
+inline constexpr bool kInstrumented = true;
+#else
+inline constexpr bool kInstrumented = false;
+#endif
+
 // Test-only introspection: counts how many times each branch of
 // `resolve_worker_start` fired during the current process.  The three
 // branches correspond to the three #75 cold-start fallback rungs:
@@ -31,6 +46,9 @@ namespace local_mip {
 // (pool warm-start) from #75 (cold-start construction); without this
 // the integration tests can't tell those paths apart since both
 // produce non-zero effort.
+//
+// When `kInstrumented == false`, all three counters always read zero
+// regardless of how many runs have completed.
 struct WarmStartCounters {
     int64_t pool;
     int64_t incumbent;
