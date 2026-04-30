@@ -44,6 +44,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <utility>  // std::swap
 #include <vector>
 
@@ -220,7 +221,18 @@ WeightedOrderBuffers &weighted_order_buffers() {
     return buffers;
 }
 
-const std::vector<HighsInt> &weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng) {
+// Returns a non-owning view into the thread_local `WeightedOrderBuffers`
+// owned by `weighted_order_buffers()`.  R2-7 round-4 review: we used to
+// return `const std::vector<HighsInt>&`, which silently relied on the
+// caller not invoking any sibling helper that touches the same
+// thread_local before the view goes out of scope.  Returning
+// `std::span` makes the lifetime contract visible in the type — a
+// future maintainer who wants to call this twice in a row, or
+// recursively from inside `construct_initial_solution`, will see the
+// view aliasing as part of the signature.  The span's payload is still
+// the same `WeightedOrderBuffers::order` vector; the view stays valid
+// until the next call to `weighted_order_buffers()` on the same thread.
+std::span<const HighsInt> weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng) {
     auto &buffers = weighted_order_buffers();
     buffers.order.resize(ncol);
     buffers.tiebreak.resize(ncol);
@@ -245,7 +257,7 @@ const std::vector<HighsInt> &weighted_order(const CscMatrix &csc, HighsInt ncol,
         }
         return tiebreak[a] < tiebreak[b];
     });
-    return buffers.order;
+    return std::span<const HighsInt>(buffers.order);
 }
 
 }  // namespace
@@ -307,7 +319,7 @@ size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, si
     // containing the variable (paper §3.2 mtm operator on violated
     // constraints).  Uniform weights (1) during construction — dynamic
     // weighting only kicks in later inside the search loop (paper §4.1).
-    const std::vector<HighsInt> &order = weighted_order(csc, ncol, rng);
+    std::span<const HighsInt> order = weighted_order(csc, ncol, rng);
 
     // Small cap on candidates per variable — bounded so one variable
     // sweep stays O(col_nnz) coefficient accesses.
