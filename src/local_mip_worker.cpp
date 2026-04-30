@@ -247,18 +247,33 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
 
             ++steps_since_improvement_;
             if (steps_since_improvement_ >= kFeasiblePlateau) {
-                // Paper-style random-walk diversification (Lin, Zou,
-                // Cai §4.1): when feasible-mode search plateaus, the
-                // paper perturbs the current solution and keeps
-                // searching instead of terminating.  We cap the
-                // number of walks at `kFeasibleMaxRandomWalks` so
-                // pathological instances eventually stop.
+                // Random-walk diversification on plateau (engineering
+                // extension).  Paper Algorithm 1 (Lin, Zou, Cai CP 2024)
+                // runs a single search loop until time cutoff with no
+                // notion of plateau, restart, or random walk; this
+                // perturb-on-plateau scheme is our addition so workers
+                // running under a coefficient-effort budget (rather
+                // than wall-clock cutoff) don't burn out on stuck
+                // assignments.  `kFeasibleMaxRandomWalks` caps the
+                // walks for pathological instances.
                 if (feasible_random_walks_done_ < kFeasibleMaxRandomWalks) {
                     perturb_solution(ctx_.solution, *ctx_.mipdata, ctx_.integrality, ctx_.col_lb,
                                      ctx_.col_ub, ctx_.ncol, rng_);
-                    // Paper §4.1: random walk gets a clean weight state — otherwise
-                    // the worker just walks back toward the same plateau under the
-                    // existing bias.
+                    // Reset weights on random walk (engineering choice;
+                    // R2-8 round-4 review).  Paper §4.1 specifies only
+                    // initialization (`w(obj)=1, w(coni)=1`) and the
+                    // PAWS-style update rule fired at local optima — it
+                    // is silent on weight handling at the random-walk /
+                    // perturbation step we add above (the paper's main
+                    // loop has no such step).  Two defensible reads:
+                    //   - retain weights: keep the learned constraint
+                    //     difficulty signal across the walk;
+                    //   - reset weights: clear the bias toward the
+                    //     direction that led to the just-failed plateau.
+                    // Empirically (4 instances tested per CLAUDE.md
+                    // testing notes) reset helps workers escape;
+                    // documenting this as an engineering extension
+                    // rather than paper-faithful behaviour.
                     ctx_.reset_weights();
                     ctx_.rebuild_state();
                     ++feasible_random_walks_done_;

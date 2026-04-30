@@ -111,11 +111,18 @@ struct WorkerCtx {
     // Called when at a local optimum (no positive operation found).
     void update_weights(Rng &rng, bool is_feasible, bool best_feasible, double best_obj);
 
-    // Reset constraint and objective weights to their initial state.
+    // Reset constraint and objective weights to their initial state
+    // (`w(obj) = 1`, `w(coni) = 1` per Lin, Zou, Cai §4.1 init).
     // Used after a random-walk perturbation: a fresh restart point
     // logically warrants a clean weighting state, otherwise the worker
     // re-explores the same direction the existing weights bias it
-    // toward (Lin, Zou, Cai §4.1, R1-9 round-3 review).
+    // toward.  Engineering choice — paper §4.1 prescribes only
+    // initialization and the PAWS-style update at local optima; it is
+    // silent on weight handling at perturbation/restart (the paper's
+    // Algorithm 1 has no such step).  See the call site in
+    // `local_mip_worker.cpp` for the full justification.  R1-9 round-3
+    // review motivated the reset; R2-8 round-4 review flagged that the
+    // paper-citation framing was not grounded in the paper.
     void reset_weights() {
         std::fill(weight.begin(), weight.end(), uint64_t{1});
         obj_weight = 1;
