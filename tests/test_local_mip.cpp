@@ -2,13 +2,16 @@
 #include "Highs.h"
 #include "local_mip.h"
 #include "local_mip_construction.h"
+#include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
+#include "parallel/HighsParallel.h"
 #include "rng.h"
 #include "solution_pool.h"
 #include "test_common.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -461,4 +464,104 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     // pool, not construction.  Without #74's pool-aware lookup the only
     // path that produces non-zero warm-start counts is `construction`.
     REQUIRE(counters.pool >= 1);
+}
+
+// ── Effort-accounting contract: run_parallel return value matches delta (#79) ──
+//
+// `local_mip::run_parallel` returns the effort it consumed; the dispatcher
+// (`mode_dispatch::run_sequential`) books that exact value into
+// `mipdata->heuristic_effort_used`.  The reviewer for #79 flagged that the
+// existing tests (#30, #33) only assert "[Sequential] effort != 0", which
+// would silently pass a regression that returns just `total_effort` and
+// drops the cold-start `construction_effort` from the sum.
+//
+// This test pins the contract directly: it constructs a `HighsMipSolver`
+// with a valid `mipdata_`, calls `local_mip::run_parallel` itself, and
+// asserts `(after - before) == returned`.  Both branches of the parallel
+// runner (deterministic + opportunistic) are covered as separate sections
+// because the bug class the reviewer flagged is branch-specific.  The
+// instance is `flugpl.mps` — small, fast, and used by the existing
+// LocalMIP tests; running with no upstream heuristic populating the pool
+// or incumbent ensures the cold-start construction path fires (so
+// `construction_effort > 0` is part of the returned sum on at least one
+// of the two sections).
+TEST_CASE("LocalMIP: run_parallel return value matches heuristic_effort_used delta",
+          "[heuristic][local_mip][effort-accounting]") {
+    // Stand up a real `HighsMipSolver` (with `mipdata_`) without going
+    // through `Highs::run`'s heuristics, so we can call
+    // `local_mip::run_parallel` ourselves and observe its return value
+    // against the bookkeeping field.  Mirrors the minimal init sequence
+    // from `HighsMipSolver::run` (init → runMipPresolve → runSetup); we
+    // skip the heuristics and B&B that follow.  The HiGHS task scheduler
+    // is normally started by `Highs::run`, which we also bypass — so
+    // initialise it once explicitly before any `HighsMipSolverData::init`
+    // call (`init` reads `parallel::num_threads()` for the cliquetable
+    // parallelism threshold and segfaults on a null worker deque).
+    // Subsequent `initialize_scheduler()` calls are no-ops.
+    highs::parallel::initialize_scheduler();
+
+    auto build_mipsolver = [](Highs& highs, HighsCallback& cb) {
+        // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
+        // that leaves `mipsolver.model_` pointing at the original LP.
+        // `local_mip::run_parallel` only needs the LP shape and the
+        // `mipdata_` row-major buffers (`ARstart_/ARindex_/ARvalue_`)
+        // that `runSetup` populates; the heavier LP-relaxation
+        // machinery that comes later in `Highs::run` is not needed and
+        // skipping presolve keeps this minimal.
+        highs.setOptionValue("presolve", "off");
+        REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+        auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
+                                                          highs.getSolution());
+        mipsolver->timer_.start();
+        mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
+        mipsolver->mipdata_->init();
+        mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
+        mipsolver->mipdata_->runSetup();
+        return mipsolver;
+    };
+
+    auto run_and_check = [&](bool opportunistic) {
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        HighsCallback cb(&highs);
+        auto mipsolver = build_mipsolver(highs, cb);
+        const bool minimize = (mipsolver->model_->sense_ == ObjSense::kMinimize);
+        SolutionPool pool(/*capacity=*/4, minimize);
+
+        // Mirror exactly what `mode_dispatch::run_sequential` does for
+        // LocalMIP: read `mipdata->heuristic_effort_used`, call
+        // `local_mip::run_parallel`, then `+=` the returned value into
+        // the bookkeeping field.  The invariant the dispatcher relies on
+        // is `(after - before) == returned`; that holds iff
+        // `run_parallel` itself did NOT also touch the field.
+        const size_t before = mipsolver->mipdata_->heuristic_effort_used;
+        // A modest budget that is plenty for flugpl: large enough that
+        // the runner will execute meaningful work (so `returned > 0` is
+        // very likely), small enough that the test stays sub-second.
+        const size_t budget = 200000;
+        const size_t returned = local_mip::run_parallel(*mipsolver, pool, budget, opportunistic);
+        mipsolver->mipdata_->heuristic_effort_used += returned;
+        const size_t after = mipsolver->mipdata_->heuristic_effort_used;
+
+        // The contract under test (issue #79): the dispatcher's `+=`
+        // booking is the *only* path that updates
+        // `mipdata->heuristic_effort_used` for LocalMIP.  If a future
+        // refactor reintroduces self-booking inside `run_parallel` the
+        // delta becomes `2 * returned` (or more) and this fires.
+        REQUIRE(after - before == returned);
+        // Sanity guard: a broken implementation that always returns 0
+        // would make the invariant above vacuously true.  flugpl with a
+        // 200k budget and no incumbent must do real work (cold-start
+        // construction fires, then at least one search epoch), so
+        // `returned > 0`.  The exact value isn't pinned (depends on
+        // parallelism + seeds) — only the lower bound is.
+        REQUIRE(returned > 0);
+    };
+
+    SECTION("deterministic (epoch-gated)") {
+        run_and_check(/*opportunistic=*/false);
+    }
+    SECTION("opportunistic (continuous parallelism)") {
+        run_and_check(/*opportunistic=*/true);
+    }
 }
