@@ -21,7 +21,12 @@ namespace scylla {
 // `pool` is owned by the caller (mode_dispatch::run_sequential).
 // Workers insert feasible pumps with kSolutionSourceScylla; the caller
 // flushes the pool once all sequential heuristics have run.
-void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                  bool opportunistic);
+//
+// Returns the total effort consumed.  The caller is responsible for
+// booking it into `mipdata->heuristic_effort_used` — same contract as
+// `local_mip::run_parallel` (issue #79).  This makes mode_dispatch.cpp
+// the single point of Scylla effort accounting.
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                    bool opportunistic);
 
 }  // namespace scylla

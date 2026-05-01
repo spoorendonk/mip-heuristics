@@ -234,7 +234,8 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
 
 namespace {
 
-void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     // Precompute var_orders sequentially before any parallel region.
@@ -250,15 +251,14 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
                                                       kInitialFprConfigs[cfg_idx].mode, seed));
     }
 
-    size_t total_effort = run_epoch_loop(
+    return run_epoch_loop(
         mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
         [](int) { /* FprWorkers rarely hit hard stale threshold in det mode */ },
         setup.stale_budget);
-
-    setup.mipdata->heuristic_effort_used += total_effort;
 }
 
-void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     // Precompute var_orders sequentially before any parallel region.
@@ -278,7 +278,7 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         int worker_idx;
     };
 
-    size_t total_effort = run_opportunistic_loop(
+    return run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
         [](int worker_idx, Rng & /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
@@ -302,26 +302,23 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             }
             return result;
         });
-
-    setup.mipdata->heuristic_effort_used += total_effort;
 }
 
 }  // namespace
 
-void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                  bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                    bool opportunistic) {
     const auto *model = mipsolver.model_;
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
     if (ncol == 0 || nrow == 0) {
-        return;
+        return 0;
     }
 
     if (opportunistic) {
-        run_parallel_opportunistic(mipsolver, pool, max_effort);
-    } else {
-        run_parallel_deterministic(mipsolver, pool, max_effort);
+        return run_parallel_opportunistic(mipsolver, pool, max_effort);
     }
+    return run_parallel_deterministic(mipsolver, pool, max_effort);
 }
 
 }  // namespace fpr

@@ -151,59 +151,55 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
 
     bool infeasible = false;
 
-    // FJ, FPR and Scylla bump `mipdata->heuristic_effort_used` themselves
-    // (see fj.cpp, fpr.cpp, scylla.cpp), on the main thread after their
-    // parallel regions have joined.  LocalMIP returns the effort it
-    // consumed and this function books it (issue #79) so that LocalMIP's
-    // entry points share one effort-accounting contract — the parallel
-    // path used to self-book while the standalone `worker()` returned
-    // and the caller booked, which was a refactor hazard.  All four
-    // bookings happen on the main thread, so we read the counter below
-    // without synchronisation — do not move any of them into a worker
-    // without revisiting this.  (Historical note: local_mip used to
-    // early-return when `mipdata->incumbent.empty()` so its [Sequential]
-    // line was absent on a first solve.  Since issue #75 it runs the
-    // paper's construction phase on cold start and emits a non-zero
-    // effort even when no upstream heuristic produced a feasible
-    // solution.)
+    // All four heuristics return the effort they consumed and this
+    // function books it into `mipdata->heuristic_effort_used` (issue #79
+    // and its follow-up that extended LocalMIP's contract to FJ, FPR,
+    // and Scylla).  mode_dispatch.cpp is therefore the single point of
+    // sequential effort accounting — no heuristic self-books.  All
+    // bookings happen on the main thread after each parallel region has
+    // joined, so we read/write the counter below without synchronisation
+    // — do not move any of them into a worker without revisiting this.
+    // (Historical note: local_mip used to early-return when
+    // `mipdata->incumbent.empty()` so its [Sequential] line was absent
+    // on a first solve.  Since issue #75 it runs the paper's
+    // construction phase on cold start and emits a non-zero effort even
+    // when no upstream heuristic produced a feasible solution.)
     //
     // Wall-ms is measured in this outer frame so all four measurements
     // share a clock and include setup (`build_csc`, `precompute_var_orders`,
-    // worker construction) — what users actually pay for.  The unsigned
-    // subtraction is guarded: if a future refactor overwrites the counter
-    // instead of accumulating, we clamp to 0 rather than print garbage.
+    // worker construction) — what users actually pay for.
     const HighsLogOptions &log_options = options->log_options;
     auto run_and_log = [&](const char *name, auto &&call) {
-        const size_t effort_before = mipdata->heuristic_effort_used;
         const auto t0 = std::chrono::steady_clock::now();
-        call();
+        const size_t effort = call();
         const auto t1 = std::chrono::steady_clock::now();
-        const size_t effort_now = mipdata->heuristic_effort_used;
-        const size_t effort_delta = effort_now >= effort_before ? effort_now - effort_before : 0;
+        mipdata->heuristic_effort_used += effort;
         const double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        log_sequential(log_options, name, effort_delta, wall_ms);
+        log_sequential(log_options, name, effort, wall_ms);
     };
 
     if (fj_on && !deadline_hit()) {
-        run_and_log("fj", [&]() {
-            if (fj::run_parallel(mipsolver, pool, alloc(kWeightFj), opportunistic)) {
+        run_and_log("fj", [&]() -> size_t {
+            auto r = fj::run_parallel(mipsolver, pool, alloc(kWeightFj), opportunistic);
+            if (r.infeasible) {
                 infeasible = true;
             }
+            return r.effort;
         });
     }
     if (!infeasible && fpr_on && !deadline_hit()) {
-        run_and_log(
-            "fpr", [&]() { fpr::run_parallel(mipsolver, pool, alloc(kWeightFpr), opportunistic); });
+        run_and_log("fpr", [&]() -> size_t {
+            return fpr::run_parallel(mipsolver, pool, alloc(kWeightFpr), opportunistic);
+        });
     }
     if (!infeasible && lm_on && !deadline_hit()) {
-        run_and_log("local_mip", [&]() {
-            mipdata->heuristic_effort_used +=
-                local_mip::run_parallel(mipsolver, pool, alloc(kWeightLocalMip), opportunistic);
+        run_and_log("local_mip", [&]() -> size_t {
+            return local_mip::run_parallel(mipsolver, pool, alloc(kWeightLocalMip), opportunistic);
         });
     }
     if (!infeasible && sc_on && !deadline_hit()) {
-        run_and_log("scylla", [&]() {
-            scylla::run_parallel(mipsolver, pool, alloc(kWeightScylla), opportunistic);
+        run_and_log("scylla", [&]() -> size_t {
+            return scylla::run_parallel(mipsolver, pool, alloc(kWeightScylla), opportunistic);
         });
     }
 

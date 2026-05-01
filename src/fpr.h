@@ -18,7 +18,12 @@ namespace fpr {
 // `pool` is owned by the caller (mode_dispatch::run_sequential).  Workers
 // insert solutions with kSolutionSourceFPR; the caller flushes the pool
 // to HiGHS once the whole sequential chain has run.
-void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                  bool opportunistic = false);
+//
+// Returns the total effort consumed.  The caller is responsible for
+// booking it into `mipdata->heuristic_effort_used` — same contract as
+// `local_mip::run_parallel` (issue #79).  This makes mode_dispatch.cpp
+// the single point of FPR effort accounting.
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                    bool opportunistic = false);
 
 }  // namespace fpr

@@ -56,14 +56,15 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
     return cap < 100 ? 100 : cap;
 }
 
-void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     const HighsInt pdlp_iter_cap =
         compute_pdlp_iter_cap(max_effort, setup.mipdata->ARindex_.size());
     ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
     if (!pdlp.initialized()) {
-        return;
+        return 0;
     }
 
     std::atomic<uint64_t> improvement_gen{0};
@@ -82,17 +83,18 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         [](int) { /* no restart */ }, setup.stale_budget);
 
     log_overlap_ratio(mipsolver.options_mip_->log_options, workers);
-    setup.mipdata->heuristic_effort_used += total_effort;
+    return total_effort;
 }
 
-void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     const HighsInt pdlp_iter_cap =
         compute_pdlp_iter_cap(max_effort, setup.mipdata->ARindex_.size());
     ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
     if (!pdlp.initialized()) {
-        return;
+        return 0;
     }
 
     std::atomic<uint64_t> improvement_gen{0};
@@ -156,22 +158,21 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
     log_overlap_ratio(mipsolver.options_mip_->log_options, workers,
                       retired_fresh.load(std::memory_order_relaxed),
                       retired_stale.load(std::memory_order_relaxed));
-    setup.mipdata->heuristic_effort_used += total_effort;
+    return total_effort;
 }
 
 }  // namespace
 
-void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                  bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                    bool opportunistic) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
-        return;
+        return 0;
     }
     if (opportunistic) {
-        run_parallel_opportunistic(mipsolver, pool, max_effort);
-    } else {
-        run_parallel_deterministic(mipsolver, pool, max_effort);
+        return run_parallel_opportunistic(mipsolver, pool, max_effort);
     }
+    return run_parallel_deterministic(mipsolver, pool, max_effort);
 }
 
 }  // namespace scylla

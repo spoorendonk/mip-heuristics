@@ -16,7 +16,8 @@ namespace fj {
 
 namespace {
 
-bool run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     // Restart counter for generating fresh seeds when workers finish.
@@ -29,7 +30,7 @@ bool run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         workers.push_back(std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed));
     }
 
-    size_t total_effort = run_epoch_loop(
+    return run_epoch_loop(
         mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorkerFj),
         [&](int w) {
             // Restart finished FjWorker with a new seed.
@@ -39,20 +40,17 @@ bool run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             workers[w] = std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
         },
         setup.stale_budget);
-
-    setup.mipdata->heuristic_effort_used += total_effort;
-
-    return false;
 }
 
-bool run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     struct FjState {
         std::unique_ptr<FjWorker> worker;
     };
 
-    size_t total_effort = run_opportunistic_loop(
+    return run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
         [](int /*worker_idx*/, Rng & /*rng*/) -> FjState {
@@ -74,25 +72,24 @@ bool run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             }
             return result;
         });
-
-    setup.mipdata->heuristic_effort_used += total_effort;
-
-    return false;
 }
 
 }  // namespace
 
-bool run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                  bool opportunistic) {
+ParallelResult run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                            bool opportunistic) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
-        return false;
+        return {};
     }
 
+    ParallelResult result;
     if (opportunistic) {
-        return run_parallel_opportunistic(mipsolver, pool, max_effort);
+        result.effort = run_parallel_opportunistic(mipsolver, pool, max_effort);
+    } else {
+        result.effort = run_parallel_deterministic(mipsolver, pool, max_effort);
     }
-    return run_parallel_deterministic(mipsolver, pool, max_effort);
+    return result;
 }
 
 }  // namespace fj
