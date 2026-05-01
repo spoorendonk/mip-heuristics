@@ -155,7 +155,10 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     // function books it into `mipdata->heuristic_effort_used` (issue #79
     // and its follow-up that extended LocalMIP's contract to FJ, FPR,
     // and Scylla).  mode_dispatch.cpp is therefore the single point of
-    // sequential effort accounting — no heuristic self-books.  All
+    // sequential effort accounting — no heuristic self-books.  Note:
+    // `fpr_lp` is *not* part of the harmonisation; it runs during B&B
+    // dive (not via this `run_sequential` path) and keeps its own
+    // self-booking — see `src/fpr_lp.cpp`.  All
     // bookings happen on the main thread after each parallel region has
     // joined, so we read/write the counter below without synchronisation
     // — do not move any of them into a worker without revisiting this.
