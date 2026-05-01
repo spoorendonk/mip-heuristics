@@ -183,11 +183,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
 
     if (fj_on && !deadline_hit()) {
         run_and_log("fj", [&]() -> size_t {
-            auto r = fj::run_parallel(mipsolver, pool, alloc(kWeightFj), opportunistic);
-            if (r.infeasible) {
-                infeasible = true;
-            }
-            return r.effort;
+            return fj::run_parallel(mipsolver, pool, alloc(kWeightFj), opportunistic);
         });
     }
     if (!infeasible && fpr_on && !deadline_hit()) {

@@ -76,20 +76,16 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
 
 }  // namespace
 
-ParallelResult run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                            bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                    bool opportunistic) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
-        return {};
+        return 0;
     }
-
-    ParallelResult result;
     if (opportunistic) {
-        result.effort = run_parallel_opportunistic(mipsolver, pool, max_effort);
-    } else {
-        result.effort = run_parallel_deterministic(mipsolver, pool, max_effort);
+        return run_parallel_opportunistic(mipsolver, pool, max_effort);
     }
-    return result;
+    return run_parallel_deterministic(mipsolver, pool, max_effort);
 }
 
 }  // namespace fj
