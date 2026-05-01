@@ -69,8 +69,16 @@ WarmStartCounters warm_start_counters();
 // insert solutions with kSolutionSourceLocalMIP and may pull restarts
 // from the pool; the caller flushes the pool once all sequential
 // heuristics have run.
-void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                  bool opportunistic = false);
+//
+// Returns the total effort consumed (search effort + cold-start
+// construction effort).  The caller is responsible for booking this
+// into `mipdata->heuristic_effort_used` — same contract as `worker()`
+// (issue #79).  This makes mode_dispatch.cpp the single point of
+// LocalMIP effort accounting, removing the asymmetry where the parallel
+// path self-booked while the standalone path returned and the caller
+// booked.
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                    bool opportunistic = false);
 
 // Single-worker variant for portfolio mode. Returns result without submitting.
 // If initial_solution is non-null, uses it as starting point.

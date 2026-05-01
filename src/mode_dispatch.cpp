@@ -76,28 +76,31 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     //   4. Copy each heuristic's suggested weight into the constants
     //      below.  Normalise so the lowest weight rounds to a tidy value
     //      (0.5 or 1.0) — absolute scale does not matter, only ratios.
-    //   5. Re-run to confirm drift is < 2× across heuristics; the
-    //      script fails at > 3× as a regression gate.
+    //   5. Re-run to confirm the new geomean rates are stable across
+    //      seeds.  Note: cross-heuristic drift (max/min effort_per_ms)
+    //      is a structural property of the heuristics — recalibrating
+    //      kWeight* does not reduce it.  As of round-5 the drift sits
+    //      at ~4.7× because LocalMIP's coefficient-access counter and
+    //      Scylla's PDLP-iters × nnz counter measure work in genuinely
+    //      different units.  The script's default `--max-drift=3.0`
+    //      currently fails on this codebase by design; it is consumed
+    //      as a one-shot calibration helper, not a CI gate.
     //
     // Recalibrated against `bench/instances_small.txt` (25 MIPLIB
     // instances, 30 s each, mip_heuristic_effort default=0.30,
-    // seq/det, mip_root_presolve_only=true).  Measured geomean
-    // `effort_per_ms` with the #74/#75/#76 patches + multi-thread
-    // default (threads=16) in place:
-    //   fj=408k  fpr=599k  local_mip=1143k  scylla=282k   drift = 4.06×
+    // seq/det, mip_root_presolve_only=true, multi-thread default
+    // threads=16).  Measured geomean `effort_per_ms` after issue #78
+    // (cold-start construction sweep rolled into local_mip's reported
+    // effort):
+    //   fj=403k  fpr=636k  local_mip=1222k  scylla=261k   drift = 4.68×
     // Weights are proportional to geomean `effort_per_ms` (scylla
-    // normalised to 1.0 as the slowest-per-effort heuristic).  The
-    // pre-#75 figures (fj=131k  fpr=123k  local_mip=190k  scylla=222k
-    // — drift 1.81×) are obsolete after the cold-start construction
-    // landed on local_mip (which now consumes real effort on every
-    // cold call instead of early-returning) and after the stale-
-    // PDLP overlap landed on scylla (which shifts its effort/ms
-    // down because stale rounds now burn FPR work against cached
-    // primals).  Re-run `bench/check_effort_drift.py
-    // bench/results/calibration_v2` to refresh.
-    constexpr double kWeightFj = 1.45;
-    constexpr double kWeightFpr = 2.13;
-    constexpr double kWeightLocalMip = 4.06;
+    // normalised to 1.0 as the slowest-per-effort heuristic).
+    // Re-run `bench/check_effort_drift.py bench/results/calibration_v2`
+    // to refresh after any change to effort accounting.  Earlier
+    // calibrations live in git history (commits 82c0fbc, 83bc78b).
+    constexpr double kWeightFj = 1.54;
+    constexpr double kWeightFpr = 2.43;
+    constexpr double kWeightLocalMip = 4.68;
     constexpr double kWeightScylla = 1.00;
 
     const bool fj_on = options->mip_heuristic_run_feasibility_jump;
@@ -148,16 +151,21 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
 
     bool infeasible = false;
 
-    // Each heuristic's `run_parallel` bumps `mipdata->heuristic_effort_used`
-    // exactly once at the end (see fj.cpp, fpr.cpp, local_mip.cpp,
-    // scylla.cpp), on the main thread after its parallel region has joined.
-    // We therefore read it here without synchronisation — do not move the
-    // `+=` inside a worker without revisiting this.  (Historical note:
-    // local_mip used to early-return when `mipdata->incumbent.empty()`
-    // so its [Sequential] line was absent on a first solve.  Since
-    // issue #75 it runs the paper's construction phase on cold start
-    // and emits a non-zero effort even when no upstream heuristic
-    // produced a feasible solution.)
+    // FJ, FPR and Scylla bump `mipdata->heuristic_effort_used` themselves
+    // (see fj.cpp, fpr.cpp, scylla.cpp), on the main thread after their
+    // parallel regions have joined.  LocalMIP returns the effort it
+    // consumed and this function books it (issue #79) so that LocalMIP's
+    // entry points share one effort-accounting contract — the parallel
+    // path used to self-book while the standalone `worker()` returned
+    // and the caller booked, which was a refactor hazard.  All four
+    // bookings happen on the main thread, so we read the counter below
+    // without synchronisation — do not move any of them into a worker
+    // without revisiting this.  (Historical note: local_mip used to
+    // early-return when `mipdata->incumbent.empty()` so its [Sequential]
+    // line was absent on a first solve.  Since issue #75 it runs the
+    // paper's construction phase on cold start and emits a non-zero
+    // effort even when no upstream heuristic produced a feasible
+    // solution.)
     //
     // Wall-ms is measured in this outer frame so all four measurements
     // share a clock and include setup (`build_csc`, `precompute_var_orders`,
@@ -189,7 +197,8 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     }
     if (!infeasible && lm_on && !deadline_hit()) {
         run_and_log("local_mip", [&]() {
-            local_mip::run_parallel(mipsolver, pool, alloc(kWeightLocalMip), opportunistic);
+            mipdata->heuristic_effort_used +=
+                local_mip::run_parallel(mipsolver, pool, alloc(kWeightLocalMip), opportunistic);
         });
     }
     if (!infeasible && sc_on && !deadline_hit()) {

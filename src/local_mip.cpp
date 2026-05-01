@@ -310,7 +310,8 @@ std::vector<double> build_starting_solution_for_worker(HighsMipSolver &mipsolver
     return start;
 }
 
-void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
     const HighsInt ncol = setup.model.num_col_;
 
@@ -397,10 +398,16 @@ void run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool, s
         },
         setup.stale_budget);
 
-    setup.mipdata->heuristic_effort_used += total_effort + construction_effort;
+    // Booking the dispatcher's `mipdata->heuristic_effort_used += ...`
+    // is the caller's responsibility (issue #79).  Returning here keeps
+    // the entry point's effort accounting symmetric with `worker()` and
+    // makes mode_dispatch.cpp the single point of LocalMIP effort
+    // booking.
+    return total_effort + construction_effort;
 }
 
-void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
+                                  size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
     const HighsInt ncol = setup.model.num_col_;
 
@@ -505,19 +512,20 @@ void run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool, s
             return result;
         });
 
-    setup.mipdata->heuristic_effort_used +=
-        total_effort + construction_effort.load(std::memory_order_relaxed);
+    // Caller books `mipdata->heuristic_effort_used` (issue #79).  See
+    // the matching note in `run_parallel_deterministic`.
+    return total_effort + construction_effort.load(std::memory_order_relaxed);
 }
 
 }  // namespace
 
-void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                  bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
+                    bool opportunistic) {
     const auto *model = mipsolver.model_;
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
     if (ncol == 0 || nrow == 0) {
-        return;
+        return 0;
     }
     // Issue #75: the old `mipdata->incumbent.empty()` early-return is
     // gone.  Cold-start is now handled by `resolve_worker_start` which
@@ -527,10 +535,9 @@ void run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effo
     // (pool-first lookup in `resolve_worker_start` already covers it).
 
     if (opportunistic) {
-        run_parallel_opportunistic(mipsolver, pool, max_effort);
-    } else {
-        run_parallel_deterministic(mipsolver, pool, max_effort);
+        return run_parallel_opportunistic(mipsolver, pool, max_effort);
     }
+    return run_parallel_deterministic(mipsolver, pool, max_effort);
 }
 
 }  // namespace local_mip
