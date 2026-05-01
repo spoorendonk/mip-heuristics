@@ -1,3 +1,5 @@
+#include "fj.h"
+#include "fpr.h"
 #include "heuristic_common.h"
 #include "Highs.h"
 #include "local_mip.h"
@@ -6,6 +8,7 @@
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
 #include "parallel/HighsParallel.h"
 #include "rng.h"
+#include "scylla.h"
 #include "solution_pool.h"
 #include "test_common.h"
 
@@ -485,15 +488,15 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
 // or incumbent ensures the cold-start construction path fires (so
 // `construction_effort > 0` is part of the returned sum on at least one
 // of the two sections).
-TEST_CASE("LocalMIP: run_parallel return value matches heuristic_effort_used delta",
-          "[heuristic][local_mip][effort-accounting]") {
+TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used delta",
+          "[heuristic][effort-accounting]") {
     // Stand up a real `HighsMipSolver` (with `mipdata_`) without going
-    // through `Highs::run`'s heuristics, so we can call
-    // `local_mip::run_parallel` ourselves and observe its return value
-    // against the bookkeeping field.  Mirrors the minimal init sequence
-    // from `HighsMipSolver::run` (init → runMipPresolve → runSetup); we
-    // skip the heuristics and B&B that follow.  The HiGHS task scheduler
-    // is normally started by `Highs::run`, which we also bypass — so
+    // through `Highs::run`'s heuristics, so we can call each heuristic's
+    // `run_parallel` ourselves and observe its return value against the
+    // bookkeeping field.  Mirrors the minimal init sequence from
+    // `HighsMipSolver::run` (init → runMipPresolve → runSetup); we skip
+    // the heuristics and B&B that follow.  The HiGHS task scheduler is
+    // normally started by `Highs::run`, which we also bypass — so
     // initialise it once explicitly before any `HighsMipSolverData::init`
     // call (`init` reads `parallel::num_threads()` for the cliquetable
     // parallelism threshold and segfaults on a null worker deque).
@@ -503,8 +506,8 @@ TEST_CASE("LocalMIP: run_parallel return value matches heuristic_effort_used del
     auto build_mipsolver = [](Highs& highs, HighsCallback& cb) {
         // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
         // that leaves `mipsolver.model_` pointing at the original LP.
-        // `local_mip::run_parallel` only needs the LP shape and the
-        // `mipdata_` row-major buffers (`ARstart_/ARindex_/ARvalue_`)
+        // The heuristics' `run_parallel` only needs the LP shape and
+        // the `mipdata_` row-major buffers (`ARstart_/ARindex_/ARvalue_`)
         // that `runSetup` populates; the heavier LP-relaxation
         // machinery that comes later in `Highs::run` is not needed and
         // skipping presolve keeps this minimal.
@@ -520,7 +523,8 @@ TEST_CASE("LocalMIP: run_parallel return value matches heuristic_effort_used del
         return mipsolver;
     };
 
-    auto run_and_check = [&](bool opportunistic) {
+    using RunFn = size_t (*)(HighsMipSolver&, SolutionPool&, size_t, bool);
+    auto check_invariant = [&](bool opportunistic, RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
         HighsCallback cb(&highs);
@@ -528,40 +532,61 @@ TEST_CASE("LocalMIP: run_parallel return value matches heuristic_effort_used del
         const bool minimize = (mipsolver->model_->sense_ == ObjSense::kMinimize);
         SolutionPool pool(/*capacity=*/4, minimize);
 
-        // Mirror exactly what `mode_dispatch::run_sequential` does for
-        // LocalMIP: read `mipdata->heuristic_effort_used`, call
-        // `local_mip::run_parallel`, then `+=` the returned value into
-        // the bookkeeping field.  The invariant the dispatcher relies on
-        // is `(after - before) == returned`; that holds iff
-        // `run_parallel` itself did NOT also touch the field.
+        // Mirror exactly what `mode_dispatch::run_sequential` does:
+        // read `mipdata->heuristic_effort_used`, call `run_parallel`,
+        // then `+=` the returned value into the bookkeeping field.
+        // The invariant the dispatcher relies on is
+        // `(after - before) == returned`; that holds iff `run_parallel`
+        // itself did NOT also touch the field.
         const size_t before = mipsolver->mipdata_->heuristic_effort_used;
         // A modest budget that is plenty for flugpl: large enough that
-        // the runner will execute meaningful work (so `returned > 0` is
+        // each runner will execute meaningful work (so `returned > 0` is
         // very likely), small enough that the test stays sub-second.
         const size_t budget = 200000;
-        const size_t returned = local_mip::run_parallel(*mipsolver, pool, budget, opportunistic);
+        const size_t returned = run_fn(*mipsolver, pool, budget, opportunistic);
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 
-        // The contract under test (issue #79): the dispatcher's `+=`
-        // booking is the *only* path that updates
-        // `mipdata->heuristic_effort_used` for LocalMIP.  If a future
-        // refactor reintroduces self-booking inside `run_parallel` the
-        // delta becomes `2 * returned` (or more) and this fires.
+        // The contract under test (issue #79 + its FJ/FPR/Scylla
+        // extension): the dispatcher's `+=` booking is the *only* path
+        // that updates `mipdata->heuristic_effort_used` for any of the
+        // four sequential heuristics.  If a future refactor reintroduces
+        // self-booking inside any `run_parallel` the delta becomes
+        // `2 * returned` (or more) and this fires.
         REQUIRE(after - before == returned);
         // Sanity guard: a broken implementation that always returns 0
         // would make the invariant above vacuously true.  flugpl with a
-        // 200k budget and no incumbent must do real work (cold-start
-        // construction fires, then at least one search epoch), so
-        // `returned > 0`.  The exact value isn't pinned (depends on
-        // parallelism + seeds) — only the lower bound is.
+        // 200k budget and no incumbent will do real work in every
+        // heuristic (FJ runs jumps, FPR fixes integers and propagates,
+        // LocalMIP constructs and searches, Scylla runs at least one
+        // PDLP+rounding cycle), so `returned > 0` for all four.  The
+        // exact value isn't pinned (depends on parallelism + seeds) —
+        // only the lower bound is.
         REQUIRE(returned > 0);
     };
 
-    SECTION("deterministic (epoch-gated)") {
-        run_and_check(/*opportunistic=*/false);
+    SECTION("fj deterministic") {
+        check_invariant(/*opportunistic=*/false, &fj::run_parallel);
     }
-    SECTION("opportunistic (continuous parallelism)") {
-        run_and_check(/*opportunistic=*/true);
+    SECTION("fj opportunistic") {
+        check_invariant(/*opportunistic=*/true, &fj::run_parallel);
+    }
+    SECTION("fpr deterministic") {
+        check_invariant(/*opportunistic=*/false, &fpr::run_parallel);
+    }
+    SECTION("fpr opportunistic") {
+        check_invariant(/*opportunistic=*/true, &fpr::run_parallel);
+    }
+    SECTION("local_mip deterministic") {
+        check_invariant(/*opportunistic=*/false, &local_mip::run_parallel);
+    }
+    SECTION("local_mip opportunistic") {
+        check_invariant(/*opportunistic=*/true, &local_mip::run_parallel);
+    }
+    SECTION("scylla deterministic") {
+        check_invariant(/*opportunistic=*/false, &scylla::run_parallel);
+    }
+    SECTION("scylla opportunistic") {
+        check_invariant(/*opportunistic=*/true, &scylla::run_parallel);
     }
 }
