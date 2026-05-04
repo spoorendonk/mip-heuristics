@@ -37,6 +37,13 @@ struct RepairSearchNode {
     bool is_lb;          // if !is_fix: true = tighten_lb, false = tighten_ub
     HighsInt e_vs_mark;  // E undo marks
     HighsInt e_sol_mark;
+    HighsInt e_pq_mark;  // E PQ mark (-1 if pq not initialized).  Required
+                         // when Phase 2 used a dynamic-var strategy that
+                         // ran `E.init_domain_pq()` — without restoring
+                         // pq state on backtrack the heap diverges from
+                         // vs_ and a subsequent pq_notify erases a var
+                         // not in the heap (#77 lifecycle rotation now
+                         // exercises this combination).
     HighsInt r_vs_mark;  // R undo marks
     HighsInt r_sol_mark;
     HighsInt sol_undo_mark;  // solution undo mark
@@ -172,3 +179,110 @@ struct FprConfig {
 // on attempt 0, or random initialization on later attempts.
 HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng &rng,
                             int attempt_idx, const double *initial_solution);
+
+// ---------------------------------------------------------------------------
+// Pause/resume lifecycle (issue #77)
+// ---------------------------------------------------------------------------
+//
+// `fpr_attempt` above runs Phase 1 (rank), Phase 2 (DFS fix-and-propagate),
+// Phase 2.5 (fill remaining unfixed), and Phase 3 (repair / 1-opt) end to end
+// in one call.  On a long DFS subtree this pegs cfg.max_effort and discards
+// the subtree's work — peers in the same epoch barrier idle while the slow
+// worker burns its slice.  The lifecycle below splits the attempt into three
+// callable stages so a worker can pause at the per-epoch gate, return to the
+// runner, then resume next epoch with the DFS state intact.
+//
+// State that must survive across `fpr_attempt_step` calls lives in
+// `FprAttemptState` (DFS cursor / counters / phase tag) and in `FprScratch`
+// (`dfs_stack` and `prop_engine`).  PropEngine.reset() runs once inside
+// `begin`; calling it between `step` invocations corrupts the DFS undo
+// stacks — the cardinal correctness invariant of this API.
+//
+// Determinism: every per-call input is either identical across runs (the
+// `cfg` reference and `mipsolver` problem buffers are immutable for the
+// attempt's lifetime) or a per-worker piece of state threaded through
+// (`Rng &rng` and `FprAttemptState`).  Two runs with identical seeds
+// produce bit-identical attempt traces — see `[fpr][resume][determinism]`
+// in tests/test_fpr.cpp.
+//
+// One-shot callers (portfolio, scylla, fpr_lp, tests) keep using
+// `fpr_attempt` above — it is a thin wrapper around begin/step/finish.
+
+struct FprAttemptState {
+    // Set in `fpr_attempt_begin`; read in `step`/`finish`.
+    HighsInt ncol = 0;
+    HighsInt nrow = 0;
+    int attempt_idx = 0;
+    bool dynamic_var = false;
+    bool do_propagate = false;
+    bool do_backtrack = false;
+    HighsInt node_limit = 0;
+    HighsInt var_order_size = 0;
+
+    // DFS progress.  `var_order_cursor` and `nodes_visited` advance during
+    // `step`; `found_complete` flips true when the DFS hits a leaf with
+    // every integer fixed.  `dfs_stack` and `prop_engine` live in
+    // `FprScratch` (capacity persists across attempts).
+    HighsInt var_order_cursor = 0;
+    HighsInt nodes_visited = 0;
+    bool found_complete = false;
+
+    // Cumulative effort consumed by this attempt across all begin/step/finish
+    // calls.  `step`'s budget gate compares against the engine's effort
+    // counter; the worker reads `effort_consumed` deltas to attribute work
+    // to the current epoch slice.
+    size_t effort_consumed = 0;
+
+    enum class Phase {
+        // Attempt has not begun (constructor default) or has been
+        // finalized by `fpr_attempt_finish`.  `begin` may be called.
+        kIdle,
+        // DFS is in progress; another `step` call may resume it.
+        kDfs,
+        // DFS has terminated (leaf found or stack exhausted); the next
+        // call must be `fpr_attempt_finish`.
+        kReadyToFinish,
+    };
+    Phase phase = Phase::kIdle;
+};
+
+enum class FprStepResult {
+    // Per-call effort budget exhausted; attempt is alive, caller may
+    // re-enter `fpr_attempt_step` with more budget next epoch.
+    kBudgetGate,
+    // DFS terminated (success leaf found or stack exhausted / node_limit
+    // hit); caller must call `fpr_attempt_finish` to materialize the
+    // verdict.
+    kVerdictReady,
+};
+
+// Phase 1 + Phase 2 seeding.  Initializes E (PropEngine) once, runs the
+// trivially-roundable fixings + initial propagation, and pushes the root
+// DFS node.  Sets `state.phase = kDfs` (or `kReadyToFinish` if Phase 1
+// already produced a complete fixing).
+//
+// `cfg.scratch` MUST be non-null; the lifecycle API does not support the
+// one-shot `local_scratch` fallback (one-shot callers should keep using
+// `fpr_attempt`).
+void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const FprConfig &cfg,
+                       Rng &rng, int attempt_idx, const double *initial_solution);
+
+// Phase 2 DFS resume.  Runs the fix-and-propagate loop until either the
+// per-call effort budget is exhausted (returns `kBudgetGate`) or the DFS
+// terminates (returns `kVerdictReady`, caller calls `finish`).
+//
+// `effort_remaining` is the per-call slice; the attempt's overall cap is
+// `cfg.max_effort` (which the worker typically sets very high so the slice
+// is the only effective gate).  Calling `step` when
+// `state.phase != kDfs` is a programming error.
+FprStepResult fpr_attempt_step(FprAttemptState &state, HighsMipSolver &mipsolver,
+                               const FprConfig &cfg, Rng &rng, size_t effort_remaining);
+
+// Phase 2.5 (fill remaining unfixed) + Phase 3 (repair / 1-opt) + result
+// build.  Always runs to verdict in one call (Phase 3 self-throttles via
+// `cfg.repair_iterations` / `cfg.walksat_iterations`).  Sets
+// `state.phase = kIdle` so the next attempt can call `begin` on the same
+// state object.  `state.found_complete == false` shortcuts to a `failed`
+// verdict.
+HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipsolver,
+                                   const FprConfig &cfg, Rng &rng);

@@ -24,60 +24,61 @@ namespace fpr {
 // HighsCliqueTable::cliquePartition which is not thread-safe).
 using VarOrderTable = std::vector<std::vector<HighsInt>>;
 
-// Worker that wraps a single fpr_attempt call per epoch.  Satisfies
-// the EpochWorker concept from epoch_runner.h.
+// EpochWorker driving the lifecycle introduced in issue #77: an attempt
+// is the unit of work, and an attempt's DFS may pause at the per-epoch
+// budget gate and resume next epoch with state intact.  When an attempt
+// verdicts (feasible / failed), the worker advances `attempt_idx_` and
+// picks the next (strategy, mode) from a deterministic per-worker
+// rotation `(worker_idx_ + attempt_idx_)`.  Attempts never share a
+// queue across workers — that determinism rule is what lets two runs
+// with the same seed produce bit-identical [Sequential] traces.
+//
+// Satisfies the EpochWorker concept from epoch_runner.h.  In det mode
+// `finished()` always returns false; the outer epoch loop's
+// stale_budget is the only termination gate (see fpr.cpp's run_epoch
+// loop's restart_finished callback for the historical no-op rationale).
 class FprWorker {
 public:
     FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
-              const VarOrderTable &var_orders, int strat_idx, FrameworkMode mode, uint32_t seed);
+              const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
+              size_t attempt_budget);
 
     EpochResult run_epoch(size_t epoch_budget);
 
-    // Returns true when the worker has exceeded the hard stale threshold
-    // (used by the opportunistic path to trigger worker replacement).
-    // The deterministic path never hits this in practice because the
-    // epoch loop's stale_budget fires first.
-    bool finished() const { return finished_; }
+    bool finished() const { return false; }
 
-    void reset_staleness() { epochs_without_improvement_ = 0; }
+    // Reset the cross-worker improvement-broadcast bookkeeping.  Called by
+    // the runner at the epoch barrier when any peer improved last epoch.
+    // The lifecycle's mid-attempt staleness has no per-worker counter to
+    // touch (the epoch loop's effort_since_improvement is the source of
+    // truth), so this is a no-op in det mode.
+    void reset_staleness() {}
 
 private:
-    void randomize_config();
+    // Pick the (strategy, mode) for `attempt_idx_`.  Cycles the
+    // paper-curated `kInitialFprConfigs` (8 entries) keyed on
+    // `(worker_idx_ + attempt_idx_) % kNumInitialFprConfigs`, so each
+    // worker visits every Class-1 config exactly once before wrapping.
+    // The body comment in `select_config_for_current_attempt` documents
+    // why this is the curated list rather than the full 8×5 grid.
+    void select_config_for_current_attempt();
 
     HighsMipSolver &mipsolver_;
     const CscMatrix &csc_;
     SolutionPool &pool_;
     const VarOrderTable &var_orders_;
 
-    int strat_idx_;
-    FrameworkMode mode_;
+    int worker_idx_;
+    size_t attempt_budget_;  // hint for cfg.max_effort per attempt
+
+    int strat_idx_ = 0;
+    FrameworkMode mode_ = FrameworkMode::kDfs;
 
     int attempt_idx_ = 0;
-    int epochs_without_improvement_ = 0;
-    // Counts how many soft-threshold randomisations have happened
-    // without an improvement.  The previous "hard stale threshold" gated
-    // on `epochs_without_improvement_` directly, but the soft threshold
-    // resets that counter every 3 epochs, so the hard cap was never
-    // reached (R2-2 from round-3 review).  Tracking randomisations
-    // separately lets the hard cap actually fire after we've cycled
-    // through many distinct (strategy, mode) configs.
-    int randomizations_without_improvement_ = 0;
-    bool finished_ = false;
-
-    // Hard cap on the number of soft-threshold randomisations
-    // (`kStaleEpochThreshold` triggerings) without an improvement before
-    // the worker declares itself finished.  Salvagnin et al. 2025 don't
-    // prescribe an early finish — their portfolio runs until budget
-    // exhausts — so this is our engineering guard against pathological
-    // loops.  At 50 we expect to visit a substantial portion of the
-    // 8 strategies × 5 modes = 40 config space (uniform sampling →
-    // ~28 distinct after 50 draws by coupon-collector) on stubborn
-    // instances before giving up.
-    static constexpr int kHardRandomizationLimit = 50;
+    bool attempt_alive_ = false;
+    FprAttemptState attempt_state_;
 
     Rng rng_;
-    // Per-worker scratch reused across fpr_attempt calls to avoid malloc
-    // churn on the DFS + WalkSAT repair hot path.
     FprScratch scratch_;
 };
 
@@ -130,9 +131,6 @@ constexpr FrameworkMode kAllModes[] = {
 
 constexpr int kNumAllModes = static_cast<int>(std::size(kAllModes));
 
-// Number of stale epochs before a worker randomizes its config.
-constexpr int kStaleEpochThreshold = 3;
-
 // Compute variable orders for every strategy in kFprStrategies.  MUST be
 // called from a sequential context: clique-based var_strategies invoke
 // HighsCliqueTable::cliquePartition which mutates internal state and is
@@ -154,52 +152,87 @@ VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
 // ---------------------------------------------------------------------------
 
 FprWorker::FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
-                     const VarOrderTable &var_orders, int strat_idx, FrameworkMode mode,
-                     uint32_t seed)
+                     const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
+                     size_t attempt_budget)
     : mipsolver_(mipsolver),
       csc_(csc),
       pool_(pool),
       var_orders_(var_orders),
-      strat_idx_(strat_idx),
-      mode_(mode),
-      rng_(seed) {}
+      worker_idx_(worker_idx),
+      attempt_budget_(attempt_budget),
+      rng_(seed) {
+    select_config_for_current_attempt();
+}
 
-void FprWorker::randomize_config() {
-    strat_idx_ = std::uniform_int_distribution<int>(0, kNumFprStrategies - 1)(rng_);
-    int m_idx = std::uniform_int_distribution<int>(0, kNumAllModes - 1)(rng_);
-    mode_ = kAllModes[m_idx];
-    // var_order lookup via var_orders_[strat_idx_] — no recomputation needed.
+void FprWorker::select_config_for_current_attempt() {
+    // Per-worker rotation through the paper-curated `kInitialFprConfigs`
+    // list, keyed deterministically on `(worker_idx + attempt_idx) %
+    // kNumInitialFprConfigs`.  Each worker visits every initial config
+    // exactly once before cycling.  Issue #77's determinism rule is
+    // satisfied because the rotation is purely a function of (worker
+    // identity, attempt count) — no shared queue, no rng dependency,
+    // no per-attempt randomisation.
+    //
+    // Why not the full 8 strategies × 5 modes = 40-pair grid?  The
+    // `kInitialFprConfigs` list is the paper's curated Class-1 set;
+    // sticking with it preserves the pre-#77 behavioural envelope on
+    // the first per-worker pass.  (Widening to 40 pairs is now safe —
+    // the historical blocker, `(kStratDomsize, kRepairSearch)` racing
+    // E's domain PQ on `repair_search` backtrack, was fixed in this
+    // same change by threading `e_pq_mark` through `RepairSearchNode` —
+    // but defer until benchmarking shows the wider rotation actually
+    // helps.)
+    int idx = ((worker_idx_ + attempt_idx_) % kNumInitialFprConfigs + kNumInitialFprConfigs) %
+              kNumInitialFprConfigs;
+    const auto &cfg = kInitialFprConfigs[idx];
+    strat_idx_ = cfg.strat_idx;
+    mode_ = cfg.mode;
 }
 
 EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     EpochResult epoch{};
 
-    // After K stale epochs, randomize config from full space.  Track
-    // total randomisations separately so the hard cap below can fire
-    // even though the soft threshold resets `epochs_without_improvement_`
-    // each time it triggers.
-    if (epochs_without_improvement_ >= kStaleEpochThreshold) {
-        randomize_config();
-        epochs_without_improvement_ = 0;
-        ++randomizations_without_improvement_;
-        if (randomizations_without_improvement_ >= kHardRandomizationLimit) {
-            finished_ = true;
-            return epoch;
-        }
+    // Issue #77 lifecycle: one attempt per `run_epoch` call, but the attempt
+    // can span multiple calls.  When the DFS exhausts the per-call slice we
+    // return `kBudgetGate` and the caller (the outer epoch_runner) gets
+    // back to the barrier; on the next call we resume the same DFS state
+    // (preserved in `attempt_state_` + `scratch_`).  When the attempt
+    // verdicts (feasible or failed), we close it out and the next call
+    // begins a fresh attempt with the next per-worker rotation slot.
+    //
+    // Looping multiple attempts inside one call adds `fpr_attempt_begin`'s
+    // O(ncol+nrow) setup churn for no parallelism gain — peers are blocked
+    // by the runner's barrier per call, not per attempt — and on models
+    // where every attempt verdicts in tens of operations
+    // (e.g. `infeasible-mip0` from HiGHS' own check instances) that churn
+    // dominates wall time.
+
+    auto *mipdata = mipsolver_.mipdata_.get();
+    const double time_limit = mipsolver_.options_mip_->time_limit;
+    if (mipdata->terminatorTerminated() || mipsolver_.timer_.read() >= time_limit) {
+        return epoch;
     }
 
-    // Get pool restart solution if available.
-    std::vector<double> initial_solution;
-    const double *init_ptr = nullptr;
-    if (pool_.get_restart(rng_, initial_solution)) {
-        init_ptr = initial_solution.data();
+    if (!attempt_alive_) {
+        select_config_for_current_attempt();
     }
 
     const auto &strat = kFprStrategies[strat_idx_];
     const auto &var_order = var_orders_[strat_idx_];
-
     FprConfig cfg{};
-    cfg.max_effort = epoch_budget;
+    // `cfg.max_effort` is the attempt-wide cap consumed by Phase 3 sub-
+    // budgets (`cfg.max_effort - total_prop_work` for repair_search /
+    // walksat).  Sized at the worker's `attempt_budget_` (=
+    // ParallelSetup::stale_budget = max_effort/4), not the per-call
+    // `epoch_budget`: when an attempt spans multiple `run_epoch` calls,
+    // the cumulative `total_prop_work` arriving at Phase 3 already
+    // exceeds any single slice, so a slice-sized cap clamps the repair
+    // budget to 0 (review R1 CF-1).  The DFS gate inside
+    // `fpr_attempt_step` uses `effort_remaining` (the per-call slice)
+    // and is unaffected by this size — Phase 3's iteration counts
+    // (`cfg.repair_iterations`, `cfg.walksat_iterations`) self-throttle
+    // even when the effort budget is large.
+    cfg.max_effort = std::max<size_t>(attempt_budget_, 1);
     cfg.hint = nullptr;
     cfg.scores = nullptr;
     cfg.cont_fallback = nullptr;
@@ -211,20 +244,44 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
     cfg.scratch = &scratch_;
 
-    auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
-    epoch.effort = result.effort;
+    if (!attempt_alive_) {
+        std::vector<double> initial_solution;
+        const double *init_ptr = nullptr;
+        if (pool_.get_restart(rng_, initial_solution)) {
+            init_ptr = initial_solution.data();
+        }
+        fpr_attempt_begin(attempt_state_, mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
+        attempt_alive_ = true;
+        epoch.effort += attempt_state_.effort_consumed;
+    }
+
+    if (attempt_state_.phase == FprAttemptState::Phase::kDfs) {
+        const size_t before_step = attempt_state_.effort_consumed;
+        const size_t budget_remaining =
+            epoch_budget > epoch.effort ? epoch_budget - epoch.effort : 0;
+        const FprStepResult outcome =
+            fpr_attempt_step(attempt_state_, mipsolver_, cfg, rng_, budget_remaining);
+        epoch.effort += attempt_state_.effort_consumed - before_step;
+        if (outcome == FprStepResult::kBudgetGate) {
+            // Attempt paused at the per-call slice boundary — return so
+            // peers do their next epoch's work and we resume here next call.
+            return epoch;
+        }
+        // kVerdictReady — DFS ended (leaf found or stack/node-limit
+        // exhausted), proceed to finish.
+    }
+
+    const size_t before_finish = attempt_state_.effort_consumed;
+    HeuristicResult result = fpr_attempt_finish(attempt_state_, mipsolver_, cfg, rng_);
+    epoch.effort += attempt_state_.effort_consumed - before_finish;
 
     if (result.found_feasible) {
         pool_.try_add(result.objective, result.solution, kSolutionSourceFPR);
         epoch.found_improvement = true;
-        epochs_without_improvement_ = 0;
-        randomizations_without_improvement_ = 0;
-    } else {
-        ++epochs_without_improvement_;
     }
 
     ++attempt_idx_;
-
+    attempt_alive_ = false;
     return epoch;
 }
 
@@ -244,16 +301,16 @@ size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
     std::vector<std::unique_ptr<FprWorker>> workers;
     workers.reserve(setup.N);
     for (size_t w = 0; w < setup.N; ++w) {
-        int cfg_idx = static_cast<int>(w) % kNumInitialFprConfigs;
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(mipsolver, setup.csc, pool, var_orders,
-                                                      kInitialFprConfigs[cfg_idx].strat_idx,
-                                                      kInitialFprConfigs[cfg_idx].mode, seed));
+        workers.push_back(std::make_unique<FprWorker>(
+            mipsolver, setup.csc, pool, var_orders, static_cast<int>(w), seed, setup.stale_budget));
     }
 
     return run_epoch_loop(
         mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
-        [](int) { /* FprWorkers rarely hit hard stale threshold in det mode */ },
+        [](int) { /* FprWorker::finished() is always false post-#77 — det mode runs
+                     until the outer epoch loop's stale_budget fires. */
+        },
         setup.stale_budget);
 }
 
@@ -267,11 +324,9 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
     std::vector<std::unique_ptr<FprWorker>> workers;
     workers.reserve(setup.N);
     for (size_t w = 0; w < setup.N; ++w) {
-        int cfg_idx = static_cast<int>(w) % kNumInitialFprConfigs;
         uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(mipsolver, setup.csc, pool, var_orders,
-                                                      kInitialFprConfigs[cfg_idx].strat_idx,
-                                                      kInitialFprConfigs[cfg_idx].mode, seed));
+        workers.push_back(std::make_unique<FprWorker>(
+            mipsolver, setup.csc, pool, var_orders, static_cast<int>(w), seed, setup.stale_budget));
     }
 
     struct FprOppState {
@@ -282,17 +337,12 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
         [](int worker_idx, Rng & /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
-        [&](FprOppState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
+        [&](FprOppState &state, Rng & /*rng*/, size_t run_cap) -> HeuristicResult {
             auto &worker = workers[state.worker_idx];
-            if (worker->finished()) {
-                // Replace with a random (strategy, mode) from the full pool.
-                // Safe because var_orders are precomputed for every strategy.
-                int strat_idx = std::uniform_int_distribution<int>(0, kNumFprStrategies - 1)(rng);
-                int m_idx = std::uniform_int_distribution<int>(0, kNumAllModes - 1)(rng);
-                uint32_t seed = static_cast<uint32_t>(rng());
-                worker = std::make_unique<FprWorker>(mipsolver, setup.csc, pool, var_orders,
-                                                     strat_idx, kAllModes[m_idx], seed);
-            }
+            // FprWorker::finished() returns false unconditionally
+            // post-#77; the opportunistic loop's own staleness gate is
+            // the termination signal.  No worker-level replacement
+            // needed.
             auto epoch = worker->run_epoch(run_cap);
             HeuristicResult result;
             result.effort = epoch.effort;

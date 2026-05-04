@@ -211,3 +211,62 @@ TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }
+
+// ===================================================================
+// Issue #77 lifecycle: pause/resume across epoch gates is deterministic
+// ===================================================================
+
+namespace {
+double solve_with_seed(const char *inst, int seed) {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("random_seed", seed);
+    // Force seq/det path so the issue-#77 lifecycle is the dispatch under test.
+    highs.setOptionValue("mip_heuristic_portfolio", false);
+    highs.setOptionValue("mip_heuristic_opportunistic", false);
+    REQUIRE(highs.readModel(std::string(kInstancesDir) + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    return obj;
+}
+}  // namespace
+
+TEST_CASE("FPR resume: same seed reproduces same objective (egout)", "[fpr][resume][determinism]") {
+    // Issue #77 requires bit-identical behaviour for two runs on the same
+    // (seed, instance).  Solving end-to-end and comparing the final
+    // objective is a coarser proxy than diffing the per-worker
+    // [Sequential] line, but it covers the same invariant: the lifecycle
+    // does not introduce non-determinism via thread scheduling, pool
+    // contention, or rotation drift.
+    const double obj1 = solve_with_seed("egout.mps", 42);
+    const double obj2 = solve_with_seed("egout.mps", 42);
+    REQUIRE(obj1 == Catch::Approx(obj2).epsilon(1e-9));
+}
+
+TEST_CASE("FPR resume: same seed reproduces same objective (bell5)", "[fpr][resume][determinism]") {
+    const double obj1 = solve_with_seed("bell5.mps", 7);
+    const double obj2 = solve_with_seed("bell5.mps", 7);
+    REQUIRE(obj1 == Catch::Approx(obj2).epsilon(1e-9));
+}
+
+TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cycling",
+          "[fpr][resume]") {
+    // Worker rotation `(worker_idx + attempt_idx) % kNumInitialFprConfigs`
+    // visits every Class-1 config (paper Section 6.3) before cycling.
+    // bell5 is a known-feasible instance that previously relied on the
+    // randomized stale-epoch jump; the deterministic rotation must still
+    // reach the same optimum.
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_run_fpr", true);
+    highs.setOptionValue("mip_heuristic_run_local_mip", false);
+    highs.setOptionValue("mip_heuristic_run_scylla", false);
+    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    highs.setOptionValue("mip_heuristic_portfolio", false);
+    REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(highs.run() == HighsStatus::kOk);
+    double obj;
+    highs.getInfoValue("objective_function_value", obj);
+    REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-4));
+}

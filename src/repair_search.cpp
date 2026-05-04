@@ -301,8 +301,9 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
     // scratch to avoid per-call allocations. ---
     auto& Q = scratch.repair_dfs_stack;
     Q.clear();
-    Q.push_back({-1, 0.0, true, false, E.vs_mark(), E.sol_mark(), R.vs_mark(), R.sol_mark(), 0, 0,
-                 total_viol});
+    const HighsInt root_e_pq = E.pq_initialized() ? E.pq_mark() : -1;
+    Q.push_back({-1, 0.0, true, false, E.vs_mark(), E.sol_mark(), root_e_pq, R.vs_mark(),
+                 R.sol_mark(), 0, 0, total_viol});
 
     HighsInt nodes_visited = 0;
 
@@ -319,9 +320,16 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         Q.pop_back();
         ++nodes_visited;
 
-        // Restore parent state (paper lines 7-8)
+        // Restore parent state (paper lines 7-8).  Pass `node.e_pq_mark`
+        // explicitly: when E was `init_domain_pq`'d in Phase 2 (any
+        // dynamic-var strategy), omitting the PQ undo target here leaves
+        // E's heap inconsistent with vs_ across backtracks — a subsequent
+        // `pq_notify` triggered by the new branch's E.fix/tighten then
+        // erases a var that's no longer in the heap.  R has no PQ active
+        // (repair_search never calls init_domain_pq on R), so the default
+        // -1 there is harmless.
         backtrack_sol_lhs(node.sol_undo_mark, node.lhs_undo_mark);
-        E.backtrack_to(node.e_vs_mark, node.e_sol_mark);
+        E.backtrack_to(node.e_vs_mark, node.e_sol_mark, /*act_mark=*/-1, node.e_pq_mark);
         R.backtrack_to(node.r_vs_mark, node.r_sol_mark);
         total_viol = node.violation;
         rebuild_violated();
@@ -399,10 +407,12 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         HighsInt cur_lhs = static_cast<HighsInt>(lhs_undo.size());
 
         // Push alternative first (explored second), then preferred (explored first)
+        const HighsInt cur_e_pq = E.pq_initialized() ? E.pq_mark() : -1;
         Q.push_back({alternative.var, alternative.val, alternative.is_fix, alternative.is_lb,
-                     cur_e_vs, cur_e_sol, cur_r_vs, cur_r_sol, cur_sol, cur_lhs, total_viol});
+                     cur_e_vs, cur_e_sol, cur_e_pq, cur_r_vs, cur_r_sol, cur_sol, cur_lhs,
+                     total_viol});
         Q.push_back({preferred.var, preferred.val, preferred.is_fix, preferred.is_lb, cur_e_vs,
-                     cur_e_sol, cur_r_vs, cur_r_sol, cur_sol, cur_lhs, total_viol});
+                     cur_e_sol, cur_e_pq, cur_r_vs, cur_r_sol, cur_sol, cur_lhs, total_viol});
 
         // Best-first steering (paper line 27)
         backtrack_best_open(Q);
