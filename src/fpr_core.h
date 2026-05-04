@@ -42,8 +42,12 @@ struct RepairSearchNode {
                          // ran `E.init_domain_pq()` — without restoring
                          // pq state on backtrack the heap diverges from
                          // vs_ and a subsequent pq_notify erases a var
-                         // not in the heap (#77 lifecycle rotation now
-                         // exercises this combination).
+                         // not in the heap.  Discovered during the #77
+                         // wider-rotation draft on `(kStratDomsize,
+                         // kRepairSearch)`; the shipped curated rotation
+                         // does not pair dynamic-var with RepairSearch,
+                         // so this is a defensive guard for any future
+                         // caller that does.
     HighsInt r_vs_mark;  // R undo marks
     HighsInt r_sol_mark;
     HighsInt sol_undo_mark;  // solution undo mark

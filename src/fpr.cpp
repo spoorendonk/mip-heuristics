@@ -35,8 +35,7 @@ using VarOrderTable = std::vector<std::vector<HighsInt>>;
 //
 // Satisfies the EpochWorker concept from epoch_runner.h.  In det mode
 // `finished()` always returns false; the outer epoch loop's
-// stale_budget is the only termination gate (see fpr.cpp's run_epoch
-// loop's restart_finished callback for the historical no-op rationale).
+// stale_budget is the only termination gate.
 class FprWorker {
 public:
     FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
@@ -80,6 +79,11 @@ private:
 
     Rng rng_;
     FprScratch scratch_;
+    // Reused across attempts to avoid `std::vector<double>` churn — the
+    // multi-attempt loop in `run_epoch` calls `pool_.get_restart` once
+    // per attempt, and an unhoisted local would re-allocate every
+    // iteration on instances large enough to matter (review R2 CF-1).
+    std::vector<double> initial_solution_buf_;
 };
 
 static_assert(EpochWorker<FprWorker>, "FprWorker must satisfy EpochWorker concept");
@@ -174,13 +178,20 @@ void FprWorker::select_config_for_current_attempt() {
     // rng dependency, no per-attempt randomisation.
     //
     // Why not the full 8 × 5 = 40-pair (strategy, mode) grid?  An earlier
-    // draft widened to it (review R1 U-2 / R2 U2 suggested it once the
-    // `e_pq_mark` repair_search fix was in place), but the
-    // `(kStratLocks, kRepairSearch)`-style pairings exposed a second
-    // latent state-restoration gap in `repair_search` (activity-undo
-    // when `init_activities()` ran in Phase 2 — `act_mark` is also
-    // skipped on the secondary backtrack).  Fix tracked separately;
-    // until then the curated list keeps the rotation safe.  Multi-attempt
+    // draft widened to it once `e_pq_mark` threading was in place, but
+    // the `(kStratDomsize, kRepairSearch)` pairing exposed a second
+    // latent state-restoration gap in `repair_search`'s secondary
+    // backtrack: `act_mark` is not threaded through `RepairSearchNode`
+    // analogously to `e_pq_mark`, so when `init_activities()` ran in
+    // Phase 2 (any `kLoosedyn` value strategy) the activity vectors and
+    // `vs_` diverge across the secondary backtrack.  `kStratDomsize` is
+    // the only entry that simultaneously uses `init_domain_pq` AND a
+    // `kLoosedyn` val strategy AND was widened to a `kRepairSearch`
+    // mode the curated list never exercised — so it is the smallest
+    // reproducer.  Fix is the same shape as `e_pq_mark` (extend
+    // `RepairSearchNode` with `e_act_mark` and pass it to
+    // `E.backtrack_to`); kept out of this change to bound scope.  Until
+    // then the curated list keeps the rotation safe.  Multi-attempt
     // looping inside `run_epoch` still lets fast workers fill the slice
     // by cycling through the 8-config list, which the issue's #1
     // acceptance bullet (FPR CPU% on tbfp-network) cares about.
@@ -240,6 +251,20 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         }
         prev_loop_effort = epoch.effort;
 
+        // Advance the per-worker rotation BEFORE building cfg so that
+        // `cfg.strategy` / `cfg.mode` / `cfg.precomputed_var_order` reflect
+        // the current attempt's choice.  Earlier draft built cfg from the
+        // previous attempt's strat/mode and re-assigned 4 fields after the
+        // rotation advance — a maintenance hazard if a future cfg field
+        // is added (review R2 CF-2).
+        if (!attempt_alive_) {
+            if (attempts_started >= kMaxAttemptsPerCall) {
+                break;
+            }
+            ++attempts_started;
+            select_config_for_current_attempt();
+        }
+
         const auto &strat = kFprStrategies[strat_idx_];
         const auto &var_order = var_orders_[strat_idx_];
         FprConfig cfg{};
@@ -268,21 +293,14 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         cfg.scratch = &scratch_;
 
         if (!attempt_alive_) {
-            if (attempts_started >= kMaxAttemptsPerCall) {
-                break;
-            }
-            ++attempts_started;
-            select_config_for_current_attempt();
-            // Refresh strat/var_order references after the rotation advance.
-            cfg.mode = mode_;
-            cfg.strategy = &kFprStrategies[strat_idx_];
-            cfg.precomputed_var_order = var_orders_[strat_idx_].data();
-            cfg.precomputed_var_order_size = static_cast<HighsInt>(var_orders_[strat_idx_].size());
-
-            std::vector<double> initial_solution;
+            // `initial_solution_buf_` is hoisted to a member to avoid
+            // reallocating an `ncol`-sized vector every loop iteration on
+            // tbfp-network-scale instances (review R2 CF-1).  pool_.get_restart
+            // overwrites the contents.
+            initial_solution_buf_.clear();
             const double *init_ptr = nullptr;
-            if (pool_.get_restart(rng_, initial_solution)) {
-                init_ptr = initial_solution.data();
+            if (pool_.get_restart(rng_, initial_solution_buf_)) {
+                init_ptr = initial_solution_buf_.data();
             }
             fpr_attempt_begin(attempt_state_, mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
             attempt_alive_ = true;

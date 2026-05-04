@@ -281,12 +281,17 @@ private:
 
     // Hard cap on the number of soft-threshold arm randomisations
     // without an improvement before the worker declares itself
-    // finished.  See FprWorker::kHardRandomizationLimit for the same
-    // pattern (and rationale — R2-2 round-3 review).
+    // finished.  At 50 we expect to visit a substantial portion of the
+    // 10 LP arms before giving up; Salvagnin et al. 2025 don't
+    // prescribe an early finish — this is our engineering guard
+    // against pathological loops.  Note: `fpr.cpp` used to carry the
+    // same constant but issue #77 replaced its FprWorker with a
+    // pause/resume lifecycle that has no per-worker stale counter;
+    // LpFprWorker keeps the staleness shape because it has no DFS
+    // state to resume across epochs.
     static constexpr int kHardRandomizationLimit = 50;
 
     // Number of stale epochs before a worker randomizes its arm.
-    // Mirrors fpr.cpp's kStaleEpochThreshold.
     static constexpr int kStaleEpochThreshold = 3;
 };
 
