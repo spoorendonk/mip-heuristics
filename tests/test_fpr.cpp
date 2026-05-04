@@ -217,37 +217,58 @@ TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
 // ===================================================================
 
 namespace {
-double solve_with_seed(const char *inst, int seed) {
+
+// Solve `inst` end-to-end at a deliberately tiny `mip_heuristic_effort`
+// so the FPR per-call slice is well below the cost of a full DFS subtree
+// — i.e., attempts must pause via `kBudgetGate` and resume on subsequent
+// `run_epoch` calls.  Without this the [fpr][resume] tests can pass
+// without ever exercising the new pause/resume code path on the small
+// HiGHS check instances (egout / bell5 / flugpl all verdict in one
+// slice at the default effort).  Returns final objective.
+double solve_with_seed_tiny_effort(const char *inst, int seed) {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("random_seed", seed);
     // Force seq/det path so the issue-#77 lifecycle is the dispatch under test.
     highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", false);
+    // Tiny effort → tiny per-call slice → DFS pauses across calls.
+    highs.setOptionValue("mip_heuristic_effort", 0.001);
     REQUIRE(highs.readModel(std::string(kInstancesDir) + "/" + inst) == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     return obj;
 }
+
 }  // namespace
 
-TEST_CASE("FPR resume: same seed reproduces same objective (egout)", "[fpr][resume][determinism]") {
+TEST_CASE("FPR resume: same seed reproduces same objective at tiny effort (egout)",
+          "[fpr][resume][determinism]") {
     // Issue #77 requires bit-identical behaviour for two runs on the same
-    // (seed, instance).  Solving end-to-end and comparing the final
-    // objective is a coarser proxy than diffing the per-worker
-    // [Sequential] line, but it covers the same invariant: the lifecycle
-    // does not introduce non-determinism via thread scheduling, pool
-    // contention, or rotation drift.
-    const double obj1 = solve_with_seed("egout.mps", 42);
-    const double obj2 = solve_with_seed("egout.mps", 42);
-    REQUIRE(obj1 == Catch::Approx(obj2).epsilon(1e-9));
+    // (seed, instance).  Tiny `mip_heuristic_effort` forces the FPR DFS
+    // to pause across multiple `run_epoch` calls — exercises the
+    // pause/resume code path the issue exists to add.  Same seed → same
+    // objective; comparing with strict equality (no Approx) since
+    // `Highs::run` should be bit-deterministic at fixed seed for the
+    // seq/det dispatch.
+    const double obj1 = solve_with_seed_tiny_effort("egout.mps", 42);
+    const double obj2 = solve_with_seed_tiny_effort("egout.mps", 42);
+    REQUIRE(obj1 == obj2);
 }
 
-TEST_CASE("FPR resume: same seed reproduces same objective (bell5)", "[fpr][resume][determinism]") {
-    const double obj1 = solve_with_seed("bell5.mps", 7);
-    const double obj2 = solve_with_seed("bell5.mps", 7);
-    REQUIRE(obj1 == Catch::Approx(obj2).epsilon(1e-9));
+TEST_CASE("FPR resume: same seed reproduces same objective at tiny effort (bell5)",
+          "[fpr][resume][determinism]") {
+    const double obj1 = solve_with_seed_tiny_effort("bell5.mps", 7);
+    const double obj2 = solve_with_seed_tiny_effort("bell5.mps", 7);
+    REQUIRE(obj1 == obj2);
+}
+
+TEST_CASE("FPR resume: same seed reproduces same objective at tiny effort (flugpl)",
+          "[fpr][resume][determinism]") {
+    const double obj1 = solve_with_seed_tiny_effort("flugpl.mps", 0);
+    const double obj2 = solve_with_seed_tiny_effort("flugpl.mps", 0);
+    REQUIRE(obj1 == obj2);
 }
 
 TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cycling",

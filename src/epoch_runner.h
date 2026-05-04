@@ -27,9 +27,12 @@ concept EpochWorker = requires(T w, size_t budget) {
 //
 // Embed (composition, NOT inheritance) into workers that track cumulative
 // effort + staleness + a hard total budget — currently `FjWorker`,
-// `LocalMipWorker`, and `ScyllaWorker`.  `FprWorker`, `LpFprWorker`, and
-// `PortfolioWorker` count stale *epochs* rather than effort so they only
-// need a `finished_` flag and do not embed this struct.
+// `LocalMipWorker`, and `ScyllaWorker`.  Since issue #77 `FprWorker`
+// counts neither stale epochs nor stale effort: its `finished()` returns
+// `false` unconditionally and `reset_staleness()` is a no-op — the outer
+// `run_epoch_loop`'s own `effort_since_improvement` is the only stale
+// gate.  `LpFprWorker` and `PortfolioWorker` count stale *epochs* and
+// keep a private `finished_` flag without this struct.
 //
 // Fields are plain (non-atomic) because each worker's inner loop accesses
 // them single-threaded.  The continuous-parallel runners own their own
