@@ -12,12 +12,35 @@
 #include "solution_pool.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <random>
 #include <vector>
 
 namespace fpr {
+
+#ifndef NDEBUG
+// Test-only lifecycle counters.  Plain `std::atomic<size_t>` with
+// relaxed `fetch_add` — the increments fire at most once per
+// `kBudgetGate` return and once per multi-attempt-loop iter past the
+// first, so the atomic cost is negligible relative to a per-thread
+// accumulator + flush.  See issue #77 review residual finding 4.
+namespace {
+std::atomic<size_t> g_budget_gate_hits{0};
+std::atomic<size_t> g_multi_attempt_iters{0};
+}  // namespace
+size_t budget_gate_hits() {
+    return g_budget_gate_hits.load(std::memory_order_relaxed);
+}
+size_t multi_attempt_iters() {
+    return g_multi_attempt_iters.load(std::memory_order_relaxed);
+}
+void reset_test_counters() {
+    g_budget_gate_hits.store(0, std::memory_order_relaxed);
+    g_multi_attempt_iters.store(0, std::memory_order_relaxed);
+}
+#endif
 
 // Precomputed variable orders indexed by kFprStrategies position.  Built
 // once sequentially before any parallel region (some strategies call
@@ -74,8 +97,17 @@ private:
     FrameworkMode mode_ = FrameworkMode::kDfs;
 
     int attempt_idx_ = 0;
-    bool attempt_alive_ = false;
     FprAttemptState attempt_state_;
+
+    // The "is an attempt currently mid-flight" predicate is computed
+    // from `attempt_state_.phase` rather than mirrored in a separate
+    // bool.  `kIdle` = no attempt or just finalized; `kDfs` = DFS in
+    // progress (paused or running); `kReadyToFinish` = step verdicted,
+    // finish pending.  The 3-state Phase enum stays — `kReadyToFinish`
+    // earns its keep via `fpr_attempt_step`'s assert that catches
+    // "step called after step already returned kVerdictReady" — but
+    // having a redundant bool in the worker is pure drift risk.
+    bool attempt_alive() const { return attempt_state_.phase != FprAttemptState::Phase::kIdle; }
 
     Rng rng_;
     FprScratch scratch_;
@@ -234,6 +266,28 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     auto *mipdata = mipsolver_.mipdata_.get();
     const double time_limit = mipsolver_.options_mip_->time_limit;
 
+    // Snapshot the pool restart once per call so all attempts inside the
+    // multi-attempt loop see the same `initial_solution`.  Per-attempt
+    // `pool_.get_restart` would observe interleaved peer `try_add` inserts
+    // from other workers running concurrently in `parallel::for_each`,
+    // breaking the issue-#77 determinism guarantee that two runs at
+    // identical seed produce bit-identical [Sequential] summaries —
+    // `initial_solution` is the only non-deterministic input into
+    // `fpr_attempt_begin`.  `initial_solution_buf_` is a member to amortise
+    // the `ncol`-sized allocation across calls (review R2 CF-1).
+    initial_solution_buf_.clear();
+    const bool have_restart = pool_.get_restart(rng_, initial_solution_buf_);
+
+    // 32 attempts × 2 mutex ops × N workers is a theoretical upper bound on
+    // pool-mutex acquisitions per outer epoch.  In practice the cap is
+    // rarely approached: each attempt's begin charges O(nnz) coefficient
+    // accesses (initial propagate), and the per-call slice is sized so an
+    // instance with non-trivial DFS spends most of the slice inside step
+    // rather than restarting attempts.  HighsSpinMutex critical sections
+    // in `try_add` / `get_restart` are sub-microsecond (lower_bound over
+    // <= kPoolCapacity entries plus an O(ncol) Hamming or single solution
+    // copy).  Even worst-case, total mutex-time per epoch is bounded ms
+    // (review R2 U-1 / Finding 3).
     constexpr int kMaxAttemptsPerCall = 32;
     int attempts_started = 0;
     size_t prev_loop_effort = 0;
@@ -243,10 +297,15 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
             break;
         }
         if (attempts_started > 0 && epoch.effort == prev_loop_effort) {
-            // Defensive: previous iteration produced zero accounted effort
-            // (degenerate model, attempt_idx > 0 random init that no-ops, etc.).
-            // Without this guard we would loop forever on a near-zero-cost
-            // attempt while never tripping the runner's outer stale gate.
+            // Defensive belt-and-braces guard.  Today this branch is
+            // unreachable: degenerate `ncol==0||nrow==0` models are filtered
+            // out by `fpr::run_parallel` before workers are constructed,
+            // every begin runs at least one `E.propagate(-1)` round (>0 ops
+            // on any non-empty model), and finish always adds
+            // `c.ARindex.size() > 0` for the LHS sum.  Keep the guard so a
+            // future change that relaxes any of the above (e.g., a Phase 1
+            // shortcut that skips initial propagate) cannot silently turn
+            // this loop into an infinite attempt-cycler.
             break;
         }
         prev_loop_effort = epoch.effort;
@@ -257,10 +316,15 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         // previous attempt's strat/mode and re-assigned 4 fields after the
         // rotation advance — a maintenance hazard if a future cfg field
         // is added (review R2 CF-2).
-        if (!attempt_alive_) {
+        if (!attempt_alive()) {
             if (attempts_started >= kMaxAttemptsPerCall) {
                 break;
             }
+#ifndef NDEBUG
+            if (attempts_started > 0) {
+                g_multi_attempt_iters.fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
             ++attempts_started;
             select_config_for_current_attempt();
         }
@@ -292,18 +356,15 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
         cfg.scratch = &scratch_;
 
-        if (!attempt_alive_) {
-            // `initial_solution_buf_` is hoisted to a member to avoid
-            // reallocating an `ncol`-sized vector every loop iteration on
-            // tbfp-network-scale instances (review R2 CF-1).  pool_.get_restart
-            // overwrites the contents.
-            initial_solution_buf_.clear();
-            const double *init_ptr = nullptr;
-            if (pool_.get_restart(rng_, initial_solution_buf_)) {
-                init_ptr = initial_solution_buf_.data();
-            }
+        if (!attempt_alive()) {
+            // Reuse the restart snapshot taken at the start of `run_epoch`
+            // (review R1 / Finding 1) — `initial_solution_buf_` is the
+            // member buffer the snapshot landed in.
+            const double *init_ptr = have_restart ? initial_solution_buf_.data() : nullptr;
             fpr_attempt_begin(attempt_state_, mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
-            attempt_alive_ = true;
+            // `attempt_state_.phase` is now `kDfs` (or `kReadyToFinish`
+            // if Phase 1 already produced a complete fixing); either way
+            // `attempt_alive()` is true on the next iteration.
             epoch.effort += attempt_state_.effort_consumed;
         }
 
@@ -315,6 +376,9 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
                 fpr_attempt_step(attempt_state_, mipsolver_, cfg, rng_, budget_remaining);
             epoch.effort += attempt_state_.effort_consumed - before_step;
             if (outcome == FprStepResult::kBudgetGate) {
+#ifndef NDEBUG
+                g_budget_gate_hits.fetch_add(1, std::memory_order_relaxed);
+#endif
                 // Attempt paused at the per-call slice boundary — return so
                 // peers do their next epoch's work and we resume here next call.
                 return epoch;
@@ -333,7 +397,8 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         }
 
         ++attempt_idx_;
-        attempt_alive_ = false;
+        // `fpr_attempt_finish` set `attempt_state_.phase = kIdle`, so
+        // `attempt_alive()` is false on the next iteration.
     }
 
     return epoch;

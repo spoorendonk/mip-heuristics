@@ -1,3 +1,4 @@
+#include "fpr.h"
 #include "fpr_strategies.h"
 #include "Highs.h"
 #include "test_common.h"
@@ -218,22 +219,41 @@ TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
 
 namespace {
 
-// Solve `inst` end-to-end at a deliberately tiny `mip_heuristic_effort`
-// so the FPR per-call slice is well below the cost of a full DFS subtree
-// — i.e., attempts must pause via `kBudgetGate` and resume on subsequent
-// `run_epoch` calls.  Without this the [fpr][resume] tests can pass
-// without ever exercising the new pause/resume code path on the small
-// HiGHS check instances (egout / bell5 / flugpl all verdict in one
-// slice at the default effort).  Returns final objective.
-double solve_with_seed_tiny_effort(const char *inst, int seed) {
+// Solve `inst` end-to-end at a small `mip_heuristic_effort` so the FPR
+// per-call slice is well below the cost of a full DFS subtree on these
+// instances — attempts must pause via `kBudgetGate` and resume on
+// subsequent `run_epoch` calls, or fast-fail and trigger the
+// multi-attempt fill loop.  Without this the [fpr][resume] tests can
+// pass without ever exercising the new pause/resume code path on the
+// small HiGHS check instances (egout / bell5 / flugpl all verdict in
+// one slice at the default effort).  At 0.001 the slice fell below the
+// cost of begin's initial `propagate(-1)` even on flugpl, so the loop
+// never reached `kBudgetGate`; 0.01 = 5x the historical anchor effort
+// (0.05/10) gives a slice large enough that step actually runs.
+// Returns final objective.
+double solve_with_seed_small_effort(const char *inst, int seed) {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("random_seed", seed);
     // Force seq/det path so the issue-#77 lifecycle is the dispatch under test.
     highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", false);
-    // Tiny effort → tiny per-call slice → DFS pauses across calls.
-    highs.setOptionValue("mip_heuristic_effort", 0.001);
+    // Pin threads=1 so the determinism contract is the *intra-worker*
+    // lifecycle determinism (single-worker pause/resume + multi-attempt
+    // fill).  Across-worker scheduling determinism is a different
+    // (harder) property: HighsTaskExecutor is a global singleton lazily
+    // initialised on the first Highs::run in a process and the per-thread
+    // work-stealing order on subsequent runs depends on the scheduler's
+    // internal state — running these tests sequentially in one Catch2
+    // process exposes that as cross-test instability at effort=0.01 on
+    // bell5 even though each test in isolation is deterministic.
+    // CLAUDE.md says "don't pass --threads/threads= unless asked" for
+    // benchmarks; this is a determinism test where threads=1 is the
+    // ask.
+    highs.setOptionValue("threads", 1);
+    // Small effort → small per-call slice → multi-attempt loop and/or
+    // pause-resume engages on the small HiGHS check instances.
+    highs.setOptionValue("mip_heuristic_effort", 0.01);
     REQUIRE(highs.readModel(std::string(kInstancesDir) + "/" + inst) == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -243,32 +263,81 @@ double solve_with_seed_tiny_effort(const char *inst, int seed) {
 
 }  // namespace
 
-TEST_CASE("FPR resume: same seed reproduces same objective at tiny effort (egout)",
+// Test design note: these tests assert end-to-end objective equality
+// across two same-seed runs.  This is a *proxy* for the issue #77
+// literal acceptance bullet — "bit-identical [Sequential] summaries" —
+// because parsing the HiGHS log would require wiring a callback into
+// the test harness that can flake on log-format changes.  A divergence
+// in effort count or attempt rotation that ultimately produces the
+// same optimum would slip past objective equality alone.  In NDEBUG=0
+// builds we additionally assert that the lifecycle counters
+// (`fpr::budget_gate_hits()`, `fpr::multi_attempt_iters()`) are
+// non-zero (proving the pause/resume / multi-attempt-fill paths
+// actually fired) AND identical across runs (proving the lifecycle
+// path traversal is deterministic).  Together this is a tighter
+// guarantee than objective equality alone.
+TEST_CASE("FPR resume: same seed reproduces same objective at small effort (egout)",
           "[fpr][resume][determinism]") {
-    // Issue #77 requires bit-identical behaviour for two runs on the same
-    // (seed, instance).  Tiny `mip_heuristic_effort` forces the FPR DFS
-    // to pause across multiple `run_epoch` calls — exercises the
-    // pause/resume code path the issue exists to add.  Same seed → same
-    // objective; comparing with strict equality (no Approx) since
-    // `Highs::run` should be bit-deterministic at fixed seed for the
-    // seq/det dispatch.
-    const double obj1 = solve_with_seed_tiny_effort("egout.mps", 42);
-    const double obj2 = solve_with_seed_tiny_effort("egout.mps", 42);
+#ifndef NDEBUG
+    fpr::reset_test_counters();
+#endif
+    const double obj1 = solve_with_seed_small_effort("egout.mps", 42);
+#ifndef NDEBUG
+    const size_t gate1 = fpr::budget_gate_hits();
+    const size_t multi1 = fpr::multi_attempt_iters();
+    // Sanity: at least one of the two new lifecycle paths must have
+    // engaged.  Without this, the determinism assertion below could
+    // pass on a regression that bypassed the lifecycle entirely
+    // (HiGHS' default B&B trivially solves these instances).
+    REQUIRE((gate1 > 0 || multi1 > 0));
+    fpr::reset_test_counters();
+#endif
+    const double obj2 = solve_with_seed_small_effort("egout.mps", 42);
     REQUIRE(obj1 == obj2);
+#ifndef NDEBUG
+    REQUIRE(fpr::budget_gate_hits() == gate1);
+    REQUIRE(fpr::multi_attempt_iters() == multi1);
+#endif
 }
 
-TEST_CASE("FPR resume: same seed reproduces same objective at tiny effort (bell5)",
+TEST_CASE("FPR resume: same seed reproduces same objective at small effort (bell5)",
           "[fpr][resume][determinism]") {
-    const double obj1 = solve_with_seed_tiny_effort("bell5.mps", 7);
-    const double obj2 = solve_with_seed_tiny_effort("bell5.mps", 7);
+#ifndef NDEBUG
+    fpr::reset_test_counters();
+#endif
+    const double obj1 = solve_with_seed_small_effort("bell5.mps", 7);
+#ifndef NDEBUG
+    const size_t gate1 = fpr::budget_gate_hits();
+    const size_t multi1 = fpr::multi_attempt_iters();
+    REQUIRE((gate1 > 0 || multi1 > 0));
+    fpr::reset_test_counters();
+#endif
+    const double obj2 = solve_with_seed_small_effort("bell5.mps", 7);
     REQUIRE(obj1 == obj2);
+#ifndef NDEBUG
+    REQUIRE(fpr::budget_gate_hits() == gate1);
+    REQUIRE(fpr::multi_attempt_iters() == multi1);
+#endif
 }
 
-TEST_CASE("FPR resume: same seed reproduces same objective at tiny effort (flugpl)",
+TEST_CASE("FPR resume: same seed reproduces same objective at small effort (flugpl)",
           "[fpr][resume][determinism]") {
-    const double obj1 = solve_with_seed_tiny_effort("flugpl.mps", 0);
-    const double obj2 = solve_with_seed_tiny_effort("flugpl.mps", 0);
+#ifndef NDEBUG
+    fpr::reset_test_counters();
+#endif
+    const double obj1 = solve_with_seed_small_effort("flugpl.mps", 0);
+#ifndef NDEBUG
+    const size_t gate1 = fpr::budget_gate_hits();
+    const size_t multi1 = fpr::multi_attempt_iters();
+    REQUIRE((gate1 > 0 || multi1 > 0));
+    fpr::reset_test_counters();
+#endif
+    const double obj2 = solve_with_seed_small_effort("flugpl.mps", 0);
     REQUIRE(obj1 == obj2);
+#ifndef NDEBUG
+    REQUIRE(fpr::budget_gate_hits() == gate1);
+    REQUIRE(fpr::multi_attempt_iters() == multi1);
+#endif
 }
 
 TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cycling",

@@ -26,4 +26,16 @@ namespace fpr {
 size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
                     bool opportunistic = false);
 
+#ifndef NDEBUG
+// Test-only lifecycle counters for the issue #77 pause/resume path.
+// Defined in fpr.cpp.  Tests assert these are non-zero after a
+// solve at small `mip_heuristic_effort` to verify the kBudgetGate /
+// multi-attempt-fill paths actually fired (objective equality alone
+// is a proxy that misses lifecycle-path regressions where the
+// rotation diverges but converges back to the same final objective).
+size_t budget_gate_hits();
+size_t multi_attempt_iters();
+void reset_test_counters();
+#endif
+
 }  // namespace fpr

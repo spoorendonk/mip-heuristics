@@ -112,7 +112,41 @@ struct FprScratch {
 };
 
 struct FprConfig {
-    size_t max_effort;  // effort budget (coefficient accesses)
+    // Effort budget (coefficient accesses).
+    //
+    // Semantics depend on the API surface the caller drives:
+    //
+    // - One-shot `fpr_attempt`: caps the entire begin → step → finish
+    //   run end-to-end.  Used as the DFS gate (one shot, gated by
+    //   `cfg.max_effort - already_used` inside the wrapper) AND as the
+    //   Phase 3 cap (`cfg.max_effort - total_prop_work` inside
+    //   `fpr_attempt_finish`).  Different one-shot callers pass
+    //   different slice sizes here:
+    //     • `portfolio.cpp` — bandit's per-arm-pull allocation.
+    //     • `scylla_worker.cpp` — per-pump-iter remainder of the
+    //       current epoch.
+    //     • `fpr_lp.cpp` — full epoch budget.
+    //   None is a normalised wall-clock-equivalent quantity; each is
+    //   simply whatever cap the caller wants on this single DFS.
+    //   Phase 3 (repair_search / walksat) self-throttles via
+    //   `repair_iterations` and `walksat_iterations`; `max_effort` is
+    //   the additional effort cap on top.
+    //
+    // - Lifecycle (`fpr_attempt_begin/step/finish` from `FprWorker`):
+    //   caps the *attempt* across all begin → step → ... → step →
+    //   finish calls that may span multiple `run_epoch` invocations,
+    //   NOT the per-call slice.  See the `cfg.max_effort =
+    //   std::max<size_t>(attempt_budget_, 1)` line in
+    //   `FprWorker::run_epoch` and its rationale comment.  The per-call
+    //   DFS gate is the `effort_remaining` argument passed explicitly
+    //   to `fpr_attempt_step`.
+    //
+    // Mixing the two conventions is a footgun: passing a slice-scale
+    // `cfg.max_effort` to the lifecycle API silently disables Phase 3
+    // repair on long attempts; passing an attempt-scale value to
+    // `fpr_attempt` lets a single DFS run far longer than the caller's
+    // slice budget intended.
+    size_t max_effort;
     // Per-variable hint for choose_fix_value (nullable; length ncol if non-null).
     // Used only on attempt 0 (papers: FPR uses incumbent, Scylla uses LP sol).
     const double *hint;
