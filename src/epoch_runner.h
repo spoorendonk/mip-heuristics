@@ -1,26 +1,26 @@
 #pragma once
 
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
-#include "parallel/HighsParallel.h"
-
 #include <concepts>
 #include <cstddef>
 #include <memory>
 #include <vector>
 
+#include "mip/HighsMipSolver.h"
+#include "mip/HighsMipSolverData.h"
+#include "parallel/HighsParallel.h"
+
 // Result of a single epoch for one worker.
 struct EpochResult {
-    size_t effort = 0;
-    bool found_improvement = false;
+  size_t effort = 0;
+  bool found_improvement = false;
 };
 
 // Interface for workers that can be paused/resumed at epoch boundaries.
 template <typename T>
 concept EpochWorker = requires(T w, size_t budget) {
-    { w.run_epoch(budget) } -> std::same_as<EpochResult>;
-    { w.finished() } -> std::convertible_to<bool>;
-    { w.reset_staleness() } -> std::same_as<void>;
+  { w.run_epoch(budget) } -> std::same_as<EpochResult>;
+  { w.finished() } -> std::convertible_to<bool>;
+  { w.reset_staleness() } -> std::same_as<void>;
 };
 
 // Shared per-worker bookkeeping for epoch-gated heuristics.
@@ -41,15 +41,54 @@ concept EpochWorker = requires(T w, size_t budget) {
 // them single-threaded.  The continuous-parallel runners own their own
 // atomic counters; see `ContinuousLoop` in `continuous_loop.h`.
 struct EpochWorkerBase {
-    size_t total_budget = 0;
-    size_t stale_budget = 0;
-    size_t total_effort = 0;
-    size_t effort_since_improvement = 0;
-    bool finished = false;
+  size_t total_budget = 0;
+  size_t stale_budget = 0;
+  size_t total_effort = 0;
+  size_t effort_since_improvement = 0;
+  bool finished = false;
 
-    // Clear the staleness counter; called at epoch barrier when any peer
-    // worker found an improvement in the prior epoch.
-    void reset_staleness() { effort_since_improvement = 0; }
+  // True when this worker has exceeded its staleness budget.
+  bool stale() const { return effort_since_improvement > stale_budget; }
+
+  // True when already stale, or would become stale after `extra` more
+  // effort.  Used for prospective inner-loop checks that avoid one epoch
+  // of overshoot (see LocalMipWorker).
+  bool stale(size_t extra) const {
+    return effort_since_improvement + extra > stale_budget;
+  }
+
+  // True when this worker has consumed its total budget.
+  bool exhausted() const { return total_effort >= total_budget; }
+
+  // True when already exhausted, or would become exhausted after `extra`
+  // more effort.  Mirrors the prospective overload of `stale`.
+  bool exhausted(size_t extra) const {
+    return total_effort + extra >= total_budget;
+  }
+
+  // Clear the staleness counter; called at epoch barrier when any peer
+  // worker found an improvement in the prior epoch.
+  void reset_staleness() { effort_since_improvement = 0; }
+
+  // Accumulate effort when the worker found an improvement.  Resets
+  // staleness and marks finished if total budget is exceeded.
+  void charge_improvement(size_t effort) {
+    total_effort += effort;
+    effort_since_improvement = 0;
+    if (exhausted()) {
+      finished = true;
+    }
+  }
+
+  // Accumulate effort when the worker found NO improvement.  Advances the
+  // staleness counter and marks finished if either budget is exceeded.
+  void charge_no_improvement(size_t effort) {
+    total_effort += effort;
+    effort_since_improvement += effort;
+    if (exhausted() || stale()) {
+      finished = true;
+    }
+  }
 };
 
 // Generic epoch loop shared by sequential parallel modes and portfolio
@@ -66,78 +105,80 @@ struct EpochWorkerBase {
 // Returns total effort consumed.
 template <EpochWorker W, typename RestartFn>
 [[nodiscard]] size_t run_epoch_loop(HighsMipSolver &mipsolver,
-                                    std::vector<std::unique_ptr<W>> &workers, size_t budget,
-                                    size_t epoch_budget, RestartFn restart_finished,
+                                    std::vector<std::unique_ptr<W>> &workers,
+                                    size_t budget, size_t epoch_budget,
+                                    RestartFn restart_finished,
                                     size_t stale_budget = 0) {
-    if (stale_budget == 0) {
-        stale_budget = budget >> 2;
+  if (stale_budget == 0) {
+    stale_budget = budget >> 2;
+  }
+  const int N = static_cast<int>(workers.size());
+  if (N == 0) {
+    return 0;
+  }
+
+  auto *mipdata = mipsolver.mipdata_.get();
+  const double time_limit = mipsolver.options_mip_->time_limit;
+
+  size_t total_effort = 0;
+  size_t effort_since_improvement = 0;
+
+  std::vector<EpochResult> epoch_results(N);
+
+  while (total_effort < budget) {
+    // Pre-epoch (sequential): termination checks
+    if (mipdata->terminatorTerminated() ||
+        mipsolver.timer_.read() >= time_limit) {
+      break;
     }
-    const int N = static_cast<int>(workers.size());
-    if (N == 0) {
-        return 0;
-    }
-
-    auto *mipdata = mipsolver.mipdata_.get();
-    const double time_limit = mipsolver.options_mip_->time_limit;
-
-    size_t total_effort = 0;
-    size_t effort_since_improvement = 0;
-
-    std::vector<EpochResult> epoch_results(N);
-
-    while (total_effort < budget) {
-        // Pre-epoch (sequential): termination checks
-        if (mipdata->terminatorTerminated() || mipsolver.timer_.read() >= time_limit) {
-            break;
-        }
-        if (effort_since_improvement > stale_budget) {
-            break;
-        }
-
-        // Restart finished workers; check if all are done.
-        bool all_finished = true;
-        for (int w = 0; w < N; ++w) {
-            if (workers[w]->finished()) {
-                restart_finished(w);
-            }
-            if (!workers[w]->finished()) {
-                all_finished = false;
-            }
-        }
-        if (all_finished) {
-            break;
-        }
-
-        // Epoch (parallel): all workers run.
-        highs::parallel::for_each(
-            0, static_cast<HighsInt>(N),
-            [&](HighsInt lo, HighsInt hi) {
-                for (HighsInt w = lo; w < hi; ++w) {
-                    epoch_results[w] = workers[w]->run_epoch(epoch_budget);
-                }
-            },
-            1);
-
-        // Post-epoch (sequential): merge results.
-        size_t epoch_effort = 0;
-        bool any_improved = false;
-        for (int w = 0; w < N; ++w) {
-            epoch_effort += epoch_results[w].effort;
-            if (epoch_results[w].found_improvement) {
-                any_improved = true;
-            }
-        }
-        total_effort += epoch_effort;
-
-        if (any_improved) {
-            effort_since_improvement = 0;
-            for (int w = 0; w < N; ++w) {
-                workers[w]->reset_staleness();
-            }
-        } else {
-            effort_since_improvement += epoch_effort;
-        }
+    if (effort_since_improvement > stale_budget) {
+      break;
     }
 
-    return total_effort;
+    // Restart finished workers; check if all are done.
+    bool all_finished = true;
+    for (int w = 0; w < N; ++w) {
+      if (workers[w]->finished()) {
+        restart_finished(w);
+      }
+      if (!workers[w]->finished()) {
+        all_finished = false;
+      }
+    }
+    if (all_finished) {
+      break;
+    }
+
+    // Epoch (parallel): all workers run.
+    highs::parallel::for_each(
+        0, static_cast<HighsInt>(N),
+        [&](HighsInt lo, HighsInt hi) {
+          for (HighsInt w = lo; w < hi; ++w) {
+            epoch_results[w] = workers[w]->run_epoch(epoch_budget);
+          }
+        },
+        1);
+
+    // Post-epoch (sequential): merge results.
+    size_t epoch_effort = 0;
+    bool any_improved = false;
+    for (int w = 0; w < N; ++w) {
+      epoch_effort += epoch_results[w].effort;
+      if (epoch_results[w].found_improvement) {
+        any_improved = true;
+      }
+    }
+    total_effort += epoch_effort;
+
+    if (any_improved) {
+      effort_since_improvement = 0;
+      for (int w = 0; w < N; ++w) {
+        workers[w]->reset_staleness();
+      }
+    } else {
+      effort_since_improvement += epoch_effort;
+    }
+  }
+
+  return total_effort;
 }
