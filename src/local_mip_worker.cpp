@@ -362,6 +362,13 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
   // Only add effort consumed since the last improvement within this
   // epoch (avoid double-counting when improvement resets the counter).
   base_.effort_since_improvement += ctx_.effort - effort_at_last_improvement;
+  // Set finished if either budget is exhausted so run_epoch_loop does not
+  // re-enter this worker after its budget is spent.  (FjWorker gets this
+  // via charge_improvement/charge_no_improvement; LocalMIP does its own
+  // accounting because improvements can occur mid-epoch.)
+  if (base_.exhausted() || base_.stale()) {
+    base_.finished = true;
+  }
   epoch.effort = epoch_effort;
 
   return epoch;

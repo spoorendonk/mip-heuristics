@@ -151,8 +151,6 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget,
   SolutionPool pool(kPoolCapacity, minimize);
   seed_pool(pool, mipsolver);
 
-  bool infeasible = false;
-
   // All four heuristics return the effort they consumed and this
   // function books it into `mipdata->heuristic_effort_used` (issue #79
   // and its follow-up that extended LocalMIP's contract to FJ, FPR,
@@ -189,19 +187,19 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget,
       return fj::run_parallel(mipsolver, pool, alloc(kWeightFj), opportunistic);
     });
   }
-  if (!infeasible && fpr_on && !deadline_hit()) {
+  if (fpr_on && !deadline_hit()) {
     run_and_log("fpr", [&]() -> size_t {
       return fpr::run_parallel(mipsolver, pool, alloc(kWeightFpr),
                                opportunistic);
     });
   }
-  if (!infeasible && lm_on && !deadline_hit()) {
+  if (lm_on && !deadline_hit()) {
     run_and_log("local_mip", [&]() -> size_t {
       return local_mip::run_parallel(mipsolver, pool, alloc(kWeightLocalMip),
                                      opportunistic);
     });
   }
-  if (!infeasible && sc_on && !deadline_hit()) {
+  if (sc_on && !deadline_hit()) {
     run_and_log("scylla", [&]() -> size_t {
       return scylla::run_parallel(mipsolver, pool, alloc(kWeightScylla),
                                   opportunistic);
@@ -216,7 +214,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget,
     mipdata->trySolution(entry.solution, entry.source);
   }
 
-  return infeasible;
+  return false;
 }
 
 }  // namespace
