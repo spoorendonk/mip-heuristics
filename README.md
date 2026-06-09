@@ -1,113 +1,117 @@
 # mip-heuristics
 
-Custom MIP primal heuristics compiled directly into a patched build of [HiGHS](https://github.com/ERGO-Code/HiGHS).
+A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.14.0 via a patched build. The project serves two goals: (1) novel algorithms — FPR (DFS+backtracking+WalkSAT+RepairSearch), fpr_lp (LP-guided FPR for B&B dive), and a Thompson-sampling adaptive portfolio, none of which appear in any other open-source MIP solver; and (2) a research platform that, for the first time, brings together FJ, FPR, LocalMIP (Lin–Zou–Cai CP 2024), and a PDLP-based feasibility pump in a single HiGHS plugin, providing CPU reference implementations for algorithms that otherwise exist only in GPU builds (cf. cuOpt arXiv:2510.20499).
 
-## Overview
+## Quick Start
 
-This project implements primal heuristics for finding feasible solutions to mixed-integer programs. The heuristics are compiled as a static object library whose objects are injected into the HiGHS `highs` library target. HiGHS v1.14.0 is fetched via CMake FetchContent and patched at build time. The result is a single `highs` binary with the custom heuristics running alongside HiGHS's built-in ones during presolve and branch-and-bound.
-
-## Heuristics
-
-- **FPR (Fix-Propagate-Repair)** -- Fix-and-propagate framework with multiple variable-ranking and value-selection strategies, plus WalkSAT-based repair search. The LP-free variant runs during presolve. Based on Salvagnin et al. [1].
-- **FPR_LP** -- LP-dependent FPR (paper Classes 2–3) driven by the root LP solution, dispatched during the branch-and-bound dive (after RENS/RINS). Single heuristic family, so only `mip_heuristic_opportunistic` selects between its two execution variants.
-- **LocalMIP** -- Tabu-based neighborhood search with constraint-violation tracking, lifting moves, and backtracking multiple starts. Based on Lin et al. [2].
-- **Scylla** -- Matrix-free fix-propagate-and-project using PDLP as an approximate LP oracle, with objective perturbation and solution-pool crossover restarts. Based on Mexi et al. [3].
-- **FeasibilityJump** -- LP-free Lagrangian heuristic. Wraps HiGHS's built-in implementation with effort budgeting and portfolio integration. Based on Luteberget and Sartor [4].
-- **Portfolio** -- Thompson sampling (Beta-Bernoulli) bandit that adaptively selects among FPR, LocalMIP, FeasibilityJump, and Scylla arms. Has deterministic and opportunistic (parallel) modes.
-
-Reference papers are in `docs/`.
-
-## Building
-
-**Prerequisites**: CMake 3.25+, a C++23 compiler (GCC 13+ or Clang 17+).
+**Prerequisites**: CMake 3.25+, GCC 13+ or Clang 17+.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake --build build -j$(nproc)          # first build ~5 min (fetches HiGHS)
+./build/bin/highs --mip_heuristic_preset all_opp model.mps
 ```
 
-First build is slow (~5 min) because HiGHS is fetched and built via FetchContent.
-
-### GPU acceleration
+Five-instance benchmark against vanilla HiGHS (requires MIPLIB instances):
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_CUDA=ON
-```
-
-Enables CUDA for the PDLP solver used by Scylla (cuPDLP). Falls back to CPU if no CUDA compiler is found.
-
-## Usage
-
-Run the patched HiGHS binary as usual:
-
-```bash
-./build/bin/highs model.mps
-```
-
-Enable portfolio mode (Thompson sampling arm selection):
-
-```bash
-./build/bin/highs --mip_heuristic_portfolio true model.mps
-```
-
-### Execution modes (2×2 matrix)
-
-`mip_heuristic_portfolio` and `mip_heuristic_opportunistic` are orthogonal flags that form a 2×2 matrix:
-
-| portfolio / opportunistic | `opportunistic = false` (deterministic, epoch-gated) | `opportunistic = true` (continuous) |
-|---|---|---|
-| `portfolio = false` (sequential) | **seq/det**: FJ → FPR → LocalMIP → Scylla in order, each with N epoch-synchronized workers | **seq/opp**: same sequence, each heuristic uses its continuous-parallel runner |
-| `portfolio = true`  (bandit)     | **port/det**: Thompson-sampling bandit across arms, workers synchronize at epoch barriers | **port/opp**: bandit with continuous workers, no barriers |
-
-FPR_LP (a single heuristic family, not a meta-portfolio) dispatches only on `mip_heuristic_opportunistic` — `mip_heuristic_portfolio` is a presolve-only flag and has no effect on the dive-time LP-FPR runner.
-
-### Custom options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `mip_heuristic_effort` | `0.30` | Multiplier on the nnz-derived base effort budget shared across custom heuristics (raised from upstream's 0.05 by our patch; see `bench/REPORT_effort_sweep.md`) |
-| `mip_heuristic_run_fpr` | `false` | Enable FPR (and LP-dependent FPR_LP) |
-| `mip_heuristic_run_local_mip` | `false` | Enable LocalMIP heuristic |
-| `mip_heuristic_run_scylla` | `false` | Enable Scylla heuristic |
-| `mip_heuristic_run_feasibility_jump` | `false` | Enable Feasibility Jump (standalone or portfolio arm) |
-| `mip_heuristic_portfolio` | `false` | Adaptive Thompson-sampling portfolio over arms |
-| `mip_heuristic_opportunistic` | `false` | Continuous (opportunistic) parallelism instead of epoch-gated deterministic parallelism |
-
-## Benchmarking
-
-The `bench/` directory has scripts for comparing patched vs vanilla HiGHS on MIPLIB instances:
-
-```bash
-# Download MIPLIB instances
 bash bench/download_miplib.sh
-
-# Run comparison
 python bench/run_benchmark.py \
   --instances bench/instances_small.txt \
   --binary ./build/bin/highs \
   --data-dir /tmp/miplib \
-  --time-limit 60
-
-# Analyze results
+  --time-limit 300
 python bench/analyze_results.py bench/results
 ```
 
-## Tests
+## Heuristics
 
-Catch2 v3 characterization tests against MIPLIB instances bundled with HiGHS:
+**FPR (Fix, Propagate, and Repair)** — LP-free DFS tree search that fixes integer variables one at a time, propagates bounds at each node, and backtracks on infeasibility. After the DFS, WalkSAT and RepairSearch repair any remaining constraint violations. The presolve variant (Class 1) runs multiple strategy configurations in parallel. Based on Salvagnin, Roberti, Fischetti, *Mathematical Programming Computation* 17, 111–139, 2025 ([doi:10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5)). **Novel** vs HiGHS, SCIP, CBC, and cuOpt: no other open-source solver implements the full backtracking+WalkSAT+RepairSearch pipeline.
+
+**fpr_lp (LP-guided FPR, Classes 2–3)** — Uses the root LP solution to seed the DFS fixing order and initial values (paper Classes 2, 3a, 3b). Dispatched during the B&B dive (after RENS/RINS), not presolve. Workers are bound to distinct LP arm configurations; excess workers wrap with distinct seeds. Shares the FPR rounding kernel. **Novel**.
+
+**LocalMIP** — Weighted tabu local search with constraint-violation tracking, lifting moves, and multi-start backtracking. Finds improving moves by solving small MIP subproblems over the neighborhood. Based on Lin, Zou, Cai, "An Efficient Local Search Solver for Mixed Integer Programming," CP 2024, Article 19 ([doi:10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19)). **Novel** vs HiGHS and SCIP; cuOpt has a GPU variant citing the same paper.
+
+**Scylla** — PDLP-based feasibility pump: alternates approximate LP solves (PDLP) with FPR rounding, progressive objective blending, and cycling perturbation. N independent pump chains share one mutex-guarded PDLP instance; workers that lose the lock round against the most-recent stale snapshot to stay productive. Based on Mexi et al., *OR Proceedings 2023* ([doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9)); same concept as cuOpt (arXiv:2510.20499). This is a CPU/HiGHS reference implementation — no novelty claim, but it is the only publicly available CPU implementation.
+
+**FeasibilityJump** — LP-free Lagrangian heuristic. Thin wrapper around HiGHS's built-in FJ implementation, routed through our parallel infrastructure for effort budgeting and portfolio integration. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)). Note: `mip_heuristic_run_feasibility_jump` (default true in our patch) disables HiGHS's internal FJ dispatch and routes it through our infrastructure.
+
+**Thompson portfolio** — Beta-Bernoulli bandit that adaptively selects arms (FPR, LocalMIP, FJ, Scylla) based on feasibility success rates. Experimental; novel vs all open-source solvers.
+
+Reference PDFs are in `docs/`.
+
+## Execution Modes
+
+Two orthogonal flags form a 2×2 dispatch matrix:
+
+| | `opportunistic=false` (epoch-gated, deterministic) | `opportunistic=true` (continuous parallel) |
+|---|---|---|
+| `portfolio=false` (sequential) | **seq/det**: FJ → FPR → LocalMIP → Scylla with N synchronized workers per epoch | **seq/opp**: same sequence, continuous workers per heuristic |
+| `portfolio=true` (bandit) | **port/det**: Thompson bandit, epoch-synchronized workers | **port/opp**: Thompson bandit, continuous workers |
+
+The `mip_heuristic_preset` option sets both flags and the per-heuristic enable flags at once:
+
+| Preset | Heuristics | Mode | Notes |
+|--------|-----------|------|-------|
+| `off` | none | — | disables all custom heuristics |
+| `fpr` | FPR | seq/det | isolate FPR for ablation |
+| `all_det` | FJ+FPR+LocalMIP | seq/det | deterministic, reproducible |
+| `all_opp` | FJ+FPR+LocalMIP | seq/opp | **recommended** |
+| `scylla` | Scylla | seq/opp | PDLP pump only |
+| `portfolio` | all | port/opp | experimental adaptive selection |
+
+Individual flags (`mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla`, `mip_heuristic_run_feasibility_jump`, `mip_heuristic_portfolio`, `mip_heuristic_opportunistic`) take effect when no preset is set.
+
+`fpr_lp` runs at B&B dive time and is not affected by the `portfolio` flag; only `mip_heuristic_opportunistic` selects between its epoch-gated and continuous variants.
+
+## Benchmarks
+
+Stage 1 results on 25 hard MIPLIB 2017 instances (`bench/instances_hard25.txt`), 300s time limit:
+
+- Patched HiGHS (`all_opp`): **35.6% primal integral improvement** over vanilla HiGHS.
+- Vanilla HiGHS is faster to first feasible solution; patched HiGHS wins on solution quality over time.
+
+PLATO mipfeas 233-instance results are in progress (`bench/instances_bench.txt`).
+
+## Tunable Parameters
+
+~57 `constexpr` parameters control per-heuristic behavior (WalkSAT step counts, RepairSearch node limits, bandit priors, PDLP epsilon schedules, etc.). See [`docs/PARAMETERS.md`](docs/PARAMETERS.md) for the full annotated list with defaults and suggested ranges.
+
+Key solver-level options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `mip_heuristic_preset` | `""` | Convenience preset; overrides individual flags |
+| `mip_heuristic_effort` | `0.30` | Normalized wall-clock budget fraction for all heuristics |
+
+## Build Options
+
+| Flag | Description |
+|------|-------------|
+| `-DCMAKE_BUILD_TYPE=Release` | Optimized build (default) |
+| `-DMIP_HEURISTICS_CUDA=ON` | Enable cuPDLP GPU backend for Scylla; falls back to CPU if no CUDA compiler found |
+
+## Testing
 
 ```bash
 cd build && ctest --output-on-failure
-cd build && ctest -R "Portfolio: flugpl" --output-on-failure   # single test by name
-cd build && ./mip_heuristics_tests "[portfolio]"                # by Catch2 tag
+cd build && ctest -R "Portfolio: flugpl" --output-on-failure   # single test
+cd build && ./mip_heuristics_tests "[portfolio]"               # Catch2 tag
 ```
 
-## References
+Catch2 v3. Characterization tests verify known-optimal objectives against MIPLIB instances bundled with HiGHS.
 
-1. D. Salvagnin, R. Roberti, M. Fischetti. *A fix-propagate-repair heuristic for mixed integer programming.* Mathematical Programming Computation 17, 111--139, 2025. [doi:10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5)
-2. P. Lin, M. Zou, S. Cai. *An Efficient Local Search Solver for Mixed Integer Programming.* In Proc. CP 2024, Article 19, pp. 19:1--19:19. [doi:10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19)
-3. G. Mexi, M. Besançon, S. Bolusani, A. Chmiela, A. Hoen, A. Gleixner. *Scylla: a matrix-free fix-propagate-and-project heuristic for mixed-integer optimization.* In Operations Research Proceedings 2023, pp. 57--63. [doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9)
-4. B. Luteberget, G. Sartor. *Feasibility Jump: an LP-free Lagrangian MIP heuristic.* Mathematical Programming Computation 15, 365--388, 2023. [doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)
+## Citation
+
+```bibtex
+@software{mip-heuristics,
+  title  = {mip-heuristics: A complete MIP primal heuristics suite for HiGHS},
+  author = {Spoorendonk, Simon},
+  year   = {2026},
+  url    = {https://github.com/spoorendonk/mip-heuristics},
+  note   = {Zenodo DOI pending}
+}
+```
 
 ## License
 
