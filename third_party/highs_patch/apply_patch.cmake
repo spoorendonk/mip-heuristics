@@ -128,15 +128,16 @@ if(_preset_found EQUAL -1)
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
-    string(REGEX MATCHALL "OptionRecordString.*mip_heuristic_preset" _preset_record_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _preset_record_hits _preset_record_count)
-    if(NOT _preset_record_count EQUAL 1)
+    # Use string(FIND) rather than REGEX MATCHALL to avoid cmake treating
+    # semicolons inside the matched string as list separators (which would
+    # make list(LENGTH) return the wrong count).
+    string(FIND "${OPTIONS_CONTENT}" "OptionRecordString(\"mip_heuristic_preset\"" _preset_record_idx)
+    if(_preset_record_idx EQUAL -1)
         message(FATAL_ERROR
             "HighsOptions.h post-patch sanity check failed: "
-            "expected exactly 1 occurrence of 'OptionRecordString.*mip_heuristic_preset', "
-            "got ${_preset_record_count}. Upstream HiGHS likely reformatted the "
-            "option-record block so the REPLACE pattern no longer matches. "
-            "Please clean the HiGHS source tree and rebuild: "
+            "could not find 'OptionRecordString(\"mip_heuristic_preset\"' after patching. "
+            "Upstream HiGHS likely reformatted the option-record block so the REPLACE "
+            "pattern no longer matches.  Please clean the HiGHS source tree and rebuild: "
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
