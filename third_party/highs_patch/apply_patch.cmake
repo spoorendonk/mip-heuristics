@@ -75,6 +75,75 @@ else()
     message(STATUS "Option patches already applied to HighsOptions.h, skipping")
 endif()
 
+# ── Add mip_heuristic_preset string option ──
+# Separate idempotency block so it applies cleanly on top of the bool-options
+# block above (both in-place upgrades and fresh checkouts).
+file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_preset" _preset_found)
+if(_preset_found EQUAL -1)
+    # Member variable: insert after mip_heuristic_opportunistic;
+    string(REPLACE
+      "  bool mip_heuristic_opportunistic;\n"
+      "  bool mip_heuristic_opportunistic;\n  std::string mip_heuristic_preset;\n"
+      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+
+    # Constructor initializer: insert after mip_heuristic_opportunistic(false),
+    string(REPLACE
+      "        mip_heuristic_opportunistic(false),\n"
+      "        mip_heuristic_opportunistic(false),\n        mip_heuristic_preset(\"\"),\n"
+      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+
+    # Record registration: insert after the mip_heuristic_opportunistic record block
+    string(REPLACE
+      "record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", \\\"scylla\\\", or \\\"portfolio\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
+      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+
+    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
+    message(STATUS "Applied mip_heuristic_preset option to HighsOptions.h")
+
+    # Sanity checks: all three insertions must produce exactly one occurrence.
+    # A silent REPLACE miss (e.g. upstream reformat) would leave an incomplete
+    # patch; the count check turns that into an actionable FATAL_ERROR.
+    string(REGEX MATCHALL "std::string mip_heuristic_preset" _preset_member_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _preset_member_hits _preset_member_count)
+    if(NOT _preset_member_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsOptions.h post-patch sanity check failed: "
+            "expected exactly 1 occurrence of 'std::string mip_heuristic_preset', "
+            "got ${_preset_member_count}. Upstream HiGHS likely reformatted "
+            "HighsOptions.h so the struct-member REPLACE pattern no longer matches. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+    string(REGEX MATCHALL "mip_heuristic_preset\\(\"\"\\)" _preset_ctor_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _preset_ctor_hits _preset_ctor_count)
+    if(NOT _preset_ctor_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsOptions.h post-patch sanity check failed: "
+            "expected exactly 1 occurrence of 'mip_heuristic_preset(\"\")' in the "
+            "constructor initializer list, got ${_preset_ctor_count}. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+    string(REGEX MATCHALL "OptionRecordString.*mip_heuristic_preset" _preset_record_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _preset_record_hits _preset_record_count)
+    if(NOT _preset_record_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsOptions.h post-patch sanity check failed: "
+            "expected exactly 1 occurrence of 'OptionRecordString.*mip_heuristic_preset', "
+            "got ${_preset_record_count}. Upstream HiGHS likely reformatted the "
+            "option-record block so the REPLACE pattern no longer matches. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+else()
+    message(STATUS "mip_heuristic_preset option already applied to HighsOptions.h, skipping")
+endif()
+
 # ── Raise mip_heuristic_effort default 0.05 → 0.30 ──
 # Our portfolio heuristics are starved at 0.05; a 10-instance sweep showed
 # monotone SGM-gap improvement up to 0.30 (see bench/REPORT_effort_sweep.md).
