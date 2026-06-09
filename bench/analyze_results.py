@@ -709,6 +709,67 @@ def print_effort_calibration(
             print("Effort units appear reasonably calibrated across arms.")
 
 
+def print_plato_summary(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    time_limit: float,
+    best_known: dict[str, float | None] | None,
+) -> None:
+    """Print PLATO-style headline metrics: primal-integral SGM ratio and feasibility counts.
+
+    The PLATO benchmark uses primal integral (area under primal-gap curve, 600s
+    window, shift=0.001) as the primary metric with shifted geometric mean across
+    all 233 instances, and counts the number of instances where a feasible solution
+    was found within the time limit.
+    """
+    instances = get_common_instances(results, configs)
+    if not instances:
+        return
+
+    # PLATO shift matches Mittelmann's published methodology (sh=0.001)
+    plato_shift = 0.001
+
+    print(f"\n## PLATO Headline Metrics ({len(instances)} instances, {time_limit:.0f}s, SGM shift={plato_shift})\n")
+
+    pi_per_config: dict[str, list[float]] = {}
+    feas_per_config: dict[str, int] = {}
+    for c in configs:
+        pis = []
+        feas_count = 0
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            if r:
+                ref = best_known.get(inst) if best_known else None
+                pi = r.primal_integral(time_limit, ref)
+                if math.isfinite(pi):
+                    pis.append(pi)
+                if r.incumbents:
+                    feas_count += 1
+        pi_per_config[c] = pis
+        feas_per_config[c] = feas_count
+
+    # Print per-config row
+    print(f"{'Config':<20} {'SGM(PrimalIntegral)':<22} {'#Feasible':>10} {'#Instances':>12}")
+    print("-" * 68)
+    for c in configs:
+        sgm = shifted_geomean(pi_per_config[c], plato_shift)
+        print(f"{c:<20} {sgm:<22.6f} {feas_per_config[c]:>10} {len(instances):>12}")
+
+    # Print pairwise ratios
+    if len(configs) >= 2:
+        print()
+        c1, c2 = configs[0], configs[1]
+        sgm1 = shifted_geomean(pi_per_config[c1], plato_shift)
+        sgm2 = shifted_geomean(pi_per_config[c2], plato_shift)
+        if sgm2 > 0 and math.isfinite(sgm2) and math.isfinite(sgm1):
+            ratio = sgm1 / sgm2
+            winner = c1 if ratio < 1.0 else c2
+            print(f"SGM ratio {c1}/{c2}: {ratio:.4f}  (lower is better; winner: {winner})")
+        feas1, feas2 = feas_per_config[c1], feas_per_config[c2]
+        print(f"Feasible delta {c1}-{c2}: {feas1 - feas2:+d}  ({c1}={feas1}, {c2}={feas2})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze HiGHS benchmark results")
     parser.add_argument("results_dir", help="Directory with config subdirectories of log files")
@@ -722,6 +783,14 @@ def main() -> None:
     parser.add_argument("--solu", default=os.path.join(os.path.dirname(__file__),
                                                        "miplib2017-v22.solu"),
                         help="MIPLIB .solu file with reference objectives")
+    parser.add_argument(
+        "--baseline", action="store_true",
+        help=(
+            "Print PLATO headline metrics: primal-integral SGM (shift=0.001, "
+            "matching Mittelmann's published methodology) and feasibility counts. "
+            "Appended after the standard paper metrics table."
+        ),
+    )
     args = parser.parse_args()
 
     results = load_results(args.results_dir, args.configs)
@@ -743,6 +812,9 @@ def main() -> None:
     print_paper_metrics(results, agg_results, active_configs, args.time_limit,
                         best_known=best_known)
     print_effort_calibration(results, active_configs)
+
+    if args.baseline:
+        print_plato_summary(results, agg_results, active_configs, args.time_limit, best_known)
 
     if args.plot:
         generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)

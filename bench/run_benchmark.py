@@ -122,7 +122,10 @@ def main() -> None:
     parser.add_argument("--binary", default="./build/bin/highs", help="Path to HiGHS binary")
     parser.add_argument("--data-dir", default="/tmp/miplib", help="Directory with .mps.gz files")
     parser.add_argument("--time-limit", type=float, default=60, help="Time limit per instance (seconds)")
-    parser.add_argument("--output", default="bench/results", help="Output directory for logs")
+    parser.add_argument(
+        "--output", "--output-dir", dest="output", default="bench/results",
+        help="Output directory for logs (default: bench/results)",
+    )
     parser.add_argument("--seeds", nargs="+", type=int, default=[0],
                         help="Random seeds to run (default: 0)")
     parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
