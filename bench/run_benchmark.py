@@ -125,6 +125,12 @@ def main() -> None:
                         help="Random seeds to run (default: 0)")
     parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
                         help="Configs to run (default: patched vanilla)")
+    parser.add_argument("--start", type=int, default=0,
+                        help="Skip the first N instances (for chunked runs, default: 0)")
+    parser.add_argument("--count", type=int, default=None,
+                        help="Run at most N instances (for chunked runs, default: all)")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="Skip instances whose log file already exists (safe to resume)")
     parser.add_argument(
         "--threads",
         type=int,
@@ -163,6 +169,12 @@ def main() -> None:
 
     os.makedirs(args.output, exist_ok=True)
 
+    # Apply chunk slicing
+    if args.start:
+        instances = instances[args.start:]
+    if args.count is not None:
+        instances = instances[:args.count]
+
     total_runs = len(args.configs) * len(args.seeds) * len(instances)
     done = 0
 
@@ -186,6 +198,14 @@ def main() -> None:
             print(f"{'='*60}")
 
             for name in instances:
+                if args.skip_existing:
+                    seed_dir = os.path.join(args.output, config, f"seed{seed}")
+                    log_path = os.path.join(seed_dir, f"{name}.log")
+                    if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+                        done += 1
+                        print(f"[{done}/{total_runs}] SKIP {name} ({config}) — log exists")
+                        continue
+
                 inst_name, cfg, sd, success = run_single(
                     binary,
                     instance_files[name],
