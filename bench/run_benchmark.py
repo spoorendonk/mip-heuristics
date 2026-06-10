@@ -7,6 +7,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 
 
 # Default vanilla options: disable all custom heuristics AND pin
@@ -131,6 +132,13 @@ def main() -> None:
                         help="Run at most N instances (for chunked runs, default: all)")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Skip instances whose log file already exists (safe to resume)")
+    parser.add_argument("--wall-time-budget", type=float, default=None, metavar="SECONDS",
+                        help="Stop launching new instances after SECONDS of wall time "
+                             "(current instance still finishes). Use with --skip-existing "
+                             "to resume later.")
+    parser.add_argument("--interleave", action="store_true",
+                        help="Run instance→config loop order (vanilla+patched per instance) "
+                             "rather than config→instance. Gives paired results sooner.")
     parser.add_argument(
         "--threads",
         type=int,
@@ -177,51 +185,96 @@ def main() -> None:
 
     total_runs = len(args.configs) * len(args.seeds) * len(instances)
     done = 0
+    budget_exhausted = False
+    run_start = time.time()
 
     # Build base options (applied to all configs)
     base_opts: dict[str, str] = {}
     if args.threads is not None:
         base_opts["threads"] = str(args.threads)
 
-    # Sequential loop: config → seed → instance
-    for config in args.configs:
+    def config_opts_for(config: str) -> dict[str, str]:
         if config == "vanilla":
-            config_opts = VANILLA_OPTIONS
-        elif config == "patched":
-            config_opts = PATCHED_OPTIONS
-        else:
-            config_opts = {}
-        extra_opts = {**base_opts, **config_opts}
-        for seed in args.seeds:
-            print(f"\n{'='*60}")
-            print(f"Config: {config}, seed: {seed} ({len(instances)} instances, {args.time_limit}s limit)")
-            print(f"{'='*60}")
+            return VANILLA_OPTIONS
+        if config == "patched":
+            return PATCHED_OPTIONS
+        return {}
 
-            for name in instances:
-                if args.skip_existing:
-                    seed_dir = os.path.join(args.output, config, f"seed{seed}")
-                    log_path = os.path.join(seed_dir, f"{name}.log")
-                    if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-                        done += 1
-                        print(f"[{done}/{total_runs}] SKIP {name} ({config}) — log exists")
-                        continue
+    def should_skip(config: str, name: str, seed: int) -> bool:
+        if not args.skip_existing:
+            return False
+        seed_dir = os.path.join(args.output, config, f"seed{seed}")
+        log_path = os.path.join(seed_dir, f"{name}.log")
+        return os.path.exists(log_path) and os.path.getsize(log_path) > 0
 
-                inst_name, cfg, sd, success = run_single(
-                    binary,
-                    instance_files[name],
-                    name,
-                    config,
-                    seed,
-                    args.time_limit,
-                    args.output,
-                    extra_opts,
-                )
-                done += 1
-                status = "OK" if success else "FAIL"
-                print(f"  [{done}/{total_runs}] {name} (seed {seed}): {status}")
+    def check_budget() -> bool:
+        """Return True if wall-time budget is exhausted."""
+        if args.wall_time_budget is None:
+            return False
+        return (time.time() - run_start) >= args.wall_time_budget
 
-    print(f"\nResults written to {args.output}/")
-    print(f"Run: python bench/analyze_results.py {args.output}")
+    def run_one(config: str, name: str, seed: int) -> None:
+        nonlocal done, budget_exhausted
+        if budget_exhausted:
+            return
+        if should_skip(config, name, seed):
+            done += 1
+            print(f"[{done}/{total_runs}] SKIP {name} ({config}) — log exists")
+            return
+        if check_budget():
+            budget_exhausted = True
+            elapsed = time.time() - run_start
+            print(f"\nTime budget reached ({elapsed/3600:.1f}h elapsed). "
+                  f"Re-run with same command to continue.")
+            return
+        extra_opts = {**base_opts, **config_opts_for(config)}
+        inst_name, cfg, sd, success = run_single(
+            binary,
+            instance_files[name],
+            name,
+            config,
+            seed,
+            args.time_limit,
+            args.output,
+            extra_opts,
+        )
+        done += 1
+        status = "OK" if success else "FAIL"
+        elapsed = time.time() - run_start
+        print(f"[{done}/{total_runs}] {name} ({config}) {status}  "
+              f"[{elapsed/3600:.1f}h elapsed]")
+
+    if args.interleave:
+        # instance → seed → config: gives paired vanilla+patched results sooner
+        for name in instances:
+            for seed in args.seeds:
+                for config in args.configs:
+                    run_one(config, name, seed)
+                    if budget_exhausted:
+                        break
+                if budget_exhausted:
+                    break
+            if budget_exhausted:
+                break
+    else:
+        # config → seed → instance: runs all of one config before the next
+        for config in args.configs:
+            for seed in args.seeds:
+                print(f"\n{'='*60}")
+                print(f"Config: {config}, seed: {seed} "
+                      f"({len(instances)} instances, {args.time_limit}s limit)")
+                print(f"{'='*60}")
+                for name in instances:
+                    run_one(config, name, seed)
+                    if budget_exhausted:
+                        break
+                if budget_exhausted:
+                    break
+            if budget_exhausted:
+                break
+
+    elapsed_total = time.time() - run_start
+    print(f"\nDone. {done} runs in {elapsed_total/3600:.1f}h. Results in {args.output}/")
 
 
 if __name__ == "__main__":
