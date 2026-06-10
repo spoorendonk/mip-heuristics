@@ -62,7 +62,7 @@ cmd_status() {
         echo "  STATUS  : COMPLETE"
         echo ""
         echo "Run analysis:"
-        echo "  python bench/analyze_results.py $OUTPUT --configs patched vanilla --time-limit $TIME_LIMIT --baseline"
+        echo "  python3 bench/analyze_results.py $OUTPUT --configs patched vanilla --time-limit $TIME_LIMIT --baseline"
     else
         local est
         est=$(estimate_hours "$remaining") || true
@@ -93,7 +93,7 @@ cmd_next() {
     echo "  (Skipping already-completed instances)"
     echo "================================================================"
 
-    python bench/run_benchmark.py \
+    python3 bench/run_benchmark.py \
         --instances "$INSTANCES" \
         --binary "$BINARY" \
         --vanilla-binary "$VANILLA_BINARY" \
@@ -112,7 +112,7 @@ cmd_next() {
     if [ "$paired" -ge "$TOTAL" ]; then
         echo ""
         echo "All instances complete — running analysis..."
-        python bench/analyze_results.py \
+        python3 bench/analyze_results.py \
             "$OUTPUT" \
             --configs patched vanilla \
             --time-limit "$TIME_LIMIT" \
