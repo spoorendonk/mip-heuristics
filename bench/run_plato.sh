@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the PLATO mipfeas comparison: vanilla HiGHS vs patched HiGHS with
-# all-opportunistic heuristics on the 233-instance MIPLIB2017 feasibility set.
+# preset=all_opp (FJ+FPR+LocalMIP, opportunistic) on the 233-instance
+# MIPLIB2017 feasibility set.
 #
 # Reference: https://plato.asu.edu/ftp/mipfeas.html
 # Metric: primal integral (area under primal-gap curve, 600s window, SGM shift=0.001)
@@ -56,9 +57,9 @@ python bench/run_benchmark.py \
     --output-dir "$OUTPUT_DIR" \
     --configs vanilla
 
-# --- Step 2: patched HiGHS (port/opp: Thompson bandit + opportunistic workers) ---
+# --- Step 2: patched HiGHS (all_opp: FJ + FPR + LocalMIP, opportunistic) ---
 echo ""
-echo "Step 2/2: patched HiGHS (portfolio=true, opportunistic=true)"
+echo "Step 2/2: patched HiGHS (preset=all_opp: FJ+FPR+LocalMIP, opportunistic, no portfolio, no Scylla)"
 python bench/run_benchmark.py \
     --instances "$INSTANCES" \
     --binary "$BINARY" \

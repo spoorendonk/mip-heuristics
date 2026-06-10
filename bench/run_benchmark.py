@@ -15,24 +15,19 @@ import sys
 # represent the upstream-HiGHS baseline so its RENS/RINS/LP budgets
 # don't inherit our bump and bias the comparison.
 VANILLA_OPTIONS = {
-    "mip_heuristic_portfolio": "false",
-    "mip_heuristic_run_fpr": "false",
-    "mip_heuristic_run_local_mip": "false",
-    "mip_heuristic_run_scylla": "false",
+    "mip_heuristic_preset": "off",
     "mip_heuristic_effort": "0.05",
 }
 
-# Default patched options: port/opp cell — Thompson bandit over the four
-# presolve heuristics (FPR/LocalMIP/FJ/Scylla) with continuous parallelism.
+# Default patched options: all_opp preset — FJ + FPR + LocalMIP with
+# opportunistic (continuous) parallelism.  Scylla is excluded because
+# PDLP solves are expensive enough to hurt wall-clock on general instances.
+# Portfolio (Thompson bandit) is excluded as it is experimental and lacks
+# sufficient benchmark evidence to be the recommended default.
 # mip_heuristic_opportunistic=true also routes fpr_lp through its
 # opportunistic arm-aligned parallel runner at B&B dive time.
 PATCHED_OPTIONS = {
-    "mip_heuristic_portfolio": "true",
-    "mip_heuristic_opportunistic": "true",
-    "mip_heuristic_run_fpr": "true",
-    "mip_heuristic_run_local_mip": "true",
-    "mip_heuristic_run_scylla": "true",
-    "mip_heuristic_run_feasibility_jump": "true",
+    "mip_heuristic_preset": "all_opp",
 }
 
 
