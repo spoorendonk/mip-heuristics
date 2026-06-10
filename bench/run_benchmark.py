@@ -10,11 +10,9 @@ import sys
 import time
 
 
-# Default vanilla options: disable all custom heuristics AND pin
-# mip_heuristic_effort back to upstream HiGHS's 0.05 default.  Our patch
-# raises that default to 0.30 for patched runs, but vanilla should
-# represent the upstream-HiGHS baseline so its RENS/RINS/LP budgets
-# don't inherit our bump and bias the comparison.
+# Default vanilla options when using the PATCHED binary as the vanilla
+# baseline (disables all our custom heuristics + pins effort to upstream
+# default).  Not used when --vanilla-binary points to a separate binary.
 VANILLA_OPTIONS = {
     "mip_heuristic_preset": "off",
     "mip_heuristic_effort": "0.05",
@@ -115,7 +113,11 @@ def run_single(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run patched vs vanilla HiGHS benchmark")
     parser.add_argument("--instances", required=True, help="File with instance names")
-    parser.add_argument("--binary", default="./build/bin/highs", help="Path to HiGHS binary")
+    parser.add_argument("--binary", default="./build/bin/highs", help="Path to patched HiGHS binary")
+    parser.add_argument("--vanilla-binary", default=None, metavar="PATH",
+                        help="Separate binary for the vanilla config (e.g. system HiGHS). "
+                             "When set, vanilla runs with no custom options — just time limit "
+                             "and seed — since the external binary has no mip_heuristic_* options.")
     parser.add_argument("--data-dir", default="/tmp/miplib", help="Directory with .mps.gz files")
     parser.add_argument("--time-limit", type=float, default=60, help="Time limit per instance (seconds)")
     parser.add_argument(
@@ -157,6 +159,15 @@ def main() -> None:
         print(f"Error: binary not found: {binary}", file=sys.stderr)
         sys.exit(1)
 
+    vanilla_binary = binary  # default: same binary, use VANILLA_OPTIONS
+    if args.vanilla_binary is not None:
+        vanilla_binary = os.path.abspath(args.vanilla_binary)
+        if not os.path.exists(vanilla_binary):
+            print(f"Error: vanilla binary not found: {vanilla_binary}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Vanilla binary : {vanilla_binary} (external — no custom options)")
+    print(f"Patched binary : {binary}")
+
     instances = load_instances(args.instances)
     print(f"Loaded {len(instances)} instances from {args.instances}")
 
@@ -193,8 +204,16 @@ def main() -> None:
     if args.threads is not None:
         base_opts["threads"] = str(args.threads)
 
+    def binary_for(config: str) -> str:
+        if config == "vanilla":
+            return vanilla_binary
+        return binary
+
     def config_opts_for(config: str) -> dict[str, str]:
         if config == "vanilla":
+            # External vanilla binary: no mip_heuristic_* options exist on it
+            if vanilla_binary != binary:
+                return {}
             return VANILLA_OPTIONS
         if config == "patched":
             return PATCHED_OPTIONS
@@ -229,7 +248,7 @@ def main() -> None:
             return
         extra_opts = {**base_opts, **config_opts_for(config)}
         inst_name, cfg, sd, success = run_single(
-            binary,
+            binary_for(config),
             instance_files[name],
             name,
             config,

@@ -25,6 +25,9 @@ TOTAL=233
 TIME_LIMIT=600
 OUTPUT="bench/results/plato"
 BINARY="${PLATO_BINARY:-./build/bin/highs}"
+# Vanilla binary: prefer system HiGHS (unpatched), fall back to patched build.
+# Override with PLATO_VANILLA_BINARY env var if needed.
+VANILLA_BINARY="${PLATO_VANILLA_BINARY:-$(which highs 2>/dev/null || echo "$BINARY")}"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -83,15 +86,17 @@ cmd_next() {
     p=$(count_done patched)
     echo "================================================================"
     echo "PLATO benchmark — running for up to ${hours}h"
-    echo "  Progress before: vanilla $v/$TOTAL, patched $p/$TOTAL"
-    echo "  Output : $OUTPUT"
-    echo "  Binary : $BINARY"
+    echo "  Progress before : vanilla $v/$TOTAL, patched $p/$TOTAL"
+    echo "  Vanilla binary  : $VANILLA_BINARY"
+    echo "  Patched binary  : $BINARY"
+    echo "  Output          : $OUTPUT"
     echo "  (Skipping already-completed instances)"
     echo "================================================================"
 
     python bench/run_benchmark.py \
         --instances "$INSTANCES" \
         --binary "$BINARY" \
+        --vanilla-binary "$VANILLA_BINARY" \
         --time-limit "$TIME_LIMIT" \
         --output "$OUTPUT" \
         --configs vanilla patched \
