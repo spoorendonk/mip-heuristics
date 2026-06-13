@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Testing override**: `.devkit/standards/cpp.md` currently documents the testing story in GoogleTest terms. Ignore that section — this project uses Catch2 v3 (`TEST_CASE(...)` with `[tag]` filters). Tracked upstream as [spoorendonk/devkit#1](https://github.com/spoorendonk/devkit/issues/1).
 
+**Git workflow**: Trunk-based development. Commit directly to `main` and push when local gates pass. No long-lived feature branches.
+
 ## Project Overview
 
 Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solver via a patched fork. The heuristics run during HiGHS's presolve phase and are compiled as object files linked directly into the `highs` library target.
