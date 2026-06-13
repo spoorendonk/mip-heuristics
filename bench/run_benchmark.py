@@ -152,6 +152,13 @@ def main() -> None:
             "heuristics are built for (see CLAUDE.md benchmarking note)."
         ),
     )
+    parser.add_argument(
+        "--extra-options",
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help="Extra options appended to all config options, e.g. mip_heuristic_effort=0.10",
+    )
     args = parser.parse_args()
 
     binary = os.path.abspath(args.binary)
@@ -203,6 +210,13 @@ def main() -> None:
     base_opts: dict[str, str] = {}
     if args.threads is not None:
         base_opts["threads"] = str(args.threads)
+    # Parse --extra-options KEY=VALUE pairs and merge into base_opts
+    for kv in (args.extra_options or []):
+        if "=" not in kv:
+            print(f"Warning: ignoring malformed --extra-options entry (no '='): {kv!r}", file=sys.stderr)
+            continue
+        k, v = kv.split("=", 1)
+        base_opts[k.strip()] = v.strip()
 
     def binary_for(config: str) -> str:
         if config == "vanilla":
