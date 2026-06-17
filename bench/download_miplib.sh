@@ -15,8 +15,9 @@ DEST="${1:-/tmp/miplib}"
 URL="https://miplib.zib.de/downloads/collection.zip"
 ZIP="/tmp/miplib_collection.zip"
 
-COUNT=$(find "$DEST" -maxdepth 1 -name "*.mps.gz" 2>/dev/null | wc -l)
-if [ -d "$DEST" ] && [ "$COUNT" -gt 200 ]; then
+COUNT=0
+[ -d "$DEST" ] && COUNT=$(find "$DEST" -maxdepth 1 -name "*.mps.gz" | wc -l)
+if [ "$COUNT" -gt 200 ]; then
     echo "MIPLIB data already present at $DEST ($COUNT instances)"
     exit 0
 fi
@@ -29,7 +30,7 @@ echo "Extracting to $DEST..."
 unzip -o -j "$ZIP" "*.mps.gz" -d "$DEST"
 rm -f "$ZIP"
 
-FINAL_COUNT=$(find "$DEST" -maxdepth 1 -name '*.mps.gz' | wc -l)
+FINAL_COUNT=$(find "$DEST" -maxdepth 1 -name '*.mps.gz' | wc -l) || FINAL_COUNT=0
 echo "Done: $FINAL_COUNT instances in $DEST"
 
 # Sanity-check a few PLATO instances that were missing from instances_bench.txt

@@ -66,12 +66,49 @@ Individual flags (`mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_h
 
 ## Benchmarks
 
+### PLATO mipfeas — 233 instances, 600s time limit
+
+Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Default preset: `all_opp` (seq/opp mode, FJ+FPR+LocalMIP).
+
+| Metric | Patched (`all_opp`) | Vanilla HiGHS |
+|---|---|---|
+| #Feasible | 197 | **207** |
+| #Win (best obj at 600s) | **179** | 154 |
+| SGM Time-to-first-feasible (s=1) | 10.8s | **3.8s** |
+| SGM Gap@600s (s=0.01) | 0.0148 | **0.0127** |
+| SGM Primal Integral (s=0.001) | 48.4 | **42.2** |
+| SGM P-D Integral | 25.9 | **23.9** |
+| PLATO headline SGM (s=0.001) | 40.0 | **33.0** |
+
+Patched wins **#best-objective** (179 vs 154) — it finds better final solutions when it solves instances at all. However, vanilla HiGHS is ~3× faster to first feasible solution (3.8s vs 10.8s) and wins on primal integral and P-D integral overall. The heuristic overhead during presolve is the primary cause of the slower first-feasible time.
+
+**To reproduce:**
+
+```bash
+# 1. Build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# 2. Download MIPLIB 2017 instances (~2 GB) to /tmp/miplib
+bash bench/download_miplib.sh
+
+# 3. Run benchmark (233 instances × 2 configs × 600s ≈ 77h total wall time)
+bench/run_plato.sh next 24        # run in 24h chunks; resumes safely
+bench/run_plato.sh status         # check progress
+# Repeat until status shows 233/233
+
+# 4. Analyze
+python3 bench/analyze_results.py bench/results/plato --configs patched vanilla --time-limit 600 --baseline
+```
+
+Results land in `bench/results/plato/`. The vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`.
+
+### Hard-25 (preliminary)
+
 Stage 1 results on 25 hard MIPLIB 2017 instances (`bench/instances_hard25.txt`), 300s time limit:
 
 - Patched HiGHS (`all_opp`): **35.6% primal integral improvement** over vanilla HiGHS.
 - Vanilla HiGHS is faster to first feasible solution; patched HiGHS wins on solution quality over time.
-
-PLATO mipfeas 233-instance results are in progress (`bench/instances_bench.txt`).
 
 ## Tunable Parameters
 
