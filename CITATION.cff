@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "mip-heuristics: A MIP primal heuristics suite for HiGHS"
+type: software
+authors:
+  - family-names: Spoorendonk
+    given-names: Simon
+    email: simon@flowty.ai
+repository-code: https://github.com/spoorendonk/mip-heuristics
+license: MIT

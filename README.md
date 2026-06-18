@@ -1,6 +1,6 @@
 # mip-heuristics
 
-A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.14.0 via a patched build. The project makes FJ, FPR (Salvagnin et al. 2025), LocalMIP (Lin–Zou–Cai CP 2024), a PDLP-based feasibility pump, and a Thompson-sampling adaptive portfolio available natively within HiGHS — without requiring GPU infrastructure — as a research and experimentation platform. GPU-based implementations of several of these algorithms exist in NVIDIA cuOpt (arXiv:2510.20499); this project provides CPU reference implementations integrated into HiGHS's parallel B&B infrastructure.
+A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.14.0 via a patched build. Makes FJ, FPR, LocalMIP, Scylla (PDLP-based feasibility pump), and a Thompson-sampling adaptive portfolio available natively within HiGHS as a research and experimentation platform. See [Heuristics](#heuristics) for algorithmic details and paper references.
 
 ## Quick Start
 
@@ -16,19 +16,19 @@ Five-instance benchmark against vanilla HiGHS (requires MIPLIB instances):
 
 ```bash
 bash bench/download_miplib.sh
-python bench/run_benchmark.py \
+python3 bench/run_benchmark.py \
   --instances bench/instances_small.txt \
   --binary ./build/bin/highs \
   --data-dir /tmp/miplib \
   --time-limit 300
-python bench/analyze_results.py bench/results
+python3 bench/analyze_results.py bench/results
 ```
 
 ## Heuristics
 
 **FPR (Fix, Propagate, and Repair)** — LP-free DFS tree search that fixes integer variables one at a time, propagates bounds at each node, and backtracks on infeasibility. After the DFS, WalkSAT and RepairSearch repair any remaining constraint violations. The presolve variant (Class 1) runs multiple strategy configurations in parallel. Based on Salvagnin, Roberti, Fischetti, *Mathematical Programming Computation* 17, 111–139, 2025 ([doi:10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5)). The full backtracking+WalkSAT+RepairSearch pipeline is not present in HiGHS, SCIP, or CBC.
 
-**fpr_lp (LP-guided FPR, Classes 2–3)** — Uses the root LP solution to seed the DFS fixing order and initial values (paper Classes 2, 3a, 3b). Dispatched during the B&B dive (after RENS/RINS), not presolve. Workers are bound to distinct LP arm configurations; excess workers wrap with distinct seeds. Shares the FPR rounding kernel.
+**fpr_lp (LP-guided FPR, Classes 2–3)** — Uses the root LP solution to seed the DFS fixing order and initial values (paper Classes 2, 3a, 3b). Dispatched during the B&B dive (after RENS/RINS), not presolve. Workers are bound to distinct LP arm configurations; excess workers wrap with distinct seeds. Shares the FPR rounding kernel. Based on Salvagnin, Roberti, Fischetti, *Mathematical Programming Computation* 17, 111–139, 2025 ([doi:10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5)) (Classes 2–3).
 
 **LocalMIP** — Weighted tabu local search with constraint-violation tracking, lifting moves, and multi-start backtracking. Finds improving moves by solving small MIP subproblems over the neighborhood. Based on Lin, Zou, Cai, "An Efficient Local Search Solver for Mixed Integer Programming," CP 2024, Article 19 ([doi:10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19)). Not in HiGHS or SCIP; cuOpt has a GPU variant citing the same paper. This is a CPU/HiGHS implementation with epoch-gated parallel multistart.
 
@@ -36,7 +36,7 @@ python bench/analyze_results.py bench/results
 
 **FeasibilityJump** — LP-free Lagrangian heuristic. Thin wrapper around HiGHS's built-in FJ implementation, routed through our parallel infrastructure for effort budgeting and portfolio integration. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)). Note: `mip_heuristic_run_feasibility_jump` (default true in our patch) disables HiGHS's internal FJ dispatch and routes it through our infrastructure.
 
-**Thompson portfolio** — Beta-Bernoulli bandit that adaptively selects arms (FPR, LocalMIP, FJ, Scylla) based on feasibility success rates. Experimental; adaptive heuristic selection of this kind is not present in HiGHS, SCIP, or cuOpt.
+**Thompson portfolio** — Beta-Bernoulli bandit that adaptively selects arms (FPR, LocalMIP, FJ, Scylla) based on feasibility success rates. Experimental; adaptive heuristic selection of this kind is not present in HiGHS, SCIP, or cuOpt. Based on Russo, Van Roy, Kazerouni, Osband, Wen, "A tutorial on Thompson sampling," *Foundations and Trends in Machine Learning* 11(1):1–96, 2018 ([doi:10.1561/2200000070](https://doi.org/10.1561/2200000070)).
 
 Reference PDFs are in `docs/`.
 
@@ -60,7 +60,9 @@ The `mip_heuristic_preset` option sets both flags and the per-heuristic enable f
 | `scylla` | Scylla | seq/opp | PDLP pump only |
 | `portfolio` | all | port/opp | experimental adaptive selection |
 
-Individual flags (`mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla`, `mip_heuristic_run_feasibility_jump`, `mip_heuristic_portfolio`, `mip_heuristic_opportunistic`) take effect when no preset is set.
+There is no standalone `local_mip` preset; to run LocalMIP alone, use individual flags (e.g. `--mip_heuristic_run_fpr=false --mip_heuristic_run_scylla=false --mip_heuristic_run_feasibility_jump=false`).
+
+When no preset is set, individual flags are used. The default with no flags set: FPR + LocalMIP + Scylla + FJ all enabled in seq/det mode. `all_opp` is the recommended preset for most use cases.
 
 `fpr_lp` runs at B&B dive time and is not affected by the `portfolio` flag; only `mip_heuristic_opportunistic` selects between its epoch-gated and continuous variants.
 
@@ -74,13 +76,22 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 |---|---|---|
 | #Feasible | 197 | **207** |
 | #Win (best obj at 600s) | **179** | 154 |
+| #Gap@600s per-instance wins | **46** | 34 |
 | SGM Time-to-first-feasible (s=1) | 10.8s | **3.8s** |
 | SGM Gap@600s (s=0.01) | 0.0148 | **0.0127** |
 | SGM Primal Integral (s=0.001) | 48.4 | **42.2** |
 | SGM P-D Integral | 25.9 | **23.9** |
 | PLATO headline SGM (s=0.001) | 40.0 | **33.0** |
 
-Patched wins **#best-objective** (179 vs 154) — it finds better final solutions when it solves instances at all. However, vanilla HiGHS is ~3× faster to first feasible solution (3.8s vs 10.8s) and wins on primal integral and P-D integral overall. The heuristic overhead during presolve is the primary cause of the slower first-feasible time.
+#### Findings
+
+Two questions give different answers.
+
+**Who finds better solutions?** Patched. At 600s, patched has the better final objective on 46 instances vs vanilla's 34 (111 ties). The #best-objective count (179 vs 154) shows the same pattern across all four instance categories (BP, IP, MBP, MIP).
+
+**Who performs better in aggregate?** Vanilla. The SGM Gap@600s (0.0148 vs 0.0127) and primal integral metrics favour vanilla for two compounding reasons: (1) the presolve heuristics run before B&B starts — the resulting ~7s delay to first feasible means every instance accumulates gap area during presolve, penalising all time-integrated metrics regardless of downstream quality; (2) the 10 instances where patched exhausts 600s without finding any feasible solution contribute gap≈1.0 to patched's average (on two verified cases, vanilla reaches 0.6% and optimal respectively).
+
+The right metric depends on the use case. Long time limits, hard instances where improving over the first B&B solution matters: patched wins on most. Short time limits or benchmarks that penalise slow starts: vanilla leads.
 
 **To reproduce:**
 
@@ -103,24 +114,6 @@ python3 bench/analyze_results.py bench/results/plato --configs patched vanilla -
 
 Results land in `bench/results/plato/`. The vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`.
 
-### Hard-25 (preliminary)
-
-Stage 1 results on 25 hard MIPLIB 2017 instances (`bench/instances_hard25.txt`), 300s time limit:
-
-- Patched HiGHS (`all_opp`): **35.6% primal integral improvement** over vanilla HiGHS.
-- Vanilla HiGHS is faster to first feasible solution; patched HiGHS wins on solution quality over time.
-
-## Tunable Parameters
-
-~57 `constexpr` parameters control per-heuristic behavior (WalkSAT step counts, RepairSearch node limits, bandit priors, PDLP epsilon schedules, etc.). See [`docs/PARAMETERS.md`](docs/PARAMETERS.md) for the full annotated list with defaults and suggested ranges.
-
-Key solver-level options:
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `mip_heuristic_preset` | `""` | Convenience preset; overrides individual flags |
-| `mip_heuristic_effort` | `0.30` | Normalized wall-clock budget fraction for all heuristics |
-
 ## Build Options
 
 | Flag | Description |
@@ -137,18 +130,6 @@ cd build && ./mip_heuristics_tests "[portfolio]"               # Catch2 tag
 ```
 
 Catch2 v3. Characterization tests verify known-optimal objectives against MIPLIB instances bundled with HiGHS.
-
-## Citation
-
-```bibtex
-@software{mip-heuristics,
-  title  = {mip-heuristics: A complete MIP primal heuristics suite for HiGHS},
-  author = {Spoorendonk, Simon},
-  year   = {2026},
-  url    = {https://github.com/spoorendonk/mip-heuristics},
-  note   = {Zenodo DOI pending}
-}
-```
 
 ## License
 
