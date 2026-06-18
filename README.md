@@ -74,26 +74,28 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|
-| #Feasible | 197 | **207** |
+| #Feasible | **212** | 207 |
 | #Win (best primal obj at 600s) | **179** | 154 |
-| #Gap@600s wins (211 with ≥1 solution) | 49 | **51** |
-| SGM Time-to-first-feasible (s=1) | 10.8s | **3.8s** |
-| SGM Gap@600s (s=0.01) | 0.0355 | **0.0247** |
-| SGM Primal Integral (s=1) | 71.6 | **57.0** |
+| #Gap@600s wins (214 with ≥1 solution) | **53** | 42 |
+| SGM Time-to-first-feasible (s=1) | 5.2s | **3.8s** |
+| SGM Gap@600s (s=0.01) | 0.0262 | **0.0247** |
+| SGM Primal Integral (s=1) | 59.6 | **57.0** |
 | SGM P-D Integral | 25.9 | **23.9** |
-| PLATO headline SGM (s=0.001) | 60.7 | **45.6** |
+| PLATO headline SGM (s=0.001) | 47.4 | **45.6** |
 
 #### Findings
 
-Instance breakdown across 233 total: **193** solved by both configs, **14** by vanilla only, **4** by patched only, **22** by neither.
+Instance breakdown across 233 total: **205** solved by both configs, **2** by vanilla only, **7** by patched only, **19** by neither.
 
-**Head-to-head Gap@600s across 211 instances (≥1 solution found)** — patched 49, vanilla 51, 111 ties. Infeasible-for-one-side instances are counted with gap=1.0. Vanilla's 14-vs-4 coverage advantage accounts for most of the difference; on the 193 mutually-solved instances the split is patched 35, vanilla 47, 111 ties.
+**Head-to-head Gap@600s across 214 instances (≥1 solution found)** — patched 53, vanilla 42, 119 ties. Infeasible-for-one-side instances are counted with gap=1.0. On the 205 mutually-solved instances: patched 51, vanilla 35, 119 ties — patched wins the majority of decisive matchups.
 
-**#Win (best primal obj) — 179 vs 154** — counts who found the better primal bound across all 211 instances where at least one config found a solution (193+14+4). Ties within 1e-6 are credited to both configs simultaneously: 179+154=333=211+122 ties. On the 89 decisive (non-tie) instances, patched wins 57 and vanilla wins 32.
+**#Win (best primal obj) — 179 vs 154** — counts who found the better primal bound across all 214 instances where at least one config found a solution (205+7+2). Ties within 1e-6 are credited to both configs simultaneously: 179+154=333=214+119 ties. On the 95 decisive (non-tie) instances, patched wins 60 and vanilla wins 35.
 
-**SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla. All SGM computations treat infeasible instances as gap=1.0 / PI=time-limit, so both configs compete on the full 233-instance set. The primary drivers of the patched deficit: (1) presolve heuristics run before B&B, so every instance accumulates ~7s of gap area before the first node; (2) patched finds no solution on 14 instances vanilla solves, each contributing gap=1.0 to the SGM.
+**Heuristic attribution in patched**: LocalMIP finds the first feasible solution on **123/233 instances**; RINS (Sub-MIP) on 31; FJ on 10. FPR contributes first on 2 instances; fpr_lp on 3 incumbents total. At termination, RINS holds the best solution on 149 instances (vs 106 for vanilla), with LocalMIP holding best on 17. The new heuristics are additive — patched finds more solutions (212 vs 207) with LocalMIP doing the heavy lifting.
 
-**Summary**: vanilla leads on aggregate SGM metrics and feasibility coverage. Patched wins more decisive head-to-head primal-bound comparisons (57 vs 32) and finds better solutions on more instances overall (#Win 179 vs 154), but its presolve overhead makes every time-integrated metric worse.
+**SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla narrowly. All SGM computations treat infeasible instances as gap=1.0 / PI=time-limit, so both configs compete on the full 233-instance set. The remaining PLATO ratio is 1.04 (47.4 vs 45.6) — the main driver is patched's slower time-to-first-feasible (~5s vs ~4s SGM) due to presolve heuristics running before B&B.
+
+**Summary**: patched leads on feasibility (212 vs 207), head-to-head Gap@600s (53–42), and #Win (179 vs 154). Vanilla leads narrowly on aggregate time-integrated SGM metrics due to the presolve overhead. On the 205 instances both solve, P-D integral favours patched (33.9 vs 36.7).
 
 **To reproduce:**
 

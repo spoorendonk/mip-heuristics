@@ -252,7 +252,7 @@ def _parse_float_or_inf(s: str) -> float:
 
 
 # Source codes that indicate an incumbent update (new feasible solution)
-_INCUMBENT_SOURCES = set("BCFHIJLPRSTUXYZzlup")
+_INCUMBENT_SOURCES = set("ABCDFGHIJLMPRSTUXYZzlup")
 
 
 def parse_log(log_text: str) -> SolveResult:
