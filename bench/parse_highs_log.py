@@ -274,8 +274,21 @@ def parse_log(log_text: str) -> SolveResult:
             best_bound = _parse_float_or_inf(best_bound_str)
             best_sol = _parse_float_or_inf(best_sol_str)
 
-            if src.strip() and src.strip() in _INCUMBENT_SOURCES:
-                # This line has a new incumbent — only record if objective improved
+            src_stripped = src.strip()
+            # Space-source lines are periodic status updates, not events — but
+            # when the model is solved by presolve (empty B&B, no heuristic ever
+            # fires), the first and only log line has a space source while
+            # BestSol already holds the presolve-found optimal.  Allow a
+            # space-source line to seed the first incumbent so that these
+            # instances are not misclassified as infeasible.
+            is_event = src_stripped in _INCUMBENT_SOURCES
+            is_presolve_seed = (
+                not src_stripped
+                and not result.incumbents
+                and best_sol not in (float("inf"), float("-inf"))
+            )
+            if is_event or is_presolve_seed:
+                # Record if objective improved (or first entry)
                 if best_sol != float("inf") and best_sol != float("-inf"):
                     prev_obj = (
                         result.incumbents[-1].objective if result.incumbents else None
@@ -285,7 +298,7 @@ def parse_log(log_text: str) -> SolveResult:
                             Incumbent(
                                 time=time_s,
                                 objective=best_sol,
-                                source=src.strip(),
+                                source=src_stripped or "P",  # 'P' = presolve
                                 nodes=nodes,
                                 dual_bound=best_bound,
                             )

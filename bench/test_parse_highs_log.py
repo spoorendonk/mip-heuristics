@@ -111,6 +111,64 @@ def test_model_header_sets_dimensions_and_category():
     assert parse_log("").category is None
 
 
+def test_custom_source_codes_recorded():
+    """A, D, M, G source codes (FPR, fpr_lp, LocalMIP, Scylla) must be
+    captured in incumbents.  They were missing from _INCUMBENT_SOURCES before
+    the fix and caused LocalMIP incumbents to be silently dropped."""
+    log = (
+        "Src  Proc. InQueue |  Leaves   Expl. | BestBound       BestSol              Gap\n"
+        "M       0       0         0   0.00%          0              10              Large      0      0      0       0.0   1.2s\n"
+        "A       1       0         1  50.00%          0               8                 0%      0      0      0       1.0   2.5s\n"
+        "D       2       0         2  80.00%          5               7                 0%      0      0      0       2.0   3.1s\n"
+        "G       3       0         3 100.00%          6               6                 0%      0      0      0       3.0   4.0s\n"
+    )
+    result = parse_log(log)
+    assert len(result.incumbents) == 4
+    sources = [inc.source for inc in result.incumbents]
+    assert sources == ["M", "A", "D", "G"]
+    assert result.incumbents[0].objective == 10.0
+    assert result.incumbents[3].objective == 6.0
+
+
+def test_presolve_optimal_space_source_recorded():
+    """When presolve solves the model to optimality (empty B&B), the single
+    log line has a space source.  It must be recorded as incumbent 'P' so
+    the instance is not misclassified as infeasible."""
+    log = (
+        "         0       0         0   0.00%   81              81                 0.00%        0      0      0          0   3.2s\n"
+        "  Status            Optimal\n"
+        "  Primal bound      81\n"
+        "  Dual bound        81\n"
+        "  Timing            3.2\n"
+        "  Nodes             0\n"
+    )
+    result = parse_log(log)
+    assert len(result.incumbents) == 1
+    assert result.incumbents[0].source == "P"
+    assert result.incumbents[0].objective == 81.0
+    assert result.time_to_first_feasible == 3.2
+    assert result.primal_bound == 81.0
+
+
+def test_primal_bound_matches_best_incumbent():
+    """Consistency invariant: if incumbents are recorded, the last objective
+    must equal primal_bound (within float tolerance)."""
+    import math
+    log = (
+        "H       0       0         0   0.00%          0              20              Large      0      0      0       0.0   1.0s\n"
+        "L       5       0         5  50.00%          8              12                 0%      0      0      0      10.0   5.0s\n"
+        "  Status            Time limit reached\n"
+        "  Primal bound      12\n"
+        "  Dual bound        8\n"
+        "  Timing            5.0\n"
+        "  Nodes             5\n"
+    )
+    result = parse_log(log)
+    assert result.incumbents
+    best_inc = result.incumbents[-1].objective
+    assert math.isclose(best_inc, result.primal_bound, rel_tol=1e-6)
+
+
 def test_sequential_zero_effort_line_parses():
     """Zero-effort [Sequential] lines (e.g. local_mip skipping a cold
     solve) are emitted so a human reader sees the skip; the drift script
