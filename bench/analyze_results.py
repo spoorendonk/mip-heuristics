@@ -811,6 +811,13 @@ def main() -> None:
             "Appended after the standard paper metrics table."
         ),
     )
+    parser.add_argument(
+        "--summary", action="store_true",
+        help=(
+            "Print only the SGM/paper-metrics summary and PLATO headline; "
+            "skip the per-instance comparison table. Implies --baseline."
+        ),
+    )
     args = parser.parse_args()
 
     results = load_results(args.results_dir, args.configs)
@@ -828,12 +835,13 @@ def main() -> None:
     common = get_common_instances(results, active_configs)
     best_known = build_best_known(results, active_configs, common, solu_refs)
 
-    print_comparison_table(agg_results, active_configs, best_known=best_known)
+    if not args.summary:
+        print_comparison_table(agg_results, active_configs, best_known=best_known)
     print_paper_metrics(results, agg_results, active_configs, args.time_limit,
                         best_known=best_known)
     print_effort_calibration(results, active_configs)
 
-    if args.baseline:
+    if args.baseline or args.summary:
         print_plato_summary(results, agg_results, active_configs, args.time_limit, best_known)
 
     if args.plot:
