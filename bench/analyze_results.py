@@ -345,10 +345,11 @@ def print_comparison_table(
         t2 = r2.time_to_first_feasible
         print(f"{format_float(t1, 10, 2)} {format_float(t2, 10, 2)} ", end="")
         if t1 is not None or t2 is not None:
+            tl = max(active_cutoffs) if active_cutoffs else float("inf")
             if t1 is not None:
-                t1st_vals[c1].append(t1)
+                t1st_vals[c1].append(min(t1, tl))
             if t2 is not None:
-                t1st_vals[c2].append(t2)
+                t1st_vals[c2].append(min(t2, tl))
             if t1 is not None and t2 is not None:
                 if t1 < t2 - 0.01:
                     wins["t1st"] += 1
@@ -529,13 +530,15 @@ def print_paper_metrics(
     print()
 
     # --- SGM of time-to-first-feasible (shift=1s, matching FJ/FPR) ---
+    # Clamp at time_limit: HiGHS occasionally reports an incumbent found
+    # fractionally after the wall-clock limit (node completing mid-timeout).
     print(f"\n{'SGM T1st (s=1)':<25}", end="")
     for c in configs:
         t1st = []
         for inst in instances:
             r = agg_results.get(c, {}).get(inst)
             if r and r.time_to_first_feasible is not None:
-                t1st.append(r.time_to_first_feasible)
+                t1st.append(min(r.time_to_first_feasible, time_limit))
         print(f" {format_float(shifted_geomean(t1st, 1.0), 12, 4)}", end="")
     print()
 
@@ -546,7 +549,7 @@ def print_paper_metrics(
         for inst in instances:
             r = agg_results.get(c, {}).get(inst)
             if r and r.time_to_best is not None:
-                tbest.append(r.time_to_best)
+                tbest.append(min(r.time_to_best, time_limit))
         print(f" {format_float(shifted_geomean(tbest, 1.0), 12, 4)}", end="")
     print()
 

@@ -114,10 +114,13 @@ class SolveResult:
     def primal_gap_at(
         self, time_cutoff: float, best_known: float | None = None
     ) -> float | None:
-        """Primal gap at a given time cutoff.
+        """Primal gap at a given time cutoff, capped at 1.0.
 
         If best_known is provided, gap = (obj - best_known) / max(|best_known|, 1).
         Otherwise, uses dual bound at the time of the incumbent.
+        Capped at 1.0 so that "no solution" (sentinel 1.0) is never beaten by
+        a found-but-terrible solution on instances where |ref| < 1 (e.g.
+        scheduling problems with optimal=0 and large violation counts).
         """
         # Find the last incumbent at or before the cutoff
         last_inc = None
@@ -130,17 +133,17 @@ class SolveResult:
             return None  # No feasible solution by cutoff
         ref = best_known if best_known is not None else last_inc.dual_bound
         denom = max(abs(ref), 1.0)
-        return abs(last_inc.objective - ref) / denom
+        return min(abs(last_inc.objective - ref) / denom, 1.0)
 
     def primal_gap_curve(
         self, best_known: float | None = None
     ) -> list[tuple[float, float]]:
-        """Return (time, gap) points for primal integral computation."""
+        """Return (time, gap) points for primal integral computation, gap capped at 1.0."""
         points = []
         for inc in self.incumbents:
             ref = best_known if best_known is not None else inc.dual_bound
             denom = max(abs(ref), 1.0)
-            gap = abs(inc.objective - ref) / denom
+            gap = min(abs(inc.objective - ref) / denom, 1.0)
             points.append((inc.time, gap))
         return points
 
