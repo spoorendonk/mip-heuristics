@@ -268,9 +268,10 @@ def count_wins(
     configs: list[str],
     instances: list[str],
 ) -> dict[str, int]:
-    """Count #Win: instances where config finds the best primal bound.
+    """Count #Win: instances where one config finds a strictly better primal bound.
 
-    Returns {config: win_count}.
+    Ties (all best-bound holders within 1e-6 of each other) are not credited
+    to any config. Returns {config: win_count}.
     """
     wins = {c: 0 for c in configs}
     for inst in instances:
@@ -282,9 +283,9 @@ def count_wins(
         if not bounds:
             continue
         best = min(bounds.values())
-        for c, b in bounds.items():
-            if abs(b - best) < 1e-6:
-                wins[c] += 1
+        winners = [c for c, b in bounds.items() if abs(b - best) < 1e-6]
+        if len(winners) == 1:
+            wins[winners[0]] += 1
     return wins
 
 

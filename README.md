@@ -75,7 +75,7 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|
 | #Feasible | **213** | 208 |
-| #Win (best primal obj at 600s) | **179** | 154 |
+| #Win (strict, best primal obj at 600s) | **61** | 36 |
 | #Gap@600s wins (215 with ≥1 solution) | **53** | 42 |
 | SGM Time-to-first-feasible (s=1) | 5.2s | **3.8s** |
 | SGM Gap@600s (s=0.01) | 0.0255 | **0.0240** |
@@ -89,13 +89,13 @@ Instance breakdown across 233 total: **206** solved by both configs, **2** by va
 
 **Head-to-head Gap@600s across 215 instances (≥1 solution found)** — patched 53, vanilla 42, 120 ties. Infeasible-for-one-side instances are counted with gap=1.0. On the 206 mutually-solved instances: patched 46, vanilla 40, 120 ties — patched wins the majority of decisive matchups.
 
-**#Win (best primal obj) — 179 vs 154** — counts who found the better primal bound across all 215 instances where at least one config found a solution (206+7+2). Ties within 1e-6 are credited to both configs simultaneously: 179+154=333=215+118 ties. On the 97 decisive (non-tie) instances, patched wins 61 and vanilla wins 36.
+**#Win (strict, best primal obj) — 61 vs 36** — counts instances where one config found a strictly better primal bound (ties within 1e-6 excluded). Out of 97 decisive instances (215 with ≥1 solution minus 118 ties).
 
 **Heuristic attribution in patched**: LocalMIP finds the first feasible solution on **123/233 instances**; RINS (Sub-MIP) on 31; FJ on 10. FPR contributes first on 2 instances; fpr_lp on 3 incumbents total. At termination, RINS holds the best solution on 149 instances (vs 106 for vanilla), with LocalMIP holding best on 17. The new heuristics are additive — patched finds more solutions (213 vs 208) with LocalMIP doing the heavy lifting.
 
 **SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla narrowly. All SGM computations treat infeasible instances as gap=1.0 / PI=time-limit, so both configs compete on the full 233-instance set. The remaining PLATO ratio is 1.04 (46.3 vs 44.6) — the main driver is patched's slower time-to-first-feasible (~5s vs ~4s SGM) due to presolve heuristics running before B&B.
 
-**Summary**: patched leads on feasibility (213 vs 208), head-to-head Gap@600s (53–42), and #Win (179 vs 154). Vanilla leads narrowly on aggregate time-integrated SGM metrics due to the presolve overhead. On the 206 instances both solve, P-D integral favours patched (33.9 vs 36.7).
+**Summary**: patched leads on feasibility (213 vs 208), head-to-head Gap@600s (53–42), and strict #Win (61 vs 36 on 97 decisive instances). Vanilla leads narrowly on aggregate time-integrated SGM metrics due to the presolve overhead. On the 206 instances both solve, P-D integral favours patched (33.9 vs 36.7).
 
 **To reproduce:**
 
