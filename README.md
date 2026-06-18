@@ -75,8 +75,8 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|
 | #Feasible | 197 | **207** |
-| #Win (best obj at 600s) | **179** | 154 |
-| #Gap@600s per-instance wins | **46** | 34 |
+| #Win (best primal obj at 600s) | **179** | 154 |
+| #Gap@600s wins (191 mutually-solved) | **46** | 34 |
 | SGM Time-to-first-feasible (s=1) | 10.8s | **3.8s** |
 | SGM Gap@600s (s=0.01) | 0.0148 | **0.0127** |
 | SGM Primal Integral (s=0.001) | 48.4 | **42.2** |
@@ -85,13 +85,15 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 
 #### Findings
 
-Two questions give different answers.
+Instance breakdown across 233 total: **191** solved by both configs, **16** by vanilla only, **6** by patched only, **20** by neither.
 
-**Who finds better solutions?** Patched. At 600s, patched has the better final objective on 46 instances vs vanilla's 34 (111 ties). The #best-objective count (179 vs 154) shows the same pattern across all four instance categories (BP, IP, MBP, MIP).
+**Head-to-head on 191 mutually-solved instances** — patched wins Gap@600s (gap to best-known) on 46, vanilla on 34, 111 ties. This is the most direct comparison: same instance, both found solutions.
 
-**Who performs better in aggregate?** Vanilla. The SGM Gap@600s (0.0148 vs 0.0127) and primal integral metrics favour vanilla for two compounding reasons: (1) the presolve heuristics run before B&B starts — the resulting ~7s delay to first feasible means every instance accumulates gap area during presolve, penalising all time-integrated metrics regardless of downstream quality; (2) the 10 instances where patched exhausts 600s without finding any feasible solution contribute gap≈1.0 to patched's average (on two verified cases, vanilla reaches 0.6% and optimal respectively).
+**#Win (best primal obj) — 179 vs 154** — counts who found the better raw primal bound across all 213 instances where at least one config found a solution (191 + 16 + 6). Ties within 1e-6 are credited to both. This is solution head-to-head on primal value, not gap to best-known; the two can differ when both solutions are far from optimal but one is closer.
 
-The right metric depends on the use case. Long time limits, hard instances where improving over the first B&B solution matters: patched wins on most. Short time limits or benchmarks that penalise slow starts: vanilla leads.
+**SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla. Note these are each computed over the per-config feasible set — 197 instances for patched, 207 for vanilla — so the populations differ. Two factors compound against patched: (1) the presolve heuristics run before B&B, so every instance accumulates gap area during the ~7s overhead before the first node; (2) the 16 instances vanilla solves but patched does not are absent from patched's SGM but present in vanilla's.
+
+Patched wins more head-to-head quality matchups on instances both solve. Vanilla leads on aggregate metrics and feasibility coverage.
 
 **To reproduce:**
 
