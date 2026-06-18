@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+import warnings
 from dataclasses import dataclass, field
 
 
@@ -372,6 +374,17 @@ def parse_log(log_text: str) -> SolveResult:
                 result.num_integer = int(m.group(4))
                 result.num_binary = int(m.group(5))
                 continue
+
+    # Sanity check: if the Solving report says there is a finite primal bound
+    # but no incumbents were recorded, a source code is missing from
+    # _INCUMBENT_SOURCES.  Raise early so the gap is caught in tests rather
+    # than silently producing wrong T1st / primal_integral values.
+    if math.isfinite(result.primal_bound) and result.primal_bound != float("inf") and not result.incumbents:
+        warnings.warn(
+            f"primal_bound={result.primal_bound} but incumbents is empty — "
+            "a source code may be missing from _INCUMBENT_SOURCES",
+            stacklevel=2,
+        )
 
     return result
 
