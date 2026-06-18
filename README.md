@@ -89,7 +89,7 @@ Instance breakdown across 233 total: **191** solved by both configs, **16** by v
 
 **Head-to-head on 191 mutually-solved instances** — patched wins Gap@600s (gap to best-known) on 46, vanilla on 34, 111 ties. This is the most direct comparison: same instance, both found solutions.
 
-**#Win (best primal obj) — 179 vs 154** — counts who found the better raw primal bound across all 213 instances where at least one config found a solution (191 + 16 + 6). Ties within 1e-6 are credited to both. This is solution head-to-head on primal value, not gap to best-known; the two can differ when both solutions are far from optimal but one is closer.
+**#Win (best primal obj) — 179 vs 154** — counts who found the better primal bound across all 213 instances where at least one config found a solution (191 + 16 + 6). Ties within 1e-6 are credited to both configs simultaneously, so 179 + 154 = 333 = 213 + 120 ties. Better primal bound = better gap to best-known (same denominator), so this is equivalent to a gap-based winner count.
 
 **SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla. Note these are each computed over the per-config feasible set — 197 instances for patched, 207 for vanilla — so the populations differ. Two factors compound against patched: (1) the presolve heuristics run before B&B, so every instance accumulates gap area during the ~7s overhead before the first node; (2) the 16 instances vanilla solves but patched does not are absent from patched's SGM but present in vanilla's.
 
