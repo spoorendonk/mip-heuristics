@@ -424,8 +424,8 @@ def print_comparison_table(
         if gap_vals[tc][c1]:
             label = f"Gap @ {int(tc)}s"
             print(f"{label:<25} {wins['gap'][tc]:<12} {losses['gap'][tc]:<12} {ties['gap'][tc]:<8} "
-                  f"{format_float(shifted_geomean(gap_vals[tc][c1], 0.01), 12, 6)} "
-                  f"{format_float(shifted_geomean(gap_vals[tc][c2], 0.01), 12, 6)}")
+                  f"{format_float(shifted_geomean(gap_vals[tc][c1], 0.001), 12, 6)} "
+                  f"{format_float(shifted_geomean(gap_vals[tc][c2], 0.001), 12, 6)}")
 
     print(f"{'P-D integral':<25} {wins['pd']:<12} {losses['pd']:<12} {ties['pd']:<8} "
           f"{format_float(shifted_geomean(pd_vals[c1], 1.0), 12, 4)} "
@@ -550,8 +550,8 @@ def print_paper_metrics(
         print(f" {format_float(shifted_geomean(tbest, 1.0), 12, 4)}", end="")
     print()
 
-    # --- SGM of primal gap at cutoff (shift=0.01, matching FPR/Scylla) ---
-    print(f"{'SGM Gap@' + str(int(time_limit)) + 's (s=0.01)':<25}", end="")
+    # --- SGM of primal gap at cutoff (shift=0.001, matching PLATO) ---
+    print(f"{'SGM Gap@' + str(int(time_limit)) + 's (s=0.001)':<25}", end="")
     for c in configs:
         gaps = []
         for inst in instances:
@@ -560,7 +560,7 @@ def print_paper_metrics(
                 ref = best_known.get(inst) if best_known else None
                 g = r.primal_gap_at(time_limit, ref)
                 gaps.append(g if g is not None else 1.0)
-        print(f" {format_float(shifted_geomean(gaps, 0.01), 12, 6)}", end="")
+        print(f" {format_float(shifted_geomean(gaps, 0.001), 12, 6)}", end="")
     print()
 
     # --- SGM of primal integral (shift=1.0) ---

@@ -78,7 +78,7 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | #Win (strict, best primal obj at 600s) | **61** | 36 |
 | #Gap@600s wins (215 with ≥1 solution) | **53** | 42 |
 | SGM Time-to-first-feasible (s=1) | 5.2s | **3.8s** |
-| SGM Gap@600s (s=0.01) | 0.0255 | **0.0240** |
+| SGM Gap@600s (s=0.001) | 0.0076 | **0.0072** |
 | SGM Primal Integral (s=1) | 58.3 | **55.8** |
 | SGM P-D Integral | 25.9 | **23.9** |
 | PLATO headline SGM (s=0.001) | 46.3 | **44.6** |
