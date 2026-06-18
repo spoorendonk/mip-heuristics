@@ -151,7 +151,7 @@ class SolveResult:
         from incumbent updates.
         """
         if not self.incumbents:
-            return float("inf")
+            return float(time_limit)  # gap held at 1.0 for entire duration
         curve = self.primal_gap_curve(best_known)
         integral = 0.0
         # Before first feasible: gap is effectively infinite, but we cap at 1.0

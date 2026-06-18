@@ -76,24 +76,24 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 |---|---|---|
 | #Feasible | 197 | **207** |
 | #Win (best primal obj at 600s) | **179** | 154 |
-| #Gap@600s wins (191 mutually-solved) | **46** | 34 |
+| #Gap@600s wins (211 with ≥1 solution) | 49 | **51** |
 | SGM Time-to-first-feasible (s=1) | 10.8s | **3.8s** |
-| SGM Gap@600s (s=0.01) | 0.0148 | **0.0127** |
-| SGM Primal Integral (s=0.001) | 48.4 | **42.2** |
+| SGM Gap@600s (s=0.01) | 0.0355 | **0.0247** |
+| SGM Primal Integral (s=1) | 71.6 | **57.0** |
 | SGM P-D Integral | 25.9 | **23.9** |
-| PLATO headline SGM (s=0.001) | 40.0 | **33.0** |
+| PLATO headline SGM (s=0.001) | 60.7 | **45.6** |
 
 #### Findings
 
-Instance breakdown across 233 total: **191** solved by both configs, **16** by vanilla only, **6** by patched only, **20** by neither.
+Instance breakdown across 233 total: **193** solved by both configs, **14** by vanilla only, **4** by patched only, **22** by neither.
 
-**Head-to-head on 191 mutually-solved instances** — patched wins Gap@600s (gap to best-known) on 46, vanilla on 34, 111 ties. This is the most direct comparison: same instance, both found solutions.
+**Head-to-head Gap@600s across 211 instances (≥1 solution found)** — patched 49, vanilla 51, 111 ties. Infeasible-for-one-side instances are counted with gap=1.0. Vanilla's 14-vs-4 coverage advantage accounts for most of the difference; on the 193 mutually-solved instances the split is patched 35, vanilla 47, 111 ties.
 
-**#Win (best primal obj) — 179 vs 154** — counts who found the better primal bound across all 213 instances where at least one config found a solution (191 + 16 + 6). Ties within 1e-6 are credited to both configs simultaneously, so 179 + 154 = 333 = 213 + 120 ties. Better primal bound = better gap to best-known (same denominator), so this is equivalent to a gap-based winner count.
+**#Win (best primal obj) — 179 vs 154** — counts who found the better primal bound across all 211 instances where at least one config found a solution (193+14+4). Ties within 1e-6 are credited to both configs simultaneously: 179+154=333=211+122 ties. On the 89 decisive (non-tie) instances, patched wins 57 and vanilla wins 32.
 
-**SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla. Note these are each computed over the per-config feasible set — 197 instances for patched, 207 for vanilla — so the populations differ. Two factors compound against patched: (1) the presolve heuristics run before B&B, so every instance accumulates gap area during the ~7s overhead before the first node; (2) the 16 instances vanilla solves but patched does not are absent from patched's SGM but present in vanilla's.
+**SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla. All SGM computations treat infeasible instances as gap=1.0 / PI=time-limit, so both configs compete on the full 233-instance set. The primary drivers of the patched deficit: (1) presolve heuristics run before B&B, so every instance accumulates ~7s of gap area before the first node; (2) patched finds no solution on 14 instances vanilla solves, each contributing gap=1.0 to the SGM.
 
-Patched wins more head-to-head quality matchups on instances both solve. Vanilla leads on aggregate metrics and feasibility coverage.
+**Summary**: vanilla leads on aggregate SGM metrics and feasibility coverage. Patched wins more decisive head-to-head primal-bound comparisons (57 vs 32) and finds better solutions on more instances overall (#Win 179 vs 154), but its presolve overhead makes every time-integrated metric worse.
 
 **To reproduce:**
 

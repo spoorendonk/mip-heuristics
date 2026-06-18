@@ -332,6 +332,7 @@ def print_comparison_table(
     t1st_vals = {c1: [], c2: []}
     gap_vals = {tc: {c1: [], c2: []} for tc in time_cutoffs}
     pd_vals = {c1: [], c2: []}
+    n_both = n_c1_only = n_c2_only = n_neither = 0
 
     for inst in instances:
         r1, r2 = agg_results[c1][inst], agg_results[c2][inst]
@@ -342,28 +343,48 @@ def print_comparison_table(
         t1 = r1.time_to_first_feasible
         t2 = r2.time_to_first_feasible
         print(f"{format_float(t1, 10, 2)} {format_float(t2, 10, 2)} ", end="")
-        if t1 is not None and t2 is not None:
-            t1st_vals[c1].append(t1)
-            t1st_vals[c2].append(t2)
-            if t1 < t2 - 0.01:
+        if t1 is not None or t2 is not None:
+            if t1 is not None:
+                t1st_vals[c1].append(t1)
+            if t2 is not None:
+                t1st_vals[c2].append(t2)
+            if t1 is not None and t2 is not None:
+                if t1 < t2 - 0.01:
+                    wins["t1st"] += 1
+                elif t2 < t1 - 0.01:
+                    losses["t1st"] += 1
+                else:
+                    ties["t1st"] += 1
+            elif t1 is not None:
                 wins["t1st"] += 1
-            elif t2 < t1 - 0.01:
-                losses["t1st"] += 1
             else:
-                ties["t1st"] += 1
+                losses["t1st"] += 1
 
-        # Gap at cutoffs
+        # Track coverage
+        if t1 is not None and t2 is not None:
+            n_both += 1
+        elif t1 is not None:
+            n_c1_only += 1
+        elif t2 is not None:
+            n_c2_only += 1
+        else:
+            n_neither += 1
+
+        # Gap at cutoffs — treat no solution as gap=1.0; count when at least
+        # one config found a solution, skip only when neither did.
         ref = best_known.get(inst) if best_known else None
         for tc in active_cutoffs:
             g1 = r1.primal_gap_at(tc, ref)
             g2 = r2.primal_gap_at(tc, ref)
             print(f"{format_float(g1, 12, 6)} {format_float(g2, 12, 6)} ", end="")
-            if g1 is not None and g2 is not None:
-                gap_vals[tc][c1].append(g1)
-                gap_vals[tc][c2].append(g2)
-                if g1 < g2 - 1e-6:
+            if g1 is not None or g2 is not None:
+                g1c = g1 if g1 is not None else 1.0
+                g2c = g2 if g2 is not None else 1.0
+                gap_vals[tc][c1].append(g1c)
+                gap_vals[tc][c2].append(g2c)
+                if g1c < g2c - 1e-6:
                     wins["gap"][tc] += 1
-                elif g2 < g1 - 1e-6:
+                elif g2c < g1c - 1e-6:
                     losses["gap"][tc] += 1
                 else:
                     ties["gap"][tc] += 1
@@ -387,6 +408,8 @@ def print_comparison_table(
     # Summary
     print("-" * 180)
     print(f"\n## Summary: {c1} vs {c2} ({len(instances)} instances)\n")
+    print(f"Coverage: {n_both} both solved  |  "
+          f"{n_c1_only} {c1}-only  |  {n_c2_only} {c2}-only  |  {n_neither} neither\n")
 
     print(f"{'Metric':<25} {c1 + ' wins':<12} {c2 + ' wins':<12} {'Ties':<8} "
           f"{'SGM(' + c1[:3] + ')':<12} {'SGM(' + c2[:3] + ')':<12}")
@@ -535,8 +558,7 @@ def print_paper_metrics(
             if r:
                 ref = best_known.get(inst) if best_known else None
                 g = r.primal_gap_at(time_limit, ref)
-                if g is not None:
-                    gaps.append(g)
+                gaps.append(g if g is not None else 1.0)
         print(f" {format_float(shifted_geomean(gaps, 0.01), 12, 6)}", end="")
     print()
 
@@ -549,8 +571,7 @@ def print_paper_metrics(
             if r:
                 ref = best_known.get(inst) if best_known else None
                 pi = r.primal_integral(time_limit, ref)
-                if math.isfinite(pi):
-                    pis.append(pi)
+                pis.append(pi)
         print(f" {format_float(shifted_geomean(pis, 1.0), 12, 4)}", end="")
     print()
 
@@ -742,8 +763,7 @@ def print_plato_summary(
             if r:
                 ref = best_known.get(inst) if best_known else None
                 pi = r.primal_integral(time_limit, ref)
-                if math.isfinite(pi):
-                    pis.append(pi)
+                pis.append(pi)
                 if r.incumbents:
                     feas_count += 1
         pi_per_config[c] = pis
