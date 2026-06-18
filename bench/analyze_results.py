@@ -160,7 +160,7 @@ def aggregate_results(
     """Aggregate across seeds using median for each metric.
 
     Returns {config: {instance: SolveResult}} with median values.
-    For incumbents, uses the seed with the median time_to_first_feasible.
+    For incumbents, uses the seed with the median primal_bound (upper-middle for even N).
     """
     aggregated: dict[str, dict[str, SolveResult]] = {}
     for config in configs:

@@ -392,7 +392,7 @@ def parse_log(log_text: str) -> SolveResult:
     # but no incumbents were recorded, a source code is missing from
     # _INCUMBENT_SOURCES.  Raise early so the gap is caught in tests rather
     # than silently producing wrong T1st / primal_integral values.
-    if math.isfinite(result.primal_bound) and result.primal_bound != float("inf") and not result.incumbents:
+    if math.isfinite(result.primal_bound) and not result.incumbents:
         warnings.warn(
             f"primal_bound={result.primal_bound} but incumbents is empty — "
             "a source code may be missing from _INCUMBENT_SOURCES",
