@@ -74,18 +74,18 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|
-| #Feasible | **212** | 207 |
+| #Feasible | **213** | 208 |
 | #Win (best primal obj at 600s) | **179** | 154 |
 | #Gap@600s wins (214 with ≥1 solution) | **53** | 42 |
 | SGM Time-to-first-feasible (s=1) | 5.2s | **3.8s** |
-| SGM Gap@600s (s=0.01) | 0.0262 | **0.0247** |
-| SGM Primal Integral (s=1) | 59.6 | **57.0** |
+| SGM Gap@600s (s=0.01) | 0.0255 | **0.0240** |
+| SGM Primal Integral (s=1) | 58.3 | **55.8** |
 | SGM P-D Integral | 25.9 | **23.9** |
-| PLATO headline SGM (s=0.001) | 47.4 | **45.6** |
+| PLATO headline SGM (s=0.001) | 46.3 | **44.6** |
 
 #### Findings
 
-Instance breakdown across 233 total: **205** solved by both configs, **2** by vanilla only, **7** by patched only, **19** by neither.
+Instance breakdown across 233 total: **206** solved by both configs, **2** by vanilla only, **7** by patched only, **18** by neither.
 
 **Head-to-head Gap@600s across 214 instances (≥1 solution found)** — patched 53, vanilla 42, 119 ties. Infeasible-for-one-side instances are counted with gap=1.0. On the 205 mutually-solved instances: patched 51, vanilla 35, 119 ties — patched wins the majority of decisive matchups.
 
