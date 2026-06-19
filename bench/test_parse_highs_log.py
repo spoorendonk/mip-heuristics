@@ -169,6 +169,38 @@ def test_primal_bound_matches_best_incumbent():
     assert math.isclose(best_inc, result.primal_bound, rel_tol=1e-6)
 
 
+def test_primal_gap_at_returns_none_when_dual_bound_infinite():
+    """primal_gap_at must return None (not NaN) when no best_known is provided
+    and the incumbent's dual_bound is ±inf (typical at the root node before
+    any B&B bound is computed).  Before the fix, abs(obj - (-inf)) / inf
+    produced NaN, which propagated silently into SGM calculations."""
+    import math
+    # The first incumbent line has BestBound = '-inf' (root, no LP solved yet).
+    log = (
+        "J       0       0         0   0.00%   -inf            50.0              Large      0      0      0       0.0   1.0s\n"
+        "  Status            Time limit reached\n"
+        "  Primal bound      50.0\n"
+        "  Dual bound        10.0\n"
+        "  Timing            1.0\n"
+    )
+    result = parse_log(log)
+    assert len(result.incumbents) == 1
+    assert result.incumbents[0].dual_bound == float("-inf")
+
+    # Without best_known, gap should be None (not nan) because ref is -inf.
+    gap = result.primal_gap_at(1.0)
+    assert gap is None, f"Expected None but got {gap}"
+
+    # With best_known provided, gap is computable and finite.
+    gap_known = result.primal_gap_at(1.0, best_known=40.0)
+    assert gap_known is not None
+    assert math.isfinite(gap_known)
+
+    # primal_integral without best_known should also be finite (skips -inf points).
+    pi = result.primal_integral(1.0)
+    assert math.isfinite(pi), f"Expected finite primal_integral but got {pi}"
+
+
 def test_sequential_zero_effort_line_parses():
     """Zero-effort [Sequential] lines (e.g. local_mip skipping a cold
     solve) are emitted so a human reader sees the skip; the drift script

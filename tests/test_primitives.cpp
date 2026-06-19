@@ -3,8 +3,10 @@
 #include "solution_pool.h"
 #include "thompson_sampler.h"
 
+#include <atomic>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <mutex>
 #include <random>
 #include <thread>
 #include <vector>
@@ -284,6 +286,72 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
     for (size_t i = 1; i < entries.size(); ++i) {
         REQUIRE(entries[i - 1].objective <= entries[i].objective);
     }
+}
+
+// ── SolutionPool: set_on_accept callback ──
+
+TEST_CASE("SolutionPool: on_accept fires for accepted solutions only", "[pool]") {
+    SolutionPool pool(3, true);  // minimize, capacity 3
+
+    std::vector<std::pair<std::vector<double>, int>> fired;
+    pool.set_on_accept(
+        [&](const std::vector<double>& sol, int src) { fired.push_back({sol, src}); });
+
+    // Three insertions into an empty pool — all accepted.
+    REQUIRE(pool.try_add(10.0, {10.0}, kSolutionSourceFPR));
+    REQUIRE(pool.try_add(8.0, {8.0}, kSolutionSourceLocalMIP));
+    REQUIRE(pool.try_add(6.0, {6.0}, kSolutionSourceFJ));
+    REQUIRE(fired.size() == 3);
+    REQUIRE(fired[0].second == kSolutionSourceFPR);
+    REQUIRE(fired[1].second == kSolutionSourceLocalMIP);
+    REQUIRE(fired[2].second == kSolutionSourceFJ);
+    REQUIRE(fired[2].first == std::vector<double>{6.0});
+
+    // Pool is full (capacity 3). Inserting a dominated solution must not fire.
+    REQUIRE_FALSE(pool.try_add(999.0, {999.0}, kSolutionSourceFPR));
+    REQUIRE(fired.size() == 3);  // unchanged
+
+    // Inserting an improving solution fires the callback.
+    REQUIRE(pool.try_add(4.0, {4.0}, kSolutionSourceFPR));
+    REQUIRE(fired.size() == 4);
+    REQUIRE(fired[3].first == std::vector<double>{4.0});
+}
+
+TEST_CASE("SolutionPool: on_accept callback under concurrent try_add", "[pool][thread-safety]") {
+    SolutionPool pool(50, true);
+
+    std::mutex cb_mtx;
+    std::atomic<int> cb_count{0};
+    std::atomic<int> accepted_count{0};
+
+    // Set callback before spawning workers (happens-before satisfied).
+    pool.set_on_accept([&](const std::vector<double>& sol, int /*src*/) {
+        // Acquiring cb_mtx while the pool spin-lock is NOT held proves
+        // no lock inversion: callback fires outside the pool lock.
+        std::lock_guard<std::mutex> guard(cb_mtx);
+        REQUIRE_FALSE(sol.empty());
+        cb_count.fetch_add(1, std::memory_order_relaxed);
+    });
+
+    constexpr int kNumThreads = 4;
+    constexpr int kOpsPerThread = 50;
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kNumThreads; ++t) {
+        threads.emplace_back([&, t]() {
+            for (int i = 0; i < kOpsPerThread; ++i) {
+                double obj = static_cast<double>(t * kOpsPerThread + i);
+                if (pool.try_add(obj, {obj}, kSolutionSourceFPR)) {
+                    accepted_count.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    for (auto& thr : threads) {
+        thr.join();
+    }
+
+    // Every accepted insertion must have triggered exactly one callback.
+    REQUIRE(cb_count.load() == accepted_count.load());
 }
 
 // ── ThompsonSampler: concurrent select/update stress ──

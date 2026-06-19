@@ -95,7 +95,7 @@ Instance breakdown across 233 total: **206** solved by both configs, **2** by va
 
 **SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla narrowly. All SGM computations treat infeasible instances as gap=1.0 / PI=time-limit, so both configs compete on the full 233-instance set. The remaining PLATO ratio is 1.05 (28.1 vs 26.8) — the main driver is patched's slower time-to-first-feasible (~5s vs ~4s SGM) due to presolve heuristics running before B&B.
 
-**Summary**: patched leads on feasibility (213 vs 208), head-to-head Gap@600s (49–35), and strict #Win (61 vs 36 on 97 decisive instances). Vanilla leads narrowly on aggregate time-integrated SGM metrics due to the presolve overhead. On the 206 instances both solve, P-D integral favours patched (33.9 vs 36.7).
+**Summary**: patched leads on feasibility (213 vs 208), head-to-head Gap@600s (49–35), and strict #Win (61 vs 36 on 97 decisive instances). Vanilla leads narrowly on aggregate time-integrated SGM metrics due to the presolve overhead.
 
 **To reproduce:**
 
