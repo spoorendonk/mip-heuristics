@@ -294,6 +294,7 @@ def print_comparison_table(
     configs: list[str],
     time_cutoffs: list[float] | None = None,
     best_known: dict[str, float | None] | None = None,
+    time_limit: float = 600.0,
 ) -> None:
     """Print per-instance comparison table using seed-aggregated values."""
     if time_cutoffs is None:
@@ -345,7 +346,7 @@ def print_comparison_table(
         t2 = r2.time_to_first_feasible
         print(f"{format_float(t1, 10, 2)} {format_float(t2, 10, 2)} ", end="")
         if t1 is not None or t2 is not None:
-            tl = max(active_cutoffs) if active_cutoffs else float("inf")
+            tl = time_limit
             if t1 is not None:
                 t1st_vals[c1].append(min(t1, tl))
             if t2 is not None:
@@ -554,6 +555,8 @@ def print_paper_metrics(
     print()
 
     # --- SGM of primal gap at cutoff (shift=0.001, matching PLATO) ---
+    # Infeasible instances contribute gap=1.0 so all instances are counted
+    # (matching Mittelmann's PLATO methodology).
     print(f"{'SGM Gap@' + str(int(time_limit)) + 's (s=0.001)':<25}", end="")
     for c in configs:
         gaps = []
@@ -840,7 +843,7 @@ def main() -> None:
     best_known = build_best_known(results, active_configs, common, solu_refs)
 
     if not args.summary:
-        print_comparison_table(agg_results, active_configs, best_known=best_known)
+        print_comparison_table(agg_results, active_configs, best_known=best_known, time_limit=args.time_limit)
     print_paper_metrics(results, agg_results, active_configs, args.time_limit,
                         best_known=best_known)
     print_effort_calibration(results, active_configs)

@@ -47,11 +47,12 @@ void log_sequential(const HighsLogOptions &log_options, const char *name, size_t
 // A single `SolutionPool` is constructed here and threaded through all
 // heuristics so that solutions found by an earlier heuristic (e.g. FJ)
 // become available as pool-restart seeds for later heuristics (FPR,
-// LocalMIP).  The pool is seeded once from the incumbent and flushed
-// to HiGHS once at the end; each entry carries its originating
-// heuristic's source tag (see solution_pool.h / #73).  The portfolio
-// modes already manage their own pool inside `portfolio::run_presolve`
-// and are not affected.
+// LocalMIP).  The pool is seeded once from the incumbent; an on_accept
+// callback then submits each new solution to HiGHS immediately on
+// acceptance so incumbent timestamps reflect find time rather than
+// flush time.  Each entry carries its originating heuristic's source
+// tag (see solution_pool.h / #73).  The portfolio modes already manage
+// their own pool inside `portfolio::run_presolve` and are not affected.
 bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic, bool fj_on,
                     bool fpr_on, bool lm_on, bool sc_on) {
     const auto *options = mipsolver.options_mip_;

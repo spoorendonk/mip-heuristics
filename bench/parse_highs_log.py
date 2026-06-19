@@ -132,6 +132,8 @@ class SolveResult:
         if last_inc is None:
             return None  # No feasible solution by cutoff
         ref = best_known if best_known is not None else last_inc.dual_bound
+        if not math.isfinite(ref):
+            return None  # dual bound not yet finite; no meaningful gap
         denom = max(abs(ref), 1.0)
         return min(abs(last_inc.objective - ref) / denom, 1.0)
 
@@ -142,6 +144,8 @@ class SolveResult:
         points = []
         for inc in self.incumbents:
             ref = best_known if best_known is not None else inc.dual_bound
+            if not math.isfinite(ref):
+                continue  # dual bound not yet finite; integral stays at 1.0
             denom = max(abs(ref), 1.0)
             gap = min(abs(inc.objective - ref) / denom, 1.0)
             points.append((inc.time, gap))

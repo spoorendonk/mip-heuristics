@@ -261,14 +261,15 @@ bool lseu_seq_emits_fj_tag(bool opportunistic) {
 // each pool was destroyed at the end of its heuristic.
 //
 // Post-#72, mode_dispatch::run_sequential owns one shared SolutionPool,
-// seeds it from the incumbent once, hands it to every heuristic's
-// run_parallel as an `&` parameter, and flushes it once at
-// end-of-chain.  The per-entry source tag (#73) lets that single flush
-// emit `J`/`A`/`M`/`G` accordingly.  These tests prove the new flush
-// path round-trips FJ's tag; the pool-restart semantic for downstream
-// heuristics is exercised transitively (FPR's get_restart now reads
-// from the same pool that FJ wrote to, as audited by the refactor's
-// signature changes).
+// seeds it from the incumbent once, and hands it to every heuristic's
+// run_parallel as an `&` parameter.  Each solution accepted by the pool
+// is immediately forwarded to HiGHS via the on_accept callback (so
+// timestamps reflect find time, not flush time).  The per-entry source
+// tag (#73) is preserved and forwarded by the callback so HiGHS logs
+// `J`/`A`/`M`/`G` per heuristic.  These tests prove the callback path
+// round-trips FJ's tag; the pool-restart semantic for downstream
+// heuristics is exercised transitively (FPR's get_restart reads from
+// the same pool that FJ wrote to).
 
 TEST_CASE("mode-matrix seq/det: FJ entries survive shared pool flush", "[mode-matrix]") {
     REQUIRE(lseu_seq_emits_fj_tag(/*opportunistic=*/false));

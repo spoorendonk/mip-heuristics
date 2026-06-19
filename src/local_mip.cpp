@@ -188,11 +188,9 @@ HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t
     // effort so the caller's accountant (portfolio bandit / mode
     // dispatch) sees the full wall-clock-equivalent work.
     result.effort = total_effort + construction_effort;
-    auto entries = pool.sorted_entries();
-    if (!entries.empty()) {
+    if (pool.copy_best(result.solution)) {
         result.found_feasible = true;
-        result.objective = entries[0].objective;
-        result.solution = std::move(entries[0].solution);
+        result.objective = pool.snapshot().best_objective;
     }
 
     return result;
