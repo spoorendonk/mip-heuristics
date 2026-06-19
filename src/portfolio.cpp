@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <vector>
@@ -444,6 +445,12 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
     SolutionPool pool(kPoolCapacity, setup.minimize);
     seed_pool(pool, mipsolver);
 
+    std::mutex highs_mtx;
+    pool.set_on_accept([&](const std::vector<double> &sol, int src) {
+        std::lock_guard<std::mutex> guard(highs_mtx);
+        mipdata->trySolution(sol, src);
+    });
+
     const auto &enabled_arms = setup.enabled_arms;
     const auto &incumbent_snapshot = setup.incumbent_snapshot;
     const auto &csc = setup.csc;
@@ -507,15 +514,6 @@ void run_presolve_opportunistic(HighsMipSolver &mipsolver, const PresolveSetup &
                                                         setup.minimize, make_run_arm, log_arm);
 
     mipdata->heuristic_effort_used += total_effort;
-
-    // Flush pool solutions to HiGHS (sequential).  Each entry carries the
-    // originating arm's source tag (set at pool-insertion time by
-    // arm_source_tag in the make_run_arm lambda and by ScyllaWorker
-    // directly), so HiGHS logs per-arm provenance (`A` FPR, `J` FJ,
-    // `M` LocalMIP, `G` Scylla) instead of a generic `H`.
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, entry.source);
-    }
 }
 
 }  // namespace
@@ -544,6 +542,12 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
     ThompsonSampler bandit(num_arms, setup.priors.data(), /*use_mutex=*/false);
     SolutionPool pool(kPoolCapacity, minimize);
     seed_pool(pool, mipsolver);
+
+    std::mutex highs_mtx;
+    pool.set_on_accept([&](const std::vector<double> &sol, int src) {
+        std::lock_guard<std::mutex> guard(highs_mtx);
+        mipdata->trySolution(sol, src);
+    });
 
     uint32_t base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed);
 
@@ -585,14 +589,6 @@ void run_presolve(HighsMipSolver &mipsolver, size_t max_effort, bool opportunist
                                          std::move(restart_cb), setup.stale_budget);
 
     mipdata->heuristic_effort_used += total_effort;
-
-    // Flush pool solutions to HiGHS (best first).  Each entry carries its
-    // originating arm's source tag so HiGHS logs per-arm provenance (`A`
-    // FPR, `J` FJ, `M` LocalMIP, `G` Scylla) rather than the generic `H`.
-    // See arm_source_tag for the arm_type → source mapping.
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, entry.source);
-    }
 }
 
 }  // namespace portfolio

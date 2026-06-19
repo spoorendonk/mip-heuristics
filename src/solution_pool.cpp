@@ -11,6 +11,10 @@
 SolutionPool::SolutionPool(int capacity, bool minimize)
     : capacity_(capacity), minimize_(minimize) {}
 
+void SolutionPool::set_on_accept(std::function<void(const std::vector<double>&, int)> callback) {
+    on_accept_ = std::move(callback);
+}
+
 void SolutionPool::set_integer_mask(std::vector<bool> mask) {
     std::lock_guard<HighsSpinMutex> lock(mtx_);
     integer_mask_ = std::move(mask);
@@ -42,70 +46,72 @@ int SolutionPool::num_integers() const {
 }
 
 bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int source) {
-    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    bool accepted = false;
+    {
+        std::lock_guard<HighsSpinMutex> lock(mtx_);
 
-    // Find insertion point (entries_ kept sorted, best first)
-    auto cmp = [this](const Entry& e, double val) {
-        return minimize_ ? e.objective < val : e.objective > val;
-    };
-    auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
+        // Find insertion point (entries_ kept sorted, best first)
+        auto cmp = [this](const Entry& entry, double val) {
+            return minimize_ ? entry.objective < val : entry.objective > val;
+        };
+        auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
 
-    if (static_cast<int>(entries_.size()) >= capacity_) {
-        auto& worst = entries_.back();
-        bool dominated = minimize_ ? obj >= worst.objective : obj <= worst.objective;
+        if (static_cast<int>(entries_.size()) >= capacity_) {
+            auto& worst = entries_.back();
+            bool dominated = minimize_ ? obj >= worst.objective : obj <= worst.objective;
 
-        if (!dominated) {
-            // Standard path: improves on worst — replace worst.
-            entries_.pop_back();
-            pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
-            entries_.insert(pos, {obj, sol, source});
-            return true;
-        }
+            if (!dominated) {
+                // Standard path: improves on worst — replace worst.
+                entries_.pop_back();
+                pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
+                entries_.insert(pos, {obj, sol, source});
+                accepted = true;
+            } else if (!integer_mask_.empty() && num_integers_ > 0 && !entries_.empty()) {
+                // Diversity-aware path: pool is full and obj doesn't beat worst.
+                // Accept if (a) integer mask is set, (b) obj is within tolerance of
+                // best, and (c) solution is sufficiently diverse from all entries.
+                double best_obj = entries_.front().objective;
+                double gap = std::abs(obj - best_obj);
+                // Continuous fallback: fraction of |best_obj|, floored to avoid
+                // a discontinuous jump near zero.
+                double threshold = std::max(kDiversityObjTolerance * std::abs(best_obj),
+                                            kDiversityObjTolerance * 1e-6);
 
-        // Diversity-aware path: pool is full and obj doesn't beat worst.
-        // Accept if (a) integer mask is set, (b) obj is within tolerance of
-        // best, and (c) solution is sufficiently diverse from all entries.
-        if (integer_mask_.empty() || num_integers_ == 0 || entries_.empty()) {
-            return false;
-        }
+                if (gap <= threshold) {
+                    // Compute minimum Hamming distance to any pool entry and track
+                    // the index of the most similar entry.
+                    int min_dist = std::numeric_limits<int>::max();
+                    int most_similar_idx = -1;
+                    for (int idx = 0; idx < static_cast<int>(entries_.size()); ++idx) {
+                        int dist = hamming_distance(sol, entries_[idx].solution);
+                        if (dist < min_dist) {
+                            min_dist = dist;
+                            most_similar_idx = idx;
+                        }
+                    }
 
-        double best_obj = entries_.front().objective;
-        double gap = std::abs(obj - best_obj);
-        // Continuous fallback: fraction of |best_obj|, floored to avoid
-        // a discontinuous jump near zero.
-        double threshold =
-            std::max(kDiversityObjTolerance * std::abs(best_obj), kDiversityObjTolerance * 1e-6);
-
-        if (gap > threshold) {
-            return false;
-        }
-
-        // Compute minimum Hamming distance to any pool entry and track
-        // the index of the most similar entry.
-        int min_dist = std::numeric_limits<int>::max();
-        int most_similar_idx = -1;
-        for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
-            int d = hamming_distance(sol, entries_[i].solution);
-            if (d < min_dist) {
-                min_dist = d;
-                most_similar_idx = i;
+                    double min_frac =
+                        static_cast<double>(min_dist) / static_cast<double>(num_integers_);
+                    if (min_frac >= kDiversityMinHammingFrac) {
+                        // Replace the most similar entry.
+                        entries_.erase(entries_.begin() + most_similar_idx);
+                        pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
+                        entries_.insert(pos, {obj, sol, source});
+                        accepted = true;
+                    }
+                }
             }
+        } else {
+            entries_.insert(pos, {obj, sol, source});
+            accepted = true;
         }
-
-        double min_frac = static_cast<double>(min_dist) / static_cast<double>(num_integers_);
-        if (min_frac < kDiversityMinHammingFrac) {
-            return false;
-        }
-
-        // Replace the most similar entry.
-        entries_.erase(entries_.begin() + most_similar_idx);
-        pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
-        entries_.insert(pos, {obj, sol, source});
-        return true;
     }
-
-    entries_.insert(pos, {obj, sol, source});
-    return true;
+    // Invoke callback outside the pool lock to avoid lock inversion: the
+    // callback holds its own mutex to serialize concurrent trySolution calls.
+    if (accepted && on_accept_) {
+        on_accept_(sol, source);
+    }
+    return accepted;
 }
 
 SolutionPool::Snapshot SolutionPool::snapshot() {

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <vector>
@@ -406,6 +407,15 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
     SolutionPool pool(kPoolCapacity, setup.minimize);
     seed_pool(pool, mipsolver);
 
+    // Submit solutions immediately on acceptance so incumbent timestamps
+    // reflect find time rather than the end-of-run flush time.
+    auto *mipdata = mipsolver.mipdata_.get();
+    std::mutex highs_mtx;
+    pool.set_on_accept([&](const std::vector<double> &sol, int src) {
+        std::lock_guard<std::mutex> guard(highs_mtx);
+        mipdata->trySolution(sol, src);
+    });
+
     // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
     // it always runs arm-aligned parallel workers — num_threads workers
     // bound to the top-N arms from kClass2/3a/3b, sharing the solution
@@ -417,14 +427,6 @@ void run(HighsMipSolver &mipsolver, size_t max_effort) {
         run_sequential_opportunistic(mipsolver, setup, pool);
     } else {
         run_sequential_deterministic(mipsolver, setup, pool);
-    }
-
-    // Submit best solutions to solver (sequential).  Each entry carries
-    // its own per-heuristic source tag so HiGHS logs the correct origin
-    // (`D` for the LP-dependent FPR arms) rather than a generic `A`.
-    auto *mipdata = mipsolver.mipdata_.get();
-    for (auto &entry : pool.sorted_entries()) {
-        mipdata->trySolution(entry.solution, entry.source);
     }
 }
 

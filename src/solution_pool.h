@@ -3,6 +3,7 @@
 #include "parallel/HighsSpinMutex.h"
 #include "rng.h"
 
+#include <functional>
 #include <vector>
 
 class HighsMipSolver;
@@ -46,7 +47,14 @@ public:
     // integer.  Thread-safe (acquires lock).
     void set_integer_mask(std::vector<bool> mask);
 
-    // Try to add a solution. Returns true if added.
+    // Register a callback invoked (outside the pool lock) whenever a solution
+    // is accepted. Call once before dispatching workers. The callback receives
+    // the solution vector and source tag and must be thread-safe (multiple
+    // workers may trigger it concurrently).
+    void set_on_accept(std::function<void(const std::vector<double>&, int)> callback);
+
+    // Try to add a solution. Returns true if added. Invokes the on_accept
+    // callback (if set) after releasing the pool lock.
     // `source` is one of the kSolutionSource* constants and is stored on
     // the inserted entry for later provenance-aware flushing.
     // Insertion policy (when pool is full):
@@ -97,6 +105,10 @@ private:
     bool minimize_;
     std::vector<bool> integer_mask_;  // true for integer variables
     int num_integers_ = 0;            // cached count of integer vars
+    // Invoked outside pool lock after a successful insertion. Set once before
+    // workers start; reads from worker threads are unsynchronized but safe
+    // because the happens-before from thread creation covers the write.
+    std::function<void(const std::vector<double>&, int)> on_accept_;
 };
 
 // Seed a pool with the current incumbent (if any). Defined inline to
