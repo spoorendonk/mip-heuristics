@@ -1,10 +1,96 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it using the metadata below."
-title: "mip-heuristics: A MIP primal heuristics suite for HiGHS"
+title: "mip-heuristics"
 type: software
+message: "If you use this software, please cite it as below."
 authors:
   - family-names: Spoorendonk
     given-names: Simon
+    orcid: "https://orcid.org/0009-0007-4304-6956"
     email: simon@flowty.ai
-repository-code: https://github.com/spoorendonk/mip-heuristics
+abstract: "Open-source primal heuristics suite for HiGHS: FPR, LocalMIP, Scylla, FeasibilityJump, and a Thompson-sampling portfolio, with epoch-gated and opportunistic parallel workers. Validated on the PLATO mipfeas benchmark."
+version: "0.1.0"
+repository-code: "https://github.com/spoorendonk/mip-heuristics"
+url: "https://github.com/spoorendonk/mip-heuristics"
+date-released: "2026-06-25"
 license: MIT
+references:
+  - type: article
+    title: "A fix-propagate-repair heuristic for mixed integer programming"
+    authors:
+      - family-names: Salvagnin
+        given-names: Domenico
+      - family-names: Roberti
+        given-names: Roberto
+      - family-names: Fischetti
+        given-names: Matteo
+    journal: "Mathematical Programming Computation"
+    volume: 17
+    start: 111
+    end: 139
+    year: 2025
+    doi: 10.1007/s12532-024-00269-5
+  - type: conference-paper
+    title: "An Efficient Local Search Solver for Mixed Integer Programming"
+    authors:
+      - family-names: Lin
+        given-names: Jiongzhi
+      - family-names: Zou
+        given-names: Yupeng
+      - family-names: Cai
+        given-names: Shaowei
+    collection-title: "Proceedings of CP 2024"
+    year: 2024
+    doi: 10.4230/LIPIcs.CP.2024.19
+  - type: conference-paper
+    title: "Scylla: a matrix-free fix-propagate-and-project heuristic for mixed-integer optimization"
+    authors:
+      - family-names: Mexi
+        given-names: Gioni
+      - family-names: Besançon
+        given-names: Mathieu
+      - family-names: Bolusani
+        given-names: Suresh
+      - family-names: Chmiela
+        given-names: Antonia
+      - family-names: Hoen
+        given-names: Alexander
+      - family-names: Gleixner
+        given-names: Ambros
+    collection-title: "Operations Research Proceedings 2023"
+    start: 57
+    end: 63
+    year: 2023
+    doi: 10.1007/978-3-031-58405-3_9
+  - type: article
+    title: "Feasibility Jump: an LP-free Lagrangian MIP heuristic"
+    authors:
+      - family-names: Luteberget
+        given-names: Bjørnar
+      - family-names: Sartor
+        given-names: Giorgio
+    journal: "Mathematical Programming Computation"
+    volume: 15
+    start: 365
+    end: 388
+    year: 2023
+    doi: 10.1007/s12532-023-00234-8
+  - type: article
+    title: "A tutorial on Thompson sampling"
+    authors:
+      - family-names: Russo
+        given-names: Daniel
+      - family-names: Van Roy
+        given-names: Benjamin
+      - family-names: Kazerouni
+        given-names: Abbas
+      - family-names: Osband
+        given-names: Ian
+      - family-names: Wen
+        given-names: Zheng
+    journal: "Foundations and Trends in Machine Learning"
+    volume: 11
+    issue: 1
+    start: 1
+    end: 96
+    year: 2018
+    doi: 10.1561/2200000070

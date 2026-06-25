@@ -1,0 +1,53 @@
+{
+  "upload_type": "software",
+  "title": "mip-heuristics: a primal heuristics suite for HiGHS",
+  "description": "Open-source primal heuristics suite integrated into HiGHS v1.14.0 via a patched build. Implements FPR (Fix, Propagate, Repair), LocalMIP, Scylla (PDLP-based feasibility pump), FeasibilityJump, LP-guided FPR, and a Thompson-sampling adaptive portfolio. Features epoch-gated and opportunistic parallel workers. Validated on the PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s).",
+  "license": "mit",
+  "creators": [
+    {
+      "name": "Spoorendonk, Simon",
+      "orcid": "0009-0007-4304-6956"
+    }
+  ],
+  "keywords": [
+    "mixed-integer programming",
+    "MIP",
+    "primal heuristics",
+    "HiGHS",
+    "feasibility",
+    "fix-propagate-repair",
+    "local search",
+    "feasibility pump",
+    "PDLP",
+    "Thompson sampling",
+    "portfolio",
+    "C++23"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.1007/s12532-024-00269-5",
+      "relation": "references",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.4230/LIPIcs.CP.2024.19",
+      "relation": "references",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.1007/978-3-031-58405-3_9",
+      "relation": "references",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.1007/s12532-023-00234-8",
+      "relation": "references",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.1561/2200000070",
+      "relation": "references",
+      "scheme": "doi"
+    }
+  ]
+}
