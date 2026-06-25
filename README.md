@@ -12,16 +12,13 @@ cmake --build build -j$(nproc)          # first build ~5 min (fetches HiGHS)
 ./build/bin/highs --mip_heuristic_preset all_opp model.mps
 ```
 
-Five-instance benchmark against vanilla HiGHS (requires MIPLIB instances):
+Full PLATO benchmark against vanilla HiGHS (requires MIPLIB instances, ~77h total):
 
 ```bash
 bash bench/download_miplib.sh
-python3 bench/run_benchmark.py \
-  --instances bench/instances_small.txt \
-  --binary ./build/bin/highs \
-  --data-dir /tmp/miplib \
-  --time-limit 300
-python3 bench/analyze_results.py bench/results
+bench/run_plato.sh next 24    # run in chunks; resumes safely
+bench/run_plato.sh status     # check progress
+python3 bench/analyze_results.py bench/results/plato --configs patched vanilla --time-limit 600 --baseline
 ```
 
 ## Heuristics
@@ -75,48 +72,35 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|
 | #Feasible | **213** | 208 |
-| #Win (strict, best primal obj at 600s) | **61** | 36 |
-| #Gap@600s wins (215 with ≥1 solution) | **49** | 35 |
-| SGM Time-to-first-feasible (s=1) | 5.2s | **3.8s** |
-| SGM Gap@600s (s=0.001) | 0.0065 | **0.0064** |
-| SGM Primal Integral (s=1) | **35.2** | 33.6 |
-| SGM P-D Integral | 25.9 | **23.9** |
-| PLATO headline SGM (s=0.001) | 28.1 | **26.8** |
+| #Win (strict, best primal obj at 600s) | **59** | 41 |
+| SGM Time-to-first-feasible (s=1) | **3.6s** | 3.8s |
+| SGM Gap@600s (s=0.001) | 0.00699 | **0.00638** |
+| SGM Primal Integral (s=1) | **33.25** | 33.57 |
+| SGM P-D Integral | 26.3 | **23.9** |
+| PLATO headline SGM (s=0.001) | **26.0** | 26.8 |
 
 #### Findings
 
-Instance breakdown across 233 total: **206** solved by both configs, **2** by vanilla only, **7** by patched only, **18** by neither.
+**PLATO headline (SGM primal integral, lower is better): 26.0 vs 26.8 — patched wins** (ratio 0.970). Patched also finds more feasible solutions (213 vs 208) and wins more head-to-head matchups by final objective (59 vs 41 strict wins).
 
-**Head-to-head Gap@600s across 215 instances (≥1 solution found)** — patched 49, vanilla 35, 131 ties. Infeasible-for-one-side instances are counted with gap=1.0; gap is capped at 1.0. On the 206 mutually-solved instances: patched 46, vanilla 33, 127 ties — patched wins the majority of decisive matchups.
+**SGM T1st**: patched 3.6s vs vanilla 3.8s — patched finds its first feasible solution faster on average, despite heuristics running after presolve via our dispatch infrastructure. Vanilla finds a first solution sooner on more individual instances (#First 117.5 vs 97.5) because HiGHS's trivial heuristics fire before the LP; patched wins the SGM average because our heuristics find solutions on harder instances where vanilla fails.
 
-**#Win (strict, best primal obj) — 61 vs 36** — counts instances where one config found a strictly better primal bound (ties within 1e-6 excluded). Out of 97 decisive instances (215 with ≥1 solution minus 118 ties).
+**SGM Gap@600s** (0.00699 vs 0.00638) and **P-D Integral** (26.3 vs 23.9) favour vanilla — vanilla spends more time in B&B, tightening the dual bound, while our presolve heuristics consume budget before the root LP.
 
-**Heuristic attribution in patched**: LocalMIP finds the first feasible solution on **123/233 instances**; RINS (Sub-MIP) on 31; FJ on 10. FPR contributes first on 2 instances; fpr_lp on 3 incumbents total. At termination, RINS holds the best solution on 149 instances (vs 106 for vanilla), with LocalMIP holding best on 17. The new heuristics are additive — patched finds more solutions (213 vs 208) with LocalMIP doing the heavy lifting.
+**SGM Primal Integral** (33.25 vs 33.57) favours patched narrowly. All SGM computations treat instances with no solution as gap=1.0 / PI=time-limit across the full 233-instance set.
 
-**SGM metrics** (Gap@600s, Primal Integral, PLATO) favour vanilla narrowly. All SGM computations treat infeasible instances as gap=1.0 / PI=time-limit, so both configs compete on the full 233-instance set. The remaining PLATO ratio is 1.05 (28.1 vs 26.8) — the main driver is patched's slower time-to-first-feasible (~5s vs ~4s SGM) due to presolve heuristics running before B&B.
-
-**Summary**: patched leads on feasibility (213 vs 208), head-to-head Gap@600s (49–35), and strict #Win (61 vs 36 on 97 decisive instances). Vanilla leads narrowly on aggregate time-integrated SGM metrics due to the presolve overhead.
+**Summary**: patched wins the PLATO headline metric (−3%), finds more feasible solutions (+5), and wins more decisive head-to-head matchups. Vanilla is better on dual-bound-weighted metrics due to more B&B time.
 
 **To reproduce:**
 
 ```bash
-# 1. Build
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-
-# 2. Download MIPLIB 2017 instances (~2 GB) to /tmp/miplib
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 bash bench/download_miplib.sh
-
-# 3. Run benchmark (233 instances × 2 configs × 600s ≈ 77h total wall time)
-bench/run_plato.sh next 24        # run in 24h chunks; resumes safely
-bench/run_plato.sh status         # check progress
-# Repeat until status shows 233/233
-
-# 4. Analyze
-python3 bench/analyze_results.py bench/results/plato --configs patched vanilla --time-limit 600 --baseline
+bench/run_plato.sh next 24   # run in chunks; resumes safely — repeat until 233/233
+python3 bench/analyze_results.py bench/results/plato --configs patched vanilla --time-limit 600 --baseline --summary
 ```
 
-Results land in `bench/results/plato/`. The vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`.
+Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`.
 
 ## Build Options
 
