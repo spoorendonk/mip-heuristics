@@ -536,14 +536,37 @@ if(_found EQUAL -1)
       "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      if (heuristics::run_presolve(*this, budget)) {\n        modelstatus_ = HighsModelStatus::kInfeasible;\n        cleanupSolve();\n        return;\n      }\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
-    # Patch C: after RINS/RENS block, insert LP-dependent FPR (Scylla moved to presolve)
+    file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
+    message(STATUS "Applied presolve heuristic patches to HighsMipSolver.cpp")
+else()
+    message(STATUS "Presolve heuristic patches already applied to HighsMipSolver.cpp, skipping")
+endif()
+
+# ── Patch C: insert fpr_lp::run after RENS/RINS in the B&B dive heuristics ──
+# Separate idempotency block so it can be applied independently of A/A2.
+# HiGHS 1.15 moved the RENS/RINS block into a runHeuristics() lambda; the
+# anchor is the profiling stop + infeasible() return that ends the lambda.
+file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
+string(FIND "${CONTENT}" "fpr_lp::run" _fprlp_found)
+if(_fprlp_found EQUAL -1)
     string(REPLACE
-      "          }\n\n          mipdata_->heuristics.flushStatistics();"
-      "          }\n          if (options_mip_->mip_heuristic_run_fpr) {\n            const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n            fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n          }\n\n          mipdata_->heuristics.flushStatistics();"
+      "    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
+      "    if (options_mip_->mip_heuristic_run_fpr) {\n      const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n      fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n    }\n    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
-    message(STATUS "Applied heuristic call site patches to HighsMipSolver.cpp")
+    message(STATUS "Applied fpr_lp B&B dive patch to HighsMipSolver.cpp")
+
+    string(FIND "${CONTENT}" "fpr_lp::run" _fprlp_check)
+    if(_fprlp_check EQUAL -1)
+        message(FATAL_ERROR
+            "HighsMipSolver.cpp post-patch sanity check failed: "
+            "'fpr_lp::run' not found after patching. "
+            "Upstream HiGHS likely restructured the runHeuristics block so the "
+            "exact-string anchor no longer matches. "
+            "Please update Patch C in third_party/highs_patch/apply_patch.cmake. "
+            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+    endif()
 else()
-    message(STATUS "Heuristic patches already applied to HighsMipSolver.cpp, skipping")
+    message(STATUS "fpr_lp B&B dive patch already applied, skipping")
 endif()

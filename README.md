@@ -1,6 +1,6 @@
 # mip-heuristics
 
-A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.14.0 via a patched build. Makes FJ, FPR, LocalMIP, Scylla (PDLP-based feasibility pump), and a Thompson-sampling adaptive portfolio available natively within HiGHS as a research and experimentation platform. See [Heuristics](#heuristics) for algorithmic details and paper references.
+A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.0 via a patched build. Makes FJ, FPR, LocalMIP, Scylla (PDLP-based feasibility pump), and a Thompson-sampling adaptive portfolio available natively within HiGHS as a research and experimentation platform. See [Heuristics](#heuristics) for algorithmic details and paper references.
 
 ## Quick Start
 

@@ -133,7 +133,7 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
         return std::nullopt;
     }
 
-    auto lp_status = mipdata->lp.getStatus();
+    auto lp_status = mipdata->getLp().getStatus();
     if (!HighsLpRelaxation::scaledOptimal(lp_status)) {
         return std::nullopt;
     }
@@ -150,7 +150,7 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     // Full-obj LP solution — direct reference to the solver's col_value
     // vector (stable while we run because we do not trigger further LP
     // solves during LP-FPR).
-    const auto &lp_sol = mipdata->lp.getLpSolver().getSolution().col_value;
+    const auto &lp_sol = mipdata->getLp().getLpSolver().getSolution().col_value;
     const double *lp_ptr = lp_sol.data();
 
     // Zero-obj analytic center (for Class 2 zerocore strategies).

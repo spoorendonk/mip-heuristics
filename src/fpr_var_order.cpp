@@ -32,7 +32,7 @@ TypeBuckets bucket_by_type(const HighsMipSolver& mipsolver) {
     for (HighsInt j = 0; j < ncol; ++j) {
         if (!is_integer(model->integrality_, j)) {
             b.cont.push_back(j);
-        } else if (mipdata->domain.isBinary(j)) {
+        } else if (mipdata->getDomain().isBinary(j)) {
             b.bin.push_back(j);
         } else {
             b.gen_int.push_back(j);

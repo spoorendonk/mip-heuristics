@@ -322,7 +322,7 @@ Candidate infeasible_step(WorkerCtx &ctx, Rng &rng, HighsInt step, bool best_fea
             HighsInt k = ctx.ARstart[ci] + static_cast<HighsInt>(rng() % row_len);
             HighsInt j = ctx.ARindex[k];
             double new_val;
-            if (ctx.mipdata->domain.isBinary(j)) {
+            if (ctx.mipdata->getDomain().isBinary(j)) {
                 new_val = (ctx.solution[j] < 0.5) ? 1.0 : 0.0;
             } else if (ctx.is_int(j)) {
                 HighsInt dir = (rng() % 2 == 0) ? 1 : -1;

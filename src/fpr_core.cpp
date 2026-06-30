@@ -131,7 +131,7 @@ double choose_fix_value(HighsInt j, const FprConfig &cfg, const AttemptCtx &c, P
         }
     }
 
-    if (c.mipdata->domain.isBinary(j)) {
+    if (c.mipdata->getDomain().isBinary(j)) {
         if (c.minimize) {
             return (c.col_cost[j] >= 0) ? lo : hi;
         }
@@ -149,7 +149,7 @@ double choose_fix_value(HighsInt j, const FprConfig &cfg, const AttemptCtx &c, P
 }
 
 double compute_alt(HighsInt j, double preferred, const AttemptCtx &c, PropEngine &E) {
-    if (c.mipdata->domain.isBinary(j)) {
+    if (c.mipdata->getDomain().isBinary(j)) {
         return (preferred < 0.5) ? 1.0 : 0.0;
     }
     double alt = (std::abs(preferred - E.var(j).lb) < c.feastol) ? E.var(j).ub : E.var(j).lb;
@@ -240,7 +240,7 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
         }
     } else if (attempt_idx == 0) {
         for (HighsInt j = 0; j < c.ncol; ++j) {
-            if (c.mipdata->domain.isBinary(j)) {
+            if (c.mipdata->getDomain().isBinary(j)) {
                 E.sol(j) = 0.0;
             } else if (is_int(j)) {
                 double lo = std::max(c.col_lb[j], -1e8);
@@ -253,7 +253,7 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
         }
     } else {
         for (HighsInt j = 0; j < c.ncol; ++j) {
-            if (c.mipdata->domain.isBinary(j)) {
+            if (c.mipdata->getDomain().isBinary(j)) {
                 E.sol(j) = std::uniform_int_distribution<int>(0, 1)(rng);
             } else if (is_int(j)) {
                 double lo = std::max(c.col_lb[j], -1e8);
