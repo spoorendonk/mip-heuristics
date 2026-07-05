@@ -24,7 +24,7 @@ endif()
 
 FetchContent_Declare(highs
     GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS.git
-    GIT_TAG        v1.15.0
+    GIT_TAG        v1.15.1
     PATCH_COMMAND ${CMAKE_COMMAND}
         -DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch
         -DSOURCE_DIR=<SOURCE_DIR>

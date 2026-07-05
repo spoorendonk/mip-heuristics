@@ -39,7 +39,7 @@ Used by the devkit pre-push hook.  The `unset GIT_DIR GIT_WORK_TREE`
 prefix is required: `git push` leaks `GIT_DIR=.git` into the hook
 subshell, and CMake's nested `git clone` inside FetchContent then
 treats that as the target git directory and fails with `fatal: invalid
-reference: v1.15.0` when trying to check out the HiGHS tag.
+reference: v1.15.1` when trying to check out the HiGHS tag.
 
 TODO(devkit): this block is an in-project workaround for an upstream
 devkit hook bug.  `.devkit/standards/common.md` says local hook
@@ -63,7 +63,7 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 
 ## Architecture
 
-**Integration model**: Heuristics are compiled as a static object library (`mip_heuristics`) whose objects are injected into the HiGHS `highs` target. The HiGHS source is fetched at build time (v1.15.0) with patches applied from `third_party/highs_patch/`. Heuristics access HiGHS internals directly via `HighsMipSolver&`.
+**Integration model**: Heuristics are compiled as a static object library (`mip_heuristics`) whose objects are injected into the HiGHS `highs` target. The HiGHS source is fetched at build time (v1.15.1) with patches applied from `third_party/highs_patch/`. Heuristics access HiGHS internals directly via `HighsMipSolver&`.
 
 **Heuristic entry points** — each has a standalone `run()` that HiGHS calls during presolve:
 - `fpr` — Fix, Propagate, and Repair. DFS tree search that fixes integers, propagates bounds, backtracks on infeasibility, then runs WalkSAT/RepairSearch to fix remaining violations. `fpr_core.cpp` exposes two APIs: the one-shot `fpr_attempt` (used by portfolio / scylla / fpr_lp / one-shot tests) and the `fpr_attempt_begin` / `fpr_attempt_step` / `fpr_attempt_finish` lifecycle (issue #77) that lets `FprWorker` pause an in-flight DFS at the per-epoch budget gate and resume it next epoch with state in `FprAttemptState` + `FprScratch`. The pause/resume mechanic is what avoids discarding work on long DFS subtrees in seq/det; multi-attempt looping inside `run_epoch` lets fast workers fill the slice with new attempts (rotated through `kInitialFprConfigs` per `(worker_idx + attempt_idx)`) instead of idling at the runner barrier. Sub-algorithms: `prop_engine` (bound propagation, with both forward propagate and a domain PQ for dynamic-var strategies — `repair_search` requires `e_pq_mark` threading on `RepairSearchNode` to keep the PQ consistent across its secondary backtracks), `walksat`, `repair_search`, `fpr_strategies` (strategy variants).
