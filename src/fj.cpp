@@ -25,18 +25,18 @@ size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
 
     std::vector<std::unique_ptr<FjWorker>> workers;
     workers.reserve(setup.N);
+    const uint32_t random_seed = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
     for (size_t w = 0; w < setup.N; ++w) {
-        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        uint32_t seed = random_seed + static_cast<uint32_t>(w);
         workers.push_back(std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed));
     }
 
     return run_epoch_loop(
         mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorkerFj),
         [&](int w) {
-            // Restart finished FjWorker with a new seed.
+            // Restart finished FjWorker: continue the linear seed sequence past N.
             ++restart_counter;
-            uint32_t seed =
-                setup.base_seed + (static_cast<uint32_t>(setup.N) + restart_counter) * kSeedStride;
+            uint32_t seed = random_seed + static_cast<uint32_t>(setup.N) + restart_counter;
             workers[w] = std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
         },
         setup.stale_budget);
@@ -46,20 +46,30 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
                                   size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
+    const uint32_t random_seed_opp = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
+
     struct FjState {
         std::unique_ptr<FjWorker> worker;
+        uint32_t initial_seed = 0;
+        bool first_creation = true;
     };
 
     return run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
-        [](int /*worker_idx*/, Rng & /*rng*/) -> FjState {
-            // Lazy init: worker is created on first run_attempt call.
-            return FjState{};
+        [random_seed_opp](int worker_idx, Rng & /*rng*/) -> FjState {
+            // Pin first attempt to random_seed + w; worker 0 matches vanilla FJ's seed.
+            return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx), true};
         },
         [&](FjState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
             if (!state.worker || state.worker->finished()) {
-                uint32_t seed = static_cast<uint32_t>(rng());
+                uint32_t seed;
+                if (state.first_creation) {
+                    seed = state.initial_seed;
+                    state.first_creation = false;
+                } else {
+                    seed = static_cast<uint32_t>(rng());
+                }
                 state.worker =
                     std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
             }

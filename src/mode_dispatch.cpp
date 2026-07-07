@@ -6,6 +6,7 @@
 #include "local_mip.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "parallel/HighsParallel.h"
 #include "portfolio.h"
 #include "scylla.h"
 #include "solution_pool.h"
@@ -95,36 +96,49 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     // threads=16).  Measured geomean `effort_per_ms` after issue #78
     // (cold-start construction sweep rolled into local_mip's reported
     // effort):
-    //   fj=403k  fpr=636k  local_mip=1222k  scylla=261k   drift = 4.68×
+    //   fpr=636k  local_mip=1222k  scylla=261k   drift = 4.68× (FJ excluded:
+    //   fixed vanilla budget, not weight-apportioned; see fj_budget below)
     // Weights are proportional to geomean `effort_per_ms` (scylla
     // normalised to 1.0 as the slowest-per-effort heuristic).
     // Re-run `bench/check_effort_drift.py bench/results/calibration_v2`
     // to refresh after any change to effort accounting.  Earlier
     // calibrations live in git history (commits 82c0fbc, 83bc78b).
-    constexpr double kWeightFj = 1.54;
+    //
+    // FJ uses a fixed per-worker budget matching vanilla HiGHS's single-thread
+    // FJ limit (nnz << 10, hardcoded in HighsFeasibilityJump.cpp; unaffected
+    // by mip_heuristic_effort).  N parallel workers each cover nnz*1024 steps
+    // so patched FJ is at least as deep as vanilla per thread.  The remaining
+    // presolve budget after FJ is split among FPR / LocalMIP / Scylla below.
     constexpr double kWeightFpr = 2.43;
     constexpr double kWeightLocalMip = 4.68;
     constexpr double kWeightScylla = 1.00;
 
-    double total_weight = 0.0;
-    if (fj_on) {
-        total_weight += kWeightFj;
-    }
+    double rest_weight = 0.0;
     if (fpr_on) {
-        total_weight += kWeightFpr;
+        rest_weight += kWeightFpr;
     }
     if (lm_on) {
-        total_weight += kWeightLocalMip;
+        rest_weight += kWeightLocalMip;
     }
     if (sc_on) {
-        total_weight += kWeightScylla;
+        rest_weight += kWeightScylla;
     }
 
-    if (total_weight == 0.0) {
+    if (!fj_on && rest_weight == 0.0) {
         return false;
     }
 
-    auto alloc = [&](double w) -> size_t { return static_cast<size_t>(budget * w / total_weight); };
+    const size_t nnz = static_cast<size_t>(mipsolver.mipdata_->ARindex_.size());
+    const size_t N_threads = static_cast<size_t>(std::max(1, highs::parallel::num_threads()));
+    const size_t fj_budget = fj_on ? N_threads * (nnz << 10) : 0;
+    const size_t used_for_fj = std::min(fj_budget, budget);
+    const size_t rest_budget = budget - used_for_fj;
+
+    auto rest_alloc = [&](double w) -> size_t {
+        return rest_weight > 0
+                   ? static_cast<size_t>(static_cast<double>(rest_budget) * w / rest_weight)
+                   : 0;
+    };
 
     // Each heuristic's inner loops also poll the deadline, but their setup
     // (build_csc, precompute_var_orders) runs before that first inner poll;
@@ -188,22 +202,23 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
 
     if (fj_on && !deadline_hit()) {
         run_and_log("fj", [&]() -> size_t {
-            return fj::run_parallel(mipsolver, pool, alloc(kWeightFj), opportunistic);
+            return fj::run_parallel(mipsolver, pool, fj_budget, opportunistic);
         });
     }
     if (fpr_on && !deadline_hit()) {
         run_and_log("fpr", [&]() -> size_t {
-            return fpr::run_parallel(mipsolver, pool, alloc(kWeightFpr), opportunistic);
+            return fpr::run_parallel(mipsolver, pool, rest_alloc(kWeightFpr), opportunistic);
         });
     }
     if (lm_on && !deadline_hit()) {
         run_and_log("local_mip", [&]() -> size_t {
-            return local_mip::run_parallel(mipsolver, pool, alloc(kWeightLocalMip), opportunistic);
+            return local_mip::run_parallel(mipsolver, pool, rest_alloc(kWeightLocalMip),
+                                           opportunistic);
         });
     }
     if (sc_on && !deadline_hit()) {
         run_and_log("scylla", [&]() -> size_t {
-            return scylla::run_parallel(mipsolver, pool, alloc(kWeightScylla), opportunistic);
+            return scylla::run_parallel(mipsolver, pool, rest_alloc(kWeightScylla), opportunistic);
         });
     }
 
