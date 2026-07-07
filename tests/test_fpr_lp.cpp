@@ -100,6 +100,36 @@ TEST_CASE("fpr_lp: preset=off disables fpr_lp dispatch", "[fpr_lp][mode-matrix][
     REQUIRE(counts.seq_opp == 0);
 }
 
+// Budget-integration regression: fpr_lp's per-call budget is capped at
+// heuristic_effort_budget(nnz, mip_heuristic_effort), the shared vanilla
+// B&B heuristic knob.  At effort=0 the cap is 0, so fpr_lp must never
+// dispatch — even though the raw run_fpr flag is true and the
+// moreHeuristicsAllowed() grace offset (+10000 LP iterations) would
+// otherwise leave headroom.  Pins that fpr_lp draws its budget from
+// mip_heuristic_effort (not mip_heuristic_presolve_effort) and that the
+// cap actually gates dispatch.  Every sub-MIP-creating vanilla
+// heuristic (RENS, RINS, rootReducedCost — the three solveSubMip
+// callers) must be off here: sub-MIPs hard-set mip_heuristic_effort=0.8
+// in the sub-MIP options (HighsPrimalHeuristics::solveSubMip), so
+// fpr_lp legitimately dispatches inside a sub-MIP regardless of the
+// parent's effort=0, and the dispatch counters are process-global.
+TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
+          "[fpr_lp][mode-matrix][budget]") {
+    fpr_lp::reset_dispatch_counts();
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    h.setOptionValue("mip_heuristic_run_fpr", true);
+    h.setOptionValue("mip_heuristic_run_rens", false);
+    h.setOptionValue("mip_heuristic_run_rins", false);
+    h.setOptionValue("mip_heuristic_run_root_reduced_cost", false);
+    h.setOptionValue("mip_heuristic_effort", 0.0);
+    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+    const auto counts = fpr_lp::dispatch_counts();
+    REQUIRE(counts.seq_det == 0);
+    REQUIRE(counts.seq_opp == 0);
+}
+
 TEST_CASE("fpr_lp: preset=scylla disables fpr_lp dispatch", "[fpr_lp][mode-matrix][preset]") {
     fpr_lp::reset_dispatch_counts();
     Highs h;

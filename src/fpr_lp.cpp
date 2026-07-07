@@ -402,6 +402,21 @@ size_t run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup 
 }  // namespace
 
 void run(HighsMipSolver &mipsolver) {
+    auto *mipdata = mipsolver.mipdata_.get();
+
+    // Parallel-search guard: under `parallel=on` HiGHS spawns concurrent
+    // processNode tasks (runTask with the parallel lock held), so this
+    // function would race on the shared mipdata counters it reads and
+    // charges below — RENS/RINS avoid that by accumulating worker-locally
+    // and flushing at serial sync points, an infrastructure fpr_lp does
+    // not have.  Skipping keeps the budget accounting exact and avoids
+    // oversubscribing the thread pool with nested fpr_lp worker teams.
+    // parallelLockActive() is false whenever there is a single search
+    // worker (the HiGHS default), so this never fires on default runs.
+    if (mipdata->parallelLockActive()) {
+        return;
+    }
+
     // Preset-aware gating: mip_heuristic_run_fpr as overridden by
     // mip_heuristic_preset.  In particular preset=off must disable fpr_lp
     // too, so a preset=off run is comparable to vanilla HiGHS (the raw
@@ -412,7 +427,6 @@ void run(HighsMipSolver &mipsolver) {
         return;
     }
 
-    auto *mipdata = mipsolver.mipdata_.get();
     const size_t nnz = mipdata->ARindex_.size();
     if (nnz == 0) {
         return;
@@ -422,7 +436,11 @@ void run(HighsMipSolver &mipsolver) {
     // moreHeuristicsAllowed() — which gates the runHeuristics lambda we
     // are called from — admits heuristics early in the search while
     //   heuristic_lp_iterations < total_lp_iterations * heuristic_effort + 10000
-    // (the initial-offset branch; the later branches are estimate-based).
+    // (the initial-offset branch; the later branches are estimate-based,
+    // so in submip/late-search regimes this formula over-estimates the
+    // true remaining envelope by up to the 10000 offset — acceptable
+    // because the per-call cap below bounds any single draw and the
+    // charge-back still depletes the real counters the gate reads).
     // Size each call to the remaining headroom of that envelope, converted
     // at nnz effort-units per LP iteration (a simplex iteration touches
     // O(nnz) coefficients), and cap it at heuristic_effort_budget(nnz,

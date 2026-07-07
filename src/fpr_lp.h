@@ -19,7 +19,11 @@ namespace fpr_lp {
 //  - all consumed work — the reference-LP solves in setup plus worker
 //    effort / nnz — is charged back to heuristic_lp_iterations and
 //    total_lp_iterations, mirroring how RENS/RINS book their sub-MIP LP
-//    iterations, so the shared envelope depletes.
+//    iterations, so the shared envelope depletes;
+//  - skipped entirely while parallelLockActive() (multi-worker B&B
+//    search under parallel=on): the counters above are shared and fpr_lp
+//    has no worker-local flush infrastructure, so running there would
+//    race.  Never fires on the default single-search-worker runs.
 void run(HighsMipSolver &mipsolver);
 
 // Test hook: counters incremented once per dispatch into each variant.
