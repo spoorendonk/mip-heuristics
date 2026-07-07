@@ -11,11 +11,15 @@ import time
 
 
 # Default vanilla options when using the PATCHED binary as the vanilla
-# baseline (disables all our custom heuristics + pins effort to upstream
-# default).  Not used when --vanilla-binary points to a separate binary.
+# baseline.  Not used when --vanilla-binary points to a separate binary.
+# preset=off disables all custom heuristics — presolve (FJ/FPR/LocalMIP/
+# Scylla) and, since the preset became preset-aware, the B&B-dive fpr_lp
+# too.  No effort pin needed anymore: the effort-option split reverted
+# mip_heuristic_effort to upstream's 0.05 default (vanilla semantics),
+# and mip_heuristic_presolve_effort is irrelevant with the presolve
+# heuristics off.
 VANILLA_OPTIONS = {
     "mip_heuristic_preset": "off",
-    "mip_heuristic_effort": "0.05",
 }
 
 # Default patched options: all_opp preset — FJ + FPR + LocalMIP with
@@ -157,7 +161,8 @@ def main() -> None:
         nargs="*",
         metavar="KEY=VALUE",
         default=[],
-        help="Extra options appended to all config options, e.g. mip_heuristic_effort=0.10",
+        help="Extra options appended to all config options, "
+        "e.g. mip_heuristic_presolve_effort=0.10",
     )
     args = parser.parse_args()
 

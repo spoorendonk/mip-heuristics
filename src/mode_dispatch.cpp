@@ -91,11 +91,13 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     //      as a one-shot calibration helper, not a CI gate.
     //
     // Recalibrated against `bench/instances_small.txt` (25 MIPLIB
-    // instances, 30 s each, mip_heuristic_effort default=0.30,
-    // seq/det, mip_root_presolve_only=true, multi-thread default
-    // threads=16).  Measured geomean `effort_per_ms` after issue #78
-    // (cold-start construction sweep rolled into local_mip's reported
-    // effort):
+    // instances, 30 s each, presolve budget at the 0.30 default —
+    // then still the overloaded `mip_heuristic_effort`, now
+    // `mip_heuristic_presolve_effort` with the same value and formula,
+    // so the calibration carries over — seq/det,
+    // mip_root_presolve_only=true, multi-thread default threads=16).  Measured geomean
+    // `effort_per_ms` after issue #78 (cold-start construction sweep rolled into local_mip's
+    // reported effort):
     //   fpr=636k  local_mip=1222k  scylla=261k   drift = 4.68× (FJ excluded:
     //   fixed vanilla budget, not weight-apportioned; see fj_budget below)
     // Weights are proportional to geomean `effort_per_ms` (scylla
@@ -106,7 +108,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     //
     // FJ uses a fixed per-worker budget matching vanilla HiGHS's single-thread
     // FJ limit (nnz << 10, hardcoded in HighsFeasibilityJump.cpp; unaffected
-    // by mip_heuristic_effort).  N parallel workers each cover nnz*1024 steps
+    // by either effort option).  N parallel workers each cover nnz*1024 steps
     // so patched FJ is at least as deep as vanilla per thread.  The remaining
     // presolve budget after FJ is split among FPR / LocalMIP / Scylla below.
     constexpr double kWeightFpr = 2.43;
@@ -227,78 +229,63 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
 
 }  // namespace
 
+HeuristicFlags effective_flags(const HighsOptions &options, bool *preset_recognized) {
+    // Individual options first; a recognized non-empty preset overrides
+    // all six flags.  Unknown presets leave the individual-option values
+    // in place (no silent disable-all footgun) — the caller warns.
+    HeuristicFlags flags{options.mip_heuristic_run_feasibility_jump,
+                         options.mip_heuristic_run_fpr,
+                         options.mip_heuristic_run_local_mip,
+                         options.mip_heuristic_run_scylla,
+                         options.mip_heuristic_portfolio,
+                         options.mip_heuristic_opportunistic};
+
+    const auto &preset = options.mip_heuristic_preset;
+    bool recognized = false;
+    if (!preset.empty()) {
+        if (preset == "off") {
+            flags = {false, false, false, false, false, false};
+            recognized = true;
+        } else if (preset == "fpr") {
+            flags = {false, true, false, false, false, false};
+            recognized = true;
+        } else if (preset == "all_det") {
+            flags = {true, true, true, false, false, false};
+            recognized = true;
+        } else if (preset == "all_opp") {
+            flags = {true, true, true, false, false, true};
+            recognized = true;
+        } else if (preset == "scylla") {
+            flags = {false, false, false, true, false, true};
+            recognized = true;
+        } else if (preset == "portfolio") {
+            flags = {true, true, true, true, true, true};
+            recognized = true;
+        }
+    }
+    if (preset_recognized != nullptr) {
+        *preset_recognized = recognized;
+    }
+    return flags;
+}
+
 bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     const auto *options = mipsolver.options_mip_;
 
-    // Derive the effective flag set from individual options first, then
-    // override with the preset if one is set.
-    bool fj_on = options->mip_heuristic_run_feasibility_jump;
-    bool fpr_on = options->mip_heuristic_run_fpr;
-    bool lm_on = options->mip_heuristic_run_local_mip;
-    bool sc_on = options->mip_heuristic_run_scylla;
-    bool portfolio = options->mip_heuristic_portfolio;
-    bool opportunistic = options->mip_heuristic_opportunistic;
-
-    const auto &preset = options->mip_heuristic_preset;
     bool preset_applied = false;
-    if (!preset.empty()) {
-        // A non-empty preset overrides all six flags.  Unknown values log a
-        // warning and leave the individual-option values in place (no silent
-        // disable-all footgun).
-        if (preset == "off") {
-            fj_on = false;
-            fpr_on = false;
-            lm_on = false;
-            sc_on = false;
-            portfolio = false;
-            opportunistic = false;
-            preset_applied = true;
-        } else if (preset == "fpr") {
-            fj_on = false;
-            fpr_on = true;
-            lm_on = false;
-            sc_on = false;
-            portfolio = false;
-            opportunistic = false;
-            preset_applied = true;
-        } else if (preset == "all_det") {
-            fj_on = true;
-            fpr_on = true;
-            lm_on = true;
-            sc_on = false;
-            portfolio = false;
-            opportunistic = false;
-            preset_applied = true;
-        } else if (preset == "all_opp") {
-            fj_on = true;
-            fpr_on = true;
-            lm_on = true;
-            sc_on = false;
-            portfolio = false;
-            opportunistic = true;
-            preset_applied = true;
-        } else if (preset == "scylla") {
-            fj_on = false;
-            fpr_on = false;
-            lm_on = false;
-            sc_on = true;
-            portfolio = false;
-            opportunistic = true;
-            preset_applied = true;
-        } else if (preset == "portfolio") {
-            fj_on = true;
-            fpr_on = true;
-            lm_on = true;
-            sc_on = true;
-            portfolio = true;
-            opportunistic = true;
-            preset_applied = true;
-        } else {
-            highsLogUser(options->log_options, HighsLogType::kWarning,
-                         "Unknown mip_heuristic_preset value \"%s\"; "
-                         "ignoring preset and using individual option flags.\n",
-                         preset.c_str());
-        }
+    const HeuristicFlags flags = effective_flags(*options, &preset_applied);
+    const bool fj_on = flags.fj;
+    const bool fpr_on = flags.fpr;
+    const bool lm_on = flags.local_mip;
+    const bool sc_on = flags.scylla;
+    const bool portfolio = flags.portfolio;
+    const bool opportunistic = flags.opportunistic;
+
+    if (!options->mip_heuristic_preset.empty() && !preset_applied) {
+        highsLogUser(options->log_options, HighsLogType::kWarning,
+                     "Unknown mip_heuristic_preset value \"%s\"; "
+                     "ignoring preset and using individual option flags.\n",
+                     options->mip_heuristic_preset.c_str());
     }
 
     // When a preset was applied, write the derived flags back into the options

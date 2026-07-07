@@ -18,8 +18,13 @@ namespace {
 // use_ipm: barrier solver (analytic center); otherwise simplex (vertex).
 // run_crossover: false disables crossover (for analytic center).
 // use_objective: true uses model cost; false uses zero objective.
+// lp_iterations: incremented by the LP iterations this solve consumed
+// (simplex + IPM + crossover counts summed — a deliberate simple proxy;
+// an IPM iteration costs more than a simplex one, but the counts are
+// small and only feed the shared B&B heuristic-budget accounting).
 std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool use_ipm,
-                                        bool run_crossover, bool use_objective) {
+                                        bool run_crossover, bool use_objective,
+                                        int64_t& lp_iterations) {
     const auto* model = mipsolver.model_;
     const auto& mipdata = *mipsolver.mipdata_;
     const HighsInt ncol = model->num_col_;
@@ -70,6 +75,11 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
     highs.passModel(std::move(lp));
     highs.run();
 
+    const auto& info = highs.getInfo();
+    lp_iterations += static_cast<int64_t>(info.simplex_iteration_count) +
+                     static_cast<int64_t>(info.ipm_iteration_count) +
+                     static_cast<int64_t>(info.crossover_iteration_count);
+
     const auto& sol = highs.getSolution();
     if (static_cast<HighsInt>(sol.col_value.size()) == ncol) {
         return sol.col_value;
@@ -79,12 +89,14 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
 
 }  // namespace
 
-std::vector<double> compute_analytic_center(const HighsMipSolver& mipsolver, bool use_objective) {
+std::vector<double> compute_analytic_center(const HighsMipSolver& mipsolver, bool use_objective,
+                                            int64_t& lp_iterations) {
     return solve_lp_relaxation(mipsolver, /*use_ipm=*/true,
-                               /*run_crossover=*/false, use_objective);
+                               /*run_crossover=*/false, use_objective, lp_iterations);
 }
 
-std::vector<double> compute_zero_obj_vertex(const HighsMipSolver& mipsolver) {
+std::vector<double> compute_zero_obj_vertex(const HighsMipSolver& mipsolver,
+                                            int64_t& lp_iterations) {
     return solve_lp_relaxation(mipsolver, /*use_ipm=*/false,
-                               /*run_crossover=*/true, /*use_objective=*/false);
+                               /*run_crossover=*/true, /*use_objective=*/false, lp_iterations);
 }

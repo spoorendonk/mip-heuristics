@@ -219,16 +219,17 @@ TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
 
 namespace {
 
-// Solve `inst` end-to-end at a small `mip_heuristic_effort` so the FPR
-// per-call slice is well below the cost of a full DFS subtree on these
-// instances — attempts must pause via `kBudgetGate` and resume on
-// subsequent `run_epoch` calls, or fast-fail and trigger the
+// Solve `inst` end-to-end at a small `mip_heuristic_presolve_effort`
+// (the knob feeding the presolve FPR budget since the effort-option
+// split) so the FPR per-call slice is well below the cost of a full DFS
+// subtree on these instances — attempts must pause via `kBudgetGate` and
+// resume on subsequent `run_epoch` calls, or fast-fail and trigger the
 // multi-attempt fill loop.  Without this the [fpr][resume] tests can
 // pass without ever exercising the new pause/resume code path on the
 // small HiGHS check instances (egout / bell5 / flugpl all verdict in
 // one slice at the default effort).  At 0.001 the slice fell below the
 // cost of begin's initial `propagate(-1)` even on flugpl, so the loop
-// never reached `kBudgetGate`; 0.01 = 5x the historical anchor effort
+// never reached `kBudgetGate`; 0.01 = 5x the budget-formula anchor effort
 // (0.05/10) gives a slice large enough that step actually runs.
 // Returns final objective.
 double solve_with_seed_small_effort(const char *inst, int seed) {
@@ -253,7 +254,7 @@ double solve_with_seed_small_effort(const char *inst, int seed) {
     highs.setOptionValue("threads", 1);
     // Small effort → small per-call slice → multi-attempt loop and/or
     // pause-resume engages on the small HiGHS check instances.
-    highs.setOptionValue("mip_heuristic_effort", 0.01);
+    highs.setOptionValue("mip_heuristic_presolve_effort", 0.01);
     REQUIRE(highs.readModel(std::string(kInstancesDir) + "/" + inst) == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;

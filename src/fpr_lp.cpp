@@ -2,12 +2,14 @@
 
 #include "epoch_runner.h"
 #include "fpr_core.h"
+#include "fpr_lp_refs.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "io/HighsIO.h"
 #include "mip/HighsLpRelaxation.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "mode_dispatch.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
 #include "solution_pool.h"
@@ -116,6 +118,11 @@ struct LpFprSetup {
     // pointer stable while mipdata->incumbent may be mutated by HiGHS).
     std::vector<double> incumbent_snapshot;
 
+    // LP iterations spent solving the reference LPs (analytic center +
+    // zero-obj vertex).  Charged against the shared B&B heuristic budget
+    // by run() whether or not the workers subsequently run.
+    int64_t setup_lp_iterations = 0;
+
     size_t budget = 0;
     size_t stale_budget = 0;
     bool minimize = true;
@@ -123,7 +130,9 @@ struct LpFprSetup {
 
 // Build the shared LP-FPR setup.  Returns nullopt when the model is
 // empty or the LP relaxation is not at an optimal scaled state (the
-// caller should skip LP-FPR entirely in that case).
+// caller should skip LP-FPR entirely in that case).  All nullopt exits
+// happen before the reference-LP solves, so a nullopt return never
+// leaves unaccounted LP work behind.
 std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effort) {
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
@@ -154,11 +163,12 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     const double *lp_ptr = lp_sol.data();
 
     // Zero-obj analytic center (for Class 2 zerocore strategies).
-    s.analytic_center = compute_analytic_center(mipsolver, /*use_objective=*/false);
+    s.analytic_center =
+        compute_analytic_center(mipsolver, /*use_objective=*/false, s.setup_lp_iterations);
     const double *ac_ptr = s.analytic_center.empty() ? lp_ptr : s.analytic_center.data();
 
     // Zero-obj LP vertex (for Class 3a zerolp strategies).
-    s.zero_vertex = compute_zero_obj_vertex(mipsolver);
+    s.zero_vertex = compute_zero_obj_vertex(mipsolver, s.setup_lp_iterations);
     const double *zv_ptr = s.zero_vertex.empty() ? lp_ptr : s.zero_vertex.data();
 
     s.arms.reserve(kNumLpArms);
@@ -316,15 +326,14 @@ uint32_t base_seed_for(const HighsMipSolver &mipsolver) {
 // 4 entry points
 // ---------------------------------------------------------------------------
 
-void run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
-                                  SolutionPool &pool) {
+size_t run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
+                                    SolutionPool &pool) {
     // Spawn `num_threads` workers; worker w binds to arm `w % kNumLpArms`.
     // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
     // wrap around the curated config list with distinct seeds for diversity.
-    auto *mipdata = mipsolver.mipdata_.get();
     const int N = compute_worker_count(mipsolver);
     if (N <= 0) {
-        return;
+        return 0;
     }
     g_seq_det_count.fetch_add(1, std::memory_order_relaxed);
 
@@ -342,20 +351,17 @@ void run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &s
     const size_t per_worker = setup.budget / static_cast<size_t>(N);
     const size_t epoch_budget = std::max<size_t>(per_worker / kEpochsPerWorker, 1);
 
-    size_t total_effort = run_epoch_loop(
+    return run_epoch_loop(
         mipsolver, workers, setup.budget, epoch_budget,
         [](int) { /* seq/det: finished workers stay finished; loop exits on all-finished */ },
         setup.stale_budget);
-
-    mipdata->heuristic_effort_used += total_effort;
 }
 
-void run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
-                                  SolutionPool &pool) {
-    auto *mipdata = mipsolver.mipdata_.get();
+size_t run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
+                                    SolutionPool &pool) {
     const int N = compute_worker_count(mipsolver);
     if (N <= 0) {
-        return;
+        return 0;
     }
     g_seq_opp_count.fetch_add(1, std::memory_order_relaxed);
 
@@ -368,7 +374,7 @@ void run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &s
         std::unique_ptr<LpFprWorker> worker;
     };
 
-    size_t total_effort = run_opportunistic_loop(
+    return run_opportunistic_loop(
         mipsolver, N, setup.budget, setup.stale_budget, default_run_cap, base_seed,
         [&](int worker_idx, Rng & /*rng*/) -> LpFprOppState {
             // Initial arm is worker_idx modulo the arm pool.
@@ -391,43 +397,117 @@ void run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &s
             }
             return result;
         });
-
-    mipdata->heuristic_effort_used += total_effort;
 }
 
 }  // namespace
 
-void run(HighsMipSolver &mipsolver, size_t max_effort) {
+void run(HighsMipSolver &mipsolver) {
+    // Preset-aware gating: mip_heuristic_run_fpr as overridden by
+    // mip_heuristic_preset.  In particular preset=off must disable fpr_lp
+    // too, so a preset=off run is comparable to vanilla HiGHS (the raw
+    // option defaults to true and the preset write-back in run_presolve is
+    // restored before B&B starts, so reading the option directly here
+    // would ignore the preset).
+    if (!heuristics::effective_flags(*mipsolver.options_mip_).fpr) {
+        return;
+    }
+
+    auto *mipdata = mipsolver.mipdata_.get();
+    const size_t nnz = mipdata->ARindex_.size();
+    if (nnz == 0) {
+        return;
+    }
+
+    // Shared B&B heuristic budget, in vanilla's currency (LP iterations).
+    // moreHeuristicsAllowed() — which gates the runHeuristics lambda we
+    // are called from — admits heuristics early in the search while
+    //   heuristic_lp_iterations < total_lp_iterations * heuristic_effort + 10000
+    // (the initial-offset branch; the later branches are estimate-based).
+    // Size each call to the remaining headroom of that envelope, converted
+    // at nnz effort-units per LP iteration (a simplex iteration touches
+    // O(nnz) coefficients), and cap it at heuristic_effort_budget(nnz,
+    // mip_heuristic_effort) — exactly nnz<<12 at the vanilla default 0.05
+    // — so one call cannot drain a large late-search envelope in one go.
+    // The charge-back below depletes the same envelope RENS/RINS draw
+    // from; that is the point: fpr_lp competes for the vanilla heuristic
+    // budget instead of consuming unaccounted work (and the budget scales
+    // with the one vanilla knob, mip_heuristic_effort).
+    const double allowed_iters =
+        static_cast<double>(mipdata->total_lp_iterations) * mipdata->heuristic_effort + 10000.0;
+    const double headroom_iters =
+        allowed_iters - static_cast<double>(mipdata->heuristic_lp_iterations);
+    if (headroom_iters <= 0.0) {
+        return;
+    }
+    const double headroom_units = headroom_iters * static_cast<double>(nnz);
+    const double cap_units =
+        static_cast<double>(heuristic_effort_budget(nnz, mipdata->heuristic_effort));
+    const auto max_effort = static_cast<size_t>(std::min(headroom_units, cap_units));
+
+    // Below ~256 LP-iteration equivalents the CSC build / var-order /
+    // worker-spawn overhead dominates any useful DFS work; skip the call
+    // (including the reference-LP solves) and let the envelope regrow.
+    const size_t min_effort = nnz << 8;
+    if (max_effort < min_effort) {
+        return;
+    }
+
     auto setup_opt = build_setup(mipsolver, max_effort);
     if (!setup_opt) {
         return;
     }
     auto &setup = *setup_opt;
 
-    SolutionPool pool(kPoolCapacity, setup.minimize);
-    seed_pool(pool, mipsolver);
+    // The reference-LP solves are part of fpr_lp's spend: subtract them
+    // from the worker budget so setup + workers together stay within
+    // max_effort.  If setup ate (nearly) everything, skip the workers but
+    // still charge the setup below.
+    const auto setup_units = static_cast<size_t>(setup.setup_lp_iterations) * nnz;
+    const size_t worker_budget = setup_units < setup.budget ? setup.budget - setup_units : 0;
 
-    // Submit solutions immediately on acceptance so incumbent timestamps
-    // reflect find time rather than the end-of-run flush time.
-    auto *mipdata = mipsolver.mipdata_.get();
-    std::mutex highs_mtx;
-    pool.set_on_accept([&](const std::vector<double> &sol, int src) {
-        std::lock_guard<std::mutex> guard(highs_mtx);
-        mipdata->trySolution(sol, src);
-    });
+    size_t worker_effort = 0;
+    if (worker_budget >= min_effort) {
+        setup.budget = worker_budget;
+        setup.stale_budget = worker_budget >> 2;
 
-    // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
-    // it always runs arm-aligned parallel workers — num_threads workers
-    // bound to the top-N arms from kClass2/3a/3b, sharing the solution
-    // pool.  The mip_heuristic_portfolio flag (a meta-portfolio over
-    // different heuristic families) does not apply here; only
-    // mip_heuristic_opportunistic picks between epoch-gated and continuous
-    // parallelism.
-    if (mipsolver.options_mip_->mip_heuristic_opportunistic) {
-        run_sequential_opportunistic(mipsolver, setup, pool);
-    } else {
-        run_sequential_deterministic(mipsolver, setup, pool);
+        SolutionPool pool(kPoolCapacity, setup.minimize);
+        seed_pool(pool, mipsolver);
+
+        // Submit solutions immediately on acceptance so incumbent timestamps
+        // reflect find time rather than the end-of-run flush time.
+        std::mutex highs_mtx;
+        pool.set_on_accept([&](const std::vector<double> &sol, int src) {
+            std::lock_guard<std::mutex> guard(highs_mtx);
+            mipdata->trySolution(sol, src);
+        });
+
+        // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
+        // it always runs arm-aligned parallel workers — num_threads workers
+        // bound to the top-N arms from kClass2/3a/3b, sharing the solution
+        // pool.  The mip_heuristic_portfolio flag (a meta-portfolio over
+        // different heuristic families) does not apply here; only
+        // mip_heuristic_opportunistic picks between epoch-gated and continuous
+        // parallelism.
+        if (mipsolver.options_mip_->mip_heuristic_opportunistic) {
+            worker_effort = run_sequential_opportunistic(mipsolver, setup, pool);
+        } else {
+            worker_effort = run_sequential_deterministic(mipsolver, setup, pool);
+        }
     }
+
+    // Charge all consumed work back to the shared envelope: reference-LP
+    // iterations directly, worker effort converted at nnz units per LP
+    // iteration.  Booked to both heuristic_ and total_lp_iterations,
+    // mirroring how RENS/RINS flush their sub-MIP LP iterations
+    // (HighsPrimalHeuristics::flushStatistics).
+    const int64_t charged =
+        setup.setup_lp_iterations + static_cast<int64_t>(worker_effort / static_cast<size_t>(nnz));
+    mipdata->heuristic_lp_iterations += charged;
+    mipdata->total_lp_iterations += charged;
+
+    // Observability counter (effort units), same booking the runners used
+    // to do themselves before the budget integration.
+    mipdata->heuristic_effort_used += worker_effort;
 }
 
 DispatchCounts dispatch_counts() {

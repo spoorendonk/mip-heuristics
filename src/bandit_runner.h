@@ -83,8 +83,9 @@ inline int compute_reward(SolutionPool::Snapshot before, SolutionPool::Snapshot 
 // Each pull gets at most kBudgetCapMultiplier * avg_effort for that arm.
 // First pull (no history) uses total_budget / (num_arms * 10).  This
 // proportional formula already scales with nnz because total_budget
-// itself is `nnz << 12 * (effort / 0.05)` (see `heuristic_effort_budget`
-// in heuristic_common.h), so a cold-start arm on a large instance
+// itself is `nnz << 12 * (presolve_effort / 0.05)` (see
+// `heuristic_effort_budget` in heuristic_common.h, fed from
+// `mip_heuristic_presolve_effort`), so a cold-start arm on a large instance
 // gets proportionally more budget than on a small instance without an
 // absolute ceiling.  The primary T1st-regression source — Phase 1-2 DFS
 // in fpr_core.cpp ignoring `max_effort` — was fixed by the

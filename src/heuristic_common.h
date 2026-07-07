@@ -129,18 +129,21 @@ inline uint32_t heuristic_base_seed(HighsInt random_seed) {
     return static_cast<uint32_t>(random_seed) + kBaseSeedOffset;
 }
 
-// Effort budget for presolve heuristics, scaled by mip_heuristic_effort.
-// `nnz << 12` is the reference base budget at the historical anchor effort
-// 0.05; the formula scales linearly in `mip_heuristic_effort`.  The patched
-// HiGHS default is 0.30 (raised from upstream's 0.05 by
-// third_party/highs_patch/apply_patch.cmake), i.e. 6x the reference base
-// budget at default.
-inline size_t heuristic_effort_budget(size_t nnz, double mip_heuristic_effort) {
-    if (mip_heuristic_effort <= 0.0) {
+// Effort budget scaled by an effort fraction.  `nnz << 12` is the
+// reference base budget at the anchor effort 0.05 (upstream's
+// mip_heuristic_effort default); the formula scales linearly in `effort`.
+// Two call sites, two knobs:
+//  - presolve dispatch (Patch A2 in apply_patch.cmake) passes
+//    `mip_heuristic_presolve_effort` (default 0.30 → 6x the base budget);
+//  - fpr_lp::run passes `mip_heuristic_effort` (vanilla default 0.05 →
+//    exactly the base budget) as its per-call cap on the shared RENS/RINS
+//    LP-iteration headroom.
+inline size_t heuristic_effort_budget(size_t nnz, double effort) {
+    if (effort <= 0.0) {
         return 0;
     }
     constexpr int kBaseShift = 12;
     constexpr double kEffortAnchor = 0.05;
-    double scale = mip_heuristic_effort / kEffortAnchor;
+    double scale = effort / kEffortAnchor;
     return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);
 }

@@ -80,6 +80,38 @@ TEST_CASE("fpr_lp: portfolio flag does not affect seq/opp dispatch",
     REQUIRE(counts.seq_det == 0);
 }
 
+// Regression tests for preset-aware gating: fpr_lp derives its enable
+// flag via heuristics::effective_flags, so mip_heuristic_preset must
+// reach it even though the raw mip_heuristic_run_fpr option (default
+// true, restored by run_presolve's write-back before B&B starts) says
+// otherwise.  Pre-split, preset=off left fpr_lp running during the
+// B&B dive — the "vanilla" benchmark config wasn't vanilla.
+
+TEST_CASE("fpr_lp: preset=off disables fpr_lp dispatch", "[fpr_lp][mode-matrix][preset]") {
+    fpr_lp::reset_dispatch_counts();
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    h.setOptionValue("mip_heuristic_preset", "off");
+    // Raw flag deliberately left at its default (true): the preset must win.
+    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+    const auto counts = fpr_lp::dispatch_counts();
+    REQUIRE(counts.seq_det == 0);
+    REQUIRE(counts.seq_opp == 0);
+}
+
+TEST_CASE("fpr_lp: preset=scylla disables fpr_lp dispatch", "[fpr_lp][mode-matrix][preset]") {
+    fpr_lp::reset_dispatch_counts();
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    h.setOptionValue("mip_heuristic_preset", "scylla");
+    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+    const auto counts = fpr_lp::dispatch_counts();
+    REQUIRE(counts.seq_det == 0);
+    REQUIRE(counts.seq_opp == 0);
+}
+
 // run_sequential_deterministic spawns `num_threads` workers with
 // arm = w % kNumLpArms (10).  On a machine with threads > 10 the extra
 // workers wrap around the arm list.  This test pins threads = 12 so

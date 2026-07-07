@@ -145,35 +145,89 @@ else()
     message(STATUS "mip_heuristic_preset option already applied to HighsOptions.h, skipping")
 endif()
 
-# ── Raise mip_heuristic_effort default 0.05 → 0.30 ──
-# Our portfolio heuristics are starved at 0.05; a 10-instance sweep showed
-# monotone SGM-gap improvement up to 0.30 (see bench/REPORT_effort_sweep.md).
-# Idempotent: the search pattern disappears once we've rewritten it.  A
-# FATAL_ERROR fires if upstream ever reformats the OptionRecordDouble line
-# and neither the pristine nor the patched substring matches — we'd silently
-# ship the wrong default otherwise.
+# ── Keep mip_heuristic_effort at the vanilla default 0.05 ──
+# Historical: the patch used to raise the default to 0.30 because the
+# presolve heuristics were starved at 0.05.  That overloaded one option
+# with two meanings (B&B LP-iteration fraction for RENS/RINS vs nnz-based
+# presolve budget).  The presolve budget now has its own knob,
+# mip_heuristic_presolve_effort (default 0.30, added below), and
+# mip_heuristic_effort keeps upstream's exact semantics and default so a
+# patched binary at default options matches vanilla's B&B heuristic
+# budget.  The rewrite below downgrades in-place source trees that still
+# carry the old raised default; a FATAL_ERROR fires if upstream ever
+# reformats the OptionRecordDouble line and neither substring matches —
+# we'd silently ship the wrong default otherwise.
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 string(FIND "${OPTIONS_CONTENT}" "&mip_heuristic_effort, 0.0, 0.05, 1.0" _effort_default_found)
 string(FIND "${OPTIONS_CONTENT}" "&mip_heuristic_effort, 0.0, 0.30, 1.0" _effort_patched_found)
-if(NOT _effort_default_found EQUAL -1)
+if(NOT _effort_patched_found EQUAL -1)
     string(REPLACE
-      "&mip_heuristic_effort, 0.0, 0.05, 1.0"
       "&mip_heuristic_effort, 0.0, 0.30, 1.0"
+      "&mip_heuristic_effort, 0.0, 0.05, 1.0"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Raised mip_heuristic_effort default to 0.30")
-elseif(NOT _effort_patched_found EQUAL -1)
-    message(STATUS "mip_heuristic_effort default already raised, skipping")
+    message(STATUS "Reverted mip_heuristic_effort default to vanilla 0.05")
+elseif(NOT _effort_default_found EQUAL -1)
+    message(STATUS "mip_heuristic_effort default already at vanilla 0.05, skipping")
 else()
     message(FATAL_ERROR
         "HighsOptions.h post-patch sanity check failed: neither the pristine "
-        "'&mip_heuristic_effort, 0.0, 0.05, 1.0' nor the patched "
+        "'&mip_heuristic_effort, 0.0, 0.05, 1.0' nor the legacy-patched "
         "'&mip_heuristic_effort, 0.0, 0.30, 1.0' substring was found. "
         "Upstream HiGHS likely reformatted the option-record block so the "
         "exact-string REPLACE pattern no longer matches. "
         "Please clean the HiGHS source tree and rebuild: "
         "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
         "cmake -B build && cmake --build build")
+endif()
+
+# ── Add mip_heuristic_presolve_effort double option ──
+# Effort budget multiplier for the custom presolve heuristics (FPR,
+# LocalMIP, Scylla).  Split off from mip_heuristic_effort so the latter
+# keeps vanilla B&B semantics; see the block above.  Default 0.30 keeps
+# the presolve budget identical to the previous overloaded default.
+file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_presolve_effort" _presolve_effort_found)
+if(_presolve_effort_found EQUAL -1)
+    # Member variable: insert after mip_heuristic_preset;
+    string(REPLACE
+      "  std::string mip_heuristic_preset;\n"
+      "  std::string mip_heuristic_preset;\n  double mip_heuristic_presolve_effort;\n"
+      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+
+    # Constructor initializer: insert after mip_heuristic_preset(""),
+    string(REPLACE
+      "        mip_heuristic_preset(\"\"),\n"
+      "        mip_heuristic_preset(\"\"),\n        mip_heuristic_presolve_effort(0.0),\n"
+      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+
+    # Record registration: insert after the mip_heuristic_preset record block
+    string(REPLACE
+      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", \\\"scylla\\\", or \\\"portfolio\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
+      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", \\\"scylla\\\", or \\\"portfolio\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);\n\n    record_double = new OptionRecordDouble(\n        \"mip_heuristic_presolve_effort\",\n        \"Effort budget multiplier for custom presolve heuristics\", advanced,\n        &mip_heuristic_presolve_effort, 0.0, 0.30, 1.0);\n    records.push_back(record_double);"
+      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+
+    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
+    message(STATUS "Applied mip_heuristic_presolve_effort option to HighsOptions.h")
+
+    # Sanity checks: all three insertions must land.
+    string(REGEX MATCHALL "double mip_heuristic_presolve_effort" _pe_member_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _pe_member_hits _pe_member_count)
+    string(REGEX MATCHALL "mip_heuristic_presolve_effort\\(0\\.0\\)" _pe_ctor_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _pe_ctor_hits _pe_ctor_count)
+    string(FIND "${OPTIONS_CONTENT}" "\"mip_heuristic_presolve_effort\"" _pe_record_idx)
+    if(NOT _pe_member_count EQUAL 1 OR NOT _pe_ctor_count EQUAL 1 OR _pe_record_idx EQUAL -1)
+        message(FATAL_ERROR
+            "HighsOptions.h post-patch sanity check failed for "
+            "mip_heuristic_presolve_effort (member=${_pe_member_count}, "
+            "ctor=${_pe_ctor_count}, record_idx=${_pe_record_idx}). "
+            "An anchor REPLACE pattern no longer matches. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+else()
+    message(STATUS "mip_heuristic_presolve_effort option already applied, skipping")
 endif()
 
 # ── Patch HighsMipSolverData.h: add capture overload + custom solution source enums ──
@@ -516,6 +570,23 @@ if(NOT _stale_rens_guard EQUAL -1)
         "cmake -B build && cmake --build build")
 endif()
 
+# Defensive check: the presolve budget used to be derived from
+# mip_heuristic_effort before the option split introduced
+# mip_heuristic_presolve_effort.  The idempotency sentinel below
+# ('heuristics::run_presolve') is present in both layouts, so an in-place
+# upgrade would silently keep the old call site and starve the presolve
+# heuristics at the reverted 0.05 default.  Force a clean rebuild.
+string(FIND "${CONTENT}" "heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort)" _stale_presolve_budget)
+if(NOT _stale_presolve_budget EQUAL -1)
+    message(FATAL_ERROR
+        "HighsMipSolver.cpp derives the presolve heuristic budget from "
+        "'mip_heuristic_effort'; this was split into "
+        "'mip_heuristic_presolve_effort'.  Clean the HiGHS source tree and "
+        "rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
+
 string(FIND "${CONTENT}" "heuristics::run_presolve" _found)
 if(_found EQUAL -1)
     # Add includes at top (after existing includes)
@@ -533,7 +604,7 @@ if(_found EQUAL -1)
     # Patch A2: insert custom heuristics block via mode_dispatch
     string(REPLACE
       "    }\n    // End of pre-root-node heuristics"
-      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort);\n      if (heuristics::run_presolve(*this, budget)) {\n        modelstatus_ = HighsModelStatus::kInfeasible;\n        cleanupSolve();\n        return;\n      }\n    }\n\n    // End of pre-root-node heuristics"
+      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_presolve_effort);\n      if (heuristics::run_presolve(*this, budget)) {\n        modelstatus_ = HighsModelStatus::kInfeasible;\n        cleanupSolve();\n        return;\n      }\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
@@ -546,12 +617,32 @@ endif()
 # Separate idempotency block so it can be applied independently of A/A2.
 # HiGHS 1.15 moved the RENS/RINS block into a runHeuristics() lambda; the
 # anchor is the profiling stop + infeasible() return that ends the lambda.
+# The call is deliberately bare: all gating (mip_heuristic_run_fpr,
+# preset) and budget derivation (shared RENS/RINS LP-iteration headroom)
+# live inside fpr_lp::run so the patch string stays minimal.
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
+
+# Defensive check: the pre-split insertion passed an nnz-based budget and
+# gated on mip_heuristic_run_fpr at the call site.  The sentinel below
+# ('fpr_lp::run') is present in both layouts; the old two-argument call no
+# longer matches the fpr_lp::run signature, so force a clean rebuild with
+# an actionable message instead of a confusing compile error.
+string(FIND "${CONTENT}" "fpr_lp::run(*this, heuristic_effort_budget" _stale_fprlp_call)
+if(NOT _stale_fprlp_call EQUAL -1)
+    message(FATAL_ERROR
+        "HighsMipSolver.cpp contains the pre-split two-argument fpr_lp::run "
+        "call site.  fpr_lp now derives its budget from the shared RENS/RINS "
+        "LP-iteration headroom internally.  Clean the HiGHS source tree and "
+        "rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
+
 string(FIND "${CONTENT}" "fpr_lp::run" _fprlp_found)
 if(_fprlp_found EQUAL -1)
     string(REPLACE
       "    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
-      "    if (options_mip_->mip_heuristic_run_fpr) {\n      const size_t fpr_lp_nnz = mipdata_->ARindex_.size();\n      fpr_lp::run(*this, heuristic_effort_budget(fpr_lp_nnz, options_mip_->mip_heuristic_effort));\n    }\n    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
+      "    fpr_lp::run(*this);\n    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
       CONTENT "${CONTENT}")
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
