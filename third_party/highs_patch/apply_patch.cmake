@@ -6,9 +6,42 @@
 if(EXISTS "${SOURCE_DIR}/highs/mip")
     set(MIP_DIR "${SOURCE_DIR}/highs/mip")
     set(LP_DATA_DIR "${SOURCE_DIR}/highs/lp_data")
+    set(IO_DIR "${SOURCE_DIR}/highs/io")
 else()
     set(MIP_DIR "${SOURCE_DIR}/src/mip")
     set(LP_DATA_DIR "${SOURCE_DIR}/src/lp_data")
+    set(IO_DIR "${SOURCE_DIR}/src/io")
+endif()
+
+# ── Patch HighsIO.cpp: self-identify patched binaries in the log header ──
+# A patched build prints the same "Running HiGHS <version> (git hash: ...)"
+# banner as an unpatched build of the same tag, so logs from the two are
+# otherwise indistinguishable when no custom option is set — a mislabeled
+# benchmark results directory would be undetectable.  Emit one marker line
+# right after the banner, unconditionally (highsLogHeader is the single
+# banner site used by both the CLI and the library API).  Keep the leading
+# token "mip-heuristics patch" stable: bench scripts and humans grep for it.
+file(READ "${IO_DIR}/HighsIO.cpp" IO_CONTENT)
+string(FIND "${IO_CONTENT}" "mip-heuristics patch" _marker_found)
+if(_marker_found EQUAL -1)
+    string(REPLACE
+      "  highsLogUser(log_options, HighsLogType::kInfo, \"%s\\n\",\n               HighsExternalApi::thirdPartyNoticeHeader().c_str());"
+      "  highsLogUser(log_options, HighsLogType::kInfo, \"%s\\n\",\n               HighsExternalApi::thirdPartyNoticeHeader().c_str());\n\n  highsLogUser(log_options, HighsLogType::kInfo,\n               \"mip-heuristics patch active (custom MIP presolve heuristics; \"\n               \"spoorendonk/mip-heuristics)\\n\");"
+      IO_CONTENT "${IO_CONTENT}")
+
+    string(FIND "${IO_CONTENT}" "mip-heuristics patch" _marker_check)
+    if(_marker_check EQUAL -1)
+        message(FATAL_ERROR
+            "HighsIO.cpp patch failed: the thirdPartyNoticeHeader anchor in "
+            "highsLogHeader no longer matches (upstream reformat?). "
+            "Update the marker patch in third_party/highs_patch/apply_patch.cmake. "
+            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+    endif()
+
+    file(WRITE "${IO_DIR}/HighsIO.cpp" "${IO_CONTENT}")
+    message(STATUS "Applied patched-binary log marker to HighsIO.cpp")
+else()
+    message(STATUS "Log marker already applied to HighsIO.cpp, skipping")
 endif()
 
 # ── Patch HighsOptions.h: register custom heuristic options ──
