@@ -93,17 +93,25 @@ def build_best_known(
 
 
 def load_results(
-    results_dir: str, configs: list[str]
+    results_dir: str,
+    configs: list[str],
+    config_dirs: dict[str, str] | None = None,
 ) -> dict[str, dict[int, dict[str, SolveResult]]]:
     """Load all parsed results.
 
     Returns {config: {seed: {instance: SolveResult}}}.
     Supports both seed-aware (results/{config}/seed{N}/*.log) and
     legacy flat (results/{config}/*.log, treated as seed 0) layouts.
+
+    `config_dirs` optionally maps a config name to an explicit directory,
+    overriding the default `results_dir/<config>`.  This lets the ablation
+    analysis pull the all_opp / vanilla anchors from `bench/results/plato`
+    while the ablation configs resolve under `bench/results/ablation`.
     """
+    config_dirs = config_dirs or {}
     results: dict[str, dict[int, dict[str, SolveResult]]] = {}
     for config in configs:
-        config_dir = os.path.join(results_dir, config)
+        config_dir = config_dirs.get(config, os.path.join(results_dir, config))
         if not os.path.isdir(config_dir):
             print(f"Warning: config directory not found: {config_dir}", file=sys.stderr)
             continue
@@ -287,6 +295,87 @@ def count_wins(
         if len(winners) == 1:
             wins[winners[0]] += 1
     return wins
+
+
+# Incumbent source-char → heuristic label.  In the PATCHED build the custom
+# heuristics emit these display chars (see the "Src:" legend printed in every
+# patched log): A=FPR, D=FPR_LP, M=LocalMIP, G=Scylla, J=FJ.  HiGHS's built-in
+# Feasibility-Jump dispatch is patched off, so a 'J' in a patched log is OUR FJ.
+# Every other char is a HiGHS built-in source (branching, rounding, sub-MIP, the
+# trivial rounders, the presolve 'P' seed, …) and is bucketed as "HiGHS/other".
+CUSTOM_SOURCE_LABELS: dict[str, str] = {
+    "A": "FPR",
+    "D": "FPR_LP",
+    "M": "LocalMIP",
+    "G": "Scylla",
+    "J": "FJ",
+}
+
+# Order used when printing attribution rows (custom heuristics first, then the
+# built-in bucket).
+ATTRIBUTION_ORDER: list[str] = ["FPR", "FPR_LP", "LocalMIP", "Scylla", "FJ", "HiGHS/other"]
+
+
+def source_label(src: str) -> str:
+    """Map an incumbent source char to a heuristic label (see CUSTOM_SOURCE_LABELS)."""
+    return CUSTOM_SOURCE_LABELS.get(src, "HiGHS/other")
+
+
+def heuristic_attribution(
+    agg_results: dict[str, dict[str, SolveResult]],
+    config: str,
+    instances: list[str],
+) -> dict[str, object]:
+    """Attribute, for one config, which heuristic found the first feasible
+    incumbent and which produced the best (final) incumbent, per instance.
+
+    Returns {"first": {label: count}, "best": {label: count}, "n_feasible": int},
+    where labels come from `source_label`.  Only instances with at least one
+    recorded incumbent are counted, so the per-dict totals equal n_feasible.
+    """
+    first: dict[str, int] = {}
+    best: dict[str, int] = {}
+    n_feasible = 0
+    for inst in instances:
+        r = agg_results.get(config, {}).get(inst)
+        if not r or not r.incumbents:
+            continue
+        n_feasible += 1
+        f = source_label(r.incumbents[0].source)
+        b = source_label(r.incumbents[-1].source)
+        first[f] = first.get(f, 0) + 1
+        best[b] = best.get(b, 0) + 1
+    return {"first": first, "best": best, "n_feasible": n_feasible}
+
+
+def print_attribution(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+) -> None:
+    """Print, per config, the first-feasible and best-held heuristic breakdown.
+
+    Reads only the already-parsed incumbent sources — no solves.  Most
+    meaningful for the multi-heuristic configs (e.g. all_opp); single-heuristic
+    or vanilla configs simply attribute everything to one source.
+    """
+    instances = get_common_instances(results, configs)
+    print(f"\n## Heuristic attribution ({len(instances)} instances)\n")
+    print("Columns: #First = found the first feasible incumbent; "
+          "#Best = held the best incumbent at termination.\n")
+
+    for c in configs:
+        attr = heuristic_attribution(agg_results, c, instances)
+        first = attr["first"]  # type: ignore[assignment]
+        best = attr["best"]    # type: ignore[assignment]
+        n_feas = attr["n_feasible"]
+        print(f"### {c}  ({n_feas} feasible)")
+        print(f"{'Heuristic':<14} {'#First':>8} {'#Best':>8}")
+        print("-" * 32)
+        labels = [lbl for lbl in ATTRIBUTION_ORDER if first.get(lbl) or best.get(lbl)]  # type: ignore[union-attr]
+        for lbl in labels:
+            print(f"{lbl:<14} {first.get(lbl, 0):>8} {best.get(lbl, 0):>8}")  # type: ignore[union-attr]
+        print()
 
 
 def print_comparison_table(
@@ -797,11 +886,124 @@ def print_plato_summary(
         print(f"Feasible delta {c1}-{c2}: {feas1 - feas2:+d}  ({c1}={feas1}, {c2}={feas2})")
 
 
+def _config_metrics(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    agg_results: dict[str, dict[str, SolveResult]],
+    config: str,
+    instances: list[str],
+    time_limit: float,
+    best_known: dict[str, float | None] | None,
+) -> dict[str, float]:
+    """Compute the one-row-per-config ablation metrics for a single config.
+
+    Returns #Feasible (any seed) plus shifted-geometric-mean of T1st (shift=1),
+    primal gap @time_limit (shift=0.001), primal integral (shift=1), and the
+    PLATO headline (primal integral, shift=0.001).  All reuse the same helpers
+    as the headline tables so an ablation row at a horizon T is directly
+    comparable to the anchors analyzed at the same T.
+    """
+    feas = count_feasible(results, config, instances)["any"]
+    t1st: list[float] = []
+    gaps: list[float] = []
+    pis: list[float] = []
+    for inst in instances:
+        r = agg_results.get(config, {}).get(inst)
+        if not r:
+            continue
+        if r.time_to_first_feasible is not None:
+            t1st.append(min(r.time_to_first_feasible, time_limit))
+        ref = best_known.get(inst) if best_known else None
+        g = r.primal_gap_at(time_limit, ref)
+        gaps.append(g if g is not None else 1.0)
+        pis.append(r.primal_integral(time_limit, ref))
+    return {
+        "feasible": float(feas),
+        "sgm_t1st": shifted_geomean(t1st, 1.0),
+        "sgm_gap": shifted_geomean(gaps, 0.001),
+        "sgm_pi": shifted_geomean(pis, 1.0),
+        "plato_sgm": shifted_geomean(pis, 0.001),
+    }
+
+
+def print_ablation_summary(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    time_limit: float,
+    best_known: dict[str, float | None] | None,
+    latex_path: str | None = None,
+) -> None:
+    """Print a one-row-per-config ablation table (and optionally write LaTeX).
+
+    Unlike `print_comparison_table` (pairwise), this lists every config on its
+    own row, the shape needed for the per-component ablation in the paper.
+    """
+    instances = get_common_instances(results, configs)
+    metrics = {c: _config_metrics(results, agg_results, c, instances, time_limit, best_known)
+               for c in configs}
+
+    print(f"\n## Ablation summary ({len(instances)} instances, {time_limit:.0f}s horizon)\n")
+    header = (f"{'Config':<22} {'#Feas':>6} {'SGM T1st':>10} "
+              f"{'SGM Gap':>10} {'SGM PI':>10} {'PLATO SGM':>11}")
+    print(header)
+    print("-" * len(header))
+    for c in configs:
+        m = metrics[c]
+        print(f"{c:<22} {int(m['feasible']):>6} {m['sgm_t1st']:>10.4f} "
+              f"{m['sgm_gap']:>10.6f} {m['sgm_pi']:>10.4f} {m['plato_sgm']:>11.4f}")
+
+    if latex_path:
+        with open(latex_path, "w") as f:
+            f.write(latex_ablation_table(configs, metrics, len(instances), time_limit))
+        print(f"\nLaTeX ablation table written to {latex_path}")
+
+
+def latex_ablation_table(
+    configs: list[str],
+    metrics: dict[str, dict[str, float]],
+    n_instances: int,
+    time_limit: float,
+) -> str:
+    """Render the ablation metrics as a booktabs LaTeX table (string).
+
+    Config labels are emitted with underscores escaped for LaTeX.  Kept here
+    (rather than in the paper repo) so the table regenerates directly from the
+    committed logs, matching the cptp-paper convention.
+    """
+    def esc(s: str) -> str:
+        return s.replace("_", r"\_")
+
+    lines = [
+        r"\begin{table}[htbp]",
+        r"\centering",
+        rf"\caption{{Per-component ablation on {n_instances} PLATO instances "
+        rf"at a {time_limit:.0f}\,s horizon (single seed). SGM = shifted "
+        r"geometric mean; PI = primal integral; PLATO SGM is the headline "
+        r"primal-integral SGM (shift $0.001$). Lower is better except \#Feas.}",
+        r"\label{tbl:ablation}",
+        r"\begin{tabular}{lrrrrr}",
+        r"\toprule",
+        r"Config & \#Feas & SGM T1st & SGM Gap & SGM PI & PLATO SGM \\",
+        r"\midrule",
+    ]
+    for c in configs:
+        m = metrics[c]
+        lines.append(
+            f"{esc(c)} & {int(m['feasible'])} & {m['sgm_t1st']:.4f} & "
+            f"{m['sgm_gap']:.6f} & {m['sgm_pi']:.4f} & {m['plato_sgm']:.4f} \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze HiGHS benchmark results")
     parser.add_argument("results_dir", help="Directory with config subdirectories of log files")
     parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
-                        help="Configs to compare (default: patched vanilla)")
+                        help="Configs to compare (default: patched vanilla). An entry of the "
+                             "form NAME=DIR loads that config from an explicit directory instead "
+                             "of results_dir/NAME (used to pull ablation anchors from "
+                             "bench/results/plato).")
     parser.add_argument("--plot", default=None, help="Path to save survival plot (e.g., bench/survival.png)")
     parser.add_argument("--gap-threshold", type=float, default=0.01,
                         help="Gap threshold for survival plot (default: 0.01 = 1%%)")
@@ -825,14 +1027,47 @@ def main() -> None:
             "skip the per-instance comparison table. Implies --baseline."
         ),
     )
+    parser.add_argument(
+        "--ablation", action="store_true",
+        help=(
+            "Print a one-row-per-config ablation table (every config on its own "
+            "row) instead of the pairwise comparison/paper-metrics tables. Use "
+            "for the per-component ablation across many configs."
+        ),
+    )
+    parser.add_argument(
+        "--attribution", action="store_true",
+        help=(
+            "Print the per-config heuristic attribution: which heuristic found "
+            "the first feasible incumbent and which held the best at termination "
+            "(from the recorded incumbent source chars; no solves)."
+        ),
+    )
+    parser.add_argument(
+        "--latex", default=None, metavar="PATH",
+        help="With --ablation, also write the ablation table as LaTeX to PATH.",
+    )
     args = parser.parse_args()
 
-    results = load_results(args.results_dir, args.configs)
+    # Parse NAME=DIR config overrides so ablation anchors can be loaded from a
+    # different results directory than the positional results_dir.
+    config_dirs: dict[str, str] = {}
+    config_names: list[str] = []
+    for entry in args.configs:
+        if "=" in entry:
+            name, path = entry.split("=", 1)
+            name, path = name.strip(), path.strip()
+            config_dirs[name] = path
+            config_names.append(name)
+        else:
+            config_names.append(entry)
+
+    results = load_results(args.results_dir, config_names, config_dirs)
     if not results:
         print("No results found", file=sys.stderr)
         sys.exit(1)
 
-    active_configs = [c for c in args.configs if c in results]
+    active_configs = [c for c in config_names if c in results]
     agg_results = aggregate_results(results, active_configs)
 
     solu_refs: dict[str, tuple[str, float | None]] = {}
@@ -842,11 +1077,24 @@ def main() -> None:
     common = get_common_instances(results, active_configs)
     best_known = build_best_known(results, active_configs, common, solu_refs)
 
+    if args.ablation:
+        # Per-component ablation: one row per config, plus optional attribution.
+        print_ablation_summary(results, agg_results, active_configs, args.time_limit,
+                               best_known, latex_path=args.latex)
+        if args.attribution:
+            print_attribution(results, agg_results, active_configs)
+        if args.plot:
+            generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)
+        return
+
     if not args.summary:
         print_comparison_table(agg_results, active_configs, best_known=best_known, time_limit=args.time_limit)
     print_paper_metrics(results, agg_results, active_configs, args.time_limit,
                         best_known=best_known)
     print_effort_calibration(results, active_configs)
+
+    if args.attribution:
+        print_attribution(results, agg_results, active_configs)
 
     if args.baseline or args.summary:
         print_plato_summary(results, agg_results, active_configs, args.time_limit, best_known)
