@@ -3,9 +3,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
-#include <mutex>
 #include <string>
-#include <vector>
 
 // ===================================================================
 // 2x2 mode-matrix correctness tests
@@ -199,52 +197,20 @@ namespace {
 
 // Helper used by the shared-pool tests.  Runs a Highs solve with the
 // given (portfolio × opportunistic) cell and only FJ enabled, captures
-// MIP display log lines via the kCallbackLogging callback, and returns
-// whether a `J` source-code line was emitted.  `J` appearing for lseu
+// the MIP display lines, and returns whether a `J` source code was
+// emitted among them.  `J` appearing for lseu
 // proves that FJ's pool entry round-tripped through the shared flush in
 // mode_dispatch::run_sequential with kSolutionSourceFJ preserved.
 bool lseu_seq_emits_fj_tag(bool opportunistic) {
-    struct LogCapture {
-        std::mutex mtx;
-        std::vector<std::string> lines;
-    };
-    LogCapture capture;
-
-    Highs h;
-    h.setOptionValue("output_flag", true);
-    h.setOptionValue("log_to_console", false);
-    h.setOptionValue("mip_heuristic_portfolio", false);
-    h.setOptionValue("mip_heuristic_opportunistic", opportunistic);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", false);
-    h.setOptionValue("mip_heuristic_run_scylla", false);
-
-    auto log_cb = [](int callback_type, const std::string& message,
-                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
-                     void* user_data) {
-        if (callback_type != kCallbackLogging) {
-            return;
-        }
-        auto* cap = static_cast<LogCapture*>(user_data);
-        std::lock_guard<std::mutex> lock(cap->mtx);
-        cap->lines.emplace_back(message);
-    };
-
-    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
-    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
-    REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/lseu.mps") == HighsStatus::kOk);
-    REQUIRE(h.run() == HighsStatus::kOk);
-
-    std::lock_guard<std::mutex> lock(capture.mtx);
-    for (const auto& line : capture.lines) {
-        // MIP display line format: " <CODE> <nodes> ..." with the single
-        // source letter at offset 1 followed by a space.
-        if (line.size() >= 3 && line[0] == ' ' && line[2] == ' ' && line[1] == 'J') {
-            return true;
-        }
-    }
-    return false;
+    const std::string codes = solve_capturing_source_codes("lseu.mps", [&](Highs& h) {
+        h.setOptionValue("mip_heuristic_portfolio", false);
+        h.setOptionValue("mip_heuristic_opportunistic", opportunistic);
+        h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+        h.setOptionValue("mip_heuristic_run_fpr", false);
+        h.setOptionValue("mip_heuristic_run_local_mip", false);
+        h.setOptionValue("mip_heuristic_run_scylla", false);
+    });
+    return codes.find('J') != std::string::npos;
 }
 }  // namespace
 

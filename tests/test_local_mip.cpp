@@ -227,49 +227,18 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
     // assert directly on the `[Sequential] heur=local_mip effort=…`
     // line with non-zero effort.  That's the real signal that #75's
     // cold-start construction kicked in.
-    struct LogCapture {
-        std::mutex mtx;
-        std::vector<std::string> lines;
-    };
-    LogCapture capture;
+    const std::vector<std::string> lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
+        h.setOptionValue("log_dev_level", 3);
+        h.setOptionValue("mip_root_presolve_only", true);
+        h.setOptionValue("mip_heuristic_run_fpr", false);
+        h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+        h.setOptionValue("mip_heuristic_run_scylla", false);
+        h.setOptionValue("mip_heuristic_run_local_mip", true);
+        h.setOptionValue("mip_heuristic_portfolio", false);
+        h.setOptionValue("mip_heuristic_opportunistic", false);
+    });
 
-    Highs h;
-    h.setOptionValue("output_flag", true);
-    h.setOptionValue("log_to_console", false);
-    h.setOptionValue("log_dev_level", 3);
-    h.setOptionValue("mip_root_presolve_only", true);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    h.setOptionValue("mip_heuristic_run_scylla", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", true);
-    h.setOptionValue("mip_heuristic_portfolio", false);
-    h.setOptionValue("mip_heuristic_opportunistic", false);
-
-    auto log_cb = [](int callback_type, const std::string& message,
-                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
-                     void* user_data) {
-        if (callback_type != kCallbackLogging) {
-            return;
-        }
-        auto* cap = static_cast<LogCapture*>(user_data);
-        std::lock_guard<std::mutex> lock(cap->mtx);
-        cap->lines.emplace_back(message);
-    };
-    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
-    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
-    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(h.run() == HighsStatus::kOk);
-
-    bool local_mip_ran = false;
-    std::lock_guard<std::mutex> lock(capture.mtx);
-    for (const auto& line : capture.lines) {
-        if (line.find("[Sequential] heur=local_mip") != std::string::npos &&
-            line.find("effort=0 ") == std::string::npos) {
-            local_mip_ran = true;
-            break;
-        }
-    }
-    REQUIRE(local_mip_ran);
+    REQUIRE(heuristic_reported_effort(lines, "local_mip"));
 }
 
 // Regression guard for `local_mip::run_parallel`'s warm-start path
@@ -289,60 +258,24 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
 // it inside the presolve budget.
 TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74)",
           "[heuristic][local_mip][pool-aware]") {
-    struct LogCapture {
-        std::mutex mtx;
-        std::vector<std::string> lines;
-    };
-    LogCapture capture;
+    const std::vector<std::string> lines = solve_capturing_log("lseu.mps", [](Highs& h) {
+        h.setOptionValue("log_dev_level", 3);
+        h.setOptionValue("mip_heuristic_portfolio", false);
+        h.setOptionValue("mip_heuristic_opportunistic", false);
+        h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
+        h.setOptionValue("mip_heuristic_run_fpr", false);
+        h.setOptionValue("mip_heuristic_run_local_mip", true);
+        h.setOptionValue("mip_heuristic_run_scylla", false);
+        // Force HiGHS to run the full root-presolve chain (fj → local_mip)
+        // before any branching, so the [Sequential] lines are guaranteed
+        // to appear regardless of whether HiGHS would otherwise shortcut
+        // into B&B.  Reviewers (R3) flagged that the test would silently
+        // fail if the chain never ran.
+        h.setOptionValue("mip_root_presolve_only", true);
+    });
 
-    Highs h;
-    h.setOptionValue("output_flag", true);
-    h.setOptionValue("log_to_console", false);
-    h.setOptionValue("log_dev_level", 3);
-    h.setOptionValue("mip_heuristic_portfolio", false);
-    h.setOptionValue("mip_heuristic_opportunistic", false);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", true);
-    h.setOptionValue("mip_heuristic_run_scylla", false);
-    // Force HiGHS to run the full root-presolve chain (fj → local_mip)
-    // before any branching, so the [Sequential] lines are guaranteed
-    // to appear regardless of whether HiGHS would otherwise shortcut
-    // into B&B.  Reviewers (R3) flagged that the test would silently
-    // fail if the chain never ran.
-    h.setOptionValue("mip_root_presolve_only", true);
-
-    auto log_cb = [](int callback_type, const std::string& message,
-                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
-                     void* user_data) {
-        if (callback_type != kCallbackLogging) {
-            return;
-        }
-        auto* cap = static_cast<LogCapture*>(user_data);
-        std::lock_guard<std::mutex> lock(cap->mtx);
-        cap->lines.emplace_back(message);
-    };
-
-    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
-    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
-    REQUIRE(h.readModel(kInstancesDir + "/lseu.mps") == HighsStatus::kOk);
-    REQUIRE(h.run() == HighsStatus::kOk);
-
-    bool fj_ran = false;
-    bool local_mip_ran = false;
-    std::lock_guard<std::mutex> lock(capture.mtx);
-    for (const auto& line : capture.lines) {
-        if (line.find("[Sequential] heur=fj") != std::string::npos &&
-            line.find("effort=0 ") == std::string::npos) {
-            fj_ran = true;
-        }
-        if (line.find("[Sequential] heur=local_mip") != std::string::npos &&
-            line.find("effort=0 ") == std::string::npos) {
-            local_mip_ran = true;
-        }
-    }
-    REQUIRE(fj_ran);
-    REQUIRE(local_mip_ran);
+    REQUIRE(heuristic_reported_effort(lines, "fj"));
+    REQUIRE(heuristic_reported_effort(lines, "local_mip"));
 }
 
 // Unit-level regression for #74's pool-aware helper (complements the

@@ -239,38 +239,15 @@ TEST_CASE("Scylla opportunistic: gt2 pure binary", "[scylla][opportunistic]") {
 // branches is via the `ContestedPdlp` unit tests in
 // `tests/test_contested_pdlp.cpp` plus MIPLIB bench runs.
 TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][scylla][overlap]") {
-    struct LogCapture {
-        std::mutex mtx;
-        std::vector<std::string> lines;
-    };
-    LogCapture capture;
-
-    Highs h;
-    h.setOptionValue("output_flag", true);
-    h.setOptionValue("log_to_console", false);
-    h.setOptionValue("log_dev_level", 3);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", false);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    h.setOptionValue("mip_heuristic_run_scylla", true);
-    h.setOptionValue("mip_heuristic_portfolio", false);
-    h.setOptionValue("mip_heuristic_opportunistic", false);
-
-    auto log_cb = [](int callback_type, const std::string& message,
-                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
-                     void* user_data) {
-        if (callback_type != kCallbackLogging) {
-            return;
-        }
-        auto* cap = static_cast<LogCapture*>(user_data);
-        std::lock_guard<std::mutex> lock(cap->mtx);
-        cap->lines.emplace_back(message);
-    };
-
-    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
-    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
-    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(h.run() == HighsStatus::kOk);
+    const std::vector<std::string> lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
+        h.setOptionValue("log_dev_level", 3);
+        h.setOptionValue("mip_heuristic_run_fpr", false);
+        h.setOptionValue("mip_heuristic_run_local_mip", false);
+        h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+        h.setOptionValue("mip_heuristic_run_scylla", true);
+        h.setOptionValue("mip_heuristic_portfolio", false);
+        h.setOptionValue("mip_heuristic_opportunistic", false);
+    });
 
     // Parse out the fresh / stale counts from the [ScyllaOverlap] line
     // so we assert the plumbing, not just the presence of a substring.
@@ -278,16 +255,13 @@ TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][s
     std::uint64_t fresh = 0;
     std::uint64_t stale = 0;
     bool seen = false;
-    {
-        std::lock_guard<std::mutex> lock(capture.mtx);
-        for (const auto& line : capture.lines) {
-            std::smatch match;
-            if (std::regex_search(line, match, re)) {
-                fresh = std::stoull(match[1].str());
-                stale = std::stoull(match[2].str());
-                seen = true;
-                break;
-            }
+    for (const auto& line : lines) {
+        std::smatch match;
+        if (std::regex_search(line, match, re)) {
+            fresh = std::stoull(match[1].str());
+            stale = std::stoull(match[2].str());
+            seen = true;
+            break;
         }
     }
     REQUIRE(seen);        // Line was emitted — closes #76's "new trace lines" ask.
