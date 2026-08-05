@@ -74,23 +74,3 @@ references:
     end: 388
     year: 2023
     doi: 10.1007/s12532-023-00234-8
-  - type: article
-    title: "A tutorial on Thompson sampling"
-    authors:
-      - family-names: Russo
-        given-names: Daniel
-      - family-names: Van Roy
-        given-names: Benjamin
-      - family-names: Kazerouni
-        given-names: Abbas
-      - family-names: Osband
-        given-names: Ian
-      - family-names: Wen
-        given-names: Zheng
-    journal: "Foundations and Trends in Machine Learning"
-    volume: 11
-    issue: 1
-    start: 1
-    end: 96
-    year: 2018
-    doi: 10.1561/2200000070

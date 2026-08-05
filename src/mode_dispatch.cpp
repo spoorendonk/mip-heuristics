@@ -285,10 +285,10 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     // options the user actually set rather than the preset-overwritten ones.
     //
     // NOTE (#91): this write-back currently has no reader.  Its only consumer
-    // was `portfolio::build_presolve_setup`, deleted with the bandit — the
-    // heuristics take their flags as `run_sequential` parameters, and the one
-    // remaining direct reader of the raw options (`fpr_lp::run`) runs at B&B
-    // dive time, after the restore.  It is left in place deliberately: epic
+    // was a presolve-setup helper deleted by #91 — the heuristics take their
+    // flags as `run_sequential` parameters, and the one remaining direct
+    // reader of the raw options (`fpr_lp::run`) runs at B&B dive time, after
+    // the restore.  It is left in place deliberately: epic
     // #88's coupling I schedules removal of this `const_cast` for #93, which
     // owns `preset=off` vanilla-equivalence and rewrites the option surface
     // wholesale.  Delete it there, not here.

@@ -2,8 +2,8 @@
 
 // xoshiro256++ — fast, high-quality PRNG used throughout the MIP heuristics.
 //
-// Replaces std::mt19937 (previously ~23% of instruction references in
-// callgrind's Portfolio bell5 trace). The C++ standard library's Mersenne
+// Replaces std::mt19937 (previously ~23% of instruction references in a
+// callgrind bell5 trace). The C++ standard library's Mersenne
 // Twister has a large 2.5 KB state, slow refill (`_M_gen_rand`), and
 // expensive double generation via `std::generate_canonical`. xoshiro256++
 // has 32 bytes of state, produces 64 bits per call with just a few

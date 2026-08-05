@@ -542,33 +542,7 @@ File paths are relative to the repository root.
 
 ---
 
-## Thompson Sampler / Portfolio
-
-### `kFjAlpha`, `kFprArmAlpha`, `kLocalMipAlpha`, `kScyllaAlpha` — Beta prior α values
-
-- **File**: `src/portfolio.cpp` (lines 71–74)
-- **Default**: All `1.0`
-- **Meaning**: Initial `α` parameter of the Beta prior for each arm in
-  the Thompson sampler (`β` is always initialized to 1.0). The Beta
-  prior `Beta(α, 1)` with `α=1` corresponds to a uniform prior over
-  `[0, 1]`. Increasing `α` for an arm biases the sampler toward
-  selecting that arm early (optimistic initialization).
-- **Suggested range**: 0.5–5.0. Setting `α > 1` gives an arm a head
-  start; `α < 1` gives a pessimistic start.
-
----
-
-### `kEmaAlpha` — effort EMA smoothing factor
-
-- **File**: `src/thompson_sampler.cpp` (`record_effort`, line 87)
-- **Default**: `0.3`
-- **Meaning**: Smoothing factor for the exponential moving average of
-  per-arm effort in `select_effort_aware`. New observations are blended
-  as `α * new + (1−α) * old`. Higher values give more weight to recent
-  observations.
-- **Suggested range**: 0.1–0.7.
-
----
+## Solution Pool and Parallel Runner
 
 ### `kPoolCapacity` — solution pool size
 
@@ -629,18 +603,6 @@ File paths are relative to the repository root.
   affects pool-crossover behavior. Halving it to 10 was unvalidated as
   of the last MIPLIB benchmark; see issue #71.
 - **Suggested range**: 10–40.
-
----
-
-### `kBudgetCapMultiplier` — opportunistic arm budget cap multiplier
-
-- **File**: `src/bandit_runner.h` (line 93)
-- **Default**: `2.5`
-- **Meaning**: In the opportunistic bandit loop, the per-arm call budget
-  is capped at `kBudgetCapMultiplier * default_run_cap`. Prevents any
-  single arm pull from consuming a disproportionate share of the total
-  budget on a slow arm.
-- **Suggested range**: 1.5–5.0.
 
 ---
 
@@ -719,5 +681,4 @@ The custom patch-added options are:
 - `mip_heuristic_run_fpr` — enable/disable FPR
 - `mip_heuristic_run_local_mip` — enable/disable LocalMIP
 - `mip_heuristic_run_scylla` — enable/disable Scylla
-- `mip_heuristic_portfolio` — enable Thompson-sampling portfolio bandit
 - `mip_heuristic_opportunistic` — use continuous (opportunistic) parallelism
