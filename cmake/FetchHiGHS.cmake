@@ -21,18 +21,22 @@ if(MIP_HEURISTICS_CUDA)
         message(FATAL_ERROR
             "MIP_HEURISTICS_CUDA=ON but no CUDA compiler was found.\n"
             "Install the CUDA toolkit and put nvcc on PATH (or pass "
-            "-DCMAKE_CUDA_COMPILER=/path/to/nvcc).")
+            "-DCMAKE_CUDA_COMPILER=/path/to/nvcc).\n"
+            "Note: CUDA_HOME must be exported as well — see the next check.")
     endif()
 
-    # HiGHS's FindCUDAConf.cmake (reached via CUPDLP_FIND_CUDA below) does a
-    # plain `set(CMAKE_CUDA_COMPILER "$ENV{CUDA_HOME}/bin/nvcc")`, which
-    # shadows the cache entry we force just below.  With CUDA_HOME unset it
-    # resolves to "/bin/nvcc" and fails confusingly, even when nvcc is on
-    # PATH — so demand CUDA_HOME up front with a message that names the fix.
+    # HiGHS's FindCUDAConf.cmake (reached via CUPDLP_FIND_CUDA below) derives
+    # `CMAKE_CUDA_PATH` from $CUDA_HOME and uses it for the cudart/cublas/
+    # cusparse `find_library` HINTS, for HiGHS's CUDA include directory, and
+    # for a plain `set(CMAKE_CUDA_COMPILER "$ENV{CUDA_HOME}/bin/nvcc")` that
+    # lands in the generated build rules.  With CUDA_HOME unset those all
+    # degrade to "/..." paths and fail confusingly — at configure time in the
+    # REQUIRED find_library calls, or later at build time — even when nvcc is
+    # on PATH.  So demand it up front with a message that names the fix.
     if(NOT DEFINED ENV{CUDA_HOME})
         message(FATAL_ERROR
             "MIP_HEURISTICS_CUDA=ON requires the CUDA_HOME environment variable "
-            "(HiGHS's FindCUDAConf.cmake resolves nvcc as $CUDA_HOME/bin/nvcc).\n"
+            "(HiGHS's FindCUDAConf.cmake derives CMAKE_CUDA_PATH from it).\n"
             "Set it to your toolkit root, e.g.: export CUDA_HOME=/usr/local/cuda")
     endif()
     if(NOT EXISTS "$ENV{CUDA_HOME}/bin/nvcc")
@@ -42,7 +46,9 @@ if(MIP_HEURISTICS_CUDA)
     endif()
 
     enable_language(CUDA)
-    # Forward detected compiler path so HiGHS's FindCUDAConf picks it up
+    # Pin the detected compiler in the cache.  FindCUDAConf later assigns a
+    # *normal* variable of the same name from $CUDA_HOME (see above), so this
+    # is the value CMake uses for anything reached before that point.
     set(CMAKE_CUDA_COMPILER "${CMAKE_CUDA_COMPILER}" CACHE FILEPATH "" FORCE)
     set(CUPDLP_GPU ON CACHE BOOL "" FORCE)
     set(CUPDLP_FIND_CUDA ON CACHE BOOL "" FORCE)
@@ -60,13 +66,30 @@ FetchContent_Declare(highs
 
 FetchContent_MakeAvailable(highs)
 
-# Post-condition: HiGHS's own CMakeLists can still flip CUPDLP_GPU off (e.g.
-# an unmet CUDA dependency inside FindCUDAConf). Catch that here so the
-# "silent CPU binary" failure mode cannot survive a successful configure.
-if(MIP_HEURISTICS_CUDA AND NOT CUPDLP_GPU)
-    message(FATAL_ERROR
-        "MIP_HEURISTICS_CUDA=ON but HiGHS disabled CUPDLP_GPU during configure — "
-        "the resulting binary would run CPU-only PDLP. Check the CUDA toolkit "
-        "installation (cudart, cublas and cusparse must all be findable under "
-        "$ENV{CUDA_HOME}).")
+# Post-condition: assert on the macro the compiler actually sees.  Testing
+# the `CUPDLP_GPU` variable here would be vacuous — we FORCE it into the
+# cache ourselves above, HiGHS never clears it (its only `set(CUPDLP_GPU
+# OFF)` is commented out), and anything HiGHS set inside its own directory
+# scope would not propagate back to us.  `HConfig.h` is `configure_file`d at
+# configure time with `#cmakedefine CUPDLP_CPU` / `#cmakedefine CUPDLP_GPU`,
+# and that is precisely what `CupdlpWrapper.cpp` branches on to pick the
+# device — so this checks the GPU-vs-CPU compile-time truth directly.
+if(MIP_HEURISTICS_CUDA)
+    set(_highs_config "${highs_BINARY_DIR}/HConfig.h")
+    if(NOT EXISTS "${_highs_config}")
+        message(FATAL_ERROR
+            "MIP_HEURISTICS_CUDA=ON but HiGHS did not generate "
+            "'${_highs_config}', so the GPU build cannot be verified.")
+    endif()
+    file(READ "${_highs_config}" _highs_config_text)
+    if(NOT _highs_config_text MATCHES "#define +CUPDLP_GPU"
+       OR _highs_config_text MATCHES "#define +CUPDLP_CPU")
+        message(FATAL_ERROR
+            "MIP_HEURISTICS_CUDA=ON but HiGHS generated a CPU-only cuPDLP "
+            "configuration (see '${_highs_config}') — the resulting binary "
+            "would run CPU-only PDLP. Check the CUDA toolkit installation "
+            "(cudart, cublas and cusparse must all be findable under CUDA_HOME).")
+    endif()
+    unset(_highs_config_text)
+    unset(_highs_config)
 endif()

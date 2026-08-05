@@ -104,7 +104,7 @@ Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS 
 | Flag | Description |
 |------|-------------|
 | `-DCMAKE_BUILD_TYPE=Release` | Optimized build (default) |
-| `-DMIP_HEURISTICS_CUDA=ON` | Enable cuPDLP GPU backend for Scylla; falls back to CPU if no CUDA compiler found |
+| `-DMIP_HEURISTICS_CUDA=ON` | Enable cuPDLP GPU backend for Scylla. Requires `CUDA_HOME` exported; **fails the configure** rather than falling back to CPU. Verify with `ldd build-gpu/bin/highs \| grep cudart` |
 
 ## Testing
 

@@ -292,3 +292,29 @@ TEST_CASE("ContestedPdlp: stale workers can round while one worker solves",
     REQUIRE(stale_hits.load() > 0);
     REQUIRE(pdlp.peak_in_flight() == 1);
 }
+
+// Regression guard for the bug class `set_option_or_die` exists to catch.
+// HiGHS renames `advanced` options across minor versions with no
+// deprecation shim (`pdlp_scaling` -> `pdlp_scaling_mode` and
+// `pdlp_e_restart_method` -> `pdlp_cupdlpc_restart_method` at v1.14.0), and
+// because every `Highs` instance we build sets `output_flag=false` first, a
+// rejected write is reported only through the discarded return status.  Both
+// options above sat dead in ContestedPdlp's constructor from the v1.14.0
+// bump until they were removed.  Pin the names the production PDLP path
+// writes so the next HiGHS bump fails here instead of silently reverting the
+// solver to its defaults and invalidating every benchmark.
+TEST_CASE("ContestedPdlp: every PDLP option name we write exists in HiGHS",
+          "[contested_pdlp][options]") {
+    Highs highs;
+    REQUIRE(highs.setOptionValue("output_flag", false) == HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("solver", "pdlp") == HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("pdlp_iteration_limit", HighsInt{1000}) == HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("pdlp_optimality_tolerance", 1e-8) == HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("time_limit", 1.0) == HighsStatus::kOk);
+
+    // Negative control: the two dropped names must stay absent.  If a future
+    // HiGHS reintroduces either, revisit the rationale comment in the
+    // ContestedPdlp constructor before wiring them back up.
+    REQUIRE(highs.setOptionValue("pdlp_scaling", true) != HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("pdlp_e_restart_method", HighsInt{2}) != HighsStatus::kOk);
+}

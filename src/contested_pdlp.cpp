@@ -28,7 +28,18 @@ void set_option_or_die(Highs &highs, const char *name, T value) {
                      "ContestedPdlp: HiGHS rejected option '%s' (unknown name or invalid value). "
                      "This is a build-time bug, not a solve failure.\n",
                      name);
+        // `assert` is a no-op under `NDEBUG` (the default for
+        // `-DCMAKE_BUILD_TYPE=Release`, i.e. every build that runs a
+        // benchmark), and an option that silently fails to apply is
+        // exactly what this helper exists to eliminate — so abort
+        // unconditionally, matching `run_locked_with_accounting` below.
+        // Every call site passes a compile-time-constant option name, and
+        // the two runtime-valued writes are provably in domain (epsilon is
+        // floored at `pump::kEpsilonFloor`=1e-8 against a 1e-10 minimum;
+        // `time_limit` is guarded `> 0` by the caller), so this cannot
+        // fire on legitimate solve data.
         assert(false && "ContestedPdlp: unknown or invalid HiGHS option");
+        std::abort();
     }
 }
 
@@ -48,16 +59,21 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver &mipsolver, HighsInt pdlp_iter_cap) 
     set_option_or_die(highs_, "solver", "pdlp");
     set_option_or_die(highs_, "output_flag", false);
     // Two options used to be set here, `pdlp_scaling=true` and
-    // `pdlp_e_restart_method=2`.  Neither name exists in HiGHS 1.15.1, so
-    // both were silently rejected and every result to date was produced
-    // on the HiGHS defaults.  They are deliberately *not* revived under
-    // their real names, because the stale values are worse than those
-    // defaults on both counts:
-    //   - `pdlp_scaling_mode` defaults to 5 (Ruiz + PC); the old `true`
-    //     would coerce to 1 (Ruiz only), i.e. weaker scaling.
-    //   - `pdlp_cupdlpc_restart_method` defaults to 1 (PDHG_GPU_RESTART);
-    //     the old `2` is PDHG_CPU_RESTART, which drags restart work off
-    //     the GPU in a CUDA build.
+    // `pdlp_e_restart_method=2`.  Both existed in HiGHS v1.13.1 and were
+    // renamed in v1.14.0, so they have been silently rejected since that
+    // bump — every result measured after it, including the round-5
+    // `kWeight*` effort calibration, was already produced on the HiGHS
+    // defaults.  They are deliberately *not* revived under their nearest
+    // modern names, because neither would do anything on this code path:
+    //   - `pdlp_scaling_mode` is consumed only by HiPDLP
+    //     (`pdlp/hipdlp/pdhg.cc`).  We set `solver=pdlp`, which
+    //     `HighsSolve.cpp` routes to cuPDLP-C (`solveLpCupdlp`); cuPDLP-C
+    //     scaling is governed by `pdlp_features_off & kPdlpScalingOff`,
+    //     which defaults to scaling on — the original intent already holds.
+    //   - `pdlp_cupdlpc_restart_method` is collapsed to {0,1} inside
+    //     `CupdlpWrapper.cpp` (`intParam[E_RESTART_METHOD] = restart_on`),
+    //     so the old `2` is indistinguishable from the default `1`; only
+    //     `0` (restart off) changes anything.
     // Leaving them unset keeps behaviour bit-identical to what the
     // `kWeight*` effort calibration was measured against.
     set_option_or_die(highs_, "pdlp_iteration_limit",
