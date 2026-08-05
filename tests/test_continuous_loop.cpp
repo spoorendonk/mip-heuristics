@@ -1,8 +1,8 @@
 // Direct unit tests for the atomic semantics of `ContinuousLoopState`.
 //
-// The struct is exercised indirectly by the 2x2 mode-matrix integration
+// The struct is exercised indirectly by the mode-matrix integration
 // tests, but its atomic ordering is load-bearing for the continuous
-// parallel runners (`opportunistic_runner.h`, `bandit_runner.h`) — a
+// parallel runner (`opportunistic_runner.h`) — a
 // regression in ordering or in the `>=` stop predicate would be a silent
 // heisenbug.  These tests target the primitive directly.
 //

@@ -20,22 +20,6 @@ class Incumbent:
 
 
 @dataclass
-class EffortSample:
-    """A single portfolio arm effort/wall-clock observation."""
-
-    arm: str
-    effort: int
-    wall_ms: float
-    effort_per_ms: float
-    reward: int | None = None  # None for legacy logs without a reward= field
-    # Log tag identifying which bandit emitted the sample. "Portfolio" is the
-    # presolve bandit (src/portfolio.cpp); "FprLpPortfolio" is the B&B-dive
-    # bandit (src/fpr_lp.cpp). Defaults to "Portfolio" for backward
-    # compatibility with historical logs that only had one bandit.
-    portfolio_tag: str = "Portfolio"
-
-
-@dataclass
 class SequentialSample:
     """A single [Sequential] per-heuristic wall-clock observation.
 
@@ -71,7 +55,6 @@ class SolveResult:
     num_integer: int | None = None
     num_binary: int | None = None
     incumbents: list[Incumbent] = field(default_factory=list)
-    effort_samples: list[EffortSample] = field(default_factory=list)
     sequential_samples: list[SequentialSample] = field(default_factory=list)
 
     @property
@@ -203,22 +186,6 @@ _PD_RE = re.compile(r"^\s+P-D integral\s+(.+)$")
 _TIMING_RE = re.compile(r"^\s+Timing\s+([\d.]+)$")
 _NODES_RE = re.compile(r"^\s+Nodes\s+(\d+)$")
 _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
-
-# Portfolio effort calibration line, emitted by both bandits via the shared
-# log_bandit_arm helper in src/bandit_runner.h:
-#   [Portfolio] arm=FprDfsLocks2 effort=123456 wall_ms=45.2 effort_per_ms=2731 reward=3
-#   [FprLpPortfolio] arm=lp_center effort=5678 wall_ms=10.2 effort_per_ms=557 reward=1
-# `[Portfolio]` is the presolve bandit (src/portfolio.cpp); `[FprLpPortfolio]`
-# is the B&B-dive bandit (src/fpr_lp.cpp). Both tags share an identical line
-# layout so a single regex captures them and a separate tag group records
-# which bandit emitted the sample.
-# The `reward=<N>` suffix was added in the bandit-dispatch consolidation
-# (issue #68); it is optional to keep the parser back-compatible with
-# historical logs predating that change.
-_EFFORT_RE = re.compile(
-    r"^\s*\[(Portfolio|FprLpPortfolio)\] arm=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
-    r"(?: reward=(\d+))?"
-)
 
 # [Sequential] per-heuristic calibration line emitted from
 # src/mode_dispatch.cpp `log_sequential` (issue #71):
@@ -353,22 +320,6 @@ def parse_log(log_text: str) -> SolveResult:
         m = _LPITERS_RE.match(line)
         if m:
             result.lp_iterations = int(m.group(1))
-            continue
-
-        # Portfolio effort calibration line
-        m = _EFFORT_RE.match(line)
-        if m:
-            reward = int(m.group(6)) if m.group(6) is not None else None
-            result.effort_samples.append(
-                EffortSample(
-                    arm=m.group(2),
-                    effort=int(m.group(3)),
-                    wall_ms=float(m.group(4)),
-                    effort_per_ms=float(m.group(5)),
-                    reward=reward,
-                    portfolio_tag=m.group(1),
-                )
-            )
             continue
 
         # Sequential per-heuristic calibration line

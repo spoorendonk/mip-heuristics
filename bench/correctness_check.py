@@ -4,10 +4,8 @@
 Runs the HiGHS binary on small test instances (shipped with HiGHS in
 check/instances/) for each of the four mode combinations:
 
-  seq/det   — portfolio=false, opportunistic=false
-  seq/opp   — portfolio=false, opportunistic=true
-  port/det  — portfolio=true,  opportunistic=false
-  port/opp  — portfolio=true,  opportunistic=true
+  det   — opportunistic=false
+  opp   — opportunistic=true
 
 Checks that each solve finds the known-optimal objective within a
 tolerance.  Reports a per-instance x per-mode pass/fail table.
@@ -38,10 +36,8 @@ INSTANCES: list[tuple[str, float, float]] = [
 ]
 
 MODES = {
-    "seq/det": {"mip_heuristic_portfolio": "false", "mip_heuristic_opportunistic": "false"},
-    "seq/opp": {"mip_heuristic_portfolio": "false", "mip_heuristic_opportunistic": "true"},
-    "port/det": {"mip_heuristic_portfolio": "true", "mip_heuristic_opportunistic": "false"},
-    "port/opp": {"mip_heuristic_portfolio": "true", "mip_heuristic_opportunistic": "true"},
+    "det": {"mip_heuristic_opportunistic": "false"},
+    "opp": {"mip_heuristic_opportunistic": "true"},
 }
 
 

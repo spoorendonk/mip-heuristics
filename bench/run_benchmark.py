@@ -25,8 +25,6 @@ VANILLA_OPTIONS = {
 # Default patched options: all_opp preset — FJ + FPR + LocalMIP with
 # opportunistic (continuous) parallelism.  Scylla is excluded because
 # PDLP solves are expensive enough to hurt wall-clock on general instances.
-# Portfolio (Thompson bandit) is excluded as it is experimental and lacks
-# sufficient benchmark evidence to be the recommended default.
 # mip_heuristic_opportunistic=true also routes fpr_lp through its
 # opportunistic arm-aligned parallel runner at B&B dive time.
 PATCHED_OPTIONS = {

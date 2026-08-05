@@ -1,6 +1,6 @@
 # mip-heuristics
 
-A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build. Makes FJ, FPR, LocalMIP, Scylla (PDLP-based feasibility pump), and a Thompson-sampling adaptive portfolio available natively within HiGHS as a research and experimentation platform. See [Heuristics](#heuristics) for algorithmic details and paper references.
+A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build. Makes FJ, FPR, LocalMIP, and Scylla (PDLP-based feasibility pump) available natively within HiGHS as a research and experimentation platform. See [Heuristics](#heuristics) for algorithmic details and paper references.
 
 ## Quick Start
 
@@ -31,22 +31,20 @@ python3 bench/analyze_results.py bench/results/plato --configs patched vanilla -
 
 **Scylla** — PDLP-based feasibility pump: alternates approximate LP solves (PDLP) with FPR rounding, progressive objective blending, and cycling perturbation. N independent pump chains share one mutex-guarded PDLP instance; workers that lose the lock round against the most-recent stale snapshot to stay productive. Based on Mexi et al., *OR Proceedings 2023* ([doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9)); same concept as cuOpt (arXiv:2510.20499). This is a CPU/HiGHS reference implementation — no novelty claim, but it is the only publicly available CPU implementation.
 
-**FeasibilityJump** — LP-free Lagrangian heuristic. Thin wrapper around HiGHS's built-in FJ implementation, routed through our parallel infrastructure for effort budgeting and portfolio integration. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)). Note: `mip_heuristic_run_feasibility_jump` (default true in our patch) disables HiGHS's internal FJ dispatch and routes it through our infrastructure.
-
-**Thompson portfolio** — Beta-Bernoulli bandit that adaptively selects arms (FPR, LocalMIP, FJ, Scylla) based on feasibility success rates. Experimental; adaptive heuristic selection of this kind is not present in HiGHS, SCIP, or cuOpt. Based on Russo, Van Roy, Kazerouni, Osband, Wen, "A tutorial on Thompson sampling," *Foundations and Trends in Machine Learning* 11(1):1–96, 2018 ([doi:10.1561/2200000070](https://doi.org/10.1561/2200000070)).
+**FeasibilityJump** — LP-free Lagrangian heuristic. Thin wrapper around HiGHS's built-in FJ implementation, routed through our parallel infrastructure for effort budgeting and shared solution-pool integration. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)). Note: `mip_heuristic_run_feasibility_jump` (default true in our patch) disables HiGHS's internal FJ dispatch and routes it through our infrastructure.
 
 Reference PDFs are in `docs/`.
 
 ## Execution Modes
 
-Two orthogonal flags form a 2×2 dispatch matrix:
+The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla with a weighted effort budget. One flag picks how each heuristic parallelises:
 
-| | `opportunistic=false` (epoch-gated, deterministic) | `opportunistic=true` (continuous parallel) |
+| Mode | Flag | Workers |
 |---|---|---|
-| `portfolio=false` (sequential) | **seq/det**: FJ → FPR → LocalMIP → Scylla with N synchronized workers per epoch | **seq/opp**: same sequence, continuous workers per heuristic |
-| `portfolio=true` (bandit) | **port/det**: Thompson bandit, epoch-synchronized workers | **port/opp**: Thompson bandit, continuous workers |
+| **seq/det** | `opportunistic=false` | N synchronized workers per epoch (deterministic) |
+| **seq/opp** | `opportunistic=true` | continuous workers per heuristic |
 
-The `mip_heuristic_preset` option sets both flags and the per-heuristic enable flags at once:
+The `mip_heuristic_preset` option sets that flag and the per-heuristic enable flags at once:
 
 | Preset | Heuristics | Mode | Notes |
 |--------|-----------|------|-------|
@@ -55,13 +53,12 @@ The `mip_heuristic_preset` option sets both flags and the per-heuristic enable f
 | `all_det` | FJ+FPR+LocalMIP | seq/det | deterministic, reproducible |
 | `all_opp` | FJ+FPR+LocalMIP | seq/opp | **recommended** |
 | `scylla` | Scylla | seq/opp | PDLP pump only |
-| `portfolio` | all | port/opp | experimental adaptive selection |
 
 There is no standalone `local_mip` preset; to run LocalMIP alone, use individual flags (e.g. `--mip_heuristic_run_fpr=false --mip_heuristic_run_scylla=false --mip_heuristic_run_feasibility_jump=false`).
 
 When no preset is set, individual flags are used. The default with no flags set: FPR + LocalMIP + Scylla + FJ all enabled in seq/det mode. `all_opp` is the recommended preset for most use cases.
 
-`fpr_lp` runs at B&B dive time and is not affected by the `portfolio` flag; only `mip_heuristic_opportunistic` selects between its epoch-gated and continuous variants.
+`fpr_lp` runs at B&B dive time; `mip_heuristic_opportunistic` selects between its epoch-gated and continuous variants.
 
 ## Benchmarks
 
@@ -113,8 +110,8 @@ Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS 
 
 ```bash
 cd build && ctest --output-on-failure
-cd build && ctest -R "Portfolio: flugpl" --output-on-failure   # single test
-cd build && ./mip_heuristics_tests "[portfolio]"               # Catch2 tag
+cd build && ctest -R "mode-matrix det: flugpl objective" --output-on-failure   # single test
+cd build && ./mip_heuristics_tests "[mode-matrix]"                            # Catch2 tag
 ```
 
 Catch2 v3. Characterization tests verify known-optimal objectives against MIPLIB instances bundled with HiGHS.
