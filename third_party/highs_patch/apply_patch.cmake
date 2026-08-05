@@ -80,6 +80,34 @@ if(NOT _stale_lmp_found EQUAL -1)
         "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
         "cmake -B build && cmake --build build")
 endif()
+# Same class of problem for the Thompson portfolio removal (#91): the
+# idempotency sentinel below ('mip_heuristic_opportunistic(false)') is present
+# in both the pre- and post-#91 layouts, so an in-place upgrade would skip the
+# whole block and leave `mip_heuristic_portfolio` declared, initialised and
+# registered in a tree whose src/ no longer reads it.  The stale option would
+# still appear in `--help` and still be settable.
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_portfolio" _stale_portfolio_found)
+if(NOT _stale_portfolio_found EQUAL -1)
+    message(FATAL_ERROR
+        "HighsOptions.h contains the obsolete 'mip_heuristic_portfolio' identifier. "
+        "The Thompson-sampling portfolio was removed in #91 and this option went "
+        "with it. "
+        "Please clean the HiGHS source tree and rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
+# The preset option is guarded by its own idempotency check ('mip_heuristic_preset'),
+# which likewise cannot distinguish the pre-#91 description string — that one
+# advertised "portfolio" as a valid preset value.  Detect it explicitly.
+string(FIND "${OPTIONS_CONTENT}" "or \\\"portfolio\\\"" _stale_preset_desc_found)
+if(NOT _stale_preset_desc_found EQUAL -1)
+    message(FATAL_ERROR
+        "HighsOptions.h still advertises \"portfolio\" as a mip_heuristic_preset value. "
+        "That preset was removed in #91. "
+        "Please clean the HiGHS source tree and rebuild: "
+        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+        "cmake -B build && cmake --build build")
+endif()
 
 # Idempotency check: look for the ctor-init substring that is unique to the new version.
 string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_opportunistic(false)" _opts_found)
@@ -87,19 +115,19 @@ if(_opts_found EQUAL -1)
     # Member variables: insert after mip_heuristic_run_shifting
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla;\n  bool mip_heuristic_portfolio;\n  bool mip_heuristic_opportunistic;\n"
+      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla;\n  bool mip_heuristic_opportunistic;\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer list: insert after mip_heuristic_run_shifting(false),
     string(REPLACE
       "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_run_scylla(false),\n        mip_heuristic_portfolio(false),\n        mip_heuristic_opportunistic(false),\n"
+      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_run_scylla(false),\n        mip_heuristic_opportunistic(false),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_portfolio\",\n                                       \"Use adaptive portfolio mode for custom heuristics\", advanced,\n                                       &mip_heuristic_portfolio, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
@@ -129,7 +157,7 @@ if(_preset_found EQUAL -1)
     # Record registration: insert after the mip_heuristic_opportunistic record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", \\\"scylla\\\", or \\\"portfolio\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_opportunistic\",\n                                       \"Use continuous (opportunistic) parallelism rather than deterministic epoch-gated parallelism for custom presolve heuristics\", advanced,\n                                       &mip_heuristic_opportunistic, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
@@ -236,8 +264,8 @@ if(_presolve_effort_found EQUAL -1)
 
     # Record registration: insert after the mip_heuristic_preset record block
     string(REPLACE
-      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", \\\"scylla\\\", or \\\"portfolio\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
-      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", \\\"scylla\\\", or \\\"portfolio\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);\n\n    record_double = new OptionRecordDouble(\n        \"mip_heuristic_presolve_effort\",\n        \"Effort budget multiplier for custom presolve heuristics\", advanced,\n        &mip_heuristic_presolve_effort, 0.0, 0.30, 1.0);\n    records.push_back(record_double);"
+      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
+      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_det\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);\n\n    record_double = new OptionRecordDouble(\n        \"mip_heuristic_presolve_effort\",\n        \"Effort budget multiplier for custom presolve heuristics\", advanced,\n        &mip_heuristic_presolve_effort, 0.0, 0.30, 1.0);\n    records.push_back(record_double);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
