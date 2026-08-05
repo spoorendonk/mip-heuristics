@@ -122,7 +122,6 @@ struct FprConfig {
     //   Phase 3 cap (`cfg.max_effort - total_prop_work` inside
     //   `fpr_attempt_finish`).  Different one-shot callers pass
     //   different slice sizes here:
-    //     • `portfolio.cpp` — bandit's per-arm-pull allocation.
     //     • `scylla_worker.cpp` — per-pump-iter remainder of the
     //       current epoch.
     //     • `fpr_lp.cpp` — full epoch budget.
@@ -211,7 +210,7 @@ struct FprConfig {
     FprScratch *scratch = nullptr;
 };
 
-// Single-attempt variant for portfolio mode. Returns result without submitting.
+// Single-attempt one-shot variant. Returns result without submitting.
 // Uses provided RNG and attempt index. If initial_solution is non-null, uses it
 // as the starting point (overriding cfg.hint). Otherwise falls back to cfg.hint
 // on attempt 0, or random initialization on later attempts.
@@ -243,7 +242,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng
 // produce bit-identical attempt traces — see `[fpr][resume][determinism]`
 // in tests/test_fpr.cpp.
 //
-// One-shot callers (portfolio, scylla, fpr_lp, tests) keep using
+// One-shot callers (scylla, fpr_lp, tests) keep using
 // `fpr_attempt` above — it is a thin wrapper around begin/step/finish.
 
 struct FprAttemptState {

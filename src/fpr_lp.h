@@ -27,9 +27,8 @@ namespace fpr_lp {
 void run(HighsMipSolver &mipsolver);
 
 // Test hook: counters incremented once per dispatch into each variant.
-// fpr_lp has a single heuristic family (unlike the presolve portfolio),
-// so it always runs arm-aligned parallel workers; the mip_heuristic_portfolio
-// flag is ignored here and only mip_heuristic_opportunistic selects between
+// fpr_lp is a single heuristic family, so it always runs arm-aligned
+// parallel workers and only mip_heuristic_opportunistic selects between
 // these two variants.  Process-global; reset before each test that inspects.
 struct DispatchCounts {
     size_t seq_det = 0;

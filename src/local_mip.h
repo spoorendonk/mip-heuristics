@@ -3,8 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 
-struct CscMatrix;
-struct HeuristicResult;
 class HighsMipSolver;
 class SolutionPool;
 
@@ -35,11 +33,9 @@ inline constexpr bool kInstrumented = false;
 //                      cold-start cache was reused (a single first-
 //                      worker construction can amortise across N
 //                      peers via `cold_start_cache`).
-// Counters cover the `run_parallel_*` paths only; the bandit-mode
-// `worker()` entry point (used by `mip_heuristic_portfolio`) also
-// increments these as of R4 review, but restart-callback warm-starts
-// inside the parallel loops are NOT counted (their work happens after
-// the initial start has already been resolved).
+// Counters cover the `run_parallel_*` paths only; restart-callback
+// warm-starts inside the parallel loops are NOT counted (their work
+// happens after the initial start has already been resolved).
 // Call `reset_warm_start_counters()` before a HiGHS run, then read
 // `warm_start_counters()` after to assert which path actually fired.
 // Used by R1-8 / R2-7 / R3-3 round-3 review tests to distinguish #74
@@ -72,17 +68,8 @@ WarmStartCounters warm_start_counters();
 //
 // Returns the total effort consumed (search effort + cold-start
 // construction effort).  The caller is responsible for booking this
-// into `mipdata->heuristic_effort_used` — same contract as `worker()`
-// (issue #79).  This makes mode_dispatch.cpp the single point of
-// LocalMIP effort accounting, removing the asymmetry where the parallel
-// path self-booked while the standalone path returned and the caller
-// booked.
+// into `mipdata->heuristic_effort_used` (issue #79), which makes
+// mode_dispatch.cpp the single point of LocalMIP effort accounting.
 size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
                     bool opportunistic = false);
-
-// Single-worker variant for portfolio mode. Returns result without submitting.
-// If initial_solution is non-null, uses it as starting point.
-// max_effort: effort budget (coefficient accesses).
-HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t seed,
-                       const double *initial_solution, size_t max_effort);
 }  // namespace local_mip

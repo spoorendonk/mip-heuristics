@@ -37,11 +37,9 @@ add_library(mip_heuristics OBJECT
     src/local_mip_worker.cpp
     src/prop_engine.cpp
     src/repair_search.cpp
-    src/thompson_sampler.cpp
     src/mode_dispatch.cpp
     src/scylla_worker.cpp
     src/solution_pool.cpp
-    src/portfolio.cpp
     src/scylla.cpp
     src/walksat.cpp
 )

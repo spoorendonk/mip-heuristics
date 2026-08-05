@@ -186,9 +186,8 @@ private:
     // generation, peers reset their local staleness on the next loop
     // iteration — prevents workers from dying on `base_.stale_budget` while a
     // peer just improved.  Plumbed by every path that can run multiple
-    // Scylla workers concurrently: standalone Scylla det + opp, and port/det
-    // (via PortfolioWorker, see portfolio.cpp) + port/opp.  The epoch_runner
-    // barrier also calls `reset_staleness()` in det modes, but that is
+    // Scylla workers concurrently: standalone Scylla det + opp.  The
+    // epoch_runner barrier also calls `reset_staleness()` in det mode, but that is
     // coarser than this atomic, which kicks in mid-epoch.  Null only in
     // single-worker contexts (LpFprWorker).
     std::atomic<uint64_t> *improvement_gen_ = nullptr;

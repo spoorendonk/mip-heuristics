@@ -10,11 +10,10 @@
 
 // Shared scaffold for continuous-parallel heuristic runners.
 //
-// `run_opportunistic_loop` (in `opportunistic_runner.h`) and
-// `run_bandit_opportunistic_loop` (in `bandit_runner.h`) both spin a fixed
+// `run_opportunistic_loop` (in `opportunistic_runner.h`) spins a fixed
 // worker pool that calls `parallel::for_each` once, then each worker loops
 // on its own calling an attempt function until a global stop condition is
-// hit.  The stop conditions they share:
+// hit.  Its stop conditions:
 //
 //   - Worker 0 polls `terminatorTerminated()` and `timer_.read() >=
 //     time_limit` on every other attempt (the HiGHS timer and terminator
@@ -29,12 +28,10 @@
 //
 //   - `effort_since_improvement >= stale_budget`.
 //
-// The two runners differ slightly in the order of per-attempt updates
-// (bandit updates staleness even on zero-effort attempts before bailing;
-// opportunistic bails immediately on zero effort), so `ContinuousLoopState`
-// exposes the atomic counters and the termination poll as plain helpers
-// rather than a single `note_attempt` that would need conditional
-// semantics.  Each runner keeps its own ordering inline.
+// `ContinuousLoopState` exposes the atomic counters and the termination
+// poll as plain helpers rather than a single `note_attempt`, so a runner
+// keeps its own ordering of the per-attempt updates inline (the
+// opportunistic runner bails immediately on zero effort).
 struct ContinuousLoopState {
     std::atomic<size_t> total_effort{0};
     std::atomic<size_t> effort_since_improvement{0};

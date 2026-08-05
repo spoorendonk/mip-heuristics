@@ -121,83 +121,6 @@ double compute_solution_objective(const HighsMipSolver &mipsolver,
     return obj;
 }
 
-}  // namespace
-
-HeuristicResult worker(HighsMipSolver &mipsolver, const CscMatrix &csc, uint32_t seed,
-                       const double *initial_solution, size_t max_effort) {
-    const HighsInt ncol = mipsolver.model_->num_col_;
-    const HighsInt nrow = mipsolver.model_->num_row_;
-
-    HeuristicResult result;
-    if (ncol == 0 || nrow == 0) {
-        return result;
-    }
-
-    const bool minimize = (mipsolver.model_->sense_ == ObjSense::kMinimize);
-    SolutionPool pool(1, minimize);
-
-    // Resolve the worker's starting point with the same fallback chain
-    // as `run_parallel_*` (caller's `initial_solution` → mipdata
-    // incumbent → paper's cold-start construction).  Without this the
-    // portfolio dispatch (`port/det`, `port/opp`) silently regressed
-    // relative to seq/det for #75 — flagged by R1-4 in round-3 review.
-    // When `initial_solution` is non-null the caller (typically the
-    // bandit) has already chosen a start; warm-start counters
-    // intentionally do NOT increment in that branch because the
-    // counter contract describes which branch THIS function chose,
-    // and the caller's source is opaque from here (R1-6 / R2-3 / R3-2
-    // round-4 review).
-    std::vector<double> constructed;
-    const double *start = initial_solution;
-    // Track cold-start construction effort separately so the caller can
-    // see it surfaced via `result.effort` (R1-3 round-3 review): the
-    // construction sweep consumes wall time but its work signal was
-    // previously invisible to the global accountant.
-    size_t construction_effort = 0;
-    if (start == nullptr) {
-        auto *mipdata = mipsolver.mipdata_.get();
-        if (!mipdata->incumbent.empty()) {
-            bump_counter(g_incumbent_count);
-            start = mipdata->incumbent.data();
-        } else {
-            bump_counter(g_construction_count);
-            Rng rng(seed);
-            construction_effort = construct_initial_solution(
-                mipsolver, csc, rng, construction_effort_cap(max_effort), constructed);
-            if (!constructed.empty()) {
-                start = constructed.data();
-            }
-        }
-    }
-
-    // Disable stale_budget: pass max_effort so it can never fire before
-    // the total budget is exhausted (original worker() had no stale_budget).
-    LocalMipWorker w(mipsolver, csc, pool, max_effort, seed, start,
-                     /*stale_budget=*/max_effort);
-
-    size_t total_effort = 0;
-    while (!w.finished()) {
-        auto epoch = w.run_epoch(max_effort);
-        total_effort += epoch.effort;
-        if (epoch.effort == 0) {
-            break;
-        }
-    }
-
-    // R1-3: roll cold-start construction effort into the reported
-    // effort so the caller's accountant (portfolio bandit / mode
-    // dispatch) sees the full wall-clock-equivalent work.
-    result.effort = total_effort + construction_effort;
-    if (pool.copy_best(result.solution)) {
-        result.found_feasible = true;
-        result.objective = pool.snapshot().best_objective;
-    }
-
-    return result;
-}
-
-namespace {
-
 // Resolve the starting point for a worker with the paper's cold-start
 // fallback (issue #75):
 //
@@ -397,10 +320,8 @@ size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
         setup.stale_budget);
 
     // Booking the dispatcher's `mipdata->heuristic_effort_used += ...`
-    // is the caller's responsibility (issue #79).  Returning here keeps
-    // the entry point's effort accounting symmetric with `worker()` and
-    // makes mode_dispatch.cpp the single point of LocalMIP effort
-    // booking.
+    // is the caller's responsibility (issue #79), which makes
+    // mode_dispatch.cpp the single point of LocalMIP effort booking.
     return total_effort + construction_effort;
 }
 

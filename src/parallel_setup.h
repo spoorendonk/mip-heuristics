@@ -19,9 +19,6 @@
 // a pure refactor — per-field semantics are unchanged.
 //
 // Not consumed by:
-//   - `portfolio.cpp` — has a `PresolveSetup` that owns additional
-//     bandit arms, priors, incumbent snapshot, and an optional
-//     `ContestedPdlp` for the Scylla arm.  Shape does not match.
 //   - `fpr_lp.cpp` — has an `LpFprSetup` that owns LP references,
 //     a reduced-cost vector, and a shared `ContestedPdlp`.  Shape
 //     does not match either.

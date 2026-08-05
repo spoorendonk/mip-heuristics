@@ -91,8 +91,8 @@ struct EpochWorkerBase {
   }
 };
 
-// Generic epoch loop shared by sequential parallel modes and portfolio
-// deterministic mode.  Workers run in parallel within each epoch and
+// Generic epoch loop used by the deterministic parallel mode of every
+// heuristic.  Workers run in parallel within each epoch and
 // synchronize at the barrier.  Finished workers are restarted via the
 // caller-provided callback.
 //

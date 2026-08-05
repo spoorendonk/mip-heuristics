@@ -33,10 +33,10 @@ public:
         double objective;
         std::vector<double> solution;
         // Per-entry provenance tag (one of the kSolutionSource* constants
-        // from HiGHS's HighsMipSolverData.h).  Carried so portfolio flushes
-        // can attribute each solution to the bandit arm / heuristic that
-        // produced it, rather than falling back on the generic
-        // kSolutionSourceHeuristic tag.
+        // from HiGHS's HighsMipSolverData.h).  Carried so the shared pool
+        // can attribute each solution to the heuristic that produced it,
+        // rather than falling back on the generic kSolutionSourceHeuristic
+        // tag.
         int source;
     };
 

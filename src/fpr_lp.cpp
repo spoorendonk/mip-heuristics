@@ -502,10 +502,8 @@ void run(HighsMipSolver &mipsolver) {
         // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
         // it always runs arm-aligned parallel workers — num_threads workers
         // bound to the top-N arms from kClass2/3a/3b, sharing the solution
-        // pool.  The mip_heuristic_portfolio flag (a meta-portfolio over
-        // different heuristic families) does not apply here; only
-        // mip_heuristic_opportunistic picks between epoch-gated and continuous
-        // parallelism.
+        // pool.  `mip_heuristic_opportunistic` picks between epoch-gated and
+        // continuous parallelism.
         if (mipsolver.options_mip_->mip_heuristic_opportunistic) {
             worker_effort = run_sequential_opportunistic(mipsolver, setup, pool);
         } else {

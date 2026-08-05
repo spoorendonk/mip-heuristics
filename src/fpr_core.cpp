@@ -80,7 +80,7 @@ double finite_clamp_helper(double val, double lo, double hi) {
 // scratch; comparing dangling pointers to .data() of vectors that have
 // since been freed is technically indeterminate per the C++ standard
 // but benign on all mainstream toolchains.  Hot-path callers (the FPR
-// worker, scylla, fpr_lp, portfolio) pair a stable `cfg.csc` and a
+// worker, scylla, fpr_lp) pair a stable `cfg.csc` and a
 // stable `mipsolver` with the scratch's lifetime — see the lifetime
 // comment on `FprConfig::scratch` in `fpr_core.h`.
 PropEngine &acquire_engine(FprScratch &scratch, const AttemptCtx &c, const CscMatrix &csc) {
@@ -599,7 +599,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipso
 // fpr_attempt — backward-compatible one-shot wrapper
 // ---------------------------------------------------------------------------
 //
-// One-shot callers (tests, portfolio, scylla, fpr_lp) keep this entry point.
+// One-shot callers (tests, scylla, fpr_lp) keep this entry point.
 // It runs begin → step (uncapped) → finish in sequence on a local state,
 // and accepts a null cfg.scratch by routing through a function-local scratch
 // (matches the pre-#77 contract for those callers).
@@ -632,7 +632,7 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng
     fpr_attempt_begin(state, mipsolver, effective_cfg, rng, attempt_idx, initial_solution);
 
     // Single-shot DFS gated by `cfg.max_effort` — matches the pre-#77
-    // contract for one-shot callers (portfolio / scylla / fpr_lp / tests).
+    // contract for one-shot callers (scylla / fpr_lp / tests).
     // The `if` (not a `while`) reflects the actual control flow: step
     // either returns `kVerdictReady` (which finish handles, possibly via
     // its `!found_complete` shortcut to `failed`) or `kBudgetGate`, in
