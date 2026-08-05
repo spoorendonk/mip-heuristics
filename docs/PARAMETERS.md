@@ -135,7 +135,7 @@ File paths are relative to the repository root.
 
 ### `kNumLpArms` — total LP-dependent FPR arms
 
-- **File**: `src/fpr_lp.cpp` (line 68)
+- **File**: `src/fpr_lp.cpp` (line 71)
 - **Default**: `10` (`kNumClass2=4` + `kNumClass3a=2` + `kNumClass3b=4`)
 - **Meaning**: Total number of LP-arm configs across Classes 2, 3a, 3b.
   Workers are assigned `w % kNumLpArms`; excess workers wrap around
@@ -534,7 +534,7 @@ File paths are relative to the repository root.
 
 ### `kNumFprConfigs` — number of distinct FPR rounding configs for Scylla
 
-- **File**: `src/scylla_worker.h` (line 67)
+- **File**: `src/scylla_worker.h` (line 58)
 - **Default**: `4`
 - **Meaning**: Number of entries in `kFprConfigs` (the per-worker static
   FPR rounding strategy assignment). Workers `0..kNumFprConfigs-1` are
@@ -546,7 +546,7 @@ File paths are relative to the repository root.
 
 ### `kPoolCapacity` — solution pool size
 
-- **File**: `src/solution_pool.h` (line 10)
+- **File**: `src/solution_pool.h` (line 11)
 - **Default**: `10`
 - **Meaning**: Maximum number of distinct solutions stored in the shared
   `SolutionPool`. When full, a new solution replaces the worst entry
@@ -559,7 +559,7 @@ File paths are relative to the repository root.
 
 ### `kDiversityObjTolerance` — diversity insertion objective tolerance
 
-- **File**: `src/solution_pool.h` (line 14)
+- **File**: `src/solution_pool.h` (line 15)
 - **Default**: `0.10`
 - **Meaning**: Maximum relative degradation in objective value that a
   diverse solution can have relative to the pool's current best and
@@ -572,7 +572,7 @@ File paths are relative to the repository root.
 
 ### `kDiversityMinHammingFrac` — minimum Hamming distance for diversity
 
-- **File**: `src/solution_pool.h` (line 16)
+- **File**: `src/solution_pool.h` (line 17)
 - **Default**: `0.05`
 - **Meaning**: A solution is considered structurally diverse if its
   Hamming distance (fraction of integer variables that differ) from all
@@ -584,7 +584,7 @@ File paths are relative to the repository root.
 
 ### `kEpochsPerWorker` — epoch cadence for FPR, LocalMIP, Scylla
 
-- **File**: `src/parallel_setup.h` (line 68)
+- **File**: `src/parallel_setup.h` (line 65)
 - **Default**: `10`
 - **Meaning**: Number of epochs each worker takes within its total
   budget in the deterministic epoch-gated runner. Smaller values
@@ -596,7 +596,7 @@ File paths are relative to the repository root.
 
 ### `kEpochsPerWorkerFj` — epoch cadence for FJ
 
-- **File**: `src/parallel_setup.h` (line 75)
+- **File**: `src/parallel_setup.h` (line 72)
 - **Default**: `20`
 - **Meaning**: Epoch cadence for FeasibilityJump, kept separate from
   the unified `kEpochsPerWorker` because FJ's synchronization cadence
@@ -614,18 +614,22 @@ mode. They are calibrated against MIPLIB geomean `effort_per_ms` using
 `bench/check_effort_drift.py`. Recalibrate after any change to effort
 accounting.
 
-### `kWeightFj` — FeasibilityJump budget weight
+### FeasibilityJump budget — not weight-apportioned
 
-- **File**: `src/mode_dispatch.cpp` (line 101)
-- **Default**: `1.54`
-- **Meaning**: Proportional to FJ's geomean `effort_per_ms` (~403k
-  coefficient-equivalent units/ms on the calibration set).
+- **File**: `src/mode_dispatch.cpp` (`fj_budget` in `run_sequential`)
+- **Value**: `num_threads * (nnz << 10)` steps
+- **Meaning**: FJ does not draw a weighted share. It gets a fixed
+  per-worker budget matching vanilla HiGHS's hardcoded single-thread FJ
+  limit (`nnz << 10` in `HighsFeasibilityJump.cpp`, which neither effort
+  option scales), so each of the N parallel workers searches at least as
+  deep as vanilla does on one thread. The remaining presolve budget is
+  what the weights below apportion among FPR/LocalMIP/Scylla.
 
 ---
 
 ### `kWeightFpr` — FPR budget weight
 
-- **File**: `src/mode_dispatch.cpp` (line 102)
+- **File**: `src/mode_dispatch.cpp` (line 111)
 - **Default**: `2.43`
 - **Meaning**: Proportional to FPR's geomean `effort_per_ms` (~636k/ms).
 
@@ -633,7 +637,7 @@ accounting.
 
 ### `kWeightLocalMip` — LocalMIP budget weight
 
-- **File**: `src/mode_dispatch.cpp` (line 103)
+- **File**: `src/mode_dispatch.cpp` (line 112)
 - **Default**: `4.68`
 - **Meaning**: Proportional to LocalMIP's geomean `effort_per_ms`
   (~1222k/ms, which includes the cold-start construction sweep as of
@@ -644,7 +648,7 @@ accounting.
 
 ### `kWeightScylla` — Scylla budget weight
 
-- **File**: `src/mode_dispatch.cpp` (line 104)
+- **File**: `src/mode_dispatch.cpp` (line 113)
 - **Default**: `1.00`
 - **Meaning**: Normalized to 1.0 (slowest-per-effort heuristic, geomean
   ~261k/ms). Scylla's effort is measured in PDLP iters × nnz, a
@@ -676,9 +680,23 @@ it to `false` disables FJ entirely. It is **not** one of the custom
 patch-added options — it is a pre-existing HiGHS option whose default
 behavior is overridden by the patch.
 
+`mip_heuristic_effort` is likewise **native to HiGHS**, not patch-added.
+It is upstream's B&B heuristic knob: `moreHeuristicsAllowed()` admits
+B&B-dive heuristics while `heuristic_lp_iterations < total_lp_iterations
+* mip_heuristic_effort` (plus an initial 10000-iteration offset). The
+patch keeps its vanilla default of `0.05` and its vanilla meaning, so a
+patched binary at default options matches vanilla's B&B heuristic budget
+exactly; it gates RENS/RINS and `fpr_lp` together. It was briefly raised
+to `0.30` and overloaded as the presolve budget — that overload was split
+out into `mip_heuristic_presolve_effort` (see below).
+
 The custom patch-added options are:
-- `mip_heuristic_effort` — overall effort budget multiplier (default `0.30`)
-- `mip_heuristic_run_fpr` — enable/disable FPR
-- `mip_heuristic_run_local_mip` — enable/disable LocalMIP
-- `mip_heuristic_run_scylla` — enable/disable Scylla
-- `mip_heuristic_opportunistic` — use continuous (opportunistic) parallelism
+- `mip_heuristic_presolve_effort` — effort budget multiplier for the
+  custom presolve heuristics, FPR/LocalMIP/Scylla (default `0.30`)
+- `mip_heuristic_preset` — named preset selecting the enable flags and
+  the parallelism mode at once (default `""`, meaning use individual flags)
+- `mip_heuristic_run_fpr` — enable/disable FPR (default `true`)
+- `mip_heuristic_run_local_mip` — enable/disable LocalMIP (default `true`)
+- `mip_heuristic_run_scylla` — enable/disable Scylla (default `true`)
+- `mip_heuristic_opportunistic` — use continuous (opportunistic)
+  parallelism rather than deterministic epoch-gated (default `false`)
