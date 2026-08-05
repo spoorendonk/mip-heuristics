@@ -21,7 +21,7 @@
 // Not consumed by:
 //   - `fpr_lp.cpp` — has an `LpFprSetup` that owns LP references,
 //     a reduced-cost vector, and a shared `ContestedPdlp`.  Shape
-//     does not match either.
+//     does not match.
 //
 // Ownership notes (post-Wave-4 #72 + Wave-5 #69):
 //   - The `SolutionPool` is NOT owned here.  Pool ownership lives in

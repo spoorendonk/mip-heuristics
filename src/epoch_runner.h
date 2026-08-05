@@ -32,10 +32,7 @@ concept EpochWorker = requires(T w, size_t budget) {
 // `false` unconditionally and `reset_staleness()` is a no-op — the outer
 // `run_epoch_loop`'s own `effort_since_improvement` is the only stale
 // gate.  `LpFprWorker` keeps a private stale-epoch counter and
-// `finished_` flag without this struct.  `PortfolioWorker` is a
-// different shape — it delegates to a Pump arm and reads
-// `pump_->finished()` through its own private flag, so it also does
-// not embed this struct.
+// `finished_` flag without this struct.
 //
 // Fields are plain (non-atomic) because each worker's inner loop accesses
 // them single-threaded.  The continuous-parallel runners own their own

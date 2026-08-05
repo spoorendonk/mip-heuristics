@@ -7,7 +7,7 @@ authors:
     given-names: Simon
     orcid: "https://orcid.org/0009-0007-4304-6956"
     email: simon@flowty.ai
-abstract: "Open-source primal heuristics suite for HiGHS: FPR, LocalMIP, Scylla, FeasibilityJump, and a Thompson-sampling portfolio, with epoch-gated and opportunistic parallel workers. Validated on the PLATO mipfeas benchmark."
+abstract: "Open-source primal heuristics suite for HiGHS: FPR, LocalMIP, Scylla and FeasibilityJump, with epoch-gated and opportunistic parallel workers. Validated on the PLATO mipfeas benchmark."
 version: "0.1.0"
 repository-code: "https://github.com/spoorendonk/mip-heuristics"
 url: "https://github.com/spoorendonk/mip-heuristics"

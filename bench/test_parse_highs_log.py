@@ -9,6 +9,25 @@ def test_empty_log_returns_default_result():
     assert result.incumbents == []
 
 
+def test_sequential_lines_parse_into_sequential_samples():
+    """`[Sequential]` lines feed kWeight* calibration (issue #71)."""
+    log = (
+        "[Sequential] heur=fj effort=1000 wall_ms=5.0 effort_per_ms=200\n"
+        "[Sequential] heur=fpr effort=2500 wall_ms=50.0 effort_per_ms=50\n"
+        "[Sequential] heur=local_mip effort=3000 wall_ms=90.0 effort_per_ms=33\n"
+        "[Sequential] heur=scylla effort=4000 wall_ms=800.0 effort_per_ms=5\n"
+    )
+    result = parse_log(log)
+    assert len(result.sequential_samples) == 4
+
+    names = [s.heuristic for s in result.sequential_samples]
+    assert names == ["fj", "fpr", "local_mip", "scylla"]
+    scylla = result.sequential_samples[-1]
+    assert scylla.effort == 4000
+    assert scylla.wall_ms == 800.0
+    assert scylla.effort_per_ms == 5.0
+
+
 def test_time_to_best_returns_last_incumbent_time():
     """time_to_best is the time of the last incumbent update, for SGM T_best."""
     from parse_highs_log import Incumbent, SolveResult

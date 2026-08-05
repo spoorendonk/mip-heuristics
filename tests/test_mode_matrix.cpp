@@ -35,6 +35,17 @@ TEST_CASE("mode-matrix opp: egout objective", "[mode-matrix]") {
     REQUIRE(solve_mode("egout.mps", true) == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
+// p0548 is the largest instance the suite characterizes.  It was covered
+// only by the deleted portfolio tests (#91); carried over here so the
+// closeout does not silently drop an instance size class.
+TEST_CASE("mode-matrix det: p0548 objective", "[mode-matrix]") {
+    REQUIRE(solve_mode("p0548.mps", false) == Catch::Approx(8691.0).epsilon(1e-3));
+}
+
+TEST_CASE("mode-matrix opp: p0548 objective", "[mode-matrix]") {
+    REQUIRE(solve_mode("p0548.mps", true) == Catch::Approx(8691.0).epsilon(1e-3));
+}
+
 // ── 2 tests: infeasibility detection × 2 modes ──
 
 namespace {

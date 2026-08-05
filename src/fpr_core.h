@@ -193,7 +193,7 @@ struct FprConfig {
 
     // Optional per-worker scratch buffers.  When non-null, fpr_attempt reuses
     // these vectors instead of allocating locals — the intended hot-path use
-    // (FPR/FPR_LP/Scylla/Portfolio workers).  When null, local vectors are
+    // (FPR/FPR_LP/Scylla workers).  When null, local vectors are
     // used (handy for one-shot callers).  Not thread-safe.
     //
     // Lifetime constraint: if `scratch` is non-null and persists across

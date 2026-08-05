@@ -279,12 +279,19 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     }
 
     // When a preset was applied, write the derived flags back into the options
-    // struct so that downstream code that reads options directly sees the
-    // preset values.  The underlying object is a non-const HighsOptions member
-    // of the enclosing Highs instance, so the cast is safe.  We save the
-    // original values first and restore them before returning so that a second
-    // highs.run() call (with or without a preset) sees the options the user
-    // actually set, not the preset-overwritten ones.
+    // struct.  The underlying object is a non-const HighsOptions member of the
+    // enclosing Highs instance, so the cast is safe.  Originals are saved first
+    // and restored before returning, so a second highs.run() call sees the
+    // options the user actually set rather than the preset-overwritten ones.
+    //
+    // NOTE (#91): this write-back currently has no reader.  Its only consumer
+    // was `portfolio::build_presolve_setup`, deleted with the bandit — the
+    // heuristics take their flags as `run_sequential` parameters, and the one
+    // remaining direct reader of the raw options (`fpr_lp::run`) runs at B&B
+    // dive time, after the restore.  It is left in place deliberately: epic
+    // #88's coupling I schedules removal of this `const_cast` for #93, which
+    // owns `preset=off` vanilla-equivalence and rewrites the option surface
+    // wholesale.  Delete it there, not here.
     if (preset_applied) {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         auto *w = const_cast<HighsOptions *>(options);

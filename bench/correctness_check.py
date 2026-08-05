@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Correctness check across the 2x2 heuristic execution matrix.
+"""Correctness check across the two heuristic execution modes.
 
 Runs the HiGHS binary on small test instances (shipped with HiGHS in
-check/instances/) for each of the four mode combinations:
+check/instances/) for each parallelism mode:
 
   det   — opportunistic=false
   opp   — opportunistic=true
@@ -131,7 +131,7 @@ def check_objective(obj: float | None, known_opt: float, tol: float) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Correctness check across 2x2 mode matrix")
+    parser = argparse.ArgumentParser(description="Correctness check across both execution modes")
     parser.add_argument("--binary", default="./build/bin/highs", help="Path to HiGHS binary")
     parser.add_argument("--instances-dir", default=None,
                         help="Path to check/instances/ dir (auto-detected from binary path)")
@@ -141,7 +141,7 @@ def main() -> None:
                         help="Random seeds to run (default: 0)")
     parser.add_argument("--modes", nargs="+", default=list(MODES.keys()),
                         choices=list(MODES.keys()),
-                        help="Modes to test (default: all four)")
+                        help="Modes to test (default: both)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Print per-solve details")
     args = parser.parse_args()
