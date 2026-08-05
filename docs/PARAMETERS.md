@@ -10,7 +10,7 @@ File paths are relative to the repository root.
 
 ### `repair_iterations` — RepairSearch DFS node limit
 
-- **File**: `src/fpr_core.h` (field of `FprConfig`, line 186)
+- **File**: `src/fpr_core.h` (field of `FprConfig`)
 - **Default**: `50`
 - **Meaning**: Maximum number of DFS nodes expanded by `repair_search`
   (paper Fig. 5). The paper quotes 200; we cap at 50 because
@@ -26,7 +26,7 @@ File paths are relative to the repository root.
 
 ### `walksat_iterations` — WalkSAT step limit
 
-- **File**: `src/fpr_core.h` (field of `FprConfig`, line 191)
+- **File**: `src/fpr_core.h` (field of `FprConfig`)
 - **Default**: `200`
 - **Meaning**: Maximum number of WalkSAT repair steps (paper Fig. 4,
   loop bound). Kept at the paper's value because each step is cheap
@@ -39,7 +39,7 @@ File paths are relative to the repository root.
 
 ### `repair_noise` — WalkSAT random-walk probability
 
-- **File**: `src/fpr_core.h` (field of `FprConfig`, line 181)
+- **File**: `src/fpr_core.h` (field of `FprConfig`)
 - **Default**: `0.75`
 - **Meaning**: Probability of taking a random move rather than a greedy
   (minimum-damage) move in `walksat_select_move` (paper Fig. 4, line
@@ -52,7 +52,7 @@ File paths are relative to the repository root.
 
 ### `kBox` — artificial bounding box for infinite bounds
 
-- **File**: `src/fpr_core.cpp` (anonymous namespace, line 62)
+- **File**: `src/fpr_core.cpp` (anonymous namespace)
 - **Default**: `1e5`
 - **Meaning**: When a variable has an unbounded side (lb = −∞ or ub =
   +∞), `finite_clamp_helper` maps the variable into a box of width
@@ -66,7 +66,7 @@ File paths are relative to the repository root.
 
 ### `kInitialFprConfigs` — curated (strategy, mode) rotation
 
-- **File**: `src/fpr.cpp` (anonymous namespace, lines 151–161)
+- **File**: `src/fpr.cpp` (anonymous namespace)
 - **Default**: 8 entries — `{BadobjclDfs, Locks2Dfs, Locks2Dive,
   LocksDfsrep, BadobjclDfsrep, RandomDiveprop, LocksRepairSearch,
   DomsizeDfs}`
@@ -85,7 +85,7 @@ File paths are relative to the repository root.
 
 ### `kMaxAttemptsPerCall` — multi-attempt fill cap per epoch
 
-- **File**: `src/fpr.cpp` (`FprWorker::run_epoch`, line 291)
+- **File**: `src/fpr.cpp` (`FprWorker::run_epoch`)
 - **Default**: `32`
 - **Meaning**: Maximum number of new FPR attempts started within a
   single `run_epoch` call. Guards against degenerate models where
@@ -100,7 +100,7 @@ File paths are relative to the repository root.
 
 ### `kNumInitialFprConfigs` — size of the curated rotation
 
-- **File**: `src/fpr.cpp` (line 161)
+- **File**: `src/fpr.cpp`
 - **Default**: `8` (derived from `std::size(kInitialFprConfigs)`)
 - **Meaning**: Number of distinct (strategy, mode) pairs in the
   `kInitialFprConfigs` rotation. Changing the array changes this
@@ -112,7 +112,7 @@ File paths are relative to the repository root.
 
 ### `kHardRandomizationLimit` — per-worker hard attempt restart cap
 
-- **File**: `src/fpr_lp.cpp` (`LpFprWorker`, line 292)
+- **File**: `src/fpr_lp.cpp` (`LpFprWorker`)
 - **Default**: `50`
 - **Meaning**: After this many consecutive stale epochs (no improvement
   and no arm switch) the worker forces a new random seed, resetting its
@@ -124,7 +124,7 @@ File paths are relative to the repository root.
 
 ### `kStaleEpochThreshold` — staleness trigger for randomization
 
-- **File**: `src/fpr_lp.cpp` (`LpFprWorker`, line 295)
+- **File**: `src/fpr_lp.cpp` (`LpFprWorker`)
 - **Default**: `3`
 - **Meaning**: Number of consecutive stale epochs before incrementing
   the randomization counter. Lower values trigger diversification
@@ -135,7 +135,7 @@ File paths are relative to the repository root.
 
 ### `kNumLpArms` — total LP-dependent FPR arms
 
-- **File**: `src/fpr_lp.cpp` (line 71)
+- **File**: `src/fpr_lp.cpp`
 - **Default**: `10` (`kNumClass2=4` + `kNumClass3a=2` + `kNumClass3b=4`)
 - **Meaning**: Total number of LP-arm configs across Classes 2, 3a, 3b.
   Workers are assigned `w % kNumLpArms`; excess workers wrap around
@@ -147,7 +147,7 @@ File paths are relative to the repository root.
 
 ### `kViolTol` — violation tolerance for constraint classification
 
-- **File**: `src/local_mip_caches.h` (line 12)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `5e-7`
 - **Meaning**: Threshold below which a constraint's violation is
   considered zero (used to classify rows into `violated` vs
@@ -160,7 +160,7 @@ File paths are relative to the repository root.
 
 ### `kRestartInterval` — steps between weight-based restarts
 
-- **File**: `src/local_mip_caches.h` (line 13)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `200000`
 - **Meaning**: Every `kRestartInterval` steps (measured in search
   iterations) the worker considers resetting its solution and weights.
@@ -171,7 +171,7 @@ File paths are relative to the repository root.
 
 ### `kTermCheckInterval` — termination check period
 
-- **File**: `src/local_mip_caches.h` (line 14)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `1000`
 - **Meaning**: Interval (in steps) between checks for termination
   conditions (time limit, effort budget). Finer values add overhead but
@@ -182,7 +182,7 @@ File paths are relative to the repository root.
 
 ### `kActivityPeriod` — weight smoothing period
 
-- **File**: `src/local_mip_caches.h` (line 15)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `100000`
 - **Meaning**: Interval (in steps) at which the PAWS-style weight
   smoothing is evaluated. Controls how often the weighting scheme
@@ -193,7 +193,7 @@ File paths are relative to the repository root.
 
 ### `kSmoothProb` — PAWS smoothing probability
 
-- **File**: `src/local_mip_caches.h` (line 16)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `3e-4`
 - **Meaning**: Probability applied each step of choosing to smooth
   (weaken) constraint weights rather than strengthen them (paper §4.1
@@ -206,7 +206,7 @@ File paths are relative to the repository root.
 
 ### `kBmsConstraints` — BMS sample size (violated constraints)
 
-- **File**: `src/local_mip_caches.h` (line 17)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `12`
 - **Meaning**: Number of violated constraints selected as the "best"
   (by weight) from a preliminary sample of `kBmsConstraints * 3`
@@ -218,7 +218,7 @@ File paths are relative to the repository root.
 
 ### `kBmsBudget` — BMS candidate variable budget
 
-- **File**: `src/local_mip_caches.h` (line 18)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `2250`
 - **Meaning**: Maximum number of variable–move candidates evaluated per
   infeasible step from the BMS violated-constraint sample. Caps the
@@ -230,7 +230,7 @@ File paths are relative to the repository root.
 
 ### `kBmsSatCon` — satisfied-constraint BMS sample count
 
-- **File**: `src/local_mip_caches.h` (line 19)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `1`
 - **Meaning**: Number of randomly sampled satisfied constraints used in
   Phase 2 of `infeasible_step` (paper Algorithm 2, lines 7–8). Raises
@@ -241,7 +241,7 @@ File paths are relative to the repository root.
 
 ### `kBmsSatBudget` — satisfied-constraint variable budget
 
-- **File**: `src/local_mip_caches.h` (line 20)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `80`
 - **Meaning**: Maximum variable–move candidates generated from the
   satisfied-constraint sample per step (Phase 2 cap).
@@ -251,7 +251,7 @@ File paths are relative to the repository root.
 
 ### `kBoolFlipBudget` — Boolean flip scan budget
 
-- **File**: `src/local_mip_caches.h` (line 21)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `5000`
 - **Meaning**: Maximum number of binary variables scanned for flipping
   in Phase 3 of `infeasible_step` (paper Algorithm 2, lines 9–11).
@@ -263,7 +263,7 @@ File paths are relative to the repository root.
 
 ### `kEasyBudget` — random easy-move fallback count
 
-- **File**: `src/local_mip_caches.h` (line 22)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `5`
 - **Meaning**: Number of randomly chosen variables tried in the Phase 6
   "easy moves" fallback (engineering extension to Algorithm 2). Provides
@@ -274,7 +274,7 @@ File paths are relative to the repository root.
 
 ### `kTabuBase` — base tabu tenure
 
-- **File**: `src/local_mip_caches.h` (line 23)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `3`
 - **Meaning**: Minimum number of steps a variable's move direction is
   forbidden after being flipped (tabu tenure base). Actual tenure is
@@ -285,7 +285,7 @@ File paths are relative to the repository root.
 
 ### `kTabuVar` — tabu tenure random variation
 
-- **File**: `src/local_mip_caches.h` (line 24)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `10`
 - **Meaning**: Range of randomness added to the tabu tenure:
   `tabu_len = kTabuBase + rng() % kTabuVar`. Higher values make tenure
@@ -296,7 +296,7 @@ File paths are relative to the repository root.
 
 ### `kFeasibleRecheckPeriod` — feasibility recheck interval
 
-- **File**: `src/local_mip_caches.h` (line 25)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `100`
 - **Meaning**: Number of feasible-mode steps between full LHS rechecks
   (`full_recheck`). Incremental updates keep the LHS cache consistent
@@ -308,7 +308,7 @@ File paths are relative to the repository root.
 
 ### `kFeasiblePlateau` — feasible-mode plateau detection threshold
 
-- **File**: `src/local_mip_caches.h` (line 33)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `5000`
 - **Meaning**: Number of feasible-mode steps without an improving move
   before triggering a random-walk perturbation (engineering extension to
@@ -320,7 +320,7 @@ File paths are relative to the repository root.
 
 ### `kFeasibleMaxRandomWalks` — perturbation cap per worker
 
-- **File**: `src/local_mip_caches.h` (line 34)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `20`
 - **Meaning**: Maximum number of random-walk perturbations a single
   worker may attempt before declaring itself finished. Prevents infinite
@@ -332,7 +332,7 @@ File paths are relative to the repository root.
 
 ### `kEpsZero` — numerical zero threshold
 
-- **File**: `src/local_mip_caches.h` (line 35)
+- **File**: `src/local_mip_caches.h`
 - **Default**: `1e-15`
 - **Meaning**: Values with absolute magnitude below `kEpsZero` are
   treated as zero throughout LocalMIP (objective coefficients, move
@@ -343,7 +343,7 @@ File paths are relative to the repository root.
 
 ### `kPerturbBinaryFraction` — binary perturbation probability
 
-- **File**: `src/local_mip_worker.h` (line 18)
+- **File**: `src/local_mip_worker.h`
 - **Default**: `0.2`
 - **Meaning**: Probability that any given integer variable is perturbed
   during a random-walk perturbation step. For binary variables: flip
@@ -356,7 +356,7 @@ File paths are relative to the repository root.
 
 ### `kConstructionEffortFraction` — cold-start construction budget fraction
 
-- **File**: `src/local_mip_construction.h` (line 54)
+- **File**: `src/local_mip_construction.h`
 - **Default**: `0.10`
 - **Meaning**: Fraction of the total worker effort budget allocated to
   the Phase B greedy construction sweep (cold-start, when neither FJ
@@ -371,8 +371,7 @@ File paths are relative to the repository root.
 
 ### `kMaxTightPerVar` — tight-delta candidate limit per variable
 
-- **File**: `src/local_mip_construction.cpp` (anonymous namespace,
-  line 314)
+- **File**: `src/local_mip_construction.cpp` (anonymous namespace)
 - **Default**: `4`
 - **Meaning**: Maximum number of currently-violated rows from which a
   "tight delta" candidate is derived for each variable during the
@@ -386,7 +385,7 @@ File paths are relative to the repository root.
 
 ### `kAlpha` — objective blending decay factor
 
-- **File**: `src/pump_common.h` (line 14)
+- **File**: `src/pump_common.h`
 - **Default**: `0.9`
 - **Meaning**: Per-iteration multiplicative decay applied to `α_K` in
   the modified objective `α_K * c + (1 - α_K) * rounding_term` (Mexi
@@ -398,7 +397,7 @@ File paths are relative to the repository root.
 
 ### `kEpsilonInit` — initial PDLP tolerance
 
-- **File**: `src/pump_common.h` (line 15)
+- **File**: `src/pump_common.h`
 - **Default**: `0.01`
 - **Meaning**: Starting tolerance for the PDLP approximate LP solver.
   Each iteration the tolerance decays by `kBeta` until it reaches
@@ -410,7 +409,7 @@ File paths are relative to the repository root.
 
 ### `kBeta` — PDLP tolerance decay factor
 
-- **File**: `src/pump_common.h` (line 16)
+- **File**: `src/pump_common.h`
 - **Default**: `0.98`
 - **Meaning**: Per-iteration multiplicative decay applied to the PDLP
   solve tolerance `ε`. The sequence is `ε_{K+1} = max(kBeta * ε_K,
@@ -421,7 +420,7 @@ File paths are relative to the repository root.
 
 ### `kEpsilonFloor` — minimum PDLP tolerance
 
-- **File**: `src/pump_common.h` (line 17)
+- **File**: `src/pump_common.h`
 - **Default**: `1e-8`
 - **Meaning**: Floor value for the PDLP solve tolerance. Once `ε` decays
   to this level it stays there for the remainder of the pump.
@@ -431,7 +430,7 @@ File paths are relative to the repository root.
 
 ### `kCycleWindow` — cycling detection history depth
 
-- **File**: `src/pump_common.h` (line 18)
+- **File**: `src/pump_common.h`
 - **Default**: `3`
 - **Meaning**: Number of past rounded solutions kept in the cycle-
   detection history. A new rounded solution that matches any of the
@@ -444,7 +443,7 @@ File paths are relative to the repository root.
 
 ### `kPerturbFraction` — cycling perturbation rate
 
-- **File**: `src/pump_common.h` (line 19)
+- **File**: `src/pump_common.h`
 - **Default**: `0.2`
 - **Meaning**: Fraction of integer variables perturbed when cycling is
   detected (Algorithm 1.1 line 14). Each integer variable is perturbed
@@ -458,7 +457,7 @@ File paths are relative to the repository root.
 
 ### `kCycleTol` — cycling detection tolerance
 
-- **File**: `src/pump_common.h` (line 20)
+- **File**: `src/pump_common.h`
 - **Default**: `0.5`
 - **Meaning**: Maximum allowed difference in any integer variable's
   value between the current rounded solution and a historical solution
@@ -472,7 +471,7 @@ File paths are relative to the repository root.
 
 ### `kMaxPdlpStalls` — PDLP zero-iteration stall limit
 
-- **File**: `src/pump_common.h` (line 21)
+- **File**: `src/pump_common.h`
 - **Default**: `3`
 - **Meaning**: Number of consecutive PDLP solve calls that return 0
   iterations before the ScyllaWorker declares itself finished. Guards
@@ -484,7 +483,7 @@ File paths are relative to the repository root.
 
 ### `kMaxStaleRoundsDefault` — default stale-snapshot cap per worker
 
-- **File**: `src/scylla_worker.h` (line 32)
+- **File**: `src/scylla_worker.h`
 - **Default**: `4`
 - **Meaning**: Default number of consecutive stale-snapshot rounds a
   ScyllaWorker may take before it must force a fresh blocking PDLP
@@ -499,7 +498,7 @@ File paths are relative to the repository root.
 
 ### `kMaxStaleRoundsMin` — minimum stale-snapshot cap
 
-- **File**: `src/scylla_worker.h` (line 33)
+- **File**: `src/scylla_worker.h`
 - **Default**: `2`
 - **Meaning**: Floor applied by `compute_max_stale_rounds`. Even on very
   small LPs, each worker is allowed at least 2 stale rounds before
@@ -509,7 +508,7 @@ File paths are relative to the repository root.
 
 ### `kMaxStaleRoundsMax` — maximum stale-snapshot cap
 
-- **File**: `src/scylla_worker.h` (line 34)
+- **File**: `src/scylla_worker.h`
 - **Default**: `16`
 - **Meaning**: Ceiling applied by `compute_max_stale_rounds`. On very
   large LPs (PDLP solve may take seconds), workers are allowed up to 16
@@ -520,7 +519,7 @@ File paths are relative to the repository root.
 
 ### `kNnzPerExtraStaleRound` — nnz-per-extra stale round scale factor
 
-- **File**: `src/scylla_worker.h` (line 43)
+- **File**: `src/scylla_worker.h`
 - **Default**: `83000`
 - **Meaning**: For every `kNnzPerExtraStaleRound` nnz in the LP,
   `compute_max_stale_rounds` adds 1 extra allowed stale round above the
@@ -534,7 +533,7 @@ File paths are relative to the repository root.
 
 ### `kNumFprConfigs` — number of distinct FPR rounding configs for Scylla
 
-- **File**: `src/scylla_worker.h` (line 58)
+- **File**: `src/scylla_worker.h`
 - **Default**: `4`
 - **Meaning**: Number of entries in `kFprConfigs` (the per-worker static
   FPR rounding strategy assignment). Workers `0..kNumFprConfigs-1` are
@@ -546,7 +545,7 @@ File paths are relative to the repository root.
 
 ### `kPoolCapacity` — solution pool size
 
-- **File**: `src/solution_pool.h` (line 11)
+- **File**: `src/solution_pool.h`
 - **Default**: `10`
 - **Meaning**: Maximum number of distinct solutions stored in the shared
   `SolutionPool`. When full, a new solution replaces the worst entry
@@ -559,7 +558,7 @@ File paths are relative to the repository root.
 
 ### `kDiversityObjTolerance` — diversity insertion objective tolerance
 
-- **File**: `src/solution_pool.h` (line 15)
+- **File**: `src/solution_pool.h`
 - **Default**: `0.10`
 - **Meaning**: Maximum relative degradation in objective value that a
   diverse solution can have relative to the pool's current best and
@@ -572,7 +571,7 @@ File paths are relative to the repository root.
 
 ### `kDiversityMinHammingFrac` — minimum Hamming distance for diversity
 
-- **File**: `src/solution_pool.h` (line 17)
+- **File**: `src/solution_pool.h`
 - **Default**: `0.05`
 - **Meaning**: A solution is considered structurally diverse if its
   Hamming distance (fraction of integer variables that differ) from all
@@ -584,7 +583,7 @@ File paths are relative to the repository root.
 
 ### `kEpochsPerWorker` — epoch cadence for FPR, LocalMIP, Scylla
 
-- **File**: `src/parallel_setup.h` (line 65)
+- **File**: `src/parallel_setup.h`
 - **Default**: `10`
 - **Meaning**: Number of epochs each worker takes within its total
   budget in the deterministic epoch-gated runner. Smaller values
@@ -596,7 +595,7 @@ File paths are relative to the repository root.
 
 ### `kEpochsPerWorkerFj` — epoch cadence for FJ
 
-- **File**: `src/parallel_setup.h` (line 72)
+- **File**: `src/parallel_setup.h`
 - **Default**: `20`
 - **Meaning**: Epoch cadence for FeasibilityJump, kept separate from
   the unified `kEpochsPerWorker` because FJ's synchronization cadence
@@ -629,7 +628,7 @@ accounting.
 
 ### `kWeightFpr` — FPR budget weight
 
-- **File**: `src/mode_dispatch.cpp` (line 111)
+- **File**: `src/mode_dispatch.cpp`
 - **Default**: `2.43`
 - **Meaning**: Proportional to FPR's geomean `effort_per_ms` (~636k/ms).
 
@@ -637,7 +636,7 @@ accounting.
 
 ### `kWeightLocalMip` — LocalMIP budget weight
 
-- **File**: `src/mode_dispatch.cpp` (line 112)
+- **File**: `src/mode_dispatch.cpp`
 - **Default**: `4.68`
 - **Meaning**: Proportional to LocalMIP's geomean `effort_per_ms`
   (~1222k/ms, which includes the cold-start construction sweep as of
@@ -648,7 +647,7 @@ accounting.
 
 ### `kWeightScylla` — Scylla budget weight
 
-- **File**: `src/mode_dispatch.cpp` (line 113)
+- **File**: `src/mode_dispatch.cpp`
 - **Default**: `1.00`
 - **Meaning**: Normalized to 1.0 (slowest-per-effort heuristic, geomean
   ~261k/ms). Scylla's effort is measured in PDLP iters × nnz, a
@@ -660,7 +659,7 @@ accounting.
 
 ### `kProgressThreshold` — no-progress trigger for best-open jump
 
-- **File**: `src/repair_search.cpp` (anonymous namespace, line 298)
+- **File**: `src/repair_search.cpp` (anonymous namespace)
 - **Default**: `10`
 - **Meaning**: Number of consecutive RepairSearch DFS nodes without a
   violation improvement before the algorithm swaps to the lowest-

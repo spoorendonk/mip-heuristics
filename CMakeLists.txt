@@ -121,4 +121,15 @@ if(_bench_py)
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         )
     endif()
+
+    # docs/PARAMETERS.md documents ~50 tuning constants by name; this fails the
+    # suite when one is renamed or deleted without the entry following it (a
+    # `kWeightFj` entry outlived its constant that way, default value and all).
+    # Registered outside the pytest gate above because it needs only the
+    # standard library — a checkout without pytest still gets the check.
+    add_test(
+        NAME docs_parameter_references
+        COMMAND ${_bench_py} ${CMAKE_CURRENT_SOURCE_DIR}/bench/check_docs_refs.py
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 endif()
