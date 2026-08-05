@@ -47,63 +47,26 @@ endif()
 # ── Patch HighsOptions.h: register custom heuristic options ──
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 
-# Defensive check: if the stale pre-#59 patch is present, abort with a clean-rebuild hint.
-# The rename (portfolio_opportunistic → opportunistic) and the removal of the dead
-# mip_heuristic_scylla_parallel option are struct-layout changes; an in-place rewrite of
-# an already-patched source tree is fragile, so force the user to clean _deps/highs-src.
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_portfolio_opportunistic" _stale_opp_found)
-if(NOT _stale_opp_found EQUAL -1)
+# Defensive check: reject a tree patched by an older version of this script.
+#
+# Every per-file idempotency check below keys on text this script itself
+# inserted, so none of them can tell a tree patched by an *earlier* version
+# from a current one: the sentinel is present in both, the block is skipped,
+# and the stale layout survives into the build as a silently wrong option set.
+# Enumerating each removed identifier does not scale and goes stale itself.
+#
+# Instead the patch stamps its version into HighsOptions.h and this check
+# rejects anything older.  A tree that carries our options but not the current
+# marker was patched by an older script and must be cleaned.  Bump
+# PATCH_VERSION whenever any inserted text changes.
+set(PATCH_VERSION "2")
+string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_run_fpr" _patch_present)
+if(_patch_version_found EQUAL -1 AND NOT _patch_present EQUAL -1)
     message(FATAL_ERROR
-        "HighsOptions.h contains the obsolete 'mip_heuristic_portfolio_opportunistic' identifier. "
-        "This was renamed to 'mip_heuristic_opportunistic' in #59. "
-        "Please clean the HiGHS source tree and rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
-endif()
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_scylla_parallel" _stale_scylla_found)
-if(NOT _stale_scylla_found EQUAL -1)
-    message(FATAL_ERROR
-        "HighsOptions.h contains the obsolete 'mip_heuristic_scylla_parallel' identifier. "
-        "This dead option was removed in #59. "
-        "Please clean the HiGHS source tree and rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
-endif()
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_local_mip_parallel" _stale_lmp_found)
-if(NOT _stale_lmp_found EQUAL -1)
-    message(FATAL_ERROR
-        "HighsOptions.h contains the obsolete 'mip_heuristic_local_mip_parallel' identifier. "
-        "This dead option was removed from the patch after an audit showed no src/ file "
-        "ever read it; the idempotency sentinel ('mip_heuristic_opportunistic(false)') "
-        "is present in both the old and new layouts so it cannot tell them apart. "
-        "Please clean the HiGHS source tree and rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
-endif()
-# Same class of problem for the option removed in #91: the idempotency
-# sentinel below ('mip_heuristic_opportunistic(false)') is present in both the
-# pre- and post-#91 layouts, so an in-place upgrade would skip the whole block
-# and leave the removed option declared, initialised and registered in a tree
-# whose src/ no longer reads it — still in `--help`, still settable.
-# The identifier below is a search needle for detecting that stale tree; it is
-# the only reason the name still appears anywhere in the repo.
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_portfolio" _stale_portfolio_found)
-if(NOT _stale_portfolio_found EQUAL -1)
-    message(FATAL_ERROR
-        "HighsOptions.h contains the obsolete 'mip_heuristic_portfolio' identifier. "
-        "That option was removed in #91. "
-        "Please clean the HiGHS source tree and rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
-endif()
-# The preset option is guarded by its own idempotency check ('mip_heuristic_preset'),
-# which likewise cannot distinguish the pre-#91 description string — that one
-# advertised an extra preset value removed in #91.  Detect it explicitly.
-string(FIND "${OPTIONS_CONTENT}" "or \\\"portfolio\\\"" _stale_preset_desc_found)
-if(NOT _stale_preset_desc_found EQUAL -1)
-    message(FATAL_ERROR
-        "HighsOptions.h still advertises \"portfolio\" as a mip_heuristic_preset value. "
-        "That preset was removed in #91. "
+        "HighsOptions.h was patched by an older version of apply_patch.cmake "
+        "(expected 'mip-heuristics patch version ${PATCH_VERSION}'). "
+        "The option set has changed since; an in-place rewrite is not safe. "
         "Please clean the HiGHS source tree and rebuild: "
         "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
         "cmake -B build && cmake --build build")
@@ -115,7 +78,7 @@ if(_opts_found EQUAL -1)
     # Member variables: insert after mip_heuristic_run_shifting
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla;\n  bool mip_heuristic_opportunistic;\n"
+      "bool mip_heuristic_run_shifting;\n  // mip-heuristics patch version 2\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla;\n  bool mip_heuristic_opportunistic;\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer list: insert after mip_heuristic_run_shifting(false),
@@ -611,25 +574,6 @@ endif()
 
 # ── Patch HighsMipSolver.cpp: insert heuristic call sites ──
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
-
-# Defensive check: detect a previously-applied Patch B RENS/RINS guard and
-# force a clean rebuild.  That guard was removed when RENS/RINS became
-# unconditional — if a developer upgrades an existing build tree without
-# blowing away build/_deps/highs-src, the idempotency sentinel below skips
-# the whole block and the stale guarded code persists, silently disabling
-# RENS/RINS (the opposite of what the fix intends).  The condition below is a
-# search needle for that old source text.
-string(FIND "${CONTENT}" "mip_heuristic_run_rens && !options_mip_->mip_heuristic_portfolio" _stale_rens_guard)
-if(NOT _stale_rens_guard EQUAL -1)
-    message(FATAL_ERROR
-        "HighsMipSolver.cpp contains a stale RENS/RINS guard that "
-        "was removed from the patch.  RENS/RINS must now run unconditionally "
-        "— an upgraded-in-place build would otherwise continue to suppress "
-        "them.  Clean the HiGHS source "
-        "tree and rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
-endif()
 
 # Defensive check: the presolve budget used to be derived from
 # mip_heuristic_effort before the option split introduced
