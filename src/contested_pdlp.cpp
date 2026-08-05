@@ -15,6 +15,23 @@ namespace {
 
 constexpr HighsInt kMinPdlpIterCap = 100;
 
+// `setOptionValue` reports an unknown or out-of-range option only through
+// its return status plus a HiGHS log line.  We set `output_flag=false` on
+// this instance, so the log line is suppressed and a typo'd or renamed
+// option silently does nothing while looking like it applied — which is
+// exactly how `pdlp_scaling` and `pdlp_e_restart_method` survived here
+// undetected.  Route every option write through this instead.
+template <typename T>
+void set_option_or_die(Highs &highs, const char *name, T value) {
+    if (highs.setOptionValue(name, value) != HighsStatus::kOk) {
+        std::fprintf(stderr,
+                     "ContestedPdlp: HiGHS rejected option '%s' (unknown name or invalid value). "
+                     "This is a build-time bug, not a solve failure.\n",
+                     name);
+        assert(false && "ContestedPdlp: unknown or invalid HiGHS option");
+    }
+}
+
 }  // namespace
 
 ContestedPdlp::ContestedPdlp(HighsMipSolver &mipsolver, HighsInt pdlp_iter_cap) {
@@ -28,12 +45,23 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver &mipsolver, HighsInt pdlp_iter_cap) 
     }
 
     auto lp = pump::build_lp_relaxation(*model, *mipdata);
-    highs_.setOptionValue("solver", "pdlp");
-    highs_.setOptionValue("output_flag", false);
-    highs_.setOptionValue("pdlp_scaling", true);
-    highs_.setOptionValue("pdlp_e_restart_method", 2);
-    highs_.setOptionValue("pdlp_iteration_limit",
-                          pdlp_iter_cap > kMinPdlpIterCap ? pdlp_iter_cap : kMinPdlpIterCap);
+    set_option_or_die(highs_, "solver", "pdlp");
+    set_option_or_die(highs_, "output_flag", false);
+    // Two options used to be set here, `pdlp_scaling=true` and
+    // `pdlp_e_restart_method=2`.  Neither name exists in HiGHS 1.15.1, so
+    // both were silently rejected and every result to date was produced
+    // on the HiGHS defaults.  They are deliberately *not* revived under
+    // their real names, because the stale values are worse than those
+    // defaults on both counts:
+    //   - `pdlp_scaling_mode` defaults to 5 (Ruiz + PC); the old `true`
+    //     would coerce to 1 (Ruiz only), i.e. weaker scaling.
+    //   - `pdlp_cupdlpc_restart_method` defaults to 1 (PDHG_GPU_RESTART);
+    //     the old `2` is PDHG_CPU_RESTART, which drags restart work off
+    //     the GPU in a CUDA build.
+    // Leaving them unset keeps behaviour bit-identical to what the
+    // `kWeight*` effort calibration was measured against.
+    set_option_or_die(highs_, "pdlp_iteration_limit",
+                      pdlp_iter_cap > kMinPdlpIterCap ? pdlp_iter_cap : kMinPdlpIterCap);
     highs_.passModel(std::move(lp));
 
     initialized_ = true;
@@ -54,8 +82,8 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     SolveResult result;
 
     highs_.changeColsCost(0, ncol_ - 1, modified_cost.data());
-    highs_.setOptionValue("pdlp_optimality_tolerance", epsilon);
-    highs_.setOptionValue("time_limit", time_limit);
+    set_option_or_die(highs_, "pdlp_optimality_tolerance", epsilon);
+    set_option_or_die(highs_, "time_limit", time_limit);
 
     if (warm_start_valid && static_cast<HighsInt>(warm_start_col_value.size()) == ncol_ &&
         static_cast<HighsInt>(warm_start_row_dual.size()) == nrow_) {
