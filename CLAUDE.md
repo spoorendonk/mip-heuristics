@@ -59,7 +59,7 @@ unset GIT_DIR GIT_WORK_TREE && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmak
 ctest --test-dir build --output-on-failure -j"$(nproc)"
 ```
 
-GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver used by Scylla. Falls back to CPU if no CUDA compiler is found.
+GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver used by Scylla. It **requires `CUDA_HOME`** to be exported (HiGHS's `FindCUDAConf.cmake` resolves nvcc as `$CUDA_HOME/bin/nvcc`, shadowing whatever we detect on `PATH`), and it **fails the configure** if nvcc, `CUDA_HOME`, or `CUPDLP_GPU` don't all check out — it does *not* fall back to CPU. That's deliberate: GPU vs CPU is a compile-time `#ifdef CUPDLP_CPU` in HiGHS's `CupdlpWrapper.cpp` with no runtime override, so a silent fallback yields a CPU binary indistinguishable from a GPU one at the command line. Build GPU into a separate tree (`cmake -B build-gpu -DMIP_HEURISTICS_CUDA=ON`) and confirm with `ldd build-gpu/bin/highs | grep -E 'cudart|cublas|cusparse'`. Omit the flag for a CPU build.
 
 ## Architecture
 
