@@ -43,7 +43,6 @@ TEST_CASE("FPR opportunistic: flugpl finds solution", "[heuristic][fpr][opportun
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -120,84 +119,18 @@ TEST_CASE("FPR strategies: multi-config sequential on egout", "[fpr][strategies]
     // The sequential multi-config runner should solve egout
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    // FPR enabled (runs multi-config), portfolio off
+    // FPR enabled (runs multi-config)
     highs.setOptionValue("mip_heuristic_run_fpr", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
-}
-
-TEST_CASE("FPR strategies: portfolio with multi-arm FPR on flugpl",
-          "[fpr][portfolio][strategies]") {
-    // Portfolio mode with 6 FPR config arms should solve flugpl
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
-}
-
-TEST_CASE("FPR strategies: portfolio multi-arm on bell5", "[fpr][portfolio][strategies]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-4));
 }
 
 // ===================================================================
 // RepairSearch tests (Fig. 5 with secondary propagation engine R)
 // ===================================================================
-
-TEST_CASE("RepairSearch: portfolio with RepairSearch arm on flugpl", "[repair-search][portfolio]") {
-    // Portfolio now includes the RepairSearch arm — verify it still solves flugpl
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
-}
-
-TEST_CASE("RepairSearch: portfolio with RepairSearch arm on egout", "[repair-search][portfolio]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
-}
-
-TEST_CASE("RepairSearch: opportunistic portfolio on flugpl",
-          "[repair-search][portfolio][opportunistic]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_portfolio", true);
-    highs.setOptionValue("mip_heuristic_opportunistic", true);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
-}
 
 TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
           "[repair-search][fpr]") {
@@ -205,7 +138,6 @@ TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -237,7 +169,6 @@ double solve_with_seed_small_effort(const char *inst, int seed) {
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("random_seed", seed);
     // Force seq/det path so the issue-#77 lifecycle is the dispatch under test.
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", false);
     // Pin threads=1 so the determinism contract is the *intra-worker*
     // lifecycle determinism (single-worker pause/resume + multi-attempt
@@ -354,7 +285,6 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;

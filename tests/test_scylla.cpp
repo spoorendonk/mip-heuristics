@@ -17,7 +17,6 @@ TEST_CASE("Scylla standalone: flugpl general integers", "[heuristic][scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -31,7 +30,6 @@ TEST_CASE("Scylla standalone: gt2 pure binary instance", "[heuristic][scylla]") 
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -45,7 +43,6 @@ TEST_CASE("Scylla standalone: egout mixed integers", "[heuristic][scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -61,7 +58,6 @@ TEST_CASE("Sequential orchestrator: flugpl weighted effort", "[heuristic][sequen
     highs.setOptionValue("mip_heuristic_run_fpr", true);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -76,7 +72,6 @@ TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") 
     highs.setOptionValue("mip_heuristic_run_fpr", true);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -94,7 +89,6 @@ TEST_CASE("Scylla parallel: flugpl finds solution", "[heuristic][scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -108,7 +102,6 @@ TEST_CASE("Scylla parallel: egout finds solution", "[heuristic][scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -122,7 +115,6 @@ TEST_CASE("Scylla parallel: gt2 binary instance", "[heuristic][scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -138,7 +130,6 @@ TEST_CASE("Scylla sequential: flugpl characterization", "[scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -152,7 +143,6 @@ TEST_CASE("Scylla parallel: flugpl characterization", "[scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -166,7 +156,6 @@ TEST_CASE("Scylla parallel: egout feasibility", "[scylla]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -183,7 +172,6 @@ TEST_CASE("Scylla opportunistic: flugpl characterization", "[scylla][opportunist
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -199,7 +187,6 @@ TEST_CASE("Scylla opportunistic: egout feasibility", "[scylla][opportunistic]") 
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -215,7 +202,6 @@ TEST_CASE("Scylla opportunistic: gt2 pure binary", "[scylla][opportunistic]") {
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -245,7 +231,6 @@ TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][s
         h.setOptionValue("mip_heuristic_run_local_mip", false);
         h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
         h.setOptionValue("mip_heuristic_run_scylla", true);
-        h.setOptionValue("mip_heuristic_portfolio", false);
         h.setOptionValue("mip_heuristic_opportunistic", false);
     });
 

@@ -7,7 +7,6 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
-#include "portfolio.h"
 #include "scylla.h"
 #include "solution_pool.h"
 
@@ -52,8 +51,7 @@ void log_sequential(const HighsLogOptions &log_options, const char *name, size_t
 // callback then submits each new solution to HiGHS immediately on
 // acceptance so incumbent timestamps reflect find time rather than
 // flush time.  Each entry carries its originating heuristic's source
-// tag (see solution_pool.h / #73).  The portfolio modes already manage
-// their own pool inside `portfolio::run_presolve` and are not affected.
+// tag (see solution_pool.h / #73).
 bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic, bool fj_on,
                     bool fpr_on, bool lm_on, bool sc_on) {
     const auto *options = mipsolver.options_mip_;
@@ -73,9 +71,8 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
     //
     // Calibration procedure (`bench/check_effort_drift.py` automates 3–5):
     //   1. Build with this file's `[Sequential]` logging enabled.
-    //   2. Run seq/det (`mip_heuristic_portfolio=false`,
-    //      `mip_heuristic_opportunistic=false`) on MIPLIB with all four
-    //      heuristics on (see `bench/run_benchmark.py`).
+    //   2. Run seq/det (`mip_heuristic_opportunistic=false`) on MIPLIB
+    //      with all four heuristics on (see `bench/run_benchmark.py`).
     //   3. `python bench/check_effort_drift.py bench/results/calibration`.
     //   4. Copy each heuristic's suggested weight into the constants
     //      below.  Normalise so the lowest weight rounds to a tidy value
@@ -231,35 +228,29 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool opportunistic
 
 HeuristicFlags effective_flags(const HighsOptions &options, bool *preset_recognized) {
     // Individual options first; a recognized non-empty preset overrides
-    // all six flags.  Unknown presets leave the individual-option values
+    // all five flags.  Unknown presets leave the individual-option values
     // in place (no silent disable-all footgun) — the caller warns.
-    HeuristicFlags flags{options.mip_heuristic_run_feasibility_jump,
-                         options.mip_heuristic_run_fpr,
-                         options.mip_heuristic_run_local_mip,
-                         options.mip_heuristic_run_scylla,
-                         options.mip_heuristic_portfolio,
+    HeuristicFlags flags{options.mip_heuristic_run_feasibility_jump, options.mip_heuristic_run_fpr,
+                         options.mip_heuristic_run_local_mip, options.mip_heuristic_run_scylla,
                          options.mip_heuristic_opportunistic};
 
     const auto &preset = options.mip_heuristic_preset;
     bool recognized = false;
     if (!preset.empty()) {
         if (preset == "off") {
-            flags = {false, false, false, false, false, false};
+            flags = {false, false, false, false, false};
             recognized = true;
         } else if (preset == "fpr") {
-            flags = {false, true, false, false, false, false};
+            flags = {false, true, false, false, false};
             recognized = true;
         } else if (preset == "all_det") {
-            flags = {true, true, true, false, false, false};
+            flags = {true, true, true, false, false};
             recognized = true;
         } else if (preset == "all_opp") {
-            flags = {true, true, true, false, false, true};
+            flags = {true, true, true, false, true};
             recognized = true;
         } else if (preset == "scylla") {
-            flags = {false, false, false, true, false, true};
-            recognized = true;
-        } else if (preset == "portfolio") {
-            flags = {true, true, true, true, true, true};
+            flags = {false, false, false, true, true};
             recognized = true;
         }
     }
@@ -278,7 +269,6 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     const bool fpr_on = flags.fpr;
     const bool lm_on = flags.local_mip;
     const bool sc_on = flags.scylla;
-    const bool portfolio = flags.portfolio;
     const bool opportunistic = flags.opportunistic;
 
     if (!options->mip_heuristic_preset.empty() && !preset_applied) {
@@ -289,13 +279,12 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     }
 
     // When a preset was applied, write the derived flags back into the options
-    // struct so that downstream code that reads options directly (e.g.
-    // portfolio::build_presolve_setup) sees the preset values.  The underlying
-    // object is a non-const HighsOptions member of the enclosing Highs
-    // instance, so the cast is safe.  We save the original values first and
-    // restore them before returning so that a second highs.run() call (with or
-    // without a preset) sees the options the user actually set, not the
-    // preset-overwritten ones.
+    // struct so that downstream code that reads options directly sees the
+    // preset values.  The underlying object is a non-const HighsOptions member
+    // of the enclosing Highs instance, so the cast is safe.  We save the
+    // original values first and restore them before returning so that a second
+    // highs.run() call (with or without a preset) sees the options the user
+    // actually set, not the preset-overwritten ones.
     if (preset_applied) {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         auto *w = const_cast<HighsOptions *>(options);
@@ -305,7 +294,6 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
         const bool saved_fpr = w->mip_heuristic_run_fpr;
         const bool saved_lm = w->mip_heuristic_run_local_mip;
         const bool saved_sc = w->mip_heuristic_run_scylla;
-        const bool saved_portfolio = w->mip_heuristic_portfolio;
         const bool saved_opportunistic = w->mip_heuristic_opportunistic;
 
         // Apply preset.
@@ -313,33 +301,22 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
         w->mip_heuristic_run_fpr = fpr_on;
         w->mip_heuristic_run_local_mip = lm_on;
         w->mip_heuristic_run_scylla = sc_on;
-        w->mip_heuristic_portfolio = portfolio;
         w->mip_heuristic_opportunistic = opportunistic;
 
         // Dispatch.
-        bool result;
-        if (portfolio) {
-            portfolio::run_presolve(mipsolver, budget, opportunistic);
-            result = false;
-        } else {
-            result = run_sequential(mipsolver, budget, opportunistic, fj_on, fpr_on, lm_on, sc_on);
-        }
+        const bool result =
+            run_sequential(mipsolver, budget, opportunistic, fj_on, fpr_on, lm_on, sc_on);
 
         // Restore originals so multi-solve on the same Highs instance is safe.
         w->mip_heuristic_run_feasibility_jump = saved_fj;
         w->mip_heuristic_run_fpr = saved_fpr;
         w->mip_heuristic_run_local_mip = saved_lm;
         w->mip_heuristic_run_scylla = saved_sc;
-        w->mip_heuristic_portfolio = saved_portfolio;
         w->mip_heuristic_opportunistic = saved_opportunistic;
 
         return result;
     }
 
-    if (portfolio) {
-        portfolio::run_presolve(mipsolver, budget, opportunistic);
-        return false;
-    }
     return run_sequential(mipsolver, budget, opportunistic, fj_on, fpr_on, lm_on, sc_on);
 }
 

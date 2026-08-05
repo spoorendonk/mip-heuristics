@@ -27,7 +27,6 @@ TEST_CASE("LocalMIP opportunistic: flugpl finds solution",
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
@@ -44,7 +43,6 @@ TEST_CASE("LocalMIP standalone: flugpl", "[heuristic][local_mip]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -58,7 +56,6 @@ TEST_CASE("LocalMIP standalone: egout", "[heuristic][local_mip]") {
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -75,7 +72,6 @@ TEST_CASE("LocalMIP parallel: flugpl finds solution", "[heuristic][local_mip]") 
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -90,7 +86,6 @@ TEST_CASE("LocalMIP parallel: egout finds solution", "[heuristic][local_mip]") {
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", true);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_portfolio", false);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -234,7 +229,6 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
         h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
         h.setOptionValue("mip_heuristic_run_scylla", false);
         h.setOptionValue("mip_heuristic_run_local_mip", true);
-        h.setOptionValue("mip_heuristic_portfolio", false);
         h.setOptionValue("mip_heuristic_opportunistic", false);
     });
 
@@ -260,7 +254,6 @@ TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74
           "[heuristic][local_mip][pool-aware]") {
     const std::vector<std::string> lines = solve_capturing_log("lseu.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
-        h.setOptionValue("mip_heuristic_portfolio", false);
         h.setOptionValue("mip_heuristic_opportunistic", false);
         h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
         h.setOptionValue("mip_heuristic_run_fpr", false);
@@ -351,7 +344,6 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
     h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     h.setOptionValue("mip_heuristic_run_scylla", false);
     h.setOptionValue("mip_heuristic_run_local_mip", true);
-    h.setOptionValue("mip_heuristic_portfolio", false);
     h.setOptionValue("mip_heuristic_opportunistic", false);
     REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
@@ -387,7 +379,6 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
     h.setOptionValue("mip_heuristic_run_scylla", false);
     h.setOptionValue("mip_heuristic_run_local_mip", true);
-    h.setOptionValue("mip_heuristic_portfolio", false);
     h.setOptionValue("mip_heuristic_opportunistic", false);
     // `lseu.mps` is the same instance the existing #74 regression test
     // uses — FJ reliably finds a feasible inside the presolve budget,

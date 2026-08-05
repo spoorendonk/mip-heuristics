@@ -33,13 +33,12 @@ inline void require_option(Highs& h, const std::string& name, T value) {
     REQUIRE(h.setOptionValue(name, value) == HighsStatus::kOk);
 }
 
-// Solve `inst` with the requested (portfolio × opportunistic) cell of
-// the execution matrix and return the final objective.  Used by the
-// mode-matrix cross-heuristic parity tests.
-inline double solve_mode(const char* inst, bool portfolio, bool opp) {
+// Solve `inst` in the requested parallelism mode (deterministic
+// epoch-gated vs opportunistic) and return the final objective.  Used by
+// the mode-matrix cross-heuristic parity tests.
+inline double solve_mode(const char* inst, bool opp) {
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_portfolio", portfolio);
     h.setOptionValue("mip_heuristic_opportunistic", opp);
     REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
@@ -139,12 +138,11 @@ inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
 }
 
 // Solve flugpl with every custom heuristic disabled in the requested
-// (portfolio × opportunistic) cell — verifies none of the mode paths
-// blocks HiGHS's built-in B&B fallback.
-inline double solve_mode_no_heuristics(bool portfolio, bool opp) {
+// parallelism mode — verifies neither mode path blocks HiGHS's built-in
+// B&B fallback.
+inline double solve_mode_no_heuristics(bool opp) {
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_portfolio", portfolio);
     h.setOptionValue("mip_heuristic_opportunistic", opp);
     h.setOptionValue("mip_heuristic_run_fpr", false);
     h.setOptionValue("mip_heuristic_run_local_mip", false);
