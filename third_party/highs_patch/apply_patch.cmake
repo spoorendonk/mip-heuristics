@@ -95,6 +95,45 @@ if(_opts_found EQUAL -1)
 
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
     message(STATUS "Applied option patches to HighsOptions.h")
+
+    # Sanity checks: all three insertions must land.  This block is the
+    # one that most needs them, because its failure mode is silent rather
+    # than loud: if only the *record registration* REPLACE misses (upstream
+    # reformats the Shifting record block it anchors on), the members and
+    # ctor inits are still there, so HighsOptions.h compiles — the options
+    # are simply never registered, keep their `false` ctor defaults, and
+    # every custom heuristic switches off with no diagnostic anywhere.
+    # The preset and presolve_effort blocks below have carried equivalent
+    # checks for a while; #92 re-anchored the preset block onto this one,
+    # which makes a miss here cascade into both.
+    #
+    # `mip_heuristic_run_scylla` alone is a sufficient probe: each of the
+    # three REPLACEs inserts all four options in a single string, so any
+    # one of them landing means all four did.  Same reason the idempotency
+    # sentinel above keys on it.
+    #
+    # Match the member declaration *without* its trailing semicolon: cmake
+    # splits a matched string containing `;` into list elements, which would
+    # make list(LENGTH) report 2 for a single hit.  Same trick the preset
+    # block uses (`std::string mip_heuristic_preset`).  The `bool ` prefix
+    # is what keeps this from also matching the ctor init or the record.
+    string(REGEX MATCHALL "bool mip_heuristic_run_scylla" _bool_member_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _bool_member_hits _bool_member_count)
+    string(REGEX MATCHALL "mip_heuristic_run_scylla\\(false\\)" _bool_ctor_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _bool_ctor_hits _bool_ctor_count)
+    # string(FIND), not REGEX MATCHALL: the record text contains semicolons.
+    string(FIND "${OPTIONS_CONTENT}" "OptionRecordBool(\"mip_heuristic_run_scylla\"" _bool_record_idx)
+    if(NOT _bool_member_count EQUAL 1 OR NOT _bool_ctor_count EQUAL 1 OR _bool_record_idx EQUAL -1)
+        message(FATAL_ERROR
+            "HighsOptions.h post-patch sanity check failed for the "
+            "mip_heuristic_run_* bool options (member=${_bool_member_count}, "
+            "ctor=${_bool_ctor_count}, record_idx=${_bool_record_idx}). "
+            "Upstream HiGHS likely reformatted HighsOptions.h so one of the "
+            "three anchor REPLACE patterns no longer matches. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
 else()
     message(STATUS "Option patches already applied to HighsOptions.h, skipping")
 endif()
