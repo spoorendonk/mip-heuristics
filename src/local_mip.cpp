@@ -265,7 +265,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
             return LmState{std::make_unique<LocalMipWorker>(
                 mipsolver, setup.csc, pool, setup.worker_budget, seed, start.data())};
         },
-        [&](LmState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
+        [&](LmState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             if (!state.worker || state.worker->finished()) {
                 // Restart from pool, incumbent, or fresh construction
                 // (cold-start), with fresh perturbation.
@@ -303,14 +303,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 state.worker = std::make_unique<LocalMipWorker>(
                     mipsolver, setup.csc, pool, setup.worker_budget, seed, restart_sol.data());
             }
-            auto attempt = state.worker->run_attempt(run_cap);
-            HeuristicResult result;
-            result.effort = attempt.effort;
-            if (attempt.found_improvement) {
-                result.found_feasible = true;
-                result.objective = pool.snapshot().best_objective;
-            }
-            return result;
+            return state.worker->run_attempt(run_cap);
         });
 
     // Caller books `mipdata->heuristic_effort_used` (issue #79), which

@@ -93,9 +93,8 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     size_t total_effort = run_opportunistic_loop(
         mipsolver, N, max_effort, setup.stale_budget, setup.default_run_cap, setup.base_seed,
         [](int worker_idx, Rng & /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
-        [&](ScyllaOppState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
+        [&](ScyllaOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             auto &worker = workers[state.worker_idx];
-            HeuristicResult result;
             if (worker->finished()) {
                 // Harvest the retired worker's overlap counters before
                 // the rebuild drops its destructor on the floor.
@@ -115,12 +114,10 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
             // attempt produced no measurable effort (e.g. a PDLP stall that has
             // not yet hit kMaxPdlpStalls). Prevents run_opportunistic_loop's
             // zero-effort guard from permanently retiring a live chain.
-            result.effort = (attempt.effort == 0 && !worker->finished()) ? 1 : attempt.effort;
-            if (attempt.found_improvement) {
-                result.found_feasible = true;
-                result.objective = pool.snapshot().best_objective;
+            if (attempt.effort == 0 && !worker->finished()) {
+                attempt.effort = 1;
             }
-            return result;
+            return attempt;
         });
 
     log_overlap_ratio(mipsolver.options_mip_->log_options, workers,

@@ -33,7 +33,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
             // Pin first attempt to random_seed + w; worker 0 matches vanilla FJ's seed.
             return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx), true};
         },
-        [&](FjState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
+        [&](FjState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             if (!state.worker || state.worker->finished()) {
                 uint32_t seed;
                 if (state.first_creation) {
@@ -45,14 +45,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 state.worker =
                     std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
             }
-            auto attempt = state.worker->run_attempt(run_cap);
-            HeuristicResult result;
-            result.effort = attempt.effort;
-            if (attempt.found_improvement) {
-                result.found_feasible = true;
-                result.objective = pool.snapshot().best_objective;
-            }
-            return result;
+            return state.worker->run_attempt(run_cap);
         });
 }
 

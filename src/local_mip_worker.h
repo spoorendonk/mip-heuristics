@@ -29,8 +29,7 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
 class LocalMipWorker {
 public:
     LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
-                   size_t total_budget, uint32_t seed, const double *initial_solution,
-                   size_t stale_budget = 0);
+                   size_t total_budget, uint32_t seed, const double *initial_solution);
 
     AttemptResult run_attempt(size_t attempt_budget);
 

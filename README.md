@@ -41,6 +41,8 @@ The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla 
 
 For a reproducible run, set `threads=1` together with a fixed `random_seed`. That is the project's reproducibility contract — a single worker per heuristic, deterministic within one binary. It is not a separate mode and needs no extra option.
 
+One caveat for library embedders (not CLI users): HiGHS's task executor is a process-global singleton, initialised by the first `run()` in the process. A later solve that asks for a *different* thread count fails outright rather than silently using the old one, so pinning `threads=1` on a second `Highs` instance returns an error unless you first call `Highs::resetGlobalScheduler(true)`.
+
 The `mip_heuristic_preset` option sets the per-heuristic enable flags:
 
 | Preset | Heuristics | Notes |

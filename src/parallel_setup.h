@@ -41,15 +41,15 @@ struct ParallelSetup {
     size_t worker_budget;    // max_effort / N (floor division)
     // max_effort / (N * 10) (min 1) — per-attempt effort cap.
     //
-    // FJ used to run on a separate cadence (`kEpochsPerWorkerFj = 20`
-    // against 10 for the rest).  That constant died with the epoch-gated
-    // runner in #92 and FJ now shares this cap, i.e. the unified cadence
-    // of 10 that its docstring had been holding out against: "FJ's
-    // synchronization cadence matters for pool-crossover behaviour and a
-    // change could regress on FJ-dominant instances.  Kept at 20 until a
-    // formal MIPLIB benchmark validates a unified value."  That benchmark
-    // was never run, so the concern is unresolved rather than answered —
-    // recorded here so it is not lost with the constant.
+    // Historical note: the deleted epoch-gated runner gave FJ a separate
+    // cadence (`kEpochsPerWorkerFj = 20` against 10 for the rest), on the
+    // grounds that "FJ's synchronization cadence matters for pool-crossover
+    // behaviour and a change could regress on FJ-dominant instances".  That
+    // only ever applied to the epoch runner — the continuous runner has
+    // always used this cap for FJ too — so #92 removed a constant, not a
+    // behaviour.  The concern was never benchmarked; recorded here so it is
+    // not lost with the constant, but no cadence changed for any surviving
+    // execution path.
     size_t default_run_cap;
     size_t stale_budget;     // max_effort / 4 — generic staleness ceiling
 

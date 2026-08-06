@@ -55,12 +55,27 @@ if(MIP_HEURISTICS_CUDA)
     message(STATUS "MIP_HEURISTICS_CUDA: enabled (CUDA compiler: ${CMAKE_CUDA_COMPILER})")
 endif()
 
+# FetchContent records the patch step as a *command line* and re-runs it
+# only when that line changes — editing apply_patch.cmake does not
+# invalidate the stamp.  Without this, every existing build tree silently
+# keeps whatever option set it was patched with, and the PATCH_VERSION
+# guard inside the script never gets a chance to run: exactly epic #88's
+# coupling B ("every existing HiGHS build tree contains the *old* option
+# set"), which the guard exists to catch.  Feeding the script's hash into
+# the command line makes any edit re-run the patch, so a stale tree hits
+# the guard and gets told to clean instead of compiling against a header
+# that no longer matches src/.  The variable is deliberately unused by
+# the script — its only job is to be part of the stamped command.
+file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch/apply_patch.cmake
+     MIP_HEURISTICS_PATCH_SHA)
+
 FetchContent_Declare(highs
     GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS.git
     GIT_TAG        v1.15.1
     PATCH_COMMAND ${CMAKE_COMMAND}
         -DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch
         -DSOURCE_DIR=<SOURCE_DIR>
+        -DPATCH_SCRIPT_SHA=${MIP_HEURISTICS_PATCH_SHA}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch/apply_patch.cmake
 )
 

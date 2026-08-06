@@ -228,10 +228,10 @@ public:
             }
         }
 
-        std::vector<double> initial_solution;
+        initial_solution_buf_.clear();
         const double *init_ptr = nullptr;
-        if (pool_.get_restart(rng_, initial_solution)) {
-            init_ptr = initial_solution.data();
+        if (pool_.get_restart(rng_, initial_solution_buf_)) {
+            init_ptr = initial_solution_buf_.data();
         }
 
         const LpArm &arm = setup_.arms[arm_idx_];
@@ -286,6 +286,10 @@ private:
     // Per-worker scratch reused across fpr_attempt calls to avoid malloc
     // churn on the DFS + WalkSAT repair hot path.
     FprScratch scratch_;
+    // Reused across attempts so the per-attempt pool restart does not
+    // re-allocate an `ncol`-sized vector every call.  Mirrors
+    // `FprWorker::initial_solution_buf_` in fpr.cpp.
+    std::vector<double> initial_solution_buf_;
 
     // Hard cap on the number of soft-threshold arm randomisations
     // without an improvement before the worker declares itself
@@ -348,20 +352,13 @@ size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionP
             uint32_t seed = base_seed + static_cast<uint32_t>(worker_idx) * kSeedStride;
             return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed)};
         },
-        [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> HeuristicResult {
+        [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             if (state.worker->finished()) {
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed);
             }
-            auto attempt = state.worker->run_attempt(run_cap);
-            HeuristicResult result;
-            result.effort = attempt.effort;
-            if (attempt.found_improvement) {
-                result.found_feasible = true;
-                result.objective = pool.snapshot().best_objective;
-            }
-            return result;
+            return state.worker->run_attempt(run_cap);
         });
 }
 

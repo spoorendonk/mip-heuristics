@@ -423,20 +423,13 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,
         [](int worker_idx, Rng & /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
-        [&](FprOppState &state, Rng & /*rng*/, size_t run_cap) -> HeuristicResult {
+        [&](FprOppState &state, Rng & /*rng*/, size_t run_cap) -> AttemptResult {
             auto &worker = workers[state.worker_idx];
             // FprWorker::finished() returns false unconditionally
             // post-#77; the opportunistic loop's own staleness gate is
             // the termination signal.  No worker-level replacement
             // needed.
-            auto attempt = worker->run_attempt(run_cap);
-            HeuristicResult result;
-            result.effort = attempt.effort;
-            if (attempt.found_improvement) {
-                result.found_feasible = true;
-                result.objective = pool.snapshot().best_objective;
-            }
-            return result;
+            return worker->run_attempt(run_cap);
         });
 }
 

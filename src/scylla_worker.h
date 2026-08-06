@@ -176,6 +176,10 @@ private:
     // Persistent scratch reused across fpr_attempt calls inside run_attempt
     // to avoid per-iteration malloc/free churn on the DFS + WalkSAT path.
     FprScratch fpr_scratch_;
+    // Pool-restart buffer, reused for the same reason: the pump loop pulls
+    // a restart on every iteration, so this was an `ncol`-sized alloc/free
+    // per iteration on the hottest path in the heuristic.
+    std::vector<double> restart_buf_;
 
     // Cross-worker improvement broadcast.  When any worker bumps the
     // generation, peers reset their local staleness on the next loop

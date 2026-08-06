@@ -395,9 +395,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_.size());
     cfg.scratch = &fpr_scratch_;
 
-    std::vector<double> restart;
-    pool_.get_restart(rng_, restart);
-    const double *restart_ptr = restart.empty() ? nullptr : restart.data();
+    restart_buf_.clear();
+    pool_.get_restart(rng_, restart_buf_);
+    const double *restart_ptr = restart_buf_.empty() ? nullptr : restart_buf_.data();
 
     HeuristicResult rounded =
         fpr_attempt(mipsolver_, cfg, rng_, 0, restart_ptr);

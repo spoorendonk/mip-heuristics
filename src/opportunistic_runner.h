@@ -5,6 +5,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
+#include "worker_base.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -21,7 +22,7 @@
 //     Called once per worker (inside the parallel region) to create
 //     initial per-worker state.
 //
-//   RunAttempt(State&, Rng&, size_t run_cap) -> HeuristicResult
+//   RunAttempt(State&, Rng&, size_t run_cap) -> AttemptResult
 //     Called repeatedly.  Should execute one heuristic attempt with at
 //     most `run_cap` effort.  When the underlying worker is finished
 //     (stalled), the callback should rebuild/restart the worker in-place.
@@ -86,7 +87,7 @@ template <typename MakeState, typename RunAttempt>
                         break;
                     }
 
-                    loop.note_staleness(result.effort, result.found_feasible, stale_budget);
+                    loop.note_staleness(result.effort, result.found_improvement, stale_budget);
                     loop.add_effort(result.effort, budget);
                 }
             }

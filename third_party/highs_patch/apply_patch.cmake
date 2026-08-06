@@ -93,9 +93,6 @@ if(_opts_found EQUAL -1)
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Applied option patches to HighsOptions.h")
-
     # Sanity checks: all three insertions must land.  This block is the
     # one that most needs them, because its failure mode is silent rather
     # than loud: if only the *record registration* REPLACE misses (upstream
@@ -108,8 +105,8 @@ if(_opts_found EQUAL -1)
     # which makes a miss here cascade into both.
     #
     # `mip_heuristic_run_scylla` alone is a sufficient probe: each of the
-    # three REPLACEs inserts all four options in a single string, so any
-    # one of them landing means all four did.  Same reason the idempotency
+    # three REPLACEs inserts all three options in a single string, so any
+    # one of them landing means all three did.  Same reason the idempotency
     # sentinel above keys on it.
     #
     # Match the member declaration *without* its trailing semicolon: cmake
@@ -134,6 +131,8 @@ if(_opts_found EQUAL -1)
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
+    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
+    message(STATUS "Applied option patches to HighsOptions.h")
 else()
     message(STATUS "Option patches already applied to HighsOptions.h, skipping")
 endif()
@@ -161,9 +160,6 @@ if(_preset_found EQUAL -1)
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);"
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
-
-    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Applied mip_heuristic_preset option to HighsOptions.h")
 
     # Sanity checks: all three insertions must produce exactly one occurrence.
     # A silent REPLACE miss (e.g. upstream reformat) would leave an incomplete
@@ -204,6 +200,8 @@ if(_preset_found EQUAL -1)
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
+    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
+    message(STATUS "Applied mip_heuristic_preset option to HighsOptions.h")
 else()
     message(STATUS "mip_heuristic_preset option already applied to HighsOptions.h, skipping")
 endif()
@@ -270,9 +268,6 @@ if(_presolve_effort_found EQUAL -1)
       "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);\n\n    record_double = new OptionRecordDouble(\n        \"mip_heuristic_presolve_effort\",\n        \"Effort budget multiplier for custom presolve heuristics\", advanced,\n        &mip_heuristic_presolve_effort, 0.0, 0.30, 1.0);\n    records.push_back(record_double);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Applied mip_heuristic_presolve_effort option to HighsOptions.h")
-
     # Sanity checks: all three insertions must land.
     string(REGEX MATCHALL "double mip_heuristic_presolve_effort" _pe_member_hits "${OPTIONS_CONTENT}")
     list(LENGTH _pe_member_hits _pe_member_count)
@@ -289,6 +284,8 @@ if(_presolve_effort_found EQUAL -1)
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
+    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
+    message(STATUS "Applied mip_heuristic_presolve_effort option to HighsOptions.h")
 else()
     message(STATUS "mip_heuristic_presolve_effort option already applied, skipping")
 endif()
@@ -340,9 +337,6 @@ if(_src_enum_found EQUAL -1)
       "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceFprLp,               // D (LP-dependent FPR, B&B dive)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceCleanup,"
       MIPDATA_H "${MIPDATA_H}")
 
-    file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
-    message(STATUS "Applied custom solution source enums to HighsMipSolverData.h")
-
     # Sanity check: the source-enum insert must produce exactly one occurrence
     # of kSolutionSourceFprLp. If it does not, an upstream reformat likely
     # broke the REPLACE pattern above, leaving the file malformed.
@@ -357,6 +351,8 @@ if(_src_enum_found EQUAL -1)
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
+    message(STATUS "Applied custom solution source enums to HighsMipSolverData.h")
 else()
     message(STATUS "Custom solution source enums already applied, skipping")
 endif()
@@ -391,9 +387,6 @@ if(_src_cpp_found EQUAL -1)
       "std::vector<int> limits = {4, 9, 14, last_enum};"
       "std::vector<int> limits = {4, 9, 14, 19, last_enum};"
       MIPDATA_CPP "${MIPDATA_CPP}")
-
-    file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")
-    message(STATUS "Applied solution source strings to HighsMipSolverData.cpp")
 
     # Sanity checks: the source-to-string insert must produce exactly one
     # kSolutionSourceFprLp branch, one "FPR LP" display string, and one
@@ -433,6 +426,8 @@ if(_src_cpp_found EQUAL -1)
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")
+    message(STATUS "Applied solution source strings to HighsMipSolverData.cpp")
 else()
     message(STATUS "Solution source strings already applied, skipping")
 endif()
@@ -605,6 +600,20 @@ if(_fj_effort_found EQUAL -1)
       "  solver.solve(col_value.data(), fjControlCallback);\n  heuristic_effort_used += fj_last_effort;\n\n  if (found_integer_feasible_solution) {\n    // Initial assignments"
       FJ_CONTENT2 "${FJ_CONTENT2}")
 
+    # Silent if it misses: the `+=` simply never appears and vanilla FJ's
+    # effort goes unaccounted forever.  Low impact today because Patch A
+    # disables that call site, but #93 restores native FJ under
+    # `suite=off`, at which point the ablation row would under-report.
+    string(FIND "${FJ_CONTENT2}" "heuristic_effort_used += fj_last_effort;" _fj_effort_check)
+    if(_fj_effort_check EQUAL -1)
+        message(FATAL_ERROR
+            "HighsFeasibilityJump.cpp post-patch sanity check failed: "
+            "'heuristic_effort_used += fj_last_effort;' not found after patching. "
+            "Upstream HiGHS likely reformatted the standalone feasibilityJump() "
+            "callback so an exact-string anchor no longer matches. "
+            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+    endif()
+
     file(WRITE "${MIP_DIR}/HighsFeasibilityJump.cpp" "${FJ_CONTENT2}")
     message(STATUS "Applied effort tracking to standalone feasibilityJump()")
 else()
@@ -651,6 +660,27 @@ if(_found EQUAL -1)
       "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_presolve_effort);\n      if (heuristics::run_presolve(*this, budget)) {\n        modelstatus_ = HighsModelStatus::kInfeasible;\n        cleanupSolve();\n        return;\n      }\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
+    # This block had no check at all, and it is the one whose miss is
+    # worst: if A2's anchor stops matching while A's still does, the tree
+    # compiles and links, but `heuristics::run_presolve` is never called
+    # *and* vanilla's standalone FJ has been switched off — a binary that
+    # runs no primal heuristics whatsoever while still printing the
+    # "mip-heuristics patch active" banner.  The mirror case (A misses,
+    # A2 lands) double-runs FJ and quietly invalidates the vanilla-
+    # equivalence row of the benchmark matrix (epic #88 coupling I).
+    # Neither shows up as a build failure, so nothing else would catch it.
+    string(FIND "${CONTENT}" "heuristics::run_presolve" _presolve_check)
+    string(FIND "${CONTENT}" "FJ runs via custom presolve heuristics block" _fj_off_check)
+    if(_presolve_check EQUAL -1 OR _fj_off_check EQUAL -1)
+        message(FATAL_ERROR
+            "HighsMipSolver.cpp presolve patch failed "
+            "(run_presolve=${_presolve_check}, fj_disable=${_fj_off_check}). "
+            "Upstream HiGHS likely restructured the pre-root-node heuristics "
+            "block so an exact-string anchor no longer matches. "
+            "Please update Patch A/A2 in third_party/highs_patch/apply_patch.cmake. "
+            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+    endif()
+
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
     message(STATUS "Applied presolve heuristic patches to HighsMipSolver.cpp")
 else()
@@ -689,9 +719,6 @@ if(_fprlp_found EQUAL -1)
       "    fpr_lp::run(*this);\n    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
       CONTENT "${CONTENT}")
 
-    file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
-    message(STATUS "Applied fpr_lp B&B dive patch to HighsMipSolver.cpp")
-
     string(FIND "${CONTENT}" "fpr_lp::run" _fprlp_check)
     if(_fprlp_check EQUAL -1)
         message(FATAL_ERROR
@@ -702,6 +729,9 @@ if(_fprlp_found EQUAL -1)
             "Please update Patch C in third_party/highs_patch/apply_patch.cmake. "
             "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
     endif()
+
+    file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
+    message(STATUS "Applied fpr_lp B&B dive patch to HighsMipSolver.cpp")
 else()
     message(STATUS "fpr_lp B&B dive patch already applied, skipping")
 endif()
