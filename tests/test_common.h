@@ -33,6 +33,32 @@ inline void require_option(Highs& h, const std::string& name, T value) {
     REQUIRE(h.setOptionValue(name, value) == HighsStatus::kOk);
 }
 
+// Makes a `threads=N` pin work regardless of what else ran first in this
+// process.
+//
+// The HiGHS task executor is a process-global singleton, initialised on
+// the first `Highs::run` of the process.  A later solve that asks for a
+// different count does not silently get the old one — it fails outright:
+// `Highs::initializeMultiThreading` returns `kError`, which surfaces as
+// an opaque `run() != kOk` with nothing pointing at the thread count.
+// Under ctest that never bites, because `catch_discover_tests` forks one
+// process per case, but `./mip_heuristics_tests "[tag]"` (documented in
+// CLAUDE.md) runs many cases in one process and every pinned case fails.
+//
+// Tearing the scheduler down on both ends fixes it in both worlds: on
+// entry so this solve gets the count it asked for, on exit so the next
+// case re-initialises at the default rather than silently inheriting our
+// pin — which would quietly strip multi-worker coverage from everything
+// downstream while still passing.  RAII rather than two bare calls
+// precisely so the exit half cannot be forgotten.
+class ScopedThreadPin {
+public:
+    ScopedThreadPin() { Highs::resetGlobalScheduler(/*blocking=*/true); }
+    ~ScopedThreadPin() { Highs::resetGlobalScheduler(/*blocking=*/true); }
+    ScopedThreadPin(const ScopedThreadPin&) = delete;
+    ScopedThreadPin& operator=(const ScopedThreadPin&) = delete;
+};
+
 // Solve `inst` at default options and return the final objective.  Used
 // by the execution-mode cross-heuristic parity tests.
 inline double solve_default(const char* inst) {
@@ -40,8 +66,19 @@ inline double solve_default(const char* inst) {
     h.setOptionValue("output_flag", false);
     // Callers assert the known optimum at tolerances tighter than
     // HiGHS's default `mip_rel_gap` (1e-4) allows it to guarantee, so
-    // require a proven-optimal solve.  See the characterization tests in
-    // `test_fpr.cpp` for the full rationale.
+    // require a proven-optimal solve.
+    //
+    // Why only some tests carry this guard: a solve permitted to stop at
+    // relative 1e-4 may return an incumbent short of the optimum, which
+    // makes any `Approx(optimum).epsilon(<1e-4)` assertion unsound in
+    // principle.  In practice only `bell5` ever exercises that freedom —
+    // 15 default-option runs of each bundled instance produced 3 distinct
+    // primal bounds for bell5 and exactly 1 for flugpl, egout, gt2,
+    // p0548 and lseu.  So the guard goes on the helpers here and on every
+    // bell5 assertion (`test_fpr.cpp`, `test_fpr_lp.cpp`); the remaining
+    // exact-optimum assertions are left alone deliberately, not by
+    // oversight.  If a new instance is added, re-run that check before
+    // asserting its optimum tightly.
     require_option(h, "mip_rel_gap", 0.0);
     REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);

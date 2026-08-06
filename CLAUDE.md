@@ -25,7 +25,7 @@ cmake --build build -j$(nproc)
 cd build && ctest --output-on-failure
 
 # Run a single test by name
-cd build && ctest -R "mode-matrix det: flugpl objective" --output-on-failure
+cd build && ctest -R "execution-mode: flugpl objective" --output-on-failure
 
 # Run tests matching a Catch2 tag
 cd build && ./mip_heuristics_tests "[mode-matrix]"
@@ -79,7 +79,7 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `worker_base.h` — `AttemptResult` (one attempt's effort + improvement flag) and `WorkerBudgetState` (per-worker effort / staleness / budget bookkeeping, embedded by composition into FJ / LocalMIP / Scylla workers).
 - `opportunistic_runner.h` — the generic continuous parallel loop every heuristic runs on.
 - `contested_pdlp` — mutex-guarded `Highs` PDLP wrapper shared by all Scylla workers. One-shot `solve(modified_cost, warm_start, epsilon, time_limit)` API holds the mutex for the full `changeColsCost → setSolution → run → getSolution` path, guaranteeing at most one PDLP solve is in flight (critical for cuPDLP GPU state). Also exposes `try_solve_or_snapshot(...)`: `try_lock` + fresh solve on success, or a lock-free `std::atomic<std::shared_ptr<const Snapshot>>` read of the most-recent completed solve on contention — lets N-1 Scylla workers keep rounding while one holds the mutex (issue #76). The in-flight counter is debug-asserted == 1 inside the critical section.
-- `scylla_worker` / `pump_common.h` — Scylla worker class and shared feasibility-pump primitives (Mexi et al. 2023). Each worker is one `ScyllaWorker` conforming to `EpochWorker` and runs its own chain of PDLP→FPR iterations.
+- `scylla_worker` / `pump_common.h` — Scylla worker class and shared feasibility-pump primitives (Mexi et al. 2023). Each worker is one `ScyllaWorker` (see `worker_base.h`) and runs its own chain of PDLP→FPR iterations.
 - `fj_worker` / `fpr_worker` (inside fpr) — the FJ and FPR worker classes. `FprWorker` is declared inline in `src/fpr.cpp`; there is no `fpr_worker.*` file.
 
 **Shared utilities** (`src/`):
@@ -92,7 +92,7 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 - `mip_heuristic_run_fpr`, `mip_heuristic_run_local_mip`, `mip_heuristic_run_scylla` — enable/disable individual heuristics. `mip_heuristic_run_fpr` also gates `fpr_lp` (via `heuristics::effective_flags`, so a preset overrides it — `preset=off` disables fpr_lp too; the raw option defaults to `true`).
 - `mip_heuristic_run_feasibility_jump` — enable FJ.
 
-**Observability**: at `log_dev_level=3` the dispatcher emits one `[Sequential] heur=<name> effort=<N> wall_ms=<X> effort_per_ms=<R>` line per heuristic per solve (see `src/mode_dispatch.cpp`). `bench/parse_highs_log.py` parses it and `bench/check_effort_drift.py` aggregates the samples to recalibrate `kWeight*`. Recalibrate at `threads=1` so the per-heuristic rates are comparable across runs. Recalibrate at `threads=1` so the per-heuristic rates are comparable across runs.
+**Observability**: at `log_dev_level=3` the dispatcher emits one `[Sequential] heur=<name> effort=<N> wall_ms=<X> effort_per_ms=<R>` line per heuristic per solve (see `src/mode_dispatch.cpp`). `bench/parse_highs_log.py` parses it and `bench/check_effort_drift.py` aggregates the samples to recalibrate `kWeight*`. Recalibrate at the **default** thread count, not `threads=1` — `effort_per_ms` is a throughput and Scylla scales sublinearly in workers (PDLP mutex) where FPR/LocalMIP scale near-linearly, so the worker-count factor does not cancel in the ratios.
 
 **Testing**: Catch2 v3. Tests use `.mps` instances from HiGHS's own `check/instances/` directory (path injected via `INSTANCES_DIR` compile definition). Characterization tests verify known-optimal objectives. (See the testing override near the top of this file — we do not use GoogleTest.)
 

@@ -3,6 +3,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
 #include <string>
 
 // ===================================================================
@@ -82,7 +83,12 @@ TEST_CASE("execution-mode: FJ-only flugpl", "[mode-matrix]") {
 namespace {
 struct SeededRun {
     double obj = 0.0;
-    HighsInt nodes = 0;
+    // `int64_t`, not `HighsInt`: `mip_node_count` is registered as an
+    // `InfoRecordInt64`, and in a default (32-bit `HighsInt`) build the
+    // `HighsInt&` overload of `getInfoValue` rejects the type, returns
+    // `kError` and leaves the value *untouched* — every node-count
+    // assertion below would compare 0 against 0 forever.
+    int64_t nodes = 0;
     // Concatenated `heur=<name> effort=<N>` fields of the `[Sequential]`
     // traces, which fingerprint how much work each heuristic did.  A
     // finer signal than the node count: the presolve heuristics can
@@ -97,16 +103,24 @@ struct SeededRun {
 // fixed `random_seed`) and fingerprint the run.
 SeededRun run_seeded(int seed) {
     SeededRun res;
+    const ScopedThreadPin pin;
     const auto lines = solve_capturing_log(
         "flugpl.mps",
         [&](Highs& h) {
             require_option(h, "threads", 1);
             require_option(h, "random_seed", seed);
             require_option(h, "log_dev_level", 3);
+            // Same rationale as `solve_default`: the objective assertion
+            // below is tighter than HiGHS's default `mip_rel_gap` (1e-4)
+            // can guarantee, so require a proven-optimal solve.
+            require_option(h, "mip_rel_gap", 0.0);
         },
         [&](Highs& h) {
-            h.getInfoValue("objective_function_value", res.obj);
-            h.getInfoValue("mip_node_count", res.nodes);
+            // Status-checked: a silently-failing `getInfoValue` leaves the
+            // field at its initialiser and makes the equality assertions
+            // in the callers vacuous.
+            REQUIRE(h.getInfoValue("objective_function_value", res.obj) == HighsStatus::kOk);
+            REQUIRE(h.getInfoValue("mip_node_count", res.nodes) == HighsStatus::kOk);
         });
     for (const auto& line : lines) {
         const auto heur = line.find("heur=");
@@ -135,15 +149,17 @@ TEST_CASE("execution-mode: threads=1 same seed reproduces the run", "[mode-matri
 
 TEST_CASE("execution-mode: threads=1 different seeds take different search paths",
           "[mode-matrix]") {
-    // Proves the seed actually reaches the workers rather than being
-    // silently ignored: if it did not, the two runs would be identical.
-    // The divergence is asserted on the effort trace or the node count
-    // rather than a specific value — which one moves is a property of
-    // the instance, not a contract.
+    // Proves the seed reaches *our* workers rather than being silently
+    // ignored.  Asserted on the effort trace specifically, not on the
+    // node count: HiGHS consumes `random_seed` in its own branching, so
+    // a differing node count would be satisfied with zero contribution
+    // from the heuristics and would prove nothing about them.  The
+    // trace is bit-stable per seed and moves in 3 of the 4 heuristics
+    // between seeds 7 and 8.
     auto a = run_seeded(7);
     auto b = run_seeded(8);
     REQUIRE(a.obj == Catch::Approx(b.obj).epsilon(1e-6));
-    REQUIRE((a.effort_trace != b.effort_trace || a.nodes != b.nodes));
+    REQUIRE(a.effort_trace != b.effort_trace);
 }
 
 TEST_CASE("execution-mode: threads=1 still finds the optimum", "[mode-matrix]") {

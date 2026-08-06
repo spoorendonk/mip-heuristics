@@ -584,8 +584,8 @@ File paths are relative to the repository root.
 ## Budget Allocation Weights (mode_dispatch)
 
 These weights tune each heuristic's share of the common effort budget
-so that equal weights yield roughly equal wall-clock spend in seq/det
-mode. They are calibrated against MIPLIB geomean `effort_per_ms` using
+so that equal weights yield roughly equal wall-clock spend. They are
+calibrated against MIPLIB geomean `effort_per_ms` using
 `bench/check_effort_drift.py`. Recalibrate after any change to effort
 accounting.
 

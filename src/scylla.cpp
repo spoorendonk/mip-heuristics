@@ -27,7 +27,7 @@ namespace {
 // busy during a held mutex.
 void log_overlap_ratio(const HighsLogOptions &log_options,
                        const std::vector<std::unique_ptr<ScyllaWorker>> &workers,
-                       std::uint64_t extra_fresh = 0, std::uint64_t extra_stale = 0) {
+                       std::uint64_t extra_fresh, std::uint64_t extra_stale) {
     std::uint64_t fresh = extra_fresh;
     std::uint64_t stale = extra_stale;
     for (const auto &w : workers) {

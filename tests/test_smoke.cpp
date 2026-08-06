@@ -71,6 +71,18 @@ TEST_CASE("Options: effort split defaults", "[options]") {
     REQUIRE(highs.setOptionValue("mip_heuristic_presolve_effort", 1.0) == HighsStatus::kOk);
 }
 
+// #92 deleted `mip_heuristic_opportunistic` from the patch rather than
+// leaving it a silently ignored knob.  Epic #88's coupling B is that every
+// pre-existing HiGHS build tree still registers the old option set; the
+// PATCH_VERSION guard in apply_patch.cmake is the primary defence and this
+// is the runtime backstop for a stale tree or a patch-script regression
+// that re-adds it.
+TEST_CASE("Options: opportunistic option is gone", "[options]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    REQUIRE(highs.setOptionValue("mip_heuristic_opportunistic", true) != HighsStatus::kOk);
+}
+
 TEST_CASE("Options: preset option exists and accepts all valid values", "[options][preset]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);

@@ -65,13 +65,20 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     //
     // Calibration procedure (`bench/check_effort_drift.py` automates 3–5):
     //   1. Build with this file's `[Sequential]` logging enabled.
-    //   2. Run the fixed suite at `threads=1` on MIPLIB with all four
-    //      heuristics on (see `bench/run_benchmark.py`).  Pinning to one
-    //      worker is what makes the per-heuristic `effort_per_ms` rates
-    //      comparable across runs: with the default thread count the
-    //      rate folds in however many workers the pool happened to give
-    //      each heuristic.
-    //   3. `python bench/check_effort_drift.py bench/results/calibration`.
+    //   2. Run the fixed suite on MIPLIB with all four heuristics on, at
+    //      the default thread count — *not* `threads=1`.  `effort_per_ms`
+    //      is a throughput, so it scales with worker count, and it does
+    //      not scale identically across heuristics: FPR and LocalMIP are
+    //      near-linear in N, while Scylla serialises every PDLP solve
+    //      behind the `ContestedPdlp` mutex and so scales sublinearly.
+    //      The N factor therefore does not cancel in the ratios, and a
+    //      single-worker calibration would hand Scylla a systematically
+    //      different weight from the one the default configuration needs.
+    //      Note `bench/run_benchmark.py`'s `patched` config pins
+    //      `mip_heuristic_preset=all_opp`, which disables Scylla — use a
+    //      config name it does not recognise (e.g. `--configs
+    //      calibration`) so no preset is applied and all four run.
+    //   3. `python bench/check_effort_drift.py <results-dir>`.
     //   4. Copy each heuristic's suggested weight into the constants
     //      below.  Normalise so the lowest weight rounds to a tidy value
     //      (0.5 or 1.0) — absolute scale does not matter, only ratios.
@@ -86,23 +93,30 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     //      as a one-shot calibration helper, not a CI gate.
     //
     // Recalibrated against `bench/instances_small.txt` (25 MIPLIB
-    // instances, 30 s each, presolve budget at the 0.30 default —
-    // then still the overloaded `mip_heuristic_effort`, now
-    // `mip_heuristic_presolve_effort` with the same value and formula,
-    // so the calibration carries over — epoch-gated parallel mode
-    // (removed in #92), mip_root_presolve_only=true, multi-thread
-    // default threads=16).  The constants are ratios of `effort_per_ms`
-    // rates, which are properties of the heuristics and not of the
-    // runner, so they carry over to the continuous runner unchanged.
-    // Measured geomean
-    // `effort_per_ms` after issue #78 (cold-start construction sweep rolled into local_mip's
-    // reported effort):
+    // instances, 30 s each, presolve budget at the 0.30 default — then
+    // still the overloaded `mip_heuristic_effort`, now
+    // `mip_heuristic_presolve_effort` with the same value and formula, so
+    // the calibration carries over across the option split —
+    // mip_root_presolve_only=true, threads=16).
+    //
+    // Caveat, and the reason step 2 above insists on the default thread
+    // count: these numbers were measured under the epoch-gated runner
+    // that #92 removed.  Effort accounting is per-worker and unchanged,
+    // and both runners give every heuristic the same worker pool, so the
+    // ratios are expected to carry over — but that is an expectation, not
+    // a measurement.  Scylla is the one to watch: losing the epoch
+    // barrier changes how often its workers contend on the PDLP mutex,
+    // which is exactly the term that does not scale with N like the
+    // others.  Re-measure before the next tweak rather than adjusting
+    // these by hand.  Measured geomean `effort_per_ms` after issue #78
+    // (cold-start construction sweep rolled into local_mip's reported
+    // effort):
     //   fpr=636k  local_mip=1222k  scylla=261k   drift = 4.68× (FJ excluded:
     //   fixed vanilla budget, not weight-apportioned; see fj_budget below)
     // Weights are proportional to geomean `effort_per_ms` (scylla
     // normalised to 1.0 as the slowest-per-effort heuristic).
-    // Re-run `bench/check_effort_drift.py bench/results/calibration_v2`
-    // to refresh after any change to effort accounting.  Earlier
+    // Re-run `bench/check_effort_drift.py <results-dir>` to refresh after
+    // any change to effort accounting.  Earlier
     // calibrations live in git history (commits 82c0fbc, 83bc78b).
     //
     // FJ uses a fixed per-worker budget matching vanilla HiGHS's single-thread

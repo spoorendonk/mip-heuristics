@@ -138,7 +138,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     size_t effort_at_last_improvement = effort_start;
 
     // Effort is the deterministic work signal; wall-clock `time_limit` is
-    // enforced by the outer loop (worker_base.h / continuous_loop.h)
+    // enforced by the outer loop (opportunistic_runner.h / continuous_loop.h)
     // between attempts.  Inner-loop polling would buy sub-attempt deadline
     // precision at the cost of a clock_gettime per iteration, which on
     // small instances was ~3% of total instruction refs.  One attempt of
@@ -346,7 +346,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     // Only add effort consumed since the last improvement within this
     // attempt (avoid double-counting when improvement resets the counter).
     base_.effort_since_improvement += ctx_.effort - effort_at_last_improvement;
-    // Set finished if either budget is exhausted so run_epoch_loop does not
+    // Set finished if either budget is exhausted so the runner does not
     // re-enter this worker after its budget is spent.  (FjWorker gets this
     // via charge_improvement/charge_no_improvement; LocalMIP does its own
     // accounting because improvements can occur mid-attempt.)

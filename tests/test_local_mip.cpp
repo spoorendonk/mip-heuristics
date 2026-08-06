@@ -319,6 +319,7 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
         SKIP("Built with MIP_HEURISTICS_INSTRUMENT=OFF — counters compiled out");
     }
     local_mip::reset_warm_start_counters();
+    const ScopedThreadPin pin;
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_root_presolve_only", true);
@@ -399,8 +400,8 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
 // `flugpl.mps` — small, fast, and used by the existing
 // LocalMIP tests; running with no upstream heuristic populating the pool
 // or incumbent ensures the cold-start construction path fires (so
-// `construction_effort > 0` is part of the returned sum on at least one
-// of the two sections).
+// `construction_effort > 0` is part of the returned sum in the
+// local_mip section).
 TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used delta",
           "[heuristic][effort-accounting]") {
     // Stand up a real `HighsMipSolver` (with `mipdata_`) without going

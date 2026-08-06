@@ -19,9 +19,17 @@
 
 namespace {
 double solve_fpr_lp(const char* inst, int threads = 0) {
+    // Only meaningful when `threads > 0`, but unconditional so the pin
+    // and its teardown can never drift apart; a no-op reset is cheap.
+    const ScopedThreadPin pin;
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_heuristic_run_fpr", true);
+    // bell5, the instance both callers use, is the one bundled instance
+    // whose solve can stop on HiGHS's default `mip_rel_gap` (1e-4) short
+    // of the optimum.  Require a proven-optimal solve so the objective
+    // assertions are sound.
+    h.setOptionValue("mip_rel_gap", 0.0);
     if (threads > 0) {
         h.setOptionValue("threads", threads);
     }

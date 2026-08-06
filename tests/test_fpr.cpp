@@ -182,6 +182,7 @@ namespace {
 // (0.05/10) gives a slice large enough that step actually runs.
 // Returns final objective.
 double solve_with_seed_small_effort(const char *inst, int seed) {
+    const ScopedThreadPin pin;
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("random_seed", seed);
@@ -300,6 +301,12 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    // bell5 is the one bundled instance whose solve can terminate on
+    // HiGHS's default `mip_rel_gap` (1e-4) with an incumbent short of
+    // the optimum — 3 distinct primal bounds over 15 default-option
+    // runs, against 1 for every other instance the suite uses.  Assert
+    // the known optimum only on a proven-optimal solve.
+    require_option(highs, "mip_rel_gap", 0.0);
     REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;

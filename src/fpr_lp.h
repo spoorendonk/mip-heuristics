@@ -26,7 +26,8 @@ namespace fpr_lp {
 //    race.  Never fires on the default single-search-worker runs.
 void run(HighsMipSolver &mipsolver);
 
-// Test hook: counter incremented once per worker dispatch.  fpr_lp is a
+// Test hook: counter incremented once per fpr_lp dispatch (one bump per
+// `run_workers` call, not per worker).  fpr_lp is a
 // single heuristic family, so it always runs arm-aligned parallel
 // workers.  Process-global; reset before each test that inspects it.
 struct DispatchCounts {

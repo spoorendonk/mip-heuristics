@@ -313,7 +313,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
 
     // Split PDLP effort accounting:
     //  - attempt.effort gets the FULL cost (iters * nnz) so the outer
-    //    run_epoch_loop / run_opportunistic_loop budget check sees
+    //    run_opportunistic_loop budget check sees
     //    actual aggregate work and stops on time.
     //  - Per-worker counters (base_.total_effort,
     //  base_.effort_since_improvement)

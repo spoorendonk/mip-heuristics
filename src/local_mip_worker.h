@@ -36,7 +36,6 @@ public:
 
     bool finished() const { return base_.finished; }
 
-
 private:
     HighsMipSolver &mipsolver_;
     const CscMatrix &csc_;
@@ -66,6 +65,5 @@ private:
     // instances where perturbation can't break the plateau.
     HighsInt feasible_random_walks_done_ = 0;
 };
-
 
 }  // namespace local_mip_detail

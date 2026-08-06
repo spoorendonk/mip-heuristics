@@ -23,8 +23,8 @@ class Incumbent:
 class SequentialSample:
     """A single [Sequential] per-heuristic wall-clock observation.
 
-    Emitted by `run_sequential` in `src/mode_dispatch.cpp` when the
-    presolve dispatch runs in seq/det (or seq/opp) mode.  One sample
+    Emitted by `run_sequential` in `src/mode_dispatch.cpp` on every
+    presolve dispatch.  One sample
     per heuristic per solve; used by `bench/check_effort_drift.py` to
     calibrate `kWeight*` (see issue #71).
     """

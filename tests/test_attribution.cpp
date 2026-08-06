@@ -72,7 +72,7 @@ TEST_CASE("attribution: LocalMIP-only run is credited with M", "[attribution]") 
 // Scylla is the one heuristic whose code is not machine-independent.
 // Each worker takes a fixed FPR rounding strategy (`kFprConfigs[w % N]`),
 // and on gt2 the strategy that lands a solution is only instantiated from
-// the third worker on: a seq/det Scylla-only run emits `G` at >= 3 workers
+// the third worker on: a Scylla-only run emits `G` at >= 3 workers
 // and none at all below that.  HiGHS derives its default worker count from
 // the machine (`(hardware_concurrency() + 1) / 2`), so asserting `G`
 // unconditionally would pass on a developer box and fail on a 2-vCPU CI

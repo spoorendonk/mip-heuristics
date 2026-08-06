@@ -9,7 +9,7 @@
 class HighsMipSolver;
 class SolutionPool;
 
-// Epoch-gated FeasibilityJump worker.  Owns a FeasibilityJumpSolver
+// FeasibilityJump worker.  Owns a FeasibilityJumpSolver
 // and supports pause/resume across attempt boundaries via the `resume`
 // parameter on FJ's solve() method.
 //
