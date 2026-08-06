@@ -45,10 +45,10 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 state.worker =
                     std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
             }
-            auto epoch = state.worker->run_epoch(run_cap);
+            auto attempt = state.worker->run_attempt(run_cap);
             HeuristicResult result;
-            result.effort = epoch.effort;
-            if (epoch.found_improvement) {
+            result.effort = attempt.effort;
+            if (attempt.found_improvement) {
                 result.found_feasible = true;
                 result.objective = pool.snapshot().best_objective;
             }

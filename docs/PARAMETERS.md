@@ -83,17 +83,17 @@ File paths are relative to the repository root.
 
 ---
 
-### `kMaxAttemptsPerCall` — multi-attempt fill cap per epoch
+### `kMaxAttemptsPerCall` — multi-attempt fill cap per call
 
-- **File**: `src/fpr.cpp` (`FprWorker::run_epoch`)
+- **File**: `src/fpr.cpp` (`FprWorker::run_attempt`)
 - **Default**: `32`
 - **Meaning**: Maximum number of new FPR attempts started within a
-  single `run_epoch` call. Guards against degenerate models where
+  single `run_attempt` call. Guards against degenerate models where
   attempts verdict near-instantly (e.g. `infeasible-mip0`), which
-  would otherwise fill the epoch budget purely with
+  would otherwise fill the attempt budget purely with
   `fpr_attempt_begin` setup overhead.
 - **Suggested range**: 8–64. Larger values let fast workers fill the
-  epoch budget completely; smaller values reduce setup churn on
+  attempt budget completely; smaller values reduce setup churn on
   degenerate models.
 
 ---
@@ -114,7 +114,7 @@ File paths are relative to the repository root.
 
 - **File**: `src/fpr_lp.cpp` (`LpFprWorker`)
 - **Default**: `50`
-- **Meaning**: After this many consecutive stale epochs (no improvement
+- **Meaning**: After this many consecutive stale attempts (no improvement
   and no arm switch) the worker forces a new random seed, resetting its
   LP arm assignment. Prevents a worker from replaying the same arm
   forever on degenerate instances.
@@ -122,11 +122,11 @@ File paths are relative to the repository root.
 
 ---
 
-### `kStaleEpochThreshold` — staleness trigger for randomization
+### `kStaleAttemptThreshold` — staleness trigger for randomization
 
 - **File**: `src/fpr_lp.cpp` (`LpFprWorker`)
 - **Default**: `3`
-- **Meaning**: Number of consecutive stale epochs before incrementing
+- **Meaning**: Number of consecutive stale attempts before incrementing
   the randomization counter. Lower values trigger diversification
   sooner.
 - **Suggested range**: 1–10.

@@ -1,6 +1,5 @@
 #include "fpr.h"
 
-#include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
@@ -10,6 +9,7 @@
 #include "parallel/HighsParallel.h"
 #include "parallel_setup.h"
 #include "solution_pool.h"
+#include "worker_base.h"
 
 #include <algorithm>
 #include <atomic>
@@ -65,7 +65,7 @@ public:
               const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
               size_t attempt_budget);
 
-    EpochResult run_epoch(size_t epoch_budget);
+    AttemptResult run_attempt(size_t attempt_budget);
 
     bool finished() const { return false; }
 
@@ -105,7 +105,7 @@ private:
     Rng rng_;
     FprScratch scratch_;
     // Reused across attempts to avoid `std::vector<double>` churn — the
-    // multi-attempt loop in `run_epoch` calls `pool_.get_restart` once
+    // multi-attempt loop in `run_attempt` calls `pool_.get_restart` once
     // per attempt, and an unhoisted local would re-allocate every
     // iteration on instances large enough to matter (review R2 CF-1).
     std::vector<double> initial_solution_buf_;
@@ -215,7 +215,7 @@ void FprWorker::select_config_for_current_attempt() {
     // `RepairSearchNode` with `e_act_mark` and pass it to
     // `E.backtrack_to`); kept out of this change to bound scope.  Until
     // then the curated list keeps the rotation safe.  Multi-attempt
-    // looping inside `run_epoch` still lets fast workers fill the slice
+    // looping inside `run_attempt` still lets fast workers fill the slice
     // by cycling through the 8-config list, which the issue's #1
     // acceptance bullet (FPR CPU% on tbfp-network) cares about.
     const int idx = ((worker_idx_ + attempt_idx_) % kNumInitialFprConfigs + kNumInitialFprConfigs) %
@@ -225,8 +225,8 @@ void FprWorker::select_config_for_current_attempt() {
     mode_ = cfg.mode;
 }
 
-EpochResult FprWorker::run_epoch(size_t epoch_budget) {
-    EpochResult epoch{};
+AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
+    AttemptResult attempt{};
 
     // Issue #77 lifecycle.  Two mechanics in play:
     //
@@ -236,7 +236,7 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     //     nodes_visited, found_complete, dfs_stack, prop_engine) lives in
     //     `attempt_state_` + `scratch_` and is preserved until the next call
     //     resumes the same attempt.  Without this, a long DFS subtree gets
-    //     truncated and discarded each epoch — the parallelism bottleneck
+    //     truncated and discarded each attempt — the parallelism bottleneck
     //     this issue exists to fix.
     //
     // (2) Multi-attempt fill *within* a call.  When an attempt verdicts
@@ -270,24 +270,24 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
     const bool have_restart = pool_.get_restart(rng_, initial_solution_buf_);
 
     // 32 attempts × 2 mutex ops × N workers is a theoretical upper bound on
-    // pool-mutex acquisitions per outer epoch.  In practice the cap is
+    // pool-mutex acquisitions per outer attempt.  In practice the cap is
     // rarely approached: each attempt's begin charges O(nnz) coefficient
     // accesses (initial propagate), and the per-call slice is sized so an
     // instance with non-trivial DFS spends most of the slice inside step
     // rather than restarting attempts.  HighsSpinMutex critical sections
     // in `try_add` / `get_restart` are sub-microsecond (lower_bound over
     // <= kPoolCapacity entries plus an O(ncol) Hamming or single solution
-    // copy).  Even worst-case, total mutex-time per epoch is bounded ms
+    // copy).  Even worst-case, total mutex-time per attempt is bounded ms
     // (review R2 U-1 / Finding 3).
     constexpr int kMaxAttemptsPerCall = 32;
     int attempts_started = 0;
     size_t prev_loop_effort = 0;
 
-    while (epoch.effort < epoch_budget) {
+    while (attempt.effort < attempt_budget) {
         if (mipdata->terminatorTerminated() || mipsolver_.timer_.read() >= time_limit) {
             break;
         }
-        if (attempts_started > 0 && epoch.effort == prev_loop_effort) {
+        if (attempts_started > 0 && attempt.effort == prev_loop_effort) {
             // Defensive belt-and-braces guard.  Today this branch is
             // unreachable: degenerate `ncol==0||nrow==0` models are filtered
             // out by `fpr::run_parallel` before workers are constructed,
@@ -299,7 +299,7 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
             // this loop into an infinite attempt-cycler.
             break;
         }
-        prev_loop_effort = epoch.effort;
+        prev_loop_effort = attempt.effort;
 
         // Advance the per-worker rotation BEFORE building cfg so that
         // `cfg.strategy` / `cfg.mode` / `cfg.precomputed_var_order` reflect
@@ -327,7 +327,7 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         // budgets (`cfg.max_effort - total_prop_work` for repair_search /
         // walksat).  Sized at the worker's `attempt_budget_` (=
         // ParallelSetup::stale_budget = max_effort/4), not the per-call
-        // `epoch_budget`: when an attempt spans multiple `run_epoch` calls,
+        // `attempt_budget`: when an attempt spans multiple `run_attempt` calls,
         // the cumulative `total_prop_work` arriving at Phase 3 already
         // exceeds any single slice, so a slice-sized cap clamps the repair
         // budget to 0 (review R1 CF-1).  The DFS gate inside
@@ -348,7 +348,7 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         cfg.scratch = &scratch_;
 
         if (!attempt_alive()) {
-            // Reuse the restart snapshot taken at the start of `run_epoch`
+            // Reuse the restart snapshot taken at the start of `run_attempt`
             // (review R1 / Finding 1) — `initial_solution_buf_` is the
             // member buffer the snapshot landed in.
             const double *init_ptr = have_restart ? initial_solution_buf_.data() : nullptr;
@@ -356,23 +356,23 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
             // `attempt_state_.phase` is now `kDfs` (or `kReadyToFinish`
             // if Phase 1 already produced a complete fixing); either way
             // `attempt_alive()` is true on the next iteration.
-            epoch.effort += attempt_state_.effort_consumed;
+            attempt.effort += attempt_state_.effort_consumed;
         }
 
         if (attempt_state_.phase == FprAttemptState::Phase::kDfs) {
             const size_t before_step = attempt_state_.effort_consumed;
             const size_t budget_remaining =
-                epoch_budget > epoch.effort ? epoch_budget - epoch.effort : 0;
+                attempt_budget > attempt.effort ? attempt_budget - attempt.effort : 0;
             const FprStepResult outcome =
                 fpr_attempt_step(attempt_state_, mipsolver_, cfg, rng_, budget_remaining);
-            epoch.effort += attempt_state_.effort_consumed - before_step;
+            attempt.effort += attempt_state_.effort_consumed - before_step;
             if (outcome == FprStepResult::kBudgetGate) {
 #ifndef NDEBUG
                 g_budget_gate_hits.fetch_add(1, std::memory_order_relaxed);
 #endif
                 // Attempt paused at the per-call slice boundary — return so
-                // peers do their next epoch's work and we resume here next call.
-                return epoch;
+                // peers do their next attempt's work and we resume here next call.
+                return attempt;
             }
             // kVerdictReady — DFS ended (leaf found or stack/node-limit
             // exhausted), proceed to finish.
@@ -380,11 +380,11 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
 
         const size_t before_finish = attempt_state_.effort_consumed;
         HeuristicResult result = fpr_attempt_finish(attempt_state_, mipsolver_, cfg, rng_);
-        epoch.effort += attempt_state_.effort_consumed - before_finish;
+        attempt.effort += attempt_state_.effort_consumed - before_finish;
 
         if (result.found_feasible) {
             pool_.try_add(result.objective, result.solution, kSolutionSourceFPR);
-            epoch.found_improvement = true;
+            attempt.found_improvement = true;
         }
 
         ++attempt_idx_;
@@ -392,7 +392,7 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
         // `attempt_alive()` is false on the next iteration.
     }
 
-    return epoch;
+    return attempt;
 }
 
 // ---------------------------------------------------------------------------
@@ -429,10 +429,10 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
             // post-#77; the opportunistic loop's own staleness gate is
             // the termination signal.  No worker-level replacement
             // needed.
-            auto epoch = worker->run_epoch(run_cap);
+            auto attempt = worker->run_attempt(run_cap);
             HeuristicResult result;
-            result.effort = epoch.effort;
-            if (epoch.found_improvement) {
+            result.effort = attempt.effort;
+            if (attempt.found_improvement) {
                 result.found_feasible = true;
                 result.objective = pool.snapshot().best_objective;
             }

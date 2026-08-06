@@ -163,7 +163,7 @@ TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
 }
 
 // ===================================================================
-// Issue #77 lifecycle: pause/resume across epoch gates is deterministic
+// Issue #77 lifecycle: pause/resume across budget gates is deterministic
 // ===================================================================
 
 namespace {
@@ -172,7 +172,7 @@ namespace {
 // (the knob feeding the presolve FPR budget since the effort-option
 // split) so the FPR per-call slice is well below the cost of a full DFS
 // subtree on these instances — attempts must pause via `kBudgetGate` and
-// resume on subsequent `run_epoch` calls, or fast-fail and trigger the
+// resume on subsequent `run_attempt` calls, or fast-fail and trigger the
 // multi-attempt fill loop.  Without this the [fpr][resume] tests can
 // pass without ever exercising the new pause/resume code path on the
 // small HiGHS check instances (egout / bell5 / flugpl all verdict in
@@ -292,7 +292,7 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
     // Worker rotation `(worker_idx + attempt_idx) % kNumInitialFprConfigs`
     // visits every Class-1 config (paper Section 6.3) before cycling.
     // bell5 is a known-feasible instance that previously relied on the
-    // randomized stale-epoch jump; the deterministic rotation must still
+    // randomized stale-attempt jump; the deterministic rotation must still
     // reach the same optimum.
     Highs highs;
     highs.setOptionValue("output_flag", false);

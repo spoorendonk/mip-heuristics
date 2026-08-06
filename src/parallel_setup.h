@@ -28,7 +28,7 @@
 //     `mode_dispatch::run_sequential` for the sequential-mode path and
 //     is passed through each heuristic's `run_parallel(..., SolutionPool&)`.
 //   - `total_effort`, `effort_since_improvement`, `finished` live in
-//     `EpochWorkerBase` (in `epoch_runner.h`) for each worker that needs
+//     `WorkerBudgetState` (in `worker_base.h`) for each worker that needs
 //     them.  `ParallelSetup::stale_budget` is the *derived* value each
 //     worker's base struct receives on construction (for the three
 //     heuristics that honour it — FJ overrides internally).

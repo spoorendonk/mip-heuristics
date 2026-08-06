@@ -123,8 +123,8 @@ struct FprConfig {
     //   `fpr_attempt_finish`).  Different one-shot callers pass
     //   different slice sizes here:
     //     • `scylla_worker.cpp` — per-pump-iter remainder of the
-    //       current epoch.
-    //     • `fpr_lp.cpp` — full epoch budget.
+    //       current attempt slice.
+    //     • `fpr_lp.cpp` — full attempt budget.
     //   None is a normalised wall-clock-equivalent quantity; each is
     //   simply whatever cap the caller wants on this single DFS.
     //   Phase 3 (repair_search / walksat) self-throttles via
@@ -133,10 +133,10 @@ struct FprConfig {
     //
     // - Lifecycle (`fpr_attempt_begin/step/finish` from `FprWorker`):
     //   caps the *attempt* across all begin → step → ... → step →
-    //   finish calls that may span multiple `run_epoch` invocations,
+    //   finish calls that may span multiple `run_attempt` invocations,
     //   NOT the per-call slice.  See the `cfg.max_effort =
     //   std::max<size_t>(attempt_budget_, 1)` line in
-    //   `FprWorker::run_epoch` and its rationale comment.  The per-call
+    //   `FprWorker::run_attempt` and its rationale comment.  The per-call
     //   DFS gate is the `effort_remaining` argument passed explicitly
     //   to `fpr_attempt_step`.
     //
@@ -224,10 +224,10 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng
 // `fpr_attempt` above runs Phase 1 (rank), Phase 2 (DFS fix-and-propagate),
 // Phase 2.5 (fill remaining unfixed), and Phase 3 (repair / 1-opt) end to end
 // in one call.  On a long DFS subtree this pegs cfg.max_effort and discards
-// the subtree's work — peers in the same epoch barrier idle while the slow
-// worker burns its slice.  The lifecycle below splits the attempt into three
-// callable stages so a worker can pause at the per-epoch gate, return to the
-// runner, then resume next epoch with the DFS state intact.
+// the subtree's work — the worker burns its whole slice for nothing.  The
+// lifecycle below splits the attempt into three callable stages so a worker
+// can pause at the per-call budget gate, return to the runner, then resume
+// on the next call with the DFS state intact.
 //
 // State that must survive across `fpr_attempt_step` calls lives in
 // `FprAttemptState` (DFS cursor / counters / phase tag) and in `FprScratch`
@@ -267,7 +267,7 @@ struct FprAttemptState {
     // Cumulative effort consumed by this attempt across all begin/step/finish
     // calls.  `step`'s budget gate compares against the engine's effort
     // counter; the worker reads `effort_consumed` deltas to attribute work
-    // to the current epoch slice.
+    // to the current attempt slice.
     size_t effort_consumed = 0;
 
     enum class Phase {
@@ -285,7 +285,7 @@ struct FprAttemptState {
 
 enum class FprStepResult {
     // Per-call effort budget exhausted; attempt is alive, caller may
-    // re-enter `fpr_attempt_step` with more budget next epoch.
+    // re-enter `fpr_attempt_step` with more budget on the next call.
     kBudgetGate,
     // DFS terminated (success leaf found or stack exhausted / node_limit
     // hit); caller must call `fpr_attempt_finish` to materialize the

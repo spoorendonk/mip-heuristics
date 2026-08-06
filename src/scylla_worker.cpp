@@ -153,7 +153,7 @@ bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult &result,
   return false;
 }
 
-EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
+AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
   if (base_.finished) {
     return {};
   }
@@ -164,11 +164,11 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
   const auto &orig_cost = model->col_cost_;
   const double time_limit = mipsolver_.options_mip_->time_limit;
 
-  EpochResult epoch{};
+  AttemptResult attempt{};
 
-  while (epoch.effort < epoch_budget && !base_.exhausted()) {
+  while (attempt.effort < attempt_budget && !base_.exhausted()) {
     // Wall-clock `time_limit` is enforced by the outer loop between
-    // epochs and by the `remaining <= 0` guard below (which also
+    // attempts and by the `remaining <= 0` guard below (which also
     // computes PDLP's input time_limit from the same timer read).
     // A redundant worker-level check before that guard would just
     // double the clock_gettime cost per iteration for no extra
@@ -273,7 +273,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
           // used in opportunistic_runner.
           base_.total_effort += 1;
           base_.effort_since_improvement += 1;
-          epoch.effort += 1;
+          attempt.effort += 1;
           continue;
         }
         if (snap->generation == last_seen_snapshot_gen_) {
@@ -289,7 +289,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
           ++stale_rounds_;
           base_.total_effort += 1;
           base_.effort_since_improvement += 1;
-          epoch.effort += 1;
+          attempt.effort += 1;
           continue;
         }
         stale_snapshot_ = snap;
@@ -312,7 +312,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
     }
 
     // Split PDLP effort accounting:
-    //  - epoch.effort gets the FULL cost (iters * nnz) so the outer
+    //  - attempt.effort gets the FULL cost (iters * nnz) so the outer
     //    run_epoch_loop / run_opportunistic_loop budget check sees
     //    actual aggregate work and stops on time.
     //  - Per-worker counters (base_.total_effort,
@@ -328,7 +328,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
     size_t local_effort = actual_effort / static_cast<size_t>(num_workers_);
     base_.total_effort += local_effort;
     base_.effort_since_improvement += local_effort;
-    epoch.effort += actual_effort;
+    attempt.effort += actual_effort;
 
     const auto &x_bar = *x_bar_ptr;
 
@@ -369,13 +369,13 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
         if (improvement_gen_ != nullptr) {
           improvement_gen_->fetch_add(1, std::memory_order_relaxed);
         }
-        epoch.found_improvement = true;
+        attempt.found_improvement = true;
         continue;
       }
     }
 
     size_t remaining_budget = std::min(
-        epoch_budget - std::min(epoch_budget, epoch.effort),
+        attempt_budget - std::min(attempt_budget, attempt.effort),
         base_.total_budget - std::min(base_.total_budget, base_.total_effort));
     if (remaining_budget == 0) {
       break;
@@ -404,7 +404,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
 
     base_.total_effort += rounded.effort;
     base_.effort_since_improvement += rounded.effort;
-    epoch.effort += rounded.effort;
+    attempt.effort += rounded.effort;
 
     if (rounded.found_feasible && !rounded.solution.empty()) {
       pool_.try_add(rounded.objective, rounded.solution, kSolutionSourceScylla);
@@ -412,7 +412,7 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
       if (improvement_gen_ != nullptr) {
         improvement_gen_->fetch_add(1, std::memory_order_relaxed);
       }
-      epoch.found_improvement = true;
+      attempt.found_improvement = true;
     }
 
     if (rounded.solution.empty()) {
@@ -487,5 +487,5 @@ EpochResult ScyllaWorker::run_epoch(size_t epoch_budget) {
     }
   }
 
-  return epoch;
+  return attempt;
 }

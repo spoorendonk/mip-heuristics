@@ -1,6 +1,5 @@
 #pragma once
 
-#include "epoch_runner.h"
 #include "heuristic_common.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
@@ -8,6 +7,7 @@
 #include "mip/HighsMipSolverData.h"
 #include "solution_pool.h"
 #include "util/HighsInt.h"
+#include "worker_base.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +32,7 @@ public:
                    size_t total_budget, uint32_t seed, const double *initial_solution,
                    size_t stale_budget = 0);
 
-    EpochResult run_epoch(size_t epoch_budget);
+    AttemptResult run_attempt(size_t attempt_budget);
 
     bool finished() const { return base_.finished; }
 
@@ -45,7 +45,7 @@ private:
 
     // Effort / staleness / finished bookkeeping.  `total_budget` and
     // `stale_budget` are set in the constructor.
-    EpochWorkerBase base_;
+    WorkerBudgetState base_;
 
     WorkerCtx ctx_;
     std::vector<HighsInt> costed_vars_;

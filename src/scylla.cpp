@@ -110,13 +110,13 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                     std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool, max_effort,
                                                    new_seed, state.worker_idx, N, &improvement_gen);
             }
-            auto epoch = worker->run_epoch(run_cap);
+            auto attempt = worker->run_attempt(run_cap);
             // Report a nominal 1 unit when the chain is still alive but the
-            // epoch produced no measurable effort (e.g. a PDLP stall that has
+            // attempt produced no measurable effort (e.g. a PDLP stall that has
             // not yet hit kMaxPdlpStalls). Prevents run_opportunistic_loop's
             // zero-effort guard from permanently retiring a live chain.
-            result.effort = (epoch.effort == 0 && !worker->finished()) ? 1 : epoch.effort;
-            if (epoch.found_improvement) {
+            result.effort = (attempt.effort == 0 && !worker->finished()) ? 1 : attempt.effort;
+            if (attempt.found_improvement) {
                 result.found_feasible = true;
                 result.objective = pool.snapshot().best_objective;
             }

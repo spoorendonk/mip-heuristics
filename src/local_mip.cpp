@@ -252,7 +252,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 // under the mutex (textbook DCL UB on a non-atomic
                 // compound type).  The single locked check below is
                 // cheap; MakeState fires N times per dispatch, not per
-                // epoch.
+                // attempt.
                 std::lock_guard<std::mutex> lock(cold_start_cache_mu);
                 if (cold_start_cache.empty()) {
                     cold_start_cache = local_cache;
@@ -303,10 +303,10 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 state.worker = std::make_unique<LocalMipWorker>(
                     mipsolver, setup.csc, pool, setup.worker_budget, seed, restart_sol.data());
             }
-            auto epoch = state.worker->run_epoch(run_cap);
+            auto attempt = state.worker->run_attempt(run_cap);
             HeuristicResult result;
-            result.effort = epoch.effort;
-            if (epoch.found_improvement) {
+            result.effort = attempt.effort;
+            if (attempt.found_improvement) {
                 result.found_feasible = true;
                 result.objective = pool.snapshot().best_objective;
             }

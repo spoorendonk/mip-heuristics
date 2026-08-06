@@ -32,7 +32,7 @@ FjWorker::FjWorker(HighsMipSolver& mipsolver, SolutionPool& pool,
 
 FjWorker::~FjWorker() = default;
 
-EpochResult FjWorker::run_epoch(size_t epoch_budget) {
+AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
   if (base_.finished) {
     return {};
   }
@@ -43,7 +43,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
   const double epsilon = mipdata->epsilon;
   const double sense_multiplier = static_cast<double>(model->sense_);
 
-  // First epoch: build the solver and initial assignments.
+  // First attempt: build the solver and initial assignments.
   if (!initialized_) {
     initialized_ = true;
 
@@ -121,7 +121,7 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
     // FJ counts "step-units" rather than coefficient accesses, so its
     // staleness budget is derived from the constraint-matrix nonzero
     // count instead of the generic `total_budget >> 2` default from
-    // EpochWorkerBase.  Coefficient-access vs step-unit semantics stays
+    // WorkerBudgetState.  Coefficient-access vs step-unit semantics stays
     // heuristic-specific — see issue #71.
     const HighsInt nnz = a_matrix.numNz();
     base_.stale_budget =
@@ -136,13 +136,13 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
 
   // Capture state for the callback closure.
   const bool resume = first_solve_done_;
-  size_t epoch_effort_consumed = 0;
+  size_t attempt_effort_consumed = 0;
   bool found_solution = false;
   double best_obj = 0.0;
   std::vector<double> best_sol;
 
   auto callback = [&](FJStatus status) -> CallbackControlFlow {
-    epoch_effort_consumed = status.totalEffort - base_.total_effort;
+    attempt_effort_consumed = status.totalEffort - base_.total_effort;
 
     if (status.solution != nullptr) {
       found_solution = true;
@@ -151,8 +151,8 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
           model->offset_ + sense_multiplier * status.solutionObjectiveValue;
     }
 
-    // Pause at epoch boundary.
-    if (epoch_effort_consumed >= epoch_budget) {
+    // Pause at the attempt boundary.
+    if (attempt_effort_consumed >= attempt_budget) {
       return CallbackControlFlow::Terminate;
     }
     // Total budget exceeded.
@@ -172,15 +172,15 @@ EpochResult FjWorker::run_epoch(size_t epoch_budget) {
                       resume);
   first_solve_done_ = true;
 
-  EpochResult result{};
-  result.effort = epoch_effort_consumed;
+  AttemptResult result{};
+  result.effort = attempt_effort_consumed;
 
   if (found_solution) {
     pool_.try_add(best_obj, best_sol, kSolutionSourceFJ);
     result.found_improvement = true;
-    base_.charge_improvement(epoch_effort_consumed);
+    base_.charge_improvement(attempt_effort_consumed);
   } else {
-    base_.charge_no_improvement(epoch_effort_consumed);
+    base_.charge_no_improvement(attempt_effort_consumed);
   }
 
   return result;

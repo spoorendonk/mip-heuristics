@@ -1,6 +1,5 @@
 #include "fpr_lp.h"
 
-#include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_lp_refs.h"
 #include "fpr_strategies.h"
@@ -13,6 +12,7 @@
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
 #include "solution_pool.h"
+#include "worker_base.h"
 
 #include <algorithm>
 #include <atomic>
@@ -210,21 +210,21 @@ public:
                 uint32_t seed)
         : mipsolver_(mipsolver), setup_(setup), pool_(pool), arm_idx_(arm_idx), rng_(seed) {}
 
-    EpochResult run_epoch(size_t epoch_budget) {
-        EpochResult epoch{};
+    AttemptResult run_attempt(size_t attempt_budget) {
+        AttemptResult attempt{};
 
-        // After K stale epochs, randomize to another LP arm from the full
+        // After K stale attempts, randomize to another LP arm from the full
         // 10-element pool.  var_orders are precomputed for every arm so the
         // switch is race-free.  Track total randomisations separately so
         // the hard cap can fire even though the soft threshold resets
-        // `epochs_without_improvement_` each trigger (R2-2 round-3 review).
-        if (epochs_without_improvement_ >= kStaleEpochThreshold) {
+        // `attempts_without_improvement_` each trigger (R2-2 round-3 review).
+        if (attempts_without_improvement_ >= kStaleAttemptThreshold) {
             randomize_arm();
-            epochs_without_improvement_ = 0;
+            attempts_without_improvement_ = 0;
             ++randomizations_without_improvement_;
             if (randomizations_without_improvement_ >= kHardRandomizationLimit) {
                 finished_ = true;
-                return epoch;
+                return attempt;
             }
         }
 
@@ -238,7 +238,7 @@ public:
         const auto &var_order = setup_.var_orders[arm_idx_];
 
         FprConfig cfg{};
-        cfg.max_effort = epoch_budget;
+        cfg.max_effort = attempt_budget;
         cfg.hint = setup_.incumbent_snapshot.empty() ? nullptr : setup_.incumbent_snapshot.data();
         cfg.scores = nullptr;
         cfg.cont_fallback = nullptr;
@@ -253,18 +253,18 @@ public:
         auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
         ++attempt_idx_;
 
-        epoch.effort = result.effort;
+        attempt.effort = result.effort;
 
         if (result.found_feasible) {
             pool_.try_add(result.objective, result.solution, kSolutionSourceFprLp);
-            epoch.found_improvement = true;
-            epochs_without_improvement_ = 0;
+            attempt.found_improvement = true;
+            attempts_without_improvement_ = 0;
             randomizations_without_improvement_ = 0;
         } else {
-            ++epochs_without_improvement_;
+            ++attempts_without_improvement_;
         }
 
-        return epoch;
+        return attempt;
     }
 
     bool finished() const { return finished_; }
@@ -278,7 +278,7 @@ private:
 
     int arm_idx_;
     int attempt_idx_ = 0;
-    int epochs_without_improvement_ = 0;
+    int attempts_without_improvement_ = 0;
     int randomizations_without_improvement_ = 0;
     bool finished_ = false;
 
@@ -296,11 +296,11 @@ private:
     // same constant but issue #77 replaced its FprWorker with a
     // pause/resume lifecycle that has no per-worker stale counter;
     // LpFprWorker keeps the staleness shape because it has no DFS
-    // state to resume across epochs.
+    // state to resume across attempts.
     static constexpr int kHardRandomizationLimit = 50;
 
-    // Number of stale epochs before a worker randomizes its arm.
-    static constexpr int kStaleEpochThreshold = 3;
+    // Number of stale attempts before a worker randomizes its arm.
+    static constexpr int kStaleAttemptThreshold = 3;
 };
 
 namespace {
@@ -354,10 +354,10 @@ size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionP
                 uint32_t seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed);
             }
-            auto epoch = state.worker->run_epoch(run_cap);
+            auto attempt = state.worker->run_attempt(run_cap);
             HeuristicResult result;
-            result.effort = epoch.effort;
-            if (epoch.found_improvement) {
+            result.effort = attempt.effort;
+            if (attempt.found_improvement) {
                 result.found_feasible = true;
                 result.objective = pool.snapshot().best_objective;
             }

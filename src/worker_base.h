@@ -3,7 +3,7 @@
 #include <cstddef>
 
 // Result of a single attempt for one worker.
-struct EpochResult {
+struct AttemptResult {
   size_t effort = 0;
   bool found_improvement = false;
 };
@@ -21,7 +21,7 @@ struct EpochResult {
 // Fields are plain (non-atomic) because each worker's inner loop accesses
 // them single-threaded.  The continuous-parallel runner owns its own
 // atomic counters; see `ContinuousLoopState` in `continuous_loop.h`.
-struct EpochWorkerBase {
+struct WorkerBudgetState {
   size_t total_budget = 0;
   size_t stale_budget = 0;
   size_t total_effort = 0;
@@ -32,7 +32,7 @@ struct EpochWorkerBase {
   bool stale() const { return effort_since_improvement > stale_budget; }
 
   // True when already stale, or would become stale after `extra` more
-  // effort.  Used for prospective inner-loop checks that avoid one epoch
+  // effort.  Used for prospective inner-loop checks that avoid one attempt
   // of overshoot (see LocalMipWorker).
   bool stale(size_t extra) const {
     return effort_since_improvement + extra > stale_budget;

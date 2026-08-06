@@ -403,7 +403,7 @@ FprStepResult fpr_attempt_step(FprAttemptState &state, HighsMipSolver &mipsolver
     };
 
     // Per-call DFS budget is `effort_remaining` (a slice of the worker's
-    // `epoch_budget`).  Crucially: gate on the *delta* `E.effort() -
+    // `attempt_budget`).  Crucially: gate on the *delta* `E.effort() -
     // effort_at_call_start`, not on absolute `E.effort()`.  After a
     // paused attempt resumes from kBudgetGate, `E.effort()` is already
     // at the previous call's slice high-water mark; comparing against

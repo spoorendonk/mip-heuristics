@@ -126,25 +126,25 @@ LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, 
     best_solution_.resize(ncol);
 }
 
-EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
+AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     if (base_.finished) {
         return {};
     }
 
     const HighsInt ncol = mipsolver_.model_->num_col_;
 
-    EpochResult epoch{};
+    AttemptResult attempt{};
     size_t effort_start = ctx_.effort;
     size_t effort_at_last_improvement = effort_start;
 
     // Effort is the deterministic work signal; wall-clock `time_limit` is
-    // enforced by the outer loop (epoch_runner.h / continuous_loop.h)
-    // between epochs.  Inner-loop polling would buy sub-epoch deadline
+    // enforced by the outer loop (worker_base.h / continuous_loop.h)
+    // between attempts.  Inner-loop polling would buy sub-attempt deadline
     // precision at the cost of a clock_gettime per iteration, which on
-    // small instances was ~3% of total instruction refs.  One epoch of
+    // small instances was ~3% of total instruction refs.  One attempt of
     // overshoot on time_limit trip is the accepted trade.
     auto spent = [&]() { return ctx_.effort - effort_start; };
-    while (spent() < epoch_budget && !base_.exhausted(spent())) {
+    while (spent() < attempt_budget && !base_.exhausted(spent())) {
         if (base_.stale(spent())) {
             base_.finished = true;
             break;
@@ -195,7 +195,7 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
                 // doesn't cumulatively retire a worker that's still
                 // finding improvements.  R3-7 round-3 review.
                 feasible_random_walks_done_ = 0;
-                epoch.found_improvement = true;
+                attempt.found_improvement = true;
 
                 pool_.try_add(obj, ctx_.solution, kSolutionSourceLocalMIP);
                 base_.reset_staleness();
@@ -341,21 +341,21 @@ EpochResult LocalMipWorker::run_epoch(size_t epoch_budget) {
         ++step_;
     }
 
-    size_t epoch_effort = ctx_.effort - effort_start;
-    base_.total_effort += epoch_effort;
+    size_t attempt_effort = ctx_.effort - effort_start;
+    base_.total_effort += attempt_effort;
     // Only add effort consumed since the last improvement within this
-    // epoch (avoid double-counting when improvement resets the counter).
+    // attempt (avoid double-counting when improvement resets the counter).
     base_.effort_since_improvement += ctx_.effort - effort_at_last_improvement;
     // Set finished if either budget is exhausted so run_epoch_loop does not
     // re-enter this worker after its budget is spent.  (FjWorker gets this
     // via charge_improvement/charge_no_improvement; LocalMIP does its own
-    // accounting because improvements can occur mid-epoch.)
+    // accounting because improvements can occur mid-attempt.)
     if (base_.exhausted() || base_.stale()) {
         base_.finished = true;
     }
-    epoch.effort = epoch_effort;
+    attempt.effort = attempt_effort;
 
-    return epoch;
+    return attempt;
 }
 
 }  // namespace local_mip_detail

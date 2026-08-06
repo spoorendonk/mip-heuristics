@@ -1,11 +1,11 @@
 #pragma once
 
 #include "contested_pdlp.h"
-#include "epoch_runner.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "util/HighsInt.h"
+#include "worker_base.h"
 
 #include <atomic>
 #include <cstddef>
@@ -83,9 +83,9 @@ public:
                  SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx,
                  int num_workers, std::atomic<uint64_t> *improvement_gen = nullptr);
 
-    // Run iterations until epoch_budget effort is consumed.  Sets
+    // Run iterations until attempt_budget effort is consumed.  Sets
     // base_.finished when the worker cannot make further progress.
-    EpochResult run_epoch(size_t epoch_budget);
+    AttemptResult run_attempt(size_t attempt_budget);
 
     bool finished() const { return base_.finished; }
     size_t total_effort() const { return base_.total_effort; }
@@ -95,13 +95,10 @@ public:
     uint64_t fresh_solves() const { return fresh_solves_; }
     uint64_t stale_rounds() const { return stale_rounds_; }
 
-    // Reset the improvement staleness counter (called at epoch boundary
-    // when another worker found an improvement).
-
 private:
     // Shared handling of a completed PDLP solve result used by both the
     // blocking (`must_force_fresh`) branch and the non-blocking
-    // `try_solve_or_snapshot` fresh branch of `run_epoch`.  Moves from
+    // `try_solve_or_snapshot` fresh branch of `run_attempt`.  Moves from
     // `result.col_value` / `result.row_dual` into warm-start state and
     // updates `pdlp_stall_count_`.  Returns true when the worker must
     // break out of the run loop (error / infeasible / stall cap /
@@ -124,7 +121,7 @@ private:
     // Effort / staleness / finished bookkeeping.  `total_budget` is set
     // in the constructor; `stale_budget` derives from `total_budget >> 2`
     // at init time.
-    EpochWorkerBase base_;
+    WorkerBudgetState base_;
 
     // Number of concurrent ScyllaWorkers sharing the contested PDLP; used
     // to amortize per-iteration effort so each worker charges its fair
@@ -176,7 +173,7 @@ private:
     int fpr_config_index_ = 0;
     std::vector<HighsInt> var_order_;
 
-    // Persistent scratch reused across fpr_attempt calls inside run_epoch
+    // Persistent scratch reused across fpr_attempt calls inside run_attempt
     // to avoid per-iteration malloc/free churn on the DFS + WalkSAT path.
     FprScratch fpr_scratch_;
 
