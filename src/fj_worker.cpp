@@ -4,14 +4,10 @@
 #include <cmath>
 #include <vector>
 
-#include "epoch_runner.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "mip/feasibilityjump.hh"
 #include "solution_pool.h"
-
-static_assert(EpochWorker<FjWorker>,
-              "FjWorker must satisfy EpochWorker concept");
 
 using external_feasibilityjump::CallbackControlFlow;
 using external_feasibilityjump::FeasibilityJumpSolver;
@@ -35,8 +31,6 @@ FjWorker::FjWorker(HighsMipSolver& mipsolver, SolutionPool& pool,
 }
 
 FjWorker::~FjWorker() = default;
-
-void FjWorker::reset_staleness() { base_.reset_staleness(); }
 
 EpochResult FjWorker::run_epoch(size_t epoch_budget) {
   if (base_.finished) {

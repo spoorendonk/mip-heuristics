@@ -27,7 +27,7 @@ python3 bench/analyze_results.py bench/results/plato --configs patched vanilla -
 
 **fpr_lp (LP-guided FPR, Classes 2–3)** — Uses the root LP solution to seed the DFS fixing order and initial values (paper Classes 2, 3a, 3b). Dispatched during the B&B dive (after RENS/RINS), not presolve. Workers are bound to distinct LP arm configurations; excess workers wrap with distinct seeds. Shares the FPR rounding kernel. Based on Salvagnin, Roberti, Fischetti, *Mathematical Programming Computation* 17, 111–139, 2025 ([doi:10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5)) (Classes 2–3).
 
-**LocalMIP** — Weighted tabu local search with constraint-violation tracking, lifting moves, and multi-start backtracking. Finds improving moves by solving small MIP subproblems over the neighborhood. Based on Lin, Zou, Cai, "An Efficient Local Search Solver for Mixed Integer Programming," CP 2024, Article 19 ([doi:10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19)). Not in HiGHS or SCIP; cuOpt has a GPU variant citing the same paper. This is a CPU/HiGHS implementation with epoch-gated parallel multistart.
+**LocalMIP** — Weighted tabu local search with constraint-violation tracking, lifting moves, and multi-start backtracking. Finds improving moves by solving small MIP subproblems over the neighborhood. Based on Lin, Zou, Cai, "An Efficient Local Search Solver for Mixed Integer Programming," CP 2024, Article 19 ([doi:10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19)). Not in HiGHS or SCIP; cuOpt has a GPU variant citing the same paper. This is a CPU/HiGHS implementation with parallel multistart.
 
 **Scylla** — PDLP-based feasibility pump: alternates approximate LP solves (PDLP) with FPR rounding, progressive objective blending, and cycling perturbation. N independent pump chains share one mutex-guarded PDLP instance; workers that lose the lock round against the most-recent stale snapshot to stay productive. Based on Mexi et al., *OR Proceedings 2023* ([doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9)); same concept as cuOpt (arXiv:2510.20499). This is a CPU/HiGHS reference implementation — no novelty claim, but it is the only publicly available CPU implementation.
 
@@ -37,34 +37,32 @@ Reference PDFs are in `docs/`.
 
 ## Execution Modes
 
-The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla with a weighted effort budget. One flag picks how each heuristic parallelises:
+The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla with a weighted effort budget. Each heuristic parallelises the same way: continuous workers that self-terminate, with no epoch barrier and no bit-identical guarantee across runs.
 
-| Mode | Flag | Workers |
-|---|---|---|
-| **seq/det** | `opportunistic=false` | N synchronized workers per epoch (deterministic) |
-| **seq/opp** | `opportunistic=true` | continuous workers per heuristic |
+For a reproducible run, set `threads=1` together with a fixed `random_seed`. That is the project's reproducibility contract — a single worker per heuristic, deterministic within one binary. It is not a separate mode and needs no extra option.
 
-The `mip_heuristic_preset` option sets that flag and the per-heuristic enable flags at once:
+The `mip_heuristic_preset` option sets the per-heuristic enable flags:
 
-| Preset | Heuristics | Mode | Notes |
-|--------|-----------|------|-------|
-| `off` | none | — | disables all custom heuristics |
-| `fpr` | FPR | seq/det | isolate FPR for ablation |
-| `all_det` | FJ+FPR+LocalMIP | seq/det | deterministic, reproducible |
-| `all_opp` | FJ+FPR+LocalMIP | seq/opp | **recommended** |
-| `scylla` | Scylla | seq/opp | PDLP pump only |
+| Preset | Heuristics | Notes |
+|--------|-----------|-------|
+| `off` | none | disables all custom heuristics |
+| `fpr` | FPR | isolate FPR for ablation |
+| `all_opp` | FJ+FPR+LocalMIP | **recommended** |
+| `scylla` | Scylla | PDLP pump only |
+
+`all_opp` is named for the continuous ("opportunistic") runner that used to be one of two parallel modes; since the epoch-gated mode was removed it is the only one. The name is kept because it labels the recorded benchmark results below. Its former sibling `all_det` named the removed mode and no longer exists.
 
 There is no standalone `local_mip` preset; to run LocalMIP alone, use individual flags (e.g. `--mip_heuristic_run_fpr=false --mip_heuristic_run_scylla=false --mip_heuristic_run_feasibility_jump=false`).
 
-When no preset is set, individual flags are used. The default with no flags set: FPR + LocalMIP + Scylla + FJ all enabled in seq/det mode. `all_opp` is the recommended preset for most use cases.
+When no preset is set, individual flags are used. The default with no flags set: FPR + LocalMIP + Scylla + FJ all enabled. `all_opp` is the recommended preset for most use cases.
 
-`fpr_lp` runs at B&B dive time; `mip_heuristic_opportunistic` selects between its epoch-gated and continuous variants.
+`fpr_lp` runs at B&B dive time on the same continuous workers.
 
 ## Benchmarks
 
 ### PLATO mipfeas — 233 instances, 600s time limit
 
-Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Default preset: `all_opp` (seq/opp mode, FJ+FPR+LocalMIP).
+Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Default preset: `all_opp` (FJ+FPR+LocalMIP).
 
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|

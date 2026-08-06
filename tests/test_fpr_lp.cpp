@@ -7,22 +7,21 @@
 #include <string>
 
 // ===================================================================
-// fpr_lp 2-mode smoke tests
+// fpr_lp dispatch tests
 //
 // fpr_lp runs LP-dependent FPR (paper Classes 2-3) during the B&B dive,
 // after RINS/RENS, when the LP relaxation is at an optimal scaled state.
-// It is a single heuristic family, so only the
-// mip_heuristic_opportunistic flag selects between the two variants.
-// Both variants must exercise the dive path and find the known optimum on
-// bell5 (small, non-trivial root LP where LP-dependent FPR contributes).
+// It is a single heuristic family with one runner, so these tests pin
+// that it exercises the dive path and finds the known optimum on bell5
+// (small, non-trivial root LP where LP-dependent FPR contributes), and
+// that every gate which should suppress the dispatch does.
 // ===================================================================
 
 namespace {
-double solve_fpr_lp_mode(const char* inst, bool opp, int threads = 0) {
+double solve_fpr_lp(const char* inst, int threads = 0) {
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_heuristic_run_fpr", true);
-    h.setOptionValue("mip_heuristic_opportunistic", opp);
     if (threads > 0) {
         h.setOptionValue("threads", threads);
     }
@@ -34,21 +33,10 @@ double solve_fpr_lp_mode(const char* inst, bool opp, int threads = 0) {
 }
 }  // namespace
 
-TEST_CASE("fpr_lp seq/det: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]") {
+TEST_CASE("fpr_lp: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]") {
     fpr_lp::reset_dispatch_counts();
-    REQUIRE(solve_fpr_lp_mode("bell5.mps", false) == Catch::Approx(8966406.49152).epsilon(1e-4));
-    const auto counts = fpr_lp::dispatch_counts();
-    REQUIRE(counts.seq_det >= 1);
-    REQUIRE(counts.seq_opp == 0);
-}
-
-TEST_CASE("fpr_lp seq/opp: bell5 finds optimum and dispatches",
-          "[fpr_lp][mode-matrix][opportunistic]") {
-    fpr_lp::reset_dispatch_counts();
-    REQUIRE(solve_fpr_lp_mode("bell5.mps", true) == Catch::Approx(8966406.49152).epsilon(1e-4));
-    const auto counts = fpr_lp::dispatch_counts();
-    REQUIRE(counts.seq_opp >= 1);
-    REQUIRE(counts.seq_det == 0);
+    REQUIRE(solve_fpr_lp("bell5.mps") == Catch::Approx(8966406.49152).epsilon(1e-4));
+    REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
 }
 
 // Regression tests for preset-aware gating: fpr_lp derives its enable
@@ -66,9 +54,7 @@ TEST_CASE("fpr_lp: preset=off disables fpr_lp dispatch", "[fpr_lp][mode-matrix][
     // Raw flag deliberately left at its default (true): the preset must win.
     REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
-    const auto counts = fpr_lp::dispatch_counts();
-    REQUIRE(counts.seq_det == 0);
-    REQUIRE(counts.seq_opp == 0);
+    REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
 }
 
 // Budget-integration regression: fpr_lp's per-call budget is capped at
@@ -96,9 +82,7 @@ TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
     h.setOptionValue("mip_heuristic_effort", 0.0);
     REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
-    const auto counts = fpr_lp::dispatch_counts();
-    REQUIRE(counts.seq_det == 0);
-    REQUIRE(counts.seq_opp == 0);
+    REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
 }
 
 TEST_CASE("fpr_lp: preset=scylla disables fpr_lp dispatch", "[fpr_lp][mode-matrix][preset]") {
@@ -108,21 +92,18 @@ TEST_CASE("fpr_lp: preset=scylla disables fpr_lp dispatch", "[fpr_lp][mode-matri
     h.setOptionValue("mip_heuristic_preset", "scylla");
     REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
-    const auto counts = fpr_lp::dispatch_counts();
-    REQUIRE(counts.seq_det == 0);
-    REQUIRE(counts.seq_opp == 0);
+    REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
 }
 
-// run_sequential_deterministic spawns `num_threads` workers with
-// arm = w % kNumLpArms (10).  On a machine with threads > 10 the extra
-// workers wrap around the arm list.  This test pins threads = 12 so
-// workers 10 and 11 double up on arms 0 and 1 with distinct seeds —
-// it must still find the optimum and must still dispatch via seq_det
-// (not crash on shared var_orders[arm] access, which is read-only).
-TEST_CASE("fpr_lp seq/det: arm wrap-around with threads > kNumLpArms", "[fpr_lp][mode-matrix]") {
+// `run_workers` spawns `num_threads` workers with arm = w % kNumLpArms
+// (10).  On a machine with threads > 10 the extra workers wrap around
+// the arm list.  This test pins threads = 12 so workers 10 and 11 double
+// up on arms 0 and 1 with distinct seeds — it must still find the
+// optimum and must still dispatch (not crash on shared var_orders[arm]
+// access, which is read-only).
+TEST_CASE("fpr_lp: arm wrap-around with threads > kNumLpArms", "[fpr_lp][mode-matrix]") {
     fpr_lp::reset_dispatch_counts();
-    REQUIRE(solve_fpr_lp_mode("bell5.mps", /*opp=*/false,
-                              /*threads=*/12) == Catch::Approx(8966406.49152).epsilon(1e-4));
-    const auto counts = fpr_lp::dispatch_counts();
-    REQUIRE(counts.seq_det >= 1);
+    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/12) ==
+            Catch::Approx(8966406.49152).epsilon(1e-4));
+    REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
 }

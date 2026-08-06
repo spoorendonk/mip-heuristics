@@ -77,7 +77,6 @@ inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 // FPR rounding uses a single strategy per worker, assigned at
 // construction time by `select_fpr_config(worker_idx, seed)`.
 //
-// Satisfies the EpochWorker concept from epoch_runner.h.
 class ScyllaWorker {
 public:
     ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
@@ -98,7 +97,6 @@ public:
 
     // Reset the improvement staleness counter (called at epoch boundary
     // when another worker found an improvement).
-    void reset_staleness() { base_.reset_staleness(); }
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
@@ -186,12 +184,9 @@ private:
     // generation, peers reset their local staleness on the next loop
     // iteration — prevents workers from dying on `base_.stale_budget` while a
     // peer just improved.  Plumbed by every path that can run multiple
-    // Scylla workers concurrently: standalone Scylla det + opp.  The
-    // epoch_runner barrier also calls `reset_staleness()` in det mode, but that is
-    // coarser than this atomic, which kicks in mid-epoch.  Null only in
-    // single-worker contexts (LpFprWorker).
+    // Scylla workers concurrently.  Null only in single-worker contexts
+    // (LpFprWorker).
     std::atomic<uint64_t> *improvement_gen_ = nullptr;
     uint64_t last_seen_gen_ = 0;
 };
 
-static_assert(EpochWorker<ScyllaWorker>, "ScyllaWorker must satisfy EpochWorker concept");

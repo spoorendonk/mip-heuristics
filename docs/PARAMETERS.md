@@ -581,30 +581,6 @@ File paths are relative to the repository root.
 
 ---
 
-### `kEpochsPerWorker` — epoch cadence for FPR, LocalMIP, Scylla
-
-- **File**: `src/parallel_setup.h`
-- **Default**: `10`
-- **Meaning**: Number of epochs each worker takes within its total
-  budget in the deterministic epoch-gated runner. Smaller values
-  synchronize workers more frequently (finer improvement broadcast
-  across the epoch barrier) at the cost of more per-epoch overhead.
-- **Suggested range**: 5–50.
-
----
-
-### `kEpochsPerWorkerFj` — epoch cadence for FJ
-
-- **File**: `src/parallel_setup.h`
-- **Default**: `20`
-- **Meaning**: Epoch cadence for FeasibilityJump, kept separate from
-  the unified `kEpochsPerWorker` because FJ's synchronization cadence
-  affects pool-crossover behavior. Halving it to 10 was unvalidated as
-  of the last MIPLIB benchmark; see issue #71.
-- **Suggested range**: 10–40.
-
----
-
 ## Budget Allocation Weights (mode_dispatch)
 
 These weights tune each heuristic's share of the common effort budget
@@ -673,9 +649,8 @@ accounting.
 `mip_heuristic_run_feasibility_jump` is a **native HiGHS option**
 (registered by HiGHS itself, default: `true`). The patch repurposes
 it: when set to `true`, HiGHS's internal FeasibilityJump handler is
-disabled and FJ runs through our presolve infrastructure (epoch-gated
-or opportunistic, depending on `mip_heuristic_opportunistic`). Setting
-it to `false` disables FJ entirely. It is **not** one of the custom
+disabled and FJ runs through our presolve infrastructure. Setting it to
+`false` disables FJ entirely. It is **not** one of the custom
 patch-added options — it is a pre-existing HiGHS option whose default
 behavior is overridden by the patch.
 
@@ -692,10 +667,8 @@ out into `mip_heuristic_presolve_effort` (see below).
 The custom patch-added options are:
 - `mip_heuristic_presolve_effort` — effort budget multiplier for the
   custom presolve heuristics, FPR/LocalMIP/Scylla (default `0.30`)
-- `mip_heuristic_preset` — named preset selecting the enable flags and
-  the parallelism mode at once (default `""`, meaning use individual flags)
+- `mip_heuristic_preset` — named preset selecting the enable flags
+  (default `""`, meaning use individual flags)
 - `mip_heuristic_run_fpr` — enable/disable FPR (default `true`)
 - `mip_heuristic_run_local_mip` — enable/disable LocalMIP (default `true`)
 - `mip_heuristic_run_scylla` — enable/disable Scylla (default `true`)
-- `mip_heuristic_opportunistic` — use continuous (opportunistic)
-  parallelism rather than deterministic epoch-gated (default `false`)

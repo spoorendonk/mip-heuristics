@@ -1,6 +1,5 @@
 #include "fj.h"
 
-#include "epoch_runner.h"
 #include "fj_worker.h"
 #include "heuristic_common.h"
 #include "mip/HighsMipSolver.h"
@@ -16,34 +15,7 @@ namespace fj {
 
 namespace {
 
-size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
-    ParallelSetup setup(mipsolver, max_effort);
-
-    // Restart counter for generating fresh seeds when workers finish.
-    uint32_t restart_counter = 0;
-
-    std::vector<std::unique_ptr<FjWorker>> workers;
-    workers.reserve(setup.N);
-    const uint32_t random_seed = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
-    for (size_t w = 0; w < setup.N; ++w) {
-        uint32_t seed = random_seed + static_cast<uint32_t>(w);
-        workers.push_back(std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed));
-    }
-
-    return run_epoch_loop(
-        mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorkerFj),
-        [&](int w) {
-            // Restart finished FjWorker: continue the linear seed sequence past N.
-            ++restart_counter;
-            uint32_t seed = random_seed + static_cast<uint32_t>(setup.N) + restart_counter;
-            workers[w] = std::make_unique<FjWorker>(mipsolver, pool, setup.worker_budget, seed);
-        },
-        setup.stale_budget);
-}
-
-size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     const uint32_t random_seed_opp = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
@@ -86,16 +58,12 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                    bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return 0;
     }
-    if (opportunistic) {
-        return run_parallel_opportunistic(mipsolver, pool, max_effort);
-    }
-    return run_parallel_deterministic(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, pool, max_effort);
 }
 
 }  // namespace fj

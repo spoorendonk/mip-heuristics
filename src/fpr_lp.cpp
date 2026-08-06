@@ -30,8 +30,7 @@ namespace {
 // Test hook counters; see fpr_lp.h.  std::atomic so concurrent entry
 // points don't race; relaxed is fine (monotonic, not used for
 // synchronization).
-std::atomic<size_t> g_seq_det_count{0};
-std::atomic<size_t> g_seq_opp_count{0};
+std::atomic<size_t> g_dispatch_count{0};
 
 // ---------------------------------------------------------------------------
 // LP-dependent arms (paper Section 6.3, Classes 2 and 3)
@@ -202,7 +201,7 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// LpFprWorker: EpochWorker that runs one LP-dependent FPR arm at a time
+// LpFprWorker: runs one LP-dependent FPR arm at a time
 // ---------------------------------------------------------------------------
 
 class LpFprWorker {
@@ -270,8 +269,6 @@ public:
 
     bool finished() const { return finished_; }
 
-    void reset_staleness() { epochs_without_improvement_ = 0; }
-
 private:
     void randomize_arm() { arm_idx_ = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng_); }
 
@@ -306,8 +303,6 @@ private:
     static constexpr int kStaleEpochThreshold = 3;
 };
 
-static_assert(EpochWorker<LpFprWorker>, "LpFprWorker must satisfy EpochWorker concept");
-
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -323,47 +318,18 @@ uint32_t base_seed_for(const HighsMipSolver &mipsolver) {
 }
 
 // ---------------------------------------------------------------------------
-// 4 entry points
+// Worker dispatch
 // ---------------------------------------------------------------------------
 
-size_t run_sequential_deterministic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
-                                    SolutionPool &pool) {
-    // Spawn `num_threads` workers; worker w binds to arm `w % kNumLpArms`.
-    // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
-    // wrap around the curated config list with distinct seeds for diversity.
+// Spawn `num_threads` workers; worker w binds to arm `w % kNumLpArms`.
+// Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
+// wrap around the curated config list with distinct seeds for diversity.
+size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionPool &pool) {
     const int N = compute_worker_count(mipsolver);
     if (N <= 0) {
         return 0;
     }
-    g_seq_det_count.fetch_add(1, std::memory_order_relaxed);
-
-    const uint32_t base_seed = base_seed_for(mipsolver);
-
-    std::vector<std::unique_ptr<LpFprWorker>> workers;
-    workers.reserve(N);
-    for (int w = 0; w < N; ++w) {
-        uint32_t seed = base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        int arm = w % kNumLpArms;
-        workers.push_back(std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed));
-    }
-
-    constexpr int kEpochsPerWorker = 10;
-    const size_t per_worker = setup.budget / static_cast<size_t>(N);
-    const size_t epoch_budget = std::max<size_t>(per_worker / kEpochsPerWorker, 1);
-
-    return run_epoch_loop(
-        mipsolver, workers, setup.budget, epoch_budget,
-        [](int) { /* seq/det: finished workers stay finished; loop exits on all-finished */ },
-        setup.stale_budget);
-}
-
-size_t run_sequential_opportunistic(HighsMipSolver &mipsolver, const LpFprSetup &setup,
-                                    SolutionPool &pool) {
-    const int N = compute_worker_count(mipsolver);
-    if (N <= 0) {
-        return 0;
-    }
-    g_seq_opp_count.fetch_add(1, std::memory_order_relaxed);
+    g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
 
     const uint32_t base_seed = base_seed_for(mipsolver);
     const size_t default_run_cap =
@@ -502,13 +468,8 @@ void run(HighsMipSolver &mipsolver) {
         // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
         // it always runs arm-aligned parallel workers — num_threads workers
         // bound to the top-N arms from kClass2/3a/3b, sharing the solution
-        // pool.  `mip_heuristic_opportunistic` picks between epoch-gated and
-        // continuous parallelism.
-        if (mipsolver.options_mip_->mip_heuristic_opportunistic) {
-            worker_effort = run_sequential_opportunistic(mipsolver, setup, pool);
-        } else {
-            worker_effort = run_sequential_deterministic(mipsolver, setup, pool);
-        }
+        // pool.
+        worker_effort = run_workers(mipsolver, setup, pool);
     }
 
     // Charge all consumed work back to the shared envelope: reference-LP
@@ -527,13 +488,11 @@ void run(HighsMipSolver &mipsolver) {
 }
 
 DispatchCounts dispatch_counts() {
-    return {g_seq_det_count.load(std::memory_order_relaxed),
-            g_seq_opp_count.load(std::memory_order_relaxed)};
+    return {g_dispatch_count.load(std::memory_order_relaxed)};
 }
 
 void reset_dispatch_counts() {
-    g_seq_det_count.store(0, std::memory_order_relaxed);
-    g_seq_opp_count.store(0, std::memory_order_relaxed);
+    g_dispatch_count.store(0, std::memory_order_relaxed);
 }
 
 }  // namespace fpr_lp

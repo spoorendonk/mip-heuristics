@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Correctness check across the two heuristic execution modes.
+"""Correctness check for the heuristic execution modes.
 
 Runs the HiGHS binary on small test instances (shipped with HiGHS in
-check/instances/) for each parallelism mode:
+check/instances/) in each mode:
 
-  det   — opportunistic=false
-  opp   — opportunistic=true
+  seq     — default options (continuous parallel workers)
+  seq1    — threads=1, the reproducible single-worker configuration
 
 Checks that each solve finds the known-optimal objective within a
 tolerance.  Reports a per-instance x per-mode pass/fail table.
@@ -36,8 +36,8 @@ INSTANCES: list[tuple[str, float, float]] = [
 ]
 
 MODES = {
-    "det": {"mip_heuristic_opportunistic": "false"},
-    "opp": {"mip_heuristic_opportunistic": "true"},
+    "seq": {},
+    "seq1": {"threads": "1"},
 }
 
 
@@ -131,7 +131,7 @@ def check_objective(obj: float | None, known_opt: float, tol: float) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Correctness check across both execution modes")
+    parser = argparse.ArgumentParser(description="Correctness check across the execution modes")
     parser.add_argument("--binary", default="./build/bin/highs", help="Path to HiGHS binary")
     parser.add_argument("--instances-dir", default=None,
                         help="Path to check/instances/ dir (auto-detected from binary path)")

@@ -49,7 +49,6 @@ std::vector<std::string> gt2_log_for(const char* which) {
         // the four positive cases below would keep passing while
         // asserting nothing.  That migration must fail loudly.
         require_option(h, "log_dev_level", 3);
-        require_option(h, "mip_heuristic_opportunistic", false);
         require_option(h, "mip_heuristic_run_fpr", false);
         require_option(h, "mip_heuristic_run_local_mip", false);
         require_option(h, "mip_heuristic_run_scylla", false);

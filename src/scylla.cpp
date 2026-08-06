@@ -1,7 +1,6 @@
 #include "scylla.h"
 
 #include "contested_pdlp.h"
-#include "epoch_runner.h"
 #include "heuristic_common.h"
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
@@ -56,38 +55,7 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
     return cap < 100 ? 100 : cap;
 }
 
-size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
-    ParallelSetup setup(mipsolver, max_effort);
-
-    const HighsInt pdlp_iter_cap =
-        compute_pdlp_iter_cap(max_effort, setup.mipdata->ARindex_.size());
-    ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
-    if (!pdlp.initialized()) {
-        return 0;
-    }
-
-    std::atomic<uint64_t> improvement_gen{0};
-
-    const int N = static_cast<int>(setup.N);
-    std::vector<std::unique_ptr<ScyllaWorker>> workers;
-    workers.reserve(setup.N);
-    for (int w = 0; w < N; ++w) {
-        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool,
-                                                         max_effort, seed, w, N, &improvement_gen));
-    }
-
-    size_t total_effort = run_epoch_loop(
-        mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
-        [](int) { /* no restart */ }, setup.stale_budget);
-
-    log_overlap_ratio(mipsolver.options_mip_->log_options, workers);
-    return total_effort;
-}
-
-size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     const HighsInt pdlp_iter_cap =
@@ -117,8 +85,8 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
     // Retired-worker counters so `log_overlap_ratio` can include the
     // contributions of workers that finished and were replaced mid-run
     // — flagged by R3 in the round-2 review.  `std::atomic` because
-    // workers are rebuilt from the opportunistic loop's worker-pinned
-    // callback which may run on different task threads.
+    // workers are rebuilt from the runner's worker-pinned callback,
+    // which may run on different task threads.
     std::atomic<std::uint64_t> retired_fresh{0};
     std::atomic<std::uint64_t> retired_stale{0};
 
@@ -133,9 +101,9 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
                 // the rebuild drops its destructor on the floor.
                 retired_fresh.fetch_add(worker->fresh_solves(), std::memory_order_relaxed);
                 retired_stale.fetch_add(worker->stale_rounds(), std::memory_order_relaxed);
-                // Rebuild stale worker with a fresh seed so the opportunistic
-                // loop doesn't lose parallelism over time (mirrors the
-                // fpr_lp opp path).  `pdlp` is shared, so warm-start etc. are
+                // Rebuild stale worker with a fresh seed so the runner
+                // doesn't lose parallelism over time (mirrors the fpr_lp
+                // path).  `pdlp` is shared, so warm-start etc. are
                 // reinitialized from scratch but the underlying LP stays.
                 uint32_t new_seed = static_cast<uint32_t>(rng());
                 worker =
@@ -163,16 +131,12 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                    bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return 0;
     }
-    if (opportunistic) {
-        return run_parallel_opportunistic(mipsolver, pool, max_effort);
-    }
-    return run_parallel_deterministic(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, pool, max_effort);
 }
 
 }  // namespace scylla

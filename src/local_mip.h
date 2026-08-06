@@ -53,13 +53,12 @@ struct WarmStartCounters {
 
 void reset_warm_start_counters();
 WarmStartCounters warm_start_counters();
-// Parallel mode. When `opportunistic=false`, runs with epoch-gated
-// synchronization: N workers run local search in parallel, synchronizing
-// at epoch boundaries.  Worker 0 starts from the unperturbed incumbent;
+// Runs N continuous `parallel::for_each` workers with per-worker
+// self-termination.  Worker 0 starts from the unperturbed incumbent;
 // workers 1..N-1 start from perturbed incumbents.  Stalled workers are
-// restarted from the pool's best solution with fresh perturbation.
-// When `opportunistic=true`, runs continuous `parallel::for_each`
-// workers with per-worker self-termination.
+// restarted from the pool's best solution with fresh perturbation.  Set
+// `threads=1` for a single worker whose behaviour is reproducible under
+// a fixed `random_seed`.
 //
 // `pool` is owned by the caller (mode_dispatch::run_sequential).  Workers
 // insert solutions with kSolutionSourceLocalMIP and may pull restarts
@@ -70,6 +69,5 @@ WarmStartCounters warm_start_counters();
 // construction effort).  The caller is responsible for booking this
 // into `mipdata->heuristic_effort_used` (issue #79), which makes
 // mode_dispatch.cpp the single point of LocalMIP effort accounting.
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                    bool opportunistic = false);
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort);
 }  // namespace local_mip

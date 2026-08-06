@@ -14,9 +14,10 @@ namespace scylla {
 // (`kFprConfigs[w % kNumFprConfigs]`).  Only one PDLP solve is in
 // flight at a time, so cuPDLP GPU state is never contended.
 //
-// `opportunistic=false` runs epoch-gated barrier synchronization
-// (`run_epoch_loop`); `opportunistic=true` runs continuous parallelism
-// (`run_opportunistic_loop`).  Both share the same `ScyllaWorker` body.
+// Workers run continuously (`run_opportunistic_loop`) with per-worker
+// self-termination; a retired chain is rebuilt in place with a fresh
+// seed.  Set `threads=1` for a single chain whose behaviour is
+// reproducible under a fixed `random_seed`.
 //
 // `pool` is owned by the caller (mode_dispatch::run_sequential).
 // Workers insert feasible pumps with kSolutionSourceScylla; the caller
@@ -26,7 +27,6 @@ namespace scylla {
 // booking it into `mipdata->heuristic_effort_used` — same contract as
 // `local_mip::run_parallel` (issue #79).  This makes mode_dispatch.cpp
 // the single point of Scylla effort accounting.
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                    bool opportunistic);
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort);
 
 }  // namespace scylla

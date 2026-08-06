@@ -47,18 +47,18 @@ void reset_test_counters() {
 // HighsCliqueTable::cliquePartition which is not thread-safe).
 using VarOrderTable = std::vector<std::vector<HighsInt>>;
 
-// EpochWorker driving the lifecycle introduced in issue #77: an attempt
-// is the unit of work, and an attempt's DFS may pause at the per-epoch
-// budget gate and resume next epoch with state intact.  When an attempt
+// Worker driving the lifecycle introduced in issue #77: an attempt
+// is the unit of work, and an attempt's DFS may pause at the per-run
+// budget gate and resume next call with state intact.  When an attempt
 // verdicts (feasible / failed), the worker advances `attempt_idx_` and
 // picks the next (strategy, mode) from a deterministic per-worker
 // rotation `(worker_idx_ + attempt_idx_)`.  Attempts never share a
 // queue across workers — that determinism rule is what lets two runs
-// with the same seed produce bit-identical [Sequential] traces.
+// with the same seed produce bit-identical [Sequential] traces at
+// `threads=1`.
 //
-// Satisfies the EpochWorker concept from epoch_runner.h.  In det mode
-// `finished()` always returns false; the outer epoch loop's
-// stale_budget is the only termination gate.
+// `finished()` always returns false; the runner's stale_budget is the
+// only termination gate.
 class FprWorker {
 public:
     FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
@@ -68,13 +68,6 @@ public:
     EpochResult run_epoch(size_t epoch_budget);
 
     bool finished() const { return false; }
-
-    // Reset the cross-worker improvement-broadcast bookkeeping.  Called by
-    // the runner at the epoch barrier when any peer improved last epoch.
-    // The lifecycle's mid-attempt staleness has no per-worker counter to
-    // touch (the epoch loop's effort_since_improvement is the source of
-    // truth), so this is a no-op in det mode.
-    void reset_staleness() {}
 
 private:
     // Pick the (strategy, mode) for `attempt_idx_`.  Cycles the
@@ -117,8 +110,6 @@ private:
     // iteration on instances large enough to matter (review R2 CF-1).
     std::vector<double> initial_solution_buf_;
 };
-
-static_assert(EpochWorker<FprWorker>, "FprWorker must satisfy EpochWorker concept");
 
 namespace {
 
@@ -405,36 +396,12 @@ EpochResult FprWorker::run_epoch(size_t epoch_budget) {
 }
 
 // ---------------------------------------------------------------------------
-// Parallel epoch-gated FPR
+// Parallel FPR
 // ---------------------------------------------------------------------------
 
 namespace {
 
-size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
-    ParallelSetup setup(mipsolver, max_effort);
-
-    // Precompute var_orders sequentially before any parallel region.
-    VarOrderTable var_orders = precompute_var_orders(mipsolver);
-
-    std::vector<std::unique_ptr<FprWorker>> workers;
-    workers.reserve(setup.N);
-    for (size_t w = 0; w < setup.N; ++w) {
-        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(
-            mipsolver, setup.csc, pool, var_orders, static_cast<int>(w), seed, setup.stale_budget));
-    }
-
-    return run_epoch_loop(
-        mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
-        [](int) { /* FprWorker::finished() is always false post-#77 — det mode runs
-                     until the outer epoch loop's stale_budget fires. */
-        },
-        setup.stale_budget);
-}
-
-size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
 
     // Precompute var_orders sequentially before any parallel region.
@@ -475,8 +442,7 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                    bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
@@ -484,10 +450,7 @@ size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_ef
         return 0;
     }
 
-    if (opportunistic) {
-        return run_parallel_opportunistic(mipsolver, pool, max_effort);
-    }
-    return run_parallel_deterministic(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, pool, max_effort);
 }
 
 }  // namespace fpr

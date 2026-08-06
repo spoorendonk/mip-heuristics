@@ -6,11 +6,10 @@ class SolutionPool;
 
 namespace fj {
 
-// Parallel mode. When `opportunistic=false`, runs with epoch-gated
-// synchronization: N FjWorkers run in parallel, each with a different
-// seed, and finished workers are restarted with a new seed.  When
-// `opportunistic=true`, runs continuous `parallel::for_each` workers
-// with per-worker self-termination.
+// Runs N continuous `parallel::for_each` FjWorkers with per-worker
+// self-termination, each seeded differently; a worker that finishes is
+// rebuilt in place with a fresh seed.  Set `threads=1` for a single
+// worker whose behaviour is reproducible under a fixed `random_seed`.
 //
 // `pool` is owned by the caller (mode_dispatch::run_sequential).  Workers
 // insert solutions into it with kSolutionSourceFJ, and the caller is
@@ -22,6 +21,5 @@ namespace fj {
 // contract as `local_mip::run_parallel`, `fpr::run_parallel`, and
 // `scylla::run_parallel` (issue #79).  This makes mode_dispatch.cpp the
 // single point of effort accounting for the four presolve heuristics.
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                    bool opportunistic = false);
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort);
 }  // namespace fj

@@ -9,14 +9,13 @@ namespace heuristics {
 
 // The effective per-heuristic enable flags after applying
 // mip_heuristic_preset on top of the individual mip_heuristic_* options.
-// A recognized non-empty preset overrides all five flags; an empty or
+// A recognized non-empty preset overrides all four flags; an empty or
 // unknown preset leaves the individual option values in place.
 struct HeuristicFlags {
     bool fj;
     bool fpr;
     bool local_mip;
     bool scylla;
-    bool opportunistic;
 };
 
 // Derive the effective flag set from `options`.  Shared by the presolve
@@ -29,9 +28,9 @@ struct HeuristicFlags {
 HeuristicFlags effective_flags(const HighsOptions &options, bool *preset_recognized = nullptr);
 
 // Top-level presolve heuristic dispatch. Reads mip_heuristic_* options
-// and runs the fixed FJ -> FPR -> LocalMIP -> Scylla chain with either
-// deterministic or opportunistic parallelism.  Returns true if the model
-// was proven infeasible.
+// and runs the fixed FJ -> FPR -> LocalMIP -> Scylla chain, each on
+// continuous parallel workers.  Returns true if the model was proven
+// infeasible.
 bool run_presolve(HighsMipSolver &mipsolver, size_t budget);
 
 }  // namespace heuristics

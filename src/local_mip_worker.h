@@ -23,7 +23,7 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
                       HighsInt ncol, Rng &rng);
 
-// EpochWorker wrapping WorkerCtx. Runs weighted local search against the
+// Worker wrapping WorkerCtx. Runs weighted local search against the
 // supplied SolutionPool, accumulating effort and submitting improving
 // solutions to the pool.
 class LocalMipWorker {
@@ -36,7 +36,6 @@ public:
 
     bool finished() const { return base_.finished; }
 
-    void reset_staleness() { base_.reset_staleness(); }
 
 private:
     HighsMipSolver &mipsolver_;
@@ -68,6 +67,5 @@ private:
     HighsInt feasible_random_walks_done_ = 0;
 };
 
-static_assert(EpochWorker<LocalMipWorker>, "LocalMipWorker must satisfy EpochWorker concept");
 
 }  // namespace local_mip_detail

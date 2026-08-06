@@ -9,6 +9,12 @@
 TEST_CASE("Characterization: flugpl", "[heuristic][fpr]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
+    // These assert the *known optimum* at a tolerance far tighter than
+    // HiGHS's default `mip_rel_gap` (1e-4), which permits terminating on
+    // an incumbent that is merely within relative 1e-4 of the dual bound.
+    // Require a proven-optimal solve so the assertion is sound rather
+    // than dependent on the search happening to land on the optimum.
+    require_option(highs, "mip_rel_gap", 0.0);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -19,6 +25,12 @@ TEST_CASE("Characterization: flugpl", "[heuristic][fpr]") {
 TEST_CASE("Characterization: egout", "[heuristic][fpr]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
+    // These assert the *known optimum* at a tolerance far tighter than
+    // HiGHS's default `mip_rel_gap` (1e-4), which permits terminating on
+    // an incumbent that is merely within relative 1e-4 of the dual bound.
+    // Require a proven-optimal solve so the assertion is sound rather
+    // than dependent on the search happening to land on the optimum.
+    require_option(highs, "mip_rel_gap", 0.0);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -29,6 +41,12 @@ TEST_CASE("Characterization: egout", "[heuristic][fpr]") {
 TEST_CASE("Characterization: bell5", "[heuristic][fpr]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
+    // These assert the *known optimum* at a tolerance far tighter than
+    // HiGHS's default `mip_rel_gap` (1e-4), which permits terminating on
+    // an incumbent that is merely within relative 1e-4 of the dual bound.
+    // Require a proven-optimal solve so the assertion is sound rather
+    // than dependent on the search happening to land on the optimum.
+    require_option(highs, "mip_rel_gap", 0.0);
     REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -36,14 +54,13 @@ TEST_CASE("Characterization: bell5", "[heuristic][fpr]") {
     REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-6));
 }
 
-TEST_CASE("FPR opportunistic: flugpl finds solution", "[heuristic][fpr][opportunistic]") {
+TEST_CASE("FPR standalone: flugpl finds solution", "[heuristic][fpr]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", true);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_scylla", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -168,8 +185,6 @@ double solve_with_seed_small_effort(const char *inst, int seed) {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("random_seed", seed);
-    // Force seq/det path so the issue-#77 lifecycle is the dispatch under test.
-    highs.setOptionValue("mip_heuristic_opportunistic", false);
     // Pin threads=1 so the determinism contract is the *intra-worker*
     // lifecycle determinism (single-worker pause/resume + multi-attempt
     // fill).  Across-worker scheduling determinism is a different

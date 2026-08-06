@@ -80,8 +80,6 @@ TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") 
 }
 
 // ── Scylla parallel: run_parallel is the unified entry for pump chains ──
-// Scylla has both det and opp variants, selected by mip_heuristic_opportunistic
-// via scylla::run_parallel_deterministic / scylla::run_parallel_opportunistic.
 
 TEST_CASE("Scylla parallel: flugpl finds solution", "[heuristic][scylla]") {
     Highs highs;
@@ -124,19 +122,6 @@ TEST_CASE("Scylla parallel: gt2 binary instance", "[heuristic][scylla]") {
 
 // ── Scylla characterization: verify known-optimal objectives ──
 
-TEST_CASE("Scylla sequential: flugpl characterization", "[scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
-}
-
 TEST_CASE("Scylla parallel: flugpl characterization", "[scylla]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
@@ -163,16 +148,16 @@ TEST_CASE("Scylla parallel: egout feasibility", "[scylla]") {
     REQUIRE(obj <= 568.1007 + 1e-4);
 }
 
-// ── Scylla opportunistic: continuous N-chain parallelism variant ──
+// ── Scylla as the only enabled heuristic ──
+// FJ off, so a solution here can only have come from the pump chains.
 
-TEST_CASE("Scylla opportunistic: flugpl characterization", "[scylla][opportunistic]") {
+TEST_CASE("Scylla only: flugpl characterization", "[scylla]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -180,14 +165,13 @@ TEST_CASE("Scylla opportunistic: flugpl characterization", "[scylla][opportunist
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-TEST_CASE("Scylla opportunistic: egout feasibility", "[scylla][opportunistic]") {
+TEST_CASE("Scylla only: egout feasibility", "[scylla]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -195,14 +179,13 @@ TEST_CASE("Scylla opportunistic: egout feasibility", "[scylla][opportunistic]") 
     REQUIRE(obj <= 568.1007 + 1e-4);
 }
 
-TEST_CASE("Scylla opportunistic: gt2 pure binary", "[scylla][opportunistic]") {
+TEST_CASE("Scylla only: gt2 pure binary", "[scylla]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     highs.setOptionValue("mip_heuristic_run_fpr", false);
     highs.setOptionValue("mip_heuristic_run_local_mip", false);
     highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     highs.setOptionValue("mip_heuristic_run_scylla", true);
-    highs.setOptionValue("mip_heuristic_opportunistic", true);
     REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
@@ -231,7 +214,6 @@ TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][s
         h.setOptionValue("mip_heuristic_run_local_mip", false);
         h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
         h.setOptionValue("mip_heuristic_run_scylla", true);
-        h.setOptionValue("mip_heuristic_opportunistic", false);
     });
 
     // Parse out the fresh / stale counts from the [ScyllaOverlap] line

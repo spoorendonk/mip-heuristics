@@ -22,11 +22,11 @@ VANILLA_OPTIONS = {
     "mip_heuristic_preset": "off",
 }
 
-# Default patched options: all_opp preset — FJ + FPR + LocalMIP with
-# opportunistic (continuous) parallelism.  Scylla is excluded because
-# PDLP solves are expensive enough to hurt wall-clock on general instances.
-# mip_heuristic_opportunistic=true also routes fpr_lp through its
-# opportunistic arm-aligned parallel runner at B&B dive time.
+# Default patched options: all_opp preset — FJ + FPR + LocalMIP.  Scylla
+# is excluded because PDLP solves are expensive enough to hurt wall-clock
+# on general instances.  The preset name is historical (it once also
+# selected the continuous parallel runner, now the only one); it is kept
+# because it labels the recorded PLATO results in README.md.
 PATCHED_OPTIONS = {
     "mip_heuristic_preset": "all_opp",
 }
@@ -149,9 +149,10 @@ def main() -> None:
         default=None,
         help=(
             "Number of solver threads — OMIT unless you specifically need to cap. "
-            "Forcing threads=1 collapses epoch-gated / opportunistic parallelism to "
-            "one worker per epoch and silently hides the parallelism the patched "
-            "heuristics are built for (see CLAUDE.md benchmarking note)."
+            "Forcing threads=1 collapses each heuristic to a single worker and "
+            "silently hides the parallelism the patched heuristics are built for "
+            "(see CLAUDE.md benchmarking note).  It is the right setting only when "
+            "reproducibility is the point, not throughput."
         ),
     )
     parser.add_argument(

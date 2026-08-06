@@ -71,21 +71,12 @@ TEST_CASE("Options: effort split defaults", "[options]") {
     REQUIRE(highs.setOptionValue("mip_heuristic_presolve_effort", 1.0) == HighsStatus::kOk);
 }
 
-TEST_CASE("Options: opportunistic option exists", "[options]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    REQUIRE(highs.setOptionValue("mip_heuristic_opportunistic", true) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_opportunistic", false) == HighsStatus::kOk);
-}
-
 TEST_CASE("Options: preset option exists and accepts all valid values", "[options][preset]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("")) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("off")) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("fpr")) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("all_det")) ==
-            HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("all_opp")) ==
             HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("scylla")) ==

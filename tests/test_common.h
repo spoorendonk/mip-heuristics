@@ -33,13 +33,16 @@ inline void require_option(Highs& h, const std::string& name, T value) {
     REQUIRE(h.setOptionValue(name, value) == HighsStatus::kOk);
 }
 
-// Solve `inst` in the requested parallelism mode (deterministic
-// epoch-gated vs opportunistic) and return the final objective.  Used by
-// the mode-matrix cross-heuristic parity tests.
-inline double solve_mode(const char* inst, bool opp) {
+// Solve `inst` at default options and return the final objective.  Used
+// by the execution-mode cross-heuristic parity tests.
+inline double solve_default(const char* inst) {
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_opportunistic", opp);
+    // Callers assert the known optimum at tolerances tighter than
+    // HiGHS's default `mip_rel_gap` (1e-4) allows it to guarantee, so
+    // require a proven-optimal solve.  See the characterization tests in
+    // `test_fpr.cpp` for the full rationale.
+    require_option(h, "mip_rel_gap", 0.0);
     REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;
@@ -56,8 +59,12 @@ inline double solve_mode(const char* inst, bool opp) {
 // the capture primitive the whole suite shares.  Declaration order below is
 // load-bearing: `capture` outlives `h`, so the callback can never fire
 // against a destroyed buffer.
-template <typename Configure>
-inline std::vector<std::string> solve_capturing_log(const char* inst, Configure&& configure) {
+// `inspect` runs on the same `Highs` object after a successful `run()`,
+// which is the only point where both the captured log and the solve's
+// info values are reachable — `Highs` is destroyed on return.
+template <typename Configure, typename Inspect>
+inline std::vector<std::string> solve_capturing_log(const char* inst, Configure&& configure,
+                                                    Inspect&& inspect) {
     struct LogCapture {
         std::mutex mtx;
         std::vector<std::string> lines;
@@ -84,9 +91,17 @@ inline std::vector<std::string> solve_capturing_log(const char* inst, Configure&
     std::forward<Configure>(configure)(h);
     REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
+    std::forward<Inspect>(inspect)(h);
 
     std::lock_guard<std::mutex> lock(capture.mtx);
     return capture.lines;
+}
+
+// Log-only overload for the majority of callers, which assert on the
+// captured lines alone.
+template <typename Configure>
+inline std::vector<std::string> solve_capturing_log(const char* inst, Configure&& configure) {
+    return solve_capturing_log(inst, std::forward<Configure>(configure), [](Highs&) {});
 }
 
 // Every solution-source code HiGHS printed on a MIP display line of
@@ -137,13 +152,11 @@ inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
     return false;
 }
 
-// Solve flugpl with every custom heuristic disabled in the requested
-// parallelism mode — verifies neither mode path blocks HiGHS's built-in
-// B&B fallback.
-inline double solve_mode_no_heuristics(bool opp) {
+// Solve flugpl with every custom heuristic disabled — verifies the
+// dispatch path does not block HiGHS's built-in B&B fallback.
+inline double solve_no_heuristics() {
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_opportunistic", opp);
     h.setOptionValue("mip_heuristic_run_fpr", false);
     h.setOptionValue("mip_heuristic_run_local_mip", false);
     h.setOptionValue("mip_heuristic_run_feasibility_jump", false);

@@ -26,13 +26,11 @@ namespace fpr_lp {
 //    race.  Never fires on the default single-search-worker runs.
 void run(HighsMipSolver &mipsolver);
 
-// Test hook: counters incremented once per dispatch into each variant.
-// fpr_lp is a single heuristic family, so it always runs arm-aligned
-// parallel workers and only mip_heuristic_opportunistic selects between
-// these two variants.  Process-global; reset before each test that inspects.
+// Test hook: counter incremented once per worker dispatch.  fpr_lp is a
+// single heuristic family, so it always runs arm-aligned parallel
+// workers.  Process-global; reset before each test that inspects it.
 struct DispatchCounts {
-    size_t seq_det = 0;
-    size_t seq_opp = 0;
+    size_t dispatches = 0;
 };
 DispatchCounts dispatch_counts();
 void reset_dispatch_counts();

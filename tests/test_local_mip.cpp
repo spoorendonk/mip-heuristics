@@ -19,22 +19,6 @@
 #include <string>
 #include <vector>
 
-TEST_CASE("LocalMIP opportunistic: flugpl finds solution",
-          "[heuristic][local_mip][opportunistic]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_opportunistic", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
-}
-
 // ── LocalMIP standalone: neighborhood search finds feasible solution ──
 
 TEST_CASE("LocalMIP standalone: flugpl", "[heuristic][local_mip]") {
@@ -63,7 +47,7 @@ TEST_CASE("LocalMIP standalone: egout", "[heuristic][local_mip]") {
     REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
-// ── LocalMIP parallel: epoch-gated parallel local search ──
+// ── LocalMIP parallel: continuous parallel local search ──
 
 TEST_CASE("LocalMIP parallel: flugpl finds solution", "[heuristic][local_mip]") {
     Highs highs;
@@ -229,7 +213,6 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
         h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
         h.setOptionValue("mip_heuristic_run_scylla", false);
         h.setOptionValue("mip_heuristic_run_local_mip", true);
-        h.setOptionValue("mip_heuristic_opportunistic", false);
     });
 
     REQUIRE(heuristic_reported_effort(lines, "local_mip"));
@@ -254,7 +237,6 @@ TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74
           "[heuristic][local_mip][pool-aware]") {
     const std::vector<std::string> lines = solve_capturing_log("lseu.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
-        h.setOptionValue("mip_heuristic_opportunistic", false);
         h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
         h.setOptionValue("mip_heuristic_run_fpr", false);
         h.setOptionValue("mip_heuristic_run_local_mip", true);
@@ -344,7 +326,16 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
     h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
     h.setOptionValue("mip_heuristic_run_scylla", false);
     h.setOptionValue("mip_heuristic_run_local_mip", true);
-    h.setOptionValue("mip_heuristic_opportunistic", false);
+    // threads=1 is load-bearing for the `pool == 0` assertion below.  The
+    // continuous runner resolves each worker's start inside the parallel
+    // region, so with several workers a late starter can legitimately
+    // warm-start from a *peer LocalMIP worker's* freshly-added solution
+    // and trip the pool branch — the old epoch-gated runner resolved all
+    // starts before any worker searched, which is what made that
+    // assertion unconditional.  One worker restores the precondition the
+    // scenario is about: nothing has populated the pool when the start is
+    // resolved.
+    require_option(h, "threads", 1);
     REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
 
@@ -379,7 +370,6 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
     h.setOptionValue("mip_heuristic_run_scylla", false);
     h.setOptionValue("mip_heuristic_run_local_mip", true);
-    h.setOptionValue("mip_heuristic_opportunistic", false);
     // `lseu.mps` is the same instance the existing #74 regression test
     // uses — FJ reliably finds a feasible inside the presolve budget,
     // so the pool is non-empty by the time LocalMIP fires.
@@ -404,10 +394,9 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
 //
 // This test pins the contract directly: it constructs a `HighsMipSolver`
 // with a valid `mipdata_`, calls `local_mip::run_parallel` itself, and
-// asserts `(after - before) == returned`.  Both branches of the parallel
-// runner (deterministic + opportunistic) are covered as separate sections
-// because the bug class the reviewer flagged is branch-specific.  The
-// instance is `flugpl.mps` — small, fast, and used by the existing
+// asserts `(after - before) == returned`.  One section per heuristic —
+// the bug class the reviewer flagged is per-runner.  The instance is
+// `flugpl.mps` — small, fast, and used by the existing
 // LocalMIP tests; running with no upstream heuristic populating the pool
 // or incumbent ensures the cold-start construction path fires (so
 // `construction_effort > 0` is part of the returned sum on at least one
@@ -447,8 +436,8 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
         return mipsolver;
     };
 
-    using RunFn = size_t (*)(HighsMipSolver&, SolutionPool&, size_t, bool);
-    auto check_invariant = [&](bool opportunistic, RunFn run_fn) {
+    using RunFn = size_t (*)(HighsMipSolver&, SolutionPool&, size_t);
+    auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
         HighsCallback cb(&highs);
@@ -467,7 +456,7 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
         // each runner will execute meaningful work (so `returned > 0` is
         // very likely), small enough that the test stays sub-second.
         const size_t budget = 200000;
-        const size_t returned = run_fn(*mipsolver, pool, budget, opportunistic);
+        const size_t returned = run_fn(*mipsolver, pool, budget);
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 
@@ -489,28 +478,16 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
         REQUIRE(returned > 0);
     };
 
-    SECTION("fj deterministic") {
-        check_invariant(/*opportunistic=*/false, &fj::run_parallel);
+    SECTION("fj") {
+        check_invariant(&fj::run_parallel);
     }
-    SECTION("fj opportunistic") {
-        check_invariant(/*opportunistic=*/true, &fj::run_parallel);
+    SECTION("fpr") {
+        check_invariant(&fpr::run_parallel);
     }
-    SECTION("fpr deterministic") {
-        check_invariant(/*opportunistic=*/false, &fpr::run_parallel);
+    SECTION("local_mip") {
+        check_invariant(&local_mip::run_parallel);
     }
-    SECTION("fpr opportunistic") {
-        check_invariant(/*opportunistic=*/true, &fpr::run_parallel);
-    }
-    SECTION("local_mip deterministic") {
-        check_invariant(/*opportunistic=*/false, &local_mip::run_parallel);
-    }
-    SECTION("local_mip opportunistic") {
-        check_invariant(/*opportunistic=*/true, &local_mip::run_parallel);
-    }
-    SECTION("scylla deterministic") {
-        check_invariant(/*opportunistic=*/false, &scylla::run_parallel);
-    }
-    SECTION("scylla opportunistic") {
-        check_invariant(/*opportunistic=*/true, &scylla::run_parallel);
+    SECTION("scylla") {
+        check_invariant(&scylla::run_parallel);
     }
 }

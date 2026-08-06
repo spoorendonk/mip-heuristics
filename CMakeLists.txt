@@ -71,7 +71,7 @@ add_executable(mip_heuristics_tests
     tests/test_scylla.cpp
     tests/test_fpr_lp.cpp
     tests/test_primitives.cpp
-    tests/test_mode_matrix.cpp
+    tests/test_execution_modes.cpp
     tests/test_attribution.cpp
     tests/test_prop_engine.cpp
     tests/test_continuous_loop.cpp

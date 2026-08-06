@@ -1,6 +1,5 @@
 #include "local_mip.h"
 
-#include "epoch_runner.h"
 #include "heuristic_common.h"
 #include "local_mip_construction.h"
 #include "local_mip_worker.h"
@@ -205,128 +204,7 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     return constructed;
 }
 
-// Build a fresh per-worker starting solution for the deterministic
-// epoch loop: worker 0 gets the unperturbed start; workers 1..N-1
-// get the start + perturbation.  Cold-start workers all get
-// independently-constructed starts (different seeds) so the
-// perturbation step is a no-op in spirit but we still apply it to
-// stay on the existing worker-diversity path.
-std::vector<double> build_starting_solution_for_worker(HighsMipSolver &mipsolver,
-                                                       const ParallelSetup &setup,
-                                                       SolutionPool &pool, size_t w, uint32_t seed,
-                                                       std::vector<double> *cold_start_cache,
-                                                       size_t *effort_out = nullptr) {
-    std::vector<double> start = resolve_worker_start(
-        mipsolver, setup.csc, pool, setup.worker_budget, seed, cold_start_cache, effort_out);
-    if (w == 0) {
-        return start;
-    }
-    // Derive a distinct perturbation seed so it doesn't reproduce the
-    // RNG trajectory the construction already consumed when cold
-    // starting.  `0x9E3779B9u` is the golden-ratio 32-bit constant
-    // (same trick `boost::hash_combine` uses).  Flagged by R1/R2.
-    Rng perturb_rng(seed ^ 0x9E3779B9u);
-    perturb_solution(start, *setup.mipdata, setup.model.integrality_, setup.model.col_lower_,
-                     setup.model.col_upper_, setup.model.num_col_, perturb_rng);
-    return start;
-}
-
-size_t run_parallel_deterministic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
-    ParallelSetup setup(mipsolver, max_effort);
-    const HighsInt ncol = setup.model.num_col_;
-
-    // Create per-worker LocalMipWorker instances.  Starting points are
-    // resolved via the paper's cold-start fallback chain (pool → incumbent
-    // → construction), then perturbed for workers 1..N-1 to mirror the
-    // original warm-start diversity path.
-    std::vector<std::unique_ptr<LocalMipWorker>> workers;
-    workers.reserve(setup.N);
-
-    // One cold-start cache shared across all workers: the first worker
-    // that falls through to the construction branch pays the full
-    // O(nnz) cost; peers re-use the cached base vector and diverge via
-    // perturbation.  Nets an N-fold reduction in cold-start setup on
-    // instances where neither FJ/FPR nor a prior incumbent populated
-    // the pool.
-    std::vector<double> cold_start_cache;
-
-    // Cold-start construction effort booked into the global accountant
-    // alongside `total_effort` once the epoch loop returns.  R1-3
-    // round-3 review: the paper's construction sweep consumes wall time
-    // and must be visible to `mipdata->heuristic_effort_used` so the
-    // budget system's wall-clock-equivalent contract holds.
-    size_t construction_effort = 0;
-
-    for (size_t w = 0; w < setup.N; ++w) {
-        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        std::vector<double> start = build_starting_solution_for_worker(
-            mipsolver, setup, pool, w, seed, &cold_start_cache, &construction_effort);
-        workers.push_back(std::make_unique<LocalMipWorker>(
-            mipsolver, setup.csc, pool, setup.worker_budget, seed, start.data()));
-    }
-
-    // Track restart seed counter for deterministic restart seeding.
-    uint32_t restart_seed_counter = static_cast<uint32_t>(setup.N);
-
-    size_t total_effort = run_epoch_loop(
-        mipsolver, workers, max_effort, setup.epoch_budget(kEpochsPerWorker),
-        [&](int w) {
-            // Restart stalled worker: prefer pool restart, fall back to
-            // incumbent, fall back again to a fresh construction with a
-            // new seed (cold-start branch of issue #75 also covers
-            // restart-after-exhaustion on stubbornly-infeasible
-            // instances).
-            uint32_t new_seed =
-                setup.base_seed + static_cast<uint32_t>(restart_seed_counter++) * kSeedStride;
-
-            std::vector<double> restart_sol;
-            Rng restart_rng(new_seed);
-            if (!pool.get_restart(restart_rng, restart_sol)) {
-                if (!setup.mipdata->incumbent.empty()) {
-                    restart_sol = setup.mipdata->incumbent;
-                } else {
-                    // Cold restart: rebuild via construction.  Effort
-                    // booked into the same `construction_effort`
-                    // accumulator that the initial-setup loop fed.
-                    //
-                    // note (R2-9 / R3-6 round-4 review): construction
-                    // effort here is added to the *global* accountant
-                    // (`mipdata->heuristic_effort_used` below) but not
-                    // to the inner `run_epoch_loop`'s per-iteration
-                    // budget cap.  Intentional: the inner loop budget
-                    // paces per-epoch wall spend, the outer global
-                    // budget is what bounds the heuristic.  Folding
-                    // construction into the inner cap would require a
-                    // layered refactor of the restart callback's
-                    // signature; the current split is permissive (a
-                    // worker can do construction work the inner cap
-                    // doesn't gate) but defensible because every cold
-                    // restart's construction is bounded by
-                    // `construction_effort_cap(worker_budget)`, so the
-                    // total over all restarts is at worst proportional
-                    // to the outer budget.
-                    Rng construct_rng(new_seed);
-                    construction_effort += construct_initial_solution(
-                        mipsolver, setup.csc, construct_rng,
-                        construction_effort_cap(setup.worker_budget), restart_sol);
-                }
-            }
-            perturb_solution(restart_sol, *setup.mipdata, setup.model.integrality_,
-                             setup.model.col_lower_, setup.model.col_upper_, ncol, restart_rng);
-            workers[w] = std::make_unique<LocalMipWorker>(
-                mipsolver, setup.csc, pool, setup.worker_budget, new_seed, restart_sol.data());
-        },
-        setup.stale_budget);
-
-    // Booking the dispatcher's `mipdata->heuristic_effort_used += ...`
-    // is the caller's responsibility (issue #79), which makes
-    // mode_dispatch.cpp the single point of LocalMIP effort booking.
-    return total_effort + construction_effort;
-}
-
-size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
-                                  size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     ParallelSetup setup(mipsolver, max_effort);
     const HighsInt ncol = setup.model.num_col_;
 
@@ -334,10 +212,12 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
         std::unique_ptr<LocalMipWorker> worker;
     };
 
-    // Cold-start cache shared across all workers of this dispatch: same
-    // motivation as the deterministic runner above.  `std::mutex`-
-    // protected because the opportunistic runner's MakeState callback
-    // runs on multiple task threads concurrently.
+    // Cold-start cache shared across all workers of this dispatch: the
+    // first worker that falls through to the construction branch pays
+    // the full O(nnz) cost, peers re-use the cached base vector and
+    // diverge via perturbation.  `std::mutex`-protected because the
+    // runner's MakeState callback runs on multiple task threads
+    // concurrently.
     std::mutex cold_start_cache_mu;
     std::vector<double> cold_start_cache;
 
@@ -394,10 +274,12 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
                     if (!setup.mipdata->incumbent.empty()) {
                         restart_sol = setup.mipdata->incumbent;
                     } else {
-                        // note (R2-9 / R3-6 round-4 review): same global-
-                        // only accounting as the deterministic restart
-                        // callback above — see that comment for the
-                        // rationale.  The construction effort here is
+                        // note (R2-9 / R3-6 round-4 review): cold-start
+                        // construction is booked into the *global*
+                        // accountant only, not the runner's per-attempt
+                        // budget cap.  Intentional: the per-attempt cap
+                        // paces wall spend, the outer global budget is
+                        // what bounds the heuristic.  The effort here is
                         // booked into `construction_effort` and added to
                         // `mipdata->heuristic_effort_used` after the
                         // opportunistic loop returns; it does not
@@ -431,15 +313,15 @@ size_t run_parallel_opportunistic(HighsMipSolver &mipsolver, SolutionPool &pool,
             return result;
         });
 
-    // Caller books `mipdata->heuristic_effort_used` (issue #79).  See
-    // the matching note in `run_parallel_deterministic`.
+    // Caller books `mipdata->heuristic_effort_used` (issue #79), which
+    // makes mode_dispatch.cpp the single point of LocalMIP effort
+    // booking.
     return total_effort + construction_effort.load(std::memory_order_relaxed);
 }
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort,
-                    bool opportunistic) {
+size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
     const auto *model = mipsolver.model_;
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
@@ -453,10 +335,7 @@ size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_ef
     // warm-start-with-pool path; this function stays neutral on that
     // (pool-first lookup in `resolve_worker_start` already covers it).
 
-    if (opportunistic) {
-        return run_parallel_opportunistic(mipsolver, pool, max_effort);
-    }
-    return run_parallel_deterministic(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, pool, max_effort);
 }
 
 }  // namespace local_mip

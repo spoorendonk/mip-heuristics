@@ -18,8 +18,6 @@ class SolutionPool;
 // Subsequent calls resume via solve(nullptr, callback, /*resume=*/true).
 //
 // Finished when FJ stalls (effortSinceLastImprovement exceeds threshold).
-//
-// Satisfies the EpochWorker concept from epoch_runner.h.
 class FjWorker {
 public:
     FjWorker(HighsMipSolver &mipsolver, SolutionPool &pool, size_t total_budget, uint32_t seed);
@@ -29,10 +27,6 @@ public:
     EpochResult run_epoch(size_t epoch_budget);
 
     bool finished() const { return base_.finished; }
-
-    // Reset the improvement staleness counter (called at epoch boundary
-    // when another worker found an improvement).
-    void reset_staleness();
 
 private:
     struct Impl;
@@ -49,6 +43,3 @@ private:
     bool initialized_ = false;
     bool first_solve_done_ = false;
 };
-
-// static_assert in fj_worker.cpp to avoid leaking C++23 concepts into
-// headers that HiGHS (C++17) might transitively include.
