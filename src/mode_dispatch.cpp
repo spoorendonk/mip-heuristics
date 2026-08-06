@@ -146,7 +146,28 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     const size_t nnz = static_cast<size_t>(mipsolver.mipdata_->ARindex_.size());
     const size_t N_threads = static_cast<size_t>(std::max(1, highs::parallel::num_threads()));
     const size_t fj_budget = fj_on ? N_threads * (nnz << 10) : 0;
-    const size_t used_for_fj = std::min(fj_budget, budget);
+
+    // What FJ *charges* against the shared presolve budget, which is not
+    // the same as what it spends: FJ always runs with the full `fj_budget`
+    // (a fixed per-worker allowance, see below), and this only decides how
+    // much of the envelope is left for FPR / LocalMIP / Scylla.
+    //
+    // `fj_budget` scales with the worker count while `budget` does not, so
+    // an uncapped charge lets FJ eat the entire envelope: at the default
+    // `mip_heuristic_presolve_effort` the two meet at 24 workers, and past
+    // that `rest_budget` is 0 and the other three heuristics return
+    // immediately, reporting `effort=0` with no warning.  HiGHS derives
+    // its default worker count from the machine, so that is reachable on
+    // any host with ~47+ hardware threads — plausible for a benchmark
+    // machine, and silent when it happens.
+    //
+    // Reserving a quarter of the envelope bounds that.  The floor is
+    // deliberately low enough not to perturb the configurations the
+    // `kWeight*` constants were calibrated at (it first binds at 19
+    // workers, against 24 for total starvation) — it caps a pathology
+    // rather than re-balancing the split.
+    const size_t rest_floor = budget / 4;
+    const size_t used_for_fj = std::min(fj_budget, budget - std::min(rest_floor, budget));
     const size_t rest_budget = budget - used_for_fj;
 
     auto rest_alloc = [&](double w) -> size_t {

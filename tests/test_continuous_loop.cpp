@@ -228,3 +228,61 @@ TEST_CASE("ContinuousLoopState: note_staleness under contention never under-coun
     size_t final_stale = loop.effort_since_improvement.load();
     REQUIRE(final_stale <= static_cast<size_t>(kIncrements));
 }
+
+// ── Poller seat (#92 follow-up) ──
+//
+// The termination poll reads HiGHS internals that are not safe for
+// concurrent callers, so at most one worker may hold the seat at a time.
+// It used to be hardcoded to worker 0, which forced a retiring worker to
+// stop the whole team so that *someone* was still watching the clock.
+// These tests pin the handoff that replaced it.
+
+TEST_CASE("ContinuousLoopState: poller seat is exclusive and starts with worker 0",
+          "[continuous_loop]") {
+    ContinuousLoopState loop;
+    REQUIRE(loop.claim_poller(0));
+    REQUIRE(loop.claim_poller(0));  // idempotent for the holder
+    REQUIRE_FALSE(loop.claim_poller(1));
+    REQUIRE_FALSE(loop.claim_poller(2));
+}
+
+TEST_CASE("ContinuousLoopState: releasing the seat lets a peer take over",
+          "[continuous_loop]") {
+    ContinuousLoopState loop;
+    REQUIRE(loop.claim_poller(0));
+    REQUIRE_FALSE(loop.claim_poller(1));
+
+    loop.release_poller(0);
+    REQUIRE(loop.claim_poller(1));
+    REQUIRE_FALSE(loop.claim_poller(2));
+    // Releasing from a non-holder must not vacate someone else's seat.
+    loop.release_poller(0);
+    REQUIRE_FALSE(loop.claim_poller(2));
+    REQUIRE(loop.claim_poller(1));
+}
+
+TEST_CASE("ContinuousLoopState: exactly one thread wins a contested seat",
+          "[continuous_loop]") {
+    // The whole point of the compare-exchange: if two workers could both
+    // believe they hold the seat, they would call the non-thread-safe
+    // HiGHS timer/terminator concurrently.
+    constexpr int kThreads = 8;
+    for (int trial = 0; trial < 200; ++trial) {
+        ContinuousLoopState loop;
+        loop.release_poller(0);  // vacate the initial seat
+        std::atomic<int> winners{0};
+        std::vector<std::thread> threads;
+        threads.reserve(kThreads);
+        for (int t = 0; t < kThreads; ++t) {
+            threads.emplace_back([&loop, &winners, t]() {
+                if (loop.claim_poller(t)) {
+                    winners.fetch_add(1, std::memory_order_relaxed);
+                }
+            });
+        }
+        for (auto& th : threads) {
+            th.join();
+        }
+        REQUIRE(winners.load() == 1);
+    }
+}

@@ -59,7 +59,7 @@ template <typename MakeState, typename RunAttempt>
                 auto state = make_state(static_cast<int>(w), rng);
 
                 while (!loop.stopped()) {
-                    if (w == 0 && (attempt_counter & 1) == 0) {
+                    if ((attempt_counter & 1) == 0 && loop.claim_poller(static_cast<int>(w))) {
                         loop.poll_termination(mipsolver);
                     }
                     if (loop.stopped()) {
@@ -78,18 +78,23 @@ template <typename MakeState, typename RunAttempt>
                     ++attempt_counter;
 
                     // Guard against workers that make no progress: a zero-effort
-                    // return means this worker is done.  Request global stop so
-                    // peers don't keep running past a solver timeout between
-                    // worker-0's next polling tick (worker 0 is the only one that
-                    // polls `mipsolver_.timer_` / `terminatorTerminated`).
+                    // return means this worker is done.  Retire it on its own —
+                    // it used to request a *global* stop, on the grounds that
+                    // worker 0 was the sole termination poller and peers would
+                    // otherwise run past a solver timeout.  The claimable poller
+                    // seat removes that constraint, so one exhausted chain no
+                    // longer ends the dispatch for its peers.  A callback that
+                    // can rebuild its worker should do so and report the retry's
+                    // effort rather than returning 0 (see scylla.cpp, fpr_lp.cpp).
                     if (result.effort == 0) {
-                        loop.request_stop();
                         break;
                     }
 
                     loop.note_staleness(result.effort, result.found_improvement, stale_budget);
                     loop.add_effort(result.effort, budget);
                 }
+
+                loop.release_poller(static_cast<int>(w));
             }
         },
         1);

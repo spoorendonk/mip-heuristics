@@ -228,6 +228,29 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     // accumulate without holding the cold-start mutex.
     std::atomic<size_t> construction_effort{0};
 
+    // Prime the cache on this thread, before any worker starts.
+    //
+    // The cache was written for the epoch runner, which resolved every
+    // worker's start sequentially *before* the parallel region — so the
+    // first worker paid the O(nnz) construction and the rest hit the
+    // cache, one construction per dispatch.  The continuous runner enters
+    // MakeState on all N workers at once, so every one of them finds the
+    // cache empty and constructs: the mutex de-duplicates the write, not
+    // the work.  That is N× the cold-start cost on exactly the instances
+    // where it is most expensive, and it inflates the effort LocalMIP
+    // reports into the kWeight* calibration.  Priming here restores the
+    // one-per-dispatch property.
+    //
+    // Returns via the pool or incumbent branch (cheaply, leaving the cache
+    // empty) whenever either can seed a start, so this only constructs
+    // when the workers would have had to anyway.
+    {
+        size_t primed_effort = 0;
+        resolve_worker_start(mipsolver, setup.csc, pool, setup.worker_budget, setup.base_seed,
+                             &cold_start_cache, &primed_effort);
+        construction_effort.fetch_add(primed_effort, std::memory_order_relaxed);
+    }
+
     size_t total_effort = run_opportunistic_loop(
         mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
         setup.base_seed,

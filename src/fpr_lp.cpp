@@ -353,12 +353,25 @@ size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionP
             return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed)};
         },
         [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
-            if (state.worker->finished()) {
+            auto rebuild = [&]() {
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed);
+            };
+            if (state.worker->finished()) {
+                rebuild();
             }
-            return state.worker->run_attempt(run_cap);
+            auto attempt = state.worker->run_attempt(run_cap);
+            if (attempt.effort == 0 && state.worker->finished()) {
+                // The worker hit its hard randomisation cap and retired
+                // without doing any work in this call.  Replace it and take
+                // the attempt now: returning 0 would retire this arm slot
+                // for the rest of the dispatch, which is what used to make
+                // the rebuild above dead code.
+                rebuild();
+                attempt = state.worker->run_attempt(run_cap);
+            }
+            return attempt;
         });
 }
 

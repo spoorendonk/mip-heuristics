@@ -95,7 +95,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
         [](int worker_idx, Rng & /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
         [&](ScyllaOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             auto &worker = workers[state.worker_idx];
-            if (worker->finished()) {
+            auto rebuild = [&]() {
                 // Harvest the retired worker's overlap counters before
                 // the rebuild drops its destructor on the floor.
                 retired_fresh.fetch_add(worker->fresh_solves(), std::memory_order_relaxed);
@@ -108,12 +108,23 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 worker =
                     std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool, max_effort,
                                                    new_seed, state.worker_idx, N, &improvement_gen);
+            };
+            if (worker->finished()) {
+                rebuild();
             }
             auto attempt = worker->run_attempt(run_cap);
+            if (attempt.effort == 0 && worker->finished()) {
+                // Finished *and* no measurable effort in the same call — the
+                // nominal-1 guard below does not cover this, and returning 0
+                // would retire the chain slot for the rest of the dispatch.
+                // Rebuild and take the attempt now.
+                rebuild();
+                attempt = worker->run_attempt(run_cap);
+            }
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has
             // not yet hit kMaxPdlpStalls). Prevents run_opportunistic_loop's
-            // zero-effort guard from permanently retiring a live chain.
+            // zero-effort guard from retiring a live chain.
             if (attempt.effort == 0 && !worker->finished()) {
                 attempt.effort = 1;
             }
