@@ -1,0 +1,46 @@
+# kWeight* calibration set for src/mode_dispatch.cpp (issue #71, #78).
+#
+# Restored in #92 after being deleted in ec28780 as "stale".  It is not
+# stale: it is the instance set the kWeight* constants were measured on,
+# and without it the calibration procedure in mode_dispatch.cpp cannot be
+# reproduced — a re-measurement on a different set silently produces
+# different constants with no way to tell drift from set change.  Measured
+# directly: the same binary on this set vs a 24-instance sample of
+# instances_plato.txt gives local_mip:scylla weights of 2.67 vs 2.91.
+#
+# Usage: 30 s per instance, mip_root_presolve_only=true, log_dev_level=3,
+# all four heuristics on, default thread count (see the calibration recipe
+# in src/mode_dispatch.cpp), then bench/check_effort_drift.py <results>.
+# Tuning subset (~25 instances) selected from Mittelmann benchmarks
+# HiGHS 1.13.0 solve time 10-600s, structural diversity
+# Used for patched-vs-vanilla regression testing
+#
+# General integer (non-binary) — tests FPR repair strategies
+n5-3
+gen-ip054
+timtab1
+mzzv11
+mzzv42z
+# Mixed binary + continuous — tests LP-guided heuristics
+dano3_3
+fiball
+mc11
+roll3000
+swath3
+unitcal_7
+triptim1
+# Pure/mostly binary — tests FJ vs portfolio
+neos5
+mas76
+pk1
+seymour1
+nexp-150-20-8-5
+tr12-30
+nw04
+qap10
+# Scheduling/structured — tests heuristic diversity
+csched008
+satellites2-60-fs
+wachplan
+neos-3627168-kasai
+mushroom-best

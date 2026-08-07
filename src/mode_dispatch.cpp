@@ -92,31 +92,81 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     //      currently fails on this codebase by design; it is consumed
     //      as a one-shot calibration helper, not a CI gate.
     //
-    // Recalibrated against `bench/instances_small.txt` (25 MIPLIB
-    // instances, 30 s each, presolve budget at the 0.30 default — then
-    // still the overloaded `mip_heuristic_effort`, now
-    // `mip_heuristic_presolve_effort` with the same value and formula, so
-    // the calibration carries over across the option split —
-    // mip_root_presolve_only=true, threads=16).
+    // Base calibration, round 5: `bench/instances_small.txt` (25 MIPLIB
+    // instances, 30 s each, mip_root_presolve_only=true, threads=16,
+    // presolve budget at the 0.30 default — then still the overloaded
+    // `mip_heuristic_effort`, now `mip_heuristic_presolve_effort` with the
+    // same value and formula, so it carries over across the option split).
+    // Measured geomean `effort_per_ms` after issue #78 (cold-start
+    // construction sweep rolled into local_mip's reported effort):
+    //   fpr=636k  local_mip=1222k  scylla=261k
     //
-    // Caveat, and the reason step 2 above insists on the default thread
-    // count: these numbers were measured under the epoch-gated runner
-    // that #92 removed.  Effort accounting is per-worker and unchanged,
-    // and both runners give every heuristic the same worker pool, so the
-    // ratios are expected to carry over — but that is an expectation, not
-    // a measurement.  Scylla is the one to watch: losing the epoch
-    // barrier changes how often its workers contend on the PDLP mutex,
-    // which is exactly the term that does not scale with N like the
-    // others.  Re-measure before the next tweak rather than adjusting
-    // these by hand.  Measured geomean `effort_per_ms` after issue #78
-    // (cold-start construction sweep rolled into local_mip's reported
-    // effort):
-    //   fpr=636k  local_mip=1222k  scylla=261k   drift = 4.68× (FJ excluded:
-    //   fixed vanilla budget, not weight-apportioned; see fj_budget below)
+    // Round 6 (#92): the constants below are those rates scaled by the
+    // measured effect of this changeset, not a fresh absolute measurement.
+    // Why, and how much to trust it:
+    //
+    //   * #92 removed the epoch-gated runner and, with it, a per-improving-
+    //     attempt SolutionPool spin-lock, two per-call allocations, and an
+    //     N× redundant LocalMIP cold start.  Those speed up the heuristics
+    //     by *different* factors, so the ratios moved.
+    //   * Controlled A/B on this exact instance set, both binaries on one
+    //     idle machine, back-to-back, two seeds — geomean of the per-seed
+    //     rate ratios (pre-#92 -> HEAD):
+    //         fpr 1.27x   local_mip 1.36x   scylla 1.03x   (fj 1.23x)
+    //     Scylla is the outlier because it is PDLP/mutex-bound: it does not
+    //     benefit from per-attempt hot-path work the way the others do.
+    //     That separation is the robust part — it reproduced across both
+    //     seeds (scylla 1.006/1.061 vs fpr 1.163/1.386).
+    //   * Scaling rather than replacing, because the absolute ratios are
+    //     strongly machine- and thread-count-dependent and the round-5
+    //     numbers are the ones taken on the intended benchmark
+    //     configuration.  Same code, same instances, 6 workers instead of
+    //     16 gives local_mip:scylla = 2.67 against round 5's 4.68 —
+    //     LocalMIP scales near-linearly in workers and Scylla does not, so
+    //     a 6-worker box cannot stand in for a 16-worker one.
+    //
+    // Trust boundary: the *direction* is solid, the magnitude is +-10%
+    // (per-seed multipliers spread that much).  These are a budget split
+    // with a 3x drift tolerance, so that is within usable range — but a
+    // full re-measurement on the 16-worker benchmark machine should
+    // confirm before the closeout campaign, and would supersede the
+    // scaling entirely.  #96's budget sweep is the natural place.
+    //
+    // What the round-6 weights do and do not buy, measured rather than
+    // assumed — read this before spending time tuning them:
+    //
+    //   * They move *effort* as intended.  Going from round 5 to round 6
+    //     shifts Scylla's share of the post-FJ envelope 12.3% -> 9.9%, and
+    //     the measured geomean effort follows: scylla -5%, local_mip +21%,
+    //     fpr +14%.
+    //   * They do **not** measurably rebalance *wall clock*, which is the
+    //     thing the "equal weights -> equal wall" contract above promises.
+    //     Geomean wall per heuristic across the calibration set barely
+    //     moves (spread 2.76x/2.93x -> 2.76x/2.82x over two seeds), and
+    //     Scylla still spends ~2.8x FPR's wall under either set.
+    //   * The reason is fixed cost, not a broken split.  At the default
+    //     effort on this set each heuristic's dispatch is only ~20-70 ms,
+    //     enough that per-dispatch setup (build_csc, FPR's var-order
+    //     precompute, Scylla's ContestedPdlp/LP construction) dominates
+    //     the budget-driven part.  A 20% budget cut moved Scylla's wall
+    //     2.5%.  The contract holds asymptotically, once search dominates
+    //     setup — not at the default budget on instances this size.
+    //   * The envelope itself does bind for FPR and LocalMIP: raising
+    //     `mip_heuristic_presolve_effort` 0.30 -> 1.00 scales their effort
+    //     ~4.1x.  Scylla is inconsistent (4.1x on roll3000, 2.6x on
+    //     swath3, *down* on mzzv11) because PDLP stalls and stale rounds
+    //     bound it before the budget does.  FJ is flat, as intended.
+    //
+    // So: tuning these constants is worthwhile for effort accounting and
+    // for keeping the w ∝ r invariant honest, but do not expect wall-clock
+    // rebalancing from them at default effort.  If equalising wall is the
+    // actual goal, the fixed setup cost has to be attacked first.
+    //
     // Weights are proportional to geomean `effort_per_ms` (scylla
-    // normalised to 1.0 as the slowest-per-effort heuristic).
-    // Re-run `bench/check_effort_drift.py <results-dir>` to refresh after
-    // any change to effort accounting.  Earlier
+    // normalised to 1.0 as the slowest-per-effort heuristic).  FJ is
+    // excluded — fixed vanilla budget, not weight-apportioned; see
+    // fj_budget below.  Re-run `bench/check_effort_drift.py <results-dir>`
+    // to refresh after any change to effort accounting.  Earlier
     // calibrations live in git history (commits 82c0fbc, 83bc78b).
     //
     // FJ uses a fixed per-worker budget matching vanilla HiGHS's single-thread
@@ -124,8 +174,8 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     // by either effort option).  N parallel workers each cover nnz*1024 steps
     // so patched FJ is at least as deep as vanilla per thread.  The remaining
     // presolve budget after FJ is split among FPR / LocalMIP / Scylla below.
-    constexpr double kWeightFpr = 2.43;
-    constexpr double kWeightLocalMip = 4.68;
+    constexpr double kWeightFpr = 2.99;       // round 5: 2.43
+    constexpr double kWeightLocalMip = 6.16;  // round 5: 4.68
     constexpr double kWeightScylla = 1.00;
 
     double rest_weight = 0.0;
