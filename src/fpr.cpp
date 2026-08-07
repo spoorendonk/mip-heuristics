@@ -403,7 +403,7 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
     std::vector<std::unique_ptr<FprWorker>> workers;
     workers.reserve(exec.num_workers);
     for (size_t w = 0; w < exec.num_workers; ++w) {
-        uint32_t seed = exec.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        uint32_t seed = exec.worker_seed(static_cast<int>(w));
         workers.push_back(std::make_unique<FprWorker>(exec, *problem.csc, sink, var_orders,
                                                       static_cast<int>(w), seed, budget.stale));
     }

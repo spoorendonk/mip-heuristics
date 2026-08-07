@@ -11,6 +11,7 @@
 #include "mip/HighsMipSolverData.h"
 #include "scylla.h"
 
+#include <algorithm>
 #include <string>
 
 namespace heuristics {
@@ -202,8 +203,6 @@ constexpr HeuristicConfig kChain[] = {
 // LocalMIP).  Each entry carries its originating heuristic's source tag
 // (see incumbent_sink.h / #73).
 bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFlags &flags) {
-    const auto *options = mipsolver.options_mip_;
-
     double rest_weight = 0.0;
     bool any_enabled = false;
     for (const HeuristicConfig &h : kChain) {
@@ -253,9 +252,11 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // Note this floors what FJ *charges*, which is not a bound on what
     // anyone spends: FJ books its full per-worker allowance regardless,
     // and Scylla routinely books past its share because one attempt is a
-    // whole PDLP solve charging `iters x nnz`.  #94'''s unified ledger is
-    // where that gets made honest; this just caps a starvation
-    // pathology rather than re-balancing the split.
+    // whole PDLP solve charging `iters x nnz`.  #94's ledger unified where
+    // that spend is *recorded*, not how much of it any heuristic is allowed
+    // to book past its share — this floor just caps a starvation pathology
+    // rather than re-balancing the split.  #96's budget sweep is where the
+    // overshoot itself gets revisited.
     const size_t rest_floor = budget / 4;  // <= budget by construction
     const size_t used_for_fj = std::min(fj_budget, budget - rest_floor);
     const size_t rest_budget = budget - used_for_fj;

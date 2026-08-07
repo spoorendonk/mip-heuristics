@@ -329,29 +329,17 @@ size_t run_workers(const LpFprSetup &setup, const ExecutionContext &exec,
         [&](int worker_idx, Rng & /*rng*/) -> LpFprOppState {
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
-            uint32_t seed = exec.base_seed + static_cast<uint32_t>(worker_idx) * kSeedStride;
+            uint32_t seed = exec.worker_seed(worker_idx);
             return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed)};
         },
         [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
-            auto rebuild = [&]() {
+            // A retired worker here hit its hard randomisation cap; the
+            // replacement draws a fresh arm so the slot keeps contributing.
+            return attempt_with_rebuild(state.worker, run_cap, [&]() {
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed);
-            };
-            if (state.worker->finished()) {
-                rebuild();
-            }
-            auto attempt = state.worker->run_attempt(run_cap);
-            if (attempt.effort == 0 && state.worker->finished()) {
-                // The worker hit its hard randomisation cap and retired
-                // without doing any work in this call.  Replace it and take
-                // the attempt now: returning 0 would retire this arm slot
-                // for the rest of the dispatch, which is what used to make
-                // the rebuild above dead code.
-                rebuild();
-                attempt = state.worker->run_attempt(run_cap);
-            }
-            return attempt;
+            });
         });
 }
 

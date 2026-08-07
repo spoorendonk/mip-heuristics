@@ -77,7 +77,7 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
     std::vector<std::unique_ptr<ScyllaWorker>> workers;
     workers.reserve(exec.num_workers);
     for (int w = 0; w < N; ++w) {
-        uint32_t seed = exec.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        uint32_t seed = exec.worker_seed(w);
         workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, *problem.csc, sink,
                                                          budget.total, seed, w, N,
                                                          &improvement_gen));
@@ -100,7 +100,7 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
         [](int worker_idx, Rng & /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
         [&](ScyllaOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             auto &worker = workers[state.worker_idx];
-            auto rebuild = [&]() {
+            auto attempt = attempt_with_rebuild(worker, run_cap, [&]() {
                 // Harvest the retired worker's overlap counters before
                 // the rebuild drops its destructor on the floor.
                 retired_fresh.fetch_add(worker->fresh_solves(), std::memory_order_relaxed);
@@ -114,19 +114,7 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                     std::make_unique<ScyllaWorker>(mipsolver, pdlp, *problem.csc, sink,
                                                    budget.total, new_seed, state.worker_idx, N,
                                                    &improvement_gen);
-            };
-            if (worker->finished()) {
-                rebuild();
-            }
-            auto attempt = worker->run_attempt(run_cap);
-            if (attempt.effort == 0 && worker->finished()) {
-                // Finished *and* no measurable effort in the same call — the
-                // nominal-1 guard below does not cover this, and returning 0
-                // would retire the chain slot for the rest of the dispatch.
-                // Rebuild and take the attempt now.
-                rebuild();
-                attempt = worker->run_attempt(run_cap);
-            }
+            });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has
             // not yet hit kMaxPdlpStalls). Prevents run_opportunistic_loop's

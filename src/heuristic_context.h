@@ -36,6 +36,17 @@
 // construction (the three heuristics that honour it — FJ's per-worker
 // allowance comes from its own fixed total instead, see mode_dispatch.cpp).
 
+// The uniform runner contract every presolve heuristic implements:
+//
+//     size_t <ns>::run(const ProblemView &problem, const HeuristicBudget &budget,
+//                      ExecutionContext &exec, IncumbentSink &sink);
+//
+// `mode_dispatch::run_sequential` owns all four arguments — including the
+// source tag the sink attributes this heuristic's solutions with — and books
+// the returned effort through `EffortLedger`, the single point of effort
+// accounting.  No heuristic self-books.  The per-heuristic headers describe
+// only what their own runner does differently.
+
 // Read-only view of the model a heuristic searches.  Cheap to copy: every
 // member is a non-owning pointer or a derived size.  The pointees are owned
 // by the `HeuristicContext` this view was carved from (the CSC) or by the
@@ -99,6 +110,14 @@ struct ExecutionContext {
     bool terminated() const {
         return mipsolver.mipdata_->terminatorTerminated() ||
                mipsolver.timer_.read() >= time_limit;
+    }
+
+    // Deterministic seed for worker `w`.  The runner seeds its own per-worker
+    // `Rng` with this, and heuristics that pre-construct their workers seed
+    // them with it too — three hand-written copies of the expression before
+    // it lived here, which is three chances for one of them to drift.
+    uint32_t worker_seed(int w) const {
+        return base_seed + static_cast<uint32_t>(w) * kSeedStride;
     }
 };
 

@@ -35,6 +35,32 @@
 //     the atomic total before starting an attempt.  Bounded overshoot
 //     is acceptable for heuristic effort accounting.
 //
+// One attempt from a worker that retires when it stalls.
+//
+// Scylla and fpr_lp both rebuild a retired worker in place, and both need
+// the same three steps — the third of which is easy to leave out and was
+// what made the rebuild path dead code once already.  Replace the worker
+// *before* the attempt if it has already retired, and again *after* an
+// attempt that both retired the worker and recorded no effort: returning 0
+// there would trip `run_opportunistic_loop`'s zero-effort guard and retire
+// the slot for the rest of the dispatch.
+//
+// `worker` is the slot to refill; `rebuild()` must leave it holding a fresh
+// one.  (FJ does not use this: it builds its worker lazily on first use and
+// has no post-attempt retry.)
+template <typename WorkerPtr, typename Rebuild>
+AttemptResult attempt_with_rebuild(WorkerPtr &worker, size_t run_cap, Rebuild rebuild) {
+    if (worker->finished()) {
+        rebuild();
+    }
+    AttemptResult attempt = worker->run_attempt(run_cap);
+    if (attempt.effort == 0 && worker->finished()) {
+        rebuild();
+        attempt = worker->run_attempt(run_cap);
+    }
+    return attempt;
+}
+
 // Returns total effort consumed across all workers.
 template <typename MakeState, typename RunAttempt>
 [[nodiscard]] size_t run_opportunistic_loop(const ExecutionContext &exec,
@@ -51,7 +77,7 @@ template <typename MakeState, typename RunAttempt>
         0, static_cast<HighsInt>(N),
         [&](HighsInt lo, HighsInt hi) {
             for (HighsInt w = lo; w < hi; ++w) {
-                Rng rng(exec.base_seed + static_cast<uint32_t>(w) * kSeedStride);
+                Rng rng(exec.worker_seed(static_cast<int>(w)));
                 int attempt_counter = 0;
 
                 auto state = make_state(static_cast<int>(w), rng);
