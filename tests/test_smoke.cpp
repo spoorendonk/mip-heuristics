@@ -36,18 +36,7 @@ TEST_CASE("Smoke test: solve small MIP", "[basic]") {
 }
 
 TEST_CASE("Options: disable custom heuristics", "[options]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    // Verify options exist and can be set
-    REQUIRE(highs.setOptionValue("mip_heuristic_run_fpr", false) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_run_local_mip", false) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_run_scylla", false) == HighsStatus::kOk);
-    // Solve still works with all custom heuristics disabled
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    REQUIRE(solve_suite("flugpl.mps", "off") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 TEST_CASE("Options: effort split defaults", "[options]") {
@@ -71,26 +60,61 @@ TEST_CASE("Options: effort split defaults", "[options]") {
     REQUIRE(highs.setOptionValue("mip_heuristic_presolve_effort", 1.0) == HighsStatus::kOk);
 }
 
-// #92 deleted `mip_heuristic_opportunistic` from the patch rather than
-// leaving it a silently ignored knob.  Epic #88's coupling B is that every
+// #92 and #93 deleted their options from the patch rather than leaving
+// them silently ignored knobs.  Epic #88's coupling B is that every
 // pre-existing HiGHS build tree still registers the old option set; the
-// PATCH_VERSION guard in apply_patch.cmake is the primary defence and this
-// is the runtime backstop for a stale tree or a patch-script regression
-// that re-adds it.
-TEST_CASE("Options: opportunistic option is gone", "[options]") {
+// PATCH_VERSION and retired-identifier guards in apply_patch.cmake are the
+// primary defence and this is the runtime backstop for a stale tree or a
+// patch-script regression that re-adds one.
+TEST_CASE("Options: retired options are gone", "[options]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     REQUIRE(highs.setOptionValue("mip_heuristic_opportunistic", true) != HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("off")) != HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("mip_heuristic_run_fpr", true) != HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("mip_heuristic_run_local_mip", true) != HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("mip_heuristic_run_scylla", true) != HighsStatus::kOk);
 }
 
-TEST_CASE("Options: preset option exists and accepts all valid values", "[options][preset]") {
+TEST_CASE("Options: suite defaults to all and accepts every value", "[options][suite]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("")) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("off")) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("fpr")) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("all_opp")) ==
-            HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("scylla")) ==
-            HighsStatus::kOk);
+    std::string suite;
+    REQUIRE(highs.getOptionValue("mip_heuristic_suite", suite) == HighsStatus::kOk);
+    REQUIRE(suite == "all");
+    // HiGHS does not validate string option *values*, so every one of these
+    // returns kOk — including the bogus one below.  What this asserts is that
+    // the option exists under this exact name; the dispatcher is what
+    // distinguishes a known value from an unknown one.
+    for (const char* value : {"off", "fj", "fpr", "local_mip", "scylla", "all"}) {
+        REQUIRE(highs.setOptionValue("mip_heuristic_suite", std::string(value)) ==
+                HighsStatus::kOk);
+    }
+}
+
+TEST_CASE("Options: unknown suite value warns and runs everything", "[options][suite]") {
+    const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
+        require_option(h, "log_dev_level", 3);
+        set_suite(h, "bogus");
+    });
+    bool warned = false;
+    for (const auto& line : lines) {
+        if (line.find("Unknown mip_heuristic_suite value \"bogus\"") != std::string::npos) {
+            warned = true;
+        }
+    }
+    REQUIRE(warned);
+    // Fail-open: all four heuristics are dispatched, exactly as at `all`.
+    // Asserted on the presence of the trace line rather than on non-zero
+    // effort — Scylla can legitimately report zero on an instance this
+    // small, and what is under test here is the flag set, not the search.
+    for (const char* heur : {"fj", "fpr", "local_mip", "scylla"}) {
+        const std::string tag = std::string("[Sequential] heur=") + heur + " ";
+        bool dispatched = false;
+        for (const auto& line : lines) {
+            dispatched = dispatched || line.find(tag) != std::string::npos;
+        }
+        INFO("heuristic " << heur);
+        REQUIRE(dispatched);
+    }
 }

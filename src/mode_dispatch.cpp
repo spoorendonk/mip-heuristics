@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <mutex>
+#include <string>
 
 namespace heuristics {
 
@@ -46,8 +47,7 @@ void log_sequential(const HighsLogOptions &log_options, const char *name, size_t
 // acceptance so incumbent timestamps reflect find time rather than
 // flush time.  Each entry carries its originating heuristic's source
 // tag (see solution_pool.h / #73).
-bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool fpr_on, bool lm_on,
-                    bool sc_on) {
+bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFlags &flags) {
     const auto *options = mipsolver.options_mip_;
 
     // Weights tune each heuristic's share of the common effort budget so
@@ -79,10 +79,9 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     //          the same set gives local_mip:scylla = 4.68 at 16 workers
     //          and 2.81 at 6.  16 is what round 5 used; deviate and the
     //          numbers are not comparable to the base.
-    //      Note `bench/run_benchmark.py`'s `patched` config pins
-    //      `mip_heuristic_preset=all_opp`, which disables Scylla — use a
-    //      config name it does not recognise (e.g. `--configs
-    //      calibration`) so no preset is applied and all four run.
+    //      `bench/run_benchmark.py`'s `patched` config pins
+    //      `mip_heuristic_suite=all`, which is what this calibration wants;
+    //      any config that narrows the suite measures fewer heuristics.
     //   3. `python bench/check_effort_drift.py <results-dir>`.
     //   4. Copy each heuristic's suggested weight into the constants
     //      below.  Normalise so the lowest weight rounds to a tidy value
@@ -197,23 +196,23 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     constexpr double kWeightScylla = 1.00;
 
     double rest_weight = 0.0;
-    if (fpr_on) {
+    if (flags.fpr) {
         rest_weight += kWeightFpr;
     }
-    if (lm_on) {
+    if (flags.local_mip) {
         rest_weight += kWeightLocalMip;
     }
-    if (sc_on) {
+    if (flags.scylla) {
         rest_weight += kWeightScylla;
     }
 
-    if (!fj_on && rest_weight == 0.0) {
+    if (!flags.fj && rest_weight == 0.0) {
         return false;
     }
 
     const size_t nnz = static_cast<size_t>(mipsolver.mipdata_->ARindex_.size());
     const size_t N_threads = static_cast<size_t>(std::max(1, highs::parallel::num_threads()));
-    const size_t fj_budget = fj_on ? N_threads * (nnz << 10) : 0;
+    const size_t fj_budget = flags.fj ? N_threads * (nnz << 10) : 0;
 
     // What FJ *charges* against the shared presolve budget, which is not
     // the same as what it spends: FJ always runs with the full `fj_budget`
@@ -313,22 +312,22 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
         log_sequential(log_options, name, effort, wall_ms);
     };
 
-    if (fj_on && !deadline_hit()) {
+    if (flags.fj && !deadline_hit()) {
         run_and_log("fj", [&]() -> size_t {
             return fj::run_parallel(mipsolver, pool, fj_budget);
         });
     }
-    if (fpr_on && !deadline_hit()) {
+    if (flags.fpr && !deadline_hit()) {
         run_and_log("fpr", [&]() -> size_t {
             return fpr::run_parallel(mipsolver, pool, rest_alloc(kWeightFpr));
         });
     }
-    if (lm_on && !deadline_hit()) {
+    if (flags.local_mip && !deadline_hit()) {
         run_and_log("local_mip", [&]() -> size_t {
             return local_mip::run_parallel(mipsolver, pool, rest_alloc(kWeightLocalMip));
         });
     }
-    if (sc_on && !deadline_hit()) {
+    if (flags.scylla && !deadline_hit()) {
         run_and_log("scylla", [&]() -> size_t {
             return scylla::run_parallel(mipsolver, pool, rest_alloc(kWeightScylla));
         });
@@ -339,102 +338,52 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
 
 }  // namespace
 
-HeuristicFlags effective_flags(const HighsOptions &options, bool *preset_recognized) {
-    // Individual options first; a recognized non-empty preset overrides
-    // all four flags.  Unknown presets leave the individual-option values
-    // in place (no silent disable-all footgun) — the caller warns.
-    HeuristicFlags flags{options.mip_heuristic_run_feasibility_jump, options.mip_heuristic_run_fpr,
-                         options.mip_heuristic_run_local_mip, options.mip_heuristic_run_scylla};
+HeuristicFlags effective_flags(const HighsOptions &options, bool *recognized) {
+    const std::string &suite = options.mip_heuristic_suite;
 
-    const auto &preset = options.mip_heuristic_preset;
-    bool recognized = false;
-    if (!preset.empty()) {
-        if (preset == "off") {
-            flags = {false, false, false, false};
-            recognized = true;
-        } else if (preset == "fpr") {
-            flags = {false, true, false, false};
-            recognized = true;
-        } else if (preset == "all_opp") {
-            // Named for the continuous ("opportunistic") runner that was
-            // once one of two modes; since #92 it is the only one.  The
-            // name is kept because it labels the recorded PLATO results
-            // in README.md and is `bench/run_benchmark.py`'s default.
-            // Its sibling `all_det` named the removed mode and is gone —
-            // passing it now trips the unknown-preset warning.
-            flags = {true, true, true, false};
-            recognized = true;
-        } else if (preset == "scylla") {
-            flags = {false, false, false, true};
-            recognized = true;
-        }
+    // Fail open on an unrecognised value: running everything is the same
+    // thing the default does, and silently disabling all four heuristics
+    // because of a typo is the worse failure.  The caller warns.
+    HeuristicFlags flags{true, true, true, true};
+    bool known = true;
+    if (suite == "off") {
+        flags = {false, false, false, false};
+    } else if (suite == "fj") {
+        flags = {true, false, false, false};
+    } else if (suite == "fpr") {
+        flags = {false, true, false, false};
+    } else if (suite == "local_mip") {
+        flags = {false, false, true, false};
+    } else if (suite == "scylla") {
+        flags = {false, false, false, true};
+    } else if (suite != "all") {
+        known = false;
     }
-    if (preset_recognized != nullptr) {
-        *preset_recognized = recognized;
+
+    // Upstream's own FJ switch still means what it says.  At suite=off the
+    // patch leaves it gating HiGHS's native FJ call site; everywhere else it
+    // gates ours, so `mip_heuristic_run_feasibility_jump=false` turns
+    // FeasibilityJump off in every configuration rather than only one.
+    flags.fj = flags.fj && options.mip_heuristic_run_feasibility_jump;
+
+    if (recognized != nullptr) {
+        *recognized = known;
     }
     return flags;
 }
 
 bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
-    const auto *options = mipsolver.options_mip_;
+    const HighsOptions &options = *mipsolver.options_mip_;
 
-    bool preset_applied = false;
-    const HeuristicFlags flags = effective_flags(*options, &preset_applied);
-    const bool fj_on = flags.fj;
-    const bool fpr_on = flags.fpr;
-    const bool lm_on = flags.local_mip;
-    const bool sc_on = flags.scylla;
-
-    if (!options->mip_heuristic_preset.empty() && !preset_applied) {
-        highsLogUser(options->log_options, HighsLogType::kWarning,
-                     "Unknown mip_heuristic_preset value \"%s\"; "
-                     "ignoring preset and using individual option flags.\n",
-                     options->mip_heuristic_preset.c_str());
+    bool recognized = false;
+    const HeuristicFlags flags = effective_flags(options, &recognized);
+    if (!recognized) {
+        highsLogUser(options.log_options, HighsLogType::kWarning,
+                     "Unknown mip_heuristic_suite value \"%s\"; running all heuristics.\n",
+                     options.mip_heuristic_suite.c_str());
     }
 
-    // When a preset was applied, write the derived flags back into the options
-    // struct.  The underlying object is a non-const HighsOptions member of the
-    // enclosing Highs instance, so the cast is safe.  Originals are saved first
-    // and restored before returning, so a second highs.run() call sees the
-    // options the user actually set rather than the preset-overwritten ones.
-    //
-    // NOTE (#91): this write-back currently has no reader.  Its only consumer
-    // was a presolve-setup helper deleted by #91 — the heuristics take their
-    // flags as `run_sequential` parameters, and the one remaining direct
-    // reader of the raw options (`fpr_lp::run`) runs at B&B dive time, after
-    // the restore.  It is left in place deliberately: epic
-    // #88's coupling I schedules removal of this `const_cast` for #93, which
-    // owns `preset=off` vanilla-equivalence and rewrites the option surface
-    // wholesale.  Delete it there, not here.
-    if (preset_applied) {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        auto *w = const_cast<HighsOptions *>(options);
-
-        // Save originals.
-        const bool saved_fj = w->mip_heuristic_run_feasibility_jump;
-        const bool saved_fpr = w->mip_heuristic_run_fpr;
-        const bool saved_lm = w->mip_heuristic_run_local_mip;
-        const bool saved_sc = w->mip_heuristic_run_scylla;
-
-        // Apply preset.
-        w->mip_heuristic_run_feasibility_jump = fj_on;
-        w->mip_heuristic_run_fpr = fpr_on;
-        w->mip_heuristic_run_local_mip = lm_on;
-        w->mip_heuristic_run_scylla = sc_on;
-
-        // Dispatch.
-        const bool result = run_sequential(mipsolver, budget, fj_on, fpr_on, lm_on, sc_on);
-
-        // Restore originals so multi-solve on the same Highs instance is safe.
-        w->mip_heuristic_run_feasibility_jump = saved_fj;
-        w->mip_heuristic_run_fpr = saved_fpr;
-        w->mip_heuristic_run_local_mip = saved_lm;
-        w->mip_heuristic_run_scylla = saved_sc;
-
-        return result;
-    }
-
-    return run_sequential(mipsolver, budget, fj_on, fpr_on, lm_on, sc_on);
+    return run_sequential(mipsolver, budget, flags);
 }
 
 }  // namespace heuristics

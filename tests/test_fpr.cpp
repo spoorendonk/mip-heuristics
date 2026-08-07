@@ -55,17 +55,7 @@ TEST_CASE("Characterization: bell5", "[heuristic][fpr]") {
 }
 
 TEST_CASE("FPR standalone: flugpl finds solution", "[heuristic][fpr]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    REQUIRE(solve_suite("flugpl.mps", "fpr") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 // ===================================================================
@@ -134,15 +124,8 @@ TEST_CASE("FPR strategies: DFS mode on flugpl", "[fpr][strategies][dfs]") {
 
 TEST_CASE("FPR strategies: multi-config sequential on egout", "[fpr][strategies]") {
     // The sequential multi-config runner should solve egout
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
     // FPR enabled (runs multi-config)
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+    REQUIRE(solve_suite("egout.mps", "fpr") == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
 // ===================================================================
@@ -152,14 +135,7 @@ TEST_CASE("FPR strategies: multi-config sequential on egout", "[fpr][strategies]
 TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
           "[repair-search][fpr]") {
     // Standalone FPR mode now includes RepairSearch config — must still solve
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    REQUIRE(solve_suite("flugpl.mps", "fpr") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 // ===================================================================
@@ -297,10 +273,7 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
     // reach the same optimum.
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
+    set_suite(highs, "fpr");
     // bell5 is the one bundled instance whose solve can terminate on
     // HiGHS's default `mip_rel_gap` (1e-4) with an incumbent short of
     // the optimum — 3 distinct primal bounds over 15 default-option

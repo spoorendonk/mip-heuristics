@@ -53,157 +53,118 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # inserted, so none of them can tell a tree patched by an *earlier* version
 # from a current one: the sentinel is present in both, the block is skipped,
 # and the stale layout survives into the build as a silently wrong option set.
-# Enumerating each removed identifier does not scale and goes stale itself.
 #
-# Instead the patch stamps its version into HighsOptions.h and this check
-# rejects anything older.  A tree that carries our options but not the current
-# marker was patched by an older script and must be cleaned.  Bump
-# PATCH_VERSION whenever any inserted text changes.
-set(PATCH_VERSION "3")
+# Two probes, because the option set has been renamed out from under the
+# marker once already:
+#   * the marker itself, for any tree patched since it was introduced;
+#   * the identifiers this script *used* to insert and no longer does, for
+#     trees older than the marker.  A retired name in the tree means the old
+#     block was applied and its text is still there — the new block would be
+#     appended alongside it and the failure would surface as an unrelated
+#     compile error in mode_dispatch.cpp.  None of these is an upstream
+#     identifier, and none is a substring of anything this script inserts
+#     (`mip_heuristic_preset` does not occur inside
+#     `mip_heuristic_presolve_effort` — they diverge at `prese`/`preso`).
+#
+# Bump PATCH_VERSION whenever any inserted text changes, and add any
+# identifier this script stops inserting to the retired list.
+set(PATCH_VERSION "4")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_run_fpr" _patch_present)
-if(_patch_version_found EQUAL -1 AND NOT _patch_present EQUAL -1)
-    message(FATAL_ERROR
-        "HighsOptions.h was patched by an older version of apply_patch.cmake "
-        "(expected 'mip-heuristics patch version ${PATCH_VERSION}'). "
-        "The option set has changed since; an in-place rewrite is not safe. "
-        "Please clean the HiGHS source tree and rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
+if(_patch_version_found EQUAL -1)
+    set(_retired_options
+        "mip_heuristic_preset:renamed to mip_heuristic_suite"
+        "mip_heuristic_run_fpr:folded into mip_heuristic_suite"
+        "mip_heuristic_run_local_mip:folded into mip_heuristic_suite"
+        "mip_heuristic_run_scylla:folded into mip_heuristic_suite"
+        "mip_heuristic_portfolio:removed with the Thompson portfolio"
+        "mip_heuristic_opportunistic:removed; opportunistic is the only parallel mode")
+    foreach(_entry IN LISTS _retired_options)
+        string(REGEX REPLACE ":.*$" "" _retired_ident "${_entry}")
+        string(REGEX REPLACE "^[^:]*:" "" _retired_why "${_entry}")
+        string(FIND "${OPTIONS_CONTENT}" "${_retired_ident}" _retired_idx)
+        if(NOT _retired_idx EQUAL -1)
+            message(FATAL_ERROR
+                "HighsOptions.h still carries '${_retired_ident}' (${_retired_why}). "
+                "The tree was patched by an older version of apply_patch.cmake; "
+                "an in-place rewrite is not safe. "
+                "Please clean the HiGHS source tree and rebuild: "
+                "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+                "cmake -B build && cmake --build build")
+        endif()
+    endforeach()
+    string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
+    if(NOT _patch_marker_found EQUAL -1)
+        message(FATAL_ERROR
+            "HighsOptions.h was patched by an older version of apply_patch.cmake "
+            "(expected 'mip-heuristics patch version ${PATCH_VERSION}'). "
+            "The inserted text has changed since; an in-place rewrite is not safe. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
 endif()
 
-# Idempotency check: look for the ctor-init substring that is unique to the new version.
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_run_scylla(false)" _opts_found)
-if(_opts_found EQUAL -1)
-    # Member variables: insert after mip_heuristic_run_shifting
+# ── Add the mip_heuristic_suite string option ──
+# One single-valued option selects which custom heuristics run:
+# off | fj | fpr | local_mip | scylla | all (default "all").  It replaced the
+# three mip_heuristic_run_* bools and mip_heuristic_preset in #93.
+#
+# All three insertions anchor on *upstream's* mip_heuristic_run_shifting
+# text.  Anchoring on our own inserted text is what made the previous option
+# blocks a chain: deleting one silently dropped the next from the build.
+string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_suite" _suite_found)
+if(_suite_found EQUAL -1)
+    # Member variable: insert after mip_heuristic_run_shifting.  The version
+    # marker rides along on this line — it is the stale-tree probe above.
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  // mip-heuristics patch version ${PATCH_VERSION}\n  bool mip_heuristic_run_fpr;\n  bool mip_heuristic_run_local_mip;\n  bool mip_heuristic_run_scylla;\n"
+      "bool mip_heuristic_run_shifting;\n  std::string mip_heuristic_suite;  // mip-heuristics patch version ${PATCH_VERSION}\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer list: insert after mip_heuristic_run_shifting(false),
     string(REPLACE
       "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        mip_heuristic_run_fpr(false),\n        mip_heuristic_run_local_mip(false),\n        mip_heuristic_run_scylla(false),\n"
+      "mip_heuristic_run_shifting(false),\n        mip_heuristic_suite(\"all\"),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_fpr\",\n                                       \"Use the FPR heuristic\", advanced,\n                                       &mip_heuristic_run_fpr, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_local_mip\",\n                                       \"Use the LocalMIP heuristic\", advanced,\n                                       &mip_heuristic_run_local_mip, true);\n    records.push_back(record_bool);\n\n    record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_suite\",\n                                          \"Custom MIP heuristic suite: \\\"off\\\", \\\"fj\\\", \\\"fpr\\\", \\\"local_mip\\\", \\\"scylla\\\" or \\\"all\\\"\", advanced,\n                                          &mip_heuristic_suite, \"all\");\n    records.push_back(record_string);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    # Sanity checks: all three insertions must land.  This block is the
-    # one that most needs them, because its failure mode is silent rather
-    # than loud: if only the *record registration* REPLACE misses (upstream
-    # reformats the Shifting record block it anchors on), the members and
-    # ctor inits are still there, so HighsOptions.h compiles — the options
-    # are simply never registered, keep their `false` ctor defaults, and
-    # every custom heuristic switches off with no diagnostic anywhere.
-    # The preset and presolve_effort blocks below have carried equivalent
-    # checks for a while; #92 re-anchored the preset block onto this one,
-    # which makes a miss here cascade into both.
-    #
-    # `mip_heuristic_run_scylla` alone is a sufficient probe: each of the
-    # three REPLACEs inserts all three options in a single string, so any
-    # one of them landing means all three did.  Same reason the idempotency
-    # sentinel above keys on it.
+    # Sanity checks: all three insertions must land.  The failure mode is
+    # silent rather than loud — if only the *record registration* REPLACE
+    # misses (upstream reformats the Shifting record block it anchors on),
+    # the member and ctor init are still there, so HighsOptions.h compiles;
+    # the option is simply never registered, keeps its ctor default, and
+    # every attempt to set it fails with no diagnostic anywhere.
     #
     # Match the member declaration *without* its trailing semicolon: cmake
     # splits a matched string containing `;` into list elements, which would
-    # make list(LENGTH) report 2 for a single hit.  Same trick the preset
-    # block uses (`std::string mip_heuristic_preset`).  The `bool ` prefix
+    # make list(LENGTH) report 2 for a single hit.  The `std::string ` prefix
     # is what keeps this from also matching the ctor init or the record.
-    string(REGEX MATCHALL "bool mip_heuristic_run_scylla" _bool_member_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _bool_member_hits _bool_member_count)
-    string(REGEX MATCHALL "mip_heuristic_run_scylla\\(false\\)" _bool_ctor_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _bool_ctor_hits _bool_ctor_count)
+    string(REGEX MATCHALL "std::string mip_heuristic_suite" _suite_member_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _suite_member_hits _suite_member_count)
+    string(REGEX MATCHALL "mip_heuristic_suite\\(\"all\"\\)" _suite_ctor_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _suite_ctor_hits _suite_ctor_count)
     # string(FIND), not REGEX MATCHALL: the record text contains semicolons.
-    string(FIND "${OPTIONS_CONTENT}" "OptionRecordBool(\"mip_heuristic_run_scylla\"" _bool_record_idx)
-    if(NOT _bool_member_count EQUAL 1 OR NOT _bool_ctor_count EQUAL 1 OR _bool_record_idx EQUAL -1)
+    string(FIND "${OPTIONS_CONTENT}" "OptionRecordString(\"mip_heuristic_suite\"" _suite_record_idx)
+    if(NOT _suite_member_count EQUAL 1 OR NOT _suite_ctor_count EQUAL 1 OR _suite_record_idx EQUAL -1)
         message(FATAL_ERROR
-            "HighsOptions.h post-patch sanity check failed for the "
-            "mip_heuristic_run_* bool options (member=${_bool_member_count}, "
-            "ctor=${_bool_ctor_count}, record_idx=${_bool_record_idx}). "
+            "HighsOptions.h post-patch sanity check failed for "
+            "mip_heuristic_suite (member=${_suite_member_count}, "
+            "ctor=${_suite_ctor_count}, record_idx=${_suite_record_idx}). "
             "Upstream HiGHS likely reformatted HighsOptions.h so one of the "
-            "three anchor REPLACE patterns no longer matches. "
+            "three mip_heuristic_run_shifting anchors no longer matches. "
             "Please clean the HiGHS source tree and rebuild: "
             "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
             "cmake -B build && cmake --build build")
     endif()
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Applied option patches to HighsOptions.h")
+    message(STATUS "Applied mip_heuristic_suite option to HighsOptions.h")
 else()
-    message(STATUS "Option patches already applied to HighsOptions.h, skipping")
-endif()
-
-# ── Add mip_heuristic_preset string option ──
-# Separate idempotency block so it applies cleanly on top of the bool-options
-# block above (both in-place upgrades and fresh checkouts).
-file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_preset" _preset_found)
-if(_preset_found EQUAL -1)
-    # Member variable: insert after mip_heuristic_run_scylla;
-    string(REPLACE
-      "  bool mip_heuristic_run_scylla;\n"
-      "  bool mip_heuristic_run_scylla;\n  std::string mip_heuristic_preset;\n"
-      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
-
-    # Constructor initializer: insert after mip_heuristic_run_scylla(false),
-    string(REPLACE
-      "        mip_heuristic_run_scylla(false),\n"
-      "        mip_heuristic_run_scylla(false),\n        mip_heuristic_preset(\"\"),\n"
-      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
-
-    # Record registration: insert after the mip_heuristic_run_scylla record block
-    string(REPLACE
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_scylla\",\n                                       \"Use the Scylla heuristic\", advanced,\n                                       &mip_heuristic_run_scylla, true);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
-      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
-
-    # Sanity checks: all three insertions must produce exactly one occurrence.
-    # A silent REPLACE miss (e.g. upstream reformat) would leave an incomplete
-    # patch; the count check turns that into an actionable FATAL_ERROR.
-    string(REGEX MATCHALL "std::string mip_heuristic_preset" _preset_member_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _preset_member_hits _preset_member_count)
-    if(NOT _preset_member_count EQUAL 1)
-        message(FATAL_ERROR
-            "HighsOptions.h post-patch sanity check failed: "
-            "expected exactly 1 occurrence of 'std::string mip_heuristic_preset', "
-            "got ${_preset_member_count}. Upstream HiGHS likely reformatted "
-            "HighsOptions.h so the struct-member REPLACE pattern no longer matches. "
-            "Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
-    endif()
-    string(REGEX MATCHALL "mip_heuristic_preset\\(\"\"\\)" _preset_ctor_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _preset_ctor_hits _preset_ctor_count)
-    if(NOT _preset_ctor_count EQUAL 1)
-        message(FATAL_ERROR
-            "HighsOptions.h post-patch sanity check failed: "
-            "expected exactly 1 occurrence of 'mip_heuristic_preset(\"\")' in the "
-            "constructor initializer list, got ${_preset_ctor_count}. "
-            "Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
-    endif()
-    # Use string(FIND) rather than REGEX MATCHALL to avoid cmake treating
-    # semicolons inside the matched string as list separators (which would
-    # make list(LENGTH) return the wrong count).
-    string(FIND "${OPTIONS_CONTENT}" "OptionRecordString(\"mip_heuristic_preset\"" _preset_record_idx)
-    if(_preset_record_idx EQUAL -1)
-        message(FATAL_ERROR
-            "HighsOptions.h post-patch sanity check failed: "
-            "could not find 'OptionRecordString(\"mip_heuristic_preset\"' after patching. "
-            "Upstream HiGHS likely reformatted the option-record block so the REPLACE "
-            "pattern no longer matches.  Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
-    endif()
-    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Applied mip_heuristic_preset option to HighsOptions.h")
-else()
-    message(STATUS "mip_heuristic_preset option already applied to HighsOptions.h, skipping")
+    message(STATUS "mip_heuristic_suite option already applied to HighsOptions.h, skipping")
 endif()
 
 # ── Keep mip_heuristic_effort at the vanilla default 0.05 ──
@@ -247,25 +208,34 @@ endif()
 # LocalMIP, Scylla).  Split off from mip_heuristic_effort so the latter
 # keeps vanilla B&B semantics; see the block above.  Default 0.30 keeps
 # the presolve budget identical to the previous overloaded default.
+#
+# Anchored on upstream's mip_heuristic_run_shifting text, like the suite
+# block above.  It used to anchor on the *preset* block's inserted text —
+# including the whole multi-line record registration — so deleting that
+# block in #93 would have silently dropped this option from the build.
+# Both blocks insert directly after the same upstream anchor, so this one
+# (running second) lands between the anchor and the suite option in the
+# member list *and* the ctor initializer list, keeping the two in the same
+# relative order and out of -Wreorder's way.
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_presolve_effort" _presolve_effort_found)
 if(_presolve_effort_found EQUAL -1)
-    # Member variable: insert after mip_heuristic_preset;
+    # Member variable: insert after mip_heuristic_run_shifting
     string(REPLACE
-      "  std::string mip_heuristic_preset;\n"
-      "  std::string mip_heuristic_preset;\n  double mip_heuristic_presolve_effort;\n"
+      "bool mip_heuristic_run_shifting;\n"
+      "bool mip_heuristic_run_shifting;\n  double mip_heuristic_presolve_effort;\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    # Constructor initializer: insert after mip_heuristic_preset(""),
+    # Constructor initializer: insert after mip_heuristic_run_shifting(false),
     string(REPLACE
-      "        mip_heuristic_preset(\"\"),\n"
-      "        mip_heuristic_preset(\"\"),\n        mip_heuristic_presolve_effort(0.0),\n"
+      "mip_heuristic_run_shifting(false),\n"
+      "mip_heuristic_run_shifting(false),\n        mip_heuristic_presolve_effort(0.0),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    # Record registration: insert after the mip_heuristic_preset record block
+    # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
-      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);"
-      "    record_string = new OptionRecordString(\"mip_heuristic_preset\",\n                                          \"Named execution-mode preset for custom heuristics: \\\"\\\", \\\"off\\\", \\\"fpr\\\", \\\"all_opp\\\", or \\\"scylla\\\"; empty string means use individual flags\", advanced,\n                                          &mip_heuristic_preset, \"\");\n    records.push_back(record_string);\n\n    record_double = new OptionRecordDouble(\n        \"mip_heuristic_presolve_effort\",\n        \"Effort budget multiplier for custom presolve heuristics\", advanced,\n        &mip_heuristic_presolve_effort, 0.0, 0.30, 1.0);\n    records.push_back(record_double);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_double = new OptionRecordDouble(\n        \"mip_heuristic_presolve_effort\",\n        \"Effort budget multiplier for custom presolve heuristics\", advanced,\n        &mip_heuristic_presolve_effort, 0.0, 0.30, 1.0);\n    records.push_back(record_double);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Sanity checks: all three insertions must land.
@@ -382,10 +352,22 @@ if(_src_cpp_found EQUAL -1)
       "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceFprLp) {\n    if (code) return \"D\";\n    return \"FPR LP\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
-    # Update printSolutionSourceKey limits for the 5 new entries (one extra group).
+    # Update printSolutionSourceKey limits for the 5 new entries (one extra
+    # group), and drop that group again at mip_heuristic_suite=off.
+    #
+    # `off` is the patch-overhead row of the benchmark matrix: it must be
+    # indistinguishable from an unpatched binary, and a legend advertising
+    # FPR / FPR LP / Local MIP / Scylla / FJ when none of them can run is a
+    # visible difference.  The literal {4, 9, 14, 19} is deliberate — reusing
+    # `last_enum` here would print [14, 24) and list the five custom sources
+    # in the *third* group instead.  With the literal, the printed key is
+    # byte-identical to vanilla's: same four groups over indices 0..18, same
+    # trailing-semicolon logic (limits.size() is 4 in both).  The enum values
+    # themselves stay registered — printSolutionSourceKey's group limits are
+    # positional index literals and renumbering them corrupts the legend.
     string(REPLACE
       "std::vector<int> limits = {4, 9, 14, last_enum};"
-      "std::vector<int> limits = {4, 9, 14, 19, last_enum};"
+      "std::vector<int> limits = {4, 9, 14, 19, last_enum};\n  if (mipsolver.options_mip_->mip_heuristic_suite == \"off\")\n    limits = {4, 9, 14, 19};  // mip-heuristics: vanilla-equivalent key"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
     # Sanity checks: the source-to-string insert must produce exactly one
@@ -601,9 +583,9 @@ if(_fj_effort_found EQUAL -1)
       FJ_CONTENT2 "${FJ_CONTENT2}")
 
     # Silent if it misses: the `+=` simply never appears and vanilla FJ's
-    # effort goes unaccounted forever.  Low impact today because Patch A
-    # disables that call site, but #93 restores native FJ under
-    # `suite=off`, at which point the ablation row would under-report.
+    # effort goes unaccounted forever.  That is the standalone call site
+    # Patch A now runs at `suite=off`, so a miss makes the patch-overhead
+    # row of the benchmark matrix under-report its effort.
     string(FIND "${FJ_CONTENT2}" "heuristic_effort_used += fj_last_effort;" _fj_effort_check)
     if(_fj_effort_check EQUAL -1)
         message(FATAL_ERROR
@@ -648,10 +630,19 @@ if(_found EQUAL -1)
       "#include \"mip/HighsMipSolver.h\"\n#include \"fpr_lp.h\"\n#include \"heuristic_common.h\"\n#include \"mode_dispatch.h\""
       CONTENT "${CONTENT}")
 
-    # Patch A: disable standalone FJ (we handle it in our presolve block)
+    # Patch A: hand the standalone FJ call site over to the custom presolve
+    # block, except at mip_heuristic_suite=off.
+    #
+    # `off` is the patch-overhead / vanilla-equivalence row of the benchmark
+    # matrix, so it must run exactly what an unpatched binary runs — which
+    # includes upstream's single-threaded FeasibilityJump.  At every other
+    # suite value FJ is either off or run by our parallel infrastructure, and
+    # letting the native call site fire too would double-run it.
+    # `mip_heuristic_run_feasibility_jump` is upstream's own option and keeps
+    # its meaning: false disables FJ here and in the custom chain alike.
     string(REPLACE
       "if (options_mip_->mip_heuristic_run_feasibility_jump) {"
-      "if (false) { // FJ runs via custom presolve heuristics block"
+      "if (options_mip_->mip_heuristic_suite == \"off\" &&\n        options_mip_->mip_heuristic_run_feasibility_jump) { // native FJ only at suite=off"
       CONTENT "${CONTENT}")
 
     # Patch A2: insert custom heuristics block via mode_dispatch
@@ -663,14 +654,15 @@ if(_found EQUAL -1)
     # This block had no check at all, and it is the one whose miss is
     # worst: if A2's anchor stops matching while A's still does, the tree
     # compiles and links, but `heuristics::run_presolve` is never called
-    # *and* vanilla's standalone FJ has been switched off — a binary that
-    # runs no primal heuristics whatsoever while still printing the
-    # "mip-heuristics patch active" banner.  The mirror case (A misses,
-    # A2 lands) double-runs FJ and quietly invalidates the vanilla-
-    # equivalence row of the benchmark matrix (epic #88 coupling I).
-    # Neither shows up as a build failure, so nothing else would catch it.
+    # *and* vanilla's standalone FJ only runs at suite=off — a binary that
+    # runs no primal heuristics whatsoever, in every configuration a
+    # benchmark would use, while still printing the "mip-heuristics patch
+    # active" banner.  The mirror case (A misses, A2 lands) double-runs FJ
+    # and quietly invalidates the vanilla-equivalence row of the benchmark
+    # matrix (epic #88 coupling I).  Neither shows up as a build failure,
+    # so nothing else would catch it.
     string(FIND "${CONTENT}" "heuristics::run_presolve" _presolve_check)
-    string(FIND "${CONTENT}" "FJ runs via custom presolve heuristics block" _fj_off_check)
+    string(FIND "${CONTENT}" "native FJ only at suite=off" _fj_off_check)
     if(_presolve_check EQUAL -1 OR _fj_off_check EQUAL -1)
         message(FATAL_ERROR
             "HighsMipSolver.cpp presolve patch failed "
@@ -691,9 +683,9 @@ endif()
 # Separate idempotency block so it can be applied independently of A/A2.
 # HiGHS 1.15 moved the RENS/RINS block into a runHeuristics() lambda; the
 # anchor is the profiling stop + infeasible() return that ends the lambda.
-# The call is deliberately bare: all gating (mip_heuristic_run_fpr,
-# preset) and budget derivation (shared RENS/RINS LP-iteration headroom)
-# live inside fpr_lp::run so the patch string stays minimal.
+# The call is deliberately bare: gating (mip_heuristic_suite) and budget
+# derivation (shared RENS/RINS LP-iteration headroom) live inside
+# fpr_lp::run so the patch string stays minimal.
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
 
 # Defensive check: the pre-split insertion passed an nnz-based budget and

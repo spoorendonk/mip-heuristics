@@ -24,7 +24,7 @@ double solve_fpr_lp(const char* inst, int threads = 0) {
     const ScopedThreadPin pin;
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_run_fpr", true);
+    set_suite(h, "fpr");
     // bell5, the instance both callers use, is the one bundled instance
     // whose solve can stop on HiGHS's default `mip_rel_gap` (1e-4) short
     // of the optimum.  Require a proven-optimal solve so the objective
@@ -47,22 +47,34 @@ TEST_CASE("fpr_lp: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]")
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
 }
 
-// Regression tests for preset-aware gating: fpr_lp derives its enable
-// flag via heuristics::effective_flags, so mip_heuristic_preset must
-// reach it even though the raw mip_heuristic_run_fpr option (default
-// true, restored by run_presolve's write-back before B&B starts) says
-// otherwise.  Pre-split, preset=off left fpr_lp running during the
-// B&B dive — the "vanilla" benchmark config wasn't vanilla.
+// Regression tests for suite-aware gating: fpr_lp derives its enable flag
+// via heuristics::effective_flags, so it runs only at `suite=fpr` and
+// `suite=all`.  Before that gate existed, the "vanilla" benchmark config
+// left fpr_lp running during the B&B dive and wasn't vanilla.
+//
+// `suite=local_mip` and `suite=scylla` disabling the dive-time heuristic is
+// the deliberate consequence documented in README.md and docs/PARAMETERS.md:
+// per-heuristic attribution has to cover fpr_lp too.  Both are pinned here
+// so the property cannot regress silently.
 
-TEST_CASE("fpr_lp: preset=off disables fpr_lp dispatch", "[fpr_lp][mode-matrix][preset]") {
+namespace {
+void require_no_fpr_lp_dispatch(const char* suite) {
     fpr_lp::reset_dispatch_counts();
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_preset", "off");
-    // Raw flag deliberately left at its default (true): the preset must win.
+    set_suite(h, suite);
     REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
+}
+}  // namespace
+
+TEST_CASE("fpr_lp: suite=off disables fpr_lp dispatch", "[fpr_lp][mode-matrix][suite]") {
+    require_no_fpr_lp_dispatch("off");
+}
+
+TEST_CASE("fpr_lp: suite=local_mip disables fpr_lp dispatch", "[fpr_lp][mode-matrix][suite]") {
+    require_no_fpr_lp_dispatch("local_mip");
 }
 
 // Budget-integration regression: fpr_lp's per-call budget is capped at
@@ -83,7 +95,7 @@ TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
     fpr_lp::reset_dispatch_counts();
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_run_fpr", true);
+    set_suite(h, "fpr");
     h.setOptionValue("mip_heuristic_run_rens", false);
     h.setOptionValue("mip_heuristic_run_rins", false);
     h.setOptionValue("mip_heuristic_run_root_reduced_cost", false);
@@ -93,14 +105,8 @@ TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
     REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
 }
 
-TEST_CASE("fpr_lp: preset=scylla disables fpr_lp dispatch", "[fpr_lp][mode-matrix][preset]") {
-    fpr_lp::reset_dispatch_counts();
-    Highs h;
-    h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_preset", "scylla");
-    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
-    REQUIRE(h.run() == HighsStatus::kOk);
-    REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
+TEST_CASE("fpr_lp: suite=scylla disables fpr_lp dispatch", "[fpr_lp][mode-matrix][suite]") {
+    require_no_fpr_lp_dispatch("scylla");
 }
 
 // `run_workers` spawns `num_threads` workers with arm = w % kNumLpArms

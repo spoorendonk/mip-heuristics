@@ -12,23 +12,32 @@ import time
 
 # Default vanilla options when using the PATCHED binary as the vanilla
 # baseline.  Not used when --vanilla-binary points to a separate binary.
-# preset=off disables all custom heuristics — presolve (FJ/FPR/LocalMIP/
-# Scylla) and, since the preset became preset-aware, the B&B-dive fpr_lp
-# too.  No effort pin needed anymore: the effort-option split reverted
-# mip_heuristic_effort to upstream's 0.05 default (vanilla semantics),
-# and mip_heuristic_presolve_effort is irrelevant with the presolve
-# heuristics off.
+# suite=off disables every custom heuristic — the presolve chain
+# (FJ/FPR/LocalMIP/Scylla) and the B&B-dive fpr_lp alike — and hands the
+# FeasibilityJump call site back to HiGHS's own single-threaded
+# implementation, so since #93 this really is vanilla-equivalent rather
+# than vanilla-minus-FJ.  `bench/check_vanilla_equivalence.py` is what
+# verifies that against an unpatched binary.  No effort pin needed: the
+# effort-option split reverted mip_heuristic_effort to upstream's 0.05
+# default (vanilla semantics), and mip_heuristic_presolve_effort is
+# irrelevant with the presolve heuristics off.
 VANILLA_OPTIONS = {
-    "mip_heuristic_preset": "off",
+    "mip_heuristic_suite": "off",
 }
 
-# Default patched options: all_opp preset — FJ + FPR + LocalMIP.  Scylla
-# is excluded because PDLP solves are expensive enough to hurt wall-clock
-# on general instances.  The preset name is historical (it once also
-# selected the continuous parallel runner, now the only one); it is kept
-# because it labels the recorded PLATO results in README.md.
+# Default patched options: the whole chain.
+#
+# This is a composition change, not a rename.  The recorded PLATO results
+# in README.md were taken at the old `all_opp` preset — FJ + FPR +
+# LocalMIP, Scylla deliberately excluded because PDLP solves are
+# expensive enough to hurt wall-clock on general instances.  The
+# single-valued option surface (#93) cannot express that combination, so
+# the default moved to `all`, which adds Scylla.  #96's per-heuristic
+# config table is where a Scylla-free row comes back if the budget sweep
+# wants one; until then, do not compare a fresh `patched` run against the
+# recorded `all_opp` numbers.
 PATCHED_OPTIONS = {
-    "mip_heuristic_preset": "all_opp",
+    "mip_heuristic_suite": "all",
 }
 
 

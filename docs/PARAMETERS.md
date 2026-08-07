@@ -660,12 +660,19 @@ accounting.
 ## FJ Option Note
 
 `mip_heuristic_run_feasibility_jump` is a **native HiGHS option**
-(registered by HiGHS itself, default: `true`). The patch repurposes
-it: when set to `true`, HiGHS's internal FeasibilityJump handler is
-disabled and FJ runs through our presolve infrastructure. Setting it to
-`false` disables FJ entirely. It is **not** one of the custom
-patch-added options — it is a pre-existing HiGHS option whose default
-behavior is overridden by the patch.
+(registered by HiGHS itself, default: `true`). It is **not** one of the
+custom patch-added options. It keeps its meaning — `false` disables
+FeasibilityJump — but *which* FJ it gates depends on
+`mip_heuristic_suite`:
+
+- at `suite=off` it gates HiGHS's own standalone single-threaded FJ,
+  which the patch leaves in place so that `off` is a true
+  vanilla-equivalent ablation;
+- at every other suite value the native call site is off and this
+  option gates our parallel FJ instead.
+
+So `--mip_heuristic_suite=off --mip_heuristic_run_feasibility_jump=false`
+is the pure patch-overhead configuration: no heuristics of any kind.
 
 `mip_heuristic_effort` is likewise **native to HiGHS**, not patch-added.
 It is upstream's B&B heuristic knob: `moreHeuristicsAllowed()` admits
@@ -677,11 +684,19 @@ exactly; it gates RENS/RINS and `fpr_lp` together. It was briefly raised
 to `0.30` and overloaded as the presolve budget — that overload was split
 out into `mip_heuristic_presolve_effort` (see below).
 
-The custom patch-added options are:
+The custom patch-added options are exactly two:
+
 - `mip_heuristic_presolve_effort` — effort budget multiplier for the
   custom presolve heuristics, FPR/LocalMIP/Scylla (default `0.30`)
-- `mip_heuristic_preset` — named preset selecting the enable flags
-  (default `""`, meaning use individual flags)
-- `mip_heuristic_run_fpr` — enable/disable FPR (default `true`)
-- `mip_heuristic_run_local_mip` — enable/disable LocalMIP (default `true`)
-- `mip_heuristic_run_scylla` — enable/disable Scylla (default `true`)
+- `mip_heuristic_suite` — which heuristics run (default `"all"`):
+  `off` | `fj` | `fpr` | `local_mip` | `scylla` | `all`. HiGHS does not
+  validate string option values, so an unrecognised value is accepted by
+  `setOptionValue` and caught at solve time: the dispatcher warns and
+  falls back to running all four.
+
+`mip_heuristic_suite` also gates the B&B-dive `fpr_lp`, on the same bit
+as presolve FPR. It therefore runs at `fpr` and `all` only — `off`,
+`local_mip` and `scylla` all disable it. That is deliberate (a
+per-heuristic attribution run must not leave a second FPR variant
+running at dive time), but it means a dive-time result measured under
+`suite=local_mip` or `suite=scylla` says nothing about `fpr_lp`.

@@ -12,71 +12,25 @@
 // ── Scylla standalone: PDLP pump finds feasible solution ──
 
 TEST_CASE("Scylla standalone: flugpl general integers", "[heuristic][scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    REQUIRE(solve_suite("flugpl.mps", "scylla") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 TEST_CASE("Scylla standalone: gt2 pure binary instance", "[heuristic][scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(21166.0).epsilon(1e-3));
+    REQUIRE(solve_suite("gt2.mps", "scylla") == Catch::Approx(21166.0).epsilon(1e-3));
 }
 
 TEST_CASE("Scylla standalone: egout mixed integers", "[heuristic][scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+    REQUIRE(solve_suite("egout.mps", "scylla") == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
 // ── Sequential orchestrator: weighted effort allocation ──
 
 TEST_CASE("Sequential orchestrator: flugpl weighted effort", "[heuristic][sequential]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    REQUIRE(solve_suite("flugpl.mps", "all") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", true);
-    highs.setOptionValue("mip_heuristic_run_fpr", true);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+    REQUIRE(solve_suite("egout.mps", "all") == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
 // ── Scylla parallel: run_parallel is the unified entry for pump chains ──
@@ -85,64 +39,22 @@ TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") 
 // duplicates of it, so they were removed rather than left as four extra
 // full HiGHS solves per suite run under names claiming distinct coverage.
 
-// ── Scylla characterization: verify known-optimal objectives ──
-
-TEST_CASE("Scylla parallel: egout feasibility", "[scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj <= 568.1007 + 1e-4);
-}
-
 // ── Scylla as the only enabled heuristic ──
 // FJ off, so a solution here can only have come from the pump chains.
+// The former "Scylla parallel: egout feasibility" case became a
+// byte-identical duplicate of the egout case below once `suite=scylla`
+// replaced the flag combination that distinguished the two.
 
 TEST_CASE("Scylla only: flugpl characterization", "[scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    REQUIRE(solve_suite("flugpl.mps", "scylla") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 TEST_CASE("Scylla only: egout feasibility", "[scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj <= 568.1007 + 1e-4);
+    REQUIRE(solve_suite("egout.mps", "scylla") <= 568.1007 + 1e-4);
 }
 
 TEST_CASE("Scylla only: gt2 pure binary", "[scylla]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_run_scylla", true);
-    REQUIRE(highs.readModel(kInstancesDir + "/gt2.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(21166.0).epsilon(1e-3));
+    REQUIRE(solve_suite("gt2.mps", "scylla") == Catch::Approx(21166.0).epsilon(1e-3));
 }
 
 // ── Scylla stale-snapshot overlap (issue #76) ──
@@ -162,10 +74,7 @@ TEST_CASE("Scylla only: gt2 pure binary", "[scylla]") {
 TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][scylla][overlap]") {
     const std::vector<std::string> lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
-        h.setOptionValue("mip_heuristic_run_fpr", false);
-        h.setOptionValue("mip_heuristic_run_local_mip", false);
-        h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-        h.setOptionValue("mip_heuristic_run_scylla", true);
+        set_suite(h, "scylla");
     });
 
     // Parse out the fresh / stale counts from the [ScyllaOverlap] line

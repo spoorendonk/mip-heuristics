@@ -393,12 +393,12 @@ void run(HighsMipSolver &mipsolver) {
         return;
     }
 
-    // Preset-aware gating: mip_heuristic_run_fpr as overridden by
-    // mip_heuristic_preset.  In particular preset=off must disable fpr_lp
-    // too, so a preset=off run is comparable to vanilla HiGHS (the raw
-    // option defaults to true and the preset write-back in run_presolve is
-    // restored before B&B starts, so reading the option directly here
-    // would ignore the preset).
+    // Suite gating: fpr_lp runs at mip_heuristic_suite=fpr and =all only.
+    // suite=off must disable it so an off run is comparable to vanilla
+    // HiGHS — this return sits above every read and write of
+    // heuristic_lp_iterations / total_lp_iterations below, which feed
+    // moreHeuristicsAllowed() and therefore decide whether RENS and RINS
+    // run.  Do not move it down.
     if (!heuristics::effective_flags(*mipsolver.options_mip_).fpr) {
         return;
     }

@@ -8,9 +8,10 @@ namespace fpr_lp {
 // Gating and budget are derived internally so fpr_lp participates in the
 // same B&B heuristic budget as RENS/RINS (issue: pre-split it drew an
 // unaccounted nnz-based budget per call):
-//  - enabled iff heuristics::effective_flags(options).fpr — i.e. the
-//    mip_heuristic_run_fpr flag as overridden by mip_heuristic_preset, so
-//    preset=off really disables it;
+//  - enabled iff heuristics::effective_flags(options).fpr — i.e. only at
+//    mip_heuristic_suite=fpr or =all, so suite=off really disables it (and
+//    so do suite=local_mip and suite=scylla, deliberately: per-heuristic
+//    attribution has to cover the dive-time heuristic too);
 //  - per-call effort budget = the remaining LP-iteration headroom of the
 //    moreHeuristicsAllowed() envelope (total_lp_iterations *
 //    mip_heuristic_effort + 10000 - heuristic_lp_iterations), converted

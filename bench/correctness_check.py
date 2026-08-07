@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Correctness check for the heuristic execution modes.
+"""Correctness check across the mip_heuristic_suite values.
 
 Runs the HiGHS binary on small test instances (shipped with HiGHS in
-check/instances/) in each mode:
+check/instances/) once per `mip_heuristic_suite` value: off, fj, fpr,
+local_mip, scylla, all.  Every one of them must still reach the known
+optimum — B&B finishes these instances on its own, so a failure means a
+heuristic broke the solve rather than failing to help it.
 
-  seq     — default options (continuous parallel workers)
-  seq1    — threads=1, the reproducible single-worker configuration
+`off` doubles as the vanilla-equivalence row: it runs HiGHS's own
+pipeline, native FeasibilityJump included.  Use
+`bench/check_vanilla_equivalence.py` to compare it against an unpatched
+binary; this script only checks that it still solves.
 
 Checks that each solve finds the known-optimal objective within a
-tolerance.  Reports a per-instance x per-mode pass/fail table.
+tolerance.  Reports a per-instance x per-config pass/fail table.
 
 Usage:
   python bench/correctness_check.py                      # defaults
   python bench/correctness_check.py --binary ./build/bin/highs
   python bench/correctness_check.py --seeds 0 1 2        # multi-seed
+  python bench/correctness_check.py --configs off all    # subset
 """
 
 from __future__ import annotations
@@ -35,15 +41,13 @@ INSTANCES: list[tuple[str, float, float]] = [
     ("p0548.mps", 8691.0, 1e-3),
 ]
 
-MODES = {
-    "seq": {},
-    "seq1": {"threads": "1"},
-}
+CONFIGS = {value: {"mip_heuristic_suite": value}
+           for value in ("off", "fj", "fpr", "local_mip", "scylla", "all")}
 
 
 @dataclass
 class RunResult:
-    mode: str
+    config: str
     instance: str
     seed: int
     objective: float | None
@@ -79,7 +83,7 @@ def write_options_file(options: dict[str, str], path: str) -> None:
 def run_solve(
     binary: str,
     instance_path: str,
-    mode_opts: dict[str, str],
+    config_opts: dict[str, str],
     seed: int,
     time_limit: float,
     tmp_dir: str,
@@ -90,7 +94,7 @@ def run_solve(
     Custom heuristic options are passed via an options file (HiGHS
     doesn't expose them as CLI flags).
     """
-    all_opts = {**mode_opts, "random_seed": str(seed)}
+    all_opts = {**config_opts, "random_seed": str(seed)}
     opts_path = os.path.join(tmp_dir, "run.opts")
     write_options_file(all_opts, opts_path)
 
@@ -131,7 +135,8 @@ def check_objective(obj: float | None, known_opt: float, tol: float) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Correctness check across the execution modes")
+    parser = argparse.ArgumentParser(
+        description="Correctness check across the mip_heuristic_suite values")
     parser.add_argument("--binary", default="./build/bin/highs", help="Path to HiGHS binary")
     parser.add_argument("--instances-dir", default=None,
                         help="Path to check/instances/ dir (auto-detected from binary path)")
@@ -139,9 +144,9 @@ def main() -> None:
                         help="Time limit per solve (seconds, default 30)")
     parser.add_argument("--seeds", nargs="+", type=int, default=[0],
                         help="Random seeds to run (default: 0)")
-    parser.add_argument("--modes", nargs="+", default=list(MODES.keys()),
-                        choices=list(MODES.keys()),
-                        help="Modes to test (default: both)")
+    parser.add_argument("--configs", nargs="+", default=list(CONFIGS.keys()),
+                        choices=list(CONFIGS.keys()),
+                        help="mip_heuristic_suite values to test (default: all six)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Print per-solve details")
     args = parser.parse_args()
@@ -172,30 +177,30 @@ def main() -> None:
     tmp_dir = tempfile.mkdtemp(prefix="correctness_check_")
 
     results: list[RunResult] = []
-    total = len(args.modes) * len(args.seeds) * len(available)
+    total = len(args.configs) * len(args.seeds) * len(available)
     done = 0
 
-    for mode in args.modes:
-        mode_opts = MODES[mode]
+    for config in args.configs:
+        config_opts = CONFIGS[config]
         for seed in args.seeds:
             for name, opt, tol, path in available:
                 done += 1
                 try:
                     obj, status, time_s = run_solve(
-                        binary, path, mode_opts, seed, args.time_limit, tmp_dir)
+                        binary, path, config_opts, seed, args.time_limit, tmp_dir)
                     passed = check_objective(obj, opt, tol)
-                    r = RunResult(mode, name, seed, obj, status, time_s, passed)
+                    r = RunResult(config, name, seed, obj, status, time_s, passed)
                 except subprocess.TimeoutExpired:
-                    r = RunResult(mode, name, seed, None, "TIMEOUT", args.time_limit, False,
+                    r = RunResult(config, name, seed, None, "TIMEOUT", args.time_limit, False,
                                   error="process timeout")
                 except Exception as e:
-                    r = RunResult(mode, name, seed, None, "ERROR", 0.0, False, error=str(e))
+                    r = RunResult(config, name, seed, None, "ERROR", 0.0, False, error=str(e))
 
                 results.append(r)
                 if args.verbose:
                     mark = "PASS" if r.passed else "FAIL"
                     obj_str = f"{r.objective:.4f}" if r.objective is not None else "N/A"
-                    print(f"  [{done}/{total}] {mark}  {mode:10s}  seed={seed}  "
+                    print(f"  [{done}/{total}] {mark}  {config:10s}  seed={seed}  "
                           f"{name:20s}  obj={obj_str:>14s}  ref={opt:.4f}  {r.time_s:.1f}s")
 
     # Summary table
@@ -207,7 +212,7 @@ def main() -> None:
     # Header: instance names
     inst_names = [name for name, _, _, _ in available]
     col_w = max(len(n) for n in inst_names) + 2
-    header = f"{'Mode':>10s} {'seed':>4s}"
+    header = f"{'Suite':>10s} {'seed':>4s}"
     for name in inst_names:
         header += f"  {name:>{col_w}s}"
     print(header)
@@ -216,11 +221,11 @@ def main() -> None:
     pass_count = 0
     fail_count = 0
 
-    for mode in args.modes:
+    for config in args.configs:
         for seed in args.seeds:
-            row = f"{mode:>10s} {seed:>4d}"
+            row = f"{config:>10s} {seed:>4d}"
             for name in inst_names:
-                matching = [r for r in results if r.mode == mode and r.seed == seed
+                matching = [r for r in results if r.config == config and r.seed == seed
                             and r.instance == name]
                 if matching:
                     r = matching[0]
@@ -245,7 +250,7 @@ def main() -> None:
             if not r.passed:
                 obj_str = f"{r.objective:.4f}" if r.objective is not None else "N/A"
                 ref = next(opt for name, opt, _, _ in available if name == r.instance)
-                print(f"  {r.mode:10s} seed={r.seed} {r.instance:20s} "
+                print(f"  {r.config:10s} seed={r.seed} {r.instance:20s} "
                       f"got={obj_str} expected={ref:.4f} status={r.status}")
                 if r.error:
                     print(f"    error: {r.error}")

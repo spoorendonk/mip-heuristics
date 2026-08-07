@@ -19,62 +19,18 @@
 #include <string>
 #include <vector>
 
-// ── LocalMIP standalone: neighborhood search finds feasible solution ──
+// ── LocalMIP only: neighborhood search finds feasible solution ──
+// There used to be a "standalone" and a "parallel" case per instance,
+// differing only in whether FJ was left enabled alongside LocalMIP.
+// `suite=local_mip` cannot express that split — and since #92 there is
+// one runner, so it named nothing — leaving byte-identical duplicates.
 
-TEST_CASE("LocalMIP standalone: flugpl", "[heuristic][local_mip]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+TEST_CASE("LocalMIP only: flugpl", "[heuristic][local_mip]") {
+    REQUIRE(solve_suite("flugpl.mps", "local_mip") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-TEST_CASE("LocalMIP standalone: egout", "[heuristic][local_mip]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
-}
-
-// ── LocalMIP parallel: continuous parallel local search ──
-
-TEST_CASE("LocalMIP parallel: flugpl finds solution", "[heuristic][local_mip]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
-}
-
-TEST_CASE("LocalMIP parallel: egout finds solution", "[heuristic][local_mip]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("mip_heuristic_run_fpr", false);
-    highs.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    highs.setOptionValue("mip_heuristic_run_local_mip", true);
-    highs.setOptionValue("mip_heuristic_run_scylla", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
-    REQUIRE(highs.run() == HighsStatus::kOk);
-    double obj;
-    highs.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(568.1007).epsilon(1e-4));
+TEST_CASE("LocalMIP only: egout", "[heuristic][local_mip]") {
+    REQUIRE(solve_suite("egout.mps", "local_mip") == Catch::Approx(568.1007).epsilon(1e-4));
 }
 
 // ── LocalMIP cold-start construction phase (issue #75) ────────────────
@@ -209,10 +165,7 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
     const std::vector<std::string> lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
         h.setOptionValue("mip_root_presolve_only", true);
-        h.setOptionValue("mip_heuristic_run_fpr", false);
-        h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-        h.setOptionValue("mip_heuristic_run_scylla", false);
-        h.setOptionValue("mip_heuristic_run_local_mip", true);
+        set_suite(h, "local_mip");
     });
 
     REQUIRE(heuristic_reported_effort(lines, "local_mip"));
@@ -227,20 +180,19 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
 // was invisible and local_mip's `[Sequential]` line read
 // `effort=0 wall_ms=0`.  After the fix, `resolve_worker_start` prefers
 // the pool's best entry over `mipdata->incumbent`, so local_mip sees
-// FJ's fresh primal as its warm-start base.  The test runs FJ +
-// LocalMIP (FPR + Scylla disabled), captures the developer-level log
-// via HiGHS's logging callback, and asserts that both the `heur=fj`
-// and `heur=local_mip` `[Sequential]` lines report non-zero effort.
+// FJ's fresh primal as its warm-start base.  The test runs the full
+// chain (`suite=all` — FJ is the only heuristic that runs *before*
+// LocalMIP and can therefore pre-fill the pool for it), captures the
+// developer-level log via HiGHS's logging callback, and asserts that
+// both the `heur=fj` and `heur=local_mip` `[Sequential]` lines report
+// non-zero effort.
 // `lseu.mps` is chosen because FJ reliably produces a feasible for
 // it inside the presolve budget.
 TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74)",
           "[heuristic][local_mip][pool-aware]") {
     const std::vector<std::string> lines = solve_capturing_log("lseu.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
-        h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
-        h.setOptionValue("mip_heuristic_run_fpr", false);
-        h.setOptionValue("mip_heuristic_run_local_mip", true);
-        h.setOptionValue("mip_heuristic_run_scylla", false);
+        set_suite(h, "all");
         // Force HiGHS to run the full root-presolve chain (fj → local_mip)
         // before any branching, so the [Sequential] lines are guaranteed
         // to appear regardless of whether HiGHS would otherwise shortcut
@@ -323,10 +275,7 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_root_presolve_only", true);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    h.setOptionValue("mip_heuristic_run_scylla", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", true);
+    set_suite(h, "local_mip");
     // threads=1 is load-bearing for the `pool == 0` assertion below.  The
     // continuous runner resolves each worker's start inside the parallel
     // region, so with several workers a late starter can legitimately
@@ -367,13 +316,13 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_root_presolve_only", true);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
-    h.setOptionValue("mip_heuristic_run_scylla", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", true);
+    set_suite(h, "all");
     // `lseu.mps` is the same instance the existing #74 regression test
     // uses — FJ reliably finds a feasible inside the presolve budget,
-    // so the pool is non-empty by the time LocalMIP fires.
+    // so the pool is non-empty by the time LocalMIP fires.  FPR runs
+    // between the two at `suite=all` and can add to the pool as well;
+    // the assertion is that LocalMIP started from the pool at all, not
+    // that FJ specifically filled it.
     REQUIRE(h.readModel(kInstancesDir + "/lseu.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
 

@@ -47,8 +47,8 @@ TEST_CASE("execution-mode: infeasible detected", "[mode-matrix]") {
 }
 
 // ── 1 test: all custom heuristics disabled ──
-// With every custom heuristic off the dispatcher is a no-op and HiGHS's
-// own B&B must still solve flugpl.
+// At `suite=off` the custom dispatcher is a no-op and HiGHS's own
+// pipeline — native FeasibilityJump included — must still solve flugpl.
 
 TEST_CASE("execution-mode: all heuristics disabled still solves", "[mode-matrix]") {
     REQUIRE(solve_no_heuristics() == Catch::Approx(1201500.0).epsilon(1e-6));
@@ -59,17 +59,7 @@ TEST_CASE("execution-mode: all heuristics disabled still solves", "[mode-matrix]
 // single-worker-type path, which is easy to break with worker-count logic.
 
 TEST_CASE("execution-mode: FJ-only flugpl", "[mode-matrix]") {
-    Highs h;
-    h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", false);
-    h.setOptionValue("mip_heuristic_run_scylla", false);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
-    REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/flugpl.mps") == HighsStatus::kOk);
-    REQUIRE(h.run() == HighsStatus::kOk);
-    double obj;
-    h.getInfoValue("objective_function_value", obj);
-    REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
+    REQUIRE(solve_suite("flugpl.mps", "fj") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 // ── 3 tests: the reproducible single-worker configuration ──
@@ -176,12 +166,8 @@ namespace {
 // that FJ's pool entry round-tripped through the shared flush in
 // mode_dispatch::run_sequential with kSolutionSourceFJ preserved.
 bool lseu_emits_fj_tag() {
-    const std::string codes = solve_capturing_source_codes("lseu.mps", [](Highs& h) {
-        h.setOptionValue("mip_heuristic_run_feasibility_jump", true);
-        h.setOptionValue("mip_heuristic_run_fpr", false);
-        h.setOptionValue("mip_heuristic_run_local_mip", false);
-        h.setOptionValue("mip_heuristic_run_scylla", false);
-    });
+    const std::string codes =
+        solve_capturing_source_codes("lseu.mps", [](Highs& h) { set_suite(h, "fj"); });
     return codes.find('J') != std::string::npos;
 }
 }  // namespace

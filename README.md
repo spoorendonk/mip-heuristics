@@ -9,7 +9,7 @@ A complete MIP primal heuristics suite integrated into [HiGHS](https://github.co
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)          # first build ~5 min (fetches HiGHS)
-./build/bin/highs --mip_heuristic_preset all_opp model.mps
+./build/bin/highs --mip_heuristic_suite all model.mps
 ```
 
 Full PLATO benchmark against vanilla HiGHS (requires MIPLIB instances, ~77h total):
@@ -31,7 +31,7 @@ python3 bench/analyze_results.py bench/results/plato --configs patched vanilla -
 
 **Scylla** — PDLP-based feasibility pump: alternates approximate LP solves (PDLP) with FPR rounding, progressive objective blending, and cycling perturbation. N independent pump chains share one mutex-guarded PDLP instance; workers that lose the lock round against the most-recent stale snapshot to stay productive. Based on Mexi et al., *OR Proceedings 2023* ([doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9)); same concept as cuOpt (arXiv:2510.20499). This is a CPU/HiGHS reference implementation — no novelty claim, but it is the only publicly available CPU implementation.
 
-**FeasibilityJump** — LP-free Lagrangian heuristic. Thin wrapper around HiGHS's built-in FJ implementation, routed through our parallel infrastructure for effort budgeting and shared solution-pool integration. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)). Note: `mip_heuristic_run_feasibility_jump` (default true in our patch) disables HiGHS's internal FJ dispatch and routes it through our infrastructure.
+**FeasibilityJump** — LP-free Lagrangian heuristic. Thin wrapper around HiGHS's built-in FJ implementation, routed through our parallel infrastructure for effort budgeting and shared solution-pool integration. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)). Note: at any `mip_heuristic_suite` value other than `off`, HiGHS's internal FJ dispatch is disabled and FJ runs through our infrastructure instead. Upstream's `mip_heuristic_run_feasibility_jump` (default true) still switches FJ off entirely.
 
 Reference PDFs are in `docs/`.
 
@@ -43,28 +43,30 @@ For a reproducible run, set `threads=1` together with a fixed `random_seed`. Tha
 
 One caveat for library embedders (not CLI users): HiGHS's task executor is a process-global singleton, initialised by the first `run()` in the process. A later solve that asks for a *different* thread count fails outright rather than silently using the old one, so pinning `threads=1` on a second `Highs` instance returns an error unless you first call `Highs::resetGlobalScheduler(true)`.
 
-The `mip_heuristic_preset` option sets the per-heuristic enable flags:
+`mip_heuristic_suite` is the single option that selects which heuristics run (default `all`):
 
-| Preset | Heuristics | Notes |
+| Value | Heuristics | Notes |
 |--------|-----------|-------|
-| `off` | none | disables all custom heuristics |
-| `fpr` | FPR | isolate FPR for ablation |
-| `all_opp` | FJ+FPR+LocalMIP | **recommended** |
+| `off` | none | vanilla-equivalent: HiGHS's own pipeline, native FeasibilityJump included |
+| `fj` | FJ | isolate FeasibilityJump |
+| `fpr` | FPR (+ `fpr_lp`) | isolate FPR for ablation |
+| `local_mip` | LocalMIP | isolate LocalMIP |
 | `scylla` | Scylla | PDLP pump only |
+| `all` | FJ+FPR+LocalMIP+Scylla (+ `fpr_lp`) | **default** |
 
-`all_opp` is named for the continuous ("opportunistic") runner that used to be one of two parallel modes; since the epoch-gated mode was removed it is the only one. The name is kept because it labels the recorded benchmark results below. Its former sibling `all_det` named the removed mode and no longer exists.
+An unrecognised value warns and falls back to `all` rather than silently disabling everything.
 
-There is no standalone `local_mip` preset; to run LocalMIP alone, use individual flags (e.g. `--mip_heuristic_run_fpr=false --mip_heuristic_run_scylla=false --mip_heuristic_run_feasibility_jump=false`).
+**`suite=off` is a true vanilla ablation on one binary.** The patch hands HiGHS's standalone FeasibilityJump call site back at `off`, so an `off` run is what an unpatched build of the same tag does. `bench/check_vanilla_equivalence.py` verifies that against an unpatched binary — identical objective, node count and heuristic LP iterations, and an empty log diff apart from the `mip-heuristics patch active` marker. Add `--mip_heuristic_run_feasibility_jump=false` on top of `off` for the pure patch-overhead configuration, with no heuristics at all.
 
-When no preset is set, individual flags are used. The default with no flags set: FPR + LocalMIP + Scylla + FJ all enabled. `all_opp` is the recommended preset for most use cases.
+**`fpr_lp` follows the FPR bit.** It runs at B&B dive time on the same continuous workers, and is gated on the same flag as presolve FPR — so it runs at `suite=fpr` and `suite=all`, and is *disabled* at `suite=local_mip` and `suite=scylla` as well as at `off`. That is deliberate: a per-heuristic attribution run must not leave a second FPR variant running at dive time. It does mean a dive-time result under `suite=local_mip` cannot be attributed to `fpr_lp`.
 
-`fpr_lp` runs at B&B dive time on the same continuous workers.
+`mip_heuristic_run_feasibility_jump` is upstream's own option and keeps its meaning: setting it false disables FeasibilityJump at every suite value, ours and HiGHS's alike.
 
 ## Benchmarks
 
 ### PLATO mipfeas — 233 instances, 600s time limit
 
-Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Default preset: `all_opp` (FJ+FPR+LocalMIP).
+Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Configuration: the then-current `mip_heuristic_preset=all_opp` — FJ + FPR + LocalMIP, Scylla deliberately excluded.
 
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|
@@ -76,7 +78,7 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | SGM P-D Integral | 26.3 | **23.9** |
 | PLATO headline SGM (s=0.001) | **26.0** | 26.8 |
 
-> **Provenance.** These numbers were measured before the #92 runner cleanup. That changeset altered several things these figures depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the presolve envelope is floored, and two of the three `kWeight*` constants were rescaled — so a build of the current tree is not the binary that produced this table. The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
+> **Provenance.** Two reasons this row cannot be reproduced on `HEAD`, both by design. First, the configuration is gone: `all_opp` was FJ + FPR + LocalMIP without Scylla, and the single-valued `mip_heuristic_suite` (#93) cannot express that combination — the closest value, `all`, adds Scylla. Second, the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the presolve envelope is floored, and two of the three `kWeight*` constants were rescaled. The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
 
 #### Findings
 

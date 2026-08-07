@@ -23,10 +23,9 @@
 // Two properties of these codes are worth knowing before relying on them:
 //
 //   * `A`, `M` and `G` are patch-only.  `J` is not: upstream's own
-//     `kSolutionSourceFeasibilityJump` also renders as `J`.  That is
-//     unambiguous today only because the patch disables upstream's FJ
-//     call site.  Epic #88 restores native FJ under `suite=off`, and at
-//     that point `J` stops identifying *which* FJ ran.
+//     `kSolutionSourceFeasibilityJump` also renders as `J`.  Since #93
+//     restored native FJ under `suite=off`, `J` identifies *which* FJ ran
+//     only away from that value — which is where every case below sits.
 //   * Scylla's `G` is worker-count dependent — see the Scylla case.
 //
 // gt2 is the instance for all cases: with one heuristic enabled at a time
@@ -37,27 +36,22 @@
 namespace {
 
 // Solve gt2 with exactly one custom presolve heuristic enabled and
-// return the captured log.  `which` is the `mip_heuristic_run_<which>`
-// option suffix.
-std::vector<std::string> gt2_log_for(const char* which) {
+// return the captured log.  `suite` is a single-heuristic
+// `mip_heuristic_suite` value.
+//
+// Both options go through `require_option`, which fails the test if the
+// name does not exist: HiGHS only returns `kError` for an unknown option,
+// so an unchecked call after a rename would leave the solve at its
+// defaults — all four heuristics on — and three of the four positive
+// cases below would keep passing while asserting nothing.
+std::vector<std::string> gt2_log_for(const char* suite) {
     return solve_capturing_log("gt2.mps", [&](Highs& h) {
-        // Every option is set through `require_option`, which fails the
-        // test if the name does not exist.  HiGHS only returns `kError`
-        // for an unknown option, so when the option surface collapses to
-        // `mip_heuristic_suite` (#93) an unchecked call would leave the
-        // solve at its defaults — all four heuristics on — and three of
-        // the four positive cases below would keep passing while
-        // asserting nothing.  That migration must fail loudly.
         require_option(h, "log_dev_level", 3);
-        require_option(h, "mip_heuristic_run_fpr", false);
-        require_option(h, "mip_heuristic_run_local_mip", false);
-        require_option(h, "mip_heuristic_run_scylla", false);
-        require_option(h, "mip_heuristic_run_feasibility_jump", false);
-        require_option(h, std::string("mip_heuristic_run_") + which, true);
+        set_suite(h, suite);
     });
 }
 
-std::string gt2_codes_for(const char* which) { return source_codes(gt2_log_for(which)); }
+std::string gt2_codes_for(const char* suite) { return source_codes(gt2_log_for(suite)); }
 
 }  // namespace
 
@@ -91,7 +85,7 @@ TEST_CASE("attribution: Scylla-only run is credited with G", "[attribution]") {
 }
 
 TEST_CASE("attribution: FJ-only run is credited with J", "[attribution]") {
-    REQUIRE(gt2_codes_for("feasibility_jump").find('J') != std::string::npos);
+    REQUIRE(gt2_codes_for("fj").find('J') != std::string::npos);
 }
 
 // The negative direction: enabling one heuristic must not let another one
@@ -102,7 +96,7 @@ TEST_CASE("attribution: FJ-only run is credited with J", "[attribution]") {
 // (epic coupling E), so a leak that re-admits FPR re-admits the dive-time
 // heuristic too.
 TEST_CASE("attribution: FJ-only run emits no other custom-heuristic solution", "[attribution]") {
-    const std::string codes = gt2_codes_for("feasibility_jump");
+    const std::string codes = gt2_codes_for("fj");
     REQUIRE(codes.find('J') != std::string::npos);
     REQUIRE(codes.find('A') == std::string::npos);  // FPR
     REQUIRE(codes.find('D') == std::string::npos);  // fpr_lp

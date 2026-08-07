@@ -189,18 +189,33 @@ inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
     return false;
 }
 
-// Solve flugpl with every custom heuristic disabled — verifies the
-// dispatch path does not block HiGHS's built-in B&B fallback.
-inline double solve_no_heuristics() {
+// Restrict the solve to one heuristic (or none).  `suite` is a
+// `mip_heuristic_suite` value: off | fj | fpr | local_mip | scylla | all.
+//
+// `require_option` rather than a bare set: a typo'd suite value would
+// otherwise leave the solve at the `all` default and the test would
+// measure every heuristic while claiming to isolate one.  HiGHS does not
+// validate string option *values*, so this catches a renamed option, not a
+// misspelt value — `mip_heuristic_suite` itself warns on those at solve
+// time (see the unknown-value case in test_smoke.cpp).
+inline void set_suite(Highs& h, const char* suite) {
+    require_option(h, "mip_heuristic_suite", std::string(suite));
+}
+
+// Solve `inst` with `suite` selected and return the final objective.
+inline double solve_suite(const char* inst, const char* suite) {
     Highs h;
     h.setOptionValue("output_flag", false);
-    h.setOptionValue("mip_heuristic_run_fpr", false);
-    h.setOptionValue("mip_heuristic_run_local_mip", false);
-    h.setOptionValue("mip_heuristic_run_feasibility_jump", false);
-    h.setOptionValue("mip_heuristic_run_scylla", false);
-    REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/flugpl.mps") == HighsStatus::kOk);
+    set_suite(h, suite);
+    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;
     h.getInfoValue("objective_function_value", obj);
     return obj;
+}
+
+// Solve flugpl with every custom heuristic disabled — verifies the
+// dispatch path does not block HiGHS's built-in B&B fallback.
+inline double solve_no_heuristics() {
+    return solve_suite("flugpl.mps", "off");
 }
