@@ -29,6 +29,13 @@ class HighsMipSolver;
 // `charge_presolve` touches nothing upstream — `heuristic_effort_used` is
 // a patch-added field with no upstream reader.  A heuristic that is
 // disabled must reach neither method.
+//
+// Threading invariant: every counter update here is a plain non-atomic
+// `+=`.  Both methods must be called from the dispatching thread with every
+// parallel region already joined — `run_sequential` books between
+// heuristics, and `fpr_lp::run` books after its worker loop returns (and
+// only when `parallelLockActive()` is false).  Do not call either from a
+// worker without making the counters atomic first.
 class EffortLedger {
 public:
     explicit EffortLedger(HighsMipSolver &mipsolver) : mipsolver_(mipsolver) {}

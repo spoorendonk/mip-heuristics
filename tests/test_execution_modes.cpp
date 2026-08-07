@@ -153,6 +153,16 @@ SeededRun run_seeded(int seed) {
         if (line.find("[Sequential] ") == std::string::npos || heur == std::string::npos) {
             continue;
         }
+        if (line.find("heur=fpr_lp ") != std::string::npos) {
+            // Dive-time heuristic; #94 gave it a [Sequential] line too, but
+            // this trace is about the presolve chain.  Its per-call budget
+            // is a function of `total_lp_iterations`, which HiGHS's own
+            // seeded branching moves independently of our workers — so
+            // including it would let the seed-sensitivity assertion below
+            // pass with zero contribution from the presolve heuristics,
+            // which is exactly the vacuity this trace exists to avoid.
+            continue;
+        }
         // Keep `heur=<name> effort=<N>`, drop the wall-clock tail.
         const auto wall = line.find(" wall_ms=", heur);
         res.effort_trace +=
@@ -219,9 +229,10 @@ bool lseu_emits_fj_tag() {
 // FPR/LocalMIP/Scylla could not see FJ's entries as pool-restart seeds:
 // each pool was destroyed at the end of its heuristic.
 //
-// Post-#72, mode_dispatch::run_sequential owns one shared SolutionPool,
-// seeds it from the incumbent once, and hands it to every heuristic's
-// run_parallel as an `&` parameter.  Each solution accepted by the pool
+// Post-#72, mode_dispatch::run_sequential owns one shared pool — since #94
+// wrapped in an IncumbentSink — seeds it from the incumbent once, and hands
+// it to every heuristic's `run` as an `&` parameter.  Each solution accepted
+// by the pool
 // is immediately forwarded to HiGHS via the on_accept callback (so
 // timestamps reflect find time, not flush time).  The per-entry source
 // tag (#73) is preserved and forwarded by the callback so HiGHS logs

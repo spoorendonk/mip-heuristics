@@ -73,6 +73,17 @@ namespace {
 // construction sweep rolled into local_mip's reported effort):
 //   fpr=636k  local_mip=1222k  scylla=261k
 //
+// Basis change since round 6 (#94): the shared CSC transpose is now built
+// once for the whole chain, in `run_sequential` and outside every
+// heuristic's timing window.  Rounds 5 and 6 measured it four times, once
+// inside each heuristic's own `wall_ms`.  Charged effort did not change, so
+// every rate below was measured against a slightly longer wall than a fresh
+// run will produce — and not uniformly across the four, since their
+// dispatches differ in length while `build_csc` is a fixed cost.  A
+// re-measurement is therefore not directly comparable to these numbers:
+// recalibrate the whole set together rather than moving one constant
+// against them.
+//
 // Round 6 (#92): the constants below are those rates scaled by the
 // measured effect of this changeset, not a fresh absolute measurement.
 // Why, and how much to trust it:
@@ -208,11 +219,29 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     for (const HeuristicConfig &h : kChain) {
         if (flags.*h.flag) {
             any_enabled = true;
-            // FJ contributes nothing: its budget is fixed, not a share.
-            rest_weight += h.weight;
+            // Fixed-budget entries (FJ) are not part of the weighted share,
+            // and their `weight` field is documented meaningless.  Enforce
+            // that here rather than relying on the table happening to hold
+            // 0.0: a nominal weight added for a future non-fixed FJ mode
+            // would otherwise shrink everyone else's cut with no test
+            // failing, since the effort assertions are all "non-zero".
+            if (!h.fixed_budget) {
+                rest_weight += h.weight;
+            }
         }
     }
     if (!any_enabled) {
+        return false;
+    }
+
+    ExecutionContext exec = make_exec(mipsolver);
+
+    // Check out before the transpose, not only before each heuristic.  Each
+    // heuristic used to build its own CSC behind its own deadline check, so
+    // an already-terminated dispatch built none; hoisting the build out of
+    // all four would otherwise make it unconditional, and it is the single
+    // most expensive piece of setup in this function.
+    if (exec.terminated()) {
         return false;
     }
 
@@ -223,7 +252,6 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // storage `problem` views, so it has to outlive the loop below.
     CscMatrix csc;
     const ProblemView problem = make_problem(mipsolver, csc);
-    ExecutionContext exec = make_exec(mipsolver);
 
     const size_t fj_budget = flags.fj ? exec.num_workers * (problem.nnz << 10) : 0;
 
@@ -267,13 +295,6 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
                    : 0;
     };
 
-    // Each heuristic's inner loops also poll the deadline, but their setup
-    // (precompute_var_orders, ContestedPdlp construction) runs before that
-    // first inner poll; checking out here skips the setup entirely once
-    // the budget is exhausted.  `exec.terminated()` is safe to call from
-    // this sequential outer loop — the previous heuristic's parallel
-    // region has already joined, so there is no concurrent access.
-
     // One sink for the whole sequential chain, so a solution found by an
     // earlier heuristic (say FJ) is available as a pool-restart seed for
     // the later ones.  Its constructor seeds the pool from the incumbent
@@ -287,8 +308,9 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // contract to FJ, FPR and Scylla; #94 brought the dive-time `fpr_lp`
     // onto the same path).  No heuristic self-books.  All
     // bookings happen on the main thread after each parallel region has
-    // joined, so we read/write the counter below without synchronisation
-    // — do not move any of them into a worker without revisiting this.
+    // joined, so `EffortLedger` reads/writes the counter without
+    // synchronisation — do not move any of them into a worker without
+    // revisiting this, and the matching note in effort_ledger.h.
     // (Historical note: local_mip used to early-return when
     // `mipdata->incumbent.empty()` so its [Sequential] line was absent
     // on a first solve.  Since issue #75 it runs the paper's
@@ -307,15 +329,23 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
         ledger.charge_presolve(name, effort, t0_s, EffortLedger::now_s());
     };
 
+    // Each heuristic's inner loops also poll the deadline, but their own
+    // setup (precompute_var_orders, ContestedPdlp construction) runs before
+    // that first inner poll; re-checking here skips it once the budget is
+    // exhausted.  `exec.terminated()` is safe to call from this sequential
+    // outer loop — the previous heuristic's parallel region has already
+    // joined, so there is no concurrent access.
+    //
+    // `slice`, not `budget`: the parameter of that name is the whole-chain
+    // envelope these shares are carved out of.
     for (const HeuristicConfig &h : kChain) {
         if (!(flags.*h.flag) || exec.terminated()) {
             continue;
         }
-        const HeuristicBudget budget =
+        const HeuristicBudget slice =
             make_budget(h.fixed_budget ? fj_budget : rest_alloc(h.weight), exec.num_workers);
         sink.set_source(h.source_tag);
-        run_and_charge(h.name,
-                       [&]() -> size_t { return h.run(problem, budget, exec, sink); });
+        run_and_charge(h.name, [&]() -> size_t { return h.run(problem, slice, exec, sink); });
     }
 
     return false;

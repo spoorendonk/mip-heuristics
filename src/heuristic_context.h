@@ -46,10 +46,22 @@
 // the returned effort through `EffortLedger`, the single point of effort
 // accounting.  No heuristic self-books.  The per-heuristic headers describe
 // only what their own runner does differently.
+//
+// `ExecutionContext` is passed by non-const reference to match the entry
+// signature, but it is immutable for the duration of a dispatch: it is
+// shared by every worker of every heuristic in the chain, so caching
+// mutable per-dispatch state on it would be an unsynchronised shared
+// write.  Both of its methods are `const`.
+//
+// `ExecutionContext` is passed by non-const reference to match the entry
+// signature, but it is immutable for the duration of a dispatch: it is
+// shared by every worker of every heuristic in the chain, so caching
+// mutable per-dispatch state on it would be an unsynchronised shared
+// write.  Both of its methods are `const`.
 
 // Read-only view of the model a heuristic searches.  Cheap to copy: every
 // member is a non-owning pointer or a derived size.  The pointees are owned
-// by the `HeuristicContext` this view was carved from (the CSC) or by the
+// by the caller that built it (the CSC — `run_sequential`'s local) or by the
 // solver (model, mipdata), and outlive the whole heuristic chain.
 struct ProblemView {
     const HighsLp *model = nullptr;
@@ -121,7 +133,7 @@ struct ExecutionContext {
     }
 };
 
-// Derive one dispatch's execution parameters.  Shared by `HeuristicContext`
+// Derive one dispatch's execution parameters.  Shared by `run_sequential`
 // and by `fpr_lp`, which runs on the same continuous parallel runner from a
 // setup of its own shape.
 inline ExecutionContext make_exec(HighsMipSolver &mipsolver) {

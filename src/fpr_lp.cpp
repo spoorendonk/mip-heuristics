@@ -3,17 +3,16 @@
 #include "effort_ledger.h"
 #include "fpr_core.h"
 #include "fpr_lp_refs.h"
-#include "heuristic_context.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
+#include "heuristic_context.h"
+#include "incumbent_sink.h"
 #include "io/HighsIO.h"
 #include "mip/HighsLpRelaxation.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "mode_dispatch.h"
 #include "opportunistic_runner.h"
-#include "parallel/HighsParallel.h"
-#include "incumbent_sink.h"
 #include "worker_base.h"
 
 #include <algorithm>
@@ -311,6 +310,9 @@ namespace {
 // ---------------------------------------------------------------------------
 
 // Spawn `exec.num_workers` workers; worker w binds to arm `w % kNumLpArms`.
+// The worker count comes from the shared `make_exec`, which floors at 1 —
+// fpr_lp used to no-op on a hypothetical `num_threads() <= 0`.  Harmonising
+// with the presolve heuristics, which have always floored, is the point.
 // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
 // wrap around the curated config list with distinct seeds for diversity.
 size_t run_workers(const LpFprSetup &setup, const ExecutionContext &exec,
@@ -433,8 +435,6 @@ void run(HighsMipSolver &mipsolver) {
 
     size_t worker_effort = 0;
     if (worker_budget >= min_effort) {
-        setup.budget = worker_budget;
-
         // The sink owns the pool, seeds it from the incumbent, and wires
         // immediate submission so incumbent timestamps reflect find time
         // rather than the end-of-run flush time.

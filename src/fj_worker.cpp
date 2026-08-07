@@ -4,10 +4,10 @@
 #include <cmath>
 #include <vector>
 
+#include "incumbent_sink.h"
+#include "mip/feasibilityjump.hh"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "mip/feasibilityjump.hh"
-#include "incumbent_sink.h"
 
 using external_feasibilityjump::CallbackControlFlow;
 using external_feasibilityjump::FeasibilityJumpSolver;

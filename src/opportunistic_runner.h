@@ -35,6 +35,10 @@
 //     the atomic total before starting an attempt.  Bounded overshoot
 //     is acceptable for heuristic effort accounting.
 //
+// (`run_opportunistic_loop` itself is declared below `attempt_with_rebuild`.)
+//
+// ---------------------------------------------------------------------------
+//
 // One attempt from a worker that retires when it stalls.
 //
 // Scylla and fpr_lp both rebuild a retired worker in place, and both need

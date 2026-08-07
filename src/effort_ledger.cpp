@@ -24,7 +24,10 @@ void EffortLedger::charge_dive(const char *name, size_t effort, int64_t setup_lp
     // units per LP iteration.  This is what makes the dive heuristic
     // compete with RENS/RINS for the vanilla `mip_heuristic_effort`
     // envelope instead of drawing unaccounted work.
-    const int64_t charged = setup_lp_iters + static_cast<int64_t>(effort / nnz);
+    // `assert` alone is not enough: the project builds Release, where
+    // NDEBUG removes it and this would be a SIGFPE rather than a wrong
+    // number.  The one current caller guards `nnz == 0` far upstream.
+    const int64_t charged = setup_lp_iters + static_cast<int64_t>(nnz == 0 ? 0 : effort / nnz);
     mipdata->heuristic_lp_iterations += charged;
     mipdata->total_lp_iterations += charged;
     book(name, effort, t0_s, t1_s);

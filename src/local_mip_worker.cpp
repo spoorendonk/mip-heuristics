@@ -1,12 +1,12 @@
 #include "local_mip_worker.h"
 
 #include "heuristic_common.h"
+#include "incumbent_sink.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "incumbent_sink.h"
 
 #include <algorithm>
 #include <cmath>

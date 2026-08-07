@@ -3,11 +3,11 @@
 #include "contested_pdlp.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
+#include "incumbent_sink.h"
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
-#include "incumbent_sink.h"
 #include "scylla_worker.h"
 
 #include <algorithm>
@@ -39,7 +39,7 @@ void log_overlap_ratio(const HighsLogOptions &log_options,
     const std::uint64_t total = fresh + stale;
     const double ratio = total == 0 ? 0.0 : static_cast<double>(stale) / static_cast<double>(total);
     // `kVerbose` matches the existing `[Sequential]` lines emitted from
-    // `mode_dispatch::log_sequential`; operators setting
+    // `EffortLedger::book` (src/effort_ledger.cpp); operators setting
     // `log_dev_level=3` expect to see this alongside them.
     highsLogDev(
         log_options, HighsLogType::kVerbose, "[ScyllaOverlap] fresh=%llu stale=%llu ratio=%.3f\n",

@@ -1,11 +1,11 @@
 #pragma once
 
 #include "heuristic_common.h"
+#include "incumbent_sink.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "incumbent_sink.h"
 #include "util/HighsInt.h"
 #include "worker_base.h"
 

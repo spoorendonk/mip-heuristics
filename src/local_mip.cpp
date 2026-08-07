@@ -2,15 +2,14 @@
 
 #include "heuristic_common.h"
 #include "heuristic_context.h"
+#include "incumbent_sink.h"
 #include "local_mip_construction.h"
 #include "local_mip_worker.h"
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
-#include "parallel/HighsParallel.h"
 #include "rng.h"
-#include "incumbent_sink.h"
 
 #include <atomic>
 #include <cmath>

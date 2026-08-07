@@ -10,10 +10,10 @@
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
+#include "incumbent_sink.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "pump_common.h"
-#include "incumbent_sink.h"
 
 namespace {
 

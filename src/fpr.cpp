@@ -280,7 +280,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         if (attempts_started > 0 && attempt.effort == prev_loop_effort) {
             // Defensive belt-and-braces guard.  Today this branch is
             // unreachable: degenerate `ncol==0||nrow==0` models are filtered
-            // out by `fpr::run_parallel` before workers are constructed,
+            // out by `fpr::run` before workers are constructed,
             // every begin runs at least one `E.propagate(-1)` round (>0 ops
             // on any non-empty model), and finish always adds
             // `c.ARindex.size() > 0` for the LHS sum.  Keep the guard so a

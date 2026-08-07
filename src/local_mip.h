@@ -35,7 +35,7 @@ inline constexpr bool kInstrumented = false;
 //                      cold-start cache was reused (a single first-
 //                      worker construction can amortise across N
 //                      peers via `cold_start_cache`).
-// Counters cover the `run_parallel_*` paths only; restart-callback
+// Counters cover the `run` start-resolution paths only; restart-callback
 // warm-starts inside the parallel loops are NOT counted (their work
 // happens after the initial start has already been resolved).
 // Call `reset_warm_start_counters()` before a HiGHS run, then read

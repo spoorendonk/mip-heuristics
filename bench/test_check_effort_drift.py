@@ -61,6 +61,22 @@ def test_drift_exceeds_threshold_fails(tmp_path):
     assert "FAIL" in res.stderr
 
 
+def test_fpr_lp_samples_are_excluded(tmp_path):
+    # #94 gave the dive-time fpr_lp a [Sequential] line of its own.  It has
+    # no kWeight* to calibrate and draws from a different envelope (the
+    # RENS/RINS LP-iteration budget), so it must not enter the geomean
+    # table — a fast fpr_lp sample would otherwise move the drift figure
+    # that gates a calibration pass.
+    rates = {"fj": 100.0, "fpr": 200.0, "local_mip": 150.0, "scylla": 80.0}
+    _write_log(str(tmp_path), "a.log", _make_log(rates))
+    _write_log(str(tmp_path), "b.log", _make_log({"fpr_lp": 100000.0}))
+    res = _run(str(tmp_path))
+    # Without the filter the 1250x spread against scylla would fail here.
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "fpr_lp" not in res.stdout
+    assert "OK: drift within threshold." in res.stdout
+
+
 def test_no_samples_returns_failure(tmp_path):
     _write_log(str(tmp_path), "empty.log", "this log has no sequential lines\n")
     res = _run(str(tmp_path))

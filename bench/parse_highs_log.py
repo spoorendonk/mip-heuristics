@@ -189,7 +189,7 @@ _NODES_RE = re.compile(r"^\s+Nodes\s+(\d+)$")
 _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 
 # [Sequential] per-heuristic calibration line emitted from
-# src/mode_dispatch.cpp `log_sequential` (issue #71):
+# src/effort_ledger.cpp `EffortLedger::book` (issue #71):
 #   [Sequential] heur=fpr effort=12345 wall_ms=67.8 effort_per_ms=182
 # There is one line per heuristic per solve, feeding
 # `bench/check_effort_drift.py` to calibrate `kWeight*`.
