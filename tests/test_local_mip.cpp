@@ -6,6 +6,7 @@
 #include "incumbent_sink.h"
 #include "local_mip.h"
 #include "local_mip_construction.h"
+#include "local_mip_worker.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
 #include "parallel/HighsParallel.h"
@@ -370,7 +371,7 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
 
 namespace {
 
-// Stand up a real `HighsMipSolver` (with `mipdata_`) on `flugpl.mps`
+// Stand up a real `HighsMipSolver` (with `mipdata_`) on `instance`
 // without going through `Highs::run`'s heuristics, so a test can call a
 // heuristic's `run` — or `make_problem` — itself.  Mirrors the minimal
 // init sequence from `HighsMipSolver::run` (init → runMipPresolve →
@@ -378,7 +379,8 @@ namespace {
 //
 // Callers must have started the HiGHS task scheduler first (see the
 // `initialize_scheduler()` note at each call site).
-std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback& cb) {
+std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback& cb,
+                                                    const char* instance = "flugpl.mps") {
     // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
     // that leaves `mipsolver.model_` pointing at the original LP.
     // The heuristics' `run` only needs the LP shape and
@@ -387,7 +389,7 @@ std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback
     // machinery that comes later in `Highs::run` is not needed and
     // skipping presolve keeps this minimal.
     highs.setOptionValue("presolve", "off");
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(highs.readModel(kInstancesDir + "/" + instance) == HighsStatus::kOk);
     auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
                                                       highs.getSolution());
     mipsolver->timer_.start();
@@ -591,4 +593,105 @@ TEST_CASE("ProblemView::incumbent is a dispatch snapshot, not the live vector (#
         REQUIRE(counters.incumbent >= 1);
         REQUIRE(counters.construction == 0);
     }
+}
+
+// ── Issue #99: column classification comes from a dispatch snapshot ──
+//
+// `addIncumbent` propagates the root domain, tightening the very bound
+// vectors `HighsDomain::isBinary` reads, while workers classify columns
+// from them.  `ProblemView::binary` (and `FprConfig::binary_mask`, and
+// `LpFprSetup::binary`) is the snapshot that replaces those live reads.
+TEST_CASE("ProblemView::binary is a dispatch snapshot of isBinary (#99)",
+          "[heuristic][heuristic-context]") {
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    // `lseu.mps`, not the `flugpl.mps` default: flugpl's integers are all
+    // general, so the binary half of this test would be vacuous on it.
+    auto mipsolver = build_bare_mipsolver(highs, cb, "lseu.mps");
+    auto* mipdata = mipsolver->mipdata_.get();
+    const HighsInt ncol = mipsolver->model_->num_col_;
+    REQUIRE(ncol > 0);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    REQUIRE(problem.binary.size() == static_cast<size_t>(ncol));
+
+    // Agrees with the domain it was taken from, column for column.
+    for (HighsInt j = 0; j < ncol; ++j) {
+        REQUIRE(static_cast<bool>(problem.binary[j]) == mipdata->getDomain().isBinary(j));
+    }
+
+    // A snapshot, not a live view: tightening a column's bounds the way
+    // `getDomain().propagate()` does must not change what a worker sees
+    // mid-dispatch.  Pick a column the domain currently calls binary; if
+    // this instance has none, the immunity check below still runs against
+    // the general-integer half.
+    HighsInt probe = -1;
+    for (HighsInt j = 0; j < ncol; ++j) {
+        if (problem.binary[j]) {
+            probe = j;
+            break;
+        }
+    }
+    REQUIRE(probe >= 0);
+    mipdata->getDomain().changeBound(HighsBoundType::kUpper, probe, 0.0,
+                                     HighsDomain::Reason::unspecified());
+    REQUIRE(!mipdata->getDomain().isBinary(probe));
+    REQUIRE(problem.binary[probe] == 1);
+}
+
+// The half that matters for #99: the consumers read the mask they are
+// handed, not the solver.  `perturb_solution` is the cleanest probe —
+// it is a free function whose only classification input is now the mask,
+// so the same columns take the binary-flip path or the general-integer
+// shift path purely on what the caller passed.
+TEST_CASE("perturb_solution classifies columns from the mask it is given (#99)",
+          "[heuristic][local_mip][heuristic-context]") {
+    // Bounds [0, 5] make the two paths distinguishable: the binary path
+    // flips to exactly 0 or 1, the general-integer path shifts by a
+    // non-zero amount within the range and so can land above 1.
+    constexpr HighsInt kNcol = 400;
+    const std::vector<HighsVarType> integrality(kNcol, HighsVarType::kInteger);
+    const std::vector<double> col_lb(kNcol, 0.0);
+    const std::vector<double> col_ub(kNcol, 5.0);
+
+    const std::vector<uint8_t> all_binary(kNcol, 1);
+    const std::vector<uint8_t> none_binary(kNcol, 0);
+
+    std::vector<double> as_binary(kNcol, 0.0);
+    Rng rng_a(12345);
+    local_mip_detail::perturb_solution(as_binary, all_binary.data(), integrality, col_lb, col_ub,
+                                       kNcol, rng_a);
+
+    std::vector<double> as_general(kNcol, 0.0);
+    Rng rng_b(12345);
+    local_mip_detail::perturb_solution(as_general, none_binary.data(), integrality, col_lb, col_ub,
+                                       kNcol, rng_b);
+
+    // Called binary: every perturbed column flipped 0 -> 1, and nothing
+    // ever leaves {0, 1}.
+    int flipped = 0;
+    for (HighsInt j = 0; j < kNcol; ++j) {
+        REQUIRE((as_binary[j] == 0.0 || as_binary[j] == 1.0));
+        if (as_binary[j] == 1.0) {
+            ++flipped;
+        }
+    }
+    // ~20% of 400 columns; a wide band, since the point is that the
+    // branch fired at all, not how often.
+    REQUIRE(flipped > 20);
+
+    // Called general-integer: the same RNG stream perturbs the same
+    // columns, but through the shift path, which reaches values the
+    // binary path cannot produce.
+    int above_one = 0;
+    for (HighsInt j = 0; j < kNcol; ++j) {
+        if (as_general[j] > 1.0) {
+            ++above_one;
+        }
+    }
+    REQUIRE(above_one > 0);
 }

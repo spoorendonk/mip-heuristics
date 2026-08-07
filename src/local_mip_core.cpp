@@ -27,7 +27,8 @@ double compute_objective(const HighsLp *model, const std::vector<double> &soluti
 
 // --- WorkerCtx ---
 
-WorkerCtx::WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_)
+WorkerCtx::WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_,
+                     const uint8_t *binary_)
     : model(mipsolver.model_),
       ARstart(mipsolver.mipdata_->ARstart_),
       ARindex(mipsolver.mipdata_->ARindex_),
@@ -45,6 +46,7 @@ WorkerCtx::WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_)
       ncol(mipsolver.model_->num_col_),
       nrow(mipsolver.model_->num_row_),
       mipdata(mipsolver.mipdata_.get()),
+      binary(binary_),
       solution(ncol),
       lhs(nrow),
       weight(nrow, 1),

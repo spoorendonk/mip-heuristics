@@ -117,6 +117,11 @@ struct LpFprSetup {
     // pointer stable while mipdata->incumbent may be mutated by HiGHS).
     std::vector<double> incumbent_snapshot;
 
+    // Per-column `HighsDomain::isBinary`, snapshotted here for the same
+    // reason (issue #99): the workers below classify columns from it while
+    // an accepted solution may be propagating the live root domain.
+    std::vector<uint8_t> binary;
+
     // LP iterations spent solving the reference LPs (analytic center +
     // zero-obj vertex).  Charged against the shared B&B heuristic budget
     // by run() whether or not the workers subsequently run.
@@ -150,6 +155,7 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     s.csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
     s.incumbent_snapshot = mipdata->incumbent;
+    s.binary = build_binary_mask(mipsolver);
 
     // Full-obj LP solution — direct reference to the solver's col_value
     // vector (stable while we run because we do not trigger further LP
@@ -244,6 +250,7 @@ public:
         cfg.lp_ref = arm.lp_ref;
         cfg.precomputed_var_order = var_order.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
+        cfg.binary_mask = setup_.binary.data();
         cfg.scratch = &scratch_;
 
         auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);

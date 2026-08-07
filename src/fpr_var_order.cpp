@@ -24,6 +24,11 @@ struct TypeBuckets {
     std::vector<HighsInt> cont;
 };
 
+// Reads the live root domain rather than a dispatch snapshot
+// (`ProblemView::binary`, issue #99).  Legal here and only here: every
+// caller reaches this through `precompute_var_orders`, which both FPR and
+// fpr_lp run on the dispatching thread before opening a parallel region —
+// the same property that makes the `cliquePartition` call below safe.
 TypeBuckets bucket_by_type(const HighsMipSolver& mipsolver) {
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();

@@ -59,8 +59,10 @@ using VarOrderTable = std::vector<std::vector<HighsInt>>;
 // only termination gate.
 class FprWorker {
 public:
+    // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
+    // issue #99); it must outlive the worker.
     FprWorker(const ExecutionContext &exec, const CscMatrix &csc, IncumbentSink &sink,
-              const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
+              const VarOrderTable &var_orders, const uint8_t *binary, int worker_idx, uint32_t seed,
               size_t attempt_budget);
 
     AttemptResult run_attempt(size_t attempt_budget);
@@ -81,6 +83,7 @@ private:
     const CscMatrix &csc_;
     IncumbentSink &sink_;
     const VarOrderTable &var_orders_;
+    const uint8_t *binary_;
 
     int worker_idx_;
     size_t attempt_budget_;  // hint for cfg.max_effort per attempt
@@ -171,13 +174,14 @@ VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
 // ---------------------------------------------------------------------------
 
 FprWorker::FprWorker(const ExecutionContext &exec, const CscMatrix &csc, IncumbentSink &sink,
-                     const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
-                     size_t attempt_budget)
+                     const VarOrderTable &var_orders, const uint8_t *binary, int worker_idx,
+                     uint32_t seed, size_t attempt_budget)
     : exec_(exec),
       mipsolver_(exec.mipsolver),
       csc_(csc),
       sink_(sink),
       var_orders_(var_orders),
+      binary_(binary),
       worker_idx_(worker_idx),
       attempt_budget_(attempt_budget),
       rng_(seed) {
@@ -335,6 +339,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         cfg.lp_ref = nullptr;
         cfg.precomputed_var_order = var_order.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
+        cfg.binary_mask = binary_;
         cfg.scratch = &scratch_;
 
         if (!attempt_alive()) {
@@ -405,7 +410,8 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
     for (size_t w = 0; w < exec.num_workers; ++w) {
         uint32_t seed = exec.worker_seed(static_cast<int>(w));
         workers.push_back(std::make_unique<FprWorker>(exec, *problem.csc, sink, var_orders,
-                                                      static_cast<int>(w), seed, budget.stale));
+                                                      problem.binary.data(), static_cast<int>(w),
+                                                      seed, budget.stale));
     }
 
     struct FprOppState {

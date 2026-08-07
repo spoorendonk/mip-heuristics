@@ -173,6 +173,20 @@ struct FprConfig {
     const HighsInt *precomputed_var_order = nullptr;
     HighsInt precomputed_var_order_size = 0;
 
+    // --- Binary-column snapshot (avoids a data race on the root domain) ---
+    // Per-column `HighsDomain::isBinary`, at least `ncol` entries, taken on
+    // the dispatching thread (`ProblemView::binary`, or `LpFprSetup`'s copy
+    // for the dive-time heuristic).  Same rationale as the var order above:
+    // a peer worker's accepted solution reaches `addIncumbent`, which
+    // propagates the root domain and tightens the very bounds `isBinary`
+    // reads (issue #99).
+    //
+    // **Any caller running inside a parallel region must set this.**  The
+    // lifecycle API asserts on it; the one-shot `fpr_attempt` snapshots for
+    // itself when it is null, which is safe only because the callers that
+    // rely on that fallback are single-threaded.
+    const uint8_t *binary_mask = nullptr;
+
     // --- Repair parameters (paper: Salvagnin et al. 2025, Section 5) ---
     // Noise parameter p: probability of random walk move (paper default: 0.75).
     // Greedy probability = 1 - repair_noise.

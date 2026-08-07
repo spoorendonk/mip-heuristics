@@ -38,12 +38,13 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp,
                            const CscMatrix &csc, IncumbentSink &sink,
-                           size_t total_budget, uint32_t seed, int worker_idx,
-                           int num_workers,
+                           const uint8_t *binary, size_t total_budget,
+                           uint32_t seed, int worker_idx, int num_workers,
                            std::atomic<uint64_t> *improvement_gen)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
       csc_(csc),
+      binary_(binary),
       sink_(sink),
       num_workers_(std::max(num_workers, 1)),
       epsilon_(pump::kEpsilonInit),
@@ -393,6 +394,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     cfg.lp_ref = nullptr;
     cfg.precomputed_var_order = var_order_.data();
     cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_.size());
+    cfg.binary_mask = binary_;
     cfg.scratch = &fpr_scratch_;
 
     restart_buf_.clear();

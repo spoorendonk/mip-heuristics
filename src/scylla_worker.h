@@ -79,9 +79,12 @@ inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 //
 class ScyllaWorker {
 public:
+    // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
+    // issue #99); it must outlive the worker.
     ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                 IncumbentSink &sink, size_t total_budget, uint32_t seed, int worker_idx,
-                 int num_workers, std::atomic<uint64_t> *improvement_gen = nullptr);
+                 IncumbentSink &sink, const uint8_t *binary, size_t total_budget, uint32_t seed,
+                 int worker_idx, int num_workers,
+                 std::atomic<uint64_t> *improvement_gen = nullptr);
 
     // Run iterations until attempt_budget effort is consumed.  Sets
     // base_.finished when the worker cannot make further progress.
@@ -111,6 +114,7 @@ private:
     HighsMipSolver &mipsolver_;
     ContestedPdlp &pdlp_;
     const CscMatrix &csc_;
+    const uint8_t *binary_;
     IncumbentSink &sink_;
 
     HighsInt ncol_ = 0;

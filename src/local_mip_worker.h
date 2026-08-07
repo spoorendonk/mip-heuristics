@@ -18,7 +18,12 @@ namespace local_mip_detail {
 inline constexpr double kPerturbBinaryFraction = 0.2;
 
 // Perturb solution: flip ~20% of binary vars, randomly shift general integers.
-void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &mipdata,
+//
+// `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`),
+// not the live root domain: this runs on worker threads while a peer's
+// accepted solution propagates that domain (issue #99).  Must be at least
+// `ncol` entries.
+void perturb_solution(std::vector<double> &solution, const uint8_t *binary,
                       const std::vector<HighsVarType> &integrality,
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
                       HighsInt ncol, Rng &rng);
@@ -34,8 +39,11 @@ public:
     // (issue #98), and a dead one: the caller only passes null when its
     // resolved start is empty, which by `resolve_worker_start`'s ordering
     // means the pool and the incumbent were empty too.
+    // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
+    // issue #99); it must outlive the worker.
     LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
-                   size_t total_budget, uint32_t seed, const double *initial_solution);
+                   size_t total_budget, uint32_t seed, const double *initial_solution,
+                   const uint8_t *binary);
 
     AttemptResult run_attempt(size_t attempt_budget);
 

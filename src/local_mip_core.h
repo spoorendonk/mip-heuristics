@@ -34,6 +34,11 @@ struct WorkerCtx {
     const HighsInt ncol;
     const HighsInt nrow;
     HighsMipSolverData *mipdata;
+    // Dispatch-time `isBinary` snapshot (`ProblemView::binary`), at least
+    // `ncol` entries.  Never re-read the live root domain from here: a
+    // peer's accepted solution propagates it while this worker runs
+    // (issue #99).
+    const uint8_t *binary;
 
     // Mutable state
     std::vector<double> solution;
@@ -63,9 +68,11 @@ struct WorkerCtx {
     // Effort tracking (coefficient accesses)
     size_t effort = 0;
 
-    WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_);
+    WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_, const uint8_t *binary_);
 
     bool is_int(HighsInt j) const { return ::is_integer(integrality, j); }
+
+    bool is_binary(HighsInt j) const { return binary[j] != 0; }
 
     double clamp_and_round(HighsInt j, double val) const {
         return clamp_round(val, col_lb[j], col_ub[j], is_int(j));

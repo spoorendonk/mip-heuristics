@@ -1,6 +1,7 @@
 #include "fpr_core.h"
 
 #include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -40,9 +41,14 @@ struct AttemptCtx {
     bool minimize;
     HighsInt ncol;
     HighsInt nrow;
+    // Dispatch-time `isBinary` snapshot; see `FprConfig::binary_mask`.
+    const uint8_t *binary;
+
+    bool is_binary(HighsInt j) const { return binary[j] != 0; }
 };
 
-AttemptCtx make_ctx(HighsMipSolver &mipsolver) {
+AttemptCtx make_ctx(HighsMipSolver &mipsolver, const uint8_t *binary) {
+    assert(binary != nullptr && "FprConfig::binary_mask must be set");
     const auto *model = mipsolver.model_;
     auto *mipdata = mipsolver.mipdata_.get();
     return AttemptCtx{
@@ -54,6 +60,7 @@ AttemptCtx make_ctx(HighsMipSolver &mipsolver) {
         model->row_upper_, model->integrality_,
         mipdata->feastol,  model->sense_ == ObjSense::kMinimize,
         model->num_col_,   model->num_row_,
+        binary,
     };
 }
 
@@ -131,7 +138,7 @@ double choose_fix_value(HighsInt j, const FprConfig &cfg, const AttemptCtx &c, P
         }
     }
 
-    if (c.mipdata->getDomain().isBinary(j)) {
+    if (c.is_binary(j)) {
         if (c.minimize) {
             return (c.col_cost[j] >= 0) ? lo : hi;
         }
@@ -149,7 +156,7 @@ double choose_fix_value(HighsInt j, const FprConfig &cfg, const AttemptCtx &c, P
 }
 
 double compute_alt(HighsInt j, double preferred, const AttemptCtx &c, PropEngine &E) {
-    if (c.mipdata->getDomain().isBinary(j)) {
+    if (c.is_binary(j)) {
         return (preferred < 0.5) ? 1.0 : 0.0;
     }
     double alt = (std::abs(preferred - E.var(j).lb) < c.feastol) ? E.var(j).ub : E.var(j).lb;
@@ -173,7 +180,7 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
                        Rng &rng, int attempt_idx, const double *initial_solution) {
     assert(cfg.scratch != nullptr && "fpr_attempt_begin requires cfg.scratch");
     FprScratch &scratch = *cfg.scratch;
-    const AttemptCtx c = make_ctx(mipsolver);
+    const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
 
     // Lifecycle reset.
     state = FprAttemptState{};
@@ -240,7 +247,7 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
         }
     } else if (attempt_idx == 0) {
         for (HighsInt j = 0; j < c.ncol; ++j) {
-            if (c.mipdata->getDomain().isBinary(j)) {
+            if (c.is_binary(j)) {
                 E.sol(j) = 0.0;
             } else if (is_int(j)) {
                 double lo = std::max(c.col_lb[j], -1e8);
@@ -253,7 +260,7 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
         }
     } else {
         for (HighsInt j = 0; j < c.ncol; ++j) {
-            if (c.mipdata->getDomain().isBinary(j)) {
+            if (c.is_binary(j)) {
                 E.sol(j) = std::uniform_int_distribution<int>(0, 1)(rng);
             } else if (is_int(j)) {
                 double lo = std::max(c.col_lb[j], -1e8);
@@ -381,7 +388,7 @@ FprStepResult fpr_attempt_step(FprAttemptState &state, HighsMipSolver &mipsolver
     assert(cfg.csc != nullptr);
 
     FprScratch &scratch = *cfg.scratch;
-    const AttemptCtx c = make_ctx(mipsolver);
+    const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
     const CscMatrix &csc = *cfg.csc;
     PropEngine &E = *scratch.prop_engine;
     auto &dfs_stack = scratch.dfs_stack;
@@ -479,7 +486,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipso
     assert(cfg.scratch != nullptr);
 
     FprScratch &scratch = *cfg.scratch;
-    const AttemptCtx c = make_ctx(mipsolver);
+    const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
 
     // Degenerate model from begin() — short-circuit cleanly.
     if (c.ncol == 0 || c.nrow == 0) {
@@ -626,6 +633,14 @@ HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng
     }
     if (effective_cfg.csc == nullptr) {
         effective_cfg.csc = &owned_csc;
+    }
+    // Same fallback shape as `csc`/`scratch` above: a one-shot caller that
+    // took no dispatch snapshot gets one here.  Callers inside a parallel
+    // region (fpr_lp, scylla, FprWorker) always set it and skip this.
+    std::vector<uint8_t> owned_binary;
+    if (effective_cfg.binary_mask == nullptr) {
+        owned_binary = build_binary_mask(mipsolver);
+        effective_cfg.binary_mask = owned_binary.data();
     }
 
     FprAttemptState state;

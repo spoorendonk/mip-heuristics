@@ -93,9 +93,36 @@ struct ProblemView {
     // mid-dispatch would then silently lose a peer's find.
     std::vector<double> incumbent;
 
+    // Per-column snapshot of `HighsDomain::isBinary`, taken with the
+    // incumbent and for the same reason (issue #99).  `addIncumbent` runs
+    // `getDomain().propagate()` and `redcostfixing.propagateRootRedcost`,
+    // both of which tighten the root domain's bound vectors element-wise,
+    // while workers classify columns from those same vectors.  Unlike the
+    // incumbent this can never dangle — the bound vectors are sized once at
+    // setup — so it is a torn read rather than a use-after-free, but it is
+    // still a race, and a column's classification flipping mid-dispatch is
+    // not something any worker is written to expect.
+    //
+    // `uint8_t` rather than `std::vector<bool>`: workers index this from
+    // hot loops, and the bit-packed specialisation's proxy references are
+    // both slower and not safely readable from several threads at once.
+    std::vector<uint8_t> binary;
+
     // A model with no columns or no rows: every heuristic declines it.
     bool degenerate() const { return ncol == 0 || nrow == 0; }
 };
+
+// Snapshot `HighsDomain::isBinary` for every column.  Must run on the
+// dispatching thread, before any parallel region — see `ProblemView::binary`.
+inline std::vector<uint8_t> build_binary_mask(const HighsMipSolver &mipsolver) {
+    const HighsInt ncol = mipsolver.model_->num_col_;
+    const HighsDomain &domain = mipsolver.mipdata_->getDomain();
+    std::vector<uint8_t> mask(static_cast<size_t>(ncol), 0);
+    for (HighsInt j = 0; j < ncol; ++j) {
+        mask[j] = domain.isBinary(j) ? 1 : 0;
+    }
+    return mask;
+}
 
 // One heuristic's slice of the presolve effort envelope.  `total` used to
 // travel separately as a bare `max_effort` parameter while the other three
@@ -185,7 +212,12 @@ inline ProblemView make_problem(HighsMipSolver &mipsolver, CscMatrix &csc) {
     HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
     csc = build_csc(model->num_col_, model->num_row_, mipdata->ARstart_, mipdata->ARindex_,
                     mipdata->ARvalue_);
-    return ProblemView{model,           mipdata,         &csc,
-                       model->num_col_, model->num_row_, mipdata->ARindex_.size(),
-                       mipdata->incumbent};
+    return ProblemView{model,
+                       mipdata,
+                       &csc,
+                       model->num_col_,
+                       model->num_row_,
+                       mipdata->ARindex_.size(),
+                       mipdata->incumbent,
+                       build_binary_mask(mipsolver)};
 }

@@ -79,8 +79,8 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
     for (int w = 0; w < N; ++w) {
         uint32_t seed = exec.worker_seed(w);
         workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, *problem.csc, sink,
-                                                         budget.total, seed, w, N,
-                                                         &improvement_gen));
+                                                         problem.binary.data(), budget.total, seed,
+                                                         w, N, &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -110,10 +110,9 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                 // path).  `pdlp` is shared, so warm-start etc. are
                 // reinitialized from scratch but the underlying LP stays.
                 uint32_t new_seed = static_cast<uint32_t>(rng());
-                worker =
-                    std::make_unique<ScyllaWorker>(mipsolver, pdlp, *problem.csc, sink,
-                                                   budget.total, new_seed, state.worker_idx, N,
-                                                   &improvement_gen);
+                worker = std::make_unique<ScyllaWorker>(
+                    mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), budget.total,
+                    new_seed, state.worker_idx, N, &improvement_gen);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has

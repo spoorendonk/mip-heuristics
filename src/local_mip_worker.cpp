@@ -17,7 +17,7 @@
 
 namespace local_mip_detail {
 
-void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &mipdata,
+void perturb_solution(std::vector<double> &solution, const uint8_t *binary,
                       const std::vector<HighsVarType> &integrality,
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
                       HighsInt ncol, Rng &rng) {
@@ -33,7 +33,7 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
         if (coin(rng) > kPerturbBinaryFraction) {
             continue;
         }
-        if (mipdata.getDomain().isBinary(j)) {
+        if (binary[j]) {
             solution[j] = (solution[j] < 0.5) ? 1.0 : 0.0;
         } else {
             // Skip variables whose current value is non-finite (NaN or
@@ -79,19 +79,19 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
 }
 
 LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
-                               size_t total_budget, uint32_t seed, const double *initial_solution)
-    : mipsolver_(mipsolver), csc_(csc), sink_(sink), rng_(seed), ctx_(mipsolver, csc) {
+                               size_t total_budget, uint32_t seed, const double *initial_solution,
+                               const uint8_t *binary)
+    : mipsolver_(mipsolver), csc_(csc), sink_(sink), rng_(seed), ctx_(mipsolver, csc, binary) {
     base_.total_budget = total_budget;
     base_.stale_budget = total_budget >> 2;
     const HighsInt ncol = mipsolver.model_->num_col_;
-    auto *mipdata = ctx_.mipdata;
 
     // Precompute variable subsets
     for (HighsInt j = 0; j < ncol; ++j) {
         if (std::abs(ctx_.col_cost[j]) >= kEpsZero) {
             costed_vars_.push_back(j);
         }
-        if (mipdata->getDomain().isBinary(j)) {
+        if (ctx_.is_binary(j)) {
             binary_vars_.push_back(j);
         }
     }
@@ -251,7 +251,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 // assignments.  `kFeasibleMaxRandomWalks` caps the
                 // walks for pathological instances.
                 if (feasible_random_walks_done_ < kFeasibleMaxRandomWalks) {
-                    perturb_solution(ctx_.solution, *ctx_.mipdata, ctx_.integrality, ctx_.col_lb,
+                    perturb_solution(ctx_.solution, ctx_.binary, ctx_.integrality, ctx_.col_lb,
                                      ctx_.col_ub, ctx_.ncol, rng_);
                     // Reset weights on random walk (engineering choice;
                     // R2-8 round-4 review).  Paper §4.1 specifies only
@@ -308,7 +308,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 ctx_.solution = best_solution_;
             } else {
                 for (HighsInt j = 0; j < ncol; ++j) {
-                    if (ctx_.mipdata->getDomain().isBinary(j)) {
+                    if (ctx_.is_binary(j)) {
                         ctx_.solution[j] = (rng_() % 2 == 0) ? 0.0 : 1.0;
                     } else if (ctx_.is_int(j)) {
                         double lo = std::max(ctx_.col_lb[j], -1e8);
