@@ -3,7 +3,7 @@
 #include <cstddef>
 
 class HighsMipSolver;
-class SolutionPool;
+class IncumbentSink;
 
 namespace scylla {
 
@@ -19,14 +19,13 @@ namespace scylla {
 // seed.  Set `threads=1` for a single chain whose behaviour is
 // reproducible under a fixed `random_seed`.
 //
-// `pool` is owned by the caller (mode_dispatch::run_sequential).
-// Workers insert feasible pumps with kSolutionSourceScylla; the caller
-// flushes the pool once all sequential heuristics have run.
+// `sink` is owned by the caller (mode_dispatch::run_sequential), which
+// also sets the source tag feasible pumps are attributed with.
 //
 // Returns the total effort consumed.  The caller is responsible for
 // booking it into `mipdata->heuristic_effort_used` — same contract as
 // `local_mip::run_parallel` (issue #79).  This makes mode_dispatch.cpp
 // the single point of Scylla effort accounting.
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort);
+size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort);
 
 }  // namespace scylla

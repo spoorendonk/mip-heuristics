@@ -15,7 +15,7 @@
 #include <vector>
 
 class HighsMipSolver;
-class SolutionPool;
+class IncumbentSink;
 
 // Per-worker default cap on consecutive stale-snapshot rounds before the
 // worker must force a blocking `solve()` to refresh its view.  Stale
@@ -80,7 +80,7 @@ inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 class ScyllaWorker {
 public:
     ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                 SolutionPool &pool, size_t total_budget, uint32_t seed, int worker_idx,
+                 IncumbentSink &sink, size_t total_budget, uint32_t seed, int worker_idx,
                  int num_workers, std::atomic<uint64_t> *improvement_gen = nullptr);
 
     // Run iterations until attempt_budget effort is consumed.  Sets
@@ -111,7 +111,7 @@ private:
     HighsMipSolver &mipsolver_;
     ContestedPdlp &pdlp_;
     const CscMatrix &csc_;
-    SolutionPool &pool_;
+    IncumbentSink &sink_;
 
     HighsInt ncol_ = 0;
     HighsInt nrow_ = 0;

@@ -7,7 +7,7 @@
 #include <memory>
 
 class HighsMipSolver;
-class SolutionPool;
+class IncumbentSink;
 
 // FeasibilityJump worker.  Owns a FeasibilityJumpSolver
 // and supports pause/resume across attempt boundaries via the `resume`
@@ -20,7 +20,7 @@ class SolutionPool;
 // Finished when FJ stalls (effortSinceLastImprovement exceeds threshold).
 class FjWorker {
 public:
-    FjWorker(HighsMipSolver &mipsolver, SolutionPool &pool, size_t total_budget, uint32_t seed);
+    FjWorker(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t total_budget, uint32_t seed);
     ~FjWorker();
 
     // Run FJ for up to attempt_budget effort, then pause via callback.
@@ -33,7 +33,7 @@ private:
     std::unique_ptr<Impl> impl_;
 
     HighsMipSolver &mipsolver_;
-    SolutionPool &pool_;
+    IncumbentSink &sink_;
     const uint32_t seed_;
 
     // Effort / staleness / finished bookkeeping.  FJ's `stale_budget` is

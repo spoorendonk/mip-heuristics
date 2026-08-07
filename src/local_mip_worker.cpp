@@ -6,7 +6,7 @@
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 
 #include <algorithm>
 #include <cmath>
@@ -78,9 +78,9 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
     }
 }
 
-LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
+LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
                                size_t total_budget, uint32_t seed, const double *initial_solution)
-    : mipsolver_(mipsolver), csc_(csc), pool_(pool), rng_(seed), ctx_(mipsolver, csc) {
+    : mipsolver_(mipsolver), csc_(csc), sink_(sink), rng_(seed), ctx_(mipsolver, csc) {
     base_.total_budget = total_budget;
     base_.stale_budget = total_budget >> 2;
     const HighsInt ncol = mipsolver.model_->num_col_;
@@ -196,7 +196,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 feasible_random_walks_done_ = 0;
                 attempt.found_improvement = true;
 
-                pool_.try_add(obj, ctx_.solution, kSolutionSourceLocalMIP);
+                sink_.offer(obj, ctx_.solution);
                 base_.reset_staleness();
                 effort_at_last_improvement = ctx_.effort;
             }

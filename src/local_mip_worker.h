@@ -5,7 +5,7 @@
 #include "local_mip_core.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 #include "util/HighsInt.h"
 #include "worker_base.h"
 
@@ -23,12 +23,12 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
                       const std::vector<double> &col_lb, const std::vector<double> &col_ub,
                       HighsInt ncol, Rng &rng);
 
-// Worker wrapping WorkerCtx. Runs weighted local search against the
-// supplied SolutionPool, accumulating effort and submitting improving
-// solutions to the pool.
+// Worker wrapping WorkerCtx. Runs weighted local search, accumulating
+// effort and submitting improving solutions through the shared
+// `IncumbentSink`.
 class LocalMipWorker {
 public:
-    LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
+    LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
                    size_t total_budget, uint32_t seed, const double *initial_solution);
 
     AttemptResult run_attempt(size_t attempt_budget);
@@ -38,7 +38,7 @@ public:
 private:
     HighsMipSolver &mipsolver_;
     const CscMatrix &csc_;
-    SolutionPool &pool_;
+    IncumbentSink &sink_;
     Rng rng_;
 
     // Effort / staleness / finished bookkeeping.  `total_budget` and

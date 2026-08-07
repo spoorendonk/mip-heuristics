@@ -8,10 +8,9 @@
 #include "mip/HighsMipSolverData.h"
 #include "parallel/HighsParallel.h"
 #include "scylla.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 
 #include <chrono>
-#include <mutex>
 #include <string>
 
 namespace heuristics {
@@ -39,14 +38,11 @@ void log_sequential(const HighsLogOptions &log_options, const char *name, size_t
 // Weighted effort allocation: each heuristic runs in turn with its
 // proportional share of the budget and the full thread pool.
 //
-// A single `SolutionPool` is constructed here and threaded through all
+// A single `IncumbentSink` is constructed here and threaded through all
 // heuristics so that solutions found by an earlier heuristic (e.g. FJ)
 // become available as pool-restart seeds for later heuristics (FPR,
-// LocalMIP).  The pool is seeded once from the incumbent; an on_accept
-// callback then submits each new solution to HiGHS immediately on
-// acceptance so incumbent timestamps reflect find time rather than
-// flush time.  Each entry carries its originating heuristic's source
-// tag (see solution_pool.h / #73).
+// LocalMIP).  Each entry carries its originating heuristic's source tag
+// (see incumbent_sink.h / #73).
 bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFlags &flags) {
     const auto *options = mipsolver.options_mip_;
 
@@ -264,23 +260,12 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
         return mipdata->terminatorTerminated() || mipsolver.timer_.read() >= time_limit;
     };
 
-    // Shared pool across the whole sequential chain.  One seed_pool call
-    // tags the incumbent with kSolutionSourceHeuristic; each heuristic
-    // worker adds its own entries with a per-heuristic source tag.
-    // The on_accept callback submits each solution to HiGHS immediately when
-    // accepted, so incumbent timestamps reflect find time rather than flush time.
-    const bool minimize = (mipsolver.model_->sense_ == ObjSense::kMinimize);
-    SolutionPool pool(kPoolCapacity, minimize);
-    seed_pool(pool, mipsolver);
-
-    // Register the on_accept callback after seed_pool to avoid re-submitting
-    // the seeded incumbent (already known to HiGHS).  The mutex serializes
-    // concurrent trySolution calls since addIncumbent is not thread-safe.
-    std::mutex highs_mtx;
-    pool.set_on_accept([&](const std::vector<double> &sol, int src) {
-        std::lock_guard<std::mutex> guard(highs_mtx);
-        mipdata->trySolution(sol, src);
-    });
+    // One sink for the whole sequential chain, so a solution found by an
+    // earlier heuristic (say FJ) is available as a pool-restart seed for
+    // the later ones.  Its constructor seeds the pool from the incumbent
+    // with the generic kSolutionSourceHeuristic tag; `set_source` below
+    // re-tags it per heuristic so each entry carries its finder's tag.
+    IncumbentSink sink(mipsolver, kSolutionSourceHeuristic);
 
     // All four heuristics return the effort they consumed and this
     // function books it into `mipdata->heuristic_effort_used` (issue #79
@@ -313,23 +298,27 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     };
 
     if (flags.fj && !deadline_hit()) {
+        sink.set_source(kSolutionSourceFJ);
         run_and_log("fj", [&]() -> size_t {
-            return fj::run_parallel(mipsolver, pool, fj_budget);
+            return fj::run_parallel(mipsolver, sink, fj_budget);
         });
     }
     if (flags.fpr && !deadline_hit()) {
+        sink.set_source(kSolutionSourceFPR);
         run_and_log("fpr", [&]() -> size_t {
-            return fpr::run_parallel(mipsolver, pool, rest_alloc(kWeightFpr));
+            return fpr::run_parallel(mipsolver, sink, rest_alloc(kWeightFpr));
         });
     }
     if (flags.local_mip && !deadline_hit()) {
+        sink.set_source(kSolutionSourceLocalMIP);
         run_and_log("local_mip", [&]() -> size_t {
-            return local_mip::run_parallel(mipsolver, pool, rest_alloc(kWeightLocalMip));
+            return local_mip::run_parallel(mipsolver, sink, rest_alloc(kWeightLocalMip));
         });
     }
     if (flags.scylla && !deadline_hit()) {
+        sink.set_source(kSolutionSourceScylla);
         run_and_log("scylla", [&]() -> size_t {
-            return scylla::run_parallel(mipsolver, pool, rest_alloc(kWeightScylla));
+            return scylla::run_parallel(mipsolver, sink, rest_alloc(kWeightScylla));
         });
     }
 

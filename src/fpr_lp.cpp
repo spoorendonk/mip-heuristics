@@ -11,14 +11,13 @@
 #include "mode_dispatch.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 #include "worker_base.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <random>
 #include <vector>
@@ -124,7 +123,6 @@ struct LpFprSetup {
 
     size_t budget = 0;
     size_t stale_budget = 0;
-    bool minimize = true;
 };
 
 // Build the shared LP-FPR setup.  Returns nullopt when the model is
@@ -147,7 +145,6 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     }
 
     LpFprSetup s;
-    s.minimize = (model->sense_ == ObjSense::kMinimize);
     s.budget = max_effort;
     s.stale_budget = max_effort >> 2;
 
@@ -206,9 +203,9 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
 
 class LpFprWorker {
 public:
-    LpFprWorker(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionPool &pool, int arm_idx,
-                uint32_t seed)
-        : mipsolver_(mipsolver), setup_(setup), pool_(pool), arm_idx_(arm_idx), rng_(seed) {}
+    LpFprWorker(HighsMipSolver &mipsolver, const LpFprSetup &setup, IncumbentSink &sink,
+                int arm_idx, uint32_t seed)
+        : mipsolver_(mipsolver), setup_(setup), sink_(sink), arm_idx_(arm_idx), rng_(seed) {}
 
     AttemptResult run_attempt(size_t attempt_budget) {
         AttemptResult attempt{};
@@ -230,7 +227,7 @@ public:
 
         initial_solution_buf_.clear();
         const double *init_ptr = nullptr;
-        if (pool_.get_restart(rng_, initial_solution_buf_)) {
+        if (sink_.get_restart(rng_, initial_solution_buf_)) {
             init_ptr = initial_solution_buf_.data();
         }
 
@@ -256,7 +253,7 @@ public:
         attempt.effort = result.effort;
 
         if (result.found_feasible) {
-            pool_.try_add(result.objective, result.solution, kSolutionSourceFprLp);
+            sink_.offer(result.objective, result.solution);
             attempt.found_improvement = true;
             attempts_without_improvement_ = 0;
             randomizations_without_improvement_ = 0;
@@ -274,7 +271,7 @@ private:
 
     HighsMipSolver &mipsolver_;
     const LpFprSetup &setup_;
-    SolutionPool &pool_;
+    IncumbentSink &sink_;
 
     int arm_idx_;
     int attempt_idx_ = 0;
@@ -328,7 +325,7 @@ uint32_t base_seed_for(const HighsMipSolver &mipsolver) {
 // Spawn `num_threads` workers; worker w binds to arm `w % kNumLpArms`.
 // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
 // wrap around the curated config list with distinct seeds for diversity.
-size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionPool &pool) {
+size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, IncumbentSink &sink) {
     const int N = compute_worker_count(mipsolver);
     if (N <= 0) {
         return 0;
@@ -350,13 +347,13 @@ size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, SolutionP
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
             uint32_t seed = base_seed + static_cast<uint32_t>(worker_idx) * kSeedStride;
-            return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed)};
+            return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed)};
         },
         [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             auto rebuild = [&]() {
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
-                state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, pool, arm, seed);
+                state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed);
             };
             if (state.worker->finished()) {
                 rebuild();
@@ -464,22 +461,15 @@ void run(HighsMipSolver &mipsolver) {
         setup.budget = worker_budget;
         setup.stale_budget = worker_budget >> 2;
 
-        SolutionPool pool(kPoolCapacity, setup.minimize);
-        seed_pool(pool, mipsolver);
-
-        // Submit solutions immediately on acceptance so incumbent timestamps
-        // reflect find time rather than the end-of-run flush time.
-        std::mutex highs_mtx;
-        pool.set_on_accept([&](const std::vector<double> &sol, int src) {
-            std::lock_guard<std::mutex> guard(highs_mtx);
-            mipdata->trySolution(sol, src);
-        });
+        // The sink owns the pool, seeds it from the incumbent, and wires
+        // immediate submission so incumbent timestamps reflect find time
+        // rather than the end-of-run flush time.
+        IncumbentSink sink(mipsolver, kSolutionSourceFprLp);
 
         // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
         // it always runs arm-aligned parallel workers — num_threads workers
-        // bound to the top-N arms from kClass2/3a/3b, sharing the solution
-        // pool.
-        worker_effort = run_workers(mipsolver, setup, pool);
+        // bound to the top-N arms from kClass2/3a/3b, sharing the sink.
+        worker_effort = run_workers(mipsolver, setup, sink);
     }
 
     // Charge all consumed work back to the shared envelope: reference-LP

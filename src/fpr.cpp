@@ -8,7 +8,7 @@
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 #include "worker_base.h"
 
 #include <algorithm>
@@ -61,7 +61,7 @@ using VarOrderTable = std::vector<std::vector<HighsInt>>;
 // only termination gate.
 class FprWorker {
 public:
-    FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
+    FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
               const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
               size_t attempt_budget);
 
@@ -80,7 +80,7 @@ private:
 
     HighsMipSolver &mipsolver_;
     const CscMatrix &csc_;
-    SolutionPool &pool_;
+    IncumbentSink &sink_;
     const VarOrderTable &var_orders_;
 
     int worker_idx_;
@@ -105,7 +105,7 @@ private:
     Rng rng_;
     FprScratch scratch_;
     // Reused across attempts to avoid `std::vector<double>` churn — the
-    // multi-attempt loop in `run_attempt` calls `pool_.get_restart` once
+    // multi-attempt loop in `run_attempt` calls `sink_.get_restart` once
     // per attempt, and an unhoisted local would re-allocate every
     // iteration on instances large enough to matter (review R2 CF-1).
     std::vector<double> initial_solution_buf_;
@@ -178,12 +178,12 @@ VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
-FprWorker::FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, SolutionPool &pool,
+FprWorker::FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
                      const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
                      size_t attempt_budget)
     : mipsolver_(mipsolver),
       csc_(csc),
-      pool_(pool),
+      sink_(sink),
       var_orders_(var_orders),
       worker_idx_(worker_idx),
       attempt_budget_(attempt_budget),
@@ -259,7 +259,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 
     // Snapshot the pool restart once per call so all attempts inside the
     // multi-attempt loop see the same `initial_solution`.  Per-attempt
-    // `pool_.get_restart` would observe interleaved peer `try_add` inserts
+    // `sink_.get_restart` would observe interleaved peer `offer` inserts
     // from other workers running concurrently in `parallel::for_each`,
     // breaking the issue-#77 determinism guarantee that two runs at
     // identical seed produce bit-identical [Sequential] summaries —
@@ -267,7 +267,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     // `fpr_attempt_begin`.  `initial_solution_buf_` is a member to amortise
     // the `ncol`-sized allocation across calls (review R2 CF-1).
     initial_solution_buf_.clear();
-    const bool have_restart = pool_.get_restart(rng_, initial_solution_buf_);
+    const bool have_restart = sink_.get_restart(rng_, initial_solution_buf_);
 
     // 32 attempts × 2 mutex ops × N workers is a theoretical upper bound on
     // pool-mutex acquisitions per outer attempt.  In practice the cap is
@@ -383,7 +383,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         attempt.effort += attempt_state_.effort_consumed - before_finish;
 
         if (result.found_feasible) {
-            pool_.try_add(result.objective, result.solution, kSolutionSourceFPR);
+            sink_.offer(result.objective, result.solution);
             attempt.found_improvement = true;
         }
 
@@ -401,7 +401,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 
 namespace {
 
-size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     HeuristicContext ctx(mipsolver);
     const ExecutionContext &exec = ctx.exec();
     const HeuristicBudget budget = ctx.budget(max_effort);
@@ -413,7 +413,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     workers.reserve(exec.num_workers);
     for (size_t w = 0; w < exec.num_workers; ++w) {
         uint32_t seed = exec.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(mipsolver, *ctx.problem().csc, pool,
+        workers.push_back(std::make_unique<FprWorker>(mipsolver, *ctx.problem().csc, sink,
                                                       var_orders, static_cast<int>(w), seed,
                                                       budget.stale));
     }
@@ -438,7 +438,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     const auto *model = mipsolver.model_;
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
@@ -446,7 +446,7 @@ size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_ef
         return 0;
     }
 
-    return run_parallel_workers(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, sink, max_effort);
 }
 
 }  // namespace fpr

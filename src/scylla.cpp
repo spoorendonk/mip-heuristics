@@ -9,7 +9,7 @@
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
 #include "scylla_worker.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 
 #include <algorithm>
 #include <atomic>
@@ -55,7 +55,7 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
     return cap < 100 ? 100 : cap;
 }
 
-size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     HeuristicContext ctx(mipsolver);
     const ProblemView &pv = ctx.problem();
     const ExecutionContext &exec = ctx.exec();
@@ -76,7 +76,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     workers.reserve(exec.num_workers);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = exec.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, *pv.csc, pool,
+        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, *pv.csc, sink,
                                                          budget.total, seed, w, N,
                                                          &improvement_gen));
     }
@@ -109,7 +109,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 // reinitialized from scratch but the underlying LP stays.
                 uint32_t new_seed = static_cast<uint32_t>(rng());
                 worker =
-                    std::make_unique<ScyllaWorker>(mipsolver, pdlp, *pv.csc, pool, budget.total,
+                    std::make_unique<ScyllaWorker>(mipsolver, pdlp, *pv.csc, sink, budget.total,
                                                    new_seed, state.worker_idx, N, &improvement_gen);
             };
             if (worker->finished()) {
@@ -142,12 +142,12 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return 0;
     }
-    return run_parallel_workers(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, sink, max_effort);
 }
 
 }  // namespace scylla

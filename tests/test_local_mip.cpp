@@ -2,6 +2,7 @@
 #include "fpr.h"
 #include "heuristic_common.h"
 #include "Highs.h"
+#include "incumbent_sink.h"
 #include "local_mip.h"
 #include "local_mip_construction.h"
 #include "mip/HighsMipSolver.h"
@@ -380,21 +381,35 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
         auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
                                                           highs.getSolution());
         mipsolver->timer_.start();
+        // `HighsMipSolver::run` initialises this before anything can find a
+        // solution; constructing the solver directly leaves it holding
+        // garbage, and `addIncumbent` -> `saveReportMipSolution` writes to
+        // it unconditionally when non-null.
+        mipsolver->improving_solution_file_ = nullptr;
         mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
         mipsolver->mipdata_->init();
         mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
         mipsolver->mipdata_->runSetup();
+        // `HighsMipSolver::run` creates the master worker right after
+        // runSetup and before it dispatches the presolve heuristics.  Do
+        // the same: `addIncumbent` — reached through the sink's accept
+        // callback as soon as a heuristic finds something — reads
+        // `mipdata_->workers[0]`, so a harness that skips this crashes on
+        // the first solution rather than on any assertion.
+        mipsolver->mipdata_->workers.emplace_back(
+            *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
+            &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
+            &mipsolver->mipdata_->getPseudoCost());
         return mipsolver;
     };
 
-    using RunFn = size_t (*)(HighsMipSolver&, SolutionPool&, size_t);
+    using RunFn = size_t (*)(HighsMipSolver&, IncumbentSink&, size_t);
     auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
         HighsCallback cb(&highs);
         auto mipsolver = build_mipsolver(highs, cb);
-        const bool minimize = (mipsolver->model_->sense_ == ObjSense::kMinimize);
-        SolutionPool pool(/*capacity=*/4, minimize);
+        IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
 
         // Mirror exactly what `mode_dispatch::run_sequential` does:
         // read `mipdata->heuristic_effort_used`, call `run_parallel`,
@@ -407,7 +422,7 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
         // each runner will execute meaningful work (so `returned > 0` is
         // very likely), small enough that the test stays sub-second.
         const size_t budget = 200000;
-        const size_t returned = run_fn(*mipsolver, pool, budget);
+        const size_t returned = run_fn(*mipsolver, sink, budget);
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 

@@ -4,7 +4,7 @@
 #include <cstdint>
 
 class HighsMipSolver;
-class SolutionPool;
+class IncumbentSink;
 
 namespace local_mip {
 
@@ -60,14 +60,13 @@ WarmStartCounters warm_start_counters();
 // `threads=1` for a single worker whose behaviour is reproducible under
 // a fixed `random_seed`.
 //
-// `pool` is owned by the caller (mode_dispatch::run_sequential).  Workers
-// insert solutions with kSolutionSourceLocalMIP and may pull restarts
-// from the pool; the caller flushes the pool once all sequential
-// heuristics have run.
+// `sink` is owned by the caller (mode_dispatch::run_sequential), which
+// also sets the source tag workers' solutions are attributed with.
+// Workers pull restarts from the same sink.
 //
 // Returns the total effort consumed (search effort + cold-start
 // construction effort).  The caller is responsible for booking this
 // into `mipdata->heuristic_effort_used` (issue #79), which makes
 // mode_dispatch.cpp the single point of LocalMIP effort accounting.
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort);
+size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort);
 }  // namespace local_mip

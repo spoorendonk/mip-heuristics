@@ -10,7 +10,7 @@
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
 #include "rng.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 
 #include <atomic>
 #include <cmath>
@@ -153,7 +153,7 @@ double compute_solution_objective(const HighsMipSolver &mipsolver,
 // cold-start cache hit).  Callers add it to
 // `mipdata->heuristic_effort_used` (R1-3 round-3 review).
 std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMatrix &csc,
-                                         SolutionPool &pool, size_t max_effort, uint32_t seed,
+                                         IncumbentSink &sink, size_t max_effort, uint32_t seed,
                                          std::vector<double> *cold_start_cache = nullptr,
                                          size_t *effort_out = nullptr) {
     // `copy_best` takes the pool lock once and copies only the top
@@ -162,7 +162,7 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     // (each sized `ncol`) just to read entry 0 — round-2 reviewers R1,
     // R2, R3 all flagged the waste on big MIPs.
     std::vector<double> start;
-    if (pool.copy_best(start)) {
+    if (sink.copy_best(start)) {
         bump_counter(g_pool_count);
         return start;
     }
@@ -196,7 +196,7 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     // search phase and are not inserted.
     if (!constructed.empty() && is_solution_feasible(mipsolver, constructed)) {
         double obj = compute_solution_objective(mipsolver, constructed);
-        pool.try_add(obj, constructed, kSolutionSourceLocalMIP);
+        sink.offer(obj, constructed);
     }
     if (cold_start_cache != nullptr) {
         *cold_start_cache = constructed;
@@ -204,7 +204,7 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
     return constructed;
 }
 
-size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     HeuristicContext ctx(mipsolver);
     const ProblemView &pv = ctx.problem();
     const ExecutionContext &exec = ctx.exec();
@@ -252,7 +252,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     // no-search dispatch report non-zero effort where it used to report 0.
     if (max_effort > 0) {
         size_t primed_effort = 0;
-        resolve_worker_start(mipsolver, *pv.csc, pool, budget.per_worker, exec.base_seed,
+        resolve_worker_start(mipsolver, *pv.csc, sink, budget.per_worker, exec.base_seed,
                              &cold_start_cache, &primed_effort);
         construction_effort.fetch_add(primed_effort, std::memory_order_relaxed);
     }
@@ -269,7 +269,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
             }
             size_t my_construction_effort = 0;
             std::vector<double> start =
-                resolve_worker_start(mipsolver, *pv.csc, pool, budget.per_worker, seed,
+                resolve_worker_start(mipsolver, *pv.csc, sink, budget.per_worker, seed,
                                      &local_cache, &my_construction_effort);
             if (my_construction_effort > 0) {
                 construction_effort.fetch_add(my_construction_effort, std::memory_order_relaxed);
@@ -291,7 +291,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 perturb_solution(start, *pv.mipdata, pv.model->integrality_, pv.model->col_lower_,
                                  pv.model->col_upper_, ncol, rng);
             }
-            return LmState{std::make_unique<LocalMipWorker>(mipsolver, *pv.csc, pool,
+            return LmState{std::make_unique<LocalMipWorker>(mipsolver, *pv.csc, sink,
                                                             budget.per_worker, seed, start.data())};
         },
         [&](LmState &state, Rng &rng, size_t run_cap) -> AttemptResult {
@@ -299,7 +299,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 // Restart from pool, incumbent, or fresh construction
                 // (cold-start), with fresh perturbation.
                 std::vector<double> restart_sol;
-                if (!pool.get_restart(rng, restart_sol)) {
+                if (!sink.get_restart(rng, restart_sol)) {
                     if (!pv.mipdata->incumbent.empty()) {
                         restart_sol = pv.mipdata->incumbent;
                     } else {
@@ -330,7 +330,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                                  pv.model->col_lower_, pv.model->col_upper_, ncol, rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LocalMipWorker>(
-                    mipsolver, *pv.csc, pool, budget.per_worker, seed, restart_sol.data());
+                    mipsolver, *pv.csc, sink, budget.per_worker, seed, restart_sol.data());
             }
             return state.worker->run_attempt(run_cap);
         });
@@ -343,7 +343,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     const auto *model = mipsolver.model_;
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
@@ -357,7 +357,7 @@ size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_ef
     // warm-start-with-pool path; this function stays neutral on that
     // (pool-first lookup in `resolve_worker_start` already covers it).
 
-    return run_parallel_workers(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, sink, max_effort);
 }
 
 }  // namespace local_mip

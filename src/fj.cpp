@@ -6,7 +6,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 
 #include <memory>
 #include <vector>
@@ -15,7 +15,7 @@ namespace fj {
 
 namespace {
 
-size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     HeuristicContext ctx(mipsolver);
     const ExecutionContext &exec = ctx.exec();
     const HeuristicBudget budget = ctx.budget(max_effort);
@@ -45,7 +45,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                     seed = static_cast<uint32_t>(rng());
                 }
                 state.worker =
-                    std::make_unique<FjWorker>(mipsolver, pool, budget.per_worker, seed);
+                    std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker, seed);
             }
             return state.worker->run_attempt(run_cap);
         });
@@ -53,12 +53,12 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
 
 }  // namespace
 
-size_t run_parallel(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
+size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
     const auto *model = mipsolver.model_;
     if (model->num_col_ == 0 || model->num_row_ == 0) {
         return 0;
     }
-    return run_parallel_workers(mipsolver, pool, max_effort);
+    return run_parallel_workers(mipsolver, sink, max_effort);
 }
 
 }  // namespace fj

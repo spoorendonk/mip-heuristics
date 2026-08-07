@@ -7,7 +7,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "mip/feasibilityjump.hh"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 
 using external_feasibilityjump::CallbackControlFlow;
 using external_feasibilityjump::FeasibilityJumpSolver;
@@ -24,9 +24,9 @@ struct FjWorker::Impl {
       : solver(log_options, seed, epsilon, feastol) {}
 };
 
-FjWorker::FjWorker(HighsMipSolver& mipsolver, SolutionPool& pool,
+FjWorker::FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink,
                    size_t total_budget, uint32_t seed)
-    : mipsolver_(mipsolver), pool_(pool), seed_(seed) {
+    : mipsolver_(mipsolver), sink_(sink), seed_(seed) {
   base_.total_budget = total_budget;
 }
 
@@ -176,7 +176,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
   result.effort = attempt_effort_consumed;
 
   if (found_solution) {
-    pool_.try_add(best_obj, best_sol, kSolutionSourceFJ);
+    sink_.offer(best_obj, best_sol);
     result.found_improvement = true;
     base_.charge_improvement(attempt_effort_consumed);
   } else {

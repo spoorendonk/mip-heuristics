@@ -13,7 +13,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "pump_common.h"
-#include "solution_pool.h"
+#include "incumbent_sink.h"
 
 namespace {
 
@@ -37,14 +37,14 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 }  // namespace
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp,
-                           const CscMatrix &csc, SolutionPool &pool,
+                           const CscMatrix &csc, IncumbentSink &sink,
                            size_t total_budget, uint32_t seed, int worker_idx,
                            int num_workers,
                            std::atomic<uint64_t> *improvement_gen)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
       csc_(csc),
-      pool_(pool),
+      sink_(sink),
       num_workers_(std::max(num_workers, 1)),
       epsilon_(pump::kEpsilonInit),
       rng_(seed),
@@ -364,7 +364,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         for (HighsInt j = 0; j < ncol_; ++j) {
           obj += orig_cost[j] * x_bar[j];
         }
-        pool_.try_add(obj, x_bar, kSolutionSourceScylla);
+        sink_.offer(obj, x_bar);
         base_.reset_staleness();
         if (improvement_gen_ != nullptr) {
           improvement_gen_->fetch_add(1, std::memory_order_relaxed);
@@ -396,7 +396,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     cfg.scratch = &fpr_scratch_;
 
     restart_buf_.clear();
-    pool_.get_restart(rng_, restart_buf_);
+    sink_.get_restart(rng_, restart_buf_);
     const double *restart_ptr = restart_buf_.empty() ? nullptr : restart_buf_.data();
 
     HeuristicResult rounded =
@@ -407,7 +407,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     attempt.effort += rounded.effort;
 
     if (rounded.found_feasible && !rounded.solution.empty()) {
-      pool_.try_add(rounded.objective, rounded.solution, kSolutionSourceScylla);
+      sink_.offer(rounded.objective, rounded.solution);
       base_.reset_staleness();
       if (improvement_gen_ != nullptr) {
         improvement_gen_->fetch_add(1, std::memory_order_relaxed);
