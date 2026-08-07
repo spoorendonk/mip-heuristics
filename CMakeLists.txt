@@ -22,6 +22,7 @@ include(cmake/FetchHiGHS.cmake)
 
 add_library(mip_heuristics OBJECT
     src/contested_pdlp.cpp
+    src/effort_ledger.cpp
     src/fj.cpp
     src/fj_worker.cpp
     src/fpr.cpp

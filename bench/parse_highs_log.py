@@ -23,13 +23,14 @@ class Incumbent:
 class SequentialSample:
     """A single [Sequential] per-heuristic wall-clock observation.
 
-    Emitted by `run_sequential` in `src/mode_dispatch.cpp` on every
-    presolve dispatch.  One sample
-    per heuristic per solve; used by `bench/check_effort_drift.py` to
-    calibrate `kWeight*` (see issue #71).
+    Emitted by `EffortLedger::book` in `src/effort_ledger.cpp`: once per
+    presolve-chain heuristic per solve, and once per dive-time `fpr_lp`
+    dispatch.  Used by `bench/check_effort_drift.py` to calibrate
+    `kWeight*` (see issue #71), which considers only the four presolve
+    heuristics.
     """
 
-    heuristic: str  # fj, fpr, local_mip, scylla
+    heuristic: str  # fj, fpr, local_mip, scylla, fpr_lp
     effort: int
     wall_ms: float
     effort_per_ms: float

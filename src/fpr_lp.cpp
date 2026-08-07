@@ -1,5 +1,6 @@
 #include "fpr_lp.h"
 
+#include "effort_ledger.h"
 #include "fpr_core.h"
 #include "fpr_lp_refs.h"
 #include "fpr_strategies.h"
@@ -443,6 +444,10 @@ void run(HighsMipSolver &mipsolver) {
         return;
     }
 
+    // Wall clock starts here: everything from this point on is fpr_lp's
+    // spend, the reference-LP solves inside `build_setup` included.
+    const double t0_s = EffortLedger::now_s();
+
     auto setup_opt = build_setup(mipsolver, max_effort);
     if (!setup_opt) {
         return;
@@ -472,19 +477,13 @@ void run(HighsMipSolver &mipsolver) {
         worker_effort = run_workers(mipsolver, setup, sink);
     }
 
-    // Charge all consumed work back to the shared envelope: reference-LP
-    // iterations directly, worker effort converted at nnz units per LP
-    // iteration.  Booked to both heuristic_ and total_lp_iterations,
-    // mirroring how RENS/RINS flush their sub-MIP LP iterations
-    // (HighsPrimalHeuristics::flushStatistics).
-    const int64_t charged =
-        setup.setup_lp_iterations + static_cast<int64_t>(worker_effort / static_cast<size_t>(nnz));
-    mipdata->heuristic_lp_iterations += charged;
-    mipdata->total_lp_iterations += charged;
-
-    // Observability counter (effort units), same booking the runners used
-    // to do themselves before the budget integration.
-    mipdata->heuristic_effort_used += worker_effort;
+    // The ledger books the observability counter, emits the per-heuristic
+    // log line, and charges the consumed work back to the shared RENS/RINS
+    // envelope.  fpr_lp is the only caller of `charge_dive`; that envelope
+    // depletion is what makes it compete for the vanilla heuristic budget
+    // rather than draw unaccounted work.
+    EffortLedger(mipsolver).charge_dive("fpr_lp", worker_effort, setup.setup_lp_iterations, nnz,
+                                        t0_s, EffortLedger::now_s());
 }
 
 DispatchCounts dispatch_counts() {

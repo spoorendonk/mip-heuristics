@@ -62,6 +62,14 @@ def geomean(values: list[float]) -> float:
     return math.exp(sum(math.log(v) for v in clean) / len(clean))
 
 
+# The presolve-chain heuristics whose kWeight* constants this script
+# calibrates.  Since issue #94 the dive-time `fpr_lp` emits the same
+# [Sequential] line — it is genuinely useful observability, but it has no
+# weight to calibrate and it draws from a different envelope, so folding
+# it into the geomean table would move the drift figure for no reason.
+CALIBRATED = ("fj", "fpr", "local_mip", "scylla")
+
+
 def aggregate(root: str) -> dict[str, list[float]]:
     """Return {heuristic: [effort_per_ms samples]} across all logs."""
     by_heur: dict[str, list[float]] = defaultdict(list)
@@ -71,7 +79,7 @@ def aggregate(root: str) -> dict[str, list[float]]:
         except OSError:
             continue
         for s in result.sequential_samples:
-            if s.effort_per_ms > 0:
+            if s.effort_per_ms > 0 and s.heuristic in CALIBRATED:
                 by_heur[s.heuristic].append(s.effort_per_ms)
     return by_heur
 
@@ -105,7 +113,7 @@ def main() -> int:
         gm = geomean(samples)
         summary[heur] = (gm, len(samples))
 
-    expected = {"fj", "fpr", "local_mip", "scylla"}
+    expected = set(CALIBRATED)
     missing = expected - summary.keys()
     if missing:
         # local_mip is the usual offender: it early-returns in

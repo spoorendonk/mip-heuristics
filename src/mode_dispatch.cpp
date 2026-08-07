@@ -1,5 +1,6 @@
 #include "mode_dispatch.h"
 
+#include "effort_ledger.h"
 #include "fj.h"
 #include "fpr.h"
 #include "io/HighsIO.h"
@@ -10,30 +11,11 @@
 #include "scylla.h"
 #include "incumbent_sink.h"
 
-#include <chrono>
 #include <string>
 
 namespace heuristics {
 
 namespace {
-
-// Emit `[Sequential] heur=<name> effort=<N> wall_ms=<X.X> effort_per_ms=<R>`.
-// Parsed by `bench/parse_highs_log.py` and used by
-// `bench/check_effort_drift.py` to calibrate kWeight* below.  Zero-effort
-// observations are emitted too (local_mip often skips with non-zero
-// setup wall_ms when the incumbent is empty; a deadline can fire before
-// setup).  `check_effort_drift.py` filters `effort_per_ms <= 0` before
-// aggregation, so these lines inform a human reader without poisoning
-// the geomean.  The `%.3f` format preserves precision for slow
-// heuristics whose rate would otherwise round to 0.
-void log_sequential(const HighsLogOptions &log_options, const char *name, size_t effort,
-                    double wall_ms) {
-    double effort_per_ms =
-        (effort > 0 && wall_ms > 0.0) ? static_cast<double>(effort) / wall_ms : 0.0;
-    highsLogDev(log_options, HighsLogType::kVerbose,
-                "[Sequential] heur=%s effort=%zu wall_ms=%.1f effort_per_ms=%.3f\n", name, effort,
-                wall_ms, effort_per_ms);
-}
 
 // Weighted effort allocation: each heuristic runs in turn with its
 // proportional share of the budget and the full thread pool.
@@ -267,14 +249,11 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // re-tags it per heuristic so each entry carries its finder's tag.
     IncumbentSink sink(mipsolver, kSolutionSourceHeuristic);
 
-    // All four heuristics return the effort they consumed and this
-    // function books it into `mipdata->heuristic_effort_used` (issue #79
-    // and its follow-up that extended LocalMIP's contract to FJ, FPR,
-    // and Scylla).  mode_dispatch.cpp is therefore the single point of
-    // sequential effort accounting — no heuristic self-books.  Note:
-    // `fpr_lp` is *not* part of the harmonisation; it runs during B&B
-    // dive (not via this `run_sequential` path) and keeps its own
-    // self-booking — see `src/fpr_lp.cpp`.  All
+    // All four heuristics return the effort they consumed and hand it to
+    // the ledger, which is the single point of effort accounting for the
+    // whole patch (issue #79 and its follow-up that extended LocalMIP's
+    // contract to FJ, FPR and Scylla; #94 brought the dive-time `fpr_lp`
+    // onto the same path).  No heuristic self-books.  All
     // bookings happen on the main thread after each parallel region has
     // joined, so we read/write the counter below without synchronisation
     // — do not move any of them into a worker without revisiting this.
@@ -287,37 +266,34 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // Wall-ms is measured in this outer frame so all four measurements
     // share a clock and include setup (`build_csc`, `precompute_var_orders`,
     // worker construction) — what users actually pay for.
-    const HighsLogOptions &log_options = options->log_options;
-    auto run_and_log = [&](const char *name, auto &&call) {
-        const auto t0 = std::chrono::steady_clock::now();
+    EffortLedger ledger(mipsolver);
+    auto run_and_charge = [&](const char *name, auto &&call) {
+        const double t0_s = EffortLedger::now_s();
         const size_t effort = call();
-        const auto t1 = std::chrono::steady_clock::now();
-        mipdata->heuristic_effort_used += effort;
-        const double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        log_sequential(log_options, name, effort, wall_ms);
+        ledger.charge_presolve(name, effort, t0_s, EffortLedger::now_s());
     };
 
     if (flags.fj && !deadline_hit()) {
         sink.set_source(kSolutionSourceFJ);
-        run_and_log("fj", [&]() -> size_t {
+        run_and_charge("fj", [&]() -> size_t {
             return fj::run_parallel(mipsolver, sink, fj_budget);
         });
     }
     if (flags.fpr && !deadline_hit()) {
         sink.set_source(kSolutionSourceFPR);
-        run_and_log("fpr", [&]() -> size_t {
+        run_and_charge("fpr", [&]() -> size_t {
             return fpr::run_parallel(mipsolver, sink, rest_alloc(kWeightFpr));
         });
     }
     if (flags.local_mip && !deadline_hit()) {
         sink.set_source(kSolutionSourceLocalMIP);
-        run_and_log("local_mip", [&]() -> size_t {
+        run_and_charge("local_mip", [&]() -> size_t {
             return local_mip::run_parallel(mipsolver, sink, rest_alloc(kWeightLocalMip));
         });
     }
     if (flags.scylla && !deadline_hit()) {
         sink.set_source(kSolutionSourceScylla);
-        run_and_log("scylla", [&]() -> size_t {
+        run_and_charge("scylla", [&]() -> size_t {
             return scylla::run_parallel(mipsolver, sink, rest_alloc(kWeightScylla));
         });
     }
