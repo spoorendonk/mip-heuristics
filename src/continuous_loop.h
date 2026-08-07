@@ -61,6 +61,19 @@ struct ContinuousLoopState {
     // what keeps the HiGHS timer/terminator single-caller — at most one
     // worker can hold the seat, and the previous holder has already left
     // its loop before releasing.
+    //
+    // acquire/release, not relaxed: what the seat guards is not race-free.
+    // `terminatorTerminated()` *writes* the non-atomic
+    // `mipsolver.termination_status_` when a terminator is attached, so a
+    // relaxed handoff would leave the outgoing holder's write unordered
+    // against the incoming holder's — a data race by the memory model,
+    // caught by ThreadSanitizer, and benign only because x86 `lock
+    // cmpxchg` happens to be a full barrier.  The seat exists to make
+    // these calls single-caller; it has to publish like one.
+    //
+    // The `cur == w` fast path needs no acquire: the only holder that
+    // never CASed is worker 0 via the initialiser below, ordered by
+    // thread creation, and a worker never re-claims after releasing.
     bool claim_poller(int w) {
         int cur = poller.load(std::memory_order_relaxed);
         if (cur == w) {
@@ -69,14 +82,16 @@ struct ContinuousLoopState {
         if (cur != kNoPoller) {
             return false;
         }
-        return poller.compare_exchange_strong(cur, w, std::memory_order_relaxed);
+        return poller.compare_exchange_strong(cur, w, std::memory_order_acquire,
+                                             std::memory_order_relaxed);
     }
 
     // Called by a worker on its way out of the loop: vacate the seat if it
     // holds it, so a surviving peer can take over the polling duty.
     void release_poller(int w) {
         int expected = w;
-        poller.compare_exchange_strong(expected, kNoPoller, std::memory_order_relaxed);
+        poller.compare_exchange_strong(expected, kNoPoller, std::memory_order_release,
+                                       std::memory_order_relaxed);
     }
 
     // Seat-holder only — the underlying HiGHS calls are not thread-safe

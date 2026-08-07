@@ -65,15 +65,20 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     //
     // Calibration procedure (`bench/check_effort_drift.py` automates 3–5):
     //   1. Build with this file's `[Sequential]` logging enabled.
-    //   2. Run the fixed suite on MIPLIB with all four heuristics on, at
-    //      the default thread count — *not* `threads=1`.  `effort_per_ms`
-    //      is a throughput, so it scales with worker count, and it does
-    //      not scale identically across heuristics: FPR and LocalMIP are
-    //      near-linear in N, while Scylla serialises every PDLP solve
-    //      behind the `ContestedPdlp` mutex and so scales sublinearly.
-    //      The N factor therefore does not cancel in the ratios, and a
-    //      single-worker calibration would hand Scylla a systematically
-    //      different weight from the one the default configuration needs.
+    //   2. Run the fixed suite on `bench/instances_small.txt`, all four
+    //      heuristics on, at `threads=16`.  Both of those are part of the
+    //      measurement, not incidental:
+    //        - the instance set, because the constants below were measured
+    //          on it and a re-measurement elsewhere is not comparable;
+    //        - the worker count, because `effort_per_ms` is a throughput
+    //          that scales with N, and *not* identically across
+    //          heuristics — FPR and LocalMIP are near-linear in N while
+    //          Scylla serialises every PDLP solve behind the
+    //          `ContestedPdlp` mutex and scales sublinearly.  The N factor
+    //          therefore does not cancel in the ratios: the same binary on
+    //          the same set gives local_mip:scylla = 4.68 at 16 workers
+    //          and 2.81 at 6.  16 is what round 5 used; deviate and the
+    //          numbers are not comparable to the base.
     //      Note `bench/run_benchmark.py`'s `patched` config pins
     //      `mip_heuristic_preset=all_opp`, which disables Scylla — use a
     //      config name it does not recognise (e.g. `--configs
@@ -121,12 +126,22 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     //     strongly machine- and thread-count-dependent and the round-5
     //     numbers are the ones taken on the intended benchmark
     //     configuration.  Same code, same instances, 6 workers instead of
-    //     16 gives local_mip:scylla = 2.67 against round 5's 4.68 —
-    //     LocalMIP scales near-linearly in workers and Scylla does not, so
-    //     a 6-worker box cannot stand in for a 16-worker one.
+    //     16 gives local_mip:scylla = 2.81 (2.67 and 2.96 on the two
+    //     seeds) against round 5's 4.68 — LocalMIP scales near-linearly in
+    //     workers and Scylla does not, so a 6-worker box cannot stand in
+    //     for a 16-worker one.
     //
-    // Trust boundary: the *direction* is solid, the magnitude is +-10%
-    // (per-seed multipliers spread that much).  These are a budget split
+    // Trust boundary, and one known bias.  The multipliers are themselves
+    // ratios measured at 6 workers, and the two things they mostly
+    // capture — a *contended* pool spin-lock and an *N-fold* redundant
+    // LocalMIP cold start — both have benefits that grow with worker
+    // count by construction.  So the 16-worker multipliers are expected
+    // to be >= these, which biases kWeightLocalMip (and to a lesser
+    // extent kWeightFpr) low rather than high.  Direction is solid;
+    // magnitude is +-10% and n=2 seeds cannot support that as a
+    // confidence interval — it is the observed per-seed spread, and
+    // switching to a paired per-instance estimator moves the weights
+    // ~6% on its own.  These are a budget split
     // with a 3x drift tolerance, so that is within usable range — but a
     // full re-measurement on the 16-worker benchmark machine should
     // confirm before the closeout campaign, and would supersede the
@@ -154,8 +169,11 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     //   * The envelope itself does bind for FPR and LocalMIP: raising
     //     `mip_heuristic_presolve_effort` 0.30 -> 1.00 scales their effort
     //     ~4.1x.  Scylla is inconsistent (4.1x on roll3000, 2.6x on
-    //     swath3, *down* on mzzv11) because PDLP stalls and stale rounds
-    //     bound it before the budget does.  FJ is flat, as intended.
+    //     swath3, and on mzzv11 either down or absent from the chain
+    //     altogether, depending on the run, once the enlarged envelope
+    //     lets FPR/LocalMIP reach the time limit first) because PDLP
+    //     stalls and stale rounds bound it before the budget does.  FJ is
+    //     flat, as intended.
     //
     // So: tuning these constants is worthwhile for effort accounting and
     // for keeping the w ∝ r invariant honest, but do not expect wall-clock
@@ -211,13 +229,22 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, bool fj_on, bool f
     // any host with ~47+ hardware threads — plausible for a benchmark
     // machine, and silent when it happens.
     //
-    // Reserving a quarter of the envelope bounds that.  The floor is
-    // deliberately low enough not to perturb the configurations the
-    // `kWeight*` constants were calibrated at (it first binds at 19
-    // workers, against 24 for total starvation) — it caps a pathology
-    // rather than re-balancing the split.
-    const size_t rest_floor = budget / 4;
-    const size_t used_for_fj = std::min(fj_budget, budget - std::min(rest_floor, budget));
+    // Reserving a quarter of the envelope bounds that.  The floor binds
+    // when `N * (nnz<<10) > 0.75 * budget`: from N >= 19 at the default
+    // `mip_heuristic_presolve_effort` (0.30), against N >= 24 for total
+    // starvation — so the threads=16 / 0.30 configuration the `kWeight*`
+    // constants were calibrated at is untouched.  The threshold scales
+    // with the effort option though, binding from N >= 4 at 0.05, which
+    // matters for a budget sweep (#96).
+    //
+    // Note this floors what FJ *charges*, which is not a bound on what
+    // anyone spends: FJ books its full per-worker allowance regardless,
+    // and Scylla routinely books past its share because one attempt is a
+    // whole PDLP solve charging `iters x nnz`.  #94'''s unified ledger is
+    // where that gets made honest; this just caps a starvation
+    // pathology rather than re-balancing the split.
+    const size_t rest_floor = budget / 4;  // <= budget by construction
+    const size_t used_for_fj = std::min(fj_budget, budget - rest_floor);
     const size_t rest_budget = budget - used_for_fj;
 
     auto rest_alloc = [&](double w) -> size_t {

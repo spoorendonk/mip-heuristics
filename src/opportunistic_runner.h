@@ -29,8 +29,8 @@
 //
 // Thread-safety constraints:
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
-//     (Scylla uses ScyllaWorker directly and does not go through this template.)
-//   - Worker-0-only terminator polling: see `ContinuousLoopState`.
+//   - Terminator polling is done by whichever worker holds the claimable
+//     seat; at most one at a time.  See `ContinuousLoopState`.
 //   - Budget overshoot: concurrent workers can overshoot `budget` by
 //     up to `N * default_run_cap` effort because each worker checks
 //     the atomic total before starting an attempt.  Bounded overshoot

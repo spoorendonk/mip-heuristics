@@ -244,7 +244,10 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     // Returns via the pool or incumbent branch (cheaply, leaving the cache
     // empty) whenever either can seed a start, so this only constructs
     // when the workers would have had to anyway.
-    {
+    // Guarded on `max_effort`: `run_opportunistic_loop` returns immediately
+    // at a zero budget, so an unconditional prime would make a
+    // no-search dispatch report non-zero effort where it used to report 0.
+    if (max_effort > 0) {
         size_t primed_effort = 0;
         resolve_worker_start(mipsolver, setup.csc, pool, setup.worker_budget, setup.base_seed,
                              &cold_start_cache, &primed_effort);

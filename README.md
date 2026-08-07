@@ -76,6 +76,8 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | SGM P-D Integral | 26.3 | **23.9** |
 | PLATO headline SGM (s=0.001) | **26.0** | 26.8 |
 
+> **Provenance.** These numbers were measured before the #92 runner cleanup. That changeset altered several things these figures depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the presolve envelope is floored, and two of the three `kWeight*` constants were rescaled — so a build of the current tree is not the binary that produced this table. The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
+
 #### Findings
 
 **PLATO headline (SGM primal integral, lower is better): 26.0 vs 26.8 — patched wins** (ratio 0.970). Patched also finds more feasible solutions (213 vs 208) and wins more head-to-head matchups by final objective (59 vs 41 strict wins).
@@ -110,7 +112,7 @@ Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS 
 
 ```bash
 cd build && ctest --output-on-failure
-cd build && ctest -R "mode-matrix det: flugpl objective" --output-on-failure   # single test
+cd build && ctest -R "execution-mode: flugpl objective" --output-on-failure     # single test
 cd build && ./mip_heuristics_tests "[mode-matrix]"                            # Catch2 tag
 ```
 

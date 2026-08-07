@@ -599,25 +599,38 @@ accounting.
   option scales), so each of the N parallel workers searches at least as
   deep as vanilla does on one thread. The remaining presolve budget is
   what the weights below apportion among FPR/LocalMIP/Scylla.
+- **Charge floor**: what FJ *charges* against the shared envelope is
+  capped so a quarter always survives for the other three. `fj_budget`
+  scales with the worker count and the envelope does not, so without the
+  cap FJ took the whole budget from N >= 24 at the default
+  `mip_heuristic_presolve_effort`, and FPR/LocalMIP/Scylla returned
+  `effort=0` with no warning. FJ itself is unaffected — it always runs
+  with the full per-worker allowance; only the charge is capped. The cap
+  first binds at N >= 19 at the default effort, and proportionally
+  earlier at lower values (N >= 4 at 0.05).
 
 ---
 
 ### `kWeightFpr` — FPR budget weight
 
 - **File**: `src/mode_dispatch.cpp`
-- **Default**: `2.43`
-- **Meaning**: Proportional to FPR's geomean `effort_per_ms` (~636k/ms).
+- **Default**: `2.99`
+- **Meaning**: Proportional to FPR's geomean `effort_per_ms`. Round-5
+  base 2.43 (~636k/ms), scaled in round 6 (#92) by the measured 1.27x
+  speed-up that changeset gave FPR. See the calibration block in
+  `src/mode_dispatch.cpp` for the derivation and its limits.
 
 ---
 
 ### `kWeightLocalMip` — LocalMIP budget weight
 
 - **File**: `src/mode_dispatch.cpp`
-- **Default**: `4.68`
-- **Meaning**: Proportional to LocalMIP's geomean `effort_per_ms`
-  (~1222k/ms, which includes the cold-start construction sweep as of
-  issue #78). Largest weight because LocalMIP has the highest
-  coefficient-access rate.
+- **Default**: `6.16`
+- **Meaning**: Proportional to LocalMIP's geomean `effort_per_ms`.
+  Round-5 base 4.68 (~1222k/ms, which includes the cold-start
+  construction sweep as of issue #78), scaled in round 6 (#92) by the
+  measured 1.36x speed-up. Largest weight because LocalMIP has the
+  highest coefficient-access rate.
 
 ---
 

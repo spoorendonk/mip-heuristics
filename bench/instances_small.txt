@@ -1,19 +1,25 @@
 # kWeight* calibration set for src/mode_dispatch.cpp (issue #71, #78).
 #
-# Restored in #92 after being deleted in ec28780 as "stale".  It is not
-# stale: it is the instance set the kWeight* constants were measured on,
-# and without it the calibration procedure in mode_dispatch.cpp cannot be
-# reproduced — a re-measurement on a different set silently produces
-# different constants with no way to tell drift from set change.  Measured
-# directly: the same binary on this set vs a 24-instance sample of
-# instances_plato.txt gives local_mip:scylla weights of 2.67 vs 2.91.
+# Restored in #92 after ec28780 deleted it along with six other lists whose
+# result directories had gone.  This one should not have gone with them: it
+# is the set the kWeight* constants were measured on, and without it the
+# calibration procedure in mode_dispatch.cpp has no defined input — a
+# re-measurement on some other set is not comparable to the recorded
+# numbers, and nobody can tell afterwards which set produced what.
+#
+# (Provenance, not a measured effect: on the one comparison available here
+# this set and a 24-instance sample of instances_plato.txt differed by 9%
+# on local_mip:scylla, which is *less* than the 11% seed-to-seed spread on
+# this set alone.  Use the recorded set because it is the recorded set, not
+# because a different one is known to shift the answer.)
 #
 # Usage: 30 s per instance, mip_root_presolve_only=true, log_dev_level=3,
-# all four heuristics on, default thread count (see the calibration recipe
-# in src/mode_dispatch.cpp), then bench/check_effort_drift.py <results>.
+# all four heuristics on, and 16 workers — see the calibration recipe in
+# src/mode_dispatch.cpp — then bench/check_effort_drift.py <results>.
+# The worker count is load-bearing, not incidental: the same binary on this
+# set gives local_mip:scylla = 4.68 at 16 workers and 2.81 at 6.
 # Tuning subset (~25 instances) selected from Mittelmann benchmarks
 # HiGHS 1.13.0 solve time 10-600s, structural diversity
-# Used for patched-vs-vanilla regression testing
 #
 # General integer (non-binary) — tests FPR repair strategies
 n5-3
@@ -29,7 +35,7 @@ roll3000
 swath3
 unitcal_7
 triptim1
-# Pure/mostly binary — tests FJ vs portfolio
+# Pure/mostly binary — FJ-dominant
 neos5
 mas76
 pk1
