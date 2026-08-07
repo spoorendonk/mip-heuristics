@@ -75,17 +75,22 @@ struct ProblemView {
     // on the dispatching thread (issue #98).  Workers read *this*, never
     // `mipdata->incumbent`: submission is immediate, so a peer worker's
     // accepted solution runs `addIncumbent`, whose whole-vector assignment
-    // (`incumbent = sol;`) can reallocate the live buffer out from under a
-    // concurrent reader — a use-after-free, not a torn value.  Empty when
-    // the solver had no incumbent at dispatch time.  `fpr_lp` keeps the
-    // equivalent copy in its own `LpFprSetup`.
+    // (`incumbent = sol;`) rewrites the live buffer under a concurrent
+    // reader — element-wise while the sizes match, reallocating out from
+    // under it on the empty-to-sized transition.  Empty when the solver had
+    // no incumbent at dispatch time.  `fpr_lp` keeps the equivalent copy in
+    // its own `LpFprSetup`.
     //
-    // Reading the snapshot is behaviour-preserving: every accepted solution
-    // enters the shared pool before `IncumbentSink`'s accept callback
-    // reaches `addIncumbent`, and every start-resolution path prefers the
-    // pool, so a worker only falls through to the incumbent when the pool
-    // is empty — which means nothing has been submitted yet and the live
-    // incumbent still equals this copy.
+    // The snapshot is the *floor* a worker starts from, not necessarily what
+    // it gets: both readers consult the shared pool first, which holds the
+    // seeded incumbent plus everything accepted since (`IncumbentSink` seeds
+    // it at construction and every accept goes through it, under its own
+    // lock).  So dropping the live read costs neither of them a warm start —
+    // LocalMIP's `resolve_worker_start` only reaches this copy with an empty
+    // pool, i.e. when nothing has been submitted and the live incumbent
+    // still equals it, and `fj.cpp` resolves pool-first for the same reason.
+    // Nothing may read this *instead* of the pool: an `FjWorker` rebuilt
+    // mid-dispatch would then silently lose a peer's find.
     std::vector<double> incumbent;
 
     // A model with no columns or no rows: every heuristic declines it.

@@ -218,8 +218,8 @@ int SolutionPool::size() {
     return static_cast<int>(entries_.size());
 }
 
-// Reads the live `mipdata->incumbent`, which is legal only because both
-// callers construct their `IncumbentSink` on the dispatching thread before
+// Reads the live `mipdata->incumbent`, which is legal only because every
+// caller constructs its `IncumbentSink` on the dispatching thread before
 // any worker starts — nothing can be submitting concurrently.  Workers read
 // the dispatch snapshot instead (`ProblemView::incumbent`, issue #98).
 void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {

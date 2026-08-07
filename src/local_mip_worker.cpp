@@ -79,8 +79,7 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
 }
 
 LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
-                               size_t total_budget, uint32_t seed, const double *initial_solution,
-                               const std::vector<double> &incumbent)
+                               size_t total_budget, uint32_t seed, const double *initial_solution)
     : mipsolver_(mipsolver), csc_(csc), sink_(sink), rng_(seed), ctx_(mipsolver, csc) {
     base_.total_budget = total_budget;
     base_.stale_budget = total_budget >> 2;
@@ -99,8 +98,7 @@ LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, 
     ctx_.lift.costed_vars = &costed_vars_;
 
     // Initialize solution
-    const double *src =
-        initial_solution ? initial_solution : (!incumbent.empty() ? incumbent.data() : nullptr);
+    const double *src = initial_solution;
     if (src) {
         for (HighsInt j = 0; j < ncol; ++j) {
             double v = src[j];

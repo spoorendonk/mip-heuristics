@@ -8,6 +8,8 @@
 #include "opportunistic_runner.h"
 
 #include <memory>
+#include <utility>
+#include <vector>
 
 namespace fj {
 
@@ -41,8 +43,22 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                 } else {
                     seed = static_cast<uint32_t>(rng());
                 }
+                // Pool first, dispatch snapshot second — the same order
+                // LocalMIP's `resolve_worker_start` uses, and the reason
+                // dropping the live `mipdata->incumbent` read (issue #98)
+                // costs FJ nothing.  The runner rebuilds a stalled worker
+                // inside the parallel region, and that rebuild used to
+                // warm-start from whatever a peer had just found; the pool
+                // holds every such solution (`IncumbentSink` seeds it from
+                // the incumbent and every accept goes through it) and
+                // `copy_best` takes its own lock, so this reads the same
+                // material without racing a concurrent `addIncumbent`.
+                std::vector<double> start;
+                if (!sink.copy_best(start)) {
+                    start = problem.incumbent;
+                }
                 state.worker = std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker,
-                                                          seed, problem.incumbent);
+                                                          seed, std::move(start));
             }
             return state.worker->run_attempt(run_cap);
         });

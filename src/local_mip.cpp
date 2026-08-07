@@ -305,9 +305,8 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                 perturb_solution(start, *problem.mipdata, problem.model->integrality_,
                                  problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
             }
-            return LmState{std::make_unique<LocalMipWorker>(mipsolver, *problem.csc, sink,
-                                                            budget.per_worker, seed, start.data(),
-                                                            problem.incumbent)};
+            return LmState{std::make_unique<LocalMipWorker>(
+                mipsolver, *problem.csc, sink, budget.per_worker, seed, start.data())};
         },
         [&](LmState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             if (!state.worker || state.worker->finished()) {
@@ -348,10 +347,8 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                 perturb_solution(restart_sol, *problem.mipdata, problem.model->integrality_,
                                  problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
-                state.worker =
-                    std::make_unique<LocalMipWorker>(mipsolver, *problem.csc, sink,
-                                                     budget.per_worker, seed, restart_sol.data(),
-                                                     problem.incumbent);
+                state.worker = std::make_unique<LocalMipWorker>(
+                    mipsolver, *problem.csc, sink, budget.per_worker, seed, restart_sol.data());
             }
             return state.worker->run_attempt(run_cap);
         });

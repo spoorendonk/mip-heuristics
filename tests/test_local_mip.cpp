@@ -368,24 +368,8 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     REQUIRE(counters.pool >= 1);
 }
 
-// ── Effort-accounting contract: run return value matches delta (#79) ──
-//
-// `local_mip::run` returns the effort it consumed; the dispatcher
-// (`mode_dispatch::run_sequential`) books that exact value into
-// `mipdata->heuristic_effort_used`.  The reviewer for #79 flagged that the
-// existing tests (#30, #33) only assert "[Sequential] effort != 0", which
-// would silently pass a regression that returns just `total_effort` and
-// drops the cold-start `construction_effort` from the sum.
-//
-// This test pins the contract directly: it constructs a `HighsMipSolver`
-// with a valid `mipdata_`, calls `local_mip::run` itself, and
-// asserts `(after - before) == returned`.  One section per heuristic —
-// the bug class the reviewer flagged is per-runner.  The instance is
-// `flugpl.mps` — small, fast, and used by the existing
-// LocalMIP tests; running with no upstream heuristic populating the pool
-// or incumbent ensures the cold-start construction path fires (so
-// `construction_effort > 0` is part of the returned sum in the
-// local_mip section).
+namespace {
+
 // Stand up a real `HighsMipSolver` (with `mipdata_`) on `flugpl.mps`
 // without going through `Highs::run`'s heuristics, so a test can call a
 // heuristic's `run` — or `make_problem` — itself.  Mirrors the minimal
@@ -429,6 +413,26 @@ std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback
     return mipsolver;
 }
 
+}  // namespace
+
+// ── Effort-accounting contract: run return value matches delta (#79) ──
+//
+// `local_mip::run` returns the effort it consumed; the dispatcher
+// (`mode_dispatch::run_sequential`) books that exact value into
+// `mipdata->heuristic_effort_used`.  The reviewer for #79 flagged that the
+// existing tests (#30, #33) only assert "[Sequential] effort != 0", which
+// would silently pass a regression that returns just `total_effort` and
+// drops the cold-start `construction_effort` from the sum.
+//
+// This test pins the contract directly: it constructs a `HighsMipSolver`
+// with a valid `mipdata_`, calls `local_mip::run` itself, and
+// asserts `(after - before) == returned`.  One section per heuristic —
+// the bug class the reviewer flagged is per-runner.  The instance is
+// `flugpl.mps` — small, fast, and used by the existing
+// LocalMIP tests; running with no upstream heuristic populating the pool
+// or incumbent ensures the cold-start construction path fires (so
+// `construction_effort > 0` is part of the returned sum in the
+// local_mip section).
 TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
           "[heuristic][effort-accounting]") {
     // The HiGHS task scheduler is normally started by `Highs::run`, which
@@ -439,15 +443,13 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
     // `initialize_scheduler()` calls are no-ops.
     highs::parallel::initialize_scheduler();
 
-    auto build_mipsolver = &build_bare_mipsolver;
-
     using RunFn = size_t (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
                              IncumbentSink&);
     auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
         HighsCallback cb(&highs);
-        auto mipsolver = build_mipsolver(highs, cb);
+        auto mipsolver = build_bare_mipsolver(highs, cb);
         CscMatrix csc;
         const ProblemView problem = make_problem(*mipsolver, csc);
         ExecutionContext exec = make_exec(*mipsolver);
@@ -505,46 +507,88 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
 //
 // Workers used to read `mipdata->incumbent` live, from inside a parallel
 // region, while a peer's accepted solution ran `addIncumbent` — whose
-// `incumbent = sol;` can reallocate the buffer out from under the reader.
+// `incumbent = sol;` rewrites that buffer under the reader.
 // `ProblemView::incumbent` is a copy taken on the dispatching thread, so a
-// later write to the live vector cannot move or change what a worker holds.
+// concurrent write cannot move or change what a worker holds.
 //
-// This pins the copy, which is what makes the reads safe; it cannot
-// reproduce the race itself (that needs a reallocation to land inside a
-// concurrent read).  A regression that turned the field back into a
-// pointer or a reference would fail here.
+// The two sections split the invariant in half.  Neither reproduces the
+// race itself — that needs a write to land inside a concurrent read — but
+// together they fail for every regression that would reintroduce it.
 TEST_CASE("ProblemView::incumbent is a dispatch snapshot, not the live vector (#98)",
-          "[heuristic][local_mip]") {
+          "[heuristic][heuristic-context][warm-start-counters]") {
     highs::parallel::initialize_scheduler();
 
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    HighsCallback cb(&highs);
-    auto mipsolver = build_bare_mipsolver(highs, cb);
-    auto* mipdata = mipsolver->mipdata_.get();
-    const HighsInt ncol = mipsolver->model_->num_col_;
-    REQUIRE(ncol > 0);
+    // The cheap half: `make_problem` copies rather than aliases.  Fails if
+    // the field goes back to being a pointer or a reference.
+    SECTION("make_problem copies, and the copy is immune to later writes") {
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        HighsCallback cb(&highs);
+        auto mipsolver = build_bare_mipsolver(highs, cb);
+        auto* mipdata = mipsolver->mipdata_.get();
+        const HighsInt ncol = mipsolver->model_->num_col_;
+        REQUIRE(ncol > 0);
 
-    // Pre-dispatch state: the solver holds an incumbent, as it does
-    // whenever an earlier heuristic (or HiGHS itself) already found one.
-    mipdata->incumbent.assign(static_cast<size_t>(ncol), 1.0);
+        // Pre-dispatch state: the solver holds an incumbent, as it does
+        // whenever an earlier heuristic (or HiGHS itself) found one.
+        mipdata->incumbent.assign(static_cast<size_t>(ncol), 1.0);
 
-    CscMatrix csc;
-    const ProblemView problem = make_problem(*mipsolver, csc);
-    REQUIRE(problem.incumbent.size() == static_cast<size_t>(ncol));
-    REQUIRE(problem.incumbent[0] == 1.0);
-    const double* snapshot_data = problem.incumbent.data();
-    REQUIRE(snapshot_data != mipdata->incumbent.data());
+        CscMatrix csc;
+        const ProblemView problem = make_problem(*mipsolver, csc);
+        REQUIRE(problem.incumbent.size() == static_cast<size_t>(ncol));
+        const double* snapshot_data = problem.incumbent.data();
+        REQUIRE(snapshot_data != mipdata->incumbent.data());
 
-    // What `addIncumbent` does on a peer worker's accepted solution: a
-    // whole-vector assignment, free to reallocate.  Grow it so the
-    // allocation is guaranteed to move.
-    std::vector<double> replacement(static_cast<size_t>(ncol) * 2, 2.0);
-    mipdata->incumbent = replacement;
+        // What `addIncumbent` does on a peer worker's accepted solution: a
+        // whole-vector assignment, free to reallocate.  Change the size so
+        // the allocation is guaranteed to move.
+        mipdata->incumbent = std::vector<double>(static_cast<size_t>(ncol) * 2, 2.0);
 
-    REQUIRE(problem.incumbent.data() == snapshot_data);
-    REQUIRE(problem.incumbent.size() == static_cast<size_t>(ncol));
-    for (HighsInt j = 0; j < ncol; ++j) {
-        REQUIRE(problem.incumbent[j] == 1.0);
+        REQUIRE(problem.incumbent.data() == snapshot_data);
+        REQUIRE(problem.incumbent.size() == static_cast<size_t>(ncol));
+        for (HighsInt j = 0; j < ncol; ++j) {
+            REQUIRE(problem.incumbent[j] == 1.0);
+        }
+    }
+
+    // The half that matters: the workers actually read the snapshot.  The
+    // two vectors are made to disagree — snapshot non-empty, live vector
+    // emptied right after — which is impossible in production but is
+    // exactly what distinguishes the two reads.  A worker (or the
+    // dispatch-thread prime in `local_mip::run`) reading `mipdata` live
+    // would find nothing and fall through to cold-start construction.
+    SECTION("LocalMIP resolves its start from the snapshot, not from mipdata") {
+        if constexpr (!local_mip::kInstrumented) {
+            SKIP("Built with MIP_HEURISTICS_INSTRUMENT=OFF — counters compiled out");
+        }
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        HighsCallback cb(&highs);
+        auto mipsolver = build_bare_mipsolver(highs, cb);
+        auto* mipdata = mipsolver->mipdata_.get();
+        const HighsInt ncol = mipsolver->model_->num_col_;
+
+        mipdata->incumbent.assign(static_cast<size_t>(ncol), 0.0);
+        CscMatrix csc;
+        const ProblemView problem = make_problem(*mipsolver, csc);
+        REQUIRE(!problem.incumbent.empty());
+
+        // Diverge the live vector from the snapshot, then build the sink:
+        // `seed_pool` reads the live one, so the pool stays empty and the
+        // incumbent branch of `resolve_worker_start` — dead in production,
+        // where the pool always carries the incumbent — becomes reachable.
+        mipdata->incumbent.clear();
+        ExecutionContext exec = make_exec(*mipsolver);
+        IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
+
+        local_mip::reset_warm_start_counters();
+        local_mip::run(problem, make_budget(200000, exec.num_workers), exec, sink);
+        auto counters = local_mip::warm_start_counters();
+
+        // Reading the snapshot: the incumbent branch fires (at minimum on
+        // the dispatch-thread prime).  Reading `mipdata` live: it is empty,
+        // so every start resolves through construction instead.
+        REQUIRE(counters.incumbent >= 1);
+        REQUIRE(counters.construction == 0);
     }
 }
