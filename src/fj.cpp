@@ -41,8 +41,8 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                 } else {
                     seed = static_cast<uint32_t>(rng());
                 }
-                state.worker =
-                    std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker, seed);
+                state.worker = std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker,
+                                                          seed, problem.incumbent);
             }
             return state.worker->run_attempt(run_cap);
         });

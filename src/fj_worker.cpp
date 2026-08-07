@@ -25,8 +25,9 @@ struct FjWorker::Impl {
 };
 
 FjWorker::FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink,
-                   size_t total_budget, uint32_t seed)
-    : mipsolver_(mipsolver), sink_(sink), seed_(seed) {
+                   size_t total_budget, uint32_t seed,
+                   const std::vector<double>& incumbent)
+    : mipsolver_(mipsolver), sink_(sink), incumbent_(incumbent), seed_(seed) {
   base_.total_budget = total_budget;
 }
 
@@ -58,7 +59,10 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
 
     impl_->col_value.resize(model->num_col_, 0.0);
 
-    const auto& inc = mipdata->incumbent;
+    // Dispatch-time snapshot, not `mipdata->incumbent`: a peer worker's
+    // accepted solution reassigns the live vector while this loop indexes
+    // it (issue #98).
+    const auto& inc = incumbent_;
     const bool use_incumbent = !inc.empty();
 
     for (HighsInt col = 0; col < model->num_col_; ++col) {

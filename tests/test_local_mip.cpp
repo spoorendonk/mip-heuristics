@@ -386,55 +386,60 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
 // or incumbent ensures the cold-start construction path fires (so
 // `construction_effort > 0` is part of the returned sum in the
 // local_mip section).
+// Stand up a real `HighsMipSolver` (with `mipdata_`) on `flugpl.mps`
+// without going through `Highs::run`'s heuristics, so a test can call a
+// heuristic's `run` — or `make_problem` — itself.  Mirrors the minimal
+// init sequence from `HighsMipSolver::run` (init → runMipPresolve →
+// runSetup); the heuristics and B&B that follow are skipped.
+//
+// Callers must have started the HiGHS task scheduler first (see the
+// `initialize_scheduler()` note at each call site).
+std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback& cb) {
+    // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
+    // that leaves `mipsolver.model_` pointing at the original LP.
+    // The heuristics' `run` only needs the LP shape and
+    // the `mipdata_` row-major buffers (`ARstart_/ARindex_/ARvalue_`)
+    // that `runSetup` populates; the heavier LP-relaxation
+    // machinery that comes later in `Highs::run` is not needed and
+    // skipping presolve keeps this minimal.
+    highs.setOptionValue("presolve", "off");
+    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
+                                                      highs.getSolution());
+    mipsolver->timer_.start();
+    // `HighsMipSolver::run` initialises this before anything can find a
+    // solution; constructing the solver directly leaves it holding
+    // garbage, and `addIncumbent` -> `saveReportMipSolution` writes to
+    // it unconditionally when non-null.
+    mipsolver->improving_solution_file_ = nullptr;
+    mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
+    mipsolver->mipdata_->init();
+    mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
+    mipsolver->mipdata_->runSetup();
+    // `HighsMipSolver::run` creates the master worker right after
+    // runSetup and before it dispatches the presolve heuristics.  Do
+    // the same: `addIncumbent` — reached through the sink's accept
+    // callback as soon as a heuristic finds something — reads
+    // `mipdata_->workers[0]`, so a harness that skips this crashes on
+    // the first solution rather than on any assertion.
+    mipsolver->mipdata_->workers.emplace_back(
+        *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
+        &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
+        &mipsolver->mipdata_->getPseudoCost());
+    return mipsolver;
+}
+
 TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
           "[heuristic][effort-accounting]") {
-    // Stand up a real `HighsMipSolver` (with `mipdata_`) without going
-    // through `Highs::run`'s heuristics, so we can call each heuristic's
-    // `run` ourselves and observe its return value against the
-    // bookkeeping field.  Mirrors the minimal init sequence from
-    // `HighsMipSolver::run` (init → runMipPresolve → runSetup); we skip
-    // the heuristics and B&B that follow.  The HiGHS task scheduler is
-    // normally started by `Highs::run`, which we also bypass — so
-    // initialise it once explicitly before any `HighsMipSolverData::init`
-    // call (`init` reads `parallel::num_threads()` for the cliquetable
-    // parallelism threshold and segfaults on a null worker deque).
-    // Subsequent `initialize_scheduler()` calls are no-ops.
+    // The HiGHS task scheduler is normally started by `Highs::run`, which
+    // this harness bypasses — so initialise it once explicitly before any
+    // `HighsMipSolverData::init` call (`init` reads
+    // `parallel::num_threads()` for the cliquetable parallelism threshold
+    // and segfaults on a null worker deque).  Subsequent
+    // `initialize_scheduler()` calls are no-ops.
     highs::parallel::initialize_scheduler();
 
-    auto build_mipsolver = [](Highs& highs, HighsCallback& cb) {
-        // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
-        // that leaves `mipsolver.model_` pointing at the original LP.
-        // The heuristics' `run` only needs the LP shape and
-        // the `mipdata_` row-major buffers (`ARstart_/ARindex_/ARvalue_`)
-        // that `runSetup` populates; the heavier LP-relaxation
-        // machinery that comes later in `Highs::run` is not needed and
-        // skipping presolve keeps this minimal.
-        highs.setOptionValue("presolve", "off");
-        REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-        auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
-                                                          highs.getSolution());
-        mipsolver->timer_.start();
-        // `HighsMipSolver::run` initialises this before anything can find a
-        // solution; constructing the solver directly leaves it holding
-        // garbage, and `addIncumbent` -> `saveReportMipSolution` writes to
-        // it unconditionally when non-null.
-        mipsolver->improving_solution_file_ = nullptr;
-        mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
-        mipsolver->mipdata_->init();
-        mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
-        mipsolver->mipdata_->runSetup();
-        // `HighsMipSolver::run` creates the master worker right after
-        // runSetup and before it dispatches the presolve heuristics.  Do
-        // the same: `addIncumbent` — reached through the sink's accept
-        // callback as soon as a heuristic finds something — reads
-        // `mipdata_->workers[0]`, so a harness that skips this crashes on
-        // the first solution rather than on any assertion.
-        mipsolver->mipdata_->workers.emplace_back(
-            *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
-            &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
-            &mipsolver->mipdata_->getPseudoCost());
-        return mipsolver;
-    };
+    auto build_mipsolver = &build_bare_mipsolver;
 
     using RunFn = size_t (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
                              IncumbentSink&);
@@ -493,5 +498,53 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
     }
     SECTION("scylla") {
         check_invariant(&scylla::run);
+    }
+}
+
+// ── Issue #98: the incumbent workers see is a dispatch snapshot ──
+//
+// Workers used to read `mipdata->incumbent` live, from inside a parallel
+// region, while a peer's accepted solution ran `addIncumbent` — whose
+// `incumbent = sol;` can reallocate the buffer out from under the reader.
+// `ProblemView::incumbent` is a copy taken on the dispatching thread, so a
+// later write to the live vector cannot move or change what a worker holds.
+//
+// This pins the copy, which is what makes the reads safe; it cannot
+// reproduce the race itself (that needs a reallocation to land inside a
+// concurrent read).  A regression that turned the field back into a
+// pointer or a reference would fail here.
+TEST_CASE("ProblemView::incumbent is a dispatch snapshot, not the live vector (#98)",
+          "[heuristic][local_mip]") {
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb);
+    auto* mipdata = mipsolver->mipdata_.get();
+    const HighsInt ncol = mipsolver->model_->num_col_;
+    REQUIRE(ncol > 0);
+
+    // Pre-dispatch state: the solver holds an incumbent, as it does
+    // whenever an earlier heuristic (or HiGHS itself) already found one.
+    mipdata->incumbent.assign(static_cast<size_t>(ncol), 1.0);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    REQUIRE(problem.incumbent.size() == static_cast<size_t>(ncol));
+    REQUIRE(problem.incumbent[0] == 1.0);
+    const double* snapshot_data = problem.incumbent.data();
+    REQUIRE(snapshot_data != mipdata->incumbent.data());
+
+    // What `addIncumbent` does on a peer worker's accepted solution: a
+    // whole-vector assignment, free to reallocate.  Grow it so the
+    // allocation is guaranteed to move.
+    std::vector<double> replacement(static_cast<size_t>(ncol) * 2, 2.0);
+    mipdata->incumbent = replacement;
+
+    REQUIRE(problem.incumbent.data() == snapshot_data);
+    REQUIRE(problem.incumbent.size() == static_cast<size_t>(ncol));
+    for (HighsInt j = 0; j < ncol; ++j) {
+        REQUIRE(problem.incumbent[j] == 1.0);
     }
 }

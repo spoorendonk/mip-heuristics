@@ -28,8 +28,14 @@ void perturb_solution(std::vector<double> &solution, const HighsMipSolverData &m
 // `IncumbentSink`.
 class LocalMipWorker {
 public:
+    // `incumbent` is the dispatch's incumbent snapshot
+    // (`ProblemView::incumbent`); it is the fallback start when
+    // `initial_solution` is null, and it is a snapshot rather than
+    // `mipdata->incumbent` because a peer worker's accepted solution can
+    // reallocate the live vector while this constructor reads it (#98).
     LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
-                   size_t total_budget, uint32_t seed, const double *initial_solution);
+                   size_t total_budget, uint32_t seed, const double *initial_solution,
+                   const std::vector<double> &incumbent);
 
     AttemptResult run_attempt(size_t attempt_budget);
 

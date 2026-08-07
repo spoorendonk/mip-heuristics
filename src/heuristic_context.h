@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 // Common execution scaffold for the four presolve heuristics (issue #94).
 //
@@ -52,17 +53,13 @@
 // shared by every worker of every heuristic in the chain, so caching
 // mutable per-dispatch state on it would be an unsynchronised shared
 // write.  Both of its methods are `const`.
-//
-// `ExecutionContext` is passed by non-const reference to match the entry
-// signature, but it is immutable for the duration of a dispatch: it is
-// shared by every worker of every heuristic in the chain, so caching
-// mutable per-dispatch state on it would be an unsynchronised shared
-// write.  Both of its methods are `const`.
 
-// Read-only view of the model a heuristic searches.  Cheap to copy: every
-// member is a non-owning pointer or a derived size.  The pointees are owned
-// by the caller that built it (the CSC — `run_sequential`'s local) or by the
-// solver (model, mipdata), and outlive the whole heuristic chain.
+// Read-only view of the model a heuristic searches.  Every member but the
+// incumbent snapshot is a non-owning pointer or a derived size; the pointees
+// are owned by the caller that built it (the CSC — `run_sequential`'s local)
+// or by the solver (model, mipdata), and outlive the whole heuristic chain.
+// Built once per dispatch and passed by const reference — the snapshot makes
+// it no longer trivially cheap to copy.
 struct ProblemView {
     const HighsLp *model = nullptr;
     const HighsMipSolverData *mipdata = nullptr;
@@ -73,6 +70,23 @@ struct ProblemView {
     HighsInt ncol = 0;
     HighsInt nrow = 0;
     size_t nnz = 0;
+
+    // Snapshot of `HighsMipSolverData::incumbent`, copied once per dispatch
+    // on the dispatching thread (issue #98).  Workers read *this*, never
+    // `mipdata->incumbent`: submission is immediate, so a peer worker's
+    // accepted solution runs `addIncumbent`, whose whole-vector assignment
+    // (`incumbent = sol;`) can reallocate the live buffer out from under a
+    // concurrent reader — a use-after-free, not a torn value.  Empty when
+    // the solver had no incumbent at dispatch time.  `fpr_lp` keeps the
+    // equivalent copy in its own `LpFprSetup`.
+    //
+    // Reading the snapshot is behaviour-preserving: every accepted solution
+    // enters the shared pool before `IncumbentSink`'s accept callback
+    // reaches `addIncumbent`, and every start-resolution path prefers the
+    // pool, so a worker only falls through to the incumbent when the pool
+    // is empty — which means nothing has been submitted yet and the live
+    // incumbent still equals this copy.
+    std::vector<double> incumbent;
 
     // A model with no columns or no rows: every heuristic declines it.
     bool degenerate() const { return ncol == 0 || nrow == 0; }
@@ -151,19 +165,22 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers) {
 }
 
 // Build the CSC transpose into caller-owned `csc` and return a view over it
-// together with the model pointers and derived sizes.
+// together with the model pointers, derived sizes and the incumbent
+// snapshot.
 //
 // `csc` must outlive every use of the returned view.  One call covers a
 // whole FJ -> FPR -> LocalMIP -> Scylla chain: the row-major buffers the
 // transpose is built from are written by `HighsMipSolverData::runSetup()`
 // before any heuristic dispatch and are not touched again while the chain
 // runs, so a single snapshot is valid for all four.  (Each heuristic used
-// to build its own identical copy.)
+// to build its own identical copy.)  Must be called on the dispatching
+// thread, before any parallel region — see `ProblemView::incumbent`.
 inline ProblemView make_problem(HighsMipSolver &mipsolver, CscMatrix &csc) {
     const HighsLp *model = mipsolver.model_;
     HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
     csc = build_csc(model->num_col_, model->num_row_, mipdata->ARstart_, mipdata->ARindex_,
                     mipdata->ARvalue_);
-    return ProblemView{model,           mipdata,          &csc,
-                       model->num_col_, model->num_row_,  mipdata->ARindex_.size()};
+    return ProblemView{model,           mipdata,         &csc,
+                       model->num_col_, model->num_row_, mipdata->ARindex_.size(),
+                       mipdata->incumbent};
 }
