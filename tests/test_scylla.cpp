@@ -9,7 +9,14 @@
 #include <string>
 #include <vector>
 
-// ── Scylla standalone: PDLP pump finds feasible solution ──
+// ── Scylla as the only enabled heuristic ──
+// `suite=scylla` clears FJ too, so a solution here can only have come from
+// the pump chains.  There used to be three sections here — "standalone",
+// "parallel" and "only" — distinguished by `mip_heuristic_opportunistic`
+// (deleted in #92) and then by the per-heuristic bool flags (#93).  With
+// neither left they are the same configuration, so the duplicates were
+// removed rather than kept as six extra full HiGHS solves per suite run
+// under names claiming distinct coverage.
 
 TEST_CASE("Scylla standalone: flugpl general integers", "[heuristic][scylla]") {
     REQUIRE(solve_suite("flugpl.mps", "scylla") == Catch::Approx(1201500.0).epsilon(1e-6));
@@ -31,30 +38,6 @@ TEST_CASE("Sequential orchestrator: flugpl weighted effort", "[heuristic][sequen
 
 TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") {
     REQUIRE(solve_suite("egout.mps", "all") == Catch::Approx(568.1007).epsilon(1e-4));
-}
-
-// ── Scylla parallel: run_parallel is the unified entry for pump chains ──
-// Only the cases that assert something the "standalone" set above does not.
-// Dropping `mip_heuristic_opportunistic` in #92 made the rest byte-identical
-// duplicates of it, so they were removed rather than left as four extra
-// full HiGHS solves per suite run under names claiming distinct coverage.
-
-// ── Scylla as the only enabled heuristic ──
-// FJ off, so a solution here can only have come from the pump chains.
-// The former "Scylla parallel: egout feasibility" case became a
-// byte-identical duplicate of the egout case below once `suite=scylla`
-// replaced the flag combination that distinguished the two.
-
-TEST_CASE("Scylla only: flugpl characterization", "[scylla]") {
-    REQUIRE(solve_suite("flugpl.mps", "scylla") == Catch::Approx(1201500.0).epsilon(1e-6));
-}
-
-TEST_CASE("Scylla only: egout feasibility", "[scylla]") {
-    REQUIRE(solve_suite("egout.mps", "scylla") <= 568.1007 + 1e-4);
-}
-
-TEST_CASE("Scylla only: gt2 pure binary", "[scylla]") {
-    REQUIRE(solve_suite("gt2.mps", "scylla") == Catch::Approx(21166.0).epsilon(1e-3));
 }
 
 // ── Scylla stale-snapshot overlap (issue #76) ──

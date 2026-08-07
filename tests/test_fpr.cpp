@@ -54,6 +54,12 @@ TEST_CASE("Characterization: bell5", "[heuristic][fpr]") {
     REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-6));
 }
 
+// Also the RepairSearch coverage: `kInitialFprConfigs` includes
+// `LocksRepairSearch`, so a `suite=fpr` solve exercises the Fig. 5
+// secondary-propagation path as part of its rotation.  A separate
+// "RepairSearch: FPR standalone" case used to say so in its name while
+// running exactly this solve; it went when the option migration made the
+// two bodies identical.
 TEST_CASE("FPR standalone: flugpl finds solution", "[heuristic][fpr]") {
     REQUIRE(solve_suite("flugpl.mps", "fpr") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
@@ -126,16 +132,6 @@ TEST_CASE("FPR strategies: multi-config sequential on egout", "[fpr][strategies]
     // The sequential multi-config runner should solve egout
     // FPR enabled (runs multi-config)
     REQUIRE(solve_suite("egout.mps", "fpr") == Catch::Approx(568.1007).epsilon(1e-4));
-}
-
-// ===================================================================
-// RepairSearch tests (Fig. 5 with secondary propagation engine R)
-// ===================================================================
-
-TEST_CASE("RepairSearch: FPR standalone with RepairSearch config on flugpl",
-          "[repair-search][fpr]") {
-    // Standalone FPR mode now includes RepairSearch config — must still solve
-    REQUIRE(solve_suite("flugpl.mps", "fpr") == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
 // ===================================================================

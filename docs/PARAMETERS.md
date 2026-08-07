@@ -671,8 +671,15 @@ FeasibilityJump — but *which* FJ it gates depends on
 - at every other suite value the native call site is off and this
   option gates our parallel FJ instead.
 
-So `--mip_heuristic_suite=off --mip_heuristic_run_feasibility_jump=false`
+So an options file carrying both
+
+    mip_heuristic_suite = off
+    mip_heuristic_run_feasibility_jump = false
+
 is the pure patch-overhead configuration: no heuristics of any kind.
+Neither is a command-line flag — HiGHS's CLI accepts only its own fixed
+flag set and rejects an unknown `--mip_heuristic_...` *without solving*,
+so custom options are reachable only through `--options_file`.
 
 `mip_heuristic_effort` is likewise **native to HiGHS**, not patch-added.
 It is upstream's B&B heuristic knob: `moreHeuristicsAllowed()` admits
@@ -695,8 +702,9 @@ The custom patch-added options are exactly two:
   falls back to running all four.
 
 `mip_heuristic_suite` also gates the B&B-dive `fpr_lp`, on the same bit
-as presolve FPR. It therefore runs at `fpr` and `all` only — `off`,
-`local_mip` and `scylla` all disable it. That is deliberate (a
+as presolve FPR. It therefore runs at `fpr` and `all` (and at an
+unrecognised value, which fails open to all four) — `off`, `local_mip`
+and `scylla` all disable it. That is deliberate (a
 per-heuristic attribution run must not leave a second FPR variant
 running at dive time), but it means a dive-time result measured under
 `suite=local_mip` or `suite=scylla` says nothing about `fpr_lp`.

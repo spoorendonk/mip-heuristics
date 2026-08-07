@@ -381,6 +381,18 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
         highsLogUser(options.log_options, HighsLogType::kWarning,
                      "Unknown mip_heuristic_suite value \"%s\"; running all heuristics.\n",
                      options.mip_heuristic_suite.c_str());
+    } else if (!flags.fj && !flags.fpr && !flags.local_mip && !flags.scylla &&
+               options.mip_heuristic_suite != "off") {
+        // Only reachable as `suite=fj` with mip_heuristic_run_feasibility_jump
+        // false, which asks for FJ and then takes it away.  That run is
+        // heuristic-free without being `off`, so it also loses the native FJ
+        // call site — a benchmark row labelled "FJ isolated" would silently
+        // measure vanilla-minus-FJ.  Say so rather than leave it silent.
+        highsLogUser(options.log_options, HighsLogType::kWarning,
+                     "mip_heuristic_suite=\"%s\" selects only FeasibilityJump, which "
+                     "mip_heuristic_run_feasibility_jump=false disables; no heuristic will "
+                     "run. Use mip_heuristic_suite=off for a vanilla-equivalent run.\n",
+                     options.mip_heuristic_suite.c_str());
     }
 
     return run_sequential(mipsolver, budget, flags);

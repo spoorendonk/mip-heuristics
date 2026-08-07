@@ -3,8 +3,10 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // ===================================================================
 // Execution-mode correctness tests
@@ -46,20 +48,54 @@ TEST_CASE("execution-mode: infeasible detected", "[mode-matrix]") {
     REQUIRE(h.getModelStatus() == HighsModelStatus::kInfeasible);
 }
 
-// ── 1 test: all custom heuristics disabled ──
+// ── 2 tests: all custom heuristics disabled ──
 // At `suite=off` the custom dispatcher is a no-op and HiGHS's own
 // pipeline — native FeasibilityJump included — must still solve flugpl.
+//
+// (The single-heuristic FJ-only case that used to sit here is
+// `FJ standalone: flugpl` in test_fj.cpp; the option migration made the
+// two identical.)
 
 TEST_CASE("execution-mode: all heuristics disabled still solves", "[mode-matrix]") {
     REQUIRE(solve_no_heuristics() == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-// ── 1 test: single-heuristic (FJ-only) ──
-// Only feasibility_jump enabled: exercises the runner's
-// single-worker-type path, which is easy to break with worker-count logic.
+// #93's headline behaviour change, and what the patch-overhead row of the
+// benchmark matrix rests on: `suite=off` hands HiGHS's standalone
+// FeasibilityJump call site back, where the patch used to rewrite it to
+// `if (false)` in every configuration.  Nothing else in ctest pins it —
+// `bench/check_vanilla_equivalence.py` proves it properly but needs a
+// separately built unpatched binary, so it is deliberately not a test.  A
+// regression of Patch A in apply_patch.cmake compiles, links, and leaves
+// every other case green while silently turning `off` back into
+// vanilla-minus-FJ.
+//
+// `Feasibility Jump: starting solve` is logged once per FJ solver
+// instance, so the count separates all three states: exactly 1 at `off`
+// (upstream's single-threaded call site), 0 at a suite that excludes FJ,
+// and one per worker at `all`.
+namespace {
+size_t count_fj_starts(const std::vector<std::string>& lines) {
+    size_t n = 0;
+    for (const auto& line : lines) {
+        n += line.find("Feasibility Jump: starting solve") != std::string::npos ? 1 : 0;
+    }
+    return n;
+}
 
-TEST_CASE("execution-mode: FJ-only flugpl", "[mode-matrix]") {
-    REQUIRE(solve_suite("flugpl.mps", "fj") == Catch::Approx(1201500.0).epsilon(1e-6));
+std::vector<std::string> lseu_log_at_suite(const char* suite) {
+    return solve_capturing_log("lseu.mps", [&](Highs& h) {
+        require_option(h, "log_dev_level", 3);
+        set_suite(h, suite);
+    });
+}
+}  // namespace
+
+TEST_CASE("execution-mode: suite=off runs HiGHS's own single-threaded FJ", "[mode-matrix]") {
+    REQUIRE(count_fj_starts(lseu_log_at_suite("off")) == 1);
+    // Not always-on, and not our parallel FJ leaking in: a suite that
+    // excludes FJ must leave the native call site silent too.
+    REQUIRE(count_fj_starts(lseu_log_at_suite("fpr")) == 0);
 }
 
 // ── 3 tests: the reproducible single-worker configuration ──

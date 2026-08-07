@@ -111,6 +111,21 @@ def test_a_differing_heuristic_lp_iteration_count_fails():
     assert any(f.startswith("heuristic LP iterations:") for f in c.failures)
 
 
+def test_two_unparseable_logs_do_not_certify_equivalence():
+    """Two logs with no solving report are equal but prove nothing."""
+    c = compare_runs("flugpl.mps", 0, patched="crashed\n", vanilla="crashed\n",
+                     time_tolerance=1.5, strict_time=False)
+    assert not c.passed
+    assert any("no parseable solving report" in f for f in c.failures)
+
+
+def test_a_slow_run_warns_without_strict_time():
+    c = compare_runs("flugpl.mps", 0, patched=render(timing="0.90"),
+                     vanilla=render(timing="0.09"), time_tolerance=1.5, strict_time=False)
+    assert c.passed
+    assert any("solve time" in w for w in c.warnings)
+
+
 def test_an_extra_log_line_fails():
     c = compare_runs("flugpl.mps", 0,
                      patched=render() + "\n[Sequential] heur=fpr effort=1 wall_ms=1\n",

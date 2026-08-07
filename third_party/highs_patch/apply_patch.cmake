@@ -71,13 +71,15 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 set(PATCH_VERSION "4")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
+    # No `;` in an entry: set() builds a cmake list and would split on it,
+    # truncating the explanation and adding a phantom probe for the tail.
     set(_retired_options
         "mip_heuristic_preset:renamed to mip_heuristic_suite"
         "mip_heuristic_run_fpr:folded into mip_heuristic_suite"
         "mip_heuristic_run_local_mip:folded into mip_heuristic_suite"
         "mip_heuristic_run_scylla:folded into mip_heuristic_suite"
         "mip_heuristic_portfolio:removed with the Thompson portfolio"
-        "mip_heuristic_opportunistic:removed; opportunistic is the only parallel mode")
+        "mip_heuristic_opportunistic:removed, opportunistic is the only parallel mode")
     foreach(_entry IN LISTS _retired_options)
         string(REGEX REPLACE ":.*$" "" _retired_ident "${_entry}")
         string(REGEX REPLACE "^[^:]*:" "" _retired_why "${_entry}")

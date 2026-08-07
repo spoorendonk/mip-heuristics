@@ -181,11 +181,12 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
 // `effort=0 wall_ms=0`.  After the fix, `resolve_worker_start` prefers
 // the pool's best entry over `mipdata->incumbent`, so local_mip sees
 // FJ's fresh primal as its warm-start base.  The test runs the full
-// chain (`suite=all` — FJ is the only heuristic that runs *before*
-// LocalMIP and can therefore pre-fill the pool for it), captures the
-// developer-level log via HiGHS's logging callback, and asserts that
-// both the `heur=fj` and `heur=local_mip` `[Sequential]` lines report
-// non-zero effort.
+// chain, because `suite=all` is the only value that runs FJ and LocalMIP
+// together — FPR runs between them and can add to the pool as well, so
+// what is pinned is that both ran with non-zero effort, not that FJ
+// specifically filled the pool.  It captures the developer-level log via
+// HiGHS's logging callback and asserts that both the `heur=fj` and
+// `heur=local_mip` `[Sequential]` lines report non-zero effort.
 // `lseu.mps` is chosen because FJ reliably produces a feasible for
 // it inside the presolve budget.
 TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74)",

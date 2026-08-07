@@ -15,6 +15,11 @@ binary; this script only checks that it still solves.
 Checks that each solve finds the known-optimal objective within a
 tolerance.  Reports a per-instance x per-config pass/fail table.
 
+The table is one-dimensional over the suite values by design (issue #93).
+The `threads=1` reproducible configuration it used to carry as a second
+dimension is covered by ctest instead — the execution-mode single-worker
+cases and the FPR resume-determinism cases all pin it.
+
 Usage:
   python bench/correctness_check.py                      # defaults
   python bench/correctness_check.py --binary ./build/bin/highs

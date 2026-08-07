@@ -22,18 +22,21 @@ Hard gates, per instance and seed:
     path.  HiGHS does not print RENS/RINS *invocation* counts, but it
     cannot invoke them differently while leaving node count, total LP
     iterations and the solution-source display lines all identical;
-  * empty normalized log diff — everything HiGHS printed, minus the
-    wall-clock columns and the patch's own marker line.
+  * empty normalized log diff — everything HiGHS printed, minus the parts
+    that cannot match by construction: the display table's elapsed-time
+    column, the timing block, the P-D integral, the profiling block's
+    seconds (its call counts are kept and compared), the options-file echo,
+    the width of the banner's git hash, and the patch's marker line.
 
-Solve time is reported and compared against `--time-tolerance` as a soft
-signal; it is noise-dominated on instances this size and never fails the
-run on its own unless `--strict-time` is passed.
+Solve time is compared against `--time-tolerance` and reported inline when
+exceeded; it is noise-dominated on instances this size, so it only fails
+the run when `--strict-time` is passed.
 
 Two differences are known and accepted rather than fixed:
 
   * the `mip-heuristics patch active` marker line, which is the only way to
     tell a patched binary from an unpatched one (the version and githash
-    banners are identical).  Normalized away;
+    banners are otherwise identical).  Normalized away;
   * one `heuristic_effort_used += fj_last_effort` store per FJ callback
     inside stock `feasibilityJump()`.  No control-flow change; invisible in
     the log.
@@ -169,6 +172,7 @@ class Comparison:
     instance: str
     seed: int
     failures: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     patched_time: float = 0.0
     vanilla_time: float = 0.0
 
@@ -183,6 +187,15 @@ def compare_runs(instance: str, seed: int, patched: str, vanilla: str,
     pm, vm = parse_metrics(patched), parse_metrics(vanilla)
     cmp = Comparison(instance, seed, patched_time=pm.time_s, vanilla_time=vm.time_s)
 
+    # A log with no solving report parses to all-None, and two all-None logs
+    # compare equal — so without this the script would certify equivalence
+    # for a pair of runs that both produced nothing at all.
+    for label, m in (("patched", pm), ("vanilla", vm)):
+        missing = [k for k, v in m.comparable().items() if v is None]
+        if missing:
+            cmp.failures.append(f"{label} log has no parseable solving report "
+                                f"(missing: {', '.join(missing)})")
+
     vanilla_fields = vm.comparable()
     for name, patched_value in pm.comparable().items():
         vanilla_value = vanilla_fields[name]
@@ -194,10 +207,10 @@ def compare_runs(instance: str, seed: int, patched: str, vanilla: str,
     if diff:
         cmp.failures.append("normalized log differs:\n    " + "\n    ".join(diff[:40]))
 
-    slower = pm.time_s > max(vm.time_s, 0.01) * time_tolerance
-    if slower and strict_time:
-        cmp.failures.append(f"solve time {pm.time_s:.2f}s vs vanilla {vm.time_s:.2f}s "
-                            f"exceeds {time_tolerance}x")
+    if pm.time_s > max(vm.time_s, 0.01) * time_tolerance:
+        message = (f"solve time {pm.time_s:.2f}s vs vanilla {vm.time_s:.2f}s "
+                   f"exceeds {time_tolerance}x")
+        (cmp.failures if strict_time else cmp.warnings).append(message)
     return cmp
 
 
@@ -240,7 +253,12 @@ def run_solve(binary: str, instance_path: str, options: dict[str, str], seed: in
         for k, v in {**options, "random_seed": str(seed)}.items():
             f.write(f"{k} = {v}\n")
     cmd = [binary, instance_path, "--time_limit", str(time_limit), "--options_file", opts_path]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=time_limit * 2 + 30)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=time_limit * 2 + 30)
+    except subprocess.TimeoutExpired:
+        # Returned rather than raised: a hung run is one FAIL row, not a
+        # traceback that abandons the instances after it.
+        return f"{binary} timed out after {time_limit * 2 + 30}s"
     return r.stdout + "\n" + r.stderr
 
 
@@ -291,7 +309,12 @@ def main() -> None:
             comparisons.append(c)
             mark = "PASS" if c.passed else "FAIL"
             print(f"  {mark}  {name:14s} seed={seed}  "
-                  f"patched={c.patched_time:.2f}s vanilla={c.vanilla_time:.2f}s")
+                  f"patched={c.patched_time:.2f}s vanilla={c.vanilla_time:.2f}s"
+                  + ("  [" + "; ".join(c.warnings) + "]" if c.warnings else ""))
+
+    if not comparisons:
+        sys.exit(f"Error: compared nothing — none of {INSTANCES} was found in "
+                 f"{instances_dir}. Pass --instances-dir explicitly.")
 
     failed = [c for c in comparisons if not c.passed]
     print(f"\n{len(comparisons) - len(failed)}/{len(comparisons)} equivalent")

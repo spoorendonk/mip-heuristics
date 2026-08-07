@@ -9,7 +9,13 @@ A complete MIP primal heuristics suite integrated into [HiGHS](https://github.co
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)          # first build ~5 min (fetches HiGHS)
-./build/bin/highs --mip_heuristic_suite all model.mps
+./build/bin/highs model.mps                        # mip_heuristic_suite defaults to `all`
+
+# The custom options are not CLI flags — HiGHS's command line takes only its
+# own fixed set, and rejects an unknown `--flag` without solving.  Pass them
+# through an options file:
+printf 'mip_heuristic_suite = fpr\n' > run.opts
+./build/bin/highs --options_file run.opts model.mps
 ```
 
 Full PLATO benchmark against vanilla HiGHS (requires MIPLIB instances, ~77h total):
@@ -56,7 +62,7 @@ One caveat for library embedders (not CLI users): HiGHS's task executor is a pro
 
 An unrecognised value warns and falls back to `all` rather than silently disabling everything.
 
-**`suite=off` is a true vanilla ablation on one binary.** The patch hands HiGHS's standalone FeasibilityJump call site back at `off`, so an `off` run is what an unpatched build of the same tag does. `bench/check_vanilla_equivalence.py` verifies that against an unpatched binary — identical objective, node count and heuristic LP iterations, and an empty log diff apart from the `mip-heuristics patch active` marker. Add `--mip_heuristic_run_feasibility_jump=false` on top of `off` for the pure patch-overhead configuration, with no heuristics at all.
+**`suite=off` is a true vanilla ablation on one binary.** The patch hands HiGHS's standalone FeasibilityJump call site back at `off`, so an `off` run is what an unpatched build of the same tag does. `bench/check_vanilla_equivalence.py` verifies that against an unpatched binary — identical objective, node count and total and heuristic LP iterations, and an empty log diff once wall-clock content is normalized away (the timing block, the P-D integral, the profiling seconds, the git-hash width, the options-file echo and the `mip-heuristics patch active` marker). Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside `mip_heuristic_suite = off` for the pure patch-overhead configuration, with no heuristics at all.
 
 **`fpr_lp` follows the FPR bit.** It runs at B&B dive time on the same continuous workers, and is gated on the same flag as presolve FPR — so it runs at `suite=fpr` and `suite=all`, and is *disabled* at `suite=local_mip` and `suite=scylla` as well as at `off`. That is deliberate: a per-heuristic attribution run must not leave a second FPR variant running at dive time. It does mean a dive-time result under `suite=local_mip` cannot be attributed to `fpr_lp`.
 
