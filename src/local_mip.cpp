@@ -1,6 +1,7 @@
 #include "local_mip.h"
 
 #include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "local_mip_construction.h"
 #include "local_mip_worker.h"
 #include "lp_data/HConst.h"
@@ -8,7 +9,6 @@
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
-#include "parallel_setup.h"
 #include "rng.h"
 #include "solution_pool.h"
 
@@ -205,8 +205,11 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
 }
 
 size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
-    ParallelSetup setup(mipsolver, max_effort);
-    const HighsInt ncol = setup.model.num_col_;
+    HeuristicContext ctx(mipsolver);
+    const ProblemView &pv = ctx.problem();
+    const ExecutionContext &exec = ctx.exec();
+    const HeuristicBudget budget = ctx.budget(max_effort);
+    const HighsInt ncol = pv.ncol;
 
     struct LmState {
         std::unique_ptr<LocalMipWorker> worker;
@@ -249,14 +252,14 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     // no-search dispatch report non-zero effort where it used to report 0.
     if (max_effort > 0) {
         size_t primed_effort = 0;
-        resolve_worker_start(mipsolver, setup.csc, pool, setup.worker_budget, setup.base_seed,
+        resolve_worker_start(mipsolver, *pv.csc, pool, budget.per_worker, exec.base_seed,
                              &cold_start_cache, &primed_effort);
         construction_effort.fetch_add(primed_effort, std::memory_order_relaxed);
     }
 
     size_t total_effort = run_opportunistic_loop(
-        mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
-        setup.base_seed,
+        mipsolver, static_cast<int>(exec.num_workers), budget.total, budget.stale,
+        budget.attempt_cap, exec.base_seed,
         [&](int worker_idx, Rng &rng) -> LmState {
             uint32_t seed = static_cast<uint32_t>(rng());
             std::vector<double> local_cache;
@@ -266,7 +269,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
             }
             size_t my_construction_effort = 0;
             std::vector<double> start =
-                resolve_worker_start(mipsolver, setup.csc, pool, setup.worker_budget, seed,
+                resolve_worker_start(mipsolver, *pv.csc, pool, budget.per_worker, seed,
                                      &local_cache, &my_construction_effort);
             if (my_construction_effort > 0) {
                 construction_effort.fetch_add(my_construction_effort, std::memory_order_relaxed);
@@ -285,11 +288,11 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 }
             }
             if (worker_idx != 0) {
-                perturb_solution(start, *setup.mipdata, setup.model.integrality_,
-                                 setup.model.col_lower_, setup.model.col_upper_, ncol, rng);
+                perturb_solution(start, *pv.mipdata, pv.model->integrality_, pv.model->col_lower_,
+                                 pv.model->col_upper_, ncol, rng);
             }
-            return LmState{std::make_unique<LocalMipWorker>(
-                mipsolver, setup.csc, pool, setup.worker_budget, seed, start.data())};
+            return LmState{std::make_unique<LocalMipWorker>(mipsolver, *pv.csc, pool,
+                                                            budget.per_worker, seed, start.data())};
         },
         [&](LmState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             if (!state.worker || state.worker->finished()) {
@@ -297,8 +300,8 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 // (cold-start), with fresh perturbation.
                 std::vector<double> restart_sol;
                 if (!pool.get_restart(rng, restart_sol)) {
-                    if (!setup.mipdata->incumbent.empty()) {
-                        restart_sol = setup.mipdata->incumbent;
+                    if (!pv.mipdata->incumbent.empty()) {
+                        restart_sol = pv.mipdata->incumbent;
                     } else {
                         // note (R2-9 / R3-6 round-4 review): cold-start
                         // construction is booked into the *global*
@@ -317,17 +320,17 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                         uint32_t cseed = static_cast<uint32_t>(rng());
                         Rng construct_rng(cseed);
                         size_t my_construction_effort = construct_initial_solution(
-                            mipsolver, setup.csc, construct_rng,
-                            construction_effort_cap(setup.worker_budget), restart_sol);
+                            mipsolver, *pv.csc, construct_rng,
+                            construction_effort_cap(budget.per_worker), restart_sol);
                         construction_effort.fetch_add(my_construction_effort,
                                                       std::memory_order_relaxed);
                     }
                 }
-                perturb_solution(restart_sol, *setup.mipdata, setup.model.integrality_,
-                                 setup.model.col_lower_, setup.model.col_upper_, ncol, rng);
+                perturb_solution(restart_sol, *pv.mipdata, pv.model->integrality_,
+                                 pv.model->col_lower_, pv.model->col_upper_, ncol, rng);
                 uint32_t seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LocalMipWorker>(
-                    mipsolver, setup.csc, pool, setup.worker_budget, seed, restart_sol.data());
+                    mipsolver, *pv.csc, pool, budget.per_worker, seed, restart_sol.data());
             }
             return state.worker->run_attempt(run_cap);
         });

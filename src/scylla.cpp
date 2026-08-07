@@ -2,12 +2,12 @@
 
 #include "contested_pdlp.h"
 #include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
-#include "parallel_setup.h"
 #include "scylla_worker.h"
 #include "solution_pool.h"
 
@@ -56,10 +56,12 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
 }
 
 size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
-    ParallelSetup setup(mipsolver, max_effort);
+    HeuristicContext ctx(mipsolver);
+    const ProblemView &pv = ctx.problem();
+    const ExecutionContext &exec = ctx.exec();
+    const HeuristicBudget budget = ctx.budget(max_effort);
 
-    const HighsInt pdlp_iter_cap =
-        compute_pdlp_iter_cap(max_effort, setup.mipdata->ARindex_.size());
+    const HighsInt pdlp_iter_cap = compute_pdlp_iter_cap(budget.total, pv.nnz);
     ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
     if (!pdlp.initialized()) {
         return 0;
@@ -69,13 +71,14 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
 
     // Pre-construct workers outside the parallel region so MakeState
     // can hand them back by index without racing on std::make_unique.
-    const int N = static_cast<int>(setup.N);
+    const int N = static_cast<int>(exec.num_workers);
     std::vector<std::unique_ptr<ScyllaWorker>> workers;
-    workers.reserve(setup.N);
+    workers.reserve(exec.num_workers);
     for (int w = 0; w < N; ++w) {
-        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool,
-                                                         max_effort, seed, w, N, &improvement_gen));
+        uint32_t seed = exec.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, *pv.csc, pool,
+                                                         budget.total, seed, w, N,
+                                                         &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -91,7 +94,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     std::atomic<std::uint64_t> retired_stale{0};
 
     size_t total_effort = run_opportunistic_loop(
-        mipsolver, N, max_effort, setup.stale_budget, setup.default_run_cap, setup.base_seed,
+        mipsolver, N, budget.total, budget.stale, budget.attempt_cap, exec.base_seed,
         [](int worker_idx, Rng & /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
         [&](ScyllaOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
             auto &worker = workers[state.worker_idx];
@@ -106,7 +109,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
                 // reinitialized from scratch but the underlying LP stays.
                 uint32_t new_seed = static_cast<uint32_t>(rng());
                 worker =
-                    std::make_unique<ScyllaWorker>(mipsolver, pdlp, setup.csc, pool, max_effort,
+                    std::make_unique<ScyllaWorker>(mipsolver, pdlp, *pv.csc, pool, budget.total,
                                                    new_seed, state.worker_idx, N, &improvement_gen);
             };
             if (worker->finished()) {

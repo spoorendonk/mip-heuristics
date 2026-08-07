@@ -3,11 +3,11 @@
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
 #include "parallel/HighsParallel.h"
-#include "parallel_setup.h"
 #include "solution_pool.h"
 #include "worker_base.h"
 
@@ -326,7 +326,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         // `cfg.max_effort` is the attempt-wide cap consumed by Phase 3 sub-
         // budgets (`cfg.max_effort - total_prop_work` for repair_search /
         // walksat).  Sized at the worker's `attempt_budget_` (=
-        // ParallelSetup::stale_budget = max_effort/4), not the per-call
+        // HeuristicBudget::stale = max_effort/4), not the per-call
         // `attempt_budget`: when an attempt spans multiple `run_attempt` calls,
         // the cumulative `total_prop_work` arriving at Phase 3 already
         // exceeds any single slice, so a slice-sized cap clamps the repair
@@ -402,17 +402,20 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 namespace {
 
 size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_t max_effort) {
-    ParallelSetup setup(mipsolver, max_effort);
+    HeuristicContext ctx(mipsolver);
+    const ExecutionContext &exec = ctx.exec();
+    const HeuristicBudget budget = ctx.budget(max_effort);
 
     // Precompute var_orders sequentially before any parallel region.
     VarOrderTable var_orders = precompute_var_orders(mipsolver);
 
     std::vector<std::unique_ptr<FprWorker>> workers;
-    workers.reserve(setup.N);
-    for (size_t w = 0; w < setup.N; ++w) {
-        uint32_t seed = setup.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(
-            mipsolver, setup.csc, pool, var_orders, static_cast<int>(w), seed, setup.stale_budget));
+    workers.reserve(exec.num_workers);
+    for (size_t w = 0; w < exec.num_workers; ++w) {
+        uint32_t seed = exec.base_seed + static_cast<uint32_t>(w) * kSeedStride;
+        workers.push_back(std::make_unique<FprWorker>(mipsolver, *ctx.problem().csc, pool,
+                                                      var_orders, static_cast<int>(w), seed,
+                                                      budget.stale));
     }
 
     struct FprOppState {
@@ -420,8 +423,8 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, SolutionPool &pool, size_
     };
 
     return run_opportunistic_loop(
-        mipsolver, static_cast<int>(setup.N), max_effort, setup.stale_budget, setup.default_run_cap,
-        setup.base_seed,
+        mipsolver, static_cast<int>(exec.num_workers), budget.total, budget.stale,
+        budget.attempt_cap, exec.base_seed,
         [](int worker_idx, Rng & /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
         [&](FprOppState &state, Rng & /*rng*/, size_t run_cap) -> AttemptResult {
             auto &worker = workers[state.worker_idx];
