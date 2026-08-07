@@ -2,6 +2,7 @@
 #include "fpr.h"
 #include "heuristic_common.h"
 #include "Highs.h"
+#include "heuristic_context.h"
 #include "incumbent_sink.h"
 #include "local_mip.h"
 #include "local_mip_construction.h"
@@ -172,11 +173,11 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
     REQUIRE(heuristic_reported_effort(lines, "local_mip"));
 }
 
-// Regression guard for `local_mip::run_parallel`'s warm-start path
+// Regression guard for `local_mip::run`'s warm-start path
 // (issue #74).  The presolve chain in `mode_dispatch::run_sequential`
 // flushes the shared `SolutionPool` into `mipdata->incumbent` only after
 // all four heuristics have run.  Before #74 (and before the #75
-// construction cold-start), `local_mip::run_parallel` bailed out on
+// construction cold-start), `local_mip::run` bailed out on
 // `mipdata->incumbent.empty()`, so an FJ solution sitting in the pool
 // was invisible and local_mip's `[Sequential]` line read
 // `effort=0 wall_ms=0`.  After the fix, `resolve_worker_start` prefers
@@ -306,6 +307,38 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
     REQUIRE(counters.incumbent == 0);
 }
 
+// Standalone LocalMIP at the default worker count (issue #94).  Distinct
+// from Scenario A above, which pins `threads=1` so it can also assert
+// `pool == 0`: what this one covers is the multi-worker standalone path
+// the heuristic config table made reachable.  At `suite=local_mip` the
+// table filters to a single entry, so LocalMIP is dispatched with the
+// entire post-FJ envelope and no upstream heuristic has run — the
+// cold-start construction is the only way it can obtain a starting
+// point, and it must actually produce one on every worker team, not
+// just on a single-worker one.
+TEST_CASE("LocalMIP standalone: cold-start construction fires at the default worker count",
+          "[heuristic][local_mip][cold-start][warm-start-counters]") {
+    if constexpr (!local_mip::kInstrumented) {
+        SKIP("Built with MIP_HEURISTICS_INSTRUMENT=OFF — counters compiled out");
+    }
+    local_mip::reset_warm_start_counters();
+    const ScopedThreadPin pin;
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    h.setOptionValue("mip_root_presolve_only", true);
+    set_suite(h, "local_mip");
+    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    auto counters = local_mip::warm_start_counters();
+    REQUIRE(counters.construction >= 1);
+    // No upstream heuristic ran, so nothing can have seeded the
+    // incumbent.  The `pool` branch is deliberately *not* asserted zero:
+    // with several workers a late starter may legitimately warm-start
+    // from a peer LocalMIP worker's freshly added solution.
+    REQUIRE(counters.incumbent == 0);
+}
+
 // Scenario B: FJ runs first and populates the pool with a feasible
 // solution; LocalMIP must then warm-start from the pool (#74 active,
 // #75 unreachable for the worker setup paths).
@@ -335,9 +368,9 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     REQUIRE(counters.pool >= 1);
 }
 
-// ── Effort-accounting contract: run_parallel return value matches delta (#79) ──
+// ── Effort-accounting contract: run return value matches delta (#79) ──
 //
-// `local_mip::run_parallel` returns the effort it consumed; the dispatcher
+// `local_mip::run` returns the effort it consumed; the dispatcher
 // (`mode_dispatch::run_sequential`) books that exact value into
 // `mipdata->heuristic_effort_used`.  The reviewer for #79 flagged that the
 // existing tests (#30, #33) only assert "[Sequential] effort != 0", which
@@ -345,7 +378,7 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
 // drops the cold-start `construction_effort` from the sum.
 //
 // This test pins the contract directly: it constructs a `HighsMipSolver`
-// with a valid `mipdata_`, calls `local_mip::run_parallel` itself, and
+// with a valid `mipdata_`, calls `local_mip::run` itself, and
 // asserts `(after - before) == returned`.  One section per heuristic —
 // the bug class the reviewer flagged is per-runner.  The instance is
 // `flugpl.mps` — small, fast, and used by the existing
@@ -353,11 +386,11 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
 // or incumbent ensures the cold-start construction path fires (so
 // `construction_effort > 0` is part of the returned sum in the
 // local_mip section).
-TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used delta",
+TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
           "[heuristic][effort-accounting]") {
     // Stand up a real `HighsMipSolver` (with `mipdata_`) without going
     // through `Highs::run`'s heuristics, so we can call each heuristic's
-    // `run_parallel` ourselves and observe its return value against the
+    // `run` ourselves and observe its return value against the
     // bookkeeping field.  Mirrors the minimal init sequence from
     // `HighsMipSolver::run` (init → runMipPresolve → runSetup); we skip
     // the heuristics and B&B that follow.  The HiGHS task scheduler is
@@ -371,7 +404,7 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
     auto build_mipsolver = [](Highs& highs, HighsCallback& cb) {
         // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
         // that leaves `mipsolver.model_` pointing at the original LP.
-        // The heuristics' `run_parallel` only needs the LP shape and
+        // The heuristics' `run` only needs the LP shape and
         // the `mipdata_` row-major buffers (`ARstart_/ARindex_/ARvalue_`)
         // that `runSetup` populates; the heavier LP-relaxation
         // machinery that comes later in `Highs::run` is not needed and
@@ -403,26 +436,31 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
         return mipsolver;
     };
 
-    using RunFn = size_t (*)(HighsMipSolver&, IncumbentSink&, size_t);
+    using RunFn = size_t (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
+                             IncumbentSink&);
     auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
         HighsCallback cb(&highs);
         auto mipsolver = build_mipsolver(highs, cb);
+        CscMatrix csc;
+        const ProblemView problem = make_problem(*mipsolver, csc);
+        ExecutionContext exec = make_exec(*mipsolver);
         IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
 
         // Mirror exactly what `mode_dispatch::run_sequential` does:
-        // read `mipdata->heuristic_effort_used`, call `run_parallel`,
+        // read `mipdata->heuristic_effort_used`, call `run`,
         // then `+=` the returned value into the bookkeeping field.
         // The invariant the dispatcher relies on is
-        // `(after - before) == returned`; that holds iff `run_parallel`
+        // `(after - before) == returned`; that holds iff `run`
         // itself did NOT also touch the field.
         const size_t before = mipsolver->mipdata_->heuristic_effort_used;
         // A modest budget that is plenty for flugpl: large enough that
         // each runner will execute meaningful work (so `returned > 0` is
         // very likely), small enough that the test stays sub-second.
         const size_t budget = 200000;
-        const size_t returned = run_fn(*mipsolver, sink, budget);
+        const size_t returned =
+            run_fn(problem, make_budget(budget, exec.num_workers), exec, sink);
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 
@@ -430,7 +468,7 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
         // extension): the dispatcher's `+=` booking is the *only* path
         // that updates `mipdata->heuristic_effort_used` for any of the
         // four sequential heuristics.  If a future refactor reintroduces
-        // self-booking inside any `run_parallel` the delta becomes
+        // self-booking inside any `run` the delta becomes
         // `2 * returned` (or more) and this fires.
         REQUIRE(after - before == returned);
         // Sanity guard: a broken implementation that always returns 0
@@ -445,15 +483,15 @@ TEST_CASE("Heuristics: run_parallel return value matches heuristic_effort_used d
     };
 
     SECTION("fj") {
-        check_invariant(&fj::run_parallel);
+        check_invariant(&fj::run);
     }
     SECTION("fpr") {
-        check_invariant(&fpr::run_parallel);
+        check_invariant(&fpr::run);
     }
     SECTION("local_mip") {
-        check_invariant(&local_mip::run_parallel);
+        check_invariant(&local_mip::run);
     }
     SECTION("scylla") {
-        check_invariant(&scylla::run_parallel);
+        check_invariant(&scylla::run);
     }
 }

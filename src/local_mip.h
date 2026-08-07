@@ -3,8 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 
-class HighsMipSolver;
 class IncumbentSink;
+struct ExecutionContext;
+struct HeuristicBudget;
+struct ProblemView;
 
 namespace local_mip {
 
@@ -60,13 +62,16 @@ WarmStartCounters warm_start_counters();
 // `threads=1` for a single worker whose behaviour is reproducible under
 // a fixed `random_seed`.
 //
-// `sink` is owned by the caller (mode_dispatch::run_sequential), which
-// also sets the source tag workers' solutions are attributed with.
-// Workers pull restarts from the same sink.
+// Uniform runner contract, shared by all four presolve heuristics
+// (issue #94).  `mode_dispatch::run_sequential` owns the problem view,
+// this heuristic's slice of the effort envelope, the execution context
+// and the incumbent sink — including the source tag the solutions found
+// here are attributed with.  Returns the total effort consumed; the
+// caller books it through `EffortLedger`, the single point of effort
+// accounting.  No heuristic self-books.
 //
-// Returns the total effort consumed (search effort + cold-start
-// construction effort).  The caller is responsible for booking this
-// into `mipdata->heuristic_effort_used` (issue #79), which makes
-// mode_dispatch.cpp the single point of LocalMIP effort accounting.
-size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort);
+// The effort returned covers the cold-start construction sweep as well
+// as the search itself.
+size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionContext &exec,
+           IncumbentSink &sink);
 }  // namespace local_mip

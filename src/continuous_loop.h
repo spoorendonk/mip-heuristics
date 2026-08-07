@@ -1,8 +1,6 @@
 #pragma once
 
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
-#include "parallel/HighsParallel.h"
+#include "heuristic_context.h"
 
 #include <atomic>
 #include <cstddef>
@@ -97,10 +95,8 @@ struct ContinuousLoopState {
     // Seat-holder only — the underlying HiGHS calls are not thread-safe
     // for concurrent callers.  Callers batch the poll to every other
     // attempt.  Peers observe the `stop` flag atomically.
-    void poll_termination(HighsMipSolver &mipsolver) {
-        auto *mipdata = mipsolver.mipdata_.get();
-        const double time_limit = mipsolver.options_mip_->time_limit;
-        if (mipdata->terminatorTerminated() || mipsolver.timer_.read() >= time_limit) {
+    void poll_termination(const ExecutionContext &exec) {
+        if (exec.terminated()) {
             request_stop();
         }
     }

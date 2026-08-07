@@ -3,13 +3,13 @@
 #include "effort_ledger.h"
 #include "fj.h"
 #include "fpr.h"
+#include "heuristic_context.h"
+#include "incumbent_sink.h"
 #include "io/HighsIO.h"
 #include "local_mip.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "parallel/HighsParallel.h"
 #include "scylla.h"
-#include "incumbent_sink.h"
 
 #include <string>
 
@@ -180,16 +180,17 @@ struct HeuristicConfig {
     bool fixed_budget;
     // Which `mip_heuristic_suite` bit enables this entry.
     bool HeuristicFlags::*flag;
-    size_t (*run)(HighsMipSolver &, IncumbentSink &, size_t);
+    size_t (*run)(const ProblemView &, const HeuristicBudget &, ExecutionContext &,
+                  IncumbentSink &);
 };
 
 constexpr HeuristicConfig kChain[] = {
-    {"fj", kSolutionSourceFJ, 0.0, true, &HeuristicFlags::fj, &fj::run_parallel},
-    {"fpr", kSolutionSourceFPR, kWeightFpr, false, &HeuristicFlags::fpr, &fpr::run_parallel},
+    {"fj", kSolutionSourceFJ, 0.0, true, &HeuristicFlags::fj, &fj::run},
+    {"fpr", kSolutionSourceFPR, kWeightFpr, false, &HeuristicFlags::fpr, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, kWeightLocalMip, false, &HeuristicFlags::local_mip,
-     &local_mip::run_parallel},
+     &local_mip::run},
     {"scylla", kSolutionSourceScylla, kWeightScylla, false, &HeuristicFlags::scylla,
-     &scylla::run_parallel},
+     &scylla::run},
 };
 
 // Weighted effort allocation: each heuristic runs in turn with its
@@ -216,9 +217,16 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
         return false;
     }
 
-    const size_t nnz = static_cast<size_t>(mipsolver.mipdata_->ARindex_.size());
-    const size_t N_threads = static_cast<size_t>(std::max(1, highs::parallel::num_threads()));
-    const size_t fj_budget = flags.fj ? N_threads * (nnz << 10) : 0;
+    // Built once for the whole chain: the CSC transpose and the derived
+    // sizes are the same for all four heuristics, and the row-major buffers
+    // they come from are frozen by `runSetup()` before dispatch.  Each
+    // heuristic used to build its own identical copy.  `csc` owns the
+    // storage `problem` views, so it has to outlive the loop below.
+    CscMatrix csc;
+    const ProblemView problem = make_problem(mipsolver, csc);
+    ExecutionContext exec = make_exec(mipsolver);
+
+    const size_t fj_budget = flags.fj ? exec.num_workers * (problem.nnz << 10) : 0;
 
     // What FJ *charges* against the shared presolve budget, which is not
     // the same as what it spends: FJ always runs with the full `fj_budget`
@@ -259,16 +267,11 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     };
 
     // Each heuristic's inner loops also poll the deadline, but their setup
-    // (build_csc, precompute_var_orders) runs before that first inner poll;
-    // checking out here skips the setup entirely once the budget is
-    // exhausted.  `terminatorTerminated` is called only from this
-    // sequential outer loop — the previous heuristic's parallel region has
-    // already joined, so there is no concurrent access.
-    const double time_limit = options->time_limit;
-    auto *mipdata = mipsolver.mipdata_.get();
-    auto deadline_hit = [&]() {
-        return mipdata->terminatorTerminated() || mipsolver.timer_.read() >= time_limit;
-    };
+    // (precompute_var_orders, ContestedPdlp construction) runs before that
+    // first inner poll; checking out here skips the setup entirely once
+    // the budget is exhausted.  `exec.terminated()` is safe to call from
+    // this sequential outer loop — the previous heuristic's parallel
+    // region has already joined, so there is no concurrent access.
 
     // One sink for the whole sequential chain, so a solution found by an
     // earlier heuristic (say FJ) is available as a pool-restart seed for
@@ -292,8 +295,10 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // when no upstream heuristic produced a feasible solution.)
     //
     // Wall-ms is measured in this outer frame so all four measurements
-    // share a clock and include setup (`build_csc`, `precompute_var_orders`,
-    // worker construction) — what users actually pay for.
+    // share a clock and include each heuristic's own setup
+    // (`precompute_var_orders`, `ContestedPdlp` construction, worker
+    // construction) — what users actually pay for.  The shared CSC build
+    // sits outside all four, since it is no longer any one of them.
     EffortLedger ledger(mipsolver);
     auto run_and_charge = [&](const char *name, auto &&call) {
         const double t0_s = EffortLedger::now_s();
@@ -302,12 +307,14 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     };
 
     for (const HeuristicConfig &h : kChain) {
-        if (!(flags.*h.flag) || deadline_hit()) {
+        if (!(flags.*h.flag) || exec.terminated()) {
             continue;
         }
-        const size_t total = h.fixed_budget ? fj_budget : rest_alloc(h.weight);
+        const HeuristicBudget budget =
+            make_budget(h.fixed_budget ? fj_budget : rest_alloc(h.weight), exec.num_workers);
         sink.set_source(h.source_tag);
-        run_and_charge(h.name, [&]() -> size_t { return h.run(mipsolver, sink, total); });
+        run_and_charge(h.name,
+                       [&]() -> size_t { return h.run(problem, budget, exec, sink); });
     }
 
     return false;

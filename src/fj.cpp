@@ -3,23 +3,21 @@
 #include "fj_worker.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
-#include "opportunistic_runner.h"
 #include "incumbent_sink.h"
+#include "mip/HighsMipSolver.h"
+#include "opportunistic_runner.h"
 
 #include <memory>
-#include <vector>
 
 namespace fj {
 
-namespace {
+size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionContext &exec,
+           IncumbentSink &sink) {
+    if (problem.degenerate()) {
+        return 0;
+    }
 
-size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
-    HeuristicContext ctx(mipsolver);
-    const ExecutionContext &exec = ctx.exec();
-    const HeuristicBudget budget = ctx.budget(max_effort);
-
+    HighsMipSolver &mipsolver = exec.mipsolver;
     const uint32_t random_seed_opp = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
 
     struct FjState {
@@ -29,8 +27,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size
     };
 
     return run_opportunistic_loop(
-        mipsolver, static_cast<int>(exec.num_workers), budget.total, budget.stale,
-        budget.attempt_cap, exec.base_seed,
+        exec, budget,
         [random_seed_opp](int worker_idx, Rng & /*rng*/) -> FjState {
             // Pin first attempt to random_seed + w; worker 0 matches vanilla FJ's seed.
             return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx), true};
@@ -49,16 +46,6 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size
             }
             return state.worker->run_attempt(run_cap);
         });
-}
-
-}  // namespace
-
-size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
-    const auto *model = mipsolver.model_;
-    if (model->num_col_ == 0 || model->num_row_ == 0) {
-        return 0;
-    }
-    return run_parallel_workers(mipsolver, sink, max_effort);
 }
 
 }  // namespace fj

@@ -20,15 +20,17 @@
 // single struct along its actual seams — what the heuristic *searches*,
 // what it may *spend*, and how it *runs* — so a heuristic's entry point can
 // take exactly the parts it needs, and `mode_dispatch` can build the
-// expensive parts once for the whole chain.
+// expensive part (the CSC transpose) once for the whole chain.
 //
-// Not consumed by `fpr_lp.cpp`: it has an `LpFprSetup` that owns LP
-// references, a reduced-cost vector and a shared `ContestedPdlp`.  Shape
-// does not match.
+// `fpr_lp.cpp` takes only `make_exec` / `make_budget`: it runs on the same
+// continuous parallel runner but keeps its own `LpFprSetup` for the LP
+// references, reduced costs and shared `ContestedPdlp` that the presolve
+// heuristics have no equivalent of.
 //
-// Ownership: the `SolutionPool` is not here — it is owned by
-// `mode_dispatch::run_sequential` and threaded through each heuristic's
-// entry point.  Per-worker effort/staleness bookkeeping lives in
+// Ownership: solution submission is not here — it lives in `IncumbentSink`
+// (incumbent_sink.h), owned by `mode_dispatch::run_sequential` and threaded
+// through each heuristic's entry point.  Per-worker effort/staleness
+// bookkeeping lives in
 // `WorkerBudgetState` (worker_base.h); `HeuristicBudget`
 // holds the *derived* values each worker's base struct receives on
 // construction (the three heuristics that honour it — FJ's per-worker
@@ -100,44 +102,37 @@ struct ExecutionContext {
     }
 };
 
-// Owns the per-dispatch derived state (the CSC transpose) that `ProblemView`
-// points at, and hands out the three views above.
+// Derive one dispatch's execution parameters.  Shared by `HeuristicContext`
+// and by `fpr_lp`, which runs on the same continuous parallel runner from a
+// setup of its own shape.
+inline ExecutionContext make_exec(HighsMipSolver &mipsolver) {
+    return ExecutionContext{mipsolver,
+                            static_cast<size_t>(std::max(1, highs::parallel::num_threads())),
+                            heuristic_base_seed(mipsolver.options_mip_->random_seed),
+                            mipsolver.options_mip_->time_limit};
+}
+
+// Split a heuristic's slice of the effort envelope into the per-worker,
+// per-attempt and staleness ceilings its workers and the runner use.
+inline HeuristicBudget make_budget(size_t total, size_t num_workers) {
+    return HeuristicBudget{total, total / num_workers,
+                           std::max<size_t>(total / (num_workers * 10), 1), total >> 2};
+}
+
+// Build the CSC transpose into caller-owned `csc` and return a view over it
+// together with the model pointers and derived sizes.
 //
-// One instance covers a whole FJ -> FPR -> LocalMIP -> Scylla chain: the
-// row-major buffers the CSC is built from are written by
-// `HighsMipSolverData::runSetup()` before any heuristic dispatch and are not
-// touched again while the chain runs, so a single snapshot is valid for all
-// four.  (Each heuristic used to build its own identical copy.)
-class HeuristicContext {
-public:
-    explicit HeuristicContext(HighsMipSolver &mipsolver);
-
-    // Non-copyable: `problem_.csc` points into `csc_`.
-    HeuristicContext(const HeuristicContext &) = delete;
-    HeuristicContext &operator=(const HeuristicContext &) = delete;
-
-    const ProblemView &problem() const { return problem_; }
-    ExecutionContext &exec() { return exec_; }
-
-    // Derive one heuristic's budget from its share of the envelope.
-    HeuristicBudget budget(size_t total) const {
-        const size_t n = exec_.num_workers;
-        return HeuristicBudget{total, total / n, std::max<size_t>(total / (n * 10), 1),
-                               total >> 2};
-    }
-
-private:
-    CscMatrix csc_;
-    ProblemView problem_;
-    ExecutionContext exec_;
-};
-
-inline HeuristicContext::HeuristicContext(HighsMipSolver &mipsolver)
-    : csc_(build_csc(mipsolver.model_->num_col_, mipsolver.model_->num_row_,
-                     mipsolver.mipdata_->ARstart_, mipsolver.mipdata_->ARindex_,
-                     mipsolver.mipdata_->ARvalue_)),
-      problem_{mipsolver.model_, mipsolver.mipdata_.get(), &csc_, mipsolver.model_->num_col_,
-               mipsolver.model_->num_row_, mipsolver.mipdata_->ARindex_.size()},
-      exec_{mipsolver, static_cast<size_t>(std::max(1, highs::parallel::num_threads())),
-            heuristic_base_seed(mipsolver.options_mip_->random_seed),
-            mipsolver.options_mip_->time_limit} {}
+// `csc` must outlive every use of the returned view.  One call covers a
+// whole FJ -> FPR -> LocalMIP -> Scylla chain: the row-major buffers the
+// transpose is built from are written by `HighsMipSolverData::runSetup()`
+// before any heuristic dispatch and are not touched again while the chain
+// runs, so a single snapshot is valid for all four.  (Each heuristic used
+// to build its own identical copy.)
+inline ProblemView make_problem(HighsMipSolver &mipsolver, CscMatrix &csc) {
+    const HighsLp *model = mipsolver.model_;
+    HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
+    csc = build_csc(model->num_col_, model->num_row_, mipdata->ARstart_, mipdata->ARindex_,
+                    mipdata->ARvalue_);
+    return ProblemView{model,           mipdata,          &csc,
+                       model->num_col_, model->num_row_,  mipdata->ARindex_.size()};
+}

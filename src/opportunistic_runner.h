@@ -2,8 +2,7 @@
 
 #include "continuous_loop.h"
 #include "heuristic_common.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
+#include "heuristic_context.h"
 #include "parallel/HighsParallel.h"
 #include "worker_base.h"
 
@@ -31,44 +30,43 @@
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
 //   - Terminator polling is done by whichever worker holds the claimable
 //     seat; at most one at a time.  See `ContinuousLoopState`.
-//   - Budget overshoot: concurrent workers can overshoot `budget` by
-//     up to `N * default_run_cap` effort because each worker checks
+//   - Budget overshoot: concurrent workers can overshoot `budget.total`
+//     by up to `N * budget.attempt_cap` because each worker checks
 //     the atomic total before starting an attempt.  Bounded overshoot
 //     is acceptable for heuristic effort accounting.
 //
 // Returns total effort consumed across all workers.
 template <typename MakeState, typename RunAttempt>
-[[nodiscard]] size_t run_opportunistic_loop(HighsMipSolver &mipsolver, int num_workers,
-                                            size_t budget, size_t stale_budget,
-                                            size_t default_run_cap, uint32_t base_seed,
-                                            MakeState make_state, RunAttempt run_attempt) {
-    if (num_workers <= 0 || budget == 0) {
+[[nodiscard]] size_t run_opportunistic_loop(const ExecutionContext &exec,
+                                            const HeuristicBudget &budget, MakeState make_state,
+                                            RunAttempt run_attempt) {
+    const int N = static_cast<int>(exec.num_workers);
+    if (N <= 0 || budget.total == 0) {
         return 0;
     }
 
-    const int N = num_workers;
     ContinuousLoopState loop;
 
     highs::parallel::for_each(
         0, static_cast<HighsInt>(N),
         [&](HighsInt lo, HighsInt hi) {
             for (HighsInt w = lo; w < hi; ++w) {
-                Rng rng(base_seed + static_cast<uint32_t>(w) * kSeedStride);
+                Rng rng(exec.base_seed + static_cast<uint32_t>(w) * kSeedStride);
                 int attempt_counter = 0;
 
                 auto state = make_state(static_cast<int>(w), rng);
 
                 while (!loop.stopped()) {
                     if ((attempt_counter & 1) == 0 && loop.claim_poller(static_cast<int>(w))) {
-                        loop.poll_termination(mipsolver);
+                        loop.poll_termination(exec);
                     }
                     if (loop.stopped()) {
                         break;
                     }
 
                     size_t current = loop.total_effort.load(std::memory_order_relaxed);
-                    size_t remaining = budget - std::min(budget, current);
-                    size_t run_cap = std::min(default_run_cap, remaining);
+                    size_t remaining = budget.total - std::min(budget.total, current);
+                    size_t run_cap = std::min(budget.attempt_cap, remaining);
                     if (run_cap == 0) {
                         loop.request_stop();
                         break;
@@ -90,8 +88,8 @@ template <typename MakeState, typename RunAttempt>
                         break;
                     }
 
-                    loop.note_staleness(result.effort, result.found_improvement, stale_budget);
-                    loop.add_effort(result.effort, budget);
+                    loop.note_staleness(result.effort, result.found_improvement, budget.stale);
+                    loop.add_effort(result.effort, budget.total);
                 }
 
                 loop.release_poller(static_cast<int>(w));

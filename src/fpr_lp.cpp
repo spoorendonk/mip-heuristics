@@ -3,6 +3,7 @@
 #include "effort_ledger.h"
 #include "fpr_core.h"
 #include "fpr_lp_refs.h"
+#include "heuristic_context.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "io/HighsIO.h"
@@ -123,7 +124,6 @@ struct LpFprSetup {
     int64_t setup_lp_iterations = 0;
 
     size_t budget = 0;
-    size_t stale_budget = 0;
 };
 
 // Build the shared LP-FPR setup.  Returns nullopt when the model is
@@ -147,7 +147,6 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
 
     LpFprSetup s;
     s.budget = max_effort;
-    s.stale_budget = max_effort >> 2;
 
     s.csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
@@ -308,34 +307,17 @@ private:
 namespace {
 
 // ---------------------------------------------------------------------------
-// Worker count for LP-FPR parallel modes
-// ---------------------------------------------------------------------------
-
-int compute_worker_count(const HighsMipSolver & /*mipsolver*/) {
-    return highs::parallel::num_threads();
-}
-
-uint32_t base_seed_for(const HighsMipSolver &mipsolver) {
-    return heuristic_base_seed(mipsolver.options_mip_->random_seed);
-}
-
-// ---------------------------------------------------------------------------
 // Worker dispatch
 // ---------------------------------------------------------------------------
 
-// Spawn `num_threads` workers; worker w binds to arm `w % kNumLpArms`.
+// Spawn `exec.num_workers` workers; worker w binds to arm `w % kNumLpArms`.
 // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
 // wrap around the curated config list with distinct seeds for diversity.
-size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, IncumbentSink &sink) {
-    const int N = compute_worker_count(mipsolver);
-    if (N <= 0) {
-        return 0;
-    }
+size_t run_workers(const LpFprSetup &setup, const ExecutionContext &exec,
+                   const HeuristicBudget &budget, IncumbentSink &sink) {
     g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
 
-    const uint32_t base_seed = base_seed_for(mipsolver);
-    const size_t default_run_cap =
-        std::max<size_t>(setup.budget / (static_cast<size_t>(N) * 10), 1);
+    HighsMipSolver &mipsolver = exec.mipsolver;
 
     // Per-worker lightweight state: just the LpFprWorker instance.
     struct LpFprOppState {
@@ -343,11 +325,11 @@ size_t run_workers(HighsMipSolver &mipsolver, const LpFprSetup &setup, Incumbent
     };
 
     return run_opportunistic_loop(
-        mipsolver, N, setup.budget, setup.stale_budget, default_run_cap, base_seed,
+        exec, budget,
         [&](int worker_idx, Rng & /*rng*/) -> LpFprOppState {
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
-            uint32_t seed = base_seed + static_cast<uint32_t>(worker_idx) * kSeedStride;
+            uint32_t seed = exec.base_seed + static_cast<uint32_t>(worker_idx) * kSeedStride;
             return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed)};
         },
         [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
@@ -464,7 +446,6 @@ void run(HighsMipSolver &mipsolver) {
     size_t worker_effort = 0;
     if (worker_budget >= min_effort) {
         setup.budget = worker_budget;
-        setup.stale_budget = worker_budget >> 2;
 
         // The sink owns the pool, seeds it from the incumbent, and wires
         // immediate submission so incumbent timestamps reflect find time
@@ -474,7 +455,12 @@ void run(HighsMipSolver &mipsolver) {
         // fpr_lp is one heuristic family (LP-dependent FPR, Classes 2-3), so
         // it always runs arm-aligned parallel workers — num_threads workers
         // bound to the top-N arms from kClass2/3a/3b, sharing the sink.
-        worker_effort = run_workers(mipsolver, setup, sink);
+        // The execution context and budget split are derived exactly as the
+        // presolve heuristics' are, even though the setup around them is
+        // fpr_lp's own.
+        const ExecutionContext exec = make_exec(mipsolver);
+        worker_effort =
+            run_workers(setup, exec, make_budget(worker_budget, exec.num_workers), sink);
     }
 
     // The ledger books the observability counter, emits the per-heuristic

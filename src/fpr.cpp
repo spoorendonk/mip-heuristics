@@ -4,11 +4,9 @@
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
-#include "opportunistic_runner.h"
-#include "parallel/HighsParallel.h"
 #include "incumbent_sink.h"
+#include "mip/HighsMipSolver.h"
+#include "opportunistic_runner.h"
 #include "worker_base.h"
 
 #include <algorithm>
@@ -61,7 +59,7 @@ using VarOrderTable = std::vector<std::vector<HighsInt>>;
 // only termination gate.
 class FprWorker {
 public:
-    FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
+    FprWorker(const ExecutionContext &exec, const CscMatrix &csc, IncumbentSink &sink,
               const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
               size_t attempt_budget);
 
@@ -78,6 +76,7 @@ private:
     // blocker).
     void select_config_for_current_attempt();
 
+    const ExecutionContext &exec_;
     HighsMipSolver &mipsolver_;
     const CscMatrix &csc_;
     IncumbentSink &sink_;
@@ -151,13 +150,6 @@ constexpr InitialFprConfig kInitialFprConfigs[] = {
 };
 constexpr int kNumInitialFprConfigs = static_cast<int>(std::size(kInitialFprConfigs));
 
-constexpr FrameworkMode kAllModes[] = {
-    FrameworkMode::kDfs,      FrameworkMode::kDfsrep,       FrameworkMode::kDive,
-    FrameworkMode::kDiveprop, FrameworkMode::kRepairSearch,
-};
-
-constexpr int kNumAllModes = static_cast<int>(std::size(kAllModes));
-
 // Compute variable orders for every strategy in kFprStrategies.  MUST be
 // called from a sequential context: clique-based var_strategies invoke
 // HighsCliqueTable::cliquePartition which mutates internal state and is
@@ -178,10 +170,11 @@ VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
-FprWorker::FprWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
+FprWorker::FprWorker(const ExecutionContext &exec, const CscMatrix &csc, IncumbentSink &sink,
                      const VarOrderTable &var_orders, int worker_idx, uint32_t seed,
                      size_t attempt_budget)
-    : mipsolver_(mipsolver),
+    : exec_(exec),
+      mipsolver_(exec.mipsolver),
       csc_(csc),
       sink_(sink),
       var_orders_(var_orders),
@@ -254,9 +247,6 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     // without bounds we'd burn the slice on `fpr_attempt_begin`'s
     // O(ncol+nrow) setup churn alone.
 
-    auto *mipdata = mipsolver_.mipdata_.get();
-    const double time_limit = mipsolver_.options_mip_->time_limit;
-
     // Snapshot the pool restart once per call so all attempts inside the
     // multi-attempt loop see the same `initial_solution`.  Per-attempt
     // `sink_.get_restart` would observe interleaved peer `offer` inserts
@@ -284,7 +274,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     size_t prev_loop_effort = 0;
 
     while (attempt.effort < attempt_budget) {
-        if (mipdata->terminatorTerminated() || mipsolver_.timer_.read() >= time_limit) {
+        if (exec_.terminated()) {
             break;
         }
         if (attempts_started > 0 && attempt.effort == prev_loop_effort) {
@@ -399,12 +389,13 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 // Parallel FPR
 // ---------------------------------------------------------------------------
 
-namespace {
+size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionContext &exec,
+           IncumbentSink &sink) {
+    if (problem.degenerate()) {
+        return 0;
+    }
 
-size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
-    HeuristicContext ctx(mipsolver);
-    const ExecutionContext &exec = ctx.exec();
-    const HeuristicBudget budget = ctx.budget(max_effort);
+    HighsMipSolver &mipsolver = exec.mipsolver;
 
     // Precompute var_orders sequentially before any parallel region.
     VarOrderTable var_orders = precompute_var_orders(mipsolver);
@@ -413,9 +404,8 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size
     workers.reserve(exec.num_workers);
     for (size_t w = 0; w < exec.num_workers; ++w) {
         uint32_t seed = exec.base_seed + static_cast<uint32_t>(w) * kSeedStride;
-        workers.push_back(std::make_unique<FprWorker>(mipsolver, *ctx.problem().csc, sink,
-                                                      var_orders, static_cast<int>(w), seed,
-                                                      budget.stale));
+        workers.push_back(std::make_unique<FprWorker>(exec, *problem.csc, sink, var_orders,
+                                                      static_cast<int>(w), seed, budget.stale));
     }
 
     struct FprOppState {
@@ -423,8 +413,7 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size
     };
 
     return run_opportunistic_loop(
-        mipsolver, static_cast<int>(exec.num_workers), budget.total, budget.stale,
-        budget.attempt_cap, exec.base_seed,
+        exec, budget,
         [](int worker_idx, Rng & /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
         [&](FprOppState &state, Rng & /*rng*/, size_t run_cap) -> AttemptResult {
             auto &worker = workers[state.worker_idx];
@@ -434,19 +423,6 @@ size_t run_parallel_workers(HighsMipSolver &mipsolver, IncumbentSink &sink, size
             // needed.
             return worker->run_attempt(run_cap);
         });
-}
-
-}  // namespace
-
-size_t run_parallel(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t max_effort) {
-    const auto *model = mipsolver.model_;
-    const HighsInt ncol = model->num_col_;
-    const HighsInt nrow = model->num_row_;
-    if (ncol == 0 || nrow == 0) {
-        return 0;
-    }
-
-    return run_parallel_workers(mipsolver, sink, max_effort);
 }
 
 }  // namespace fpr
