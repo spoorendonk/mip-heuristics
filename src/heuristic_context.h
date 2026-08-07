@@ -103,9 +103,20 @@ struct ProblemView {
     // still a race, and a column's classification flipping mid-dispatch is
     // not something any worker is written to expect.
     //
+    // Scope: taken once for the *whole* FJ -> FPR -> LocalMIP -> Scylla
+    // chain, so a column that root propagation fixes after FJ's first
+    // incumbent is still classified with its pre-FJ value by the other
+    // three.  Deliberate, and cheap: workers enforce bounds from
+    // `model->col_lower_/col_upper_`, never from `HighsDomain`, so the
+    // classification was already decoupled from the bounds they respect.
+    //
     // `uint8_t` rather than `std::vector<bool>`: workers index this from
-    // hot loops, and the bit-packed specialisation's proxy references are
-    // both slower and not safely readable from several threads at once.
+    // hot loops, and the bit-packed specialisation costs a shift and mask
+    // per read plus a proxy object.  Concurrent *reads* of a frozen
+    // `vector<bool>` would be well-defined — the hazard is concurrent
+    // read/write of neighbouring bits, which cannot arise for a mask built
+    // before the parallel region — so this is a throughput choice, not a
+    // correctness one.
     std::vector<uint8_t> binary;
 
     // A model with no columns or no rows: every heuristic declines it.
@@ -212,12 +223,16 @@ inline ProblemView make_problem(HighsMipSolver &mipsolver, CscMatrix &csc) {
     HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
     csc = build_csc(model->num_col_, model->num_row_, mipdata->ARstart_, mipdata->ARindex_,
                     mipdata->ARvalue_);
-    return ProblemView{model,
-                       mipdata,
-                       &csc,
-                       model->num_col_,
-                       model->num_row_,
-                       mipdata->ARindex_.size(),
-                       mipdata->incumbent,
-                       build_binary_mask(mipsolver)};
+    // Designated initialisers: two snapshots have been appended to this
+    // aggregate in as many issues, and three of the members in the middle
+    // are a positional `HighsInt, HighsInt, size_t` run that a mis-ordered
+    // addition would silently convert between.
+    return ProblemView{.model = model,
+                       .mipdata = mipdata,
+                       .csc = &csc,
+                       .ncol = model->num_col_,
+                       .nrow = model->num_row_,
+                       .nnz = mipdata->ARindex_.size(),
+                       .incumbent = mipdata->incumbent,
+                       .binary = build_binary_mask(mipsolver)};
 }

@@ -626,9 +626,9 @@ TEST_CASE("ProblemView::binary is a dispatch snapshot of isBinary (#99)",
 
     // A snapshot, not a live view: tightening a column's bounds the way
     // `getDomain().propagate()` does must not change what a worker sees
-    // mid-dispatch.  Pick a column the domain currently calls binary; if
-    // this instance has none, the immunity check below still runs against
-    // the general-integer half.
+    // mid-dispatch.  `lseu.mps` is binary-heavy so the search below always
+    // finds a probe; the `REQUIRE(probe >= 0)` guards a future instance swap
+    // that would quietly make the rest of this vacuous.
     HighsInt probe = -1;
     for (HighsInt j = 0; j < ncol; ++j) {
         if (problem.binary[j]) {
@@ -684,9 +684,11 @@ TEST_CASE("perturb_solution classifies columns from the mask it is given (#99)",
     // branch fired at all, not how often.
     REQUIRE(flipped > 20);
 
-    // Called general-integer: the same RNG stream perturbs the same
-    // columns, but through the shift path, which reaches values the
-    // binary path cannot produce.
+    // Called general-integer: the shift path consumes RNG draws the binary
+    // path does not, so the two streams diverge after the first perturbed
+    // column — this is not a column-for-column A/B.  What it pins is that
+    // the shift path ran at all, since it reaches values the binary path
+    // cannot produce.
     int above_one = 0;
     for (HighsInt j = 0; j < kNcol; ++j) {
         if (as_general[j] > 1.0) {

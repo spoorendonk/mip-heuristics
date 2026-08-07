@@ -1,6 +1,7 @@
 #include "scylla.h"
 
 #include "contested_pdlp.h"
+#include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "incumbent_sink.h"
@@ -18,6 +19,33 @@
 namespace scylla {
 
 namespace {
+
+// Variable orders for every entry of `kFprConfigs`, computed on the
+// dispatching thread before any parallel region.
+//
+// `ScyllaWorker`'s constructor used to compute its own, which was fine for
+// the initial workers (built sequentially below) but not for the rebuild
+// in `run_opportunistic_loop`'s callback: that runs on a task thread, so a
+// rebuilt worker read the live root domain through `bucket_by_type` while
+// a peer's accepted solution was propagating it (issue #99), and for the
+// `kTypecl` strategies also called `HighsCliqueTable::cliquePartition`,
+// which mutates and reallocates the clique table that `addIncumbent`'s
+// `extractObjCliques` is writing at the same time.  `fpr::run` has always
+// precomputed for exactly this reason; Scylla now does too.
+//
+// Behaviour-identical: the per-config seed is `base_seed + config_index`,
+// independent of the worker seed, so a worker rebuilt with a fresh seed
+// computed the same order it now looks up.  It also drops N redundant
+// computations of the same `kNumFprConfigs` orders at construction.
+std::vector<std::vector<HighsInt>> precompute_config_var_orders(HighsMipSolver &mipsolver) {
+    std::vector<std::vector<HighsInt>> orders(kNumFprConfigs);
+    const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
+    for (int i = 0; i < kNumFprConfigs; ++i) {
+        Rng rng(base + static_cast<uint32_t>(i));
+        orders[i] = compute_var_order(mipsolver, kFprConfigs[i].strat.var_strategy, rng, nullptr);
+    }
+    return orders;
+}
 
 // Emit the PDLP/FPR overlap metrics that issue #76 asks for as the
 // acceptance signal.  Sum per-worker fresh / stale counters before
@@ -71,6 +99,10 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
 
     std::atomic<uint64_t> improvement_gen{0};
 
+    // Sequential: `compute_var_order` reaches `cliquePartition` and the live
+    // root domain, neither of which is safe from a worker thread (#99).
+    const std::vector<std::vector<HighsInt>> var_orders = precompute_config_var_orders(mipsolver);
+
     // Pre-construct workers outside the parallel region so MakeState
     // can hand them back by index without racing on std::make_unique.
     const int N = static_cast<int>(exec.num_workers);
@@ -79,8 +111,9 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
     for (int w = 0; w < N; ++w) {
         uint32_t seed = exec.worker_seed(w);
         workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, *problem.csc, sink,
-                                                         problem.binary.data(), budget.total, seed,
-                                                         w, N, &improvement_gen));
+                                                         problem.binary.data(), var_orders,
+                                                         budget.total, seed, w, N,
+                                                         &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -111,8 +144,8 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                 // reinitialized from scratch but the underlying LP stays.
                 uint32_t new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
-                    mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), budget.total,
-                    new_seed, state.worker_idx, N, &improvement_gen);
+                    mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
+                    budget.total, new_seed, state.worker_idx, N, &improvement_gen);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has

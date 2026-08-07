@@ -25,10 +25,15 @@ struct TypeBuckets {
 };
 
 // Reads the live root domain rather than a dispatch snapshot
-// (`ProblemView::binary`, issue #99).  Legal here and only here: every
-// caller reaches this through `precompute_var_orders`, which both FPR and
-// fpr_lp run on the dispatching thread before opening a parallel region —
-// the same property that makes the `cliquePartition` call below safe.
+// (`ProblemView::binary`, issue #99).  Legal because every production
+// caller reaches this from the dispatching thread, before any parallel
+// region opens: `fpr::precompute_var_orders`, `fpr_lp`'s `build_setup`,
+// and — since #99 — `scylla::precompute_config_var_orders`.  That last one
+// exists precisely because `ScyllaWorker`'s constructor used to compute its
+// own order, and `scylla::run` rebuilds a retired worker from inside the
+// parallel loop.  It is the same property that makes the `cliquePartition`
+// call below safe, and it is load-bearing for both: keep any new caller on
+// the dispatching thread.
 TypeBuckets bucket_by_type(const HighsMipSolver& mipsolver) {
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();

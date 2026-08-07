@@ -33,7 +33,6 @@ struct WorkerCtx {
     const bool minimize;
     const HighsInt ncol;
     const HighsInt nrow;
-    HighsMipSolverData *mipdata;
     // Dispatch-time `isBinary` snapshot (`ProblemView::binary`), at least
     // `ncol` entries.  Never re-read the live root domain from here: a
     // peer's accepted solution propagates it while this worker runs

@@ -80,10 +80,16 @@ inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 class ScyllaWorker {
 public:
     // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
-    // issue #99); it must outlive the worker.
+    // issue #99) and `var_orders` holds one precomputed variable order per
+    // `kFprConfigs` entry.  Both are built on the dispatching thread and
+    // must outlive the worker: this constructor also runs on a task thread
+    // when `scylla::run` rebuilds a retired worker, and computing a var
+    // order there would read the live root domain and mutate the clique
+    // table under a concurrent `addIncumbent`.
     ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                 IncumbentSink &sink, const uint8_t *binary, size_t total_budget, uint32_t seed,
-                 int worker_idx, int num_workers,
+                 IncumbentSink &sink, const uint8_t *binary,
+                 const std::vector<std::vector<HighsInt>> &var_orders, size_t total_budget,
+                 uint32_t seed, int worker_idx, int num_workers,
                  std::atomic<uint64_t> *improvement_gen = nullptr);
 
     // Run iterations until attempt_budget effort is consumed.  Sets
@@ -175,7 +181,8 @@ private:
 
     // FPR strategy assignment (static, one per worker).
     int fpr_config_index_ = 0;
-    std::vector<HighsInt> var_order_;
+    // Points into the caller's dispatch-time table; never owned.
+    const std::vector<HighsInt> *var_order_ = nullptr;
 
     // Persistent scratch reused across fpr_attempt calls inside run_attempt
     // to avoid per-iteration malloc/free churn on the DFS + WalkSAT path.

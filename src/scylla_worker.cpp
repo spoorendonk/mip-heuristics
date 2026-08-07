@@ -1,6 +1,7 @@
 #include "scylla_worker.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -38,8 +39,10 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp,
                            const CscMatrix &csc, IncumbentSink &sink,
-                           const uint8_t *binary, size_t total_budget,
-                           uint32_t seed, int worker_idx, int num_workers,
+                           const uint8_t *binary,
+                           const std::vector<std::vector<HighsInt>> &var_orders,
+                           size_t total_budget, uint32_t seed, int worker_idx,
+                           int num_workers,
                            std::atomic<uint64_t> *improvement_gen)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
@@ -114,12 +117,12 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp,
   modified_cost_ = orig_cost;
   cycle_history_.reserve(pump::kCycleWindow);
 
-  // Pre-compute variable order for this worker's static strategy.
-  Rng order_rng(heuristic_base_seed(mipsolver_.options_mip_->random_seed) +
-                static_cast<uint32_t>(fpr_config_index_));
-  var_order_ = compute_var_order(
-      mipsolver_, kFprConfigs[fpr_config_index_].strat.var_strategy, order_rng,
-      nullptr);
+  // Look up this worker's variable order from the dispatch-time table.
+  // Computing it here would read the live root domain and call
+  // cliquePartition — see the constructor's contract (issue #99).
+  assert(fpr_config_index_ >= 0 &&
+         fpr_config_index_ < static_cast<int>(var_orders.size()));
+  var_order_ = &var_orders[fpr_config_index_];
 }
 
 bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult &result,
@@ -392,8 +395,8 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     cfg.mode = named.mode;
     cfg.strategy = &named.strat;
     cfg.lp_ref = nullptr;
-    cfg.precomputed_var_order = var_order_.data();
-    cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_.size());
+    cfg.precomputed_var_order = var_order_->data();
+    cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_->size());
     cfg.binary_mask = binary_;
     cfg.scratch = &fpr_scratch_;
 

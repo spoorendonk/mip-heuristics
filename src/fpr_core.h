@@ -7,6 +7,7 @@
 #include "walksat.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -182,9 +183,12 @@ struct FprConfig {
     // reads (issue #99).
     //
     // **Any caller running inside a parallel region must set this.**  The
-    // lifecycle API asserts on it; the one-shot `fpr_attempt` snapshots for
-    // itself when it is null, which is safe only because the callers that
-    // rely on that fallback are single-threaded.
+    // lifecycle API asserts on it — a debug assert, so a null mask in an
+    // NDEBUG build is a null dereference at the first `is_binary`, not a
+    // graceful degradation.  The one-shot `fpr_attempt` snapshots for
+    // itself when it is null; no caller relies on that today (both
+    // one-shot callers set the mask), it exists to match the `csc` /
+    // `scratch` compatibility shims beside it.
     const uint8_t *binary_mask = nullptr;
 
     // --- Repair parameters (paper: Salvagnin et al. 2025, Section 5) ---
