@@ -72,8 +72,9 @@ class NativeCounters:
     `heur_lp_iters` and `total_lp_iters` are upstream's own fields, but
     they are **shared**, not purely native: `EffortLedger::charge_dive`
     adds to both so `fpr_lp` competes with RENS/RINS for one envelope.
-    `fpr_lp_lp_iters` is exactly what our dive heuristic contributed —
-    subtract it to get HiGHS's own heuristic LP work.  Without that,
+    `fpr_lp_lp_iters` is exactly what our dive heuristic contributed to
+    each of them — subtract it from either to get HiGHS's own LP work
+    (`native_heur_lp_iters`, `native_total_lp_iters`).  Without that,
     comparing `suite=off` against `suite=all` reads our self-charge as a
     jump in native heuristic activity (on flugpl seed 1: 169 vs 1294 with
     identical rens/rins/rcfix counts), which is the exact confound this
@@ -85,7 +86,8 @@ class NativeCounters:
     rcfix: int
     heur_lp_iters: int
     total_lp_iters: int
-    # Both default for logs emitted before these fields were split out.
+    # Defaults for direct construction only: `_NATIVE_RE` requires every
+    # field, so a `[Native]` line without these two does not parse at all.
     rens_root: int = 0
     fpr_lp_lp_iters: int = 0
 
@@ -93,6 +95,15 @@ class NativeCounters:
     def native_heur_lp_iters(self) -> int:
         """`heur_lp_iters` with our own dive heuristic's charge removed."""
         return self.heur_lp_iters - self.fpr_lp_lp_iters
+
+    @property
+    def native_total_lp_iters(self) -> int:
+        """`total_lp_iters` with our own dive heuristic's charge removed.
+
+        `charge_dive` adds the same value to both upstream counters, so
+        this subtraction is the companion to `native_heur_lp_iters`.
+        """
+        return self.total_lp_iters - self.fpr_lp_lp_iters
 
 
 @dataclass

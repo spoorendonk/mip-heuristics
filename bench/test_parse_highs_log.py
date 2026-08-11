@@ -249,6 +249,8 @@ def test_native_heur_lp_iters_excludes_our_own_dive_charge():
     native = parse_log(log).native
     assert native is not None
     assert native.native_heur_lp_iters == 169
+    # `charge_dive` bills the same value to both upstream counters.
+    assert native.native_total_lp_iters == 18875
 
 
 def test_native_root_rens_is_a_subset_of_total_rens():
