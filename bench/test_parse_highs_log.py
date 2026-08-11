@@ -154,6 +154,103 @@ def test_primal_gap_at_returns_none_when_dual_bound_infinite():
     assert math.isfinite(pi), f"Expected finite primal_integral but got {pi}"
 
 
+def test_heur_lines_parse_into_heuristic_samples():
+    """`[Heur]` carries phase, window and outcome (issue #95)."""
+    log = (
+        "[Heur] name=fj phase=presolve start_s=0.412 end_s=1.077 effort=8388608 "
+        "wall_ms=665.2 effort_per_ms=12610.100 found=1\n"
+        "[Heur] name=fpr_lp phase=dive start_s=3.901 end_s=4.115 effort=1048576 "
+        "wall_ms=214.0 effort_per_ms=4900.800 found=0\n"
+    )
+    result = parse_log(log)
+    assert len(result.heuristic_samples) == 2
+
+    fj, fpr_lp = result.heuristic_samples
+    assert (fj.name, fj.phase) == ("fj", "presolve")
+    assert fj.start_s == 0.412
+    assert fj.end_s == 1.077
+    assert fj.effort == 8388608
+    assert fj.wall_ms == 665.2
+    assert fj.effort_per_ms == 12610.1
+    assert fj.found is True
+
+    assert (fpr_lp.name, fpr_lp.phase) == ("fpr_lp", "dive")
+    assert fpr_lp.found is False
+
+    # heuristic_wall_fraction needs a solve time to divide by.
+    assert result.heuristic_wall_fraction is None
+    result.solve_time = 8.792
+    assert result.heuristic_wall_fraction == (665.2 + 214.0) / 1000.0 / 8.792
+
+
+def test_native_line_parses_into_native_counters():
+    """`[Native]` is the internal-budget cannibalization measurement."""
+    log = "[Native] rens=3 rins=7 rcfix=1 heur_lp_iters=48211 total_lp_iters=193044\n"
+    result = parse_log(log)
+    assert result.native is not None
+    assert result.native.rens == 3
+    assert result.native.rins == 7
+    assert result.native.rcfix == 1
+    assert result.native.heur_lp_iters == 48211
+    assert result.native.total_lp_iters == 193044
+
+
+def test_root_line_parses_into_root_timing():
+    """`[Root]` is the wall-clock cannibalization measurement."""
+    log = "[Root] lp_time_s=1.402 presolve_heur_s=2.118\n"
+    result = parse_log(log)
+    assert result.root is not None
+    assert result.root.lp_time_s == 1.402
+    assert result.root.presolve_heur_s == 2.118
+    assert result.time_to_root_lp == 1.402
+
+
+def test_root_line_negative_lp_time_means_root_lp_not_reached():
+    """The solver emits -1 when the root LP was never started (presolve
+    solved the model, or a limit fired first).  The line must still parse,
+    and `time_to_root_lp` must report "no root LP" rather than t=0."""
+    result = parse_log("[Root] lp_time_s=-1.000 presolve_heur_s=0.000\n")
+    assert result.root is not None
+    assert result.root.lp_time_s == -1.0
+    assert result.time_to_root_lp is None
+
+
+def test_log_without_instrumentation_lines_parses_unchanged():
+    """Back-compatibility: logs predating issue #95 (or any run below
+    log_dev_level=3) carry none of the three new line types."""
+    log = (
+        "MIP ex has 50 rows; 100 cols; 200 nonzeros; 60 integer variables (40 binary)\n"
+        "[Sequential] heur=fpr effort=2500 wall_ms=50.0 effort_per_ms=50\n"
+        "  Status            Optimal\n"
+        "  Timing            5.0\n"
+    )
+    result = parse_log(log)
+    assert result.heuristic_samples == []
+    assert result.native is None
+    assert result.root is None
+    assert result.time_to_root_lp is None
+    assert result.heuristic_wall_fraction is None
+    # The legacy line still parses alongside the absent new ones.
+    assert len(result.sequential_samples) == 1
+    assert result.status == "Optimal"
+
+
+def test_sequential_and_heur_lines_coexist():
+    """Both tags are emitted for the same observation; `[Sequential]` is
+    what `check_effort_drift.py` calibrates on and must keep parsing."""
+    log = (
+        "[Sequential] heur=scylla effort=4000 wall_ms=800.0 effort_per_ms=5.000\n"
+        "[Heur] name=scylla phase=presolve start_s=1.0 end_s=1.8 effort=4000 "
+        "wall_ms=800.0 effort_per_ms=5.000 found=1\n"
+    )
+    result = parse_log(log)
+    assert len(result.sequential_samples) == 1
+    assert result.sequential_samples[0].heuristic == "scylla"
+    assert result.sequential_samples[0].effort == 4000
+    assert len(result.heuristic_samples) == 1
+    assert result.heuristic_samples[0].name == "scylla"
+
+
 def test_sequential_zero_effort_line_parses():
     """Zero-effort [Sequential] lines (e.g. local_mip skipping a cold
     solve) are emitted so a human reader sees the skip; the drift script

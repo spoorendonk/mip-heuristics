@@ -425,7 +425,11 @@ void run(HighsMipSolver &mipsolver) {
 
     // Wall clock starts here: everything from this point on is fpr_lp's
     // spend, the reference-LP solves inside `build_setup` included.
-    const double t0_s = EffortLedger::now_s();
+    // The ledger is constructed first because it owns the clock — its
+    // `now_s` reads the solver's timer so this window is comparable with
+    // the `[Root]` timestamps (issue #95).
+    EffortLedger ledger(mipsolver);
+    const double t0_s = ledger.now_s();
 
     auto setup_opt = build_setup(mipsolver, max_effort);
     if (!setup_opt) {
@@ -441,6 +445,7 @@ void run(HighsMipSolver &mipsolver) {
     const size_t worker_budget = setup_units < setup.budget ? setup.budget - setup_units : 0;
 
     size_t worker_effort = 0;
+    bool found = false;
     if (worker_budget >= min_effort) {
         // The sink owns the pool, seeds it from the incumbent, and wires
         // immediate submission so incumbent timestamps reflect find time
@@ -456,6 +461,9 @@ void run(HighsMipSolver &mipsolver) {
         const ExecutionContext exec = make_exec(mipsolver);
         worker_effort =
             run_workers(setup, exec, make_budget(worker_budget, exec.num_workers), sink);
+        // Read after the worker loop has joined; the sink starts at zero
+        // because it is constructed per dispatch.
+        found = sink.accepted() > 0;
     }
 
     // The ledger books the observability counter, emits the per-heuristic
@@ -463,8 +471,8 @@ void run(HighsMipSolver &mipsolver) {
     // envelope.  fpr_lp is the only caller of `charge_dive`; that envelope
     // depletion is what makes it compete for the vanilla heuristic budget
     // rather than draw unaccounted work.
-    EffortLedger(mipsolver).charge_dive("fpr_lp", worker_effort, setup.setup_lp_iterations, nnz,
-                                        t0_s, EffortLedger::now_s());
+    ledger.charge_dive("fpr_lp", worker_effort, found, setup.setup_lp_iterations, nnz, t0_s,
+                       ledger.now_s());
 }
 
 DispatchCounts dispatch_counts() {

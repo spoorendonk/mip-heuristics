@@ -37,6 +37,66 @@ class SequentialSample:
 
 
 @dataclass
+class HeuristicSample:
+    """A single `[Heur]` cannibalization observation (issue #95).
+
+    Emitted by `EffortLedger::book` alongside the legacy `[Sequential]`
+    line, once per presolve-chain heuristic per solve and once per
+    dive-time `fpr_lp` dispatch.  Carries what `[Sequential]` cannot:
+    *when* the heuristic ran, on the solver's own clock, so its window can
+    be placed against `[Root] lp_time_s`; which side of the patch boundary
+    it ran on (`phase`); and whether it produced anything (`found`).
+    """
+
+    name: str  # fj, fpr, local_mip, scylla, fpr_lp
+    phase: str  # presolve | dive
+    start_s: float
+    end_s: float
+    effort: int
+    wall_ms: float
+    effort_per_ms: float
+    found: bool
+
+
+@dataclass
+class NativeCounters:
+    """The `[Native]` line: HiGHS's own heuristic activity for one solve.
+
+    `rens` / `rins` / `rcfix` count invocations of upstream's RENS, RINS
+    and root-reduced-cost heuristics across the whole solve (root node and
+    B&B dive alike).  The two LP-iteration counters are upstream's own
+    fields, reported rather than added.  Together they separate
+    internal-budget cannibalization (our heuristics consuming the counters
+    that gate RENS/RINS) from wall-clock cannibalization.
+    """
+
+    rens: int
+    rins: int
+    rcfix: int
+    heur_lp_iters: int
+    total_lp_iters: int
+
+
+@dataclass
+class RootTiming:
+    """The `[Root]` line: when the root LP started, and what preceded it.
+
+    `lp_time_s` is elapsed solve seconds at the start of the first root LP
+    solve, or negative when the root LP was never reached (presolve solved
+    the model, or a limit fired first).  `presolve_heur_s` is the wall time
+    the custom presolve chain spent before it.
+
+    On an instance that restarts, HiGHS re-runs both the presolve chain and
+    the root node, so `presolve_heur_s` accumulates over every restart while
+    `lp_time_s` pins the first root LP.  `presolve_heur_s > lp_time_s` is
+    therefore expected there, not a contradiction.
+    """
+
+    lp_time_s: float
+    presolve_heur_s: float
+
+
+@dataclass
 class SolveResult:
     """Parsed result from a HiGHS MIP solve."""
 
@@ -57,6 +117,11 @@ class SolveResult:
     num_binary: int | None = None
     incumbents: list[Incumbent] = field(default_factory=list)
     sequential_samples: list[SequentialSample] = field(default_factory=list)
+    heuristic_samples: list[HeuristicSample] = field(default_factory=list)
+    # Both None for a log produced before issue #95, or by any run below
+    # log_dev_level=3.
+    native: NativeCounters | None = None
+    root: RootTiming | None = None
 
     @property
     def category(self) -> str | None:
@@ -87,6 +152,31 @@ class SolveResult:
         if self.incumbents:
             return self.incumbents[0].time
         return None
+
+    @property
+    def time_to_root_lp(self) -> float | None:
+        """Elapsed seconds when the first root LP solve started.
+
+        None when the log carries no `[Root]` line, or when the root LP was
+        never reached (sentinel negative value).
+        """
+        if self.root is None or self.root.lp_time_s < 0.0:
+            return None
+        return self.root.lp_time_s
+
+    @property
+    def heuristic_wall_fraction(self) -> float | None:
+        """Share of total solve wall time spent inside our heuristics.
+
+        The cannibalization headline number: the sum of every `[Heur]`
+        window (presolve chain and B&B dive alike) over the solve time
+        HiGHS reports.  None when either input is missing — no `[Heur]`
+        lines, or no `Timing` line to divide by.
+        """
+        if not self.heuristic_samples or self.solve_time <= 0.0:
+            return None
+        total_ms = sum(h.wall_ms for h in self.heuristic_samples)
+        return total_ms / 1000.0 / self.solve_time
 
     @property
     def time_to_best(self) -> float | None:
@@ -195,6 +285,28 @@ _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 # `bench/check_effort_drift.py` to calibrate `kWeight*`.
 _SEQUENTIAL_RE = re.compile(
     r"^\s*\[Sequential\] heur=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
+)
+
+# Cannibalization instrumentation, all three from issue #95 and all three
+# at log_dev_level=3.  `[Heur]` is emitted next to `[Sequential]` by
+# `EffortLedger::book`; `[Native]` and `[Root]` once per solve by
+# `heuristics::log_solve_summary` in src/mode_dispatch.cpp:
+#   [Heur] name=fj phase=presolve start_s=0.412 end_s=1.077 effort=8388608 \
+#          wall_ms=665.2 effort_per_ms=12610.1 found=1
+#   [Native] rens=3 rins=7 rcfix=1 heur_lp_iters=48211 total_lp_iters=193044
+#   [Root] lp_time_s=1.402 presolve_heur_s=2.118
+# `lp_time_s` takes an optional sign: -1 is the "root LP never reached"
+# sentinel, and a pattern without it would silently skip the line.
+_HEUR_RE = re.compile(
+    r"^\s*\[Heur\] name=(\S+) phase=(\S+) start_s=([\d.]+) end_s=([\d.]+) "
+    r"effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+) found=(\d+)"
+)
+_NATIVE_RE = re.compile(
+    r"^\s*\[Native\] rens=(\d+) rins=(\d+) rcfix=(\d+) "
+    r"heur_lp_iters=(-?\d+) total_lp_iters=(-?\d+)"
+)
+_ROOT_RE = re.compile(
+    r"^\s*\[Root\] lp_time_s=(-?[\d.]+) presolve_heur_s=(-?[\d.]+)"
 )
 
 # Model header emitted by HiGHS right after reading the MPS, e.g.
@@ -333,6 +445,43 @@ def parse_log(log_text: str) -> SolveResult:
                     wall_ms=float(m.group(3)),
                     effort_per_ms=float(m.group(4)),
                 )
+            )
+            continue
+
+        # Cannibalization instrumentation (issue #95).
+        m = _HEUR_RE.match(line)
+        if m:
+            result.heuristic_samples.append(
+                HeuristicSample(
+                    name=m.group(1),
+                    phase=m.group(2),
+                    start_s=float(m.group(3)),
+                    end_s=float(m.group(4)),
+                    effort=int(m.group(5)),
+                    wall_ms=float(m.group(6)),
+                    effort_per_ms=float(m.group(7)),
+                    found=m.group(8) != "0",
+                )
+            )
+            continue
+        m = _NATIVE_RE.match(line)
+        if m:
+            # Last occurrence wins.  One per solve in practice, but a log
+            # concatenating several runs should report the final state
+            # rather than the first.
+            result.native = NativeCounters(
+                rens=int(m.group(1)),
+                rins=int(m.group(2)),
+                rcfix=int(m.group(3)),
+                heur_lp_iters=int(m.group(4)),
+                total_lp_iters=int(m.group(5)),
+            )
+            continue
+        m = _ROOT_RE.match(line)
+        if m:
+            result.root = RootTiming(
+                lp_time_s=float(m.group(1)),
+                presolve_heur_s=float(m.group(2)),
             )
             continue
 

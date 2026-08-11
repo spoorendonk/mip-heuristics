@@ -26,9 +26,10 @@ class HighsMipSolver;
 // State-mutation invariant: this class is the *only* thing in `src/`
 // allowed to write upstream `HighsMipSolverData` counters, and only in
 // `charge_dive`, where depleting the envelope is the deliberate contract.
-// `charge_presolve` touches nothing upstream — `heuristic_effort_used` is
-// a patch-added field with no upstream reader.  A heuristic that is
-// disabled must reach neither method.
+// `charge_presolve` touches nothing upstream — `heuristic_effort_used`
+// and `presolve_heuristic_time` are both patch-added fields with no
+// upstream reader.  A heuristic that is disabled must reach neither
+// method.
 //
 // Threading invariant: every counter update here is a plain non-atomic
 // `+=`.  Both methods must be called from the dispatching thread with every
@@ -40,13 +41,20 @@ class EffortLedger {
 public:
     explicit EffortLedger(HighsMipSolver &mipsolver) : mipsolver_(mipsolver) {}
 
-    // Seconds on a monotonic clock, for the `t0_s` / `t1_s` arguments
-    // below.  Exposed here so every caller times against one clock.
-    static double now_s();
+    // Elapsed solve seconds, for the `t0_s` / `t1_s` arguments below.
+    // Exposed here so every caller times against one clock — and it is
+    // deliberately the *solver's* clock (`HighsMipSolver::timer_`) rather
+    // than a raw `steady_clock`, so the `start_s` / `end_s` fields of the
+    // `[Heur]` line share an origin with the `[Root] lp_time_s` timestamp
+    // and with HiGHS's own display-line time column.  Comparing a
+    // heuristic's window against when the root LP started is the whole
+    // point of the cannibalization instrumentation (issue #95).
+    double now_s() const;
 
     // A presolve-chain heuristic (FJ / FPR / LocalMIP / Scylla) consumed
-    // `effort` units between `t0_s` and `t1_s`.
-    void charge_presolve(const char *name, size_t effort, double t0_s, double t1_s);
+    // `effort` units between `t0_s` and `t1_s`.  `found` is whether the
+    // shared `IncumbentSink` accepted at least one of its solutions.
+    void charge_presolve(const char *name, size_t effort, bool found, double t0_s, double t1_s);
 
     // A B&B-dive heuristic (fpr_lp) did the same, and additionally owes
     // the shared heuristic LP-iteration envelope: its `setup_lp_iters`
@@ -54,11 +62,12 @@ public:
     // per LP iteration are charged to `heuristic_lp_iterations` and
     // `total_lp_iterations`, mirroring how RENS/RINS flush their sub-MIP
     // LP iterations.  `nnz` must be non-zero.
-    void charge_dive(const char *name, size_t effort, int64_t setup_lp_iters, size_t nnz,
-                     double t0_s, double t1_s);
+    void charge_dive(const char *name, size_t effort, bool found, int64_t setup_lp_iters,
+                     size_t nnz, double t0_s, double t1_s);
 
 private:
-    void book(const char *name, size_t effort, double t0_s, double t1_s);
+    void book(const char *name, const char *phase, size_t effort, bool found, double t0_s,
+              double t1_s);
 
     HighsMipSolver &mipsolver_;
 };

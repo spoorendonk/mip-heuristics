@@ -68,7 +68,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Bump PATCH_VERSION whenever any inserted text changes, and add any
 # identifier this script stops inserting to the retired list.
-set(PATCH_VERSION "4")
+set(PATCH_VERSION "5")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     # No `;` in an entry: set() builds a cmake list and would split on it,
@@ -278,6 +278,63 @@ else()
     message(STATUS "heuristic_effort_used field already applied, skipping")
 endif()
 
+# ── Cannibalization instrumentation counters (issue #95) ──
+# Four patch-added fields with no upstream reader, plus one for our own
+# presolve wall time.  They exist to answer the closeout question "do the
+# custom presolve heuristics starve HiGHS's own RENS/RINS, or delay the
+# root LP?", which needs measurements on both sides of the patch boundary.
+#
+# Anchored on *upstream's* `double heuristic_effort;`, the same text the
+# heuristic_effort_used block above anchors on, rather than on that
+# block's inserted line — chaining onto our own text is what epic #88
+# coupling C warns about.  Both blocks insert directly after the anchor
+# and this one runs second, so the layout is
+#   double heuristic_effort;  <these fields>  size_t heuristic_effort_used;
+# and either block can be removed without touching the other.
+#
+# `std::atomic` because the B&B-dive RENS/RINS call site runs inside
+# `runTask` and executes concurrently across workers when `parallel=on`;
+# a plain `++` there would be a data race.  The root-node counters and
+# both doubles are written single-threaded, but share the type for
+# uniformity at the read sites.
+string(FIND "${MIPDATA_H}" "rens_calls" _instr_fields_found)
+if(_instr_fields_found EQUAL -1)
+    string(REPLACE
+      "#include <vector>"
+      "#include <atomic>\n#include <vector>"
+      MIPDATA_H "${MIPDATA_H}")
+    string(REPLACE
+      "  double heuristic_effort;"
+      "  double heuristic_effort;\n  // mip-heuristics: cannibalization instrumentation (issue #95).\n  // Incremented at existing call sites; no upstream reader, no control\n  // flow touched, so these read identically on a patched suite=off run\n  // and on an unpatched binary.\n  std::atomic<size_t> rens_calls{0};\n  std::atomic<size_t> rins_calls{0};\n  std::atomic<size_t> rcfix_calls{0};\n  // Elapsed solve seconds when the first root LP solve started; negative\n  // until it does.  A pure read of mipsolver.timer_.\n  double root_lp_time = -1.0;\n  // Wall seconds the custom presolve heuristic chain spent before the\n  // root node.  Written by src/effort_ledger.cpp on the dispatching\n  // thread; read by heuristics::log_solve_summary.\n  double presolve_heuristic_time = 0.0;"
+      MIPDATA_H "${MIPDATA_H}")
+
+    # Sanity checks: a missed anchor here is silent — the fields simply
+    # never appear and every call site below fails to compile with an
+    # error that points at HiGHS rather than at this script.
+    string(REGEX MATCHALL "std::atomic<size_t> rens_calls" _instr_rens_hits "${MIPDATA_H}")
+    list(LENGTH _instr_rens_hits _instr_rens_count)
+    string(REGEX MATCHALL "double root_lp_time = -1.0" _instr_root_hits "${MIPDATA_H}")
+    list(LENGTH _instr_root_hits _instr_root_count)
+    string(REGEX MATCHALL "#include <atomic>" _instr_atomic_hits "${MIPDATA_H}")
+    list(LENGTH _instr_atomic_hits _instr_atomic_count)
+    if(NOT _instr_rens_count EQUAL 1 OR NOT _instr_root_count EQUAL 1
+       OR NOT _instr_atomic_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolverData.h post-patch sanity check failed for the "
+            "instrumentation counters (rens=${_instr_rens_count}, "
+            "root_lp_time=${_instr_root_count}, atomic_include=${_instr_atomic_count}). "
+            "Upstream HiGHS likely reformatted the 'double heuristic_effort;' "
+            "member or the include block. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
+    message(STATUS "Applied instrumentation counters to HighsMipSolverData.h")
+else()
+    message(STATUS "Instrumentation counters already applied, skipping")
+endif()
+
 string(FIND "${MIPDATA_H}" "feasibilityJumpCapture" _fj_h_found)
 if(_fj_h_found EQUAL -1)
     string(REPLACE
@@ -414,6 +471,70 @@ if(_src_cpp_found EQUAL -1)
     message(STATUS "Applied solution source strings to HighsMipSolverData.cpp")
 else()
     message(STATUS "Solution source strings already applied, skipping")
+endif()
+
+# ── Root-node instrumentation: rcfix/RENS counts + root LP timestamp (#95) ──
+# Independent of the source-string block above: its own sentinel, its own
+# anchors, its own check.  Three insertions, all of them additive
+# statements placed immediately before an existing one — no upstream
+# statement is moved, reordered or made conditional, which is the
+# equivalence invariant these counters exist to be measured against.
+#
+# `rootReducedCost` is called from nowhere else in HiGHS, so the root
+# block is the only place `rcfix_calls` can be counted; RENS is called
+# here *and* in the B&B dive lambda, and both sites increment so the
+# reported count is the whole solve's.  RINS has no root call site.
+#
+# `root_lp_time` is guarded on its own sentinel value rather than on
+# `numRestarts`: `evaluateRootNode` runs again after a restart, and the
+# question the number answers ("when did the root LP first get to start,
+# given what ran before it") is about the first one.
+file(READ "${MIP_DIR}/HighsMipSolverData.cpp" MIPDATA_CPP2)
+string(FIND "${MIPDATA_CPP2}" "rcfix_calls" _root_instr_found)
+if(_root_instr_found EQUAL -1)
+    string(REPLACE
+      "      heuristics.rootReducedCost(worker);"
+      "      rcfix_calls.fetch_add(1, std::memory_order_relaxed);\n      heuristics.rootReducedCost(worker);"
+      MIPDATA_CPP2 "${MIPDATA_CPP2}")
+    string(REPLACE
+      "      heuristics.RENS(worker, rootlpsol);"
+      "      rens_calls.fetch_add(1, std::memory_order_relaxed);\n      heuristics.RENS(worker, rootlpsol);"
+      MIPDATA_CPP2 "${MIPDATA_CPP2}")
+    # The declaration (`HighsLpRelaxation::Status status = ...`) is what
+    # makes this the *first* of the eleven evaluateRootLp calls in the
+    # file; every later one assigns to the already-declared `status`.
+    string(REPLACE
+      "  profiling->start(kMipClockEvaluateRootLp);\n  HighsLpRelaxation::Status status = evaluateRootLp(worker);"
+      "  if (root_lp_time < 0.0)\n    root_lp_time = mipsolver.timer_.read();  // mip-heuristics (#95)\n  profiling->start(kMipClockEvaluateRootLp);\n  HighsLpRelaxation::Status status = evaluateRootLp(worker);"
+      MIPDATA_CPP2 "${MIPDATA_CPP2}")
+
+    # Sanity checks: every miss here is silent.  A missed counter reports
+    # zero RENS/rcfix calls forever, which reads as "the custom heuristics
+    # starved them completely" — the exact conclusion this instrumentation
+    # exists to test, arrived at from a broken anchor.  A missed
+    # root_lp_time leaves the field at -1 and the [Root] line useless.
+    string(REGEX MATCHALL "rcfix_calls.fetch_add" _root_rcfix_hits "${MIPDATA_CPP2}")
+    list(LENGTH _root_rcfix_hits _root_rcfix_count)
+    string(REGEX MATCHALL "rens_calls.fetch_add" _root_rens_hits "${MIPDATA_CPP2}")
+    list(LENGTH _root_rens_hits _root_rens_count)
+    string(REGEX MATCHALL "root_lp_time = mipsolver.timer_.read\\(\\)" _root_time_hits "${MIPDATA_CPP2}")
+    list(LENGTH _root_time_hits _root_time_count)
+    if(NOT _root_rcfix_count EQUAL 1 OR NOT _root_rens_count EQUAL 1
+       OR NOT _root_time_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolverData.cpp post-patch sanity check failed for the "
+            "root-node instrumentation (rcfix=${_root_rcfix_count}, "
+            "rens=${_root_rens_count}, root_lp_time=${_root_time_count}). "
+            "Upstream HiGHS likely reformatted evaluateRootNode so one of the "
+            "call-site anchors no longer matches. "
+            "Please clean the HiGHS source tree and rebuild: "
+            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
+            "cmake -B build && cmake --build build")
+    endif()
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP2}")
+    message(STATUS "Applied root-node instrumentation to HighsMipSolverData.cpp")
+else()
+    message(STATUS "Root-node instrumentation already applied, skipping")
 endif()
 
 # ── Patch HighsFeasibilityJump.cpp: add capture implementation ──
@@ -728,4 +849,89 @@ if(_fprlp_found EQUAL -1)
     message(STATUS "Applied fpr_lp B&B dive patch to HighsMipSolver.cpp")
 else()
     message(STATUS "fpr_lp B&B dive patch already applied, skipping")
+endif()
+
+# ── Patch D: count HiGHS's own RENS/RINS calls in the B&B dive (#95) ──
+# Deliberately anchored on the `mipdata_->heuristics.RENS(` /
+# `.RINS(` call statements rather than on the profiling stop that Patch C
+# above uses, even though both live in the same `runHeuristics` lambda:
+# the two blocks must stay independently editable, and re-using Patch C's
+# anchor would make changing either one silently shift the other.
+#
+# Both increments are additive statements placed immediately before an
+# existing call.  Nothing is reordered and nothing becomes conditional,
+# so the dive behaves exactly as an unpatched binary does.  The counters
+# are atomic because `runHeuristics` is invoked from `runTask` and runs
+# concurrently across B&B workers when `parallel=on`.
+file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
+string(FIND "${CONTENT}" "mipdata_->rens_calls" _dive_instr_found)
+if(_dive_instr_found EQUAL -1)
+    string(REPLACE
+      "        mipdata_->heuristics.RENS("
+      "        mipdata_->rens_calls.fetch_add(1, std::memory_order_relaxed);\n        mipdata_->heuristics.RENS("
+      CONTENT "${CONTENT}")
+    string(REPLACE
+      "        mipdata_->heuristics.RINS("
+      "        mipdata_->rins_calls.fetch_add(1, std::memory_order_relaxed);\n        mipdata_->heuristics.RINS("
+      CONTENT "${CONTENT}")
+
+    # Silent on a miss: the dive calls stop being counted and the
+    # `[Native]` line under-reports, which reads as starvation that did
+    # not happen.
+    string(REGEX MATCHALL "mipdata_->rens_calls.fetch_add" _dive_rens_hits "${CONTENT}")
+    list(LENGTH _dive_rens_hits _dive_rens_count)
+    string(REGEX MATCHALL "mipdata_->rins_calls.fetch_add" _dive_rins_hits "${CONTENT}")
+    list(LENGTH _dive_rins_hits _dive_rins_count)
+    if(NOT _dive_rens_count EQUAL 1 OR NOT _dive_rins_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolver.cpp post-patch sanity check failed for the dive "
+            "RENS/RINS counters (rens=${_dive_rens_count}, rins=${_dive_rins_count}). "
+            "Upstream HiGHS likely reformatted the runHeuristics lambda so an "
+            "exact-string anchor no longer matches. "
+            "Please update Patch D in third_party/highs_patch/apply_patch.cmake. "
+            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+    endif()
+
+    file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
+    message(STATUS "Applied dive RENS/RINS counters to HighsMipSolver.cpp")
+else()
+    message(STATUS "Dive RENS/RINS counters already applied, skipping")
+endif()
+
+# ── Patch E: emit the once-per-solve [Native] / [Root] lines (#95) ──
+# `cleanupSolve` is the single funnel every exit path of
+# `HighsMipSolver::run` goes through, including the early returns that
+# never reach the root node, so one call here reports exactly once per
+# solve without adding a return path of its own.  The emission is placed
+# before the final display line so the instrumentation precedes HiGHS's
+# solving report rather than interleaving with it.
+#
+# The declaration comes from the `mode_dispatch.h` include added by
+# Patch A/A2 above.  That is the one cross-block dependency here, and it
+# fails loudly (a compile error naming `heuristics::log_solve_summary`)
+# rather than silently, which is why it is not duplicated.
+file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
+string(FIND "${CONTENT}" "log_solve_summary" _summary_found)
+if(_summary_found EQUAL -1)
+    string(REPLACE
+      "  // Force a final logging line\n  mipdata_->printDisplayLine(kSolutionSourceCleanup);"
+      "  heuristics::log_solve_summary(*this);\n  // Force a final logging line\n  mipdata_->printDisplayLine(kSolutionSourceCleanup);"
+      CONTENT "${CONTENT}")
+
+    string(REGEX MATCHALL "heuristics::log_solve_summary" _summary_hits "${CONTENT}")
+    list(LENGTH _summary_hits _summary_count)
+    if(NOT _summary_count EQUAL 1)
+        message(FATAL_ERROR
+            "HighsMipSolver.cpp post-patch sanity check failed: expected exactly "
+            "1 occurrence of 'heuristics::log_solve_summary', got ${_summary_count}. "
+            "Upstream HiGHS likely reformatted cleanupSolve so the final-display-line "
+            "anchor no longer matches. "
+            "Please update Patch E in third_party/highs_patch/apply_patch.cmake. "
+            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+    endif()
+
+    file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
+    message(STATUS "Applied solve-summary instrumentation to HighsMipSolver.cpp")
+else()
+    message(STATUS "Solve-summary instrumentation already applied, skipping")
 endif()

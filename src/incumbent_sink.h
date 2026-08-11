@@ -3,6 +3,8 @@
 #include "rng.h"
 #include "solution_pool.h"
 
+#include <atomic>
+#include <cstddef>
 #include <mutex>
 #include <vector>
 
@@ -34,8 +36,27 @@ public:
     // in which case HiGHS has already been told, from inside this call.
     // Safe to call concurrently from any worker.
     bool offer(double objective, const std::vector<double> &solution) {
-        return pool_.try_add(objective, solution, source_);
+        const bool accepted = pool_.try_add(objective, solution, source_);
+        if (accepted) {
+            accepted_.fetch_add(1, std::memory_order_relaxed);
+        }
+        return accepted;
     }
+
+    // Number of offers the pool has accepted since construction.  The
+    // `found` field of the `[Heur]` instrumentation line (issue #95) is
+    // this counter moving across one heuristic's dispatch; the sink is
+    // the only place that knows, because a worker's return value is its
+    // effort and nothing else.  Relaxed loads are enough: the dispatching
+    // thread reads it either side of a joined parallel region, so the
+    // join already provides the ordering.
+    //
+    // "Accepted by the pool", not "improved the incumbent": the pool also
+    // admits a solution within `kDiversityObjTolerance` of the best when
+    // it is structurally diverse.  `found=1` therefore means the heuristic
+    // produced a feasible solution worth keeping, which is the question
+    // the cannibalization tables ask.
+    size_t accepted() const { return accepted_.load(std::memory_order_relaxed); }
 
     // Retarget the attribution tag for subsequent offers.  Legal only
     // between heuristics, on the dispatching thread, with every parallel
@@ -56,4 +77,5 @@ private:
     // thread produced the solution.
     std::mutex highs_mtx_;
     int source_;
+    std::atomic<size_t> accepted_{0};
 };

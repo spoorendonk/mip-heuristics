@@ -12,6 +12,7 @@
 #include "scylla.h"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 
 namespace heuristics {
@@ -324,9 +325,14 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // sits outside all four, since it is no longer any one of them.
     EffortLedger ledger(mipsolver);
     auto run_and_charge = [&](const char *name, auto &&call) {
-        const double t0_s = EffortLedger::now_s();
+        // `found` is the sink's accepted-offer count moving across this
+        // heuristic's dispatch.  Read either side of the call, on this
+        // thread, with the parallel region joined at both points.
+        const size_t accepted_before = sink.accepted();
+        const double t0_s = ledger.now_s();
         const size_t effort = call();
-        ledger.charge_presolve(name, effort, t0_s, EffortLedger::now_s());
+        ledger.charge_presolve(name, effort, sink.accepted() > accepted_before, t0_s,
+                               ledger.now_s());
     };
 
     // Each heuristic's inner loops also poll the deadline, but their own
@@ -411,6 +417,48 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     }
 
     return run_sequential(mipsolver, budget, flags);
+}
+
+void log_solve_summary(HighsMipSolver &mipsolver) {
+    // RENS and RINS each build a sub-MIP with its own HighsMipSolver, and
+    // cleanupSolve runs for those too.  Their counters describe a
+    // different model, and one `[Native]` line per sub-MIP would make the
+    // per-solve records ambiguous, so only the outer solve reports.
+    if (mipsolver.submip) {
+        return;
+    }
+    const HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
+    if (mipdata == nullptr) {
+        return;
+    }
+    const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
+
+    // `%lld` with an explicit cast: the LP-iteration counters are int64_t,
+    // whose printf length modifier is platform-dependent.
+    highsLogDev(log_options, HighsLogType::kVerbose,
+                "[Native] rens=%zu rins=%zu rcfix=%zu heur_lp_iters=%lld total_lp_iters=%lld\n",
+                mipdata->rens_calls.load(std::memory_order_relaxed),
+                mipdata->rins_calls.load(std::memory_order_relaxed),
+                mipdata->rcfix_calls.load(std::memory_order_relaxed),
+                static_cast<long long>(mipdata->heuristic_lp_iterations),
+                static_cast<long long>(mipdata->total_lp_iterations));
+
+    // `lp_time_s` is negative when the root LP was never reached (presolve
+    // solved or proved the model, or a limit fired first); the parser
+    // treats that as "no root LP" rather than "at t=0".
+    //
+    // The two fields are not on the same footing across a restart, and
+    // deliberately so: HiGHS's `goto restart` re-enters above both the
+    // presolve chain and `evaluateRootNode` without rebuilding `mipdata_`,
+    // so `presolve_heur_s` accumulates over every restart while
+    // `lp_time_s` pins the *first* root LP.  "How long until the root LP
+    // first got to start" and "how much wall time did the presolve chain
+    // cost in total" are the two questions being asked; on a restarting
+    // instance `presolve_heur_s > lp_time_s` is therefore expected rather
+    // than a contradiction.
+    highsLogDev(log_options, HighsLogType::kVerbose,
+                "[Root] lp_time_s=%.3f presolve_heur_s=%.3f\n", mipdata->root_lp_time,
+                mipdata->presolve_heuristic_time);
 }
 
 }  // namespace heuristics
