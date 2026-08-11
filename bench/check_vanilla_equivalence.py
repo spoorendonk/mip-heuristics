@@ -39,7 +39,11 @@ Two differences are known and accepted rather than fixed:
     banners are otherwise identical).  Normalized away;
   * one `heuristic_effort_used += fj_last_effort` store per FJ callback
     inside stock `feasibilityJump()`.  No control-flow change; invisible in
-    the log.
+    the log;
+  * the `[Native]` / `[Root]` instrumentation lines (issue #95), emitted at
+    `suite=off` on purpose because that run is the reference the patched
+    rows are compared against.  Only visible at `log_dev_level=3`, which
+    this script does not set, but normalized away regardless.
 
 Usage:
   python bench/check_vanilla_equivalence.py --vanilla-binary /usr/local/bin/highs
@@ -71,16 +75,30 @@ INSTANCES = [
 VANILLA_EQUIVALENT_OPTIONS = {"mip_heuristic_suite": "off"}
 
 # Lines dropped before diffing: wall-clock measurements, the patch's
-# self-identification marker, and HiGHS's echo of the options it was given
+# self-identification marker, HiGHS's echo of the options it was given
 # (the patched run is handed `mip_heuristic_suite=off` and the vanilla run
 # has no such option, so that one line always differs by construction —
-# it says nothing about solver behaviour).
+# it says nothing about solver behaviour), and the two once-per-solve
+# instrumentation lines from issue #95.
+#
+# Those two are emitted at `suite=off` on purpose: that run is the vanilla
+# reference the patched rows are compared against, so its RENS/RINS counts
+# and root-LP timestamp are precisely what the analysis needs.  An
+# unpatched binary cannot print them, so they are a structural difference
+# rather than a behavioural one.  They are invisible below
+# `log_dev_level=3` and this script does not raise it, so the masks are
+# inert today — which is exactly why they belong here now, before someone
+# adds `log_dev_level` to the run and gets an unexplained diff instead of
+# a green equivalence proof.  `[Heur]` and `[Sequential]` need no entry:
+# `run_sequential` returns before the ledger exists at `suite=off`.
 _VOLATILE_LINE = re.compile(
     r"^\s*(?:"
     r"Timing\b"                       # "Timing            0.09"
     r"|P-D integral\b"                # objective integral, time-weighted
     r"|mip-heuristics patch active"   # the accepted marker
     r"|Set option\b"                  # options-file echo
+    r"|\[Native\]"                    # issue #95 instrumentation, patch-only
+    r"|\[Root\]"                      # issue #95 instrumentation, patch-only
     r"|[\d.]+\s*\((?:Presolve|Solve|Postsolve)\)\s*$"  # Timing continuation lines
     r")"
 )

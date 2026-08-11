@@ -65,6 +65,21 @@ def test_normalize_log_drops_the_options_echo():
     assert normalize_log(patched) == normalize_log(render())
 
 
+def test_normalize_log_drops_the_issue_95_instrumentation_lines():
+    """`[Native]` / `[Root]` are emitted at suite=off too — that run is the
+    reference the patched rows are compared against — and an unpatched
+    binary cannot print them.  Only visible at log_dev_level=3, which this
+    script does not set, so the mask must hold before someone raises it."""
+    patched = render().replace(
+        "Solving report",
+        "[Native] rens=1 rens_root=1 rins=1 rcfix=1 heur_lp_iters=697 "
+        "total_lp_iters=2125 fpr_lp_lp_iters=0\n"
+        "[Root] lp_time_s=0.039 presolve_heur_s=0.000\n"
+        "Solving report",
+    )
+    assert normalize_log(patched) == normalize_log(render())
+
+
 def test_normalize_log_masks_profiling_seconds_but_keeps_call_counts():
     """The call count is signal; the seconds beside it are not."""
     masked = normalize_log("      subMIP time [calls] = 0.02 [27]")

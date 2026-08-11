@@ -38,9 +38,10 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget);
 
 // Emit the once-per-solve cannibalization instrumentation (issue #95):
 // the `[Native]` line (HiGHS's own RENS / RINS / root-reduced-cost call
-// counts and the shared heuristic LP-iteration counters) and the `[Root]`
-// line (when the root LP started, and how much wall time the presolve
-// chain spent before it).  Both at `log_dev_level=3`, like `[Heur]`.
+// counts, the shared heuristic LP-iteration counters, and the share of
+// those counters our own dive heuristic charged) and the `[Root]` line
+// (when the root LP started, and how much wall time the presolve chain
+// spent before it).  Both at `log_dev_level=3`, like `[Heur]`.
 //
 // Called from `HighsMipSolver::cleanupSolve` by the patch, so it fires on
 // every exit path exactly once.  Reads only; it must stay a pure report,

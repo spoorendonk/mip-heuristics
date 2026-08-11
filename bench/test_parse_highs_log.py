@@ -183,16 +183,86 @@ def test_heur_lines_parse_into_heuristic_samples():
     assert result.heuristic_wall_fraction == (665.2 + 214.0) / 1000.0 / 8.792
 
 
+def test_heur_line_accepts_negative_wall_ms():
+    """The ledger times against HiGHS's solver clock, which is not
+    monotonic (high_resolution_clock == system_clock on libstdc++).  A
+    wall-clock step can yield a negative window; the sample must surface
+    rather than being silently dropped by the pattern."""
+    log = (
+        "[Sequential] heur=fpr effort=100 wall_ms=-3.0 effort_per_ms=0.000\n"
+        "[Heur] name=fpr phase=presolve start_s=1.0 end_s=0.997 effort=100 "
+        "wall_ms=-3.0 effort_per_ms=0.000 found=0\n"
+    )
+    result = parse_log(log)
+    assert len(result.sequential_samples) == 1
+    assert result.sequential_samples[0].wall_ms == -3.0
+    assert len(result.heuristic_samples) == 1
+    assert result.heuristic_samples[0].wall_ms == -3.0
+
+
+def test_heuristic_wall_fraction_is_zero_for_an_instrumented_off_run():
+    """A `suite=off` baseline runs no heuristics, so its true fraction is
+    0.0, not unknown — and that row is exactly where a None would be
+    dropped by aggregation.  The `[Native]` line, emitted unconditionally
+    on any instrumented run, is what distinguishes it from an old log."""
+    off_log = (
+        "[Native] rens=1 rens_root=1 rins=1 rcfix=1 heur_lp_iters=697 "
+        "total_lp_iters=2125 fpr_lp_lp_iters=0\n"
+        "[Root] lp_time_s=0.039 presolve_heur_s=0.000\n"
+        "  Timing            0.5\n"
+    )
+    result = parse_log(off_log)
+    assert result.heuristic_samples == []
+    assert result.heuristic_wall_fraction == 0.0
+
+    # Same absence of [Heur], but no instrumentation at all -> unknown.
+    old = parse_log("  Timing            0.5\n")
+    assert old.heuristic_wall_fraction is None
+
+
 def test_native_line_parses_into_native_counters():
     """`[Native]` is the internal-budget cannibalization measurement."""
-    log = "[Native] rens=3 rins=7 rcfix=1 heur_lp_iters=48211 total_lp_iters=193044\n"
+    log = (
+        "[Native] rens=3 rens_root=1 rins=7 rcfix=1 heur_lp_iters=48211 "
+        "total_lp_iters=193044 fpr_lp_lp_iters=1125\n"
+    )
     result = parse_log(log)
     assert result.native is not None
     assert result.native.rens == 3
+    assert result.native.rens_root == 1
     assert result.native.rins == 7
     assert result.native.rcfix == 1
     assert result.native.heur_lp_iters == 48211
     assert result.native.total_lp_iters == 193044
+    assert result.native.fpr_lp_lp_iters == 1125
+
+
+def test_native_heur_lp_iters_excludes_our_own_dive_charge():
+    """`heur_lp_iters` is a shared counter that `charge_dive` also writes,
+    so it over-reports HiGHS's own heuristic work by whatever fpr_lp
+    billed.  `native_heur_lp_iters` is the subtracted figure an `off` vs
+    `all` comparison actually wants."""
+    log = (
+        "[Native] rens=1 rens_root=1 rins=1 rcfix=1 heur_lp_iters=1294 "
+        "total_lp_iters=20000 fpr_lp_lp_iters=1125\n"
+    )
+    native = parse_log(log).native
+    assert native is not None
+    assert native.native_heur_lp_iters == 169
+
+
+def test_native_root_rens_is_a_subset_of_total_rens():
+    """The root gate is where a presolve-found incumbent suppresses RENS,
+    so the root count must be readable separately from the whole-solve
+    total that merges it with the B&B dive site."""
+    log = (
+        "[Native] rens=4 rens_root=0 rins=2 rcfix=1 heur_lp_iters=10 "
+        "total_lp_iters=100 fpr_lp_lp_iters=0\n"
+    )
+    native = parse_log(log).native
+    assert native is not None
+    assert native.rens == 4
+    assert native.rens_root == 0  # root RENS suppressed; dive still ran
 
 
 def test_root_line_parses_into_root_timing():

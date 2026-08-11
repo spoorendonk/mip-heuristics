@@ -189,6 +189,21 @@ inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
     return false;
 }
 
+// Whether any captured line carries `tag`, e.g. "[Native] " or
+// "[Heur] name=fpr ".  Requires `log_dev_level=3` on the solve.
+//
+// `find` rather than a prefix match: HiGHS routes some log lines through
+// a formatter that prepends nothing today, but the assertions this backs
+// are about a line being emitted at all, not about its column 0.
+inline bool log_contains(const std::vector<std::string>& lines, const std::string& tag) {
+    for (const auto& line : lines) {
+        if (line.find(tag) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Restrict the solve to one heuristic (or none).  `suite` is a
 // `mip_heuristic_suite` value: off | fj | fpr | local_mip | scylla | all.
 //

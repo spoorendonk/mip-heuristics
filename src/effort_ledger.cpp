@@ -10,14 +10,17 @@ double EffortLedger::now_s() const { return mipsolver_.timer_.read(); }
 
 void EffortLedger::charge_presolve(const char *name, size_t effort, bool found, double t0_s,
                                    double t1_s) {
+    book(name, "presolve", effort, found, t0_s, t1_s);
+}
+
+void EffortLedger::note_presolve_span(double t0_s, double t1_s) {
     // Patch-added field, no upstream reader: it exists so
     // `heuristics::log_solve_summary` can report the presolve chain's
     // total wall spend on the `[Root]` line, which is what turns "the
     // root LP started at t" into "the root LP was delayed by t".  Written
-    // here, on the dispatching thread, under the same joined-region
-    // invariant as every other counter in this file.
+    // on the dispatching thread, under the same joined-region invariant
+    // as every other counter in this file.
     mipsolver_.mipdata_->presolve_heuristic_time += t1_s - t0_s;
-    book(name, "presolve", effort, found, t0_s, t1_s);
 }
 
 void EffortLedger::charge_dive(const char *name, size_t effort, bool found, int64_t setup_lp_iters,
@@ -34,6 +37,11 @@ void EffortLedger::charge_dive(const char *name, size_t effort, bool found, int6
     const int64_t charged = setup_lp_iters + static_cast<int64_t>(nnz == 0 ? 0 : effort / nnz);
     mipdata->heuristic_lp_iterations += charged;
     mipdata->total_lp_iterations += charged;
+    // Both counters above are shared with HiGHS's own heuristics, so the
+    // `[Native]` line reporting them raw would bill our dive work as
+    // upstream's — on flugpl at seed 1 that is 87% of the field.  Keep a
+    // running total of what we put in so an analyst can subtract it.
+    mipdata->fpr_lp_lp_iterations += charged;
     book(name, "dive", effort, found, t0_s, t1_s);
 }
 

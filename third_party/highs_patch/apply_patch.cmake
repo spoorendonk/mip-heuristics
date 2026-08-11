@@ -68,7 +68,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Bump PATCH_VERSION whenever any inserted text changes, and add any
 # identifier this script stops inserting to the retired list.
-set(PATCH_VERSION "5")
+set(PATCH_VERSION "6")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     # No `;` in an entry: set() builds a cmake list and would split on it,
@@ -305,7 +305,7 @@ if(_instr_fields_found EQUAL -1)
       MIPDATA_H "${MIPDATA_H}")
     string(REPLACE
       "  double heuristic_effort;"
-      "  double heuristic_effort;\n  // mip-heuristics: cannibalization instrumentation (issue #95).\n  // Incremented at existing call sites; no upstream reader, no control\n  // flow touched, so these read identically on a patched suite=off run\n  // and on an unpatched binary.\n  std::atomic<size_t> rens_calls{0};\n  std::atomic<size_t> rins_calls{0};\n  std::atomic<size_t> rcfix_calls{0};\n  // Elapsed solve seconds when the first root LP solve started; negative\n  // until it does.  A pure read of mipsolver.timer_.\n  double root_lp_time = -1.0;\n  // Wall seconds the custom presolve heuristic chain spent before the\n  // root node.  Written by src/effort_ledger.cpp on the dispatching\n  // thread; read by heuristics::log_solve_summary.\n  double presolve_heuristic_time = 0.0;"
+      "  double heuristic_effort;\n  // mip-heuristics: cannibalization instrumentation (issue #95).\n  // Incremented at existing call sites; no upstream reader, no control\n  // flow touched, so these read identically on a patched suite=off run\n  // and on an unpatched binary.\n  std::atomic<size_t> rens_calls{0};\n  std::atomic<size_t> rins_calls{0};\n  std::atomic<size_t> rcfix_calls{0};\n  // RENS invocations from the *root* call site only, a subset of\n  // rens_calls.  The root gate (upper_limit finite plus\n  // moreHeuristicsAllowed()) is where a presolve-found incumbent\n  // suppresses RENS, so the root count is the cannibalization signal and\n  // the whole-solve total alone would hide it.\n  std::atomic<size_t> rens_root_calls{0};\n  // LP iterations our own dive heuristic charged to\n  // heuristic_lp_iterations / total_lp_iterations.  Those two counters\n  // are shared, so without this an analyst reading them as \"HiGHS's own\n  // heuristic work\" is really reading ours as well.  Written by\n  // src/effort_ledger.cpp.\n  int64_t fpr_lp_lp_iterations = 0;\n  // Elapsed solve seconds when the first root LP solve started; negative\n  // until it does.  A pure read of mipsolver.timer_.\n  double root_lp_time = -1.0;\n  // Wall seconds the custom presolve heuristic chain spent before the\n  // root node, setup included.  Written by src/effort_ledger.cpp on the\n  // dispatching thread; read by heuristics::log_solve_summary.\n  double presolve_heuristic_time = 0.0;"
       MIPDATA_H "${MIPDATA_H}")
 
     # Sanity checks: a missed anchor here is silent — the fields simply
@@ -313,15 +313,21 @@ if(_instr_fields_found EQUAL -1)
     # error that points at HiGHS rather than at this script.
     string(REGEX MATCHALL "std::atomic<size_t> rens_calls" _instr_rens_hits "${MIPDATA_H}")
     list(LENGTH _instr_rens_hits _instr_rens_count)
+    string(REGEX MATCHALL "std::atomic<size_t> rens_root_calls" _instr_rroot_hits "${MIPDATA_H}")
+    list(LENGTH _instr_rroot_hits _instr_rroot_count)
+    string(REGEX MATCHALL "int64_t fpr_lp_lp_iterations" _instr_fprlp_hits "${MIPDATA_H}")
+    list(LENGTH _instr_fprlp_hits _instr_fprlp_count)
     string(REGEX MATCHALL "double root_lp_time = -1.0" _instr_root_hits "${MIPDATA_H}")
     list(LENGTH _instr_root_hits _instr_root_count)
     string(REGEX MATCHALL "#include <atomic>" _instr_atomic_hits "${MIPDATA_H}")
     list(LENGTH _instr_atomic_hits _instr_atomic_count)
-    if(NOT _instr_rens_count EQUAL 1 OR NOT _instr_root_count EQUAL 1
+    if(NOT _instr_rens_count EQUAL 1 OR NOT _instr_rroot_count EQUAL 1
+       OR NOT _instr_fprlp_count EQUAL 1 OR NOT _instr_root_count EQUAL 1
        OR NOT _instr_atomic_count EQUAL 1)
         message(FATAL_ERROR
             "HighsMipSolverData.h post-patch sanity check failed for the "
             "instrumentation counters (rens=${_instr_rens_count}, "
+            "rens_root=${_instr_rroot_count}, fpr_lp_iters=${_instr_fprlp_count}, "
             "root_lp_time=${_instr_root_count}, atomic_include=${_instr_atomic_count}). "
             "Upstream HiGHS likely reformatted the 'double heuristic_effort;' "
             "member or the include block. "
@@ -496,9 +502,13 @@ if(_root_instr_found EQUAL -1)
       "      heuristics.rootReducedCost(worker);"
       "      rcfix_calls.fetch_add(1, std::memory_order_relaxed);\n      heuristics.rootReducedCost(worker);"
       MIPDATA_CPP2 "${MIPDATA_CPP2}")
+    # Both counters at the root site: `rens_calls` is the whole-solve
+    # total (this site plus the dive site, Patch D below), `rens_root_calls`
+    # isolates the root gate, which is where a presolve-found incumbent
+    # actually suppresses RENS.
     string(REPLACE
       "      heuristics.RENS(worker, rootlpsol);"
-      "      rens_calls.fetch_add(1, std::memory_order_relaxed);\n      heuristics.RENS(worker, rootlpsol);"
+      "      rens_calls.fetch_add(1, std::memory_order_relaxed);\n      rens_root_calls.fetch_add(1, std::memory_order_relaxed);\n      heuristics.RENS(worker, rootlpsol);"
       MIPDATA_CPP2 "${MIPDATA_CPP2}")
     # The declaration (`HighsLpRelaxation::Status status = ...`) is what
     # makes this the *first* of the eleven evaluateRootLp calls in the
@@ -517,14 +527,17 @@ if(_root_instr_found EQUAL -1)
     list(LENGTH _root_rcfix_hits _root_rcfix_count)
     string(REGEX MATCHALL "rens_calls.fetch_add" _root_rens_hits "${MIPDATA_CPP2}")
     list(LENGTH _root_rens_hits _root_rens_count)
+    string(REGEX MATCHALL "rens_root_calls.fetch_add" _root_rroot_hits "${MIPDATA_CPP2}")
+    list(LENGTH _root_rroot_hits _root_rroot_count)
     string(REGEX MATCHALL "root_lp_time = mipsolver.timer_.read\\(\\)" _root_time_hits "${MIPDATA_CPP2}")
     list(LENGTH _root_time_hits _root_time_count)
     if(NOT _root_rcfix_count EQUAL 1 OR NOT _root_rens_count EQUAL 1
-       OR NOT _root_time_count EQUAL 1)
+       OR NOT _root_rroot_count EQUAL 1 OR NOT _root_time_count EQUAL 1)
         message(FATAL_ERROR
             "HighsMipSolverData.cpp post-patch sanity check failed for the "
             "root-node instrumentation (rcfix=${_root_rcfix_count}, "
-            "rens=${_root_rens_count}, root_lp_time=${_root_time_count}). "
+            "rens=${_root_rens_count}, rens_root=${_root_rroot_count}, "
+            "root_lp_time=${_root_time_count}). "
             "Upstream HiGHS likely reformatted evaluateRootNode so one of the "
             "call-site anchors no longer matches. "
             "Please clean the HiGHS source tree and rebuild: "

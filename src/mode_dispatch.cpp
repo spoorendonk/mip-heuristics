@@ -246,6 +246,15 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
         return false;
     }
 
+    // Spans the whole chain, shared setup included, and is reported as
+    // `[Root] presolve_heur_s` — a different question from the per-
+    // heuristic windows below, which stay scoped to what `kWeight*`
+    // calibrates.  See `EffortLedger::note_presolve_span`.  Started after
+    // the `terminated()` check above, since a dispatch that returns there
+    // costs the solver nothing.
+    EffortLedger ledger(mipsolver);
+    const double chain_t0_s = ledger.now_s();
+
     // Built once for the whole chain: the CSC transpose and the derived
     // sizes are the same for all four heuristics, and the row-major buffers
     // they come from are frozen by `runSetup()` before dispatch.  Each
@@ -323,7 +332,6 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // (`precompute_var_orders`, `ContestedPdlp` construction, worker
     // construction) — what users actually pay for.  The shared CSC build
     // sits outside all four, since it is no longer any one of them.
-    EffortLedger ledger(mipsolver);
     auto run_and_charge = [&](const char *name, auto &&call) {
         // `found` is the sink's accepted-offer count moving across this
         // heuristic's dispatch.  Read either side of the call, on this
@@ -354,6 +362,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
         run_and_charge(h.name, [&]() -> size_t { return h.run(problem, slice, exec, sink); });
     }
 
+    ledger.note_presolve_span(chain_t0_s, ledger.now_s());
     return false;
 }
 
@@ -427,21 +436,36 @@ void log_solve_summary(HighsMipSolver &mipsolver) {
     if (mipsolver.submip) {
         return;
     }
+    // No null check on `mipdata_`: `cleanupSolve`, the only caller,
+    // dereferences it two statements earlier.
     const HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
-    if (mipdata == nullptr) {
-        return;
-    }
     const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
 
+    // `rens` is the whole-solve total and `rens_root` the root-site subset
+    // of it.  The root gate is the one a presolve-found incumbent closes —
+    // `upper_limit` goes finite and `moreHeuristicsAllowed()` starts
+    // mattering — so a suppressed root RENS is the cannibalization signal,
+    // and the merged total can hold steady while it disappears.
+    //
+    // `heur_lp_iters` / `total_lp_iters` are upstream's own counters, but
+    // they are *shared*: `EffortLedger::charge_dive` adds to both so
+    // fpr_lp competes with RENS/RINS for the same envelope.  Reporting
+    // them raw therefore bills our dive work as HiGHS's, which is the
+    // confound this whole line exists to remove — so `fpr_lp_lp_iters`
+    // reports exactly what we put in, for an analyst to subtract.
+    //
     // `%lld` with an explicit cast: the LP-iteration counters are int64_t,
     // whose printf length modifier is platform-dependent.
     highsLogDev(log_options, HighsLogType::kVerbose,
-                "[Native] rens=%zu rins=%zu rcfix=%zu heur_lp_iters=%lld total_lp_iters=%lld\n",
+                "[Native] rens=%zu rens_root=%zu rins=%zu rcfix=%zu heur_lp_iters=%lld "
+                "total_lp_iters=%lld fpr_lp_lp_iters=%lld\n",
                 mipdata->rens_calls.load(std::memory_order_relaxed),
+                mipdata->rens_root_calls.load(std::memory_order_relaxed),
                 mipdata->rins_calls.load(std::memory_order_relaxed),
                 mipdata->rcfix_calls.load(std::memory_order_relaxed),
                 static_cast<long long>(mipdata->heuristic_lp_iterations),
-                static_cast<long long>(mipdata->total_lp_iterations));
+                static_cast<long long>(mipdata->total_lp_iterations),
+                static_cast<long long>(mipdata->fpr_lp_lp_iterations));
 
     // `lp_time_s` is negative when the root LP was never reached (presolve
     // solved or proved the model, or a limit fired first); the parser

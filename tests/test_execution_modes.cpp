@@ -244,3 +244,69 @@ bool lseu_emits_fj_tag() {
 TEST_CASE("execution-mode: FJ entries survive shared pool flush", "[mode-matrix]") {
     REQUIRE(lseu_emits_fj_tag());
 }
+
+// ── 3 tests: the cannibalization instrumentation is actually emitted (#95) ──
+//
+// Every one of these lines comes out of a patch block in
+// `third_party/highs_patch/apply_patch.cmake`, and each block is skipped
+// on an already-populated `_deps` tree.  Losing Patch E — or dropping an
+// emission from the ledger — therefore compiles, links, and leaves the
+// rest of the suite green while the binary produces no instrumentation at
+// all.  Nothing else in ctest reads these lines, so this is the only
+// place that would notice.  Same precedent as the `[Sequential]` traces
+// and #93's native-FJ pin.
+
+TEST_CASE("instrumentation: a dev-level solve emits [Heur], [Native] and [Root]",
+          "[mode-matrix][observability]") {
+    const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
+        require_option(h, "log_dev_level", 3);
+        set_suite(h, "all");
+    });
+    // `phase=presolve` specifically: the tag alone would still pass if the
+    // ledger stopped distinguishing the presolve chain from the B&B dive.
+    REQUIRE(log_contains(lines, "[Heur] name=fpr phase=presolve "));
+    REQUIRE(log_contains(lines, "[Native] rens="));
+    REQUIRE(log_contains(lines, "[Root] lp_time_s="));
+}
+
+TEST_CASE("instrumentation: [Native] and [Root] survive at suite=off",
+          "[mode-matrix][observability]") {
+    // `off` is the vanilla-equivalence row of the benchmark matrix, and its
+    // RENS/RINS counts are the reference every patched row is compared
+    // against — so these two lines must be emitted there even though the
+    // custom chain never runs.  `[Heur]` must not be: nothing dispatched.
+    const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
+        require_option(h, "log_dev_level", 3);
+        set_suite(h, "off");
+    });
+    REQUIRE(log_contains(lines, "[Native] rens="));
+    REQUIRE(log_contains(lines, "[Root] lp_time_s="));
+    REQUIRE_FALSE(log_contains(lines, "[Heur] "));
+    REQUIRE_FALSE(log_contains(lines, "[Sequential] "));
+    // Nothing dispatched, so the chain span is zero — this is the field
+    // that lets the bench parser report a real 0.0 for the baseline row
+    // rather than "unknown".
+    REQUIRE(log_contains(lines, "presolve_heur_s=0.000"));
+}
+
+TEST_CASE("instrumentation: [Native] separates fpr_lp's own LP-iteration charge",
+          "[mode-matrix][observability]") {
+    // `heur_lp_iters` is a *shared* counter: EffortLedger::charge_dive adds
+    // to it so fpr_lp competes with RENS/RINS for one envelope.  Reporting
+    // it without `fpr_lp_lp_iters` alongside bills our dive work as HiGHS's
+    // own, which reads as a jump in native heuristic activity between
+    // suite=off and suite=all where there was none.  bell5 is the instance
+    // whose dive reliably dispatches fpr_lp (see test_fpr_lp.cpp).
+    const auto lines = solve_capturing_log("bell5.mps", [](Highs& h) {
+        require_option(h, "log_dev_level", 3);
+        require_option(h, "mip_rel_gap", 0.0);
+        set_suite(h, "fpr");
+    });
+    REQUIRE(log_contains(lines, "[Heur] name=fpr_lp phase=dive "));
+    REQUIRE(log_contains(lines, " fpr_lp_lp_iters="));
+    // Guard against a vacuous pass: a zero charge would make the field
+    // present but say nothing about whether it tracks the ledger.
+    REQUIRE_FALSE(log_contains(lines, " fpr_lp_lp_iters=0"));
+    // The root gate is reported separately from the whole-solve total.
+    REQUIRE(log_contains(lines, " rens_root="));
+}

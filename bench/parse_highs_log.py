@@ -64,10 +64,20 @@ class NativeCounters:
 
     `rens` / `rins` / `rcfix` count invocations of upstream's RENS, RINS
     and root-reduced-cost heuristics across the whole solve (root node and
-    B&B dive alike).  The two LP-iteration counters are upstream's own
-    fields, reported rather than added.  Together they separate
-    internal-budget cannibalization (our heuristics consuming the counters
-    that gate RENS/RINS) from wall-clock cannibalization.
+    B&B dive alike).  `rens_root` is the root-site subset of `rens`: the
+    root gate is the one a presolve-found incumbent closes, so a
+    suppressed root RENS is the cannibalization signal, and the merged
+    total can hold steady while it vanishes.
+
+    `heur_lp_iters` and `total_lp_iters` are upstream's own fields, but
+    they are **shared**, not purely native: `EffortLedger::charge_dive`
+    adds to both so `fpr_lp` competes with RENS/RINS for one envelope.
+    `fpr_lp_lp_iters` is exactly what our dive heuristic contributed —
+    subtract it to get HiGHS's own heuristic LP work.  Without that,
+    comparing `suite=off` against `suite=all` reads our self-charge as a
+    jump in native heuristic activity (on flugpl seed 1: 169 vs 1294 with
+    identical rens/rins/rcfix counts), which is the exact confound this
+    line exists to eliminate.
     """
 
     rens: int
@@ -75,6 +85,14 @@ class NativeCounters:
     rcfix: int
     heur_lp_iters: int
     total_lp_iters: int
+    # Both default for logs emitted before these fields were split out.
+    rens_root: int = 0
+    fpr_lp_lp_iters: int = 0
+
+    @property
+    def native_heur_lp_iters(self) -> int:
+        """`heur_lp_iters` with our own dive heuristic's charge removed."""
+        return self.heur_lp_iters - self.fpr_lp_lp_iters
 
 
 @dataclass
@@ -170,11 +188,22 @@ class SolveResult:
 
         The cannibalization headline number: the sum of every `[Heur]`
         window (presolve chain and B&B dive alike) over the solve time
-        HiGHS reports.  None when either input is missing — no `[Heur]`
-        lines, or no `Timing` line to divide by.
+        HiGHS reports.
+
+        Absent `[Heur]` lines mean two different things and must not be
+        conflated: a `suite=off` baseline ran no heuristics and its true
+        value is **0.0**, while a log predating issue #95 (or below
+        log_dev_level=3) simply cannot say.  The presence of a `[Native]`
+        line identifies the former — it is emitted unconditionally on any
+        instrumented run, `suite=off` included — so the baseline row keeps
+        a real number instead of being silently dropped by whatever
+        filters None.  None still means "unknown": no instrumentation, or
+        no `Timing` line to divide by.
         """
-        if not self.heuristic_samples or self.solve_time <= 0.0:
+        if self.solve_time <= 0.0:
             return None
+        if not self.heuristic_samples:
+            return 0.0 if self.native is not None else None
         total_ms = sum(h.wall_ms for h in self.heuristic_samples)
         return total_ms / 1000.0 / self.solve_time
 
@@ -283,8 +312,13 @@ _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 #   [Sequential] heur=fpr effort=12345 wall_ms=67.8 effort_per_ms=182
 # There is one line per heuristic per solve, feeding
 # `bench/check_effort_drift.py` to calibrate `kWeight*`.
+# `wall_ms` takes an optional sign here and in `_HEUR_RE`: the ledger
+# times against HiGHS's own solver clock, which bottoms out in
+# `high_resolution_clock` (== non-monotonic `system_clock` on libstdc++),
+# so a wall-clock step can produce a negative window.  Rare, but a pattern
+# without the sign drops the sample instead of surfacing the artefact.
 _SEQUENTIAL_RE = re.compile(
-    r"^\s*\[Sequential\] heur=(\S+) effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+)"
+    r"^\s*\[Sequential\] heur=(\S+) effort=(\d+) wall_ms=(-?[\d.]+) effort_per_ms=([\d.]+)"
 )
 
 # Cannibalization instrumentation, all three from issue #95 and all three
@@ -293,17 +327,18 @@ _SEQUENTIAL_RE = re.compile(
 # `heuristics::log_solve_summary` in src/mode_dispatch.cpp:
 #   [Heur] name=fj phase=presolve start_s=0.412 end_s=1.077 effort=8388608 \
 #          wall_ms=665.2 effort_per_ms=12610.1 found=1
-#   [Native] rens=3 rins=7 rcfix=1 heur_lp_iters=48211 total_lp_iters=193044
+#   [Native] rens=3 rens_root=1 rins=7 rcfix=1 heur_lp_iters=48211 \
+#            total_lp_iters=193044 fpr_lp_lp_iters=1125
 #   [Root] lp_time_s=1.402 presolve_heur_s=2.118
 # `lp_time_s` takes an optional sign: -1 is the "root LP never reached"
 # sentinel, and a pattern without it would silently skip the line.
 _HEUR_RE = re.compile(
     r"^\s*\[Heur\] name=(\S+) phase=(\S+) start_s=([\d.]+) end_s=([\d.]+) "
-    r"effort=(\d+) wall_ms=([\d.]+) effort_per_ms=([\d.]+) found=(\d+)"
+    r"effort=(\d+) wall_ms=(-?[\d.]+) effort_per_ms=([\d.]+) found=(\d+)"
 )
 _NATIVE_RE = re.compile(
-    r"^\s*\[Native\] rens=(\d+) rins=(\d+) rcfix=(\d+) "
-    r"heur_lp_iters=(-?\d+) total_lp_iters=(-?\d+)"
+    r"^\s*\[Native\] rens=(\d+) rens_root=(\d+) rins=(\d+) rcfix=(\d+) "
+    r"heur_lp_iters=(-?\d+) total_lp_iters=(-?\d+) fpr_lp_lp_iters=(-?\d+)"
 )
 _ROOT_RE = re.compile(
     r"^\s*\[Root\] lp_time_s=(-?[\d.]+) presolve_heur_s=(-?[\d.]+)"
@@ -471,10 +506,12 @@ def parse_log(log_text: str) -> SolveResult:
             # rather than the first.
             result.native = NativeCounters(
                 rens=int(m.group(1)),
-                rins=int(m.group(2)),
-                rcfix=int(m.group(3)),
-                heur_lp_iters=int(m.group(4)),
-                total_lp_iters=int(m.group(5)),
+                rens_root=int(m.group(2)),
+                rins=int(m.group(3)),
+                rcfix=int(m.group(4)),
+                heur_lp_iters=int(m.group(5)),
+                total_lp_iters=int(m.group(6)),
+                fpr_lp_lp_iters=int(m.group(7)),
             )
             continue
         m = _ROOT_RE.match(line)
