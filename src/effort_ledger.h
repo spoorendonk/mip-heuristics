@@ -69,8 +69,9 @@ public:
     // Deliberately *not* the sum of the `charge_presolve` windows: those
     // are scoped to what `kWeight*` calibrates and exclude the shared
     // setup `run_sequential` hoisted out of all four heuristics
-    // (`make_problem` / `build_csc` / `seed_pool`) — 7 ms on p0548 and
-    // growing with nnz, attributed to nobody.  `[Root] presolve_heur_s`
+    // (`make_problem` / `build_csc` / `seed_pool`) — sub-millisecond on
+    // the bundled test instances, but O(nnz) and attributed to nobody at
+    // any size.  `[Root] presolve_heur_s`
     // asks "how much wall time did the chain cost the solver before the
     // root node", so it takes the full span.  Keeping the two quantities
     // separate is what lets the calibration basis stay untouched.
