@@ -1223,13 +1223,13 @@ def _print_internal_budget_table(
             if n is not None and base_n is not None and c != baseline:
                 delta = n.native_heur_lp_iters - base_n.native_heur_lp_iters
             print(f"{inst:<24} {c:<14} "
-                  f"{format_int(n.rens if n else None, 6)} "
-                  f"{format_int(n.rens_root if n else None, 9)} "
-                  f"{format_int(n.rins if n else None, 6)} "
-                  f"{format_int(n.rcfix if n else None, 6)} "
-                  f"{format_int(n.native_heur_lp_iters if n else None, 11)} "
-                  f"{format_int(n.native_total_lp_iters if n else None, 11)} "
-                  f"{format_int(n.fpr_lp_lp_iters if n else None, 9)} "
+                  f"{format_int(n.rens if n is not None else None, 6)} "
+                  f"{format_int(n.rens_root if n is not None else None, 9)} "
+                  f"{format_int(n.rins if n is not None else None, 6)} "
+                  f"{format_int(n.rcfix if n is not None else None, 6)} "
+                  f"{format_int(n.native_heur_lp_iters if n is not None else None, 11)} "
+                  f"{format_int(n.native_total_lp_iters if n is not None else None, 11)} "
+                  f"{format_int(n.fpr_lp_lp_iters if n is not None else None, 9)} "
                   f"{format_int(delta, 11, signed=True)}")
 
     print("\n#### Aggregate (median over instrumented instances)\n")
@@ -1309,7 +1309,7 @@ def _print_wall_clock_table(
             print(f"{inst:<24} {c:<14} "
                   f"{format_float(heuristic_wall_seconds(r), 8, 2)} "
                   f"{format_float(heuristic_wall_seconds(r, 'dive'), 8, 2)} "
-                  f"{format_float(r.heuristic_wall_fraction if r else None, 9, 4)} "
+                  f"{format_float(r.heuristic_wall_fraction if r is not None else None, 9, 4)} "
                   f"{format_float(t_root, 9, 2)} "
                   f"{format_float(d_root, 9, 2)} "
                   f"{format_float(presolve_span_seconds(r), 8, 2)} "
