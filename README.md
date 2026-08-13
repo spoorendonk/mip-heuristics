@@ -109,6 +109,32 @@ python3 bench/analyze_results.py bench/results/plato --configs patched vanilla -
 
 Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`.
 
+### Per-heuristic ablation and budget sweep
+
+`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value — `vanilla`, `off`, `fj`, `fpr`, `local_mip`, `scylla`, `all` — plus `patched` as a back-compatible alias for `all`. An unknown config name is an error, not a run at default options. `--budget-sweep` crosses each config with `mip_heuristic_presolve_effort` values, writing to `<output>/<config>@e<V>/seed<N>/`; those directory names are what `analyze_results.py --configs` takes, so a sweep needs no new analysis code.
+
+```bash
+bash bench/download_miplib.sh                       # once
+python3 bench/run_benchmark.py \
+    --instances bench/instances_small.txt \
+    --data-dir /tmp/miplib \
+    --output bench/results/sweep \
+    --configs vanilla off fj fpr local_mip scylla all \
+    --budget-sweep 0.05 0.15 0.30 0.60 1.00 \
+    --time-limit 600 --seeds 0 1 2 --skip-existing
+python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600 \
+    --configs vanilla off fj fpr@e0.05 local_mip@e0.05 scylla@e0.05 all@e0.05
+```
+
+`run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped.
+
+Three configs are not swept, because `mip_heuristic_presolve_effort` provably does not reach them: `vanilla` and `off` run no presolve heuristic at all, and `fj` runs on a fixed per-worker allowance that neither effort option scales. They run once each as the sweep's anchor rows — note the unsuffixed `vanilla off fj` in the analyze command above. Naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
+
+Two things the harness deliberately does not do by default:
+
+- **No `threads=`.** Forcing `threads=1` collapses each heuristic to a single worker. It is the right setting for reproducibility and the wrong one for a throughput benchmark, so `--threads` exists but has no default.
+- **No `log_dev_level=3`.** Pass `--dev-log` to turn on the `[Heur]` / `[Native]` / `[Root]` / `[Sequential]` instrumentation that `bench/parse_highs_log.py` reads for the cannibalization analysis. It is not free: HiGHS's own FeasibilityJump logs one line per weight bump at exactly that level, from every parallel FJ worker, with an `fflush` each. Measured on five bundled instances at a 10 s limit that is 97–750x the log volume (bell5: 16 KB → 3.5 MB) and 1.1–4.4x the total solve wall time (egout: 0.048 s → 0.212 s), concentrated in the FJ phase — i.e. in the number the analysis is reading. Use `--dev-log` for attribution runs and leave it off for headline timings.
+
 ## Build Options
 
 | Flag | Description |

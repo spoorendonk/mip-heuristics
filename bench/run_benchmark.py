@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Run patched vs vanilla HiGHS on MIPLIB instances."""
+"""Run patched vs vanilla HiGHS on MIPLIB instances.
+
+One config per `mip_heuristic_suite` value, so a per-heuristic ablation is a
+config list rather than a hand-written options file, and `--budget-sweep`
+crosses those configs with `mip_heuristic_presolve_effort` values.  Output is
+`<output>/<config>/seed<N>/<instance>.log`, with the swept configs named
+`<config>@e<effort>` — those directory names are exactly what
+`analyze_results.py --configs` takes, so a sweep is analysable with no new
+analysis code.
+
+Everything goes through `--options_file`: HiGHS's CLI11 parser takes only its
+own fixed flag set, and an unknown `--mip_heuristic_*` is a parse error that
+exits without solving.
+"""
 
 from __future__ import annotations
 
@@ -8,37 +21,256 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 
-
-# Default vanilla options when using the PATCHED binary as the vanilla
-# baseline.  Not used when --vanilla-binary points to a separate binary.
-# suite=off disables every custom heuristic — the presolve chain
-# (FJ/FPR/LocalMIP/Scylla) and the B&B-dive fpr_lp alike — and hands the
-# FeasibilityJump call site back to HiGHS's own single-threaded
-# implementation, so since #93 this really is vanilla-equivalent rather
-# than vanilla-minus-FJ.  `bench/check_vanilla_equivalence.py` is what
-# verifies that against an unpatched binary.  No effort pin needed: the
-# effort-option split reverted mip_heuristic_effort to upstream's 0.05
-# default (vanilla semantics), and mip_heuristic_presolve_effort is
-# irrelevant with the presolve heuristics off.
-VANILLA_OPTIONS = {
-    "mip_heuristic_suite": "off",
-}
-
-# Default patched options: the whole chain.
+# Benchmark configs.  Every one of them is a single value of
+# `mip_heuristic_suite` (#93), so the table is a name -> suite-value map
+# rather than a bag of per-config option dicts.
 #
-# This is a composition change, not a rename.  The recorded PLATO results
-# in README.md were taken at the old `all_opp` preset — FJ + FPR +
-# LocalMIP, Scylla deliberately excluded because PDLP solves are
-# expensive enough to hurt wall-clock on general instances.  The
-# single-valued option surface (#93) cannot express that combination, so
-# the default moved to `all`, which adds Scylla.  #96's per-heuristic
-# config table is where a Scylla-free row comes back if the budget sweep
-# wants one; until then, do not compare a fresh `patched` run against the
-# recorded `all_opp` numbers.
-PATCHED_OPTIONS = {
-    "mip_heuristic_suite": "all",
+# `vanilla` maps to `off` because on the *patched* binary `suite=off` hands
+# HiGHS's standalone FeasibilityJump call site back and disables every custom
+# heuristic — the presolve chain (FJ/FPR/LocalMIP/Scylla) and the B&B-dive
+# `fpr_lp` alike — so it is vanilla-equivalent rather than vanilla-minus-FJ.
+# `bench/check_vanilla_equivalence.py` proves that against a separately built
+# unpatched binary.  With `--vanilla-binary` the config resolves to no options
+# at all, since an unpatched binary has no `mip_heuristic_*` options to set.
+# No effort pin is needed either way: the effort-option split reverted
+# `mip_heuristic_effort` to upstream's 0.05 default (vanilla semantics), and
+# `mip_heuristic_presolve_effort` is irrelevant with the presolve chain off.
+#
+# `patched` is an **alias** for `all`, kept so existing result trees and
+# `bench/run_plato.sh` keep resolving.  It is not a rename of the
+# configuration the recorded PLATO table in README.md was measured at: that
+# row is `all_opp` — FJ + FPR + LocalMIP with Scylla deliberately excluded,
+# because PDLP solves are expensive enough to hurt wall-clock on general
+# instances — and the single-valued option surface cannot express it.  `all`
+# adds Scylla.  Do not compare a fresh `patched` run against the recorded
+# `all_opp` numbers.
+CONFIG_SUITES: dict[str, str] = {
+    "vanilla": "off",
+    "off": "off",
+    "fj": "fj",
+    "fpr": "fpr",
+    "local_mip": "local_mip",
+    "scylla": "scylla",
+    "all": "all",
+    "patched": "all",
 }
+
+# Separator between a config name and its `mip_heuristic_presolve_effort`
+# value in a swept config name / output directory, e.g. `fpr@e0.30`.
+BUDGET_SUFFIX = "@e"
+
+# Budgets for `--budget-sweep` with no explicit values.  Spans the option's
+# range from a twentieth of the shipped default to its maximum, with 0.30 —
+# the default — in the middle so a sweep always contains the shipped
+# configuration as its own row.  Effort is a normalised, wall-clock-equivalent
+# budget, so the values are comparable across heuristics but not a fixed
+# fraction of any particular time limit.
+DEFAULT_BUDGET_SWEEP = ("0.05", "0.15", "0.30", "0.60", "1.00")
+
+# Configs a budget sweep cannot say anything about, mapped to the reason —
+# `mip_heuristic_presolve_effort` provably does not reach any of them.  A
+# `<config>@e<V>` tree for one of these would be N identical runs under N
+# different names, which is the same plausible-looking-but-meaningless output
+# that the unknown-config-name raise exists to prevent.  They stay in a sweep
+# as a single unsuffixed anchor row instead of being dropped — a Layer B
+# sweep still wants its baselines.
+#
+# `all` is deliberately *not* exempt even though FJ is flat inside it too: the
+# effort option decides how much of the shared envelope FJ's charge consumes
+# and therefore what FPR / LocalMIP / Scylla get.
+#
+# Measured on p0548 at a 20 s limit, seed 0, reading `[Sequential] effort` at
+# the two ends of the option's range (0.05 -> 1.00):
+#
+#   suite=fj    fj 4,500,943 -> 4,501,087            (0.003% — flat)
+#   suite=all   fj 4,500,905 -> 4,500,919            (flat here too)
+#               fpr 188,000  -> 27,422,878           (146x)
+#               local_mip 243,414 -> 56,160,051      (231x)
+#               scylla 672,428 -> 14,778,280         (22x)
+SWEEP_EXEMPT: dict[str, str] = {
+    "vanilla": "runs no presolve heuristic",
+    "off": "runs no presolve heuristic",
+    # `run_sequential` gives FJ the fixed `num_workers * (nnz << 10)`
+    # per-worker allowance (`fj_budget` in `src/mode_dispatch.cpp`), which
+    # neither effort option scales; the option moves only what FJ *charges*
+    # against the shared envelope, and at `suite=fj` there is nothing else in
+    # the chain for that charge to take budget away from.
+    "fj": "runs on a fixed per-worker allowance that the option does not scale",
+}
+
+
+@dataclass(frozen=True)
+class ConfigPlan:
+    """One resolved config: what to run it with, and where it lands.
+
+    `resolve_config` is the only decomposer of a `<base>@e<budget>` name;
+    `build_plan` is the only place the two *consequences* of that
+    decomposition — which binary, which options — are chosen together.
+    Choosing them at separate use sites is how `vanilla@e0.30` would silently
+    pick the patched binary while its options came from the vanilla branch.
+    """
+
+    name: str  # directory name under --output, e.g. `fpr@e0.30`
+    base: str  # entry in CONFIG_SUITES, e.g. `fpr`
+    binary: str
+    options: dict[str, str]
+
+
+def split_config(config: str) -> tuple[str, str | None]:
+    """Split `fpr@e0.30` into `("fpr", "0.30")`; `("fpr", None)` if unswept."""
+    base, sep, budget = config.partition(BUDGET_SUFFIX)
+    return base, (budget if sep else None)
+
+
+def parse_budget(value: str) -> str:
+    """Validate one `--budget-sweep` value and return it **verbatim**.
+
+    The string the caller typed is what names the output directory, so `0.30`
+    gives `fpr@e0.30` rather than the `fpr@e0.3` a float round-trip would
+    produce.  Those directory names are what `analyze_results.py --configs`
+    consumes, so they have to match the README literally.
+
+    Raises ValueError on whitespace, a non-number, or a value outside the
+    option's range.  HiGHS is not quiet about the last of those — it prints
+    `checkOptionValue: ... is above upper bound` and exits 255
+    (`HighsStatus::kError`) after the banner, without solving — but catching
+    it here is what stops a swept campaign discovering it one directory at a
+    time, hours in.
+    """
+    if value != value.strip():
+        # Surrounding whitespace survives float() but would land verbatim in a
+        # directory name, and the analyze command printed at the end of a run
+        # is unquoted.
+        raise ValueError(f"budget {value!r} has leading or trailing whitespace")
+    try:
+        as_float = float(value)
+    except ValueError as exc:
+        raise ValueError(f"budget {value!r} is not a number") from exc
+    if not 0.0 <= as_float <= 1.0:
+        raise ValueError(
+            f"budget {value!r} is outside mip_heuristic_presolve_effort's [0.0, 1.0]"
+        )
+    return value
+
+
+def resolve_config(config: str) -> tuple[str, str | None]:
+    """`split_config` plus the unknown-name raise.
+
+    That raise is the point of this module's config surface: the old
+    implementation returned `{}` for anything it did not recognise, so a
+    mistyped `--configs patchd` produced a fully populated, plausible-looking,
+    completely meaningless results tree that nothing downstream noticed.
+    """
+    base, budget = split_config(config)
+    if base not in CONFIG_SUITES:
+        known = ", ".join(sorted(CONFIG_SUITES))
+        raise ValueError(
+            f"unknown config {config!r}; known configs: {known} "
+            f"(optionally suffixed {BUDGET_SUFFIX}<effort>, e.g. fpr{BUDGET_SUFFIX}0.30)"
+        )
+    return base, budget
+
+
+def config_options(config: str, *, external_vanilla: bool = False) -> dict[str, str]:
+    """HiGHS options for one config name, budget suffix included.
+
+    Raises ValueError on an unknown name (see `resolve_config`).
+    `external_vanilla` says the `vanilla` config runs on a separately built
+    unpatched binary, which has no `mip_heuristic_*` options at all.
+    """
+    base, budget = resolve_config(config)
+    if budget is not None:
+        parse_budget(budget)
+        if base in SWEEP_EXEMPT:
+            raise ValueError(
+                f"config {base!r} {SWEEP_EXEMPT[base]}, so it does not read "
+                f"mip_heuristic_presolve_effort and the budget suffix in "
+                f"{config!r} would change nothing"
+            )
+    if base == "vanilla" and external_vanilla:
+        return {}
+    options = {"mip_heuristic_suite": CONFIG_SUITES[base]}
+    if budget is not None:
+        options["mip_heuristic_presolve_effort"] = budget
+    return options
+
+
+def expand_configs(
+    configs: list[str], budgets: list[str]
+) -> tuple[list[str], list[str]]:
+    """Expand each config into one `<config>@e<V>` entry per swept budget.
+
+    Returns (expanded config names, human-readable notices to print).  With an
+    empty `budgets` the config list is returned unchanged.  Configs in
+    `SWEEP_EXEMPT` pass through once, unsuffixed, with a notice.
+    """
+    if not budgets:
+        for config in configs:
+            resolve_config(config)  # the unknown-name raise applies here too
+        return list(configs), []
+    for budget in budgets:
+        parse_budget(budget)
+    expanded: list[str] = []
+    notices: list[str] = []
+    for config in configs:
+        base, existing = resolve_config(config)
+        if existing is not None:
+            raise ValueError(
+                f"config {config!r} already carries a {BUDGET_SUFFIX} budget "
+                f"suffix; drop it or drop --budget-sweep"
+            )
+        if base in SWEEP_EXEMPT:
+            expanded.append(config)
+            notices.append(
+                f"Note: config {config!r} {SWEEP_EXEMPT[base]}, so it does not "
+                f"read mip_heuristic_presolve_effort — it is not swept, and "
+                f"runs once as the sweep's anchor row."
+            )
+            continue
+        expanded.extend(f"{config}{BUDGET_SUFFIX}{b}" for b in budgets)
+    return expanded, notices
+
+
+def build_base_options(
+    threads: int | None, dev_log: bool, extra_options: list[str] | None
+) -> dict[str, str]:
+    """Options applied to every config, from the flags that are not per-config.
+
+    Empty by default, and that emptiness is load-bearing twice over: no
+    `threads` (forcing `threads=1` collapses each heuristic to a single worker
+    and invalidates a throughput benchmark) and no `log_dev_level` (level 3
+    costs up to 4.1x wall time — see `--dev-log`).
+    """
+    base: dict[str, str] = {}
+    if threads is not None:
+        base["threads"] = str(threads)
+    if dev_log:
+        base["log_dev_level"] = "3"
+    for kv in extra_options or []:
+        if "=" not in kv:
+            print(f"Warning: ignoring malformed --extra-options entry (no '='): {kv!r}",
+                  file=sys.stderr)
+            continue
+        key, value = kv.split("=", 1)
+        base[key.strip()] = value.strip()
+    return base
+
+
+def build_plan(config: str, patched_binary: str, vanilla_binary: str) -> ConfigPlan:
+    """Resolve a config name to its binary and options, in one place.
+
+    Both the binary choice and the options come off the same decomposed base
+    name, so a swept `vanilla@e...` cannot pick the patched binary while
+    taking the vanilla option branch (it is rejected outright — see
+    SWEEP_EXEMPT).
+    """
+    base, _ = resolve_config(config)
+    external_vanilla = vanilla_binary != patched_binary
+    options = config_options(config, external_vanilla=external_vanilla)
+    binary = vanilla_binary if base == "vanilla" else patched_binary
+    return ConfigPlan(name=config, base=base, binary=binary, options=options)
 
 
 def load_instances(path: str) -> list[str]:
@@ -67,6 +299,23 @@ def write_options_file(options: dict[str, str], path: str) -> None:
     with open(path, "w") as f:
         for k, v in options.items():
             f.write(f"{k} = {v}\n")
+
+
+def record_failure(log_path: str, output: str) -> None:
+    """Park a failed run's output *beside* the log rather than as the log.
+
+    `should_skip` treats a non-empty `<instance>.log` as done and
+    `analyze_results.py` globs `*.log`, so writing a crash, a timeout or a
+    rejected options file into that name does two silent things: it cements
+    the failure across a `--skip-existing` resume, and it scores as a
+    legitimately infeasible instance (no incumbents, `primal_bound=inf`).
+    `<instance>.log.err` is matched by neither, so the run is retried on
+    resume and the evidence is still on disk.
+    """
+    with open(log_path + ".err", "w") as f:
+        f.write(output)
+    if os.path.exists(log_path):
+        os.remove(log_path)
 
 
 def run_single(
@@ -108,16 +357,28 @@ def run_single(
         output = result.stdout
         if result.stderr:
             output += "\n--- stderr ---\n" + result.stderr
+        # HiGHS's CLI exits `int(HighsStatus)`: 0 = kOk, 1 = kWarning — which
+        # is what "Time limit reached" gives, the normal benchmark outcome —
+        # and 255 = kError, meaning it never solved.  An unknown or
+        # out-of-range option in the .opts file lands in that last bucket:
+        # two ERROR lines, the banner, exit 255.  Treating that as a completed
+        # run is the same silent-failure family as the old `config_opts_for`
+        # returning `{}`, one layer down.
+        if result.returncode not in (0, 1):
+            record_failure(log_path, output + f"\n--- runner ---\n"
+                           f"{binary} exited {result.returncode} without solving\n")
+            print(f"Error: {binary} exited {result.returncode} on {instance_name} "
+                  f"({config}, seed {seed}) without solving; see {log_path}.err",
+                  file=sys.stderr)
+            return (instance_name, config, seed, False)
         with open(log_path, "w") as f:
             f.write(output)
         return (instance_name, config, seed, True)
     except subprocess.TimeoutExpired:
-        with open(log_path, "w") as f:
-            f.write(f"TIMEOUT: process killed after {time_limit * 1.5 + 120}s\n")
+        record_failure(log_path, f"TIMEOUT: process killed after {time_limit * 1.5 + 120}s\n")
         return (instance_name, config, seed, False)
     except Exception as e:
-        with open(log_path, "w") as f:
-            f.write(f"ERROR: {e}\n")
+        record_failure(log_path, f"ERROR: {e}\n")
         return (instance_name, config, seed, False)
 
 
@@ -137,8 +398,27 @@ def main() -> None:
     )
     parser.add_argument("--seeds", nargs="+", type=int, default=[0],
                         help="Random seeds to run (default: 0)")
-    parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
-                        help="Configs to run (default: patched vanilla)")
+    parser.add_argument(
+        "--configs", nargs="+", default=["patched", "vanilla"],
+        help=(
+            "Configs to run (default: patched vanilla). One of: "
+            + ", ".join(sorted(CONFIG_SUITES))
+            + ". Each selects a mip_heuristic_suite value; `patched` is an alias "
+              "for `all`, and `vanilla` runs the external --vanilla-binary when "
+              "one is given. An unknown name is an error, not a default-option run."
+        ),
+    )
+    parser.add_argument(
+        "--budget-sweep", nargs="*", metavar="V", default=None,
+        help=(
+            "Sweep mip_heuristic_presolve_effort: each config expands to "
+            "<config>@e<V> per value, writing to <output>/<config>@e<V>/seed<N>/. "
+            "With no values, sweeps " + " ".join(DEFAULT_BUDGET_SWEEP) + ". "
+            "`vanilla`, `off` and `fj` do not read the option (FJ's budget is a "
+            "fixed per-worker allowance) and are not swept — they run once "
+            "each, as the sweep's anchor rows."
+        ),
+    )
     parser.add_argument("--start", type=int, default=0,
                         help="Skip the first N instances (for chunked runs, default: 0)")
     parser.add_argument("--count", type=int, default=None,
@@ -172,6 +452,24 @@ def main() -> None:
         help="Extra options appended to all config options, "
         "e.g. mip_heuristic_presolve_effort=0.10",
     )
+    parser.add_argument(
+        "--dev-log",
+        action="store_true",
+        help=(
+            "Set log_dev_level=3, which is what makes the [Heur] / [Native] / "
+            "[Root] / [Sequential] instrumentation visible to parse_highs_log.py. "
+            "OFF by default because it is not free: HiGHS's own FeasibilityJump "
+            "logs one line per weight bump at exactly that level, from every "
+            "parallel FJ worker, with an fflush each. Measured on the bundled "
+            "instances that is 50-550x the log volume and up to 4.1x the total "
+            "solve wall time. The cost is concentrated in the FJ phase, so it "
+            "lands on the very numbers the cannibalization analysis reads, and "
+            "asymmetrically: fj's effort_per_ms is depressed by its own logging "
+            "while the other three barely log at all, so a --dev-log run's rates "
+            "are not comparable with a plain run's. Use it for attribution runs, "
+            "not for headline timings."
+        ),
+    )
     args = parser.parse_args()
 
     binary = os.path.abspath(args.binary)
@@ -179,14 +477,72 @@ def main() -> None:
         print(f"Error: binary not found: {binary}", file=sys.stderr)
         sys.exit(1)
 
-    vanilla_binary = binary  # default: same binary, use VANILLA_OPTIONS
+    vanilla_binary = binary  # default: same binary at mip_heuristic_suite=off
     if args.vanilla_binary is not None:
         vanilla_binary = os.path.abspath(args.vanilla_binary)
         if not os.path.exists(vanilla_binary):
             print(f"Error: vanilla binary not found: {vanilla_binary}", file=sys.stderr)
             sys.exit(1)
-        print(f"Vanilla binary : {vanilla_binary} (external — no custom options)")
+        # `build_plan` decides externality by comparing resolved paths, not by
+        # whether the flag was given — run_plato.sh falls back to --binary when
+        # `which highs` finds nothing, and this is the line a reader checks to
+        # confirm which baseline they measured.
+        if vanilla_binary == binary:
+            print(f"Vanilla binary : {vanilla_binary} (same path as --binary — "
+                  "vanilla runs the patched binary at mip_heuristic_suite=off)")
+        else:
+            print(f"Vanilla binary : {vanilla_binary} (external — no custom options)")
     print(f"Patched binary : {binary}")
+
+    # Resolve configs before anything else runs: an unknown name must fail
+    # here, not after producing hours of default-option results.
+    budgets = args.budget_sweep
+    if budgets is not None and not budgets:
+        budgets = list(DEFAULT_BUDGET_SWEEP)
+    try:
+        config_names, notices = expand_configs(args.configs, budgets or [])
+        dupes = sorted({n for n in config_names if config_names.count(n) > 1})
+        if dupes:
+            raise ValueError(
+                f"duplicate config(s) {', '.join(dupes)} — a config name is one "
+                "output directory, so a repeat is the same run twice"
+            )
+        plans = [build_plan(c, binary, vanilla_binary) for c in config_names]
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    for notice in notices:
+        print(notice)
+    # Distinct names can still resolve to one configuration — `all` and
+    # `patched` are aliases, and `vanilla` is `off` unless an external binary
+    # was given.  That is "N identical runs under N names", the thing the
+    # unknown-name raise and SWEEP_EXEMPT both exist to prevent, so warn
+    # rather than silently burning the compute.  A warning, not an error:
+    # run_plato.sh legitimately reaches the vanilla==off case when `which
+    # highs` finds nothing.
+    seen: dict[tuple[str, tuple[tuple[str, str], ...]], str] = {}
+    for plan in plans:
+        key = (plan.binary, tuple(sorted(plan.options.items())))
+        if key in seen:
+            print(f"Warning: config {plan.name!r} is identical to {seen[key]!r} "
+                  "(same binary, same options) — duplicated work, not a second "
+                  "data point", file=sys.stderr)
+        else:
+            seen[key] = plan.name
+    if budgets:
+        print(f"Budget sweep   : mip_heuristic_presolve_effort in {' '.join(budgets)}")
+    print(f"Configs        : {' '.join(p.name for p in plans)}")
+    # State the instrumentation decision in the header of every run.  Without
+    # it, `--dev-log` is a flag you discover you needed after the campaign:
+    # `SolveResult.heuristic_wall_fraction` is `None` on a plain run — not 0.0,
+    # which is reserved for an instrumented `suite=off` — so the attribution
+    # tables come out empty rather than wrong, hours later.
+    print("Instrumentation: " + (
+        "log_dev_level=3 ([Heur]/[Native]/[Root]/[Sequential]) — attribution "
+        "run, timings inflated"
+        if args.dev_log else
+        "off — headline timings; pass --dev-log for the attribution tables"
+    ))
 
     instances = load_instances(args.instances)
     print(f"Loaded {len(instances)} instances from {args.instances}")
@@ -214,37 +570,19 @@ def main() -> None:
     if args.count is not None:
         instances = instances[:args.count]
 
-    total_runs = len(args.configs) * len(args.seeds) * len(instances)
+    total_runs = len(plans) * len(args.seeds) * len(instances)
     done = 0
     budget_exhausted = False
     run_start = time.time()
 
-    # Build base options (applied to all configs)
-    base_opts: dict[str, str] = {}
-    if args.threads is not None:
-        base_opts["threads"] = str(args.threads)
-    # Parse --extra-options KEY=VALUE pairs and merge into base_opts
-    for kv in (args.extra_options or []):
-        if "=" not in kv:
-            print(f"Warning: ignoring malformed --extra-options entry (no '='): {kv!r}", file=sys.stderr)
-            continue
-        k, v = kv.split("=", 1)
-        base_opts[k.strip()] = v.strip()
-
-    def binary_for(config: str) -> str:
-        if config == "vanilla":
-            return vanilla_binary
-        return binary
-
-    def config_opts_for(config: str) -> dict[str, str]:
-        if config == "vanilla":
-            # External vanilla binary: no mip_heuristic_* options exist on it
-            if vanilla_binary != binary:
-                return {}
-            return VANILLA_OPTIONS
-        if config == "patched":
-            return PATCHED_OPTIONS
-        return {}
+    base_opts = build_base_options(args.threads, args.dev_log, args.extra_options)
+    # Config options win over base options, so any --extra-options pin of a key
+    # a config also sets is silently discarded on that config.
+    for plan in plans:
+        for key in sorted(set(base_opts) & set(plan.options)):
+            print(f"Warning: --extra-options {key}={base_opts[key]!r} is overridden "
+                  f"by config {plan.name!r} ({key}={plan.options[key]!r})",
+                  file=sys.stderr)
 
     def should_skip(config: str, name: str, seed: int) -> bool:
         if not args.skip_existing:
@@ -259,13 +597,13 @@ def main() -> None:
             return False
         return (time.time() - run_start) >= args.wall_time_budget
 
-    def run_one(config: str, name: str, seed: int) -> None:
+    def run_one(plan: ConfigPlan, name: str, seed: int) -> None:
         nonlocal done, budget_exhausted
         if budget_exhausted:
             return
-        if should_skip(config, name, seed):
+        if should_skip(plan.name, name, seed):
             done += 1
-            print(f"[{done}/{total_runs}] SKIP {name} ({config}) — log exists")
+            print(f"[{done}/{total_runs}] SKIP {name} ({plan.name}) — log exists")
             return
         if check_budget():
             budget_exhausted = True
@@ -273,12 +611,12 @@ def main() -> None:
             print(f"\nTime budget reached ({elapsed/3600:.1f}h elapsed). "
                   f"Re-run with same command to continue.")
             return
-        extra_opts = {**base_opts, **config_opts_for(config)}
-        inst_name, cfg, sd, success = run_single(
-            binary_for(config),
+        extra_opts = {**base_opts, **plan.options}
+        _, _, _, success = run_single(
+            plan.binary,
             instance_files[name],
             name,
-            config,
+            plan.name,
             seed,
             args.time_limit,
             args.output,
@@ -287,15 +625,15 @@ def main() -> None:
         done += 1
         status = "OK" if success else "FAIL"
         elapsed = time.time() - run_start
-        print(f"[{done}/{total_runs}] {name} ({config}) {status}  "
+        print(f"[{done}/{total_runs}] {name} ({plan.name}) {status}  "
               f"[{elapsed/3600:.1f}h elapsed]")
 
     if args.interleave:
         # instance → seed → config: gives paired vanilla+patched results sooner
         for name in instances:
             for seed in args.seeds:
-                for config in args.configs:
-                    run_one(config, name, seed)
+                for plan in plans:
+                    run_one(plan, name, seed)
                     if budget_exhausted:
                         break
                 if budget_exhausted:
@@ -304,14 +642,14 @@ def main() -> None:
                 break
     else:
         # config → seed → instance: runs all of one config before the next
-        for config in args.configs:
+        for plan in plans:
             for seed in args.seeds:
                 print(f"\n{'='*60}")
-                print(f"Config: {config}, seed: {seed} "
+                print(f"Config: {plan.name}, seed: {seed} "
                       f"({len(instances)} instances, {args.time_limit}s limit)")
                 print(f"{'='*60}")
                 for name in instances:
-                    run_one(config, name, seed)
+                    run_one(plan, name, seed)
                     if budget_exhausted:
                         break
                 if budget_exhausted:
@@ -321,6 +659,18 @@ def main() -> None:
 
     elapsed_total = time.time() - run_start
     print(f"\nDone. {done} runs in {elapsed_total/3600:.1f}h. Results in {args.output}/")
+    # The config names are the directory names, so the analysis command is
+    # mechanical — print it rather than making the reader reconstruct it.
+    # Two configs is the pairwise/PLATO shape README.md and run_plato.sh
+    # document; three or more is the one-row-per-config ablation a sweep
+    # produces.  Suggesting --ablation for a `patched vanilla` run would
+    # contradict the command run_plato.sh prints seconds later.
+    if done:
+        mode = "--ablation" if len(plans) > 2 else "--baseline --summary"
+        print("\nAnalyze with:\n"
+              f"  python3 bench/analyze_results.py {args.output} {mode} "
+              f"--configs {' '.join(p.name for p in plans)} "
+              f"--time-limit {args.time_limit:g}")
 
 
 if __name__ == "__main__":

@@ -162,3 +162,40 @@ def test_load_results_config_dir_override(tmp_path: Path):
     assert "anchor" in loaded
     assert 0 in loaded["anchor"]
     assert inst_name in loaded["anchor"][0]
+
+
+# ── budget-sweep directory names (`<config>@e<effort>`) ───────────────────────
+
+
+def _tiny_tree(root: Path, config: str) -> None:
+    seed_dir = root / config / "seed0"
+    seed_dir.mkdir(parents=True)
+    (seed_dir / "toy.log").write_text(
+        "      Status      Time limit reached\n      Primal bound inf\n"
+    )
+
+
+def test_load_results_reads_budget_sweep_directories(tmp_path: Path):
+    """run_benchmark's --budget-sweep names directories `<config>@e<V>`.
+
+    The whole point of that naming is that sweep output is analysable with no
+    new analysis code, so the default `results_dir/<config>` path has to take
+    the `@` verbatim.
+    """
+    configs = ["fpr@e0.05", "fpr@e0.30", "vanilla"]
+    for config in configs:
+        _tiny_tree(tmp_path, config)
+    loaded = load_results(str(tmp_path), configs)
+    assert sorted(loaded) == sorted(configs)
+    for config in configs:
+        assert "toy" in loaded[config][0]
+
+
+def test_latex_ablation_table_renders_budget_sweep_config_names():
+    """`@` is an ordinary character in LaTeX text mode; `_` still is not."""
+    metrics = {
+        "local_mip@e0.30": {"feasible": 5.0, "sgm_t1st": 1.0, "sgm_gap": 0.01,
+                            "sgm_pi": 2.0, "plato_sgm": 1.5},
+    }
+    tex = latex_ablation_table(["local_mip@e0.30"], metrics, 5, 60.0)
+    assert r"local\_mip@e0.30" in tex
