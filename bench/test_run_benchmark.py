@@ -15,9 +15,12 @@ from run_benchmark import (
     build_plan,
     config_options,
     expand_configs,
+    find_ignored_config_warning,
+    main,
     parse_budget,
     run_single,
     split_config,
+    write_log,
     write_options_file,
 )
 
@@ -323,3 +326,178 @@ def test_write_options_file_round_trips(tmp_path: Path):
     write_options_file({"mip_heuristic_suite": "fpr", "random_seed": "3"}, str(path))
     assert path.read_text() == "mip_heuristic_suite = fpr\nrandom_seed = 3\n"
     assert os.path.exists(path)
+
+
+def test_a_successful_retry_clears_a_stale_err(tmp_path: Path):
+    """Exactly one of .log / .err describes what is in the tree now.
+
+    Otherwise a --skip-existing resume over a partially failed campaign
+    leaves .err files whose instances have since succeeded, and .err degrades
+    from "failed" to "failed at some point".
+    """
+    log = tmp_path / "model.log"
+    (tmp_path / "model.log.err").write_text("failure from an earlier attempt\n")
+    write_log(str(log), "a good run\n")
+    assert log.read_text() == "a good run\n"
+    assert not (tmp_path / "model.log.err").exists()
+
+
+# --- a run that solved but ignored its configuration -----------------------
+
+
+def test_the_fail_open_warning_is_detected():
+    """HiGHS accepts an unknown suite *value* and runs all four anyway.
+
+    Verbatim text from src/mode_dispatch.cpp's run_presolve.
+    """
+    output = (
+        "Running HiGHS 1.15.1\n"
+        'WARNING: Unknown mip_heuristic_suite value "of"; running all heuristics.\n'
+        "  Status            Optimal\n"
+    )
+    assert "Unknown mip_heuristic_suite" in find_ignored_config_warning(output)
+
+
+def test_the_fj_taken_away_warning_is_detected():
+    """`suite=fj` + run_feasibility_jump=false measures vanilla-minus-FJ."""
+    output = (
+        'WARNING: mip_heuristic_suite="fj" selects only FeasibilityJump, which '
+        "mip_heuristic_run_feasibility_jump=false disables; no heuristic will "
+        "run. Use mip_heuristic_suite=off for a vanilla-equivalent run.\n"
+    )
+    assert find_ignored_config_warning(output) is not None
+
+
+def test_an_ordinary_log_trips_nothing():
+    assert find_ignored_config_warning("Running HiGHS\n  Status  Optimal\n") is None
+
+
+def test_a_run_that_ignored_its_config_is_parked_as_err(tmp_path: Path, capsys):
+    """Exit 0 and a complete log, so only this check can catch it."""
+    binary = tmp_path / "fake_highs"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "print('Running HiGHS')\n"
+        'print(\'WARNING: Unknown mip_heuristic_suite value "of"; '
+        "running all heuristics.')\n"
+        "sys.exit(0)\n"
+    )
+    binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+    out = tmp_path / "results"
+    _, _, _, ok = run_single(
+        str(binary), "model.mps", "model", "off", 0, 1.0, str(out)
+    )
+    assert not ok
+    seed_dir = out / "off" / "seed0"
+    assert not (seed_dir / "model.log").exists()
+    assert "ignored its configuration" in (seed_dir / "model.log.err").read_text()
+    assert "ignored its configuration" in capsys.readouterr().err
+
+
+# --- two names, one configuration ------------------------------------------
+
+
+def test_budgets_differing_only_as_strings_are_one_configuration():
+    """`0.3` and `0.30` are two directories but one number to HiGHS."""
+    a = build_plan(f"fpr{BUDGET_SUFFIX}0.3", PATCHED, PATCHED)
+    b = build_plan(f"fpr{BUDGET_SUFFIX}0.30", PATCHED, PATCHED)
+    assert a.name != b.name  # distinct output directories
+    assert a.identity == b.identity  # identical solver behaviour
+
+
+def test_genuinely_different_budgets_are_different_configurations():
+    a = build_plan(f"fpr{BUDGET_SUFFIX}0.30", PATCHED, PATCHED)
+    b = build_plan(f"fpr{BUDGET_SUFFIX}0.60", PATCHED, PATCHED)
+    assert a.identity != b.identity
+
+
+def test_identity_separates_configs_that_differ_only_by_binary():
+    assert (
+        build_plan("vanilla", PATCHED, EXTERNAL).identity
+        != build_plan("off", PATCHED, EXTERNAL).identity
+    )
+
+
+def test_aliases_share_one_identity():
+    assert build_plan("patched", PATCHED, PATCHED).identity == (
+        build_plan("all", PATCHED, PATCHED).identity
+    )
+
+
+# --- main()'s own guards ---------------------------------------------------
+
+
+def _main(tmp_path: Path, monkeypatch, *argv: str) -> None:
+    """Run main() over an empty instance list — every guard, no solves."""
+    instances = tmp_path / "none.txt"
+    instances.write_text("")
+    monkeypatch.setattr(
+        sys, "argv",
+        ["run_benchmark.py", "--instances", str(instances), "--binary", sys.executable,
+         "--data-dir", str(tmp_path), "--output", str(tmp_path / "out"), *argv],
+    )
+    main()
+
+
+def test_main_exits_2_on_an_unknown_config(tmp_path: Path, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        _main(tmp_path, monkeypatch, "--configs", "patchd")
+    assert exc.value.code == 2
+    assert "unknown config 'patchd'" in capsys.readouterr().err
+
+
+def test_main_exits_2_on_a_duplicate_config(tmp_path: Path, monkeypatch, capsys):
+    """One config name is one output directory, so a repeat is one run twice."""
+    with pytest.raises(SystemExit) as exc:
+        _main(tmp_path, monkeypatch, "--configs", "fpr", "fpr")
+    assert exc.value.code == 2
+    assert "duplicate config" in capsys.readouterr().err
+
+
+def test_main_exits_2_on_an_explicitly_suffixed_exempt_config(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit) as exc:
+        _main(tmp_path, monkeypatch, "--configs", f"vanilla{BUDGET_SUFFIX}0.30")
+    assert exc.value.code == 2
+
+
+def test_main_warns_that_vanilla_and_off_are_the_same_run(tmp_path, monkeypatch, capsys):
+    """Without --vanilla-binary they are one configuration under two names."""
+    _main(tmp_path, monkeypatch, "--configs", "vanilla", "off")
+    err = capsys.readouterr().err
+    assert "identical" in err and "duplicated work" in err
+
+
+def test_main_warns_on_string_duplicate_budgets(tmp_path, monkeypatch, capsys):
+    _main(tmp_path, monkeypatch, "--configs", "fpr", "--budget-sweep", "0.3", "0.30")
+    assert "identical" in capsys.readouterr().err
+
+
+def test_main_warns_when_a_config_overrides_an_extra_option(tmp_path, monkeypatch, capsys):
+    _main(tmp_path, monkeypatch, "--configs", "fpr",
+          "--extra-options", "mip_heuristic_suite=scylla")
+    assert "is overridden by config 'fpr'" in capsys.readouterr().err
+
+
+def test_main_warns_that_an_extra_random_seed_is_ignored(tmp_path, monkeypatch, capsys):
+    """The seed names the output directory, so --seeds has to win."""
+    _main(tmp_path, monkeypatch, "--configs", "fpr", "--extra-options", "random_seed=7")
+    assert "random_seed" in capsys.readouterr().err
+
+
+def test_main_reports_the_instrumentation_mode(tmp_path, monkeypatch, capsys):
+    _main(tmp_path, monkeypatch, "--configs", "fpr")
+    assert "Instrumentation: off" in capsys.readouterr().out
+    _main(tmp_path, monkeypatch, "--configs", "fpr", "--dev-log")
+    assert "log_dev_level=3" in capsys.readouterr().out
+
+
+def test_main_accepts_the_documented_readme_sweep(tmp_path, monkeypatch, capsys):
+    """The README reproduce block must not warn about duplicated work."""
+    _main(tmp_path, monkeypatch,
+          "--configs", "off", "fj", "fpr", "local_mip", "scylla", "all",
+          "--budget-sweep", "0.05", "0.15", "0.30", "0.60", "1.00")
+    captured = capsys.readouterr()
+    assert "identical" not in captured.err
+    assert "off@e" not in captured.out and "fj@e" not in captured.out
+    assert "fpr@e0.05" in captured.out and "all@e1.00" in captured.out

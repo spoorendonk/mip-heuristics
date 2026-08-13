@@ -119,21 +119,23 @@ python3 bench/run_benchmark.py \
     --instances bench/instances_small.txt \
     --data-dir /tmp/miplib \
     --output bench/results/sweep \
-    --configs vanilla off fj fpr local_mip scylla all \
+    --configs off fj fpr local_mip scylla all \
     --budget-sweep 0.05 0.15 0.30 0.60 1.00 \
     --time-limit 600 --seeds 0 1 2 --skip-existing
 python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600 \
-    --configs vanilla off fj fpr@e0.05 local_mip@e0.05 scylla@e0.05 all@e0.05
+    --configs off fj fpr@e0.05 local_mip@e0.05 scylla@e0.05 all@e0.05
 ```
 
 `run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped.
 
-Three configs are not swept, because `mip_heuristic_presolve_effort` provably does not reach them: `vanilla` and `off` run no presolve heuristic at all, and `fj` runs on a fixed per-worker allowance that neither effort option scales. They run once each as the sweep's anchor rows — note the unsuffixed `vanilla off fj` in the analyze command above. Naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
+`off` is the baseline here, not `vanilla`. On the patched binary the two are the same run — `vanilla` *is* `mip_heuristic_suite=off` unless `--vanilla-binary` points at a separately built unpatched binary — so asking for both without that flag runs every instance twice for one data point, and the harness says so. Add `--vanilla-binary /path/to/unpatched/highs` (plus `vanilla` back in the config list) for a headline baseline; it is the stronger claim, and the only thing that makes the two configs differ.
+
+Three configs are not swept, because `mip_heuristic_presolve_effort` provably does not reach them: `vanilla` and `off` run no presolve heuristic at all, and `fj` runs on a fixed per-worker allowance that neither effort option scales. They run once each as the sweep's anchor rows — note the unsuffixed `off fj` in the analyze command above. Naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
 
 Two things the harness deliberately does not do by default:
 
 - **No `threads=`.** Forcing `threads=1` collapses each heuristic to a single worker. It is the right setting for reproducibility and the wrong one for a throughput benchmark, so `--threads` exists but has no default.
-- **No `log_dev_level=3`.** Pass `--dev-log` to turn on the `[Heur]` / `[Native]` / `[Root]` / `[Sequential]` instrumentation that `bench/parse_highs_log.py` reads for the cannibalization analysis. It is not free: HiGHS's own FeasibilityJump logs one line per weight bump at exactly that level, from every parallel FJ worker, with an `fflush` each. Measured on five bundled instances at a 10 s limit that is 97–750x the log volume (bell5: 16 KB → 3.5 MB) and 1.1–4.4x the total solve wall time (egout: 0.048 s → 0.212 s), concentrated in the FJ phase — i.e. in the number the analysis is reading. Use `--dev-log` for attribution runs and leave it off for headline timings.
+- **No `log_dev_level=3`.** Pass `--dev-log` to turn on the `[Heur]` / `[Native]` / `[Root]` / `[Sequential]` instrumentation that `bench/parse_highs_log.py` reads for the cannibalization analysis. It is not free: HiGHS's own FeasibilityJump logs one line per weight bump at exactly that level, from every parallel FJ worker, with an `fflush` each. Measured on five bundled instances at a 10 s limit that is 97–750x the log volume (bell5: 16 KB → 3.5 MB) and 1.1–4.4x the total solve wall time (egout: 0.048 s → 0.212 s), concentrated in the FJ phase — i.e. in the number the analysis is reading. Without it `SolveResult.heuristic_wall_fraction` is `None` (unknown), not `0.0`, so the attribution tables come out empty rather than wrong. Use `--dev-log` for attribution runs and leave it off for headline timings.
 
 ## Build Options
 

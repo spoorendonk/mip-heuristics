@@ -117,6 +117,24 @@ class ConfigPlan:
     binary: str
     options: dict[str, str]
 
+    @property
+    def identity(self) -> tuple[str, tuple[tuple[str, str | float], ...]]:
+        """What the solver actually sees, for "is this the same run?" checks.
+
+        Not the name and not the raw options: `0.3` and `0.30` name two
+        directories but are one number to HiGHS, so `--budget-sweep 0.3 0.30`
+        would otherwise produce two identical trees with nothing to flag it.
+        Budgets stay verbatim in `name` (the directory) and are compared as
+        floats here (the behaviour).
+        """
+        normalized: list[tuple[str, str | float]] = []
+        for key, value in sorted(self.options.items()):
+            try:
+                normalized.append((key, float(value)))
+            except ValueError:
+                normalized.append((key, value))
+        return (self.binary, tuple(normalized))
+
 
 def split_config(config: str) -> tuple[str, str | None]:
     """Split `fpr@e0.30` into `("fpr", "0.30")`; `("fpr", None)` if unswept."""
@@ -301,6 +319,36 @@ def write_options_file(options: dict[str, str], path: str) -> None:
             f.write(f"{k} = {v}\n")
 
 
+# HiGHS warnings that mean the solve did not do what its config name says.
+# These exit 0 with a complete, ordinary-looking log, so nothing below the
+# runner can tell the resulting tree apart from a good one.
+#
+# The first is the important one: HiGHS validates option *names* but not
+# string option *values*, so `mip_heuristic_suite=of` is accepted by
+# `setOptionValue` and caught only at solve time, where `run_presolve`
+# deliberately fails open to all four heuristics with a `kWarning`.  An
+# `off/` directory would then hold runs that actually executed `all`.  The
+# realistic route there is not a typo but a HiGHS tag bump renaming the
+# values — silently rejected options are a recurring failure in this project
+# (see the "Bumping the HiGHS tag" note in CLAUDE.md).
+#
+# The second is the same class from the other side: `suite=fj` with
+# `mip_heuristic_run_feasibility_jump=false` asks for FJ and then takes it
+# away, so an "FJ isolated" row would measure vanilla-minus-FJ.
+CONFIG_IGNORED_WARNINGS = (
+    "Unknown mip_heuristic_suite value",
+    "no heuristic will run",
+)
+
+
+def find_ignored_config_warning(output: str) -> str | None:
+    """Return the line of `output` saying the run ignored its configuration."""
+    for line in output.splitlines():
+        if any(marker in line for marker in CONFIG_IGNORED_WARNINGS):
+            return line.strip()
+    return None
+
+
 def record_failure(log_path: str, output: str) -> None:
     """Park a failed run's output *beside* the log rather than as the log.
 
@@ -316,6 +364,24 @@ def record_failure(log_path: str, output: str) -> None:
         f.write(output)
     if os.path.exists(log_path):
         os.remove(log_path)
+
+
+def write_log(log_path: str, output: str) -> None:
+    """Record a successful run, clearing any `.err` from an earlier attempt.
+
+    The counterpart to `record_failure`, and it has to clear the `.err` for
+    the same reason that clears the `.log`: exactly one of the two files
+    describes what is in the tree now.  Without this, a `--skip-existing`
+    resume over a partially failed campaign leaves `.err` files whose
+    instances have since succeeded, so `.err` degrades from "this run failed"
+    to "this run failed at some point", which is not a property anyone can
+    filter on.
+    """
+    with open(log_path, "w") as f:
+        f.write(output)
+    err_path = log_path + ".err"
+    if os.path.exists(err_path):
+        os.remove(err_path)
 
 
 def run_single(
@@ -371,8 +437,19 @@ def run_single(
                   f"({config}, seed {seed}) without solving; see {log_path}.err",
                   file=sys.stderr)
             return (instance_name, config, seed, False)
-        with open(log_path, "w") as f:
-            f.write(output)
+        # A run that solved fine but ignored the configuration it was given is
+        # worse than one that failed: the exit code is 0 and the log is
+        # complete, so the tree is indistinguishable from a good one while the
+        # directory name says something the binary did not do.
+        ignored = find_ignored_config_warning(output)
+        if ignored is not None:
+            record_failure(log_path, output + f"\n--- runner ---\n"
+                           f"{binary} ignored its configuration: {ignored}\n")
+            print(f"Error: {binary} ignored its configuration on {instance_name} "
+                  f"({config}, seed {seed}): {ignored}; see {log_path}.err",
+                  file=sys.stderr)
+            return (instance_name, config, seed, False)
+        write_log(log_path, output)
         return (instance_name, config, seed, True)
     except subprocess.TimeoutExpired:
         record_failure(log_path, f"TIMEOUT: process killed after {time_limit * 1.5 + 120}s\n")
@@ -460,9 +537,9 @@ def main() -> None:
             "[Root] / [Sequential] instrumentation visible to parse_highs_log.py. "
             "OFF by default because it is not free: HiGHS's own FeasibilityJump "
             "logs one line per weight bump at exactly that level, from every "
-            "parallel FJ worker, with an fflush each. Measured on the bundled "
-            "instances that is 50-550x the log volume and up to 4.1x the total "
-            "solve wall time. The cost is concentrated in the FJ phase, so it "
+            "parallel FJ worker, with an fflush each. Measured on five bundled "
+            "instances at a 10 s limit that is 97-750x the log volume and up to "
+            "4.4x the total solve wall time. The cost is concentrated in the FJ phase, so it "
             "lands on the very numbers the cannibalization analysis reads, and "
             "asymmetrically: fj's effort_per_ms is depressed by its own logging "
             "while the other three barely log at all, so a --dev-log run's rates "
@@ -520,9 +597,9 @@ def main() -> None:
     # rather than silently burning the compute.  A warning, not an error:
     # run_plato.sh legitimately reaches the vanilla==off case when `which
     # highs` finds nothing.
-    seen: dict[tuple[str, tuple[tuple[str, str], ...]], str] = {}
+    seen: dict[tuple[str, tuple[tuple[str, str | float], ...]], str] = {}
     for plan in plans:
-        key = (plan.binary, tuple(sorted(plan.options.items())))
+        key = plan.identity
         if key in seen:
             print(f"Warning: config {plan.name!r} is identical to {seen[key]!r} "
                   "(same binary, same options) — duplicated work, not a second "
@@ -576,6 +653,14 @@ def main() -> None:
     run_start = time.time()
 
     base_opts = build_base_options(args.threads, args.dev_log, args.extra_options)
+    # `run_single` writes random_seed last, from --seeds, because the seed is
+    # part of the output path (`seed<N>/`) and an --extra-options pin would
+    # make the directory name a lie.  Say so: silently dropping the flag is
+    # the same "your option did nothing" failure this changeset exists to fix.
+    if "random_seed" in base_opts:
+        print(f"Warning: --extra-options random_seed={base_opts['random_seed']!r} is "
+              f"ignored — the seed comes from --seeds ({' '.join(map(str, args.seeds))}) "
+              "and names the output directory", file=sys.stderr)
     # Config options win over base options, so any --extra-options pin of a key
     # a config also sets is silently discarded on that config.
     for plan in plans:
