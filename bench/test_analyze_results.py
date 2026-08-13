@@ -8,9 +8,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import shutil
+import subprocess
 from pathlib import Path
 
 from analyze_results import (
+    CANNIBALIZATION_CATEGORIES,
     aggregate_results,
     classify_cannibalization,
     count_first,
@@ -20,6 +22,7 @@ from analyze_results import (
     latex_ablation_table,
     load_results,
     native_call_total,
+    native_lp_share,
     pick_baseline_config,
     presolve_span_seconds,
     print_cannibalization_tables,
@@ -349,6 +352,53 @@ def test_neutral_when_nothing_moved():
     assert v.evidence == ()
 
 
+def test_merged_call_total_needs_a_margin_but_root_rens_does_not():
+    """The merged total is a rate; rens_root is a gate.
+
+    A one-call dip out of forty is thread-interleaving noise on counters the
+    B&B dive increments concurrently, and reporting it as budget taken would
+    inflate the epic's headline count.  A vanished root call is never noise.
+    """
+    base = _instrumented(rens=20, rens_root=1, rins=20, rcfix=0)
+    drift = _instrumented(rens=20, rens_root=1, rins=19, rcfix=0)
+    assert classify_cannibalization(drift, base).category == "neutral"
+
+    real = _instrumented(rens=15, rens_root=1, rins=15, rcfix=0)
+    assert classify_cannibalization(real, base).category == "internal-budget"
+
+    gate = _instrumented(rens=20, rens_root=0, rins=20, rcfix=0)
+    assert classify_cannibalization(gate, base).category == "internal-budget"
+
+
+def test_thresholds_are_overridable_for_a_sensitivity_check():
+    """The CLI does not expose them; the keyword arguments are the way in."""
+    base = _instrumented(solve_time=10.0)
+    row = _instrumented(solve_time=10.0, samples=[_heur("fj", "presolve", 0.1, 300.0)])
+    assert classify_cannibalization(row, base).category == "neutral"
+    assert classify_cannibalization(row, base, wall_fraction=0.01).category == "wall-clock"
+
+
+def test_heuristic_wall_time_is_reported_from_heur_lines_alone():
+    """`[Native]` comes from cleanupSolve; a truncated log can lack it.
+
+    Keying the wall-time helper on `[Native]` alone printed Heur_s='-' next to
+    a populated HeurFrac on the same row — self-contradictory.
+    """
+    r = SolveResult(status="Time limit", solve_time=10.0)
+    r.heuristic_samples = [_heur("fj", "presolve", 0.1, 3000.0)]
+    assert not is_instrumented(r)
+    assert heuristic_wall_seconds(r) == 3.0
+    assert r.heuristic_wall_fraction == 0.3
+
+
+def test_native_lp_share_is_the_gate_quantity():
+    """NatShare is what upstream's moreHeuristicsAllowed() tests."""
+    r = _instrumented(heur_lp=1500, tot_lp=11000, ours=500)
+    assert native_lp_share(r) == 1000 / 10500
+    assert native_lp_share(_instrumented(heur_lp=0, tot_lp=0)) is None
+    assert native_lp_share(_uninstrumented()) is None
+
+
 def test_more_native_activity_is_not_cannibalization():
     """Only decreases count; a config that lets HiGHS do more is not a cost."""
     base = _instrumented(rens=1, rens_root=0, rins=1, heur_lp=100)
@@ -425,9 +475,36 @@ def test_uninstrumented_row_and_uninstrumented_baseline_are_distinguished():
 def test_pick_baseline_prefers_the_instrumented_zero_heuristic_config():
     agg = {
         "patched": {"a": _instrumented(samples=[_heur("fj", "presolve", 0.1, 5.0)])},
-        "suite_off": {"a": _instrumented()},
+        # Name deliberately absent from CANNIBALIZATION_BASELINE_NAMES so the
+        # structural test (instrumented, no [Heur] lines) has to find it on its
+        # own rather than the name fallback answering by accident.
+        "zeroheur": {"a": _instrumented()},
     }
-    assert pick_baseline_config(agg, ["patched", "suite_off"]) == "suite_off"
+    assert pick_baseline_config(agg, ["patched", "zeroheur"]) == "zeroheur"
+
+
+def test_pick_baseline_refuses_a_heuristic_running_config_with_a_baseline_name():
+    """A config that dispatched heuristics is a subject, never a reference.
+
+    Nothing downstream would catch it — the uninstrumented-baseline warning
+    does not fire on an instrumented row — so every other row would be
+    silently compared against a patched reference.  A config rename (#96)
+    lands on exactly this path.
+    """
+    agg = {
+        "patched": {"a": _instrumented(samples=[_heur("fj", "presolve", 0.1, 6.0)])},
+        "vanilla": {"a": _instrumented(samples=[_heur("fj", "presolve", 0.1, 5.0)])},
+    }
+    assert pick_baseline_config(agg, ["patched", "vanilla"]) is None
+
+
+def test_uninstrumented_rows_are_not_evidence_of_dispatching_nothing():
+    """A pre-#95 row has no [Heur] lines because it has no lines at all."""
+    agg = {
+        "mixed": {"a": _instrumented(samples=[_heur("fj", "presolve", 0.1, 5.0)]),
+                  "b": _uninstrumented()},
+    }
+    assert pick_baseline_config(agg, ["mixed"]) is None
 
 
 def test_pick_baseline_falls_back_to_a_known_name_when_uninstrumented():
@@ -503,6 +580,38 @@ def _write_tree(root_dir: Path, tree: dict[str, dict[str, str]]) -> None:
             (seed_dir / f"{inst}.log").write_text(text)
 
 
+def _render(tmp_path: Path, tree: dict[str, dict[str, str]], capsys,
+            baseline: str | None = None) -> str:
+    """Write a results tree, run the report over it, return the output."""
+    _write_tree(tmp_path, tree)
+    configs = list(tree)
+    results = load_results(str(tmp_path), configs)
+    print_cannibalization_tables(
+        results, aggregate_results(results, configs), configs, baseline
+    )
+    return capsys.readouterr().out
+
+
+def _block(out: str, start: str, end: str | None = None) -> str:
+    """The slice of the report between two headings."""
+    part = out.split(start, 1)[1]
+    return part.split(end, 1)[0] if end else part
+
+
+def _cells(block: str, instance: str, config: str) -> list[str]:
+    """Whitespace-split cells of one instance x config row.
+
+    Asserting by column index rather than by substring is what pins a column
+    to its own value: a grep over the whole line passes when two columns are
+    wired to the same source.
+    """
+    for line in block.splitlines():
+        parts = line.split()
+        if len(parts) > 1 and parts[0] == instance and parts[1] == config:
+            return parts
+    raise AssertionError(f"no row for {instance}/{config} in:\n{block}")
+
+
 def test_cannibalization_tables_render_from_an_instrumented_tree(tmp_path, capsys):
     """Both tables, their aggregates and the classification, no scripting."""
     starved = _synth_log(
@@ -519,21 +628,17 @@ def test_cannibalization_tables_render_from_an_instrumented_tree(tmp_path, capsy
         solve_time=10.0,
         samples=[_heur("fj", "presolve", 0.1, 40.0)],
         native=(3, 1, 4, 1, 2000, 11000, 0),
-        root=(1.05, 0.04),
+        # Span deliberately unlike every other numeric cell in the row, so the
+        # assertion on it can only be satisfied by the Span_s column.
+        root=(1.05, 0.31),
     )
     base_log = _synth_log(
         solve_time=10.0, native=(3, 1, 4, 1, 2000, 11000, 0), root=(1.0, 0.0)
     )
-    _write_tree(tmp_path, {
+    out = _render(tmp_path, {
         "patched": {"starved": starved, "quiet": quiet},
         "vanilla": {"starved": base_log, "quiet": base_log},
-    })
-
-    configs = ["patched", "vanilla"]
-    results = load_results(str(tmp_path), configs)
-    agg = aggregate_results(results, configs)
-    print_cannibalization_tables(results, agg, configs)
-    out = capsys.readouterr().out
+    }, capsys)
 
     assert "## Cannibalization" in out
     assert "Baseline config: vanilla" in out
@@ -541,34 +646,204 @@ def test_cannibalization_tables_render_from_an_instrumented_tree(tmp_path, capsy
     assert "### Wall clock" in out
     assert "### Classification counts" in out
 
-    lines = out.splitlines()
-    # Native counters land in the internal-budget row, with our dive charge
-    # subtracted from both shared LP counters (1300-900, 12000-900) and the
-    # delta taken against the baseline's own native figure (400-2000).
-    internal_row = next(
-        ln for ln in lines
-        if ln.startswith("starved") and "patched" in ln and "11100" in ln
-    )
-    assert " 400 " in internal_row
-    assert "-1600" in internal_row
-    # ... and the wall-clock row classifies the instance from both signals.
-    starved_patched = next(
-        ln for ln in lines
-        if ln.startswith("starved") and "patched" in ln and "both" in ln
-    )
-    assert "root LP +3.50s" in starved_patched
-    assert "rens_root 1->0" in starved_patched
-    assert "native heur LP iters 2000->400" in starved_patched
+    internal = _block(out, "### Internal budget", "#### Aggregate")
+    wall = _block(_block(out, "### Wall clock"), "Class:", "#### Aggregate")
 
-    quiet_patched = next(
-        ln for ln in lines
-        if ln.startswith("quiet") and "patched" in ln and "neutral" in ln
-    )
-    assert "0.04" in quiet_patched  # presolve span still reported
+    # Internal budget: counters, our dive charge subtracted from both shared
+    # LP counters (1300-900, 12000-900), the native share of those two, and
+    # the delta against the baseline's own native figure (400-2000).
+    row = _cells(internal, "starved", "patched")
+    assert row[2:8] == ["1", "0", "1", "1", "400", "11100"]
+    assert row[8] == f"{400 / 11100:.4f}"
+    assert row[9] == "900"
+    assert row[10] == "-1600"
+    assert _cells(internal, "starved", "vanilla")[10] == "-"  # no delta on itself
 
-    # The baseline config is a row in its own right.
-    assert any(ln.startswith("starved") and "vanilla" in ln and "baseline" in ln
-               for ln in lines)
+    # Wall clock: Heur_s, Dive_s, HeurFrac, Troot_s, dTroot_s, Span_s, Class.
+    row = _cells(wall, "starved", "patched")
+    assert row[2] == "4.40" and row[3] == "0.50"      # 4.4 s total, 0.5 s dive
+    assert row[4] == "0.4400"
+    assert row[5] == "4.50" and row[6] == "3.50"
+    assert row[7] == "3.90"
+    assert row[8] == "both"
+    evidence = " ".join(row[9:])
+    assert "rens_root 1->0" in evidence
+    assert "native heur LP iters 2000->400" in evidence
+    assert "root LP +3.50s" in evidence
+
+    quiet_row = _cells(wall, "quiet", "patched")
+    assert quiet_row[2] == "0.04"   # Heur_s
+    assert quiet_row[7] == "0.31"   # Span_s, distinct from every other cell
+    assert quiet_row[8] == "neutral"
+
+    # The baseline config is a row in its own right, with real zeros.
+    base_row = _cells(wall, "starved", "vanilla")
+    assert base_row[2] == "0" and base_row[3] == "0" and base_row[4] == "0"
+    assert base_row[6] == "-"  # no delta against itself
+    assert base_row[8] == "baseline"
+
+
+def test_classification_counts_account_for_every_instance(tmp_path, capsys):
+    """No instance may silently fall out of the classification."""
+    inst = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
+                      root=(0.5, 0.0))
+    old = "      Status            Optimal\n      Timing            6.00\n"
+    out = _render(tmp_path, {
+        "patched": {"i1": inst, "i2": inst, "i3": old},
+        "vanilla": {"i1": inst, "i2": inst, "i3": inst},
+    }, capsys)
+
+    counts = _block(out, "### Classification counts")
+    for cfg in ("patched", "vanilla"):
+        row = next(ln for ln in counts.splitlines() if ln.startswith(cfg))
+        assert sum(int(v) for v in row.split()[1:]) == 3
+    header = next(ln for ln in counts.splitlines() if ln.startswith("Config"))
+    assert header.split()[1:] == list(CANNIBALIZATION_CATEGORIES)
+
+
+def test_root_rens_lost_counts_suppression_and_abstains_without_a_baseline(
+    tmp_path, capsys
+):
+    """The root-gate headline must never print 0 for want of a comparison.
+
+    A hard zero in that column reads as "no root RENS was suppressed", which
+    is the opposite of "nothing was checked" — every other baseline-relative
+    cell renders '-' in that state.
+    """
+    base_log = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
+                          root=(0.5, 0.0))
+    suppressed = _synth_log(
+        solve_time=6.0,
+        samples=[_heur("fpr", "presolve", 0.1, 100.0, found=True)],
+        native=(2, 0, 2, 0, 500, 5000, 0),
+        root=(0.52, 0.11),
+    )
+    out = _render(tmp_path, {"patched": {"i1": suppressed},
+                             "vanilla": {"i1": base_log}}, capsys)
+    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[1]
+    assert next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[-1] == "1"
+    assert next(ln for ln in agg.splitlines() if ln.startswith("vanilla")).split()[-1] == "-"
+
+    # Same config with no baseline in the tree: nothing was compared, so the
+    # column abstains rather than reporting zero suppressions.
+    out = _render(tmp_path / "solo", {"patched": {"i1": suppressed}}, capsys)
+    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[1]
+    assert next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[-1] == "-"
+
+
+def test_root_lp_column_reports_how_many_instances_stand_behind_it(
+    tmp_path, capsys
+):
+    """An instance whose root LP was never reached leaves that config's SGM.
+
+    The bias runs the wrong way for the epic's claim — the most delayed
+    instances are the ones that vanish — so the count must be visible.
+    """
+    reached = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
+                         root=(1.0, 0.0))
+    never = _synth_log(
+        solve_time=6.0,
+        samples=[_heur("fj", "presolve", 0.1, 50.0)],
+        native=(2, 1, 2, 0, 500, 5000, 0),
+        root=(-1.0, 0.05),
+    )
+    out = _render(tmp_path, {"patched": {"i1": reached, "i2": never},
+                             "vanilla": {"i1": reached, "i2": reached}}, capsys)
+    wall_agg = _block(_block(out, "### Wall clock"), "#### Aggregate", "#Root =")
+    patched = next(ln for ln in wall_agg.splitlines() if ln.startswith("patched"))
+    vanilla = next(ln for ln in wall_agg.splitlines() if ln.startswith("vanilla"))
+    assert patched.split()[1] == "2" and patched.split()[6] == "1"  # #Instr, #Root
+    assert vanilla.split()[1] == "2" and vanilla.split()[6] == "2"
+    # The unreached row is visible as such, not as t=0.
+    assert _cells(_block(_block(out, "### Wall clock"), "Class:", "#### Aggregate"),
+                  "i2", "patched")[5] == "-"
+
+
+def test_negative_heuristic_window_is_shown_and_kept_out_of_the_aggregate(
+    tmp_path, capsys
+):
+    """HiGHS's solver clock is not monotonic, so a window can come out negative.
+
+    `shifted_geomean` clamps anything <= -1 s and would drag the whole SGM to
+    ~-1 with no indication; the per-instance row still shows the artefact,
+    which is the reason both bench regexes accept the sign.
+    """
+    # start_s is an absolute solver-clock reading, so it stays positive even
+    # when the window it ends is negative — the parser's end_s pattern is
+    # unsigned for exactly that reason.
+    artefact = _synth_log(
+        solve_time=6.0,
+        samples=[_heur("fj", "presolve", 5.0, -3000.0)],
+        native=(2, 1, 2, 0, 500, 5000, 0),
+        root=(0.5, 0.0),
+    )
+    normal = _synth_log(
+        solve_time=6.0,
+        samples=[_heur("fj", "presolve", 0.1, 1000.0)],
+        native=(2, 1, 2, 0, 500, 5000, 0),
+        root=(0.5, 0.0),
+    )
+    out = _render(tmp_path, {"patched": {"i1": artefact, "i2": normal}}, capsys)
+    rows = _block(_block(out, "### Wall clock"), "Class:", "#### Aggregate")
+    assert _cells(rows, "i1", "patched")[2] == "-3.00"
+    assert "negative [Heur] window(s) excluded" in out
+    wall_agg = _block(_block(out, "### Wall clock"), "#### Aggregate", "#Root =")
+    patched = next(ln for ln in wall_agg.splitlines() if ln.startswith("patched"))
+    assert patched.split()[2] == "1.00"  # SGM over the surviving sample only
+
+
+def test_mixed_tree_reports_per_row_rather_than_dropping_instances(
+    tmp_path, capsys
+):
+    """A tree extended after #95 landed carries both kinds of log."""
+    inst = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
+                      root=(0.5, 0.0))
+    old = "      Status            Optimal\n      Timing            6.00\n"
+    out = _render(tmp_path, {"patched": {"new": inst, "old": old},
+                             "vanilla": {"new": inst, "old": old}}, capsys)
+    internal = _block(out, "### Internal budget", "#### Aggregate")
+    assert _cells(internal, "old", "patched")[2:] == ["-"] * 9
+    assert _cells(internal, "new", "patched")[2] == "2"
+    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[1]
+    assert next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[1] == "1"
+
+
+def test_cli_renders_the_tables_end_to_end(tmp_path):
+    """Issue #100 asks for this with no ad-hoc scripting — drive the CLI.
+
+    Uses `sys.executable` rather than a hard-coded interpreter path so it runs
+    under whatever is driving pytest, matching test_check_effort_drift.py.
+    """
+    inst = _synth_log(
+        solve_time=6.0,
+        samples=[_heur("fj", "presolve", 0.1, 3000.0)],
+        native=(2, 1, 2, 0, 500, 5000, 0),
+        root=(0.9, 0.6),
+    )
+    base = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
+                      root=(0.5, 0.0))
+    _write_tree(tmp_path, {"patched": {"i1": inst}, "vanilla": {"i1": base}})
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "analyze_results.py")
+    res = subprocess.run(
+        [sys.executable, script, str(tmp_path), "--configs", "patched", "vanilla",
+         "--summary", "--cannibalization"],
+        capture_output=True, text=True, check=False,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "## Cannibalization" in res.stdout
+    assert "### Internal budget" in res.stdout
+    assert "### Wall clock" in res.stdout
+    assert "wall-clock" in res.stdout
+
+    # ... and the same tables under --ablation, the other call site.
+    res = subprocess.run(
+        [sys.executable, script, str(tmp_path), "--configs", "patched", "vanilla",
+         "--ablation", "--cannibalization", "--cannibalization-baseline", "vanilla"],
+        capture_output=True, text=True, check=False,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "Baseline config: vanilla" in res.stdout
 
 
 def test_cannibalization_baseline_row_survives_aggregation(tmp_path, capsys):
