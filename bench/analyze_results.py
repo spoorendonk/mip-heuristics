@@ -1131,12 +1131,15 @@ def classify_cannibalization(
     lp_drop_rel: float = CANNIBALIZATION_LP_DROP_REL,
 ) -> CannibalizationVerdict:
     """Classify one (instance, config) row against the baseline row."""
-    if is_baseline:
-        return CannibalizationVerdict("baseline", False, False)
     rn = row.native if row is not None else None
     bn = base.native if base is not None else None
+    # Instrumentation is checked before the baseline shortcut: the label
+    # describes what the row can support, and an uninstrumented baseline row
+    # supports nothing — including its own use as a reference.
     if row is None or rn is None:
         return CannibalizationVerdict("not-instrumented", False, False)
+    if is_baseline:
+        return CannibalizationVerdict("baseline", False, False)
     if base is None or bn is None:
         return CannibalizationVerdict("no-baseline", False, False)
 
@@ -1310,7 +1313,7 @@ def _print_wall_clock_table(
                   f"{format_float(t_root, 9, 2)} "
                   f"{format_float(d_root, 9, 2)} "
                   f"{format_float(presolve_span_seconds(r), 8, 2)} "
-                  f"{v.category:<16} {'; '.join(v.evidence)}")
+                  f"{v.category:<16} {'; '.join(v.evidence)}".rstrip())
 
     print("\n#### Aggregate (SGM shift=1 for seconds, median for HeurFrac)\n")
     agg_header = (f"{'Config':<14} {'#Instr':>7} {'Heur_s':>8} {'Dive_s':>8} "
