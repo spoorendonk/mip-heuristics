@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import statistics
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -214,6 +216,13 @@ def format_float(v: float | None, width: int = 10, prec: int = 4) -> str:
     if abs(v) < 1e-8:
         return "0".rjust(width)
     return f"{v:.{prec}f}".rjust(width)
+
+
+def format_int(v: int | None, width: int = 8, signed: bool = False) -> str:
+    """Right-align an integer, rendering a missing value as '-'."""
+    if v is None:
+        return "-".rjust(width)
+    return (f"{v:+d}" if signed else str(v)).rjust(width)
 
 
 def count_feasible(
@@ -938,6 +947,490 @@ def latex_ablation_table(
     return "\n".join(lines)
 
 
+# ── Cannibalization analysis (epic #88; instrumentation from issue #95) ───────
+#
+# The closeout epic's central empirical question is whether running our
+# presolve heuristics starves HiGHS's own RENS/RINS and delays the root LP.
+# It separates two kinds of cost, and the tables below keep them apart:
+#
+#   internal-budget — our heuristics consume the counters HiGHS itself reads
+#                     when deciding whether its own heuristics may run, so
+#                     RENS/RINS/root-reduced-cost fire less often.  This is an
+#                     integration confound, to be eliminated.
+#   wall-clock      — those budgets are preserved, but the solve still pays
+#                     for the heuristics in end-to-end time (root LP pushed
+#                     later, a large share of the solve spent inside them).
+#                     This is a real cost and stays in the results.
+#
+# Every judgement is made against one baseline config — the vanilla-equivalent
+# row (a patched binary at `mip_heuristic_suite=off`, which is instrumented and
+# dispatches no custom heuristic).  A config compared against nothing cannot be
+# classified, and says so rather than guessing.
+
+# Wall-clock half of the classification.  Blunt on purpose: these labels are
+# triage for the closeout tables, not a statistical test.
+CANNIBALIZATION_WALL_FRACTION = 0.05  # >= 5% of the solve spent in our heuristics
+CANNIBALIZATION_ROOT_DELAY_REL = 0.10  # root LP >= 10% later than the baseline's,
+CANNIBALIZATION_ROOT_DELAY_ABS = 0.05  # ... and at least this many seconds later
+# Internal-budget half.  Call counts are small integers and are compared
+# strictly; LP-iteration counts drift for benign reasons (a different incumbent
+# changes how long a sub-MIP runs), so they need a margin.
+CANNIBALIZATION_LP_DROP_REL = 0.10
+
+# Config names tried, in order, when no baseline is named on the command line
+# and the structural test (below) is inconclusive.
+CANNIBALIZATION_BASELINE_NAMES: tuple[str, ...] = (
+    "vanilla",
+    "off",
+    "suite_off",
+    "baseline",
+)
+
+# Printed in this order in the classification counts.
+CANNIBALIZATION_CATEGORIES: tuple[str, ...] = (
+    "baseline",
+    "neutral",
+    "wall-clock",
+    "internal-budget",
+    "both",
+    "no-baseline",
+    "not-instrumented",
+)
+
+
+@dataclass(frozen=True)
+class CannibalizationVerdict:
+    """One (instance, config) classification plus the evidence behind it.
+
+    `category` is one of `CANNIBALIZATION_CATEGORIES`:
+
+    baseline         this row *is* the baseline; it is the reference, not a
+                     subject.
+    neutral          native heuristic activity preserved and no material
+                     wall-clock cost.
+    wall-clock       native activity preserved, but the solve paid in time —
+                     root LP delayed and/or a material share of it spent
+                     inside our heuristics.
+    internal-budget  HiGHS's own heuristics ran less: fewer calls (root-site
+                     RENS counts on its own) or materially fewer heuristic LP
+                     iterations of their own.
+    both             both signals fired.
+    no-baseline      this row is instrumented but the baseline row is missing
+                     or not instrumented, so nothing can be compared.
+    not-instrumented this log predates issue #95 (or ran below
+                     log_dev_level=3) and carries none of the counters.
+    """
+
+    category: str
+    internal: bool
+    wall: bool
+    evidence: tuple[str, ...] = ()
+
+
+def is_instrumented(r: SolveResult | None) -> bool:
+    """True when this log carries the issue-#95 cannibalization lines.
+
+    Keyed on the `[Native]` line, the same marker
+    `SolveResult.heuristic_wall_fraction` uses.  `[Native]` is emitted once per
+    solve on every instrumented run, `mip_heuristic_suite=off` included, so its
+    presence — not the presence of `[Heur]` lines — is what separates "ran no
+    custom heuristics" from "cannot say".
+    """
+    return r is not None and r.native is not None
+
+
+def heuristic_wall_seconds(r: SolveResult | None, phase: str | None = None) -> float | None:
+    """Wall seconds spent inside our heuristics, optionally one phase only.
+
+    Returns **0.0**, not None, for an instrumented run that dispatched no
+    custom heuristic: the baseline row's true value is zero and it must survive
+    any aggregation that filters None, since it is the reference for every
+    other row.  None means the log is not instrumented.
+    """
+    if r is None or not is_instrumented(r):
+        return None
+    return sum(h.wall_ms for h in r.heuristic_samples
+               if phase is None or h.phase == phase) / 1000.0
+
+
+def native_call_total(r: SolveResult | None) -> int | None:
+    """RENS + RINS + root-reduced-cost calls, i.e. HiGHS's own heuristic calls.
+
+    These three counters are purely native — they are incremented at upstream
+    call sites only — unlike the LP-iteration counters, which are shared.
+    """
+    if r is None or r.native is None:
+        return None
+    return r.native.rens + r.native.rins + r.native.rcfix
+
+
+def presolve_span_seconds(r: SolveResult | None) -> float | None:
+    """`[Root] presolve_heur_s`: the custom presolve chain's total span.
+
+    On a restarting instance HiGHS re-runs the chain, so this accumulates over
+    restarts while `time_to_root_lp` pins the *first* root LP.  A span larger
+    than the root-LP timestamp is expected there and is neither corrected nor
+    flagged.
+    """
+    if r is None or r.root is None:
+        return None
+    return r.root.presolve_heur_s
+
+
+def _config_dispatches_no_heuristics(
+    agg_results: dict[str, dict[str, SolveResult]], config: str
+) -> bool:
+    """True when this config is instrumented and never dispatched a heuristic.
+
+    The structural fingerprint of the vanilla-equivalent row: `[Native]` lines
+    present (so it came from a patched binary at log_dev_level=3) and not one
+    `[Heur]` line anywhere.
+    """
+    rows = list(agg_results.get(config, {}).values())
+    if not any(is_instrumented(r) for r in rows):
+        return False
+    return all(not r.heuristic_samples for r in rows)
+
+
+def pick_baseline_config(
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    explicit: str | None = None,
+) -> str | None:
+    """Choose the config every other row is compared against.
+
+    An explicit name wins outright (None if it is not in the tree, which the
+    caller reports).  Otherwise prefer a config that is instrumented *and*
+    dispatched nothing — the vanilla-equivalent `suite=off` row — breaking ties
+    by `CANNIBALIZATION_BASELINE_NAMES`.  Failing that, fall back to those
+    names alone, which is what an externally built unpatched `vanilla` binary
+    hits: its logs carry no instrumentation, so the rows come out
+    `no-baseline`, with the reason stated rather than silently omitted.
+    """
+    if explicit is not None:
+        return explicit if explicit in configs else None
+    candidates = [c for c in configs if _config_dispatches_no_heuristics(agg_results, c)]
+    for name in CANNIBALIZATION_BASELINE_NAMES:
+        if name in candidates:
+            return name
+    if candidates:
+        return candidates[0]
+    for name in CANNIBALIZATION_BASELINE_NAMES:
+        if name in configs:
+            return name
+    return None
+
+
+def classify_cannibalization(
+    row: SolveResult | None,
+    base: SolveResult | None,
+    is_baseline: bool = False,
+    wall_fraction: float = CANNIBALIZATION_WALL_FRACTION,
+    root_delay_rel: float = CANNIBALIZATION_ROOT_DELAY_REL,
+    root_delay_abs: float = CANNIBALIZATION_ROOT_DELAY_ABS,
+    lp_drop_rel: float = CANNIBALIZATION_LP_DROP_REL,
+) -> CannibalizationVerdict:
+    """Classify one (instance, config) row against the baseline row."""
+    if is_baseline:
+        return CannibalizationVerdict("baseline", False, False)
+    rn = row.native if row is not None else None
+    bn = base.native if base is not None else None
+    if row is None or rn is None:
+        return CannibalizationVerdict("not-instrumented", False, False)
+    if base is None or bn is None:
+        return CannibalizationVerdict("no-baseline", False, False)
+
+    internal: list[str] = []
+    # Root-site RENS on its own.  The root gate is the one a presolve-found
+    # incumbent closes, and the merged rens total can hold steady while the
+    # root call vanishes, so this is checked before and separately from it.
+    if rn.rens_root < bn.rens_root:
+        internal.append(f"rens_root {bn.rens_root}->{rn.rens_root}")
+    row_calls, base_calls = native_call_total(row), native_call_total(base)
+    if row_calls is not None and base_calls is not None and row_calls < base_calls:
+        internal.append(f"native calls {base_calls}->{row_calls}")
+    # Native LP iterations, with our dive heuristic's own charge subtracted
+    # from both sides — the raw counters are shared and reading them raw bills
+    # our work as upstream's.
+    if bn.native_heur_lp_iters > 0 and (
+        rn.native_heur_lp_iters < bn.native_heur_lp_iters * (1.0 - lp_drop_rel)
+    ):
+        internal.append(
+            f"native heur LP iters {bn.native_heur_lp_iters}->{rn.native_heur_lp_iters}"
+        )
+
+    wall: list[str] = []
+    frac = row.heuristic_wall_fraction
+    if frac is not None and frac >= wall_fraction:
+        wall.append(f"heur wall {frac * 100:.1f}% of solve")
+    t_row, t_base = row.time_to_root_lp, base.time_to_root_lp
+    if t_row is not None and t_base is not None:
+        delay = t_row - t_base
+        # Both a relative and an absolute margin must be cleared: 10% of a
+        # 0.02 s root LP is noise, and an 0.05 s delay on a 300 s one is too.
+        if delay > max(root_delay_rel * t_base, root_delay_abs):
+            wall.append(f"root LP +{delay:.2f}s")
+
+    if internal and wall:
+        category = "both"
+    elif internal:
+        category = "internal-budget"
+    elif wall:
+        category = "wall-clock"
+    else:
+        category = "neutral"
+    return CannibalizationVerdict(
+        category, bool(internal), bool(wall), tuple(internal + wall)
+    )
+
+
+def _median_or_none(values: list[float]) -> float | None:
+    """Median of the observed values, None when nothing was observed."""
+    return statistics.median(values) if values else None
+
+
+def _print_internal_budget_table(
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    instances: list[str],
+    baseline: str | None,
+) -> None:
+    """Per instance x config: HiGHS's own heuristic calls and LP iterations."""
+    print(f"\n### Internal budget ({len(instances)} instances)\n")
+    print("RENSroot is the root-node subset of RENS and is never folded into it: "
+          "the root gate is\nthe one a presolve-found incumbent closes, so a "
+          "suppressed root call is the signal even\nwhen the merged total holds "
+          "steady.  NatHeurLP / NatTotLP are the shared LP-iteration\ncounters "
+          "with our own dive heuristic's charge (OurLP) subtracted; dNatHeurLP "
+          "is NatHeurLP\nagainst the baseline row.\n")
+
+    header = (f"{'Instance':<24} {'Config':<14} {'RENS':>6} {'RENSroot':>9} "
+              f"{'RINS':>6} {'RCfix':>6} {'NatHeurLP':>11} {'NatTotLP':>11} "
+              f"{'OurLP':>9} {'dNatHeurLP':>11}")
+    print(header)
+    print("-" * len(header))
+
+    for inst in instances:
+        base_r = agg_results.get(baseline, {}).get(inst) if baseline else None
+        for c in configs:
+            r = agg_results.get(c, {}).get(inst)
+            n = r.native if r is not None else None
+            base_n = base_r.native if base_r is not None else None
+            delta = None
+            if n is not None and base_n is not None and c != baseline:
+                delta = n.native_heur_lp_iters - base_n.native_heur_lp_iters
+            print(f"{inst:<24} {c:<14} "
+                  f"{format_int(n.rens if n else None, 6)} "
+                  f"{format_int(n.rens_root if n else None, 9)} "
+                  f"{format_int(n.rins if n else None, 6)} "
+                  f"{format_int(n.rcfix if n else None, 6)} "
+                  f"{format_int(n.native_heur_lp_iters if n else None, 11)} "
+                  f"{format_int(n.native_total_lp_iters if n else None, 11)} "
+                  f"{format_int(n.fpr_lp_lp_iters if n else None, 9)} "
+                  f"{format_int(delta, 11, signed=True)}")
+
+    print("\n#### Aggregate (median over instrumented instances)\n")
+    agg_header = (f"{'Config':<14} {'#Instr':>7} {'RENS':>6} {'RENSroot':>9} "
+                  f"{'RINS':>6} {'RCfix':>6} {'NatHeurLP':>11} {'NatTotLP':>11} "
+                  f"{'OurLP':>9} {'RootRENSlost':>13}")
+    print(agg_header)
+    print("-" * len(agg_header))
+    for c in configs:
+        cols: dict[str, list[float]] = {k: [] for k in
+                                        ("rens", "rens_root", "rins", "rcfix",
+                                         "heur", "tot", "ours")}
+        n_instr = 0
+        lost = 0
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            n = r.native if r is not None else None
+            if n is None:
+                continue
+            n_instr += 1
+            cols["rens"].append(n.rens)
+            cols["rens_root"].append(n.rens_root)
+            cols["rins"].append(n.rins)
+            cols["rcfix"].append(n.rcfix)
+            cols["heur"].append(n.native_heur_lp_iters)
+            cols["tot"].append(n.native_total_lp_iters)
+            cols["ours"].append(n.fpr_lp_lp_iters)
+            base_r = agg_results.get(baseline, {}).get(inst) if baseline else None
+            base_n = base_r.native if base_r is not None else None
+            if (c != baseline and base_n is not None
+                    and base_n.rens_root > 0 and n.rens_root == 0):
+                lost += 1
+        print(f"{c:<14} {n_instr:>7} "
+              f"{format_float(_median_or_none(cols['rens']), 6, 1)} "
+              f"{format_float(_median_or_none(cols['rens_root']), 9, 1)} "
+              f"{format_float(_median_or_none(cols['rins']), 6, 1)} "
+              f"{format_float(_median_or_none(cols['rcfix']), 6, 1)} "
+              f"{format_float(_median_or_none(cols['heur']), 11, 1)} "
+              f"{format_float(_median_or_none(cols['tot']), 11, 1)} "
+              f"{format_float(_median_or_none(cols['ours']), 9, 1)} "
+              f"{format_int(None if c == baseline else lost, 13)}")
+    print("\nRootRENSlost = instances where the baseline called root RENS and "
+          "this config did not.")
+
+
+def _print_wall_clock_table(
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    instances: list[str],
+    baseline: str | None,
+    verdicts: dict[tuple[str, str], CannibalizationVerdict],
+) -> None:
+    """Per instance x config: heuristic wall time, root-LP delay, class."""
+    print(f"\n### Wall clock ({len(instances)} instances)\n")
+    print("Heur_s is the sum of every [Heur] window (0.0 — not missing — for an "
+          "instrumented run\nthat dispatched none); Dive_s is the fpr_lp part of "
+          "it.  Span_s is the presolve chain's\nfull span, which includes the "
+          "shared setup and accumulates across restarts, so it may\nexceed "
+          "Troot_s on a restarting instance.\n")
+
+    header = (f"{'Instance':<24} {'Config':<14} {'Heur_s':>8} {'Dive_s':>8} "
+              f"{'HeurFrac':>9} {'Troot_s':>9} {'dTroot_s':>9} {'Span_s':>8} "
+              f"{'Class':<16} Evidence")
+    print(header)
+    print("-" * len(header))
+
+    for inst in instances:
+        base_r = agg_results.get(baseline, {}).get(inst) if baseline else None
+        t_base = base_r.time_to_root_lp if base_r is not None else None
+        for c in configs:
+            r = agg_results.get(c, {}).get(inst)
+            t_root = r.time_to_root_lp if r is not None else None
+            d_root = (t_root - t_base
+                      if t_root is not None and t_base is not None and c != baseline
+                      else None)
+            v = verdicts[(inst, c)]
+            print(f"{inst:<24} {c:<14} "
+                  f"{format_float(heuristic_wall_seconds(r), 8, 2)} "
+                  f"{format_float(heuristic_wall_seconds(r, 'dive'), 8, 2)} "
+                  f"{format_float(r.heuristic_wall_fraction if r else None, 9, 4)} "
+                  f"{format_float(t_root, 9, 2)} "
+                  f"{format_float(d_root, 9, 2)} "
+                  f"{format_float(presolve_span_seconds(r), 8, 2)} "
+                  f"{v.category:<16} {'; '.join(v.evidence)}")
+
+    print("\n#### Aggregate (SGM shift=1 for seconds, median for HeurFrac)\n")
+    agg_header = (f"{'Config':<14} {'#Instr':>7} {'Heur_s':>8} {'Dive_s':>8} "
+                  f"{'HeurFrac':>9} {'Troot_s':>9} {'Span_s':>8}")
+    print(agg_header)
+    print("-" * len(agg_header))
+    for c in configs:
+        heur: list[float] = []
+        dive: list[float] = []
+        fracs: list[float] = []
+        troot: list[float] = []
+        span: list[float] = []
+        n_instr = 0
+        for inst in instances:
+            r = agg_results.get(c, {}).get(inst)
+            if not is_instrumented(r):
+                continue
+            n_instr += 1
+            # heuristic_wall_seconds is 0.0 rather than None here, so the
+            # baseline config keeps a real row instead of an empty one.
+            h = heuristic_wall_seconds(r)
+            if h is not None:
+                heur.append(h)
+            d = heuristic_wall_seconds(r, "dive")
+            if d is not None:
+                dive.append(d)
+            f = r.heuristic_wall_fraction if r is not None else None
+            if f is not None:
+                fracs.append(f)
+            t = r.time_to_root_lp if r is not None else None
+            if t is not None:
+                troot.append(t)
+            s = presolve_span_seconds(r)
+            if s is not None:
+                span.append(s)
+        print(f"{c:<14} {n_instr:>7} "
+              f"{format_float(shifted_geomean(heur, 1.0) if heur else None, 8, 2)} "
+              f"{format_float(shifted_geomean(dive, 1.0) if dive else None, 8, 2)} "
+              f"{format_float(_median_or_none(fracs), 9, 4)} "
+              f"{format_float(shifted_geomean(troot, 1.0) if troot else None, 9, 2)} "
+              f"{format_float(shifted_geomean(span, 1.0) if span else None, 8, 2)}")
+
+
+def _print_classification_counts(
+    configs: list[str],
+    instances: list[str],
+    verdicts: dict[tuple[str, str], CannibalizationVerdict],
+) -> None:
+    """Per config, how many instances landed in each cannibalization category."""
+    print("\n### Classification counts\n")
+    header = f"{'Config':<14}" + "".join(f" {cat:>17}" for cat in CANNIBALIZATION_CATEGORIES)
+    print(header)
+    print("-" * len(header))
+    for c in configs:
+        counts = {cat: 0 for cat in CANNIBALIZATION_CATEGORIES}
+        for inst in instances:
+            counts[verdicts[(inst, c)].category] += 1
+        print(f"{c:<14}" + "".join(f" {counts[cat]:>17}" for cat in CANNIBALIZATION_CATEGORIES))
+
+
+def print_cannibalization_tables(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    baseline_config: str | None = None,
+) -> None:
+    """Print the internal-budget and wall-clock cannibalization tables.
+
+    Reads only the issue-#95 records already parsed out of the logs — no
+    solves.  A results tree predating that instrumentation carries none of
+    them, and this reports itself unavailable rather than printing zeros.
+    """
+    instances = get_common_instances(results, configs)
+    print("\n## Cannibalization\n")
+
+    if not instances:
+        print("(no common instances across the requested configs)")
+        return
+
+    any_instrumented = any(
+        is_instrumented(agg_results.get(c, {}).get(inst))
+        for c in configs for inst in instances
+    )
+    if not any_instrumented:
+        print("(not instrumented: no [Native] / [Heur] / [Root] lines in these "
+              "logs.\n These come from issue #95 and need log_dev_level=3 on a "
+              "patched binary;\n a results tree recorded before that carries "
+              "none of them.)")
+        return
+
+    requested = baseline_config
+    baseline = pick_baseline_config(agg_results, configs, baseline_config)
+    if requested is not None and baseline is None:
+        print(f"(requested baseline config '{requested}' is not in this results "
+              "tree — rows cannot be compared)")
+    elif baseline is None:
+        print("(no vanilla-equivalent baseline config found — pass "
+              "--cannibalization-baseline NAME.\n Rows are reported but not "
+              "classified.)")
+    else:
+        print(f"Baseline config: {baseline}")
+        if not any(is_instrumented(agg_results.get(baseline, {}).get(i)) for i in instances):
+            print(f"WARNING: baseline config '{baseline}' carries no "
+                  "instrumentation.  An externally built\n         unpatched "
+                  "binary emits none; the comparison needs the patched binary "
+                  "at\n         mip_heuristic_suite=off instead.")
+
+    verdicts: dict[tuple[str, str], CannibalizationVerdict] = {}
+    for inst in instances:
+        base_r = agg_results.get(baseline, {}).get(inst) if baseline else None
+        for c in configs:
+            verdicts[(inst, c)] = classify_cannibalization(
+                agg_results.get(c, {}).get(inst), base_r, is_baseline=(c == baseline)
+            )
+
+    _print_internal_budget_table(agg_results, configs, instances, baseline)
+    _print_wall_clock_table(agg_results, configs, instances, baseline, verdicts)
+    _print_classification_counts(configs, instances, verdicts)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze HiGHS benchmark results")
     parser.add_argument("results_dir", help="Directory with config subdirectories of log files")
@@ -986,6 +1479,24 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--cannibalization", action="store_true",
+        help=(
+            "Print the internal-budget and wall-clock cannibalization tables "
+            "(epic #88): HiGHS's own RENS/RINS/root-reduced-cost calls and its "
+            "share of the shared LP-iteration counters, the heuristic wall-time "
+            "and root-LP delay, and a per-instance classification. Needs logs "
+            "recorded at log_dev_level=3 on a patched binary (issue #95)."
+        ),
+    )
+    parser.add_argument(
+        "--cannibalization-baseline", default=None, metavar="CONFIG",
+        help=(
+            "Config every other row is compared against in --cannibalization "
+            "(default: auto-detect the vanilla-equivalent config — instrumented "
+            "and dispatching no custom heuristic)."
+        ),
+    )
+    parser.add_argument(
         "--latex", default=None, metavar="PATH",
         help="With --ablation, also write the ablation table as LaTeX to PATH.",
     )
@@ -1025,6 +1536,9 @@ def main() -> None:
                                best_known, latex_path=args.latex)
         if args.attribution:
             print_attribution(results, agg_results, active_configs)
+        if args.cannibalization:
+            print_cannibalization_tables(results, agg_results, active_configs,
+                                         args.cannibalization_baseline)
         if args.plot:
             generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)
         return
@@ -1039,6 +1553,10 @@ def main() -> None:
 
     if args.baseline or args.summary:
         print_plato_summary(results, agg_results, active_configs, args.time_limit, best_known)
+
+    if args.cannibalization:
+        print_cannibalization_tables(results, agg_results, active_configs,
+                                     args.cannibalization_baseline)
 
     if args.plot:
         generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)
