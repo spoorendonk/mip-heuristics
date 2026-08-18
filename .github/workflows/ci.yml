@@ -101,4 +101,4 @@ jobs:
       # so this check answers to the repository and not to ruff's release
       # notes — which is what makes it safe to fail the build on.
       - name: Lint
-        run: ruff check bench
+        run: ruff check bench cmake

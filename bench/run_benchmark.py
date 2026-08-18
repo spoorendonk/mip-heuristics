@@ -259,7 +259,7 @@ def build_base_options(
     Empty by default, and that emptiness is load-bearing twice over: no
     `threads` (forcing `threads=1` collapses each heuristic to a single worker
     and invalidates a throughput benchmark) and no `log_dev_level` (level 3
-    costs up to 4.1x wall time — see `--dev-log`).
+    costs up to 4.4x wall time — see `--dev-log`).
     """
     base: dict[str, str] = {}
     if threads is not None:
@@ -703,12 +703,19 @@ def main() -> None:
     # `SolveResult.heuristic_wall_fraction` is `None` on a plain run — not 0.0,
     # which is reserved for an instrumented `suite=off` — so the attribution
     # tables come out empty rather than wrong, hours later.
+    base_opts = build_base_options(args.threads, args.dev_log, args.extra_options)
+
+    # Keyed on the option that will actually be written, not on `--dev-log`:
+    # `--extra-options log_dev_level=1` overrides the flag, and the header is
+    # the record that gets captured (the collision warning goes to stderr, so
+    # under `run_benchmark.py > run.log` the two land in different streams and
+    # the header is the half that survives).
     print(
         "Instrumentation: "
         + (
             "log_dev_level=3 ([Heur]/[Native]/[Root]/[Sequential]) — attribution "
             "run, timings inflated"
-            if args.dev_log
+            if base_opts.get("log_dev_level") == "3"
             else "off — headline timings; pass --dev-log for the attribution tables"
         )
     )
@@ -747,7 +754,6 @@ def main() -> None:
     budget_exhausted = False
     run_start = time.time()
 
-    base_opts = build_base_options(args.threads, args.dev_log, args.extra_options)
     # `run_single` writes random_seed last, from --seeds, because the seed is
     # part of the output path (`seed<N>/`) and an --extra-options pin would
     # make the directory name a lie.  Say so: silently dropping the flag is
@@ -860,9 +866,16 @@ def main() -> None:
     # contradict the command run_plato.sh prints seconds later.
     if done:
         mode = "--ablation" if len(plans) > 2 else "--baseline --summary"
+        # An instrumented tree is the only kind `--cannibalization` can read,
+        # and it is the whole reason `--dev-log` exists — so offer it exactly
+        # when the tree supports it, rather than leaving the reader to pair
+        # the two flags themselves.
+        cannibalization = (
+            " --cannibalization" if base_opts.get("log_dev_level") == "3" else ""
+        )
         print(
             "\nAnalyze with:\n"
-            f"  python3 bench/analyze_results.py {args.output} {mode} "
+            f"  python3 bench/analyze_results.py {args.output} {mode}{cannibalization} "
             f"--configs {' '.join(p.name for p in plans)} "
             f"--time-limit {args.time_limit:g}"
         )

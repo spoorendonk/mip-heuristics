@@ -38,18 +38,32 @@ import sys
 
 # The single upstream parse error described above.  Matched on the message so
 # that a different error in the same header still fails the gate.
-KNOWN_UPSTREAM_ERROR = "invalid application of 'sizeof' to an incomplete type 'HighsSearch'"
+KNOWN_UPSTREAM_ERROR = (
+    "invalid application of 'sizeof' to an incomplete type 'HighsSearch'"
+)
 
-DIAG = re.compile(r"^(?P<path>/\S+?):(?P<line>\d+):(?P<col>\d+): "
-                  r"(?P<sev>warning|error): (?P<msg>.*?) \[(?P<check>[\w.,-]+)\]$")
+DIAG = re.compile(
+    r"^(?P<path>/\S+?):(?P<line>\d+):(?P<col>\d+): "
+    r"(?P<sev>warning|error): (?P<msg>.*?) \[(?P<check>[\w.,-]+)\]$"
+)
 
 
-def run_one(clang_tidy: str, build_dir: str, header_filter: str,
-            source: pathlib.Path) -> tuple[str, int]:
+def run_one(
+    clang_tidy: str, build_dir: str, header_filter: str, source: pathlib.Path
+) -> tuple[str, int]:
     proc = subprocess.run(
-        [clang_tidy, "-p", build_dir, "--quiet",
-         f"--header-filter={header_filter}", str(source)],
-        capture_output=True, text=True, check=False)
+        [
+            clang_tidy,
+            "-p",
+            build_dir,
+            "--quiet",
+            f"--header-filter={header_filter}",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     return proc.stdout + proc.stderr, proc.returncode
 
 
@@ -66,9 +80,14 @@ def main() -> int:
     # `**/src/*.cpp` from the root: the latter also matches CMake's own
     # `build/_deps/highs-build/CMakeFiles/_CMakeLTOTest-CXX/src/*.cpp` probes,
     # and this gate must never be pointed at the fetched upstream tree.
-    sources = sorted((root / "src").rglob("*.cpp")) + sorted((root / "tests").rglob("*.cpp"))
+    sources = sorted((root / "src").rglob("*.cpp")) + sorted(
+        (root / "tests").rglob("*.cpp")
+    )
     if not sources:
-        print(f"clang-tidy gate: no first-party translation units under {root}", file=sys.stderr)
+        print(
+            f"clang-tidy gate: no first-party translation units under {root}",
+            file=sys.stderr,
+        )
         return 1
 
     # The checked-in .clang-tidy carries a portable, path-independent
@@ -79,13 +98,22 @@ def main() -> int:
     # tests/ match, whatever the fetched trees are called.
     header_filter = f"^{re.escape(str(root))}/(src|tests)/"
 
-    version = subprocess.run([args.clang_tidy, "--version"], capture_output=True,
-                             text=True, check=False).stdout.strip().replace("\n", " ")
+    version = (
+        subprocess.run(
+            [args.clang_tidy, "--version"], capture_output=True, text=True, check=False
+        )
+        .stdout.strip()
+        .replace("\n", " ")
+    )
 
     jobs = args.jobs or None
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        results = list(pool.map(
-            lambda s: run_one(args.clang_tidy, args.build_dir, header_filter, s), sources))
+        results = list(
+            pool.map(
+                lambda s: run_one(args.clang_tidy, args.build_dir, header_filter, s),
+                sources,
+            )
+        )
 
     # clang-tidy exits 0 when it emitted no compiler error and 1 when it did (on this
     # project, the known upstream one, judged below).  2 means it skipped files, and a
@@ -93,7 +121,9 @@ def main() -> int:
     # gigabyte resident per process makes an OOM kill a realistic outcome on a small
     # runner.  In every one of those cases the translation unit produced no analysis,
     # which must not read as "clean".
-    incomplete = [(src, rc) for src, (_, rc) in zip(sources, results) if rc not in (0, 1)]
+    incomplete = [
+        (src, rc) for src, (_, rc) in zip(sources, results) if rc not in (0, 1)
+    ]
     outputs = [text for text, _ in results]
 
     findings: dict[tuple[str, str, str, str], str] = {}
@@ -104,8 +134,10 @@ def main() -> int:
         # TU, but when it cannot it says so without a trailing [check] tag, so
         # DIAG below would never see it and the file would contribute nothing.
         if "unable to handle compilation" in text:
-            unexpected_errors.add("clang-tidy could not build a compile command for a "
-                                  "translation unit; is it missing from CMakeLists.txt?")
+            unexpected_errors.add(
+                "clang-tidy could not build a compile command for a "
+                "translation unit; is it missing from CMakeLists.txt?"
+            )
         for raw in text.splitlines():
             m = DIAG.match(raw)
             if not m:
@@ -117,8 +149,11 @@ def main() -> int:
                 rel = path
             first_party = rel.startswith("src/") or rel.startswith("tests/")
 
-            if (m.group("check") == "clang-diagnostic-error"
-                    and KNOWN_UPSTREAM_ERROR not in m.group("msg")):
+            if m.group(
+                "check"
+            ) == "clang-diagnostic-error" and KNOWN_UPSTREAM_ERROR not in m.group(
+                "msg"
+            ):
                 unexpected_errors.add(raw.strip())
 
             if not first_party:
@@ -127,20 +162,29 @@ def main() -> int:
             findings.setdefault(key, m.group("msg"))
 
     if unexpected_errors:
-        print("clang-tidy gate: unexpected compiler error(s) — the analysis below ran on a "
-              "degraded parse and cannot be trusted:", file=sys.stderr)
+        print(
+            "clang-tidy gate: unexpected compiler error(s) — the analysis below ran on a "
+            "degraded parse and cannot be trusted:",
+            file=sys.stderr,
+        )
         for e in sorted(unexpected_errors):
             print(f"  {e}", file=sys.stderr)
 
     if findings:
-        print(f"clang-tidy gate: {len(findings)} finding(s) in first-party sources "
-              f"({version}):", file=sys.stderr)
+        print(
+            f"clang-tidy gate: {len(findings)} finding(s) in first-party sources "
+            f"({version}):",
+            file=sys.stderr,
+        )
         for (rel, line, col, check), msg in sorted(findings.items()):
             print(f"  {rel}:{line}:{col}: {msg} [{check}]", file=sys.stderr)
 
     if incomplete:
-        print(f"clang-tidy gate: clang-tidy did not complete on {len(incomplete)} translation "
-              "unit(s) — their analysis is missing, not clean:", file=sys.stderr)
+        print(
+            f"clang-tidy gate: clang-tidy did not complete on {len(incomplete)} translation "
+            "unit(s) — their analysis is missing, not clean:",
+            file=sys.stderr,
+        )
         for src, rc in incomplete:
             print(f"  {src} (exit {rc})", file=sys.stderr)
 

@@ -40,9 +40,7 @@ from parse_highs_log import (
 def _result(t_first: float | None) -> SolveResult:
     r = SolveResult()
     if t_first is not None:
-        r.incumbents.append(
-            Incumbent(time=t_first, objective=1.0, source="H", nodes=0)
-        )
+        r.incumbents.append(Incumbent(time=t_first, objective=1.0, source="H", nodes=0))
     return r
 
 
@@ -114,9 +112,9 @@ def test_heuristic_attribution_first_and_best():
     agg = {
         "c": {
             "i1": _result_sources(["J", "A", "M"]),  # first FJ, best LocalMIP
-            "i2": _result_sources(["A"]),            # first & best FPR
-            "i3": SolveResult(),                     # infeasible — skipped
-            "i4": _result_sources(["B", "B"]),       # HiGHS/other first & best
+            "i2": _result_sources(["A"]),  # first & best FPR
+            "i3": SolveResult(),  # infeasible — skipped
+            "i4": _result_sources(["B", "B"]),  # HiGHS/other first & best
         }
     }
     attr = heuristic_attribution(agg, "c", ["i1", "i2", "i3", "i4"])
@@ -138,16 +136,26 @@ def test_heuristic_attribution_totals_equal_feasible():
 
 def test_latex_ablation_table_escapes_and_rows():
     metrics = {
-        "all_opp": {"feasible": 213.0, "sgm_t1st": 3.3, "sgm_gap": 0.02,
-                    "sgm_pi": 22.0, "plato_sgm": 17.3},
-        "loo_no_fj": {"feasible": 200.0, "sgm_t1st": 4.0, "sgm_gap": 0.03,
-                      "sgm_pi": 25.0, "plato_sgm": 19.0},
+        "all_opp": {
+            "feasible": 213.0,
+            "sgm_t1st": 3.3,
+            "sgm_gap": 0.02,
+            "sgm_pi": 22.0,
+            "plato_sgm": 17.3,
+        },
+        "loo_no_fj": {
+            "feasible": 200.0,
+            "sgm_t1st": 4.0,
+            "sgm_gap": 0.03,
+            "sgm_pi": 25.0,
+            "plato_sgm": 19.0,
+        },
     }
     tex = latex_ablation_table(["all_opp", "loo_no_fj"], metrics, 233, 100.0)
     assert r"\begin{tabular}{lrrrrr}" in tex
     assert r"\toprule" in tex and r"\bottomrule" in tex
-    assert r"loo\_no\_fj" in tex           # underscore escaped for LaTeX
-    assert "213" in tex                    # #Feas rendered as int
+    assert r"loo\_no\_fj" in tex  # underscore escaped for LaTeX
+    assert "213" in tex  # #Feas rendered as int
     assert r"all\_opp" in tex
 
 
@@ -164,8 +172,7 @@ def test_load_results_config_dir_override(tmp_path: Path):
     if sample is None:
         # No committed logs in this checkout — synthesize a minimal one.
         (seed_dir / "toy.log").write_text(
-            "      Status      Time limit reached\n"
-            "      Primal bound inf\n"
+            "      Status      Time limit reached\n      Primal bound inf\n"
         )
         inst_name = "toy"
     else:
@@ -211,16 +218,24 @@ def test_load_results_reads_budget_sweep_directories(tmp_path: Path):
 def test_latex_ablation_table_renders_budget_sweep_config_names():
     """`@` is an ordinary character in LaTeX text mode; `_` still is not."""
     metrics = {
-        "local_mip@e0.30": {"feasible": 5.0, "sgm_t1st": 1.0, "sgm_gap": 0.01,
-                            "sgm_pi": 2.0, "plato_sgm": 1.5},
+        "local_mip@e0.30": {
+            "feasible": 5.0,
+            "sgm_t1st": 1.0,
+            "sgm_gap": 0.01,
+            "sgm_pi": 2.0,
+            "plato_sgm": 1.5,
+        },
     }
     tex = latex_ablation_table(["local_mip@e0.30"], metrics, 5, 60.0)
     assert r"local\_mip@e0.30" in tex
+
+
 # ── cannibalization tables (issue #100, records from #95) ─────────────────────
 
 
-def _heur(name: str, phase: str, start: float, wall_ms: float,
-          found: bool = False) -> HeuristicSample:
+def _heur(
+    name: str, phase: str, start: float, wall_ms: float, found: bool = False
+) -> HeuristicSample:
     """One `[Heur]` sample; effort and rate are irrelevant to these tables."""
     return HeuristicSample(
         name=name,
@@ -290,9 +305,11 @@ def test_instrumented_baseline_is_a_real_zero_not_a_missing_value():
 
 def test_heuristic_wall_seconds_splits_presolve_from_dive():
     r = _instrumented(
-        samples=[_heur("fj", "presolve", 0.1, 400.0),
-                 _heur("fpr", "presolve", 0.5, 600.0),
-                 _heur("fpr_lp", "dive", 3.0, 250.0)]
+        samples=[
+            _heur("fj", "presolve", 0.1, 400.0),
+            _heur("fpr", "presolve", 0.5, 600.0),
+            _heur("fpr_lp", "dive", 3.0, 250.0),
+        ]
     )
     assert heuristic_wall_seconds(r) == 1.25
     assert heuristic_wall_seconds(r, "presolve") == 1.0
@@ -322,9 +339,7 @@ def test_root_site_rens_suppression_alone_is_internal_budget():
 def test_wall_clock_category_when_budgets_are_preserved():
     """Same native activity, but a third of the solve went into heuristics."""
     base = _instrumented(solve_time=10.0)
-    row = _instrumented(
-        solve_time=10.0, samples=[_heur("fj", "presolve", 0.1, 3300.0)]
-    )
+    row = _instrumented(solve_time=10.0, samples=[_heur("fj", "presolve", 0.1, 3300.0)])
     v = classify_cannibalization(row, base)
     assert v.category == "wall-clock"
     assert v.wall and not v.internal
@@ -375,7 +390,9 @@ def test_thresholds_are_overridable_for_a_sensitivity_check():
     base = _instrumented(solve_time=10.0)
     row = _instrumented(solve_time=10.0, samples=[_heur("fj", "presolve", 0.1, 300.0)])
     assert classify_cannibalization(row, base).category == "neutral"
-    assert classify_cannibalization(row, base, wall_fraction=0.01).category == "wall-clock"
+    assert (
+        classify_cannibalization(row, base, wall_fraction=0.01).category == "wall-clock"
+    )
 
 
 def test_heuristic_wall_time_is_reported_from_heur_lines_alone():
@@ -422,7 +439,27 @@ def test_native_lp_iterations_are_compared_with_our_charge_removed():
     starved = _instrumented(heur_lp=5100, tot_lp=14100, ours=5000)
     v = classify_cannibalization(starved, base)
     assert v.category == "internal-budget"
-    assert any("native heur LP iters 1000->100" in e for e in v.evidence)
+    assert any(
+        "native heur LP share" in e and "(1000->100 iters)" in e for e in v.evidence
+    )
+
+
+def test_faster_solve_that_raises_the_native_share_is_not_internal_budget():
+    """The limb tests a share, because upstream's gate tests a ratio.
+
+    `moreHeuristicsAllowed` compares `heuristic_lp_iterations` against
+    `total_lp_iterations * effort`, so what matters is how close a config
+    drove HiGHS to its own gate — not how many iterations it did.  A config
+    that simply solves faster cuts native heuristic LP iterations *and* the
+    total together; if the total falls further the share rises, HiGHS's
+    heuristics were relatively more active, and nothing was starved.  An
+    absolute test labels that `internal-budget` and inflates the headline.
+    """
+    base = _instrumented(heur_lp=1000, tot_lp=10000, ours=0)  # share 0.100
+    faster = _instrumented(heur_lp=800, tot_lp=5000, ours=0)  # share 0.160
+    assert faster.native.native_heur_lp_iters < base.native.native_heur_lp_iters
+    v = classify_cannibalization(faster, base)
+    assert not any("native heur LP" in e for e in v.evidence)
 
 
 def test_root_lp_delay_needs_both_a_relative_and_an_absolute_margin():
@@ -462,14 +499,19 @@ def test_restarting_instance_span_may_exceed_root_lp_timestamp():
 
 def test_uninstrumented_row_and_uninstrumented_baseline_are_distinguished():
     inst = _instrumented()
-    assert classify_cannibalization(_uninstrumented(), inst).category == "not-instrumented"
+    assert (
+        classify_cannibalization(_uninstrumented(), inst).category == "not-instrumented"
+    )
     assert classify_cannibalization(inst, _uninstrumented()).category == "no-baseline"
     assert classify_cannibalization(inst, None).category == "no-baseline"
     assert classify_cannibalization(inst, inst, is_baseline=True).category == "baseline"
     # An uninstrumented baseline row is labelled by what it carries, not by
     # its role: it cannot serve as a reference either.
     old = _uninstrumented()
-    assert classify_cannibalization(old, old, is_baseline=True).category == "not-instrumented"
+    assert (
+        classify_cannibalization(old, old, is_baseline=True).category
+        == "not-instrumented"
+    )
 
 
 def test_pick_baseline_prefers_the_instrumented_zero_heuristic_config():
@@ -501,8 +543,10 @@ def test_pick_baseline_refuses_a_heuristic_running_config_with_a_baseline_name()
 def test_uninstrumented_rows_are_not_evidence_of_dispatching_nothing():
     """A pre-#95 row has no [Heur] lines because it has no lines at all."""
     agg = {
-        "mixed": {"a": _instrumented(samples=[_heur("fj", "presolve", 0.1, 5.0)]),
-                  "b": _uninstrumented()},
+        "mixed": {
+            "a": _instrumented(samples=[_heur("fj", "presolve", 0.1, 5.0)]),
+            "b": _uninstrumented(),
+        },
     }
     assert pick_baseline_config(agg, ["mixed"]) is None
 
@@ -580,8 +624,9 @@ def _write_tree(root_dir: Path, tree: dict[str, dict[str, str]]) -> None:
             (seed_dir / f"{inst}.log").write_text(text)
 
 
-def _render(tmp_path: Path, tree: dict[str, dict[str, str]], capsys,
-            baseline: str | None = None) -> str:
+def _render(
+    tmp_path: Path, tree: dict[str, dict[str, str]], capsys, baseline: str | None = None
+) -> str:
     """Write a results tree, run the report over it, return the output."""
     _write_tree(tmp_path, tree)
     configs = list(tree)
@@ -616,9 +661,11 @@ def test_cannibalization_tables_render_from_an_instrumented_tree(tmp_path, capsy
     """Both tables, their aggregates and the classification, no scripting."""
     starved = _synth_log(
         solve_time=10.0,
-        samples=[_heur("fj", "presolve", 0.1, 900.0, found=True),
-                 _heur("scylla", "presolve", 1.0, 3000.0),
-                 _heur("fpr_lp", "dive", 6.0, 500.0)],
+        samples=[
+            _heur("fj", "presolve", 0.1, 900.0, found=True),
+            _heur("scylla", "presolve", 1.0, 3000.0),
+            _heur("fpr_lp", "dive", 6.0, 500.0),
+        ],
         # 1300 shared heuristic LP iterations of which 900 are fpr_lp's own
         # charge, so HiGHS itself did 400 against the baseline's 2000.
         native=(1, 0, 1, 1, 1300, 12000, 900),
@@ -635,10 +682,14 @@ def test_cannibalization_tables_render_from_an_instrumented_tree(tmp_path, capsy
     base_log = _synth_log(
         solve_time=10.0, native=(3, 1, 4, 1, 2000, 11000, 0), root=(1.0, 0.0)
     )
-    out = _render(tmp_path, {
-        "patched": {"starved": starved, "quiet": quiet},
-        "vanilla": {"starved": base_log, "quiet": base_log},
-    }, capsys)
+    out = _render(
+        tmp_path,
+        {
+            "patched": {"starved": starved, "quiet": quiet},
+            "vanilla": {"starved": base_log, "quiet": base_log},
+        },
+        capsys,
+    )
 
     assert "## Cannibalization" in out
     assert "Baseline config: vanilla" in out
@@ -661,19 +712,20 @@ def test_cannibalization_tables_render_from_an_instrumented_tree(tmp_path, capsy
 
     # Wall clock: Heur_s, Dive_s, HeurFrac, Troot_s, dTroot_s, Span_s, Class.
     row = _cells(wall, "starved", "patched")
-    assert row[2] == "4.40" and row[3] == "0.50"      # 4.4 s total, 0.5 s dive
+    assert row[2] == "4.40" and row[3] == "0.50"  # 4.4 s total, 0.5 s dive
     assert row[4] == "0.4400"
     assert row[5] == "4.50" and row[6] == "3.50"
     assert row[7] == "3.90"
     assert row[8] == "both"
     evidence = " ".join(row[9:])
     assert "rens_root 1->0" in evidence
-    assert "native heur LP iters 2000->400" in evidence
+    assert "native heur LP share" in evidence
+    assert "(2000->400 iters)" in evidence
     assert "root LP +3.50s" in evidence
 
     quiet_row = _cells(wall, "quiet", "patched")
-    assert quiet_row[2] == "0.04"   # Heur_s
-    assert quiet_row[7] == "0.31"   # Span_s, distinct from every other cell
+    assert quiet_row[2] == "0.04"  # Heur_s
+    assert quiet_row[7] == "0.31"  # Span_s, distinct from every other cell
     assert quiet_row[8] == "neutral"
 
     # The baseline config is a row in its own right, with real zeros.
@@ -685,13 +737,18 @@ def test_cannibalization_tables_render_from_an_instrumented_tree(tmp_path, capsy
 
 def test_classification_counts_account_for_every_instance(tmp_path, capsys):
     """No instance may silently fall out of the classification."""
-    inst = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
-                      root=(0.5, 0.0))
+    inst = _synth_log(
+        solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0), root=(0.5, 0.0)
+    )
     old = "      Status            Optimal\n      Timing            6.00\n"
-    out = _render(tmp_path, {
-        "patched": {"i1": inst, "i2": inst, "i3": old},
-        "vanilla": {"i1": inst, "i2": inst, "i3": inst},
-    }, capsys)
+    out = _render(
+        tmp_path,
+        {
+            "patched": {"i1": inst, "i2": inst, "i3": old},
+            "vanilla": {"i1": inst, "i2": inst, "i3": inst},
+        },
+        capsys,
+    )
 
     counts = _block(out, "### Classification counts")
     for cfg in ("patched", "vanilla"):
@@ -710,53 +767,79 @@ def test_root_rens_lost_counts_suppression_and_abstains_without_a_baseline(
     is the opposite of "nothing was checked" — every other baseline-relative
     cell renders '-' in that state.
     """
-    base_log = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
-                          root=(0.5, 0.0))
+    base_log = _synth_log(
+        solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0), root=(0.5, 0.0)
+    )
     suppressed = _synth_log(
         solve_time=6.0,
         samples=[_heur("fpr", "presolve", 0.1, 100.0, found=True)],
         native=(2, 0, 2, 0, 500, 5000, 0),
         root=(0.52, 0.11),
     )
-    out = _render(tmp_path, {"patched": {"i1": suppressed},
-                             "vanilla": {"i1": base_log}}, capsys)
-    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[1]
-    assert next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[-1] == "1"
-    assert next(ln for ln in agg.splitlines() if ln.startswith("vanilla")).split()[-1] == "-"
+    out = _render(
+        tmp_path, {"patched": {"i1": suppressed}, "vanilla": {"i1": base_log}}, capsys
+    )
+    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[
+        1
+    ]
+    assert (
+        next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[-1]
+        == "1"
+    )
+    assert (
+        next(ln for ln in agg.splitlines() if ln.startswith("vanilla")).split()[-1]
+        == "-"
+    )
 
     # Same config with no baseline in the tree: nothing was compared, so the
     # column abstains rather than reporting zero suppressions.
     out = _render(tmp_path / "solo", {"patched": {"i1": suppressed}}, capsys)
-    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[1]
-    assert next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[-1] == "-"
+    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[
+        1
+    ]
+    assert (
+        next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[-1]
+        == "-"
+    )
 
 
-def test_root_lp_column_reports_how_many_instances_stand_behind_it(
-    tmp_path, capsys
-):
+def test_root_lp_column_reports_how_many_instances_stand_behind_it(tmp_path, capsys):
     """An instance whose root LP was never reached leaves that config's SGM.
 
     The bias runs the wrong way for the epic's claim — the most delayed
     instances are the ones that vanish — so the count must be visible.
     """
-    reached = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
-                         root=(1.0, 0.0))
+    reached = _synth_log(
+        solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0), root=(1.0, 0.0)
+    )
     never = _synth_log(
         solve_time=6.0,
         samples=[_heur("fj", "presolve", 0.1, 50.0)],
         native=(2, 1, 2, 0, 500, 5000, 0),
         root=(-1.0, 0.05),
     )
-    out = _render(tmp_path, {"patched": {"i1": reached, "i2": never},
-                             "vanilla": {"i1": reached, "i2": reached}}, capsys)
+    out = _render(
+        tmp_path,
+        {
+            "patched": {"i1": reached, "i2": never},
+            "vanilla": {"i1": reached, "i2": reached},
+        },
+        capsys,
+    )
     wall_agg = _block(_block(out, "### Wall clock"), "#### Aggregate", "#Root =")
     patched = next(ln for ln in wall_agg.splitlines() if ln.startswith("patched"))
     vanilla = next(ln for ln in wall_agg.splitlines() if ln.startswith("vanilla"))
     assert patched.split()[1] == "2" and patched.split()[6] == "1"  # #Instr, #Root
     assert vanilla.split()[1] == "2" and vanilla.split()[6] == "2"
     # The unreached row is visible as such, not as t=0.
-    assert _cells(_block(_block(out, "### Wall clock"), "Class:", "#### Aggregate"),
-                  "i2", "patched")[5] == "-"
+    assert (
+        _cells(
+            _block(_block(out, "### Wall clock"), "Class:", "#### Aggregate"),
+            "i2",
+            "patched",
+        )[5]
+        == "-"
+    )
 
 
 def test_negative_heuristic_window_is_shown_and_kept_out_of_the_aggregate(
@@ -792,20 +875,27 @@ def test_negative_heuristic_window_is_shown_and_kept_out_of_the_aggregate(
     assert patched.split()[2] == "1.00"  # SGM over the surviving sample only
 
 
-def test_mixed_tree_reports_per_row_rather_than_dropping_instances(
-    tmp_path, capsys
-):
+def test_mixed_tree_reports_per_row_rather_than_dropping_instances(tmp_path, capsys):
     """A tree extended after #95 landed carries both kinds of log."""
-    inst = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
-                      root=(0.5, 0.0))
+    inst = _synth_log(
+        solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0), root=(0.5, 0.0)
+    )
     old = "      Status            Optimal\n      Timing            6.00\n"
-    out = _render(tmp_path, {"patched": {"new": inst, "old": old},
-                             "vanilla": {"new": inst, "old": old}}, capsys)
+    out = _render(
+        tmp_path,
+        {"patched": {"new": inst, "old": old}, "vanilla": {"new": inst, "old": old}},
+        capsys,
+    )
     internal = _block(out, "### Internal budget", "#### Aggregate")
     assert _cells(internal, "old", "patched")[2:] == ["-"] * 9
     assert _cells(internal, "new", "patched")[2] == "2"
-    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[1]
-    assert next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[1] == "1"
+    agg = _block(out, "### Internal budget", "### Wall clock").split("#### Aggregate")[
+        1
+    ]
+    assert (
+        next(ln for ln in agg.splitlines() if ln.startswith("patched")).split()[1]
+        == "1"
+    )
 
 
 def test_cli_renders_the_tables_end_to_end(tmp_path):
@@ -820,15 +910,27 @@ def test_cli_renders_the_tables_end_to_end(tmp_path):
         native=(2, 1, 2, 0, 500, 5000, 0),
         root=(0.9, 0.6),
     )
-    base = _synth_log(solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0),
-                      root=(0.5, 0.0))
+    base = _synth_log(
+        solve_time=6.0, native=(2, 1, 2, 0, 500, 5000, 0), root=(0.5, 0.0)
+    )
     _write_tree(tmp_path, {"patched": {"i1": inst}, "vanilla": {"i1": base}})
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "analyze_results.py")
+    script = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "analyze_results.py"
+    )
     res = subprocess.run(
-        [sys.executable, script, str(tmp_path), "--configs", "patched", "vanilla",
-         "--summary", "--cannibalization"],
-        capture_output=True, text=True, check=False,
+        [
+            sys.executable,
+            script,
+            str(tmp_path),
+            "--configs",
+            "patched",
+            "vanilla",
+            "--summary",
+            "--cannibalization",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert res.returncode == 0, res.stderr
     assert "## Cannibalization" in res.stdout
@@ -838,9 +940,21 @@ def test_cli_renders_the_tables_end_to_end(tmp_path):
 
     # ... and the same tables under --ablation, the other call site.
     res = subprocess.run(
-        [sys.executable, script, str(tmp_path), "--configs", "patched", "vanilla",
-         "--ablation", "--cannibalization", "--cannibalization-baseline", "vanilla"],
-        capture_output=True, text=True, check=False,
+        [
+            sys.executable,
+            script,
+            str(tmp_path),
+            "--configs",
+            "patched",
+            "vanilla",
+            "--ablation",
+            "--cannibalization",
+            "--cannibalization-baseline",
+            "vanilla",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert res.returncode == 0, res.stderr
     assert "Baseline config: vanilla" in res.stdout
@@ -852,8 +966,9 @@ def test_cannibalization_baseline_row_survives_aggregation(tmp_path, capsys):
     It is the reference every other row is read against; an aggregation that
     filtered None would drop it and leave the table without its zero line.
     """
-    base_log = _synth_log(solve_time=8.0, native=(2, 1, 2, 0, 500, 5000, 0),
-                          root=(0.5, 0.0))
+    base_log = _synth_log(
+        solve_time=8.0, native=(2, 1, 2, 0, 500, 5000, 0), root=(0.5, 0.0)
+    )
     patched_log = _synth_log(
         solve_time=8.0,
         samples=[_heur("local_mip", "presolve", 0.1, 200.0)],
@@ -876,9 +991,11 @@ def test_cannibalization_baseline_row_survives_aggregation(tmp_path, capsys):
 
 def test_cannibalization_degrades_on_a_tree_without_instrumentation(tmp_path, capsys):
     """A results tree recorded before issue #95 still analyses."""
-    old = ("      Status            Optimal\n"
-           "      Nodes             3\n"
-           "      Timing            5.00\n")
+    old = (
+        "      Status            Optimal\n"
+        "      Nodes             3\n"
+        "      Timing            5.00\n"
+    )
     _write_tree(tmp_path, {"patched": {"i1": old}, "vanilla": {"i1": old}})
     configs = ["patched", "vanilla"]
     results = load_results(str(tmp_path), configs)
@@ -901,11 +1018,15 @@ def test_cannibalization_warns_when_only_the_baseline_lacks_instrumentation(
         native=(2, 1, 2, 0, 500, 5000, 0),
         root=(0.6, 0.11),
     )
-    _write_tree(tmp_path, {
-        "patched": {"i1": patched_log},
-        "vanilla": {"i1": "      Status            Optimal\n"
-                          "      Timing            6.00\n"},
-    })
+    _write_tree(
+        tmp_path,
+        {
+            "patched": {"i1": patched_log},
+            "vanilla": {
+                "i1": "      Status            Optimal\n      Timing            6.00\n"
+            },
+        },
+    )
     configs = ["patched", "vanilla"]
     results = load_results(str(tmp_path), configs)
     print_cannibalization_tables(results, aggregate_results(results, configs), configs)

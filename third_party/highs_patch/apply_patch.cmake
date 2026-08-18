@@ -14,7 +14,7 @@ string(CONCAT CLEAN_REBUILD
     "Clean the HiGHS source tree and rebuild "
     "(see CONTRIBUTING.md, \"The clean-rebuild rule\"): "
     "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt "
-    "&& cmake -B build && cmake --build build")
+    "&& cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build")
 
 # Detect source layout: v1.13+ uses highs/ subdirectory
 if(EXISTS "${SOURCE_DIR}/highs/mip")

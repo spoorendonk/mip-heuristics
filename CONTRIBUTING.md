@@ -125,8 +125,8 @@ The benchmark harness is Python with its own test suite, registered in ctest as
 `bench_python_tests` and also runnable directly:
 
 ```bash
-.venv/bin/pip install ruff pytest
-.venv/bin/ruff check bench
+.venv/bin/pip install ruff==0.16.3 pytest
+.venv/bin/ruff check bench cmake
 .venv/bin/python -m pytest bench
 ```
 
@@ -134,17 +134,18 @@ The benchmark harness is Python with its own test suite, registered in ctest as
 `pytest` from the repo root works too. Both run in CI as a separate fast job
 with no C++ build.
 
-**`ruff check bench` currently reports 21 findings, so the CI lint step is
-advisory (`continue-on-error`) rather than gating, and it runs *after* the
-tests** — a failing step skips the rest of a job, so linting first would mean
-the bench tests never ran in CI at all. Twenty of the findings come from rule
-families ruff 0.16 turned on by default; one — an `F541` f-string with no
-placeholders in `bench/correctness_check.py` — fails under any rule set.
-`pyproject.toml` pins only `target-version`, so the effective rule set is
-whatever the installed ruff defaults to, which is why CI pins the version.
-Closing this means either fixing `bench/*.py` or declaring an explicit
-`[tool.ruff.lint] select`, and then deleting `continue-on-error` so the step
-gates like the C++ job does. Do not close it by loosening the version pin.
+**`ruff check bench cmake` gates.** It runs *after* the tests in the same job — a
+failing step skips the rest of a job, so linting first would mean the bench
+tests never ran in CI at all — but both fail the build.
+
+The rule set is declared explicitly in `pyproject.toml` under
+`[tool.ruff.lint]` rather than inherited from ruff's defaults, and CI pins the
+ruff version to match. That pairing is what makes the gate safe to fail a
+build on: ruff 0.16 widened its defaults and turned `bench/` red without a
+line of `bench/` changing, and a gate whose rule set moves underneath it
+fails for reasons unrelated to the change under review. Widen the set
+deliberately — add a family, fix what it finds, land both together. Do not
+loosen the version pin to make a finding go away.
 
 ## Code review bar
 

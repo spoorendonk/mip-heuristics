@@ -1256,14 +1256,29 @@ def classify_cannibalization(
         and row_calls < base_calls * (1.0 - call_drop_rel)
     ):
         internal.append(f"native calls {base_calls}->{row_calls}")
-    # Native LP iterations, with our dive heuristic's own charge subtracted
-    # from both sides — the raw counters are shared and reading them raw bills
-    # our work as upstream's.
-    if bn.native_heur_lp_iters > 0 and (
-        rn.native_heur_lp_iters < bn.native_heur_lp_iters * (1.0 - lp_drop_rel)
+    # Native LP iterations, as a *share* of upstream's own total rather than
+    # an absolute count, with our dive heuristic's charge subtracted from both
+    # sides of both terms (the raw counters are shared, and reading them raw
+    # bills our work as upstream's).
+    #
+    # The share is the quantity that decides the gate: `moreHeuristicsAllowed`
+    # tests `heuristic_lp_iterations < total_lp_iterations * effort + 10000`,
+    # a ratio.  An absolute test mislabels the common benign case — a config
+    # that simply solves faster cuts native heuristic LP iterations *and*
+    # total LP iterations together, and if the total falls further the share
+    # rises, meaning HiGHS's heuristics were relatively more active and
+    # nothing was starved.  Firing there would inflate the exact count this
+    # analysis exists to report honestly.
+    row_share, base_share = native_lp_share(row), native_lp_share(base)
+    if (
+        row_share is not None
+        and base_share is not None
+        and base_share > 0.0
+        and row_share < base_share * (1.0 - lp_drop_rel)
     ):
         internal.append(
-            f"native heur LP iters {bn.native_heur_lp_iters}->{rn.native_heur_lp_iters}"
+            f"native heur LP share {base_share:.3f}->{row_share:.3f} "
+            f"({bn.native_heur_lp_iters}->{rn.native_heur_lp_iters} iters)"
         )
 
     wall: list[str] = []
