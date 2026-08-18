@@ -135,3 +135,11 @@ if(_bench_py)
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
 endif()
+
+# --- Lint gates ---
+# clang-format (check-only) and clang-tidy over src/ and tests/, registered as
+# ctest tests labelled `lint` and as the `lint` build target.  Must come after
+# include(CTest) so add_test() is available.  See cmake/Lint.cmake for the
+# pinned tool versions and for why CI has to pass
+# -DMIP_HEURISTICS_REQUIRE_LINT=ON.
+include(cmake/Lint.cmake)
