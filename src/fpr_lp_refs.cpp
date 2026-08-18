@@ -81,7 +81,7 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
                      static_cast<int64_t>(info.crossover_iteration_count);
 
     const auto& sol = highs.getSolution();
-    if (static_cast<HighsInt>(sol.col_value.size()) == ncol) {
+    if (std::cmp_equal(sol.col_value.size(), ncol)) {
         return sol.col_value;
     }
     return {};

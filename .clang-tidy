@@ -103,8 +103,13 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.ConstantPointerParameterCase
     value: lower_case
-  - key: readability-identifier-naming.ConstantMemberCase
-    value: lower_case
+  # ConstantMemberCase is deliberately left unset.  It takes precedence
+  # over PrivateMemberSuffix, so setting it to lower_case rejects a
+  # `const` private member spelled with this project's `_` suffix
+  # (`FjWorker::start_`, `FjWorker::seed_`), while setting it to
+  # lower_case-with-`_` would then demand the suffix on public `const`
+  # members that correctly have none.  Unset, const members fall through
+  # to the private/public member rules below, which is the intent.
   - key: readability-identifier-naming.GlobalConstantCase
     value: CamelCase
   - key: readability-identifier-naming.GlobalConstantPrefix

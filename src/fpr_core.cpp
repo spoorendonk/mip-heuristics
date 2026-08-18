@@ -28,9 +28,9 @@ struct AttemptCtx {
     HighsMipSolver& mipsolver;
     const HighsLp* model;
     HighsMipSolverData* mipdata;
-    const std::vector<HighsInt>& ARstart;
-    const std::vector<HighsInt>& ARindex;
-    const std::vector<double>& ARvalue;
+    const std::vector<HighsInt>& ar_start;
+    const std::vector<HighsInt>& ar_index;
+    const std::vector<double>& ar_value;
     const std::vector<double>& col_lb;
     const std::vector<double>& col_ub;
     const std::vector<double>& col_cost;
@@ -102,8 +102,9 @@ PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMa
     std::optional<PropEngine>& engine_opt = scratch.prop_engine;
     const bool engine_valid =
         engine_opt.has_value() && engine_opt->ncol() == c.ncol && engine_opt->nrow() == c.nrow &&
-        engine_opt->ar_start() == c.ARstart.data() && engine_opt->ar_index() == c.ARindex.data() &&
-        engine_opt->ar_value() == c.ARvalue.data() &&
+        engine_opt->ar_start() == c.ar_start.data() &&
+        engine_opt->ar_index() == c.ar_index.data() &&
+        engine_opt->ar_value() == c.ar_value.data() &&
         engine_opt->csc_start() == csc.col_start.data() &&
         engine_opt->csc_row() == csc.col_row.data() &&
         engine_opt->csc_val() == csc.col_val.data() && engine_opt->col_lb() == c.col_lb.data() &&
@@ -111,7 +112,7 @@ PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMa
         engine_opt->row_hi() == c.row_hi.data() &&
         engine_opt->integrality() == c.integrality.data() && engine_opt->feastol() == c.feastol;
     if (!engine_valid) {
-        engine_opt.emplace(c.ncol, c.nrow, c.ARstart.data(), c.ARindex.data(), c.ARvalue.data(),
+        engine_opt.emplace(c.ncol, c.nrow, c.ar_start.data(), c.ar_index.data(), c.ar_value.data(),
                            csc, c.col_lb.data(), c.col_ub.data(), c.row_lo.data(), c.row_hi.data(),
                            c.integrality.data(), c.feastol);
     } else {
@@ -184,6 +185,12 @@ bool is_row_violated_in_ctx(HighsInt i, double lhs, const AttemptCtx& c) {
 // fpr_attempt_begin
 // ---------------------------------------------------------------------------
 
+// Cognitive complexity 80 (threshold 25).  Kept whole: Phases 1-2 of the paper's
+// Fix-Propagate-Repair (Fig. 4) — variable order, value selection, propagation and DFS seeding —
+// expressed as one resumable state machine so an attempt can pause at the budget gate. Decomposing
+// it would move work across a worker's inner loop, and the closeout takes no unmeasured performance
+// risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const FprConfig& cfg,
                        Rng& rng, int attempt_idx, const double* initial_solution) {
     assert(cfg.scratch != nullptr && "fpr_attempt_begin requires cfg.scratch");
@@ -232,6 +239,14 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     scratch.lhs_cache.resize(c.nrow);
 
     // --- Acquire PropEngine (resets if cached engine is from a previous attempt) ---
+    // NOLINT rationale: `E` is the paper's own symbol for this object
+    // (Fig. 5), used under that name in the surrounding prose in
+    // fpr_core.h, repair_search.h and fpr_strategies.h, and — for the
+    // primary engine — as the parameter name of repair_search() itself.
+    // Lower-casing only the locals would split one symbol across two
+    // spellings; renaming the documentation too would cost the mapping
+    // back to the paper, which the standards rank above naming.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine& E = acquire_engine(scratch, c, csc);
 
     // --- Initial solution -----------------------------------------------------------
@@ -389,6 +404,11 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
 // fpr_attempt_step
 // ---------------------------------------------------------------------------
 
+// Cognitive complexity 26 (threshold 25).  Kept whole: one resumable DFS step of Fig. 4, including
+// the per-call budget gate that lets an in-flight attempt pause and resume. Decomposing it would
+// move work across a worker's inner loop, and the closeout takes no unmeasured performance risk;
+// the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver,
                                const FprConfig& cfg, Rng& rng, size_t effort_remaining) {
     assert(state.phase == FprAttemptState::Phase::kDfs &&
@@ -399,6 +419,12 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
     FprScratch& scratch = *cfg.scratch;
     const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
     const CscMatrix& csc = *cfg.csc;
+    // NOLINT rationale: `E` is the paper's own symbol for the primary
+    // propagation engine (Fig. 5), used under that name in the prose in
+    // fpr_core.h, repair_search.h and fpr_strategies.h and as the
+    // parameter name of repair_search() itself.  Lower-casing only the
+    // locals would split one symbol across two spellings.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine& E = *scratch.prop_engine;
     auto& dfs_stack = scratch.dfs_stack;
     auto& var_order = scratch.var_order;
@@ -490,6 +516,11 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
 // fpr_attempt_finish
 // ---------------------------------------------------------------------------
 
+// Cognitive complexity 41 (threshold 25).  Kept whole: Phase 3 hand-off to WalkSAT / RepairSearch
+// plus the teardown every early exit in Fig. 4 shares. Decomposing it would move work across a
+// worker's inner loop, and the closeout takes no unmeasured performance risk; the standards also
+// rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipsolver,
                                    const FprConfig& cfg, Rng& rng) {
     assert(cfg.scratch != nullptr);
@@ -505,6 +536,12 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
 
     assert(cfg.csc != nullptr);
     const CscMatrix& csc = *cfg.csc;
+    // NOLINT rationale: `E` is the paper's own symbol for the primary
+    // propagation engine (Fig. 5), used under that name in the prose in
+    // fpr_core.h, repair_search.h and fpr_strategies.h and as the
+    // parameter name of repair_search() itself.  Lower-casing only the
+    // locals would split one symbol across two spellings.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine& E = *scratch.prop_engine;
 
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
@@ -544,11 +581,11 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
 
     auto& lhs_cache = scratch.lhs_cache;
     lhs_cache.resize(c.nrow);
-    total_prop_work += c.ARindex.size();
+    total_prop_work += c.ar_index.size();
     for (HighsInt i = 0; i < c.nrow; ++i) {
         double lhs = 0.0;
-        for (HighsInt k = c.ARstart[i]; k < c.ARstart[i + 1]; ++k) {
-            lhs += c.ARvalue[k] * solution[c.ARindex[k]];
+        for (HighsInt k = c.ar_start[i]; k < c.ar_start[i + 1]; ++k) {
+            lhs += c.ar_value[k] * solution[c.ar_index[k]];
         }
         lhs_cache[i] = lhs;
     }

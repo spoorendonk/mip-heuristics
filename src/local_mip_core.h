@@ -18,9 +18,9 @@ namespace local_mip_detail {
 struct WorkerCtx {
     // Model refs
     const HighsLp* model;
-    const std::vector<HighsInt>& ARstart;
-    const std::vector<HighsInt>& ARindex;
-    const std::vector<double>& ARvalue;
+    const std::vector<HighsInt>& ar_start;
+    const std::vector<HighsInt>& ar_index;
+    const std::vector<double>& ar_value;
     const std::vector<double>& col_lb;
     const std::vector<double>& col_ub;
     const std::vector<double>& col_cost;

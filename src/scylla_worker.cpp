@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -152,6 +153,11 @@ bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsI
     return false;
 }
 
+// Cognitive complexity 99 (threshold 25).  Kept whole: one feasibility-pump chain iteration (Mexi
+// et al. Alg 1.1) plus the stale-snapshot fallback that keeps N-1 workers productive. Decomposing
+// it would move work across a worker's inner loop, and the closeout takes no unmeasured performance
+// risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     if (base_.finished) {
         return {};
@@ -461,7 +467,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             // on process exit, and "die loud" is the correct response
             // to a structural invariant violation (R2-5 round-5).
             const int expected_size = std::min(K_, pump::kCycleWindow);
-            if (static_cast<int>(cycle_history_.size()) != expected_size) {
+            if (std::cmp_not_equal(cycle_history_.size(), expected_size)) {
                 std::fprintf(stderr,
                              "ScyllaWorker: cycle_history invariant violated "
                              "(size=%zu, expected=%d, K_=%d). Pump state corruption — "

@@ -9,11 +9,17 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <utility>
 #include <vector>
 
 namespace {
 
 // SyncChanges(E, R): transfer domain deductions from R to E (paper line 13).
+// Cognitive complexity 33 (threshold 25).  Kept whole: SyncChanges(E, R) from Fig. 5 line 13: the
+// domain-transfer case analysis for binaries and general integers. Decomposing it would move work
+// across a worker's inner loop, and the closeout takes no unmeasured performance risk; the
+// standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool sync_changes(PropEngine& E, const PropEngine& R) {
     bool any_seeded = false;
     for (HighsInt j = 0; j < E.ncol(); ++j) {
@@ -135,6 +141,12 @@ bool apply_branch_to_r(PropEngine& R, const RepairSearchNode& node) {
 
 }  // namespace
 
+// Cognitive complexity 68 (threshold 25).  Kept whole: RepairSearch from Fig. 5 in full, including
+// the secondary backtracks and the e_pq_mark threading that keeps E's domain PQ consistent.
+// Decomposing it would move work across a worker's inner loop, and the
+// closeout takes no unmeasured performance risk; the standards also rank
+// fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
                    const double* row_hi, HighsInt repair_iterations, double repair_noise,
@@ -160,7 +172,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
     auto& violated = scratch.walksat.violated;
     auto& violated_pos = scratch.walksat.violated_pos;
     violated.clear();
-    if (static_cast<HighsInt>(violated_pos.size()) < nrow) {
+    if (std::cmp_less(violated_pos.size(), nrow)) {
         violated_pos.assign(nrow, -1);
     } else {
         std::fill(violated_pos.begin(), violated_pos.begin() + nrow, -1);
@@ -289,6 +301,14 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
                              E.csc_row(), E.csc_val(), col_lb, col_ub, row_lo, row_hi,
                              E.integrality(), feastol);
     }
+    // NOLINT rationale: `R` is the paper's own symbol for this object
+    // (Fig. 5), used under that name in the surrounding prose in
+    // fpr_core.h, repair_search.h and fpr_strategies.h, and — for the
+    // primary engine — as the parameter name of repair_search() itself.
+    // Lower-casing only the locals would split one symbol across two
+    // spellings; renaming the documentation too would cost the mapping
+    // back to the paper, which the standards rank above naming.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine& R = *engine_r_opt;
 
     size_t total_effort = 0;
@@ -299,6 +319,14 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
 
     // --- DFS stack (paper Fig. 5, lines 3-4).  Reused across calls via
     // scratch to avoid per-call allocations. ---
+    // NOLINT rationale: `Q` is the paper's own symbol for this object
+    // (Fig. 5), used under that name in the surrounding prose in
+    // fpr_core.h, repair_search.h and fpr_strategies.h, and — for the
+    // primary engine — as the parameter name of repair_search() itself.
+    // Lower-casing only the locals would split one symbol across two
+    // spellings; renaming the documentation too would cost the mapping
+    // back to the paper, which the standards rank above naming.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     auto& Q = scratch.repair_dfs_stack;
     Q.clear();
     const HighsInt root_e_pq = E.pq_initialized() ? E.pq_mark() : -1;

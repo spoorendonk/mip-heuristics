@@ -2,6 +2,7 @@
 #include "Highs.h"
 #include "prop_engine.h"
 
+#include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
@@ -17,25 +18,25 @@
 //   row 1: x1 + x2 <= 8   (row_lo=-inf, row_hi=8)
 namespace {
 struct SmallModel {
-    static constexpr HighsInt ncol = 3;
-    static constexpr HighsInt nrow = 2;
+    static constexpr HighsInt kNcol = 3;
+    static constexpr HighsInt kNrow = 2;
     std::vector<HighsInt> ar_start = {0, 2, 4};
     std::vector<HighsInt> ar_index = {0, 1, 1, 2};
     std::vector<double> ar_value = {1.0, 1.0, 1.0, 1.0};
     std::vector<double> col_lb = {0.0, 0.0, 0.0};
     std::vector<double> col_ub = {1.0, 5.0, 10.0};
-    double row_lo[2] = {2.0, -kHighsInf};
-    double row_hi[2] = {kHighsInf, 8.0};
+    std::array<double, 2> row_lo = {2.0, -kHighsInf};
+    std::array<double, 2> row_hi = {kHighsInf, 8.0};
     std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kInteger,
                                              HighsVarType::kContinuous};
     CscMatrix csc;
 
-    SmallModel() { csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value); }
+    SmallModel() { csc = build_csc(kNcol, kNrow, ar_start, ar_index, ar_value); }
 
     PropEngine make_engine(double feastol = 1e-6) {
-        return PropEngine(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc,
-                          col_lb.data(), col_ub.data(), row_lo, row_hi, integrality.data(),
-                          feastol);
+        return {kNcol,           kNrow,         ar_start.data(),    ar_index.data(),
+                ar_value.data(), csc,           col_lb.data(),      col_ub.data(),
+                row_lo.data(),   row_hi.data(), integrality.data(), feastol};
     }
 };
 }  // namespace
@@ -383,12 +384,12 @@ TEST_CASE("PropEngine: pointer-identity guard detects problem swap",
     // in repair_search.cpp.  If any pointer comparison is accidentally
     // dropped in a future refactor, this assertion fails.
     auto matches = [](const PropEngine& eng, const SmallModel& m, double feastol) {
-        return eng.ncol() == SmallModel::ncol && eng.nrow() == SmallModel::nrow &&
+        return eng.ncol() == SmallModel::kNcol && eng.nrow() == SmallModel::kNrow &&
                eng.ar_start() == m.ar_start.data() && eng.ar_index() == m.ar_index.data() &&
                eng.ar_value() == m.ar_value.data() && eng.csc_start() == m.csc.col_start.data() &&
                eng.csc_row() == m.csc.col_row.data() && eng.csc_val() == m.csc.col_val.data() &&
                eng.col_lb() == m.col_lb.data() && eng.col_ub() == m.col_ub.data() &&
-               eng.row_lo() == m.row_lo && eng.row_hi() == m.row_hi &&
+               eng.row_lo() == m.row_lo.data() && eng.row_hi() == m.row_hi.data() &&
                eng.integrality() == m.integrality.data() && eng.feastol() == feastol;
     };
 
@@ -476,8 +477,8 @@ TEST_CASE("IndexedMinHeap: erase of the root re-heapifies correctly", "[prop-eng
     heap.reserve(8);
     // Distinct vars with distinct keys (keys chosen to force non-sorted
     // insertion order so sift_up is exercised on the build-up).
-    const std::pair<double, HighsInt> entries[] = {{7.0, 0}, {3.0, 1}, {5.0, 2}, {1.0, 3},
-                                                   {6.0, 4}, {4.0, 5}, {8.0, 6}, {2.0, 7}};
+    const auto entries = std::to_array<std::pair<double, HighsInt>>(
+        {{7.0, 0}, {3.0, 1}, {5.0, 2}, {1.0, 3}, {6.0, 4}, {4.0, 5}, {8.0, 6}, {2.0, 7}});
     for (const auto& [key, var] : entries) {
         heap.insert(key, var);
     }

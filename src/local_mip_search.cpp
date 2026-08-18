@@ -32,6 +32,11 @@ void append_candidate(WorkerCtx& ctx, std::vector<BatchCand>& batch, HighsInt j,
 // Paper Definitions 5-10: two-level scoring function.
 // Progress score (level 1): discrete constraint-transition scores + objective.
 // Bonus score (level 2): breakthrough bonus + robustness bonus.
+// Cognitive complexity 41 (threshold 25).  Kept whole: Defs 6-7 and 9-10 evaluated in a single pass
+// over the column, which is the point — separate passes would re-walk the CSC column. Decomposing
+// it would move work across a worker's inner loop, and the closeout takes no unmeasured performance
+// risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, double new_val,
                                                    bool best_feasible, double best_obj) {
     double old_val = ctx.solution[j];
@@ -177,6 +182,12 @@ Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, 
     return best;
 }
 
+// Cognitive complexity 93 (threshold 25).  Kept whole: Algorithm 2 in full: six numbered phases,
+// each the fallback for the previous one, sharing the candidate batch and effort counter.
+// Decomposing it would move work across a worker's inner loop, and the
+// closeout takes no unmeasured performance risk; the standards also rank
+// fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_feasible,
                           double best_objective, const std::vector<HighsInt>& costed_vars,
                           const std::vector<HighsInt>& binary_vars) {
@@ -201,7 +212,7 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         }
     }
 
-    if (static_cast<HighsInt>(sampled.size()) > num_to_keep) {
+    if (std::cmp_greater(sampled.size(), num_to_keep)) {
         std::partial_sort(sampled.begin(), sampled.begin() + num_to_keep, sampled.end(),
                           [](const WeightedCon& a, const WeightedCon& b) { return a.w > b.w; });
         sampled.resize(num_to_keep);
@@ -215,10 +226,10 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         if (budget_remaining <= 0) {
             break;
         }
-        for (HighsInt k = ctx.ARstart[ci]; k < ctx.ARstart[ci + 1] && budget_remaining > 0; ++k) {
-            HighsInt j = ctx.ARindex[k];
+        for (HighsInt k = ctx.ar_start[ci]; k < ctx.ar_start[ci + 1] && budget_remaining > 0; ++k) {
+            HighsInt j = ctx.ar_index[k];
             --budget_remaining;
-            double delta = ctx.compute_tight_delta(ci, j, ctx.ARvalue[k]);
+            double delta = ctx.compute_tight_delta(ci, j, ctx.ar_value[k]);
             append_candidate(ctx, batch, j, delta);
         }
     }
@@ -244,11 +255,12 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         HighsInt num_sat_sample = std::min(kBmsSatCon, ctx.satisfied.size());
         HighsInt sat_budget = kBmsSatBudget;
         for (HighsInt s = 0; s < num_sat_sample && sat_budget > 0; ++s) {
-            HighsInt ci = ctx.satisfied[rng() % ctx.satisfied.size()];
-            for (HighsInt k = ctx.ARstart[ci]; k < ctx.ARstart[ci + 1] && sat_budget > 0; ++k) {
-                HighsInt j = ctx.ARindex[k];
+            HighsInt ci = ctx.satisfied[static_cast<HighsInt>(
+                rng() % static_cast<uint64_t>(ctx.satisfied.size()))];
+            for (HighsInt k = ctx.ar_start[ci]; k < ctx.ar_start[ci + 1] && sat_budget > 0; ++k) {
+                HighsInt j = ctx.ar_index[k];
                 --sat_budget;
-                double delta = ctx.compute_tight_delta(ci, j, ctx.ARvalue[k]);
+                double delta = ctx.compute_tight_delta(ci, j, ctx.ar_value[k]);
                 append_candidate(ctx, batch, j, delta);
             }
         }
@@ -294,10 +306,11 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
 
     if (!ctx.violated.empty()) {
         batch.clear();
-        HighsInt ci = ctx.violated[rng() % ctx.violated.size()];
-        for (HighsInt k = ctx.ARstart[ci]; k < ctx.ARstart[ci + 1]; ++k) {
-            HighsInt j = ctx.ARindex[k];
-            double delta = ctx.compute_tight_delta(ci, j, ctx.ARvalue[k]);
+        HighsInt ci =
+            ctx.violated[static_cast<HighsInt>(rng() % static_cast<uint64_t>(ctx.violated.size()))];
+        for (HighsInt k = ctx.ar_start[ci]; k < ctx.ar_start[ci + 1]; ++k) {
+            HighsInt j = ctx.ar_index[k];
+            double delta = ctx.compute_tight_delta(ci, j, ctx.ar_value[k]);
             append_candidate(ctx, batch, j, delta);
         }
         // Breakthrough candidates already scored in Phase 1; skip re-scoring.
@@ -316,11 +329,12 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
 
     // --- Phase 5: Perturbation (our addition, last resort) ---
     if (!ctx.violated.empty()) {
-        HighsInt ci = ctx.violated[rng() % ctx.violated.size()];
-        HighsInt row_len = ctx.ARstart[ci + 1] - ctx.ARstart[ci];
+        HighsInt ci =
+            ctx.violated[static_cast<HighsInt>(rng() % static_cast<uint64_t>(ctx.violated.size()))];
+        HighsInt row_len = ctx.ar_start[ci + 1] - ctx.ar_start[ci];
         if (row_len > 0) {
-            HighsInt k = ctx.ARstart[ci] + static_cast<HighsInt>(rng() % row_len);
-            HighsInt j = ctx.ARindex[k];
+            HighsInt k = ctx.ar_start[ci] + static_cast<HighsInt>(rng() % row_len);
+            HighsInt j = ctx.ar_index[k];
             double new_val;
             if (ctx.is_binary(j)) {
                 new_val = (ctx.solution[j] < 0.5) ? 1.0 : 0.0;

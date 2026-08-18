@@ -2,6 +2,7 @@
 #include "Highs.h"
 #include "test_common.h"
 
+#include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -19,9 +20,9 @@ TEST_CASE("Smoke test: solve small MIP", "[basic]") {
     highs.changeColIntegrality(0, HighsVarType::kInteger);
     highs.changeColIntegrality(1, HighsVarType::kInteger);
 
-    HighsInt idx[] = {0, 1};
-    double val[] = {1.0, 1.0};
-    highs.addRow(1.0, kHighsInf, 2, idx, val);
+    const auto idx = std::to_array<HighsInt>({0, 1});
+    const auto val = std::to_array<double>({1.0, 1.0});
+    highs.addRow(1.0, kHighsInf, 2, idx.data(), val.data());
 
     HighsStatus status = highs.run();
     REQUIRE(status == HighsStatus::kOk);

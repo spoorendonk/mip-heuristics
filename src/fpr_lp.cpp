@@ -16,6 +16,7 @@
 #include "worker_base.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -42,7 +43,7 @@ std::atomic<size_t> g_dispatch_count{0};
 //   Class 3a — zerolp configs         — zero-obj vertex  (zv_ptr)
 //   Class 3b — lp/cliques2 configs    — full-obj LP      (lp_ptr)
 
-constexpr NamedConfig kClass2Configs[] = {
+constexpr auto kClass2Configs = std::to_array<NamedConfig>({
     {kStratZerocore, FrameworkMode::kDfs},
     {kStratZerocore, FrameworkMode::kDive},
     {kStratZerocore, FrameworkMode::kDiveprop},
@@ -50,26 +51,26 @@ constexpr NamedConfig kClass2Configs[] = {
                                            // structure"; run unconditionally,
                                            // degrades gracefully on non-clique
                                            // models
-};
+});
 constexpr int kNumClass2 = static_cast<int>(std::size(kClass2Configs));
 
-constexpr NamedConfig kClass3aConfigs[] = {
+constexpr auto kClass3aConfigs = std::to_array<NamedConfig>({
     {kStratZerolp, FrameworkMode::kDfs},
     {kStratZerolp, FrameworkMode::kDiveprop},
-};
+});
 constexpr int kNumClass3a = static_cast<int>(std::size(kClass3aConfigs));
 
-constexpr NamedConfig kClass3bConfigs[] = {
+constexpr auto kClass3bConfigs = std::to_array<NamedConfig>({
     {kStratCliques2, FrameworkMode::kDiveprop},
     {kStratLp, FrameworkMode::kDfs},
     {kStratLp, FrameworkMode::kDive},
     {kStratLp, FrameworkMode::kDiveprop},
-};
+});
 constexpr int kNumClass3b = static_cast<int>(std::size(kClass3bConfigs));
 
 constexpr int kNumLpArms = kNumClass2 + kNumClass3a + kNumClass3b;
 
-constexpr const char* kLpArmNames[] = {
+constexpr auto kLpArmNames = std::to_array<const char*>({
     "ZerocoreDfs",       // Class 2
     "ZerocoreDive",      // Class 2
     "ZerocoreDiveprop",  // Class 2
@@ -80,7 +81,7 @@ constexpr const char* kLpArmNames[] = {
     "LpDfs",             // Class 3b
     "LpDive",            // Class 3b
     "LpDiveprop",        // Class 3b
-};
+});
 static_assert(std::size(kLpArmNames) == kNumLpArms, "kLpArmNames must match total LP arm count");
 
 // An arm binds a NamedConfig to the LP reference pointer it requires.

@@ -9,6 +9,7 @@
 
 #include "Highs.h"
 
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
@@ -119,7 +120,7 @@ inline std::vector<std::string> solve_capturing_log(const char* inst, Configure&
             return;
         }
         auto* cap = static_cast<LogCapture*>(user_data);
-        std::lock_guard<std::mutex> lock(cap->mtx);
+        std::scoped_lock lock(cap->mtx);
         cap->lines.emplace_back(message);
     };
 
@@ -130,7 +131,7 @@ inline std::vector<std::string> solve_capturing_log(const char* inst, Configure&
     REQUIRE(h.run() == HighsStatus::kOk);
     std::forward<Inspect>(inspect)(h);
 
-    std::lock_guard<std::mutex> lock(capture.mtx);
+    std::scoped_lock lock(capture.mtx);
     return capture.lines;
 }
 
@@ -179,14 +180,11 @@ inline std::string solve_capturing_source_codes(const char* inst, Configure&& co
 inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
                                       const std::string& heur) {
     const std::string tag = "[Sequential] heur=" + heur + " effort=";
-    for (const auto& line : lines) {
+    return std::ranges::any_of(lines, [&](const std::string& line) {
         const auto pos = line.find(tag);
-        if (pos != std::string::npos &&
-            std::strtoull(line.c_str() + pos + tag.size(), nullptr, 10) > 0) {
-            return true;
-        }
-    }
-    return false;
+        return pos != std::string::npos &&
+               std::strtoull(line.c_str() + pos + tag.size(), nullptr, 10) > 0;
+    });
 }
 
 // Whether any captured line carries `tag`, e.g. "[Native] " or
@@ -196,12 +194,7 @@ inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
 // a formatter that prepends nothing today, but the assertions this backs
 // are about a line being emitted at all, not about its column 0.
 inline bool log_contains(const std::vector<std::string>& lines, const std::string& tag) {
-    for (const auto& line : lines) {
-        if (line.contains(tag)) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(lines, [&](const std::string& line) { return line.contains(tag); });
 }
 
 // Restrict the solve to one heuristic (or none).  `suite` is a

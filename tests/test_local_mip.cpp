@@ -56,22 +56,22 @@ TEST_CASE("LocalMIP construction: feasibility-first sweep repairs tiny MIP",
     const HighsInt ncol = 2;
     const HighsInt nrow = 1;
     // Row-major: one row with (x0 + x1) >= 1.
-    std::vector<HighsInt> ARstart = {0, 2};
-    std::vector<HighsInt> ARindex = {0, 1};
-    std::vector<double> ARvalue = {1.0, 1.0};
+    std::vector<HighsInt> ar_start = {0, 2};
+    std::vector<HighsInt> ar_index = {0, 1};
+    std::vector<double> ar_value = {1.0, 1.0};
     std::vector<double> col_lb = {0.0, 0.0};
     std::vector<double> col_ub = {1.0, 1.0};
     std::vector<double> row_lo = {1.0};
     std::vector<double> row_hi = {kHighsInf};
     std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kInteger};
-    CscMatrix csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
+    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
 
     ConstructionInputs inputs;
     inputs.ncol = ncol;
     inputs.nrow = nrow;
-    inputs.ARstart = &ARstart;
-    inputs.ARindex = &ARindex;
-    inputs.ARvalue = &ARvalue;
+    inputs.ar_start = &ar_start;
+    inputs.ar_index = &ar_index;
+    inputs.ar_value = &ar_value;
     inputs.col_lb = &col_lb;
     inputs.col_ub = &col_ub;
     inputs.row_lo = &row_lo;
@@ -110,23 +110,23 @@ TEST_CASE("LocalMIP construction: zero-start respects bounds with lb > 0 / ub < 
 
     const HighsInt ncol = 3;
     const HighsInt nrow = 0;  // no constraints → only zero-start phase runs
-    std::vector<HighsInt> ARstart = {0};
-    std::vector<HighsInt> ARindex;
-    std::vector<double> ARvalue;
+    std::vector<HighsInt> ar_start = {0};
+    std::vector<HighsInt> ar_index;
+    std::vector<double> ar_value;
     std::vector<double> col_lb = {2.0, -5.0, -3.0};  // lb>0 / lb<0 / ub<0
     std::vector<double> col_ub = {5.0, -1.0, -1.0};
     std::vector<double> row_lo;
     std::vector<double> row_hi;
     std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kContinuous,
                                              HighsVarType::kInteger};
-    CscMatrix csc = build_csc(ncol, nrow, ARstart, ARindex, ARvalue);
+    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
 
     ConstructionInputs inputs;
     inputs.ncol = ncol;
     inputs.nrow = nrow;
-    inputs.ARstart = &ARstart;
-    inputs.ARindex = &ARindex;
-    inputs.ARvalue = &ARvalue;
+    inputs.ar_start = &ar_start;
+    inputs.ar_index = &ar_index;
+    inputs.ar_value = &ar_value;
     inputs.col_lb = &col_lb;
     inputs.col_ub = &col_ub;
     inputs.row_lo = &row_lo;
@@ -630,7 +630,7 @@ TEST_CASE("ProblemView::binary is a dispatch snapshot of isBinary (#99)",
     // that would quietly make the rest of this vacuous.
     HighsInt probe = -1;
     for (HighsInt j = 0; j < ncol; ++j) {
-        if (problem.binary[j] != 0u) {
+        if (problem.binary[j] != 0U) {
             probe = j;
             break;
         }

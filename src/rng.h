@@ -19,6 +19,7 @@
 // so it plugs into `std::uniform_int_distribution`, `std::generate_canonical`,
 // `std::gamma_distribution`, `std::shuffle`, etc. unchanged.
 
+#include <array>
 #include <cstdint>
 #include <limits>
 
@@ -76,7 +77,7 @@ private:
         return x ^ (x >> 31);
     }
 
-    std::uint64_t s_[4];
+    std::array<std::uint64_t, 4> s_;
 };
 
 // Project-wide PRNG alias.  Every heuristic uses `Rng` in preference to

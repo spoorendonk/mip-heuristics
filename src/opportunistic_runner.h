@@ -31,7 +31,7 @@
 //   - Terminator polling is done by whichever worker holds the claimable
 //     seat; at most one at a time.  See `ContinuousLoopState`.
 //   - Budget overshoot: concurrent workers can overshoot `budget.total`
-//     by up to `N * budget.attempt_cap` because each worker checks
+//     by up to `n * budget.attempt_cap` because each worker checks
 //     the atomic total before starting an attempt.  Bounded overshoot
 //     is acceptable for heuristic effort accounting.
 //
@@ -70,15 +70,15 @@ template <typename MakeState, typename RunAttempt>
 [[nodiscard]] size_t run_opportunistic_loop(const ExecutionContext& exec,
                                             const HeuristicBudget& budget, MakeState make_state,
                                             RunAttempt run_attempt) {
-    const int N = static_cast<int>(exec.num_workers);
-    if (N <= 0 || budget.total == 0) {
+    const int n = static_cast<int>(exec.num_workers);
+    if (n <= 0 || budget.total == 0) {
         return 0;
     }
 
     ContinuousLoopState loop;
 
     highs::parallel::for_each(
-        0, static_cast<HighsInt>(N),
+        0, static_cast<HighsInt>(n),
         [&](HighsInt lo, HighsInt hi) {
             for (HighsInt w = lo; w < hi; ++w) {
                 Rng rng(exec.worker_seed(static_cast<int>(w)));

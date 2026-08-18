@@ -15,6 +15,7 @@ void EffortLedger::charge_presolve(const char* name, size_t effort, bool found, 
     book(name, "presolve", effort, found, t0_s, t1_s);
 }
 
+// NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
 void EffortLedger::note_presolve_span(double t0_s, double t1_s) {
     // Patch-added field, no upstream reader: it exists so
     // `heuristics::log_solve_summary` can report the presolve chain's
@@ -47,6 +48,7 @@ void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int6
     book(name, "dive", effort, found, t0_s, t1_s);
 }
 
+// NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
 void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
                         double t1_s) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;

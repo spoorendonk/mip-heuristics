@@ -35,7 +35,7 @@ namespace {
 //
 // Behaviour-identical: the per-config seed is `base_seed + config_index`,
 // independent of the worker seed, so a worker rebuilt with a fresh seed
-// computed the same order it now looks up.  It also drops N redundant
+// computed the same order it now looks up.  It also drops n redundant
 // computations of the same `kNumFprConfigs` orders at construction.
 std::vector<std::vector<HighsInt>> precompute_config_var_orders(HighsMipSolver& mipsolver) {
     std::vector<std::vector<HighsInt>> orders(kNumFprConfigs);
@@ -105,14 +105,14 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
 
     // Pre-construct workers outside the parallel region so MakeState
     // can hand them back by index without racing on std::make_unique.
-    const int N = static_cast<int>(exec.num_workers);
+    const int n = static_cast<int>(exec.num_workers);
     std::vector<std::unique_ptr<ScyllaWorker>> workers;
     workers.reserve(exec.num_workers);
-    for (int w = 0; w < N; ++w) {
+    for (int w = 0; w < n; ++w) {
         uint32_t seed = exec.worker_seed(w);
         workers.push_back(std::make_unique<ScyllaWorker>(
             mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders, budget.total,
-            seed, w, N, &improvement_gen));
+            seed, w, n, &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -144,7 +144,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 auto new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
                     mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
-                    budget.total, new_seed, state.worker_idx, N, &improvement_gen);
+                    budget.total, new_seed, state.worker_idx, n, &improvement_gen);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has

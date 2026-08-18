@@ -72,18 +72,18 @@ double zero_start_value(double lb, double ub, bool integer) {
 
 // Compute all row LHS from `solution` and fill `lhs`.  Charges
 // `effort` proportional to the nnz (matches LHS computation cost).
-void compute_all_lhs(HighsInt nrow, const std::vector<HighsInt>& ARstart,
-                     const std::vector<HighsInt>& ARindex, const std::vector<double>& ARvalue,
+void compute_all_lhs(HighsInt nrow, const std::vector<HighsInt>& ar_start,
+                     const std::vector<HighsInt>& ar_index, const std::vector<double>& ar_value,
                      const std::vector<double>& solution, std::vector<double>& lhs,
                      size_t& effort) {
     for (HighsInt i = 0; i < nrow; ++i) {
         double l = 0.0;
-        for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-            l += ARvalue[k] * solution[ARindex[k]];
+        for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
+            l += ar_value[k] * solution[ar_index[k]];
         }
         lhs[i] = l;
     }
-    effort += ARindex.size();
+    effort += ar_index.size();
 }
 
 // For a single variable `j`, evaluate the effect of flipping it to
@@ -249,6 +249,11 @@ void weighted_order(const CscMatrix& csc, HighsInt ncol, Rng& rng,
 
 }  // namespace
 
+// Cognitive complexity 47 (threshold 25).  Kept whole: the two-phase cold start — Phase A bound
+// clamp, Phase B greedy feasibility sweep — which share the effort accounting. Decomposing it would
+// move work across a worker's inner loop, and the closeout takes no unmeasured performance risk;
+// the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, size_t max_effort,
                                   std::vector<double>& out_solution) {
     const HighsInt ncol = inputs.ncol;
@@ -264,9 +269,9 @@ size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, si
     const auto& row_lo = *inputs.row_lo;
     const auto& row_hi = *inputs.row_hi;
     const auto& integrality = *inputs.integrality;
-    const auto& ARstart = *inputs.ARstart;
-    const auto& ARindex = *inputs.ARindex;
-    const auto& ARvalue = *inputs.ARvalue;
+    const auto& ar_start = *inputs.ar_start;
+    const auto& ar_index = *inputs.ar_index;
+    const auto& ar_value = *inputs.ar_value;
     const CscMatrix& csc = *inputs.csc;
     const double feastol = inputs.feastol;
 
@@ -296,7 +301,7 @@ size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, si
     // (one full pass over nnz) against the construction cap.
     std::vector<double> lhs(nrow, 0.0);
     size_t effort = 0;
-    compute_all_lhs(nrow, ARstart, ARindex, ARvalue, out_solution, lhs, effort);
+    compute_all_lhs(nrow, ar_start, ar_index, ar_value, out_solution, lhs, effort);
 
     // --- Phase B: greedy variable sweep --------------------------------
     // Iterate variables in constraint-coverage-weighted order.  For each
@@ -434,9 +439,9 @@ size_t construct_initial_solution(HighsMipSolver& mipsolver, const CscMatrix& cs
     ConstructionInputs inputs;
     inputs.ncol = model->num_col_;
     inputs.nrow = model->num_row_;
-    inputs.ARstart = &mipdata->ARstart_;
-    inputs.ARindex = &mipdata->ARindex_;
-    inputs.ARvalue = &mipdata->ARvalue_;
+    inputs.ar_start = &mipdata->ARstart_;
+    inputs.ar_index = &mipdata->ARindex_;
+    inputs.ar_value = &mipdata->ARvalue_;
     inputs.col_lb = &model->col_lower_;
     inputs.col_ub = &model->col_upper_;
     inputs.row_lo = &model->row_lower_;

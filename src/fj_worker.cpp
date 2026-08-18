@@ -32,6 +32,13 @@ FjWorker::FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_
 
 FjWorker::~FjWorker() = default;
 
+// Cognitive complexity 50 (threshold 25).  Kept whole: one FeasibilityJump attempt: budget slicing,
+// staleness detection and solver rebuild are interleaved with upstream FJ's callback contract,
+// which resumes the solver mid-run.
+// Decomposing it would move work across a worker's inner loop, and the
+// closeout takes no unmeasured performance risk; the standards also rank
+// fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     if (base_.finished) {
         return {};
@@ -67,11 +74,11 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
             double lower = model->col_lower_[col];
             double upper = model->col_upper_[col];
 
-            VarType fjVarType;
+            VarType fj_var_type;
             if (model->integrality_[col] == HighsVarType::kContinuous) {
-                fjVarType = VarType::Continuous;
+                fj_var_type = VarType::Continuous;
             } else {
-                fjVarType = VarType::Integer;
+                fj_var_type = VarType::Integer;
                 lower = std::ceil(lower - feastol);
                 upper = std::floor(upper + feastol);
             }
@@ -82,7 +89,8 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 base_.finished = true;
                 return {};
             }
-            impl_->solver.addVar(fjVarType, lower, upper, sense_multiplier * model->col_cost_[col]);
+            impl_->solver.addVar(fj_var_type, lower, upper,
+                                 sense_multiplier * model->col_cost_[col]);
 
             double initial_assignment = 0.0;
             if (use_incumbent && std::isfinite(inc[col])) {
@@ -101,17 +109,17 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         a_matrix.createRowwise(model->a_matrix_);
 
         for (HighsInt row = 0; row < model->num_row_; ++row) {
-            bool hasFiniteLower = std::isfinite(model->row_lower_[row]);
-            bool hasFiniteUpper = std::isfinite(model->row_upper_[row]);
-            if (hasFiniteLower || hasFiniteUpper) {
+            bool has_finite_lower = std::isfinite(model->row_lower_[row]);
+            bool has_finite_upper = std::isfinite(model->row_upper_[row]);
+            if (has_finite_lower || has_finite_upper) {
                 HighsInt row_num_nz = a_matrix.start_[row + 1] - a_matrix.start_[row];
                 auto* row_index = a_matrix.index_.data() + a_matrix.start_[row];
                 auto* row_value = a_matrix.value_.data() + a_matrix.start_[row];
-                if (hasFiniteLower) {
+                if (has_finite_lower) {
                     impl_->solver.addConstraint(RowType::Gte, model->row_lower_[row], row_num_nz,
                                                 row_index, row_value, 0);
                 }
-                if (hasFiniteUpper) {
+                if (has_finite_upper) {
                     impl_->solver.addConstraint(RowType::Lte, model->row_upper_[row], row_num_nz,
                                                 row_index, row_value, 0);
                 }

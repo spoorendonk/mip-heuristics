@@ -7,6 +7,8 @@
 #include "util/HighsInt.h"
 #include "worker_base.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -45,9 +47,7 @@ inline constexpr size_t kNnzPerExtraStaleRound = 83'000;
 inline int compute_max_stale_rounds(size_t nnz_lp) {
     const int extra = static_cast<int>(nnz_lp / kNnzPerExtraStaleRound);
     const int cap = kMaxStaleRoundsDefault + extra;
-    return cap < kMaxStaleRoundsMin   ? kMaxStaleRoundsMin
-           : cap > kMaxStaleRoundsMax ? kMaxStaleRoundsMax
-                                      : cap;
+    return std::clamp(cap, kMaxStaleRoundsMin, kMaxStaleRoundsMax);
 }
 
 // Compatibility alias for callers that don't have `nnz_lp_` in scope.
@@ -58,12 +58,12 @@ inline constexpr int kMaxStaleRounds = kMaxStaleRoundsDefault;
 // strategy is covered once when N >= kNumFprConfigs).  Additional workers
 // receive a seed-driven pseudo-random choice so redundant workers do not
 // cluster on the same strategy — still deterministic per (seed, worker_idx).
-inline constexpr NamedConfig kFprConfigs[] = {
+inline constexpr auto kFprConfigs = std::to_array<NamedConfig>({
     {kStratBadobjcl, FrameworkMode::kDfs},
     {kStratLocks2, FrameworkMode::kDfs},
     {kStratLocks2, FrameworkMode::kDive},
     {kStratLocks, FrameworkMode::kDfsrep},
-};
+});
 inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 
 // One worker of the Scylla feasibility-pump heuristic (Mexi et al.
@@ -166,10 +166,11 @@ private:
     uint64_t fresh_solves_ = 0;
     uint64_t stale_rounds_ = 0;
 
-    // NOLINTNEXTLINE(modernize-use-default-member-init): the initialiser
+    // The initialiser
     // `pump::kEpsilonInit` lives in pump_common.h, which this header
     // deliberately does not include (cpp.md: minimise includes in
     // headers).  It is set in the constructor's init list instead.
+    // NOLINTNEXTLINE(modernize-use-default-member-init)
     double epsilon_;
     double alpha_K_ = 1.0;
     int K_ = 0;

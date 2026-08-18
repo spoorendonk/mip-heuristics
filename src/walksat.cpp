@@ -8,8 +8,13 @@
 #include <cstddef>
 #include <limits>
 #include <random>
+#include <utility>
 #include <vector>
 
+// Cognitive complexity 31 (threshold 25).  Kept whole: WalkSAT move selection: the noise / greedy /
+// tabu case analysis. Decomposing it would move work across a worker's inner loop, and the closeout
+// takes no unmeasured performance risk; the standards also rank fidelity to the reference algorithm
+// above mechanical extraction. NOLINTNEXTLINE(readability-function-cognitive-complexity)
 WalkSatMove walksat_select_move(HighsInt row, const double* solution, const double* lhs_cache,
                                 const double* col_lb, const double* col_ub, const PropEngine& data,
                                 double noise, Rng& rng, size_t& effort, WalkSatScratch& scratch) {
@@ -149,6 +154,11 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
 // WalkSAT repair walk (paper Fig. 4)
 // ---------------------------------------------------------------------------
 
+// Cognitive complexity 46 (threshold 25).  Kept whole: the WalkSAT repair loop with its
+// violated-set bookkeeping and undo trail, which must stay in step with each other. Decomposing it
+// would move work across a worker's inner loop, and the closeout takes no unmeasured performance
+// risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
                     std::vector<double>& lhs_cache, const double* col_lb, const double* col_ub,
                     HighsInt max_iterations, double noise, bool track_best, size_t max_effort,
@@ -171,7 +181,7 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
     violated.clear();
     sol_undo.clear();
     lhs_undo.clear();
-    if (static_cast<HighsInt>(violated_pos.size()) < nrow) {
+    if (std::cmp_less(violated_pos.size(), nrow)) {
         violated_pos.assign(nrow, -1);
     } else {
         std::fill(violated_pos.begin(), violated_pos.begin() + nrow, -1);

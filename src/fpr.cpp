@@ -10,6 +10,7 @@
 #include "worker_base.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -122,7 +123,7 @@ namespace {
 // — including clique-based ones like kStratBadobjcl whose compute_var_order
 // calls HighsCliqueTable::cliquePartition — can be used inside a parallel
 // region without racing on cliquePartition's internal state.
-constexpr FprStrategyConfig kFprStrategies[] = {
+constexpr auto kFprStrategies = std::to_array<FprStrategyConfig>({
     // Strategies used by the paper's curated initial configs.
     kStratBadobjcl,  // 0: type+cliques / badobj
     kStratLocks2,    // 1: locks / loosedyn
@@ -133,7 +134,7 @@ constexpr FprStrategyConfig kFprStrategies[] = {
     kStratRandom2,  // 5: random / random
     kStratBadobj,   // 6: type / badobj
     kStratGoodobj,  // 7: type / goodobj
-};
+});
 constexpr int kNumFprStrategies = static_cast<int>(std::size(kFprStrategies));
 
 // Paper Section 6.3, Class 1 — LP-free initial configs.  Each entry gives
@@ -143,7 +144,7 @@ struct InitialFprConfig {
     int strat_idx;
     FrameworkMode mode;
 };
-constexpr InitialFprConfig kInitialFprConfigs[] = {
+constexpr auto kInitialFprConfigs = std::to_array<InitialFprConfig>({
     {0, FrameworkMode::kDfs},           // kStratBadobjcl, dfs
     {1, FrameworkMode::kDfs},           // kStratLocks2, dfs
     {1, FrameworkMode::kDive},          // kStratLocks2, dive
@@ -152,7 +153,7 @@ constexpr InitialFprConfig kInitialFprConfigs[] = {
     {3, FrameworkMode::kDiveprop},      // kStratRandom, diveprop
     {2, FrameworkMode::kRepairSearch},  // kStratLocks, repairsearch
     {4, FrameworkMode::kDfs},           // kStratDomsize, dfs
-};
+});
 constexpr int kNumInitialFprConfigs = static_cast<int>(std::size(kInitialFprConfigs));
 
 // Compute variable orders for every strategy in kFprStrategies.  MUST be
@@ -225,6 +226,11 @@ void FprWorker::select_config_for_current_attempt() {
     mode_ = cfg.mode;
 }
 
+// Cognitive complexity 26 (threshold 25).  Kept whole: the worker's multi-attempt loop:
+// pause/resume of an in-flight DFS and rotation through kInitialFprConfigs. Decomposing it would
+// move work across a worker's inner loop, and the closeout takes no unmeasured performance risk;
+// the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     AttemptResult attempt{};
 
@@ -290,7 +296,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
             // out by `fpr::run` before workers are constructed,
             // every begin runs at least one `E.propagate(-1)` round (>0 ops
             // on any non-empty model), and finish always adds
-            // `c.ARindex.size() > 0` for the LHS sum.  Keep the guard so a
+            // `c.ar_index.size() > 0` for the LHS sum.  Keep the guard so a
             // future change that relaxes any of the above (e.g., a Phase 1
             // shortcut that skips initial propagate) cannot silently turn
             // this loop into an infinite attempt-cycler.

@@ -58,11 +58,11 @@ std::string gt2_codes_for(const char* suite) {
 }  // namespace
 
 TEST_CASE("attribution: FPR-only run is credited with A", "[attribution]") {
-    REQUIRE(gt2_codes_for("fpr").find('A') != std::string::npos);
+    REQUIRE(gt2_codes_for("fpr").contains('A'));
 }
 
 TEST_CASE("attribution: LocalMIP-only run is credited with M", "[attribution]") {
-    REQUIRE(gt2_codes_for("local_mip").find('M') != std::string::npos);
+    REQUIRE(gt2_codes_for("local_mip").contains('M'));
 }
 
 // Scylla is the one heuristic whose code is not machine-independent.
@@ -82,12 +82,11 @@ TEST_CASE("attribution: LocalMIP-only run is credited with M", "[attribution]") 
 // filtered out of the chain.
 TEST_CASE("attribution: Scylla-only run is credited with G", "[attribution]") {
     const std::vector<std::string> lines = gt2_log_for("scylla");
-    REQUIRE((source_codes(lines).find('G') != std::string::npos ||
-             heuristic_reported_effort(lines, "scylla")));
+    REQUIRE((source_codes(lines).contains('G') || heuristic_reported_effort(lines, "scylla")));
 }
 
 TEST_CASE("attribution: FJ-only run is credited with J", "[attribution]") {
-    REQUIRE(gt2_codes_for("fj").find('J') != std::string::npos);
+    REQUIRE(gt2_codes_for("fj").contains('J'));
 }
 
 // The negative direction: enabling one heuristic must not let another one
@@ -99,9 +98,9 @@ TEST_CASE("attribution: FJ-only run is credited with J", "[attribution]") {
 // heuristic too.
 TEST_CASE("attribution: FJ-only run emits no other custom-heuristic solution", "[attribution]") {
     const std::string codes = gt2_codes_for("fj");
-    REQUIRE(codes.find('J') != std::string::npos);
-    REQUIRE(codes.find('A') == std::string::npos);  // FPR
-    REQUIRE(codes.find('D') == std::string::npos);  // fpr_lp
-    REQUIRE(codes.find('M') == std::string::npos);  // LocalMIP
-    REQUIRE(codes.find('G') == std::string::npos);  // Scylla
+    REQUIRE(codes.contains('J'));
+    REQUIRE(!codes.contains('A'));  // FPR
+    REQUIRE(!codes.contains('D'));  // fpr_lp
+    REQUIRE(!codes.contains('M'));  // LocalMIP
+    REQUIRE(!codes.contains('G'));  // Scylla
 }

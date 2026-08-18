@@ -101,8 +101,8 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     set_option_or_die(highs_, "pdlp_optimality_tolerance", epsilon);
     set_option_or_die(highs_, "time_limit", time_limit);
 
-    if (warm_start_valid && static_cast<HighsInt>(warm_start_col_value.size()) == ncol_ &&
-        static_cast<HighsInt>(warm_start_row_dual.size()) == nrow_) {
+    if (warm_start_valid && std::cmp_equal(warm_start_col_value.size(), ncol_) &&
+        std::cmp_equal(warm_start_row_dual.size(), nrow_)) {
         HighsSolution warm;
         warm.col_value = warm_start_col_value;
         warm.row_dual = warm_start_row_dual;

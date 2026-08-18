@@ -208,6 +208,11 @@ std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
 // --- cliques2: dynamic clique cover using LP solution (paper Fig. 3) ---
 // For each clique, pick the most positive literal w.r.t. LP solution,
 // then remaining uncovered binaries.
+// Cognitive complexity 29 (threshold 25).  Kept whole: the cliques2 variable order (Table 3):
+// clique partition, per-clique ranking, and the non-clique tail. Decomposing it would move work
+// across a worker's inner loop, and the closeout takes no unmeasured performance risk; the
+// standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver, const double* lp_ref) {
     auto* mipdata = mipsolver.mipdata_.get();
     auto b = bucket_by_type(mipsolver);

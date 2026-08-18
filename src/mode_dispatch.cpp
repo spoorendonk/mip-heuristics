@@ -12,6 +12,7 @@
 #include "scylla.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <string>
 
@@ -196,13 +197,13 @@ struct HeuristicConfig {
     size_t (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
 };
 
-constexpr HeuristicConfig kChain[] = {
+constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, 0.0, true, &HeuristicFlags::fj, &fj::run},
     {"fpr", kSolutionSourceFPR, kWeightFpr, false, &HeuristicFlags::fpr, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, kWeightLocalMip, false, &HeuristicFlags::local_mip,
      &local_mip::run},
     {"scylla", kSolutionSourceScylla, kWeightScylla, false, &HeuristicFlags::scylla, &scylla::run},
-};
+});
 
 // Weighted effort allocation: each heuristic runs in turn with its
 // proportional share of the budget and the full thread pool.

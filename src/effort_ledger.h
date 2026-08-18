@@ -75,12 +75,13 @@ public:
     // asks "how much wall time did the chain cost the solver before the
     // root node", so it takes the full span.  Keeping the two quantities
     // separate is what lets the calibration basis stay untouched.
-    // NOLINTNEXTLINE(readability-make-member-function-const): the ledger
+    // The ledger
     // holds `HighsMipSolver&`, so every method here technically leaves the
     // ledger object untouched — but this is the one place in src/ that
     // writes the solver's own counters.  `const` would advertise the
     // opposite and invite a `const EffortLedger&` caller to assume the
     // call is free of side effects.
+    // NOLINTNEXTLINE(readability-make-member-function-const)
     void note_presolve_span(double t0_s, double t1_s);
 
     // A B&B-dive heuristic (fpr_lp) did the same, and additionally owes
@@ -93,12 +94,13 @@ public:
                      size_t nnz, double t0_s, double t1_s);
 
 private:
-    // NOLINTNEXTLINE(readability-make-member-function-const): the ledger
+    // The ledger
     // holds `HighsMipSolver&`, so every method here technically leaves the
     // ledger object untouched — but this is the one place in src/ that
     // writes the solver's own counters.  `const` would advertise the
     // opposite and invite a `const EffortLedger&` caller to assume the
     // call is free of side effects.
+    // NOLINTNEXTLINE(readability-make-member-function-const)
     void book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
               double t1_s);
 

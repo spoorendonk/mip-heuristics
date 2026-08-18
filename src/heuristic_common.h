@@ -36,14 +36,14 @@ struct CscMatrix {
     std::vector<double> col_val;
 };
 
-inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow, const std::vector<HighsInt>& ARstart,
-                           const std::vector<HighsInt>& ARindex,
-                           const std::vector<double>& ARvalue) {
-    const auto nnz = static_cast<HighsInt>(ARindex.size());
+inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow, const std::vector<HighsInt>& ar_start,
+                           const std::vector<HighsInt>& ar_index,
+                           const std::vector<double>& ar_value) {
+    const auto nnz = static_cast<HighsInt>(ar_index.size());
     CscMatrix csc;
     csc.col_start.assign(ncol + 1, 0);
     for (HighsInt k = 0; k < nnz; ++k) {
-        csc.col_start[ARindex[k] + 1]++;
+        csc.col_start[ar_index[k] + 1]++;
     }
     for (HighsInt j = 0; j < ncol; ++j) {
         csc.col_start[j + 1] += csc.col_start[j];
@@ -53,10 +53,10 @@ inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow, const std::vector<Highs
     {
         std::vector<HighsInt> pos(csc.col_start);
         for (HighsInt i = 0; i < nrow; ++i) {
-            for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-                HighsInt j = ARindex[k];
+            for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
+                HighsInt j = ar_index[k];
                 csc.col_row[pos[j]] = i;
-                csc.col_val[pos[j]] = ARvalue[k];
+                csc.col_val[pos[j]] = ar_value[k];
                 pos[j]++;
             }
         }

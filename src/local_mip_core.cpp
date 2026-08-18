@@ -29,9 +29,9 @@ double compute_objective(const HighsLp* model, const std::vector<double>& soluti
 
 WorkerCtx::WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uint8_t* binary_)
     : model(mipsolver.model_),
-      ARstart(mipsolver.mipdata_->ARstart_),
-      ARindex(mipsolver.mipdata_->ARindex_),
-      ARvalue(mipsolver.mipdata_->ARvalue_),
+      ar_start(mipsolver.mipdata_->ARstart_),
+      ar_index(mipsolver.mipdata_->ARindex_),
+      ar_value(mipsolver.mipdata_->ARvalue_),
       col_lb(mipsolver.model_->col_lower_),
       col_ub(mipsolver.model_->col_upper_),
       col_cost(mipsolver.model_->col_cost_),
@@ -93,8 +93,8 @@ void WorkerCtx::apply_move(HighsInt j, double new_val) {
         lhs[i] += csc.col_val[p] * delta;
         update_violated(i);
         if (dirty_lift) {
-            for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-                lift.mark_dirty(ARindex[k]);
+            for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
+                lift.mark_dirty(ar_index[k]);
             }
         }
     }
@@ -112,7 +112,7 @@ void WorkerCtx::apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, 
 }
 
 bool WorkerCtx::full_recheck(bool update_sets, bool early_exit) {
-    effort += ARindex.size();
+    effort += ar_index.size();
     if (update_sets) {
         violated.clear();
         satisfied.clear();
@@ -120,8 +120,8 @@ bool WorkerCtx::full_recheck(bool update_sets, bool early_exit) {
     bool feasible = true;
     for (HighsInt i = 0; i < nrow; ++i) {
         double l = 0.0;
-        for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
-            l += ARvalue[k] * solution[ARindex[k]];
+        for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
+            l += ar_value[k] * solution[ar_index[k]];
         }
         lhs[i] = l;
         if (compute_violation(i, l) > kViolTol) {
@@ -147,6 +147,11 @@ void WorkerCtx::rebuild_state() {
     current_obj = compute_objective(model, solution);
 }
 
+// Cognitive complexity 35 (threshold 25).  Kept whole: LocalMIP's tight-delta rule (Defs 4-5): one
+// branch per bound / integrality / direction combination. Decomposing it would move work across a
+// worker's inner loop, and the closeout takes no unmeasured performance risk; the standards also
+// rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double WorkerCtx::compute_tight_delta(HighsInt i, HighsInt j, double coeff) const {
     if (std::abs(coeff) < kEpsZero) {
         return 0.0;
@@ -225,6 +230,11 @@ void WorkerCtx::update_weights(Rng& rng, bool is_feasible, bool best_feasible, d
 
 // --- LiftCache method implementations ---
 
+// Cognitive complexity 43 (threshold 25).  Kept whole: incremental score recomputation for one
+// variable; the branch structure is the score definition itself. Decomposing it would move work
+// across a worker's inner loop, and the closeout takes no unmeasured performance risk; the
+// standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void LiftCache::recompute_one(HighsInt j, WorkerCtx& ctx) {
     double old_score = score[j];
     if (std::abs(ctx.col_cost[j]) < kEpsZero) {

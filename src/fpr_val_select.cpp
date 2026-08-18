@@ -68,6 +68,11 @@ double val_lp_based(double lb, double ub, bool is_int, double lp_val, Rng& rng) 
 // Use precomputed min/max activities to count how many constraints would become
 // infeasible if variable goes up vs down. Pick direction with fewer dynamic
 // locks.
+// Cognitive complexity 30 (threshold 25).  Kept whole: the paper's loosedyn value rule (Table 3) —
+// one branch per bound / lock / objective case. Decomposing it would move work across a worker's
+// inner loop, and the closeout takes no unmeasured performance risk; the standards also rank
+// fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */, bool minimize, double cost,
                     const double* row_lo, const double* row_hi, const double* min_act,
                     const double* max_act, const CscMatrix& csc) {

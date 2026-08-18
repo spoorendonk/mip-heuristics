@@ -138,7 +138,8 @@ inline void perturb(std::vector<double>& x, const HighsLp& model, Rng& rng) {
             continue;
         }
         int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
-        x[j] = lo + std::fmod(current - lo + shift, irange + 1.0);
+        x[j] = lo + std::fmod(current - lo + static_cast<double>(shift),
+                              static_cast<double>(irange) + 1.0);
         // Final clamp to the original bounds — mirrors the closing
         // step of `local_mip_detail::perturb_solution` so the two
         // patterns stay structurally identical.  Defensive against any

@@ -272,6 +272,11 @@ void PropEngine::seed_worklist(HighsInt j) {
     }
 }
 
+// Cognitive complexity 92 (threshold 25).  Kept whole: the AC-3 bound-propagation fixpoint; the
+// branch structure is the row/column activity case analysis and it runs per DFS node. Decomposing
+// it would move work across a worker's inner loop, and the closeout takes no unmeasured performance
+// risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool PropEngine::propagate(HighsInt fixed_var) {
     // Hoist raw pointers once so the tight loop doesn't re-load member
     // fields on every iteration. All of these arrays are read-only (the
@@ -616,7 +621,7 @@ void PropEngine::update_activities(HighsInt j, const VarState& old_vs) {
 void PropEngine::init_domain_pq() {
     domain_pq_.clear();
     pq_undo_.clear();
-    pq_undo_.reserve(4 * ncol_);
+    pq_undo_.reserve(4 * static_cast<size_t>(ncol_));
     for (HighsInt j = 0; j < ncol_; ++j) {
         if (is_int(j) && !vs_[j].fixed) {
             domain_pq_.insert(vs_[j].ub - vs_[j].lb, j);

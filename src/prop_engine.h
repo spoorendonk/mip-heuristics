@@ -36,7 +36,7 @@ public:
     [[nodiscard]] bool empty() const { return heap_.empty(); }
     [[nodiscard]] std::size_t size() const { return heap_.size(); }
     [[nodiscard]] bool contains(HighsInt var) const {
-        return var >= 0 && var < static_cast<HighsInt>(pos_.size()) && pos_[var] != kNotPresent;
+        return var >= 0 && static_cast<std::size_t>(var) < pos_.size() && pos_[var] != kNotPresent;
     }
 
     // Precondition: !empty().

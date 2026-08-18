@@ -68,9 +68,9 @@ inline size_t construction_effort_cap(size_t max_effort) {
 struct ConstructionInputs {
     HighsInt ncol;
     HighsInt nrow;
-    const std::vector<HighsInt>* ARstart;
-    const std::vector<HighsInt>* ARindex;
-    const std::vector<double>* ARvalue;
+    const std::vector<HighsInt>* ar_start;
+    const std::vector<HighsInt>* ar_index;
+    const std::vector<double>* ar_value;
     const std::vector<double>* col_lb;
     const std::vector<double>* col_ub;
     const std::vector<double>* row_lo;

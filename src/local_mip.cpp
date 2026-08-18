@@ -80,7 +80,7 @@ bool is_solution_feasible(const HighsMipSolver& mipsolver, const std::vector<dou
     const HighsInt nrow = model->num_row_;
     const double feastol = mipdata->feastol;
     const double inttol = mipdata->epsilon;
-    if (static_cast<HighsInt>(solution.size()) != ncol) {
+    if (std::cmp_not_equal(solution.size(), ncol)) {
         return false;
     }
     // Integer feasibility.
@@ -96,7 +96,7 @@ bool is_solution_feasible(const HighsMipSolver& mipsolver, const std::vector<dou
             return false;
         }
     }
-    // Row feasibility — walk ARstart/ARindex/ARvalue once.
+    // Row feasibility — walk ar_start/ar_index/ar_value once.
     for (HighsInt i = 0; i < nrow; ++i) {
         double lhs = 0.0;
         for (HighsInt k = mipdata->ARstart_[i]; k < mipdata->ARstart_[i + 1]; ++k) {
