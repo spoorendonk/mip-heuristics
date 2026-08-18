@@ -7,7 +7,7 @@ authors:
     given-names: Simon
     orcid: "https://orcid.org/0009-0007-4304-6956"
     email: simon@flowty.ai
-abstract: "Open-source primal heuristics suite for HiGHS: FPR, LocalMIP, Scylla and FeasibilityJump, with continuous (opportunistic) parallel workers. Validated on the PLATO mipfeas benchmark."
+abstract: "A unified open-source reference implementation and empirical evaluation of four modern primal heuristics for mixed-integer programming — FeasibilityJump, Fix-Propagate-Repair, LocalMIP and Scylla — integrated into the HiGHS solver behind a common interface with shared effort budgeting and solution submission, so they can be measured under identical conditions. Includes an LP-guided FPR variant dispatched during the branch-and-bound dive, continuous (opportunistic) parallel workers, and an end-to-end evaluation on the PLATO mipfeas benchmark. The combined configuration yields only a small aggregate improvement over vanilla HiGHS: the contribution is the open implementations, the common integration infrastructure and the comparable measurements, not a faster solver configuration."
 version: "0.1.0"
 repository-code: "https://github.com/spoorendonk/mip-heuristics"
 url: "https://github.com/spoorendonk/mip-heuristics"

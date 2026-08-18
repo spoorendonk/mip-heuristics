@@ -1,7 +1,7 @@
 {
   "upload_type": "software",
   "title": "mip-heuristics: a primal heuristics suite for HiGHS",
-  "description": "Open-source primal heuristics suite integrated into HiGHS v1.15.1 via a patched build. Implements FPR (Fix, Propagate, Repair), LocalMIP, Scylla (PDLP-based feasibility pump), FeasibilityJump and LP-guided FPR. Features continuous (opportunistic) parallel workers. Validated on the PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s).",
+  "description": "A unified open-source reference implementation and empirical evaluation of four modern primal heuristics for mixed-integer programming, all integrated into HiGHS v1.15.1 via a patched build: FeasibilityJump, FPR (Fix, Propagate, Repair), LocalMIP and Scylla (a PDLP-based feasibility pump), plus an LP-guided FPR variant dispatched during the branch-and-bound dive. The four share a common integration interface, effort budgeting and solution-submission infrastructure, and run on continuous (opportunistic) parallel workers, so they can be compared under identical conditions. Evaluated end to end on the PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s). The combined configuration gives only a small aggregate improvement over vanilla HiGHS; the contribution is the open implementations, the shared infrastructure and the comparable measurements rather than a faster solver configuration.",
   "license": "mit",
   "creators": [
     {
@@ -19,6 +19,10 @@
     "local search",
     "feasibility pump",
     "PDLP",
+    "branch and bound",
+    "reference implementation",
+    "reproducible research",
+    "MIPLIB",
     "C++23"
   ],
   "related_identifiers": [
@@ -39,11 +43,6 @@
     },
     {
       "identifier": "10.1007/s12532-023-00234-8",
-      "relation": "references",
-      "scheme": "doi"
-    },
-    {
-      "identifier": "10.1561/2200000070",
       "relation": "references",
       "scheme": "doi"
     }
