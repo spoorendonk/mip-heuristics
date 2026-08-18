@@ -1,1 +1,36 @@
-.devkit/config/.clang-tidy
+# Check contract for the clang-tidy gate (see cmake/Lint.cmake).
+#
+# Content is devkit's shared C++ check set (devkit `config/.clang-tidy`),
+# checked in here as a regular file rather than the symlink `setup.sh`
+# installs — see the header of `.clang-format` for why the symlink cannot
+# carry a gate.  Project-specific narrowings are marked NARROWED below,
+# each with the reason it does not apply to this codebase.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers
+
+CheckOptions:
+  - key: readability-function-cognitive-complexity.Threshold
+    value: 25
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*'
+FormatStyle: file

@@ -1,1 +1,39 @@
-.devkit/config/.clang-format
+# Style contract for the clang-format gate (see cmake/Lint.cmake).
+#
+# Content is devkit's shared C++ style (devkit `config/.clang-format`),
+# checked in here as a regular file rather than the symlink `setup.sh`
+# installs.  The symlink cannot carry a gate: the pinned `.devkit`
+# submodule commit does not contain `config/.clang-format`, so in any
+# fresh checkout — CI included, which does `submodules: true` — the
+# symlink dangles and clang-format silently falls back to LLVM style.
+# devkit's `update.sh` deliberately leaves regular files alone ("the
+# user's own customizations"), so this override survives an update.
+#
+# Keep in sync with devkit by hand if the shared style changes.
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: Latest
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+NamespaceIndentation: None
+PointerAlignment: Left
+SortIncludes: CaseInsensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Project headers
+  - Regex: '".*"'
+    Priority: 1
+  # Third-party headers
+  - Regex: '<[a-z].*>'
+    Priority: 2
+  # Standard library
+  - Regex: '<.*>'
+    Priority: 3
