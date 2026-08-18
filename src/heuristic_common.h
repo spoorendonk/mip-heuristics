@@ -39,7 +39,7 @@ struct CscMatrix {
 inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow, const std::vector<HighsInt>& ARstart,
                            const std::vector<HighsInt>& ARindex,
                            const std::vector<double>& ARvalue) {
-    const HighsInt nnz = static_cast<HighsInt>(ARindex.size());
+    const auto nnz = static_cast<HighsInt>(ARindex.size());
     CscMatrix csc;
     csc.col_start.assign(ncol + 1, 0);
     for (HighsInt k = 0; k < nnz; ++k) {

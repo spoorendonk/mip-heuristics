@@ -12,7 +12,7 @@ IncumbentSink::IncumbentSink(HighsMipSolver& mipsolver, int source)
 
     auto* mipdata = mipsolver.mipdata_.get();
     pool_.set_on_accept([this, mipdata](const std::vector<double>& sol, int src) {
-        std::lock_guard<std::mutex> guard(highs_mtx_);
+        std::scoped_lock guard(highs_mtx_);
         mipdata->trySolution(sol, src);
     });
 }

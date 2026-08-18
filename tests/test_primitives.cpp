@@ -181,7 +181,7 @@ TEST_CASE("SolutionPool: on_accept fires for accepted solutions only", "[pool]")
 
     std::vector<std::pair<std::vector<double>, int>> fired;
     pool.set_on_accept(
-        [&](const std::vector<double>& sol, int src) { fired.push_back({sol, src}); });
+        [&](const std::vector<double>& sol, int src) { fired.emplace_back(sol, src); });
 
     // Three insertions into an empty pool — all accepted.
     REQUIRE(pool.try_add(10.0, {10.0}, kSolutionSourceFPR));
@@ -214,7 +214,7 @@ TEST_CASE("SolutionPool: on_accept callback under concurrent try_add", "[pool][t
     pool.set_on_accept([&](const std::vector<double>& sol, int /*src*/) {
         // Acquiring cb_mtx while the pool spin-lock is NOT held proves
         // no lock inversion: callback fires outside the pool lock.
-        std::lock_guard<std::mutex> guard(cb_mtx);
+        std::scoped_lock guard(cb_mtx);
         REQUIRE_FALSE(sol.empty());
         cb_count.fetch_add(1, std::memory_order_relaxed);
     });
@@ -225,7 +225,7 @@ TEST_CASE("SolutionPool: on_accept callback under concurrent try_add", "[pool][t
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < kOpsPerThread; ++i) {
-                double obj = static_cast<double>((t * kOpsPerThread) + i);
+                auto obj = static_cast<double>((t * kOpsPerThread) + i);
                 if (pool.try_add(obj, {obj}, kSolutionSourceFPR)) {
                     accepted_count.fetch_add(1, std::memory_order_relaxed);
                 }

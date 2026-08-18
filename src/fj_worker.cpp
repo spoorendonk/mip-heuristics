@@ -41,7 +41,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     auto* mipdata = mipsolver_.mipdata_.get();
     const double feastol = mipsolver_.options_mip_->mip_feasibility_tolerance;
     const double epsilon = mipdata->epsilon;
-    const double sense_multiplier = static_cast<double>(model->sense_);
+    const auto sense_multiplier = static_cast<double>(model->sense_);
 
     // First attempt: build the solver and initial assignments.
     if (!initialized_) {

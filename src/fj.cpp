@@ -20,7 +20,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     }
 
     HighsMipSolver& mipsolver = exec.mipsolver;
-    const uint32_t random_seed_opp = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
+    const auto random_seed_opp = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
 
     struct FjState {
         std::unique_ptr<FjWorker> worker;

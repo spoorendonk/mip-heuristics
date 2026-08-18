@@ -3,6 +3,7 @@
 #include "heuristic_common.h"
 #include "util/HighsInt.h"
 
+#include <algorithm>
 #include <limits>
 #include <vector>
 
@@ -156,9 +157,9 @@ struct LiftCache {
     void mark_all_dirty() {
         all_dirty = true;
         dirty_list.clear();
-        std::fill(dirty.begin(), dirty.end(), true);
+        std::ranges::fill(dirty, true);
         positive_list.clear();
-        std::fill(in_positive.begin(), in_positive.end(), false);
+        std::ranges::fill(in_positive, false);
     }
 
     void recompute_one(HighsInt j, WorkerCtx& ctx);

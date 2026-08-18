@@ -204,6 +204,11 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             lift_best.score = 0.0;
             {
                 HighsInt write = 0;
+                // NOLINTNEXTLINE(modernize-loop-convert): this is a compaction
+                // over `positive_list`, not a traversal — the body writes back
+                // into the same vector at `write <= read`.  A range-for hides
+                // that the container is being rewritten underneath the loop,
+                // and this is LocalMIP's per-restart inner loop.
                 for (HighsInt read = 0;
                      read < static_cast<HighsInt>(ctx_.lift.positive_list.size()); ++read) {
                     HighsInt j = ctx_.lift.positive_list[read];
@@ -332,8 +337,8 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             }
 
             ctx_.rebuild_state();
-            std::fill(ctx_.tabu_inc_until.begin(), ctx_.tabu_inc_until.end(), 0);
-            std::fill(ctx_.tabu_dec_until.begin(), ctx_.tabu_dec_until.end(), 0);
+            std::ranges::fill(ctx_.tabu_inc_until, 0);
+            std::ranges::fill(ctx_.tabu_dec_until, 0);
         }
 
         ++step_;

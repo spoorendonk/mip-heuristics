@@ -141,7 +141,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 // doesn't lose parallelism over time (mirrors the fpr_lp
                 // path).  `pdlp` is shared, so warm-start etc. are
                 // reinitialized from scratch but the underlying LP stays.
-                uint32_t new_seed = static_cast<uint32_t>(rng());
+                auto new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
                     mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
                     budget.total, new_seed, state.worker_idx, N, &improvement_gen);

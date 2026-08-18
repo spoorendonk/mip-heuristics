@@ -64,7 +64,7 @@ std::vector<HighsInt> concat_buckets(TypeBuckets& b) {
 std::vector<HighsInt> rank_lr(const HighsMipSolver& mipsolver) {
     const HighsInt ncol = mipsolver.model_->num_col_;
     std::vector<HighsInt> order(ncol);
-    std::iota(order.begin(), order.end(), 0);
+    std::ranges::iota(order, 0);
     return order;
 }
 
@@ -94,10 +94,10 @@ std::vector<HighsInt> rank_locks(const HighsMipSolver& mipsolver) {
         return std::max(up[a], dn[a]) > std::max(up[b_idx], dn[b_idx]);
     };
     // Stable sort preserves formulation order as tiebreak
-    std::stable_sort(b.bin.begin(), b.bin.end(), cmp);
-    std::stable_sort(b.gen_int.begin(), b.gen_int.end(), cmp);
+    std::ranges::stable_sort(b.bin, cmp);
+    std::ranges::stable_sort(b.gen_int, cmp);
     // continuous locks are irrelevant for fixing order, but sort for consistency
-    std::stable_sort(b.cont.begin(), b.cont.end(), cmp);
+    std::ranges::stable_sort(b.cont, cmp);
     return concat_buckets(b);
 }
 
@@ -113,7 +113,7 @@ std::vector<HighsInt> rank_typecl(const HighsMipSolver& mipsolver) {
     std::vector<CV> clq_vars;
     clq_vars.reserve(b.bin.size());
     for (HighsInt j : b.bin) {
-        clq_vars.push_back(CV(j, 1));
+        clq_vars.emplace_back(j, 1);
     }
 
     if (clq_vars.empty()) {
@@ -134,7 +134,7 @@ std::vector<HighsInt> rank_typecl(const HighsMipSolver& mipsolver) {
             clique_cols.push_back(static_cast<HighsInt>(clq_vars[k].col));
         }
         // Sort by formulation order within clique
-        std::sort(clique_cols.begin(), clique_cols.end());
+        std::ranges::sort(clique_cols);
         b.bin.insert(b.bin.end(), clique_cols.begin(), clique_cols.end());
     }
 
@@ -155,7 +155,7 @@ std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
     std::vector<CV> clq_vars;
     clq_vars.reserve(b.bin.size());
     for (HighsInt j : b.bin) {
-        clq_vars.push_back(CV(j, 1));
+        clq_vars.emplace_back(j, 1);
     }
 
     if (clq_vars.empty() || (lp_ref == nullptr)) {
@@ -173,7 +173,7 @@ std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
         // Collect vars and weights (paper Fig. 2)
         std::vector<std::pair<HighsInt, double>> vars_weights;
         for (HighsInt k = start; k < end; ++k) {
-            HighsInt col = static_cast<HighsInt>(clq_vars[k].col);
+            auto col = static_cast<HighsInt>(clq_vars[k].col);
             // Skip fixed variables
             if (col_ub[col] - col_lb[col] < 1e-6) {
                 continue;
@@ -181,7 +181,7 @@ std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
             // Weight = x_ac[col] for positive literal (val=1)
             double w = clq_vars[k].val ? lp_ref[col] : 1.0 - lp_ref[col];
             w = std::max(w, 1e-10);  // avoid zero weights
-            vars_weights.push_back({col, w});
+            vars_weights.emplace_back(col, w);
         }
 
         if (vars_weights.empty()) {
@@ -194,8 +194,8 @@ std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
             double u = std::uniform_real_distribution<double>(1e-15, 1.0)(rng);
             w = std::log(u) / w;
         }
-        std::sort(vars_weights.begin(), vars_weights.end(),
-                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::ranges::sort(vars_weights,
+                          [](const auto& a, const auto& b) { return a.second > b.second; });
 
         for (const auto& [col, _] : vars_weights) {
             b.bin.push_back(col);
@@ -220,7 +220,7 @@ std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver, const doubl
     std::vector<CV> clq_vars;
     clq_vars.reserve(b.bin.size());
     for (HighsInt j : b.bin) {
-        clq_vars.push_back(CV(j, 1));
+        clq_vars.emplace_back(j, 1);
     }
 
     // Use the objective-weighted clique partition variant
@@ -244,7 +244,7 @@ std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver, const doubl
         double best_val = -1.0;
 
         for (HighsInt k = start; k < end; ++k) {
-            HighsInt col = static_cast<HighsInt>(clq_vars[k].col);
+            auto col = static_cast<HighsInt>(clq_vars[k].col);
             double v = clq_vars[k].val ? lp_ref[col] : 1.0 - lp_ref[col];
             sum += v;
             if (col_ub[col] - col_lb[col] < 1e-6) {
@@ -260,7 +260,7 @@ std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver, const doubl
         if (best_col >= 0 && sum >= 1.0 - 1e-6) {
             b.bin.push_back(best_col);
             for (HighsInt k = start; k < end; ++k) {
-                HighsInt col = static_cast<HighsInt>(clq_vars[k].col);
+                auto col = static_cast<HighsInt>(clq_vars[k].col);
                 if (col != best_col) {
                     b.bin.push_back(col);
                 }

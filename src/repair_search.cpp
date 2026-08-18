@@ -98,10 +98,10 @@ void backtrack_best_open(std::vector<RepairSearchNode>& Q) {
     if (Q.empty()) {
         return;
     }
-    auto best = std::min_element(Q.begin(), Q.end(),
-                                 [](const RepairSearchNode& a, const RepairSearchNode& b) {
-                                     return a.violation < b.violation;
-                                 });
+    auto best =
+        std::ranges::min_element(Q, [](const RepairSearchNode& a, const RepairSearchNode& b) {
+            return a.violation < b.violation;
+        });
     if (best != Q.end() - 1) {
         std::iter_swap(best, Q.end() - 1);
     }
@@ -403,8 +403,8 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         HighsInt cur_e_sol = E.sol_mark();
         HighsInt cur_r_vs = R.vs_mark();
         HighsInt cur_r_sol = R.sol_mark();
-        HighsInt cur_sol = static_cast<HighsInt>(sol_undo.size());
-        HighsInt cur_lhs = static_cast<HighsInt>(lhs_undo.size());
+        auto cur_sol = static_cast<HighsInt>(sol_undo.size());
+        auto cur_lhs = static_cast<HighsInt>(lhs_undo.size());
 
         // Push alternative first (explored second), then preferred (explored first)
         const HighsInt cur_e_pq = E.pq_initialized() ? E.pq_mark() : -1;

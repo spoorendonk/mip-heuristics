@@ -235,7 +235,7 @@ ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double>& modif
     assert(static_cast<HighsInt>(modified_cost.size()) == ncol_ ||
            ncol_ == 0 /* test-double allows empty shapes */);
 
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     return run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
                                       warm_start_valid, epsilon, time_limit);
 }

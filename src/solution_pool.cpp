@@ -16,7 +16,7 @@ void SolutionPool::set_on_accept(std::function<void(const std::vector<double>&, 
 }
 
 void SolutionPool::set_integer_mask(std::vector<bool> mask) {
-    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    std::scoped_lock lock(mtx_);
     integer_mask_ = std::move(mask);
     num_integers_ = 0;
     for (bool b : integer_mask_) {
@@ -48,12 +48,15 @@ int SolutionPool::num_integers() const {
 bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int source) {
     bool accepted = false;
     {
-        std::lock_guard<HighsSpinMutex> lock(mtx_);
+        std::scoped_lock lock(mtx_);
 
         // Find insertion point (entries_ kept sorted, best first)
         auto cmp = [this](const Entry& entry, double val) {
             return minimize_ ? entry.objective < val : entry.objective > val;
         };
+        // NOLINTNEXTLINE(modernize-use-ranges): std::ranges::lower_bound requires
+        // indirect_strict_weak_order, which rejects `cmp`'s heterogeneous
+        // (const Entry&, double) signature — the range overload does not compile.
         auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
 
         if (static_cast<int>(entries_.size()) >= capacity_) {
@@ -63,6 +66,9 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
             if (!dominated) {
                 // Standard path: improves on worst — replace worst.
                 entries_.pop_back();
+                // NOLINTNEXTLINE(modernize-use-ranges): std::ranges::lower_bound requires
+                // indirect_strict_weak_order, which rejects `cmp`'s heterogeneous
+                // (const Entry&, double) signature — the range overload does not compile.
                 pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
                 entries_.insert(pos, {obj, sol, source});
                 accepted = true;
@@ -95,6 +101,9 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
                     if (min_frac >= kDiversityMinHammingFrac) {
                         // Replace the most similar entry.
                         entries_.erase(entries_.begin() + most_similar_idx);
+                        // NOLINTNEXTLINE(modernize-use-ranges): std::ranges::lower_bound requires
+                        // indirect_strict_weak_order, which rejects `cmp`'s heterogeneous
+                        // (const Entry&, double) signature — the range overload does not compile.
                         pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
                         entries_.insert(pos, {obj, sol, source});
                         accepted = true;
@@ -115,7 +124,7 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
 }
 
 SolutionPool::Snapshot SolutionPool::snapshot() {
-    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    std::scoped_lock lock(mtx_);
     if (entries_.empty()) {
         return {false, minimize_ ? std::numeric_limits<double>::infinity()
                                  : -std::numeric_limits<double>::infinity()};
@@ -124,7 +133,7 @@ SolutionPool::Snapshot SolutionPool::snapshot() {
 }
 
 bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
-    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    std::scoped_lock lock(mtx_);
     if (entries_.empty()) {
         return false;
     }
@@ -202,12 +211,12 @@ bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
 }
 
 std::vector<SolutionPool::Entry> SolutionPool::sorted_entries() {
-    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    std::scoped_lock lock(mtx_);
     return entries_;  // already kept sorted
 }
 
 bool SolutionPool::copy_best(std::vector<double>& out) {
-    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    std::scoped_lock lock(mtx_);
     if (entries_.empty()) {
         return false;
     }
@@ -216,7 +225,7 @@ bool SolutionPool::copy_best(std::vector<double>& out) {
 }
 
 int SolutionPool::size() {
-    std::lock_guard<HighsSpinMutex> lock(mtx_);
+    std::scoped_lock lock(mtx_);
     return static_cast<int>(entries_.size());
 }
 

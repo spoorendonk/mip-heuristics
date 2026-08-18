@@ -72,7 +72,7 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
         double new_lhs = old_lhs + (coeff * delta);
         double old_viol = ctx.viol_cache.get_or_compute(i, old_lhs, ctx.row_lo[i], ctx.row_hi[i]);
         double new_viol = ctx.compute_violation(i, new_lhs);
-        double w = static_cast<double>(ctx.weight[i]);
+        auto w = static_cast<double>(ctx.weight[i]);
 
         // Def 6: constraint progress score
         bool was_viol = (old_viol > kViolTol);
@@ -196,7 +196,7 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         }
     } else {
         for (HighsInt s = 0; s < num_to_sample; ++s) {
-            HighsInt idx = static_cast<HighsInt>(rng() % ctx.violated.size());
+            auto idx = static_cast<HighsInt>(rng() % ctx.violated.size());
             sampled.push_back({ctx.violated[idx], ctx.weight[ctx.violated[idx]]});
         }
     }
@@ -266,8 +266,8 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
     // --- Phase 3: Boolean flip (Alg 2 lines 9-11) ---
     if (!binary_vars.empty()) {
         batch.clear();
-        HighsInt nbinary = static_cast<HighsInt>(binary_vars.size());
-        HighsInt offset = static_cast<HighsInt>(rng() % nbinary);
+        auto nbinary = static_cast<HighsInt>(binary_vars.size());
+        auto offset = static_cast<HighsInt>(rng() % nbinary);
         for (HighsInt idx = 0; idx < nbinary && idx < kBoolFlipBudget; ++idx) {
             HighsInt j = binary_vars[(offset + idx) % nbinary];
             double new_val = (ctx.solution[j] < 0.5) ? 1.0 : 0.0;
@@ -351,7 +351,7 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         batch.clear();
         HighsInt num_easy = std::min(kEasyBudget, ctx.ncol);
         for (HighsInt s = 0; s < num_easy; ++s) {
-            HighsInt j = static_cast<HighsInt>(rng() % ctx.ncol);
+            auto j = static_cast<HighsInt>(rng() % ctx.ncol);
             double target;
             if (ctx.col_lb[j] > 0) {
                 target = ctx.col_lb[j];

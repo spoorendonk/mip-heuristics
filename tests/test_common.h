@@ -29,7 +29,7 @@ inline const std::string kInstancesDir = INSTANCES_DIR;
 // where an option is *disabling* something: the test then measures a
 // completely different solve and can still pass.
 template <typename T>
-inline void require_option(Highs& h, const std::string& name, T value) {
+inline void require_option(Highs& h, const std::string& name, const T& value) {
     REQUIRE(h.setOptionValue(name, value) == HighsStatus::kOk);
 }
 

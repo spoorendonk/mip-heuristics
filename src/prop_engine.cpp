@@ -186,8 +186,8 @@ bool PropEngine::fix(HighsInt j, double value) {
         value = std::round(value);
     }
     VarState old_vs = vs_[j];
-    vs_undo_.push_back({j, old_vs});
-    sol_undo_.push_back({j, solution_[j]});
+    vs_undo_.emplace_back(j, old_vs);
+    sol_undo_.emplace_back(j, solution_[j]);
     vs_[j].fixed = true;
     vs_[j].val = value;
     solution_[j] = value;
@@ -208,8 +208,8 @@ bool PropEngine::tighten_lb(HighsInt j, double new_lb) {
         return true;  // no tightening
     }
     VarState old_vs = vs_[j];
-    vs_undo_.push_back({j, old_vs});
-    sol_undo_.push_back({j, solution_[j]});
+    vs_undo_.emplace_back(j, old_vs);
+    sol_undo_.emplace_back(j, solution_[j]);
     vs_[j].lb = new_lb;
     // Auto-fix if domain becomes singleton
     if (!vs_[j].fixed && vs_[j].ub - vs_[j].lb < feastol_) {
@@ -239,8 +239,8 @@ bool PropEngine::tighten_ub(HighsInt j, double new_ub) {
         return true;  // no tightening
     }
     VarState old_vs = vs_[j];
-    vs_undo_.push_back({j, old_vs});
-    sol_undo_.push_back({j, solution_[j]});
+    vs_undo_.emplace_back(j, old_vs);
+    sol_undo_.emplace_back(j, solution_[j]);
     vs_[j].ub = new_ub;
     // Auto-fix if domain becomes singleton
     if (!vs_[j].fixed && vs_[j].ub - vs_[j].lb < feastol_) {
@@ -433,8 +433,8 @@ bool PropEngine::propagate(HighsInt fixed_var) {
             VarState pre_change_vs = vj;
 
             if (tighter_lb || tighter_ub) {
-                vs_undo_.push_back({j, pre_change_vs});
-                sol_undo_.push_back({j, solution_[j]});
+                vs_undo_.emplace_back(j, pre_change_vs);
+                sol_undo_.emplace_back(j, solution_[j]);
                 if (tighter_lb) {
                     vj.lb = new_lb;
                 }
@@ -446,8 +446,8 @@ bool PropEngine::propagate(HighsInt fixed_var) {
 
             if (!vj.fixed && vj.ub - vj.lb < feastol) {
                 if (!changed) {
-                    vs_undo_.push_back({j, pre_change_vs});
-                    sol_undo_.push_back({j, solution_[j]});
+                    vs_undo_.emplace_back(j, pre_change_vs);
+                    sol_undo_.emplace_back(j, solution_[j]);
                 }
                 double val = (vj.lb + vj.ub) * 0.5;
                 if (is_integer) {

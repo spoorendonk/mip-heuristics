@@ -274,10 +274,10 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     size_t total_effort = run_opportunistic_loop(
         exec, budget,
         [&](int worker_idx, Rng& rng) -> LmState {
-            uint32_t seed = static_cast<uint32_t>(rng());
+            auto seed = static_cast<uint32_t>(rng());
             std::vector<double> local_cache;
             {
-                std::lock_guard<std::mutex> lock(cold_start_cache_mu);
+                std::scoped_lock lock(cold_start_cache_mu);
                 local_cache = cold_start_cache;  // cheap if empty, one copy if warm
             }
             size_t my_construction_effort = 0;
@@ -295,7 +295,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 // compound type).  The single locked check below is
                 // cheap; MakeState fires N times per dispatch, not per
                 // attempt.
-                std::lock_guard<std::mutex> lock(cold_start_cache_mu);
+                std::scoped_lock lock(cold_start_cache_mu);
                 if (cold_start_cache.empty()) {
                     cold_start_cache = local_cache;
                 }
@@ -335,7 +335,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                         // `construction_effort_cap(worker_budget)` per
                         // restart so total construction work scales
                         // with the outer budget.
-                        uint32_t cseed = static_cast<uint32_t>(rng());
+                        auto cseed = static_cast<uint32_t>(rng());
                         Rng construct_rng(cseed);
                         size_t my_construction_effort = construct_initial_solution(
                             mipsolver, *problem.csc, construct_rng,
@@ -346,7 +346,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 }
                 perturb_solution(restart_sol, problem.binary.data(), problem.model->integrality_,
                                  problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
-                uint32_t seed = static_cast<uint32_t>(rng());
+                auto seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LocalMipWorker>(
                     mipsolver, *problem.csc, sink, budget.per_worker, seed, restart_sol.data(),
                     problem.binary.data());

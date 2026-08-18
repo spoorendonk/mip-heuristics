@@ -237,7 +237,7 @@ void weighted_order(const CscMatrix& csc, HighsInt ncol, Rng& rng,
     // workers — the shuffle's randomness is overwritten by the
     // deterministic col-nnz comparison for any two variables with
     // different nnz.  Review R2 flagged this.
-    std::sort(out_order.begin(), out_order.end(), [&](HighsInt a, HighsInt b) {
+    std::ranges::sort(out_order, [&](HighsInt a, HighsInt b) {
         auto nnz_a = csc.col_start[a + 1] - csc.col_start[a];
         auto nnz_b = csc.col_start[b + 1] - csc.col_start[b];
         if (nnz_a != nnz_b) {

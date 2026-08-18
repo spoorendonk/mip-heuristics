@@ -223,8 +223,8 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
         for (HighsInt j = 0; j < c.ncol; ++j) {
             var_order[j] = j;
         }
-        std::sort(var_order.begin(), var_order.end(),
-                  [&](HighsInt a, HighsInt b) { return cfg.scores[a] > cfg.scores[b]; });
+        std::ranges::sort(var_order,
+                          [&](HighsInt a, HighsInt b) { return cfg.scores[a] > cfg.scores[b]; });
     }
     state.var_order_size = static_cast<HighsInt>(var_order.size());
 

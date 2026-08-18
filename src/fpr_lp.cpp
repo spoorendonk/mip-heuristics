@@ -173,14 +173,14 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver& mipsolver, size_t max_effo
     const double* zv_ptr = s.zero_vertex.empty() ? lp_ptr : s.zero_vertex.data();
 
     s.arms.reserve(kNumLpArms);
-    for (int i = 0; i < kNumClass2; ++i) {
-        s.arms.push_back({&kClass2Configs[i], ac_ptr});
+    for (const auto& cfg : kClass2Configs) {
+        s.arms.push_back({&cfg, ac_ptr});
     }
-    for (int i = 0; i < kNumClass3a; ++i) {
-        s.arms.push_back({&kClass3aConfigs[i], zv_ptr});
+    for (const auto& cfg : kClass3aConfigs) {
+        s.arms.push_back({&cfg, zv_ptr});
     }
-    for (int i = 0; i < kNumClass3b; ++i) {
-        s.arms.push_back({&kClass3bConfigs[i], lp_ptr});
+    for (const auto& cfg : kClass3bConfigs) {
+        s.arms.push_back({&cfg, lp_ptr});
     }
 
     // Precompute var_orders sequentially — required before any parallel
@@ -346,7 +346,7 @@ size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
             // replacement draws a fresh arm so the slot keeps contributing.
             return attempt_with_rebuild(state.worker, run_cap, [&]() {
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
-                uint32_t seed = static_cast<uint32_t>(rng());
+                auto seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed);
             });
         });
@@ -411,7 +411,7 @@ void run(HighsMipSolver& mipsolver) {
         return;
     }
     const double headroom_units = headroom_iters * static_cast<double>(nnz);
-    const double cap_units =
+    const auto cap_units =
         static_cast<double>(heuristic_effort_budget(nnz, mipdata->heuristic_effort));
     const auto max_effort = static_cast<size_t>(std::min(headroom_units, cap_units));
 

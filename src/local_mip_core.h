@@ -132,7 +132,7 @@ struct WorkerCtx {
     // review motivated the reset; R2-8 round-4 review flagged that the
     // paper-citation framing was not grounded in the paper.
     void reset_weights() {
-        std::fill(weight.begin(), weight.end(), uint64_t{1});
+        std::ranges::fill(weight, uint64_t{1});
         obj_weight = 1;
     }
 };
