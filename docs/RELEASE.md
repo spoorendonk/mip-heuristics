@@ -243,35 +243,28 @@ citable, a complete tree without it is not.
 
 ### Current state, as verified
 
-**The archive-service integration is not configured for this repository.**
-Verified rather than assumed, at the time of writing:
+**The Zenodo integration is configured.** Verified rather than assumed:
+`gh api repos/spoorendonk/mip-heuristics/hooks` lists one active webhook
+pointing at Zenodo's GitHub receiver, subscribed to `release` events. That
+webhook *is* the integration — Zenodo installs it when the repository is
+toggled on, so its presence is the confirmation that the toggle was flipped.
 
-- `gh api repos/spoorendonk/mip-heuristics/hooks` returns `[]`. Zenodo's
-  integration works by installing a webhook, and it installs that webhook only
-  when the repository is toggled on. No webhook means no integration.
-- A Zenodo search for `mip-heuristics` / `spoorendonk` returns no record for
-  this repository.
-- The repository has no tags and no releases.
+Re-run that command if you ever need to check; it is the whole test. (The
+hook's URL embeds an access token, so do not paste the output anywhere
+public.)
 
-So **a release cut today would mint no DOI**, and neither `CITATION.cff` nor
-`.zenodo.json` currently carries one. That is not a defect in those files —
-they were written for the closeout positioning by the documentation issue and
-are correct as far as they go — it is a step nobody has taken yet.
+The repository still has no tags and no releases, so **no DOI exists yet** —
+the first release is what mints one. Neither `CITATION.cff` nor `.zenodo.json`
+carries a DOI today, which is correct: one cannot be pre-reserved through the
+GitHub integration (see below), so it is added after the first release.
 
-### What the maintainer must do, exactly
-
-This is a browser task with no CLI equivalent; the integration requires an
-OAuth grant that `gh` cannot make.
-
-1. Sign in at <https://zenodo.org/> (use "Log in with GitHub" if you want the
-   accounts linked in one step).
-2. Profile menu → **GitHub**.
-3. Press **Sync now** so the repository list is current.
-4. Find `spoorendonk/mip-heuristics` and flip its toggle **On**. This is what
-   installs the webhook; `gh api .../hooks` will list it afterwards, which is
-   how you confirm the step took.
-5. **Do this before creating the release.** Releases made before the toggle was
-   flipped are not archived, and there is no backfill.
+> **The toggle must precede the release.** It does, now. Recorded because a
+> release made before a repository is toggled on is silently not archived and
+> there is no backfill — so if this ever reads `[]` again, fix it *before*
+> tagging, not after. The browser path is: sign in at <https://zenodo.org/> →
+> profile menu → **GitHub** → **Sync now** → toggle `spoorendonk/mip-heuristics`
+> **On**. There is no CLI equivalent; the integration needs an OAuth grant
+> `gh` cannot make.
 
 Two consequences that decide the rest of the process:
 
@@ -367,8 +360,10 @@ that must not be reordered.
 
 **Publish — order matters**
 
-1. [ ] Zenodo integration enabled for the repository, webhook confirmed with
-       `gh api repos/spoorendonk/mip-heuristics/hooks`.
+1. [ ] Zenodo webhook still present — `gh api repos/spoorendonk/mip-heuristics/hooks`
+       lists one active hook on `release`. It was enabled ahead of this
+       release; re-confirm rather than assume, because a release cut while it
+       is absent is silently not archived and there is no backfill.
 2. [ ] Annotated tag: `git tag -a vX.Y.Z -m "..."` then `git push origin vX.Y.Z`.
 3. [ ] GitHub release created from that tag, notes naming the pinned HiGHS tag
        and the `PATCH_VERSION`.
