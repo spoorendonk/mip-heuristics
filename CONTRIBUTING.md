@@ -194,5 +194,8 @@ commit-msg hook enforces the format. Run the full suite before considering work
 done — the pre-push hook is the final gate, and `--no-verify` is not an
 option. Close any GitHub issue the work resolved.
 
+Cutting a version is a separate procedure with an ordering constraint a normal
+push does not have: see [`docs/RELEASE.md`](docs/RELEASE.md).
+
 When something in this file or `CLAUDE.md` would have prevented a mistake you
 just made, fix it in the same commit.

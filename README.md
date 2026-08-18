@@ -4,7 +4,7 @@ A unified open-source reference implementation and empirical evaluation of four 
 
 The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: the combined patched solver gives only a small aggregate improvement over vanilla on the PLATO `mipfeas` benchmark, and the honest end-to-end finding is that additional heuristics may not compensate for the solver progress they displace. See [Benchmarks](#benchmarks) for the numbers and their provenance.
 
-**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the PLATO protocol) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`docs/README.md`](docs/README.md) (source papers).
+**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the PLATO protocol) · [`docs/RELEASE.md`](docs/RELEASE.md) (release process, artifact archive, DOI wiring) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`docs/README.md`](docs/README.md) (source papers).
 
 ## Quick Start
 
