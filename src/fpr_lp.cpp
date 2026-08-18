@@ -69,7 +69,7 @@ constexpr int kNumClass3b = static_cast<int>(std::size(kClass3bConfigs));
 
 constexpr int kNumLpArms = kNumClass2 + kNumClass3a + kNumClass3b;
 
-constexpr const char *kLpArmNames[] = {
+constexpr const char* kLpArmNames[] = {
     "ZerocoreDfs",       // Class 2
     "ZerocoreDive",      // Class 2
     "ZerocoreDiveprop",  // Class 2
@@ -85,8 +85,8 @@ static_assert(std::size(kLpArmNames) == kNumLpArms, "kLpArmNames must match tota
 
 // An arm binds a NamedConfig to the LP reference pointer it requires.
 struct LpArm {
-    const NamedConfig *config;
-    const double *lp_ref;
+    const NamedConfig* config;
+    const double* lp_ref;
 };
 
 // ---------------------------------------------------------------------------
@@ -135,9 +135,9 @@ struct LpFprSetup {
 // caller should skip LP-FPR entirely in that case).  All nullopt exits
 // happen before the reference-LP solves, so a nullopt return never
 // leaves unaccounted LP work behind.
-std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effort) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
+std::optional<LpFprSetup> build_setup(HighsMipSolver& mipsolver, size_t max_effort) {
+    const auto* model = mipsolver.model_;
+    auto* mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
     if (ncol == 0 || nrow == 0) {
@@ -160,17 +160,17 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
     // Full-obj LP solution — direct reference to the solver's col_value
     // vector (stable while we run because we do not trigger further LP
     // solves during LP-FPR).
-    const auto &lp_sol = mipdata->getLp().getLpSolver().getSolution().col_value;
-    const double *lp_ptr = lp_sol.data();
+    const auto& lp_sol = mipdata->getLp().getLpSolver().getSolution().col_value;
+    const double* lp_ptr = lp_sol.data();
 
     // Zero-obj analytic center (for Class 2 zerocore strategies).
     s.analytic_center =
         compute_analytic_center(mipsolver, /*use_objective=*/false, s.setup_lp_iterations);
-    const double *ac_ptr = s.analytic_center.empty() ? lp_ptr : s.analytic_center.data();
+    const double* ac_ptr = s.analytic_center.empty() ? lp_ptr : s.analytic_center.data();
 
     // Zero-obj LP vertex (for Class 3a zerolp strategies).
     s.zero_vertex = compute_zero_obj_vertex(mipsolver, s.setup_lp_iterations);
-    const double *zv_ptr = s.zero_vertex.empty() ? lp_ptr : s.zero_vertex.data();
+    const double* zv_ptr = s.zero_vertex.empty() ? lp_ptr : s.zero_vertex.data();
 
     s.arms.reserve(kNumLpArms);
     for (int i = 0; i < kNumClass2; ++i) {
@@ -208,7 +208,7 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver &mipsolver, size_t max_effo
 
 class LpFprWorker {
 public:
-    LpFprWorker(HighsMipSolver &mipsolver, const LpFprSetup &setup, IncumbentSink &sink,
+    LpFprWorker(HighsMipSolver& mipsolver, const LpFprSetup& setup, IncumbentSink& sink,
                 int arm_idx, uint32_t seed)
         : mipsolver_(mipsolver), setup_(setup), sink_(sink), arm_idx_(arm_idx), rng_(seed) {}
 
@@ -231,13 +231,13 @@ public:
         }
 
         initial_solution_buf_.clear();
-        const double *init_ptr = nullptr;
+        const double* init_ptr = nullptr;
         if (sink_.get_restart(rng_, initial_solution_buf_)) {
             init_ptr = initial_solution_buf_.data();
         }
 
-        const LpArm &arm = setup_.arms[arm_idx_];
-        const auto &var_order = setup_.var_orders[arm_idx_];
+        const LpArm& arm = setup_.arms[arm_idx_];
+        const auto& var_order = setup_.var_orders[arm_idx_];
 
         FprConfig cfg{};
         cfg.max_effort = attempt_budget;
@@ -275,9 +275,9 @@ public:
 private:
     void randomize_arm() { arm_idx_ = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng_); }
 
-    HighsMipSolver &mipsolver_;
-    const LpFprSetup &setup_;
-    IncumbentSink &sink_;
+    HighsMipSolver& mipsolver_;
+    const LpFprSetup& setup_;
+    IncumbentSink& sink_;
 
     int arm_idx_;
     int attempt_idx_ = 0;
@@ -322,11 +322,11 @@ namespace {
 // with the presolve heuristics, which have always floored, is the point.
 // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
 // wrap around the curated config list with distinct seeds for diversity.
-size_t run_workers(const LpFprSetup &setup, const ExecutionContext &exec,
-                   const HeuristicBudget &budget, IncumbentSink &sink) {
+size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
+                   const HeuristicBudget& budget, IncumbentSink& sink) {
     g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
 
-    HighsMipSolver &mipsolver = exec.mipsolver;
+    HighsMipSolver& mipsolver = exec.mipsolver;
 
     // Per-worker lightweight state: just the LpFprWorker instance.
     struct LpFprOppState {
@@ -335,13 +335,13 @@ size_t run_workers(const LpFprSetup &setup, const ExecutionContext &exec,
 
     return run_opportunistic_loop(
         exec, budget,
-        [&](int worker_idx, Rng & /*rng*/) -> LpFprOppState {
+        [&](int worker_idx, Rng& /*rng*/) -> LpFprOppState {
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
             uint32_t seed = exec.worker_seed(worker_idx);
             return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed)};
         },
-        [&](LpFprOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
+        [&](LpFprOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             // A retired worker here hit its hard randomisation cap; the
             // replacement draws a fresh arm so the slot keeps contributing.
             return attempt_with_rebuild(state.worker, run_cap, [&]() {
@@ -354,8 +354,8 @@ size_t run_workers(const LpFprSetup &setup, const ExecutionContext &exec,
 
 }  // namespace
 
-void run(HighsMipSolver &mipsolver) {
-    auto *mipdata = mipsolver.mipdata_.get();
+void run(HighsMipSolver& mipsolver) {
+    auto* mipdata = mipsolver.mipdata_.get();
 
     // Parallel-search guard: under `parallel=on` HiGHS spawns concurrent
     // processNode tasks (runTask with the parallel lock held), so this
@@ -435,7 +435,7 @@ void run(HighsMipSolver &mipsolver) {
     if (!setup_opt) {
         return;
     }
-    auto &setup = *setup_opt;
+    auto& setup = *setup_opt;
 
     // The reference-LP solves are part of fpr_lp's spend: subtract them
     // from the worker budget so setup + workers together stay within

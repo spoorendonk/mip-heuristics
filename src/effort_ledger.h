@@ -39,7 +39,7 @@ class HighsMipSolver;
 // worker without making the counters atomic first.
 class EffortLedger {
 public:
-    explicit EffortLedger(HighsMipSolver &mipsolver) : mipsolver_(mipsolver) {}
+    explicit EffortLedger(HighsMipSolver& mipsolver) : mipsolver_(mipsolver) {}
 
     // Elapsed solve seconds, for the `t0_s` / `t1_s` arguments below.
     //
@@ -62,7 +62,7 @@ public:
     // A presolve-chain heuristic (FJ / FPR / LocalMIP / Scylla) consumed
     // `effort` units between `t0_s` and `t1_s`.  `found` is whether the
     // shared `IncumbentSink` accepted at least one of its solutions.
-    void charge_presolve(const char *name, size_t effort, bool found, double t0_s, double t1_s);
+    void charge_presolve(const char* name, size_t effort, bool found, double t0_s, double t1_s);
 
     // The whole presolve chain occupied the solver from `t0_s` to `t1_s`.
     //
@@ -83,12 +83,12 @@ public:
     // per LP iteration are charged to `heuristic_lp_iterations` and
     // `total_lp_iterations`, mirroring how RENS/RINS flush their sub-MIP
     // LP iterations.  `nnz` must be non-zero.
-    void charge_dive(const char *name, size_t effort, bool found, int64_t setup_lp_iters,
+    void charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
                      size_t nnz, double t0_s, double t1_s);
 
 private:
-    void book(const char *name, const char *phase, size_t effort, bool found, double t0_s,
+    void book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
               double t1_s);
 
-    HighsMipSolver &mipsolver_;
+    HighsMipSolver& mipsolver_;
 };

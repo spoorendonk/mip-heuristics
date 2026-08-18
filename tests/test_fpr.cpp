@@ -153,7 +153,7 @@ namespace {
 // never reached `kBudgetGate`; 0.01 = 5x the budget-formula anchor effort
 // (0.05/10) gives a slice large enough that step actually runs.
 // Returns final objective.
-double solve_with_seed_small_effort(const char *inst, int seed) {
+double solve_with_seed_small_effort(const char* inst, int seed) {
     const ScopedThreadPin pin;
     Highs highs;
     highs.setOptionValue("output_flag", false);

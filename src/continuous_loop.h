@@ -81,7 +81,7 @@ struct ContinuousLoopState {
             return false;
         }
         return poller.compare_exchange_strong(cur, w, std::memory_order_acquire,
-                                             std::memory_order_relaxed);
+                                              std::memory_order_relaxed);
     }
 
     // Called by a worker on its way out of the loop: vacate the seat if it
@@ -95,7 +95,7 @@ struct ContinuousLoopState {
     // Seat-holder only — the underlying HiGHS calls are not thread-safe
     // for concurrent callers.  Callers batch the poll to every other
     // attempt.  Peers observe the `stop` flag atomically.
-    void poll_termination(const ExecutionContext &exec) {
+    void poll_termination(const ExecutionContext& exec) {
         if (exec.terminated()) {
             request_stop();
         }

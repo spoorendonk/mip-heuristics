@@ -60,7 +60,7 @@ namespace {
 
 // Helper to bump a warm-start counter only when instrumentation is
 // enabled.  Compiles to a no-op in production builds.
-inline void bump_counter(std::atomic<int64_t> &counter) {
+inline void bump_counter(std::atomic<int64_t>& counter) {
     if constexpr (kInstrumented) {
         counter.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -73,9 +73,9 @@ inline void bump_counter(std::atomic<int64_t> &counter) {
 // shared pool with the LocalMIP source tag; if infeasible the caller
 // still uses it as the search's starting point (paper's intended
 // behaviour).
-bool is_solution_feasible(const HighsMipSolver &mipsolver, const std::vector<double> &solution) {
-    const auto *model = mipsolver.model_;
-    const auto *mipdata = mipsolver.mipdata_.get();
+bool is_solution_feasible(const HighsMipSolver& mipsolver, const std::vector<double>& solution) {
+    const auto* model = mipsolver.model_;
+    const auto* mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
     const double feastol = mipdata->feastol;
@@ -109,9 +109,9 @@ bool is_solution_feasible(const HighsMipSolver &mipsolver, const std::vector<dou
     return true;
 }
 
-double compute_solution_objective(const HighsMipSolver &mipsolver,
-                                  const std::vector<double> &solution) {
-    const auto *model = mipsolver.model_;
+double compute_solution_objective(const HighsMipSolver& mipsolver,
+                                  const std::vector<double>& solution) {
+    const auto* model = mipsolver.model_;
     double obj = model->offset_;
     for (HighsInt j = 0; j < model->num_col_; ++j) {
         obj += model->col_cost_[j] * solution[j];
@@ -156,12 +156,11 @@ double compute_solution_objective(const HighsMipSolver &mipsolver,
 // the function returned via the pool or incumbent branches, or via the
 // cold-start cache hit).  Callers add it to
 // `mipdata->heuristic_effort_used` (R1-3 round-3 review).
-std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMatrix &csc,
-                                         IncumbentSink &sink,
-                                         const std::vector<double> &incumbent, size_t max_effort,
-                                         uint32_t seed,
-                                         std::vector<double> *cold_start_cache = nullptr,
-                                         size_t *effort_out = nullptr) {
+std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMatrix& csc,
+                                         IncumbentSink& sink, const std::vector<double>& incumbent,
+                                         size_t max_effort, uint32_t seed,
+                                         std::vector<double>* cold_start_cache = nullptr,
+                                         size_t* effort_out = nullptr) {
     // `copy_best` takes the pool lock once and copies only the top
     // entry's solution vector.  Previous versions used
     // `sorted_entries()` which copies up to kPoolCapacity entries
@@ -211,8 +210,8 @@ std::vector<double> resolve_worker_start(HighsMipSolver &mipsolver, const CscMat
 
 }  // namespace
 
-size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionContext &exec,
-           IncumbentSink &sink) {
+size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
+           IncumbentSink& sink) {
     // Issue #75: the old `mipdata->incumbent.empty()` early-return is
     // gone.  Cold-start is now handled by `resolve_worker_start` which
     // runs the paper's construction phase when neither pool nor
@@ -223,7 +222,7 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
         return 0;
     }
 
-    HighsMipSolver &mipsolver = exec.mipsolver;
+    HighsMipSolver& mipsolver = exec.mipsolver;
     const HighsInt ncol = problem.ncol;
 
     struct LmState {
@@ -274,7 +273,7 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
 
     size_t total_effort = run_opportunistic_loop(
         exec, budget,
-        [&](int worker_idx, Rng &rng) -> LmState {
+        [&](int worker_idx, Rng& rng) -> LmState {
             uint32_t seed = static_cast<uint32_t>(rng());
             std::vector<double> local_cache;
             {
@@ -309,7 +308,7 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
                                                             budget.per_worker, seed, start.data(),
                                                             problem.binary.data())};
         },
-        [&](LmState &state, Rng &rng, size_t run_cap) -> AttemptResult {
+        [&](LmState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             if (!state.worker || state.worker->finished()) {
                 // Restart from pool, incumbent, or fresh construction
                 // (cold-start), with fresh perturbation.

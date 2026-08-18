@@ -46,9 +46,9 @@ public:
     using ContestedPdlp::publish_snapshot_for_test;
 
 protected:
-    SolveResult solve_locked(const std::vector<double> & /*modified_cost*/,
-                             const std::vector<double> & /*warm_start_col_value*/,
-                             const std::vector<double> & /*warm_start_row_dual*/,
+    SolveResult solve_locked(const std::vector<double>& /*modified_cost*/,
+                             const std::vector<double>& /*warm_start_col_value*/,
+                             const std::vector<double>& /*warm_start_row_dual*/,
                              bool /*warm_start_valid*/, double /*epsilon*/,
                              double /*time_limit*/) override {
         int sleep_ms = solve_sleep_ms.load(std::memory_order_relaxed);
@@ -193,7 +193,7 @@ TEST_CASE("ContestedPdlp: concurrent workers preserve one-solve-in-flight invari
             }
         });
     }
-    for (auto &t : threads) {
+    for (auto& t : threads) {
         t.join();
     }
 
@@ -231,7 +231,7 @@ TEST_CASE("ContestedPdlp: blocking solve() always serialises but never dead-lock
             }
         });
     }
-    for (auto &t : threads) {
+    for (auto& t : threads) {
         t.join();
     }
     REQUIRE(pdlp.peak_in_flight() == 1);

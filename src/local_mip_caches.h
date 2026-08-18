@@ -138,7 +138,7 @@ struct LiftCache {
     bool all_dirty = true;
     std::vector<HighsInt> positive_list;
     std::vector<bool> in_positive;
-    const std::vector<HighsInt> *costed_vars = nullptr;
+    const std::vector<HighsInt>* costed_vars = nullptr;
 
     explicit LiftCache(HighsInt ncol)
         : lo(ncol), hi(ncol), score(ncol), dirty(ncol, true), in_positive(ncol, false) {
@@ -161,8 +161,8 @@ struct LiftCache {
         std::fill(in_positive.begin(), in_positive.end(), false);
     }
 
-    void recompute_one(HighsInt j, WorkerCtx &ctx);
-    void recompute_all(WorkerCtx &ctx);
+    void recompute_one(HighsInt j, WorkerCtx& ctx);
+    void recompute_all(WorkerCtx& ctx);
 };
 
 }  // namespace local_mip_detail

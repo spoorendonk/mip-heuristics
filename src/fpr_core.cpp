@@ -25,41 +25,49 @@ namespace {
 // stashable), so each function rebuilds them from this struct.  Cheap
 // — the lambdas are stateless wrappers over const refs.
 struct AttemptCtx {
-    HighsMipSolver &mipsolver;
-    const HighsLp *model;
-    HighsMipSolverData *mipdata;
-    const std::vector<HighsInt> &ARstart;
-    const std::vector<HighsInt> &ARindex;
-    const std::vector<double> &ARvalue;
-    const std::vector<double> &col_lb;
-    const std::vector<double> &col_ub;
-    const std::vector<double> &col_cost;
-    const std::vector<double> &row_lo;
-    const std::vector<double> &row_hi;
-    const std::vector<HighsVarType> &integrality;
+    HighsMipSolver& mipsolver;
+    const HighsLp* model;
+    HighsMipSolverData* mipdata;
+    const std::vector<HighsInt>& ARstart;
+    const std::vector<HighsInt>& ARindex;
+    const std::vector<double>& ARvalue;
+    const std::vector<double>& col_lb;
+    const std::vector<double>& col_ub;
+    const std::vector<double>& col_cost;
+    const std::vector<double>& row_lo;
+    const std::vector<double>& row_hi;
+    const std::vector<HighsVarType>& integrality;
     double feastol;
     bool minimize;
     HighsInt ncol;
     HighsInt nrow;
     // Dispatch-time `isBinary` snapshot; see `FprConfig::binary_mask`.
-    const uint8_t *binary;
+    const uint8_t* binary;
 
     bool is_binary(HighsInt j) const { return binary[j] != 0; }
 };
 
-AttemptCtx make_ctx(HighsMipSolver &mipsolver, const uint8_t *binary) {
+AttemptCtx make_ctx(HighsMipSolver& mipsolver, const uint8_t* binary) {
     assert(binary != nullptr && "FprConfig::binary_mask must be set");
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
+    const auto* model = mipsolver.model_;
+    auto* mipdata = mipsolver.mipdata_.get();
     return AttemptCtx{
-        mipsolver,         model,
-        mipdata,           mipdata->ARstart_,
-        mipdata->ARindex_, mipdata->ARvalue_,
-        model->col_lower_, model->col_upper_,
-        model->col_cost_,  model->row_lower_,
-        model->row_upper_, model->integrality_,
-        mipdata->feastol,  model->sense_ == ObjSense::kMinimize,
-        model->num_col_,   model->num_row_,
+        mipsolver,
+        model,
+        mipdata,
+        mipdata->ARstart_,
+        mipdata->ARindex_,
+        mipdata->ARvalue_,
+        model->col_lower_,
+        model->col_upper_,
+        model->col_cost_,
+        model->row_lower_,
+        model->row_upper_,
+        model->integrality_,
+        mipdata->feastol,
+        model->sense_ == ObjSense::kMinimize,
+        model->num_col_,
+        model->num_row_,
         binary,
     };
 }
@@ -90,8 +98,8 @@ double finite_clamp_helper(double val, double lo, double hi) {
 // worker, scylla, fpr_lp) pair a stable `cfg.csc` and a
 // stable `mipsolver` with the scratch's lifetime — see the lifetime
 // comment on `FprConfig::scratch` in `fpr_core.h`.
-PropEngine &acquire_engine(FprScratch &scratch, const AttemptCtx &c, const CscMatrix &csc) {
-    std::optional<PropEngine> &engine_opt = scratch.prop_engine;
+PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMatrix& csc) {
+    std::optional<PropEngine>& engine_opt = scratch.prop_engine;
     const bool engine_valid =
         engine_opt.has_value() && engine_opt->ncol() == c.ncol && engine_opt->nrow() == c.nrow &&
         engine_opt->ar_start() == c.ARstart.data() && engine_opt->ar_index() == c.ARindex.data() &&
@@ -114,8 +122,8 @@ PropEngine &acquire_engine(FprScratch &scratch, const AttemptCtx &c, const CscMa
 
 // Strategy-aware or legacy hint+objective-greedy value selection.
 // Pure (no state outside its arguments); rebuild fresh in each begin/step/finish.
-double choose_fix_value(HighsInt j, const FprConfig &cfg, const AttemptCtx &c, PropEngine &E,
-                        const CscMatrix &csc, Rng &rng, bool use_hint) {
+double choose_fix_value(HighsInt j, const FprConfig& cfg, const AttemptCtx& c, PropEngine& E,
+                        const CscMatrix& csc, Rng& rng, bool use_hint) {
     if (cfg.strategy) {
         return choose_value(j, E.var(j).lb, E.var(j).ub, is_integer(c.integrality, j), c.minimize,
                             c.col_cost[j], cfg.strategy->val_strategy, rng, cfg.lp_ref,
@@ -155,7 +163,7 @@ double choose_fix_value(HighsInt j, const FprConfig &cfg, const AttemptCtx &c, P
     return (c.col_cost[j] > 0) ? hi : lo;
 }
 
-double compute_alt(HighsInt j, double preferred, const AttemptCtx &c, PropEngine &E) {
+double compute_alt(HighsInt j, double preferred, const AttemptCtx& c, PropEngine& E) {
     if (c.is_binary(j)) {
         return (preferred < 0.5) ? 1.0 : 0.0;
     }
@@ -166,7 +174,7 @@ double compute_alt(HighsInt j, double preferred, const AttemptCtx &c, PropEngine
     return alt;
 }
 
-bool is_row_violated_in_ctx(HighsInt i, double lhs, const AttemptCtx &c) {
+bool is_row_violated_in_ctx(HighsInt i, double lhs, const AttemptCtx& c) {
     return is_row_violated(lhs, c.row_lo[i], c.row_hi[i], c.feastol);
 }
 
@@ -176,10 +184,10 @@ bool is_row_violated_in_ctx(HighsInt i, double lhs, const AttemptCtx &c) {
 // fpr_attempt_begin
 // ---------------------------------------------------------------------------
 
-void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const FprConfig &cfg,
-                       Rng &rng, int attempt_idx, const double *initial_solution) {
+void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const FprConfig& cfg,
+                       Rng& rng, int attempt_idx, const double* initial_solution) {
     assert(cfg.scratch != nullptr && "fpr_attempt_begin requires cfg.scratch");
-    FprScratch &scratch = *cfg.scratch;
+    FprScratch& scratch = *cfg.scratch;
     const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
 
     // Lifecycle reset.
@@ -200,10 +208,10 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
     // `fpr_attempt` which builds a local CSC.  Persistent callers (the
     // FPR worker) all carry a stable cfg.csc.
     assert(cfg.csc != nullptr && "fpr_attempt_begin requires cfg.csc");
-    const CscMatrix &csc = *cfg.csc;
+    const CscMatrix& csc = *cfg.csc;
 
     // --- Phase 1: variable ranking -------------------------------------------------
-    auto &var_order = scratch.var_order;
+    auto& var_order = scratch.var_order;
     var_order.clear();
     if (cfg.precomputed_var_order != nullptr) {
         var_order.assign(cfg.precomputed_var_order,
@@ -224,7 +232,7 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
     scratch.lhs_cache.resize(c.nrow);
 
     // --- Acquire PropEngine (resets if cached engine is from a previous attempt) ---
-    PropEngine &E = acquire_engine(scratch, c, csc);
+    PropEngine& E = acquire_engine(scratch, c, csc);
 
     // --- Initial solution -----------------------------------------------------------
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
@@ -291,8 +299,8 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
 
     // Trivially-roundable fixings (paper Section 6).
     if (!c.mipdata->uplocks.empty()) {
-        const auto &uplocks = c.mipdata->uplocks;
-        const auto &downlocks = c.mipdata->downlocks;
+        const auto& uplocks = c.mipdata->uplocks;
+        const auto& downlocks = c.mipdata->downlocks;
         for (HighsInt j = 0; j < c.ncol; ++j) {
             if (!is_int(j) || E.var(j).fixed) {
                 continue;
@@ -322,7 +330,7 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
     state.nodes_visited = 0;
     state.found_complete = false;
 
-    auto &dfs_stack = scratch.dfs_stack;
+    auto& dfs_stack = scratch.dfs_stack;
     dfs_stack.clear();
     const size_t dfs_reserve =
         state.do_backtrack ? 2 * static_cast<size_t>(c.ncol) : static_cast<size_t>(c.ncol);
@@ -380,19 +388,19 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
 // fpr_attempt_step
 // ---------------------------------------------------------------------------
 
-FprStepResult fpr_attempt_step(FprAttemptState &state, HighsMipSolver &mipsolver,
-                               const FprConfig &cfg, Rng &rng, size_t effort_remaining) {
+FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver,
+                               const FprConfig& cfg, Rng& rng, size_t effort_remaining) {
     assert(state.phase == FprAttemptState::Phase::kDfs &&
            "fpr_attempt_step called outside kDfs phase");
     assert(cfg.scratch != nullptr);
     assert(cfg.csc != nullptr);
 
-    FprScratch &scratch = *cfg.scratch;
+    FprScratch& scratch = *cfg.scratch;
     const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
-    const CscMatrix &csc = *cfg.csc;
-    PropEngine &E = *scratch.prop_engine;
-    auto &dfs_stack = scratch.dfs_stack;
-    auto &var_order = scratch.var_order;
+    const CscMatrix& csc = *cfg.csc;
+    PropEngine& E = *scratch.prop_engine;
+    auto& dfs_stack = scratch.dfs_stack;
+    auto& var_order = scratch.var_order;
 
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
 
@@ -481,11 +489,11 @@ FprStepResult fpr_attempt_step(FprAttemptState &state, HighsMipSolver &mipsolver
 // fpr_attempt_finish
 // ---------------------------------------------------------------------------
 
-HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipsolver,
-                                   const FprConfig &cfg, Rng &rng) {
+HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipsolver,
+                                   const FprConfig& cfg, Rng& rng) {
     assert(cfg.scratch != nullptr);
 
-    FprScratch &scratch = *cfg.scratch;
+    FprScratch& scratch = *cfg.scratch;
     const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
 
     // Degenerate model from begin() — short-circuit cleanly.
@@ -495,8 +503,8 @@ HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipso
     }
 
     assert(cfg.csc != nullptr);
-    const CscMatrix &csc = *cfg.csc;
-    PropEngine &E = *scratch.prop_engine;
+    const CscMatrix& csc = *cfg.csc;
+    PropEngine& E = *scratch.prop_engine;
 
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
 
@@ -529,11 +537,11 @@ HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipso
         E.sol(j) = std::max(c.col_lb[j], std::min(c.col_ub[j], E.sol(j)));
     }
 
-    auto &solution = scratch.solution;
+    auto& solution = scratch.solution;
     solution.assign(E.sol_data(), E.sol_data() + c.ncol);
     size_t total_prop_work = E.effort();
 
-    auto &lhs_cache = scratch.lhs_cache;
+    auto& lhs_cache = scratch.lhs_cache;
     lhs_cache.resize(c.nrow);
     total_prop_work += c.ARindex.size();
     for (HighsInt i = 0; i < c.nrow; ++i) {
@@ -611,10 +619,10 @@ HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipso
 // and accepts a null cfg.scratch by routing through a function-local scratch
 // (matches the pre-#77 contract for those callers).
 
-HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng &rng,
-                            int attempt_idx, const double *initial_solution) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
+HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng& rng,
+                            int attempt_idx, const double* initial_solution) {
+    const auto* model = mipsolver.model_;
+    auto* mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
     if (ncol == 0 || nrow == 0) {

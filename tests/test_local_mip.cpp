@@ -380,7 +380,7 @@ namespace {
 // Callers must have started the HiGHS task scheduler first (see the
 // `initialize_scheduler()` note at each call site).
 std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback& cb,
-                                                    const char* instance = "flugpl.mps") {
+                                                     const char* instance = "flugpl.mps") {
     // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
     // that leaves `mipsolver.model_` pointing at the original LP.
     // The heuristics' `run` only needs the LP shape and
@@ -445,8 +445,8 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
     // `initialize_scheduler()` calls are no-ops.
     highs::parallel::initialize_scheduler();
 
-    using RunFn = size_t (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
-                             IncumbentSink&);
+    using RunFn =
+        size_t (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
     auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
@@ -468,8 +468,7 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
         // each runner will execute meaningful work (so `returned > 0` is
         // very likely), small enough that the test stays sub-second.
         const size_t budget = 200000;
-        const size_t returned =
-            run_fn(problem, make_budget(budget, exec.num_workers), exec, sink);
+        const size_t returned = run_fn(problem, make_budget(budget, exec.num_workers), exec, sink);
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 

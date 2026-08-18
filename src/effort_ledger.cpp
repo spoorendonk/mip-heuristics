@@ -6,9 +6,11 @@
 
 #include <cassert>
 
-double EffortLedger::now_s() const { return mipsolver_.timer_.read(); }
+double EffortLedger::now_s() const {
+    return mipsolver_.timer_.read();
+}
 
-void EffortLedger::charge_presolve(const char *name, size_t effort, bool found, double t0_s,
+void EffortLedger::charge_presolve(const char* name, size_t effort, bool found, double t0_s,
                                    double t1_s) {
     book(name, "presolve", effort, found, t0_s, t1_s);
 }
@@ -23,10 +25,10 @@ void EffortLedger::note_presolve_span(double t0_s, double t1_s) {
     mipsolver_.mipdata_->presolve_heuristic_time += t1_s - t0_s;
 }
 
-void EffortLedger::charge_dive(const char *name, size_t effort, bool found, int64_t setup_lp_iters,
+void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
                                size_t nnz, double t0_s, double t1_s) {
     assert(nnz > 0);
-    auto *mipdata = mipsolver_.mipdata_.get();
+    auto* mipdata = mipsolver_.mipdata_.get();
     // Reference-LP iterations directly, worker effort converted at nnz
     // units per LP iteration.  This is what makes the dive heuristic
     // compete with RENS/RINS for the vanilla `mip_heuristic_effort`
@@ -45,8 +47,8 @@ void EffortLedger::charge_dive(const char *name, size_t effort, bool found, int6
     book(name, "dive", effort, found, t0_s, t1_s);
 }
 
-void EffortLedger::book(const char *name, const char *phase, size_t effort, bool found,
-                        double t0_s, double t1_s) {
+void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
+                        double t1_s) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;
 
     // Two lines per observation, deliberately:
@@ -73,7 +75,7 @@ void EffortLedger::book(const char *name, const char *phase, size_t effort, bool
     const double wall_ms = (t1_s - t0_s) * 1000.0;
     const double effort_per_ms =
         (effort > 0 && wall_ms > 0.0) ? static_cast<double>(effort) / wall_ms : 0.0;
-    const HighsLogOptions &log_options = mipsolver_.options_mip_->log_options;
+    const HighsLogOptions& log_options = mipsolver_.options_mip_->log_options;
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Sequential] heur=%s effort=%zu wall_ms=%.1f effort_per_ms=%.3f\n", name, effort,
                 wall_ms, effort_per_ms);

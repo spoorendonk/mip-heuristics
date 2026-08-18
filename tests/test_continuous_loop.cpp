@@ -110,7 +110,7 @@ TEST_CASE("ContinuousLoopState: multi-threaded add_effort monotonic accumulation
             }
         });
     }
-    for (auto &th : threads) {
+    for (auto& th : threads) {
         th.join();
     }
 
@@ -143,7 +143,7 @@ TEST_CASE("ContinuousLoopState: multi-threaded add_effort triggers stop exactly 
             }
         });
     }
-    for (auto &th : threads) {
+    for (auto& th : threads) {
         th.join();
     }
 
@@ -155,7 +155,7 @@ TEST_CASE("ContinuousLoopState: multi-threaded add_effort triggers stop exactly 
     // Atomicity of fetch_add guarantees exactly one such call across all
     // threads.
     int crossings = 0;
-    for (const auto &per_thread : observed) {
+    for (const auto& per_thread : observed) {
         for (size_t total : per_thread) {
             if (total >= kBudget && total - kChunk < kBudget) {
                 ++crossings;
@@ -246,8 +246,7 @@ TEST_CASE("ContinuousLoopState: poller seat is exclusive and starts with worker 
     REQUIRE_FALSE(loop.claim_poller(2));
 }
 
-TEST_CASE("ContinuousLoopState: releasing the seat lets a peer take over",
-          "[continuous_loop]") {
+TEST_CASE("ContinuousLoopState: releasing the seat lets a peer take over", "[continuous_loop]") {
     ContinuousLoopState loop;
     REQUIRE(loop.claim_poller(0));
     REQUIRE_FALSE(loop.claim_poller(1));
@@ -261,8 +260,7 @@ TEST_CASE("ContinuousLoopState: releasing the seat lets a peer take over",
     REQUIRE(loop.claim_poller(1));
 }
 
-TEST_CASE("ContinuousLoopState: exactly one thread wins a contested seat",
-          "[continuous_loop]") {
+TEST_CASE("ContinuousLoopState: exactly one thread wins a contested seat", "[continuous_loop]") {
     // The whole point of the compare-exchange: if two workers could both
     // believe they hold the seat, they would call the non-thread-safe
     // HiGHS timer/terminator concurrently.

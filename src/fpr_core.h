@@ -149,15 +149,15 @@ struct FprConfig {
     size_t max_effort;
     // Per-variable hint for choose_fix_value (nullable; length ncol if non-null).
     // Used only on attempt 0 (papers: FPR uses incumbent, Scylla uses LP sol).
-    const double *hint;
+    const double* hint;
     // Ranking scores per variable (length ncol; caller computes).
     // Used only when strategy is null (legacy mode).
-    const double *scores;
+    const double* scores;
     // Fallback values for zero-cost continuous vars (length ncol)
-    const double *cont_fallback;
+    const double* cont_fallback;
     // Optional pre-built CSC matrix (avoids redundant build if caller already has
     // one)
-    const CscMatrix *csc;
+    const CscMatrix* csc;
 
     // --- Framework mode (paper Section 3) ---
     FrameworkMode mode = FrameworkMode::kDiveprop;
@@ -165,13 +165,13 @@ struct FprConfig {
     // --- Strategy (paper Table 3) ---
     // When non-null, uses the paper's variable ranking and value selection.
     // When null, falls back to legacy scores-based ranking + hint/goodobj.
-    const FprStrategyConfig *strategy = nullptr;
+    const FprStrategyConfig* strategy = nullptr;
     // LP reference solution for LP-based strategies (nullable).
-    const double *lp_ref = nullptr;
+    const double* lp_ref = nullptr;
 
     // --- Pre-computed variable order (avoids data races on cliquePartition) ---
     // When non-null, fpr_attempt uses this order instead of computing one.
-    const HighsInt *precomputed_var_order = nullptr;
+    const HighsInt* precomputed_var_order = nullptr;
     HighsInt precomputed_var_order_size = 0;
 
     // --- Binary-column snapshot (avoids a data race on the root domain) ---
@@ -189,7 +189,7 @@ struct FprConfig {
     // itself when it is null; no caller relies on that today (both
     // one-shot callers set the mask), it exists to match the `csc` /
     // `scratch` compatibility shims beside it.
-    const uint8_t *binary_mask = nullptr;
+    const uint8_t* binary_mask = nullptr;
 
     // --- Repair parameters (paper: Salvagnin et al. 2025, Section 5) ---
     // Noise parameter p: probability of random walk move (paper default: 0.75).
@@ -225,15 +225,15 @@ struct FprConfig {
     // In practice every hot-path caller pairs a stable `csc` with its
     // scratch, so this is a latent-footgun warning rather than a live
     // hazard.
-    FprScratch *scratch = nullptr;
+    FprScratch* scratch = nullptr;
 };
 
 // Single-attempt one-shot variant. Returns result without submitting.
 // Uses provided RNG and attempt index. If initial_solution is non-null, uses it
 // as the starting point (overriding cfg.hint). Otherwise falls back to cfg.hint
 // on attempt 0, or random initialization on later attempts.
-HeuristicResult fpr_attempt(HighsMipSolver &mipsolver, const FprConfig &cfg, Rng &rng,
-                            int attempt_idx, const double *initial_solution);
+HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng& rng,
+                            int attempt_idx, const double* initial_solution);
 
 // ---------------------------------------------------------------------------
 // Pause/resume lifecycle (issue #77)
@@ -319,8 +319,8 @@ enum class FprStepResult {
 // `cfg.scratch` MUST be non-null; the lifecycle API does not support the
 // one-shot `local_scratch` fallback (one-shot callers should keep using
 // `fpr_attempt`).
-void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const FprConfig &cfg,
-                       Rng &rng, int attempt_idx, const double *initial_solution);
+void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const FprConfig& cfg,
+                       Rng& rng, int attempt_idx, const double* initial_solution);
 
 // Phase 2 DFS resume.  Runs the fix-and-propagate loop until either the
 // per-call effort budget is exhausted (returns `kBudgetGate`) or the DFS
@@ -330,8 +330,8 @@ void fpr_attempt_begin(FprAttemptState &state, HighsMipSolver &mipsolver, const 
 // `cfg.max_effort` (which the worker typically sets very high so the slice
 // is the only effective gate).  Calling `step` when
 // `state.phase != kDfs` is a programming error.
-FprStepResult fpr_attempt_step(FprAttemptState &state, HighsMipSolver &mipsolver,
-                               const FprConfig &cfg, Rng &rng, size_t effort_remaining);
+FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver,
+                               const FprConfig& cfg, Rng& rng, size_t effort_remaining);
 
 // Phase 2.5 (fill remaining unfixed) + Phase 3 (repair / 1-opt) + result
 // build.  Always runs to verdict in one call (Phase 3 self-throttles via
@@ -339,5 +339,5 @@ FprStepResult fpr_attempt_step(FprAttemptState &state, HighsMipSolver &mipsolver
 // `state.phase = kIdle` so the next attempt can call `begin` on the same
 // state object.  `state.found_complete == false` shortcuts to a `failed`
 // verdict.
-HeuristicResult fpr_attempt_finish(FprAttemptState &state, HighsMipSolver &mipsolver,
-                                   const FprConfig &cfg, Rng &rng);
+HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipsolver,
+                                   const FprConfig& cfg, Rng& rng);

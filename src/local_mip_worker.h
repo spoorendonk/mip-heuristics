@@ -23,10 +23,10 @@ inline constexpr double kPerturbBinaryFraction = 0.2;
 // not the live root domain: this runs on worker threads while a peer's
 // accepted solution propagates that domain (issue #99).  Must be at least
 // `ncol` entries.
-void perturb_solution(std::vector<double> &solution, const uint8_t *binary,
-                      const std::vector<HighsVarType> &integrality,
-                      const std::vector<double> &col_lb, const std::vector<double> &col_ub,
-                      HighsInt ncol, Rng &rng);
+void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
+                      const std::vector<HighsVarType>& integrality,
+                      const std::vector<double>& col_lb, const std::vector<double>& col_ub,
+                      HighsInt ncol, Rng& rng);
 
 // Worker wrapping WorkerCtx. Runs weighted local search, accumulating
 // effort and submitting improving solutions through the shared
@@ -41,18 +41,18 @@ public:
     // means the pool and the incumbent were empty too.
     // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
     // issue #99); it must outlive the worker.
-    LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
-                   size_t total_budget, uint32_t seed, const double *initial_solution,
-                   const uint8_t *binary);
+    LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
+                   size_t total_budget, uint32_t seed, const double* initial_solution,
+                   const uint8_t* binary);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
     bool finished() const { return base_.finished; }
 
 private:
-    HighsMipSolver &mipsolver_;
-    const CscMatrix &csc_;
-    IncumbentSink &sink_;
+    HighsMipSolver& mipsolver_;
+    const CscMatrix& csc_;
+    IncumbentSink& sink_;
     Rng rng_;
 
     // Effort / staleness / finished bookkeeping.  `total_budget` and

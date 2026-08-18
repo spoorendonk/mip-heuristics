@@ -19,7 +19,7 @@ namespace local_mip_detail {
 
 namespace {
 
-void append_candidate(WorkerCtx &ctx, std::vector<BatchCand> &batch, HighsInt j, double delta) {
+void append_candidate(WorkerCtx& ctx, std::vector<BatchCand>& batch, HighsInt j, double delta) {
     double new_val = ctx.clamp_and_round(j, ctx.solution[j] + delta);
     if (std::abs(new_val - ctx.solution[j]) < kEpsZero) {
         return;
@@ -32,7 +32,7 @@ void append_candidate(WorkerCtx &ctx, std::vector<BatchCand> &batch, HighsInt j,
 // Paper Definitions 5-10: two-level scoring function.
 // Progress score (level 1): discrete constraint-transition scores + objective.
 // Bonus score (level 2): breakthrough bonus + robustness bonus.
-std::pair<double, double> compute_candidate_scores(WorkerCtx &ctx, HighsInt j, double new_val,
+std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, double new_val,
                                                    bool best_feasible, double best_obj) {
     double old_val = ctx.solution[j];
     double delta = new_val - old_val;
@@ -110,7 +110,7 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx &ctx, HighsInt j, d
     return {progress, bonus};
 }
 
-bool is_aspiration(const WorkerCtx &ctx, HighsInt j, double new_val, double best_obj,
+bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best_obj,
                    bool best_feasible) {
     if (!best_feasible) {
         return false;
@@ -121,7 +121,7 @@ bool is_aspiration(const WorkerCtx &ctx, HighsInt j, double new_val, double best
     return ctx.minimize ? (new_obj < best_obj - ctx.epsilon) : (new_obj > best_obj + ctx.epsilon);
 }
 
-double compute_breakthrough_delta(const WorkerCtx &ctx, HighsInt j, double cur_obj,
+double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_obj,
                                   double best_obj) {
     double obj_coeff = ctx.col_cost[j];
     if (std::abs(obj_coeff) < kEpsZero) {
@@ -146,10 +146,10 @@ double compute_breakthrough_delta(const WorkerCtx &ctx, HighsInt j, double cur_o
     return delta;
 }
 
-Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch, HighsInt step,
+Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, HighsInt step,
                                  bool aspiration, double best_obj, bool best_feasible) {
     Candidate best;
-    for (const auto &c : batch) {
+    for (const auto& c : batch) {
         double delta = c.new_val - ctx.solution[c.var_idx];
         if (std::abs(delta) < kEpsZero) {
             continue;
@@ -177,13 +177,13 @@ Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch, 
     return best;
 }
 
-Candidate infeasible_step(WorkerCtx &ctx, Rng &rng, HighsInt step, bool best_feasible,
-                          double best_objective, const std::vector<HighsInt> &costed_vars,
-                          const std::vector<HighsInt> &binary_vars) {
+Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_feasible,
+                          double best_objective, const std::vector<HighsInt>& costed_vars,
+                          const std::vector<HighsInt>& binary_vars) {
     ctx.was_infeasible = true;
 
-    auto &batch = ctx.batch;
-    auto &sampled = ctx.sampled;
+    auto& batch = ctx.batch;
+    auto& sampled = ctx.sampled;
 
     // --- Phase 1: BMS tight moves from violated constraints ---
     HighsInt num_to_sample = std::min(kBmsConstraints * 3, ctx.violated.size());
@@ -203,14 +203,14 @@ Candidate infeasible_step(WorkerCtx &ctx, Rng &rng, HighsInt step, bool best_fea
 
     if (static_cast<HighsInt>(sampled.size()) > num_to_keep) {
         std::partial_sort(sampled.begin(), sampled.begin() + num_to_keep, sampled.end(),
-                          [](const WeightedCon &a, const WeightedCon &b) { return a.w > b.w; });
+                          [](const WeightedCon& a, const WeightedCon& b) { return a.w > b.w; });
         sampled.resize(num_to_keep);
     }
 
     batch.clear();
     HighsInt budget_remaining = kBmsBudget;
 
-    for (auto &[ci, w] : sampled) {
+    for (auto& [ci, w] : sampled) {
         (void)w;
         if (budget_remaining <= 0) {
             break;

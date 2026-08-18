@@ -15,7 +15,7 @@ namespace local_mip_detail {
 
 namespace {
 
-double compute_objective(const HighsLp *model, const std::vector<double> &solution) {
+double compute_objective(const HighsLp* model, const std::vector<double>& solution) {
     double obj = model->offset_;
     for (HighsInt j = 0; j < model->num_col_; ++j) {
         obj += model->col_cost_[j] * solution[j];
@@ -27,8 +27,7 @@ double compute_objective(const HighsLp *model, const std::vector<double> &soluti
 
 // --- WorkerCtx ---
 
-WorkerCtx::WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_,
-                     const uint8_t *binary_)
+WorkerCtx::WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uint8_t* binary_)
     : model(mipsolver.model_),
       ARstart(mipsolver.mipdata_->ARstart_),
       ARindex(mipsolver.mipdata_->ARindex_),
@@ -101,7 +100,7 @@ void WorkerCtx::apply_move(HighsInt j, double new_val) {
     }
 }
 
-void WorkerCtx::apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, Rng &rng) {
+void WorkerCtx::apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, Rng& rng) {
     double delta = new_val - solution[j];
     apply_move(j, new_val);
     HighsInt tabu_len = kTabuBase + static_cast<HighsInt>(rng() % kTabuVar);
@@ -198,7 +197,7 @@ double WorkerCtx::compute_tight_delta(HighsInt i, HighsInt j, double coeff) cons
     return delta;
 }
 
-void WorkerCtx::update_weights(Rng &rng, bool is_feasible, bool best_feasible, double best_obj) {
+void WorkerCtx::update_weights(Rng& rng, bool is_feasible, bool best_feasible, double best_obj) {
     std::uniform_real_distribution<double> coin(0.0, 1.0);
     if (coin(rng) >= kSmoothProb) {
         // With probability 1 - sp: strengthen
@@ -226,7 +225,7 @@ void WorkerCtx::update_weights(Rng &rng, bool is_feasible, bool best_feasible, d
 
 // --- LiftCache method implementations ---
 
-void LiftCache::recompute_one(HighsInt j, WorkerCtx &ctx) {
+void LiftCache::recompute_one(HighsInt j, WorkerCtx& ctx) {
     double old_score = score[j];
     if (std::abs(ctx.col_cost[j]) < kEpsZero) {
         score[j] = 0.0;
@@ -307,7 +306,7 @@ void LiftCache::recompute_one(HighsInt j, WorkerCtx &ctx) {
     dirty[j] = false;
 }
 
-void LiftCache::recompute_all(WorkerCtx &ctx) {
+void LiftCache::recompute_all(WorkerCtx& ctx) {
     if (all_dirty) {
         // Only recompute columns with nonzero cost; zero-cost columns
         // always have score=0 and never need lift recomputation.

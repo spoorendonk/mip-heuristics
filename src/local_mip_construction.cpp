@@ -72,10 +72,10 @@ double zero_start_value(double lb, double ub, bool integer) {
 
 // Compute all row LHS from `solution` and fill `lhs`.  Charges
 // `effort` proportional to the nnz (matches LHS computation cost).
-void compute_all_lhs(HighsInt nrow, const std::vector<HighsInt> &ARstart,
-                     const std::vector<HighsInt> &ARindex, const std::vector<double> &ARvalue,
-                     const std::vector<double> &solution, std::vector<double> &lhs,
-                     size_t &effort) {
+void compute_all_lhs(HighsInt nrow, const std::vector<HighsInt>& ARstart,
+                     const std::vector<HighsInt>& ARindex, const std::vector<double>& ARvalue,
+                     const std::vector<double>& solution, std::vector<double>& lhs,
+                     size_t& effort) {
     for (HighsInt i = 0; i < nrow; ++i) {
         double l = 0.0;
         for (HighsInt k = ARstart[i]; k < ARstart[i + 1]; ++k) {
@@ -96,9 +96,9 @@ struct CandidateEffect {
     HighsInt rows_newly_satisfied;  // rows containing j that transition viol→sat
 };
 
-CandidateEffect evaluate_move(HighsInt j, double old_val, double new_val, const CscMatrix &csc,
-                              const std::vector<double> &lhs, const std::vector<double> &row_lo,
-                              const std::vector<double> &row_hi, double feastol, size_t &effort) {
+CandidateEffect evaluate_move(HighsInt j, double old_val, double new_val, const CscMatrix& csc,
+                              const std::vector<double>& lhs, const std::vector<double>& row_lo,
+                              const std::vector<double>& row_hi, double feastol, size_t& effort) {
     CandidateEffect eff{0.0, 0, 0};
     double delta = new_val - old_val;
     if (std::abs(delta) < 1e-15) {
@@ -124,8 +124,8 @@ CandidateEffect evaluate_move(HighsInt j, double old_val, double new_val, const 
 }
 
 // Apply the chosen move to both `solution` and `lhs`, charging effort.
-void apply_move_inplace(HighsInt j, double new_val, std::vector<double> &solution,
-                        std::vector<double> &lhs, const CscMatrix &csc, size_t &effort) {
+void apply_move_inplace(HighsInt j, double new_val, std::vector<double>& solution,
+                        std::vector<double>& lhs, const CscMatrix& csc, size_t& effort) {
     double old_val = solution[j];
     double delta = new_val - old_val;
     if (std::abs(delta) < 1e-15) {
@@ -143,10 +143,10 @@ void apply_move_inplace(HighsInt j, double new_val, std::vector<double> &solutio
 // `coeff` that would satisfy row `i` from the current `lhs[i]`.
 // Mirrors `WorkerCtx::compute_tight_delta` but as a free function so we
 // don't need to build a WorkerCtx just for construction.
-double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vector<double> &lhs,
-                           const std::vector<double> &row_lo, const std::vector<double> &row_hi,
-                           const std::vector<double> &col_lb, const std::vector<double> &col_ub,
-                           const std::vector<double> &solution, double feastol, bool integer) {
+double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vector<double>& lhs,
+                           const std::vector<double>& row_lo, const std::vector<double>& row_hi,
+                           const std::vector<double>& col_lb, const std::vector<double>& col_ub,
+                           const std::vector<double>& solution, double feastol, bool integer) {
     if (std::abs(coeff) < 1e-15) {
         return 0.0;
     }
@@ -220,8 +220,8 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
 // R3-4 round-5); peak capacity is bounded by the largest `ncol` this
 // thread has ever sorted, which on MIPLIB scales is at most a few MB
 // of `uint32_t`.
-void weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng,
-                    std::vector<HighsInt> &out_order) {
+void weighted_order(const CscMatrix& csc, HighsInt ncol, Rng& rng,
+                    std::vector<HighsInt>& out_order) {
     thread_local std::vector<uint32_t> tiebreak;
     out_order.resize(ncol);
     tiebreak.resize(ncol);
@@ -249,8 +249,8 @@ void weighted_order(const CscMatrix &csc, HighsInt ncol, Rng &rng,
 
 }  // namespace
 
-size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size_t max_effort,
-                                  std::vector<double> &out_solution) {
+size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, size_t max_effort,
+                                  std::vector<double>& out_solution) {
     const HighsInt ncol = inputs.ncol;
     const HighsInt nrow = inputs.nrow;
 
@@ -259,15 +259,15 @@ size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, si
         return 0;
     }
 
-    const auto &col_lb = *inputs.col_lb;
-    const auto &col_ub = *inputs.col_ub;
-    const auto &row_lo = *inputs.row_lo;
-    const auto &row_hi = *inputs.row_hi;
-    const auto &integrality = *inputs.integrality;
-    const auto &ARstart = *inputs.ARstart;
-    const auto &ARindex = *inputs.ARindex;
-    const auto &ARvalue = *inputs.ARvalue;
-    const CscMatrix &csc = *inputs.csc;
+    const auto& col_lb = *inputs.col_lb;
+    const auto& col_ub = *inputs.col_ub;
+    const auto& row_lo = *inputs.row_lo;
+    const auto& row_hi = *inputs.row_hi;
+    const auto& integrality = *inputs.integrality;
+    const auto& ARstart = *inputs.ARstart;
+    const auto& ARindex = *inputs.ARindex;
+    const auto& ARvalue = *inputs.ARvalue;
+    const CscMatrix& csc = *inputs.csc;
     const double feastol = inputs.feastol;
 
     // --- Phase A: zero-start (paper Alg 1 Line 1) -----------------------
@@ -427,10 +427,10 @@ size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, si
 
 // HighsMipSolver& thin wrapper: assemble ConstructionInputs from the
 // solver's model + mipdata and delegate.
-size_t construct_initial_solution(HighsMipSolver &mipsolver, const CscMatrix &csc, Rng &rng,
-                                  size_t max_effort, std::vector<double> &out_solution) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
+size_t construct_initial_solution(HighsMipSolver& mipsolver, const CscMatrix& csc, Rng& rng,
+                                  size_t max_effort, std::vector<double>& out_solution) {
+    const auto* model = mipsolver.model_;
+    auto* mipdata = mipsolver.mipdata_.get();
     ConstructionInputs inputs;
     inputs.ncol = model->num_col_;
     inputs.nrow = model->num_row_;

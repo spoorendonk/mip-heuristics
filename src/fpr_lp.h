@@ -25,7 +25,7 @@ namespace fpr_lp {
 //    search under parallel=on): the counters above are shared and fpr_lp
 //    has no worker-local flush infrastructure, so running there would
 //    race.  Never fires on the default single-search-worker runs.
-void run(HighsMipSolver &mipsolver);
+void run(HighsMipSolver& mipsolver);
 
 // Test hook: counter incremented once per fpr_lp dispatch (one bump per
 // `run_workers` call, not per worker).  fpr_lp is a

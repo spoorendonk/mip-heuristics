@@ -22,7 +22,7 @@ namespace scylla {
 // reproducible under a fixed `random_seed`.
 //
 // Implements the uniform runner contract; see heuristic_context.h.
-size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionContext &exec,
-           IncumbentSink &sink);
+size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
+           IncumbentSink& sink);
 
 }  // namespace scylla

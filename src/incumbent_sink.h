@@ -27,15 +27,15 @@ public:
     // Constructs the pool, seeds it from the current incumbent, and wires
     // the accept callback.  `source` tags everything offered until
     // `set_source` says otherwise.
-    IncumbentSink(HighsMipSolver &mipsolver, int source);
+    IncumbentSink(HighsMipSolver& mipsolver, int source);
 
-    IncumbentSink(const IncumbentSink &) = delete;
-    IncumbentSink &operator=(const IncumbentSink &) = delete;
+    IncumbentSink(const IncumbentSink&) = delete;
+    IncumbentSink& operator=(const IncumbentSink&) = delete;
 
     // Offer a candidate solution.  Returns true if the pool accepted it,
     // in which case HiGHS has already been told, from inside this call.
     // Safe to call concurrently from any worker.
-    bool offer(double objective, const std::vector<double> &solution) {
+    bool offer(double objective, const std::vector<double>& solution) {
         const bool accepted = pool_.try_add(objective, solution, source_);
         if (accepted) {
             accepted_.fetch_add(1, std::memory_order_relaxed);
@@ -67,8 +67,8 @@ public:
 
     // Restart material for a worker beginning a fresh attempt.  Both are
     // thread-safe (the pool takes its own lock).
-    bool get_restart(Rng &rng, std::vector<double> &out) { return pool_.get_restart(rng, out); }
-    bool copy_best(std::vector<double> &out) { return pool_.copy_best(out); }
+    bool get_restart(Rng& rng, std::vector<double>& out) { return pool_.get_restart(rng, out); }
+    bool copy_best(std::vector<double>& out) { return pool_.copy_best(out); }
 
 private:
     SolutionPool pool_;

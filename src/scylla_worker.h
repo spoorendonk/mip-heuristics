@@ -86,11 +86,11 @@ public:
     // when `scylla::run` rebuilds a retired worker, and computing a var
     // order there would read the live root domain and mutate the clique
     // table under a concurrent `addIncumbent`.
-    ScyllaWorker(HighsMipSolver &mipsolver, ContestedPdlp &pdlp, const CscMatrix &csc,
-                 IncumbentSink &sink, const uint8_t *binary,
-                 const std::vector<std::vector<HighsInt>> &var_orders, size_t total_budget,
+    ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const CscMatrix& csc,
+                 IncumbentSink& sink, const uint8_t* binary,
+                 const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
                  uint32_t seed, int worker_idx, int num_workers,
-                 std::atomic<uint64_t> *improvement_gen = nullptr);
+                 std::atomic<uint64_t>* improvement_gen = nullptr);
 
     // Run iterations until attempt_budget effort is consumed.  Sets
     // base_.finished when the worker cannot make further progress.
@@ -114,14 +114,14 @@ private:
     // empty primal), false to continue with `iters_out` set and
     // `x_bar_ptr` pointing at `warm_start_col_value_`.  Kept on the
     // header so tests can call it independently if needed.
-    bool absorb_fresh_solve(ContestedPdlp::SolveResult &result, HighsInt &iters_out,
-                            const std::vector<double> *&x_bar_ptr);
+    bool absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsInt& iters_out,
+                            const std::vector<double>*& x_bar_ptr);
 
-    HighsMipSolver &mipsolver_;
-    ContestedPdlp &pdlp_;
-    const CscMatrix &csc_;
-    const uint8_t *binary_;
-    IncumbentSink &sink_;
+    HighsMipSolver& mipsolver_;
+    ContestedPdlp& pdlp_;
+    const CscMatrix& csc_;
+    const uint8_t* binary_;
+    IncumbentSink& sink_;
 
     HighsInt ncol_ = 0;
     HighsInt nrow_ = 0;
@@ -182,7 +182,7 @@ private:
     // FPR strategy assignment (static, one per worker).
     int fpr_config_index_ = 0;
     // Points into the caller's dispatch-time table; never owned.
-    const std::vector<HighsInt> *var_order_ = nullptr;
+    const std::vector<HighsInt>* var_order_ = nullptr;
 
     // Persistent scratch reused across fpr_attempt calls inside run_attempt
     // to avoid per-iteration malloc/free churn on the DFS + WalkSAT path.
@@ -198,7 +198,6 @@ private:
     // peer just improved.  Plumbed by every path that can run multiple
     // Scylla workers concurrently.  Null only in single-worker contexts
     // (LpFprWorker).
-    std::atomic<uint64_t> *improvement_gen_ = nullptr;
+    std::atomic<uint64_t>* improvement_gen_ = nullptr;
     uint64_t last_seen_gen_ = 0;
 };
-

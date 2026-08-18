@@ -61,9 +61,9 @@
 // Built once per dispatch and passed by const reference — the snapshot makes
 // it no longer trivially cheap to copy.
 struct ProblemView {
-    const HighsLp *model = nullptr;
-    const HighsMipSolverData *mipdata = nullptr;
-    const CscMatrix *csc = nullptr;
+    const HighsLp* model = nullptr;
+    const HighsMipSolverData* mipdata = nullptr;
+    const CscMatrix* csc = nullptr;
 
     // Derived sizes, previously recomputed at every call site that wanted
     // one of them.
@@ -125,9 +125,9 @@ struct ProblemView {
 
 // Snapshot `HighsDomain::isBinary` for every column.  Must run on the
 // dispatching thread, before any parallel region — see `ProblemView::binary`.
-inline std::vector<uint8_t> build_binary_mask(const HighsMipSolver &mipsolver) {
+inline std::vector<uint8_t> build_binary_mask(const HighsMipSolver& mipsolver) {
     const HighsInt ncol = mipsolver.model_->num_col_;
-    const HighsDomain &domain = mipsolver.mipdata_->getDomain();
+    const HighsDomain& domain = mipsolver.mipdata_->getDomain();
     std::vector<uint8_t> mask(static_cast<size_t>(ncol), 0);
     for (HighsInt j = 0; j < ncol; ++j) {
         mask[j] = domain.isBinary(j) ? 1 : 0;
@@ -157,9 +157,9 @@ struct HeuristicBudget {
 // concern was never benchmarked; recorded here so it is not lost with the
 // constant, but no cadence changed for any surviving execution path.
 struct ExecutionContext {
-    HighsMipSolver &mipsolver;
-    size_t num_workers;   // highs::parallel::num_threads(), at least 1
-    uint32_t base_seed;   // seeded from `random_seed` via heuristic_base_seed
+    HighsMipSolver& mipsolver;
+    size_t num_workers;  // highs::parallel::num_threads(), at least 1
+    uint32_t base_seed;  // seeded from `random_seed` via heuristic_base_seed
     double time_limit;
 
     // The single "should we stop?" predicate.  Three hand-rolled copies of
@@ -177,23 +177,20 @@ struct ExecutionContext {
     // is skipped otherwise — and predates this struct; folding the three
     // hand-rolled copies into one method is what makes it visible.
     bool terminated() const {
-        return mipsolver.mipdata_->terminatorTerminated() ||
-               mipsolver.timer_.read() >= time_limit;
+        return mipsolver.mipdata_->terminatorTerminated() || mipsolver.timer_.read() >= time_limit;
     }
 
     // Deterministic seed for worker `w`.  The runner seeds its own per-worker
     // `Rng` with this, and heuristics that pre-construct their workers seed
     // them with it too — three hand-written copies of the expression before
     // it lived here, which is three chances for one of them to drift.
-    uint32_t worker_seed(int w) const {
-        return base_seed + static_cast<uint32_t>(w) * kSeedStride;
-    }
+    uint32_t worker_seed(int w) const { return base_seed + static_cast<uint32_t>(w) * kSeedStride; }
 };
 
 // Derive one dispatch's execution parameters.  Shared by `run_sequential`
 // and by `fpr_lp`, which runs on the same continuous parallel runner from a
 // setup of its own shape.
-inline ExecutionContext make_exec(HighsMipSolver &mipsolver) {
+inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
     return ExecutionContext{mipsolver,
                             static_cast<size_t>(std::max(1, highs::parallel::num_threads())),
                             heuristic_base_seed(mipsolver.options_mip_->random_seed),
@@ -218,9 +215,9 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers) {
 // runs, so a single snapshot is valid for all four.  (Each heuristic used
 // to build its own identical copy.)  Must be called on the dispatching
 // thread, before any parallel region — see `ProblemView::incumbent`.
-inline ProblemView make_problem(HighsMipSolver &mipsolver, CscMatrix &csc) {
-    const HighsLp *model = mipsolver.model_;
-    HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
+inline ProblemView make_problem(HighsMipSolver& mipsolver, CscMatrix& csc) {
+    const HighsLp* model = mipsolver.model_;
+    HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
     csc = build_csc(model->num_col_, model->num_row_, mipdata->ARstart_, mipdata->ARindex_,
                     mipdata->ARvalue_);
     // Designated initialisers: two snapshots have been appended to this

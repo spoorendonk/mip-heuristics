@@ -21,7 +21,7 @@ inline constexpr double kCycleTol = 0.5;  // integer values differ by >= 1.0
 inline constexpr int kMaxPdlpStalls = 3;
 
 // Build LP relaxation from the presolved MIP model (strip integrality).
-inline HighsLp build_lp_relaxation(const HighsLp &model, const HighsMipSolverData &mipdata) {
+inline HighsLp build_lp_relaxation(const HighsLp& model, const HighsMipSolverData& mipdata) {
     HighsLp lp;
     lp.num_col_ = model.num_col_;
     lp.num_row_ = model.num_row_;
@@ -43,10 +43,10 @@ inline HighsLp build_lp_relaxation(const HighsLp &model, const HighsMipSolverDat
 
 // Compute modified objective (Algorithm 1.1, line 15).
 inline void compute_pump_objective(
-    const std::vector<double> &orig_cost, const std::vector<double> &x_rounded,
-    const std::vector<double> &x_lp, const std::vector<HighsVarType> &integrality,
-    const std::vector<double> &col_lb, const std::vector<double> &col_ub, double alpha_K,
-    double cost_scale, HighsInt ncol, std::vector<double> &modified_cost) {
+    const std::vector<double>& orig_cost, const std::vector<double>& x_rounded,
+    const std::vector<double>& x_lp, const std::vector<HighsVarType>& integrality,
+    const std::vector<double>& col_lb, const std::vector<double>& col_ub, double alpha_K,
+    double cost_scale, HighsInt ncol, std::vector<double>& modified_cost) {
     for (HighsInt j = 0; j < ncol; ++j) {
         double scaled_cost = alpha_K * cost_scale * orig_cost[j];
         if (is_integer(integrality, j)) {
@@ -65,10 +65,10 @@ inline void compute_pump_objective(
 }
 
 // Detect cycling: check if x_rounded matches any solution in history.
-inline bool detect_cycling(const std::vector<std::vector<double>> &history,
-                           const std::vector<double> &x_rounded,
-                           const std::vector<HighsVarType> &integrality, HighsInt ncol) {
-    for (const auto &prev : history) {
+inline bool detect_cycling(const std::vector<std::vector<double>>& history,
+                           const std::vector<double>& x_rounded,
+                           const std::vector<HighsVarType>& integrality, HighsInt ncol) {
+    for (const auto& prev : history) {
         if (prev.empty()) {
             continue;
         }
@@ -90,16 +90,16 @@ inline bool detect_cycling(const std::vector<std::vector<double>> &history,
 }
 
 // Perturb a rounded solution to break cycling (Algorithm 1.1, line 14).
-inline void perturb(std::vector<double> &x, const HighsLp &model, Rng &rng) {
+inline void perturb(std::vector<double>& x, const HighsLp& model, Rng& rng) {
     // `kInfBoundShiftWindow` and `kSafeInt64DoubleRange` are shared
     // with `local_mip_detail::perturb_solution` via heuristic_common.h
     // (R1-4 / R3-11 round-5 review): the two perturbation paths must
     // use the same window so their bound-clamping behaviour stays
     // identical.
     const HighsInt ncol = model.num_col_;
-    const auto &integrality = model.integrality_;
-    const auto &lb = model.col_lower_;
-    const auto &ub = model.col_upper_;
+    const auto& integrality = model.integrality_;
+    const auto& lb = model.col_lower_;
+    const auto& ub = model.col_upper_;
 
     for (HighsInt j = 0; j < ncol; ++j) {
         if (!is_integer(integrality, j)) {

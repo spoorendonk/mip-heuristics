@@ -84,12 +84,12 @@ public:
     // Builds the shared PDLP Highs instance from the presolved MIP
     // relaxation.  `initialized()==false` when the instance has no
     // rows / no nonzeros; callers should short-circuit.
-    ContestedPdlp(HighsMipSolver &mipsolver, HighsInt pdlp_iter_cap);
+    ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap);
 
     virtual ~ContestedPdlp() = default;
 
-    ContestedPdlp(const ContestedPdlp &) = delete;
-    ContestedPdlp &operator=(const ContestedPdlp &) = delete;
+    ContestedPdlp(const ContestedPdlp&) = delete;
+    ContestedPdlp& operator=(const ContestedPdlp&) = delete;
 
     bool initialized() const { return initialized_; }
     size_t nnz_lp() const { return nnz_lp_; }
@@ -107,9 +107,9 @@ public:
     // On success, publishes the result as the latest Snapshot so that
     // other workers hitting `try_solve_or_snapshot` can round against
     // it concurrently.
-    SolveResult solve(const std::vector<double> &modified_cost,
-                      const std::vector<double> &warm_start_col_value,
-                      const std::vector<double> &warm_start_row_dual, bool warm_start_valid,
+    SolveResult solve(const std::vector<double>& modified_cost,
+                      const std::vector<double>& warm_start_col_value,
+                      const std::vector<double>& warm_start_row_dual, bool warm_start_valid,
                       double epsilon, double time_limit);
 
     // Non-blocking variant: `try_lock` the PDLP mutex.
@@ -123,9 +123,9 @@ public:
     // Invariant preserved: at most one PDLP solve is in flight at a
     // time (cuPDLP GPU state safety).  Enforced by `try_lock` plus a
     // debug assertion on `in_flight_count_`.
-    TrySolveResult try_solve_or_snapshot(const std::vector<double> &modified_cost,
-                                         const std::vector<double> &warm_start_col_value,
-                                         const std::vector<double> &warm_start_row_dual,
+    TrySolveResult try_solve_or_snapshot(const std::vector<double>& modified_cost,
+                                         const std::vector<double>& warm_start_col_value,
+                                         const std::vector<double>& warm_start_row_dual,
                                          bool warm_start_valid, double epsilon, double time_limit);
 
     // Latest completed Snapshot (shared ownership) or null if no solve
@@ -154,9 +154,9 @@ protected:
     // plumbing without dragging a full Highs instance in.  Caller
     // (either `solve()` or `try_solve_or_snapshot()`) already holds
     // `mu_` when this runs.
-    virtual SolveResult solve_locked(const std::vector<double> &modified_cost,
-                                     const std::vector<double> &warm_start_col_value,
-                                     const std::vector<double> &warm_start_row_dual,
+    virtual SolveResult solve_locked(const std::vector<double>& modified_cost,
+                                     const std::vector<double>& warm_start_col_value,
+                                     const std::vector<double>& warm_start_row_dual,
                                      bool warm_start_valid, double epsilon, double time_limit);
 
     // Constructor for the test double: does not build the Highs LP.
@@ -182,9 +182,9 @@ protected:
 private:
     // Wraps `solve_locked` with the in-flight-count tripwire and the
     // snapshot publication.  `mu_` must be held on entry.
-    SolveResult run_locked_with_accounting(const std::vector<double> &modified_cost,
-                                           const std::vector<double> &warm_start_col_value,
-                                           const std::vector<double> &warm_start_row_dual,
+    SolveResult run_locked_with_accounting(const std::vector<double>& modified_cost,
+                                           const std::vector<double>& warm_start_col_value,
+                                           const std::vector<double>& warm_start_row_dual,
                                            bool warm_start_valid, double epsilon,
                                            double time_limit);
 
@@ -192,7 +192,7 @@ private:
     // Snapshot.  Only called while `mu_` is held, so publications are
     // serialised; concurrent stale readers see the update via atomic
     // release/acquire.
-    void publish_snapshot_locked(const SolveResult &result);
+    void publish_snapshot_locked(const SolveResult& result);
 
     std::mutex mu_;
     Highs highs_;

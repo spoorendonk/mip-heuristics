@@ -51,7 +51,9 @@ std::vector<std::string> gt2_log_for(const char* suite) {
     });
 }
 
-std::string gt2_codes_for(const char* suite) { return source_codes(gt2_log_for(suite)); }
+std::string gt2_codes_for(const char* suite) {
+    return source_codes(gt2_log_for(suite));
+}
 
 }  // namespace
 

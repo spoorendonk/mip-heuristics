@@ -36,9 +36,9 @@ struct CscMatrix {
     std::vector<double> col_val;
 };
 
-inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow, const std::vector<HighsInt> &ARstart,
-                           const std::vector<HighsInt> &ARindex,
-                           const std::vector<double> &ARvalue) {
+inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow, const std::vector<HighsInt>& ARstart,
+                           const std::vector<HighsInt>& ARindex,
+                           const std::vector<double>& ARvalue) {
     const HighsInt nnz = static_cast<HighsInt>(ARindex.size());
     CscMatrix csc;
     csc.col_start.assign(ncol + 1, 0);
@@ -64,7 +64,7 @@ inline CscMatrix build_csc(HighsInt ncol, HighsInt nrow, const std::vector<Highs
     return csc;
 }
 
-inline bool is_integer(const std::vector<HighsVarType> &integrality, HighsInt j) {
+inline bool is_integer(const std::vector<HighsVarType>& integrality, HighsInt j) {
     return integrality[j] != HighsVarType::kContinuous;
 }
 

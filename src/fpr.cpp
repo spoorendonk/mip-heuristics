@@ -61,8 +61,8 @@ class FprWorker {
 public:
     // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
     // issue #99); it must outlive the worker.
-    FprWorker(const ExecutionContext &exec, const CscMatrix &csc, IncumbentSink &sink,
-              const VarOrderTable &var_orders, const uint8_t *binary, int worker_idx, uint32_t seed,
+    FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
+              const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx, uint32_t seed,
               size_t attempt_budget);
 
     AttemptResult run_attempt(size_t attempt_budget);
@@ -78,12 +78,12 @@ private:
     // blocker).
     void select_config_for_current_attempt();
 
-    const ExecutionContext &exec_;
-    HighsMipSolver &mipsolver_;
-    const CscMatrix &csc_;
-    IncumbentSink &sink_;
-    const VarOrderTable &var_orders_;
-    const uint8_t *binary_;
+    const ExecutionContext& exec_;
+    HighsMipSolver& mipsolver_;
+    const CscMatrix& csc_;
+    IncumbentSink& sink_;
+    const VarOrderTable& var_orders_;
+    const uint8_t* binary_;
 
     int worker_idx_;
     size_t attempt_budget_;  // hint for cfg.max_effort per attempt
@@ -157,7 +157,7 @@ constexpr int kNumInitialFprConfigs = static_cast<int>(std::size(kInitialFprConf
 // called from a sequential context: clique-based var_strategies invoke
 // HighsCliqueTable::cliquePartition which mutates internal state and is
 // not thread-safe.
-VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
+VarOrderTable precompute_var_orders(HighsMipSolver& mipsolver) {
     VarOrderTable orders(kNumFprStrategies);
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprStrategies; ++i) {
@@ -173,8 +173,8 @@ VarOrderTable precompute_var_orders(HighsMipSolver &mipsolver) {
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
-FprWorker::FprWorker(const ExecutionContext &exec, const CscMatrix &csc, IncumbentSink &sink,
-                     const VarOrderTable &var_orders, const uint8_t *binary, int worker_idx,
+FprWorker::FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
+                     const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx,
                      uint32_t seed, size_t attempt_budget)
     : exec_(exec),
       mipsolver_(exec.mipsolver),
@@ -217,7 +217,7 @@ void FprWorker::select_config_for_current_attempt() {
     // acceptance bullet (FPR CPU% on tbfp-network) cares about.
     const int idx = ((worker_idx_ + attempt_idx_) % kNumInitialFprConfigs + kNumInitialFprConfigs) %
                     kNumInitialFprConfigs;
-    const auto &cfg = kInitialFprConfigs[idx];
+    const auto& cfg = kInitialFprConfigs[idx];
     strat_idx_ = cfg.strat_idx;
     mode_ = cfg.mode;
 }
@@ -314,8 +314,8 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
             select_config_for_current_attempt();
         }
 
-        const auto &strat = kFprStrategies[strat_idx_];
-        const auto &var_order = var_orders_[strat_idx_];
+        const auto& strat = kFprStrategies[strat_idx_];
+        const auto& var_order = var_orders_[strat_idx_];
         FprConfig cfg{};
         // `cfg.max_effort` is the attempt-wide cap consumed by Phase 3 sub-
         // budgets (`cfg.max_effort - total_prop_work` for repair_search /
@@ -346,7 +346,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
             // Reuse the restart snapshot taken at the start of `run_attempt`
             // (review R1 / Finding 1) — `initial_solution_buf_` is the
             // member buffer the snapshot landed in.
-            const double *init_ptr = have_restart ? initial_solution_buf_.data() : nullptr;
+            const double* init_ptr = have_restart ? initial_solution_buf_.data() : nullptr;
             fpr_attempt_begin(attempt_state_, mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
             // `attempt_state_.phase` is now `kDfs` (or `kReadyToFinish`
             // if Phase 1 already produced a complete fixing); either way
@@ -394,13 +394,13 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 // Parallel FPR
 // ---------------------------------------------------------------------------
 
-size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionContext &exec,
-           IncumbentSink &sink) {
+size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
+           IncumbentSink& sink) {
     if (problem.degenerate()) {
         return 0;
     }
 
-    HighsMipSolver &mipsolver = exec.mipsolver;
+    HighsMipSolver& mipsolver = exec.mipsolver;
 
     // Precompute var_orders sequentially before any parallel region.
     VarOrderTable var_orders = precompute_var_orders(mipsolver);
@@ -420,9 +420,9 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
 
     return run_opportunistic_loop(
         exec, budget,
-        [](int worker_idx, Rng & /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
-        [&](FprOppState &state, Rng & /*rng*/, size_t run_cap) -> AttemptResult {
-            auto &worker = workers[state.worker_idx];
+        [](int worker_idx, Rng& /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
+        [&](FprOppState& state, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
+            auto& worker = workers[state.worker_idx];
             // FprWorker::finished() returns false unconditionally
             // post-#77; the opportunistic loop's own staleness gate is
             // the termination signal.  No worker-level replacement

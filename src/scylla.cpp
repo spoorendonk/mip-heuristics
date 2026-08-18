@@ -37,7 +37,7 @@ namespace {
 // independent of the worker seed, so a worker rebuilt with a fresh seed
 // computed the same order it now looks up.  It also drops N redundant
 // computations of the same `kNumFprConfigs` orders at construction.
-std::vector<std::vector<HighsInt>> precompute_config_var_orders(HighsMipSolver &mipsolver) {
+std::vector<std::vector<HighsInt>> precompute_config_var_orders(HighsMipSolver& mipsolver) {
     std::vector<std::vector<HighsInt>> orders(kNumFprConfigs);
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprConfigs; ++i) {
@@ -52,12 +52,12 @@ std::vector<std::vector<HighsInt>> precompute_config_var_orders(HighsMipSolver &
 // the workers are destroyed so operators running with log_dev_level=3
 // can see whether the stale-snapshot path actually kept peer workers
 // busy during a held mutex.
-void log_overlap_ratio(const HighsLogOptions &log_options,
-                       const std::vector<std::unique_ptr<ScyllaWorker>> &workers,
+void log_overlap_ratio(const HighsLogOptions& log_options,
+                       const std::vector<std::unique_ptr<ScyllaWorker>>& workers,
                        std::uint64_t extra_fresh, std::uint64_t extra_stale) {
     std::uint64_t fresh = extra_fresh;
     std::uint64_t stale = extra_stale;
-    for (const auto &w : workers) {
+    for (const auto& w : workers) {
         if (!w) {
             continue;
         }
@@ -84,13 +84,13 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
 
 }  // namespace
 
-size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionContext &exec,
-           IncumbentSink &sink) {
+size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
+           IncumbentSink& sink) {
     if (problem.degenerate()) {
         return 0;
     }
 
-    HighsMipSolver &mipsolver = exec.mipsolver;
+    HighsMipSolver& mipsolver = exec.mipsolver;
     const HighsInt pdlp_iter_cap = compute_pdlp_iter_cap(budget.total, problem.nnz);
     ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
     if (!pdlp.initialized()) {
@@ -110,10 +110,9 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
     workers.reserve(exec.num_workers);
     for (int w = 0; w < N; ++w) {
         uint32_t seed = exec.worker_seed(w);
-        workers.push_back(std::make_unique<ScyllaWorker>(mipsolver, pdlp, *problem.csc, sink,
-                                                         problem.binary.data(), var_orders,
-                                                         budget.total, seed, w, N,
-                                                         &improvement_gen));
+        workers.push_back(std::make_unique<ScyllaWorker>(
+            mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders, budget.total,
+            seed, w, N, &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -130,9 +129,9 @@ size_t run(const ProblemView &problem, const HeuristicBudget &budget, ExecutionC
 
     size_t total_effort = run_opportunistic_loop(
         exec, budget,
-        [](int worker_idx, Rng & /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
-        [&](ScyllaOppState &state, Rng &rng, size_t run_cap) -> AttemptResult {
-            auto &worker = workers[state.worker_idx];
+        [](int worker_idx, Rng& /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
+        [&](ScyllaOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
+            auto& worker = workers[state.worker_idx];
             auto attempt = attempt_with_rebuild(worker, run_cap, [&]() {
                 // Harvest the retired worker's overlap counters before
                 // the rebuild drops its destructor on the floor.

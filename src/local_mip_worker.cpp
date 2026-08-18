@@ -17,10 +17,10 @@
 
 namespace local_mip_detail {
 
-void perturb_solution(std::vector<double> &solution, const uint8_t *binary,
-                      const std::vector<HighsVarType> &integrality,
-                      const std::vector<double> &col_lb, const std::vector<double> &col_ub,
-                      HighsInt ncol, Rng &rng) {
+void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
+                      const std::vector<HighsVarType>& integrality,
+                      const std::vector<double>& col_lb, const std::vector<double>& col_ub,
+                      HighsInt ncol, Rng& rng) {
     // `kInfBoundShiftWindow` and `kSafeInt64DoubleRange` are shared
     // with `pump::perturb` via `heuristic_common.h` (R1-4 / R3-11
     // round-5 review): the two perturbation paths must use the same
@@ -78,9 +78,9 @@ void perturb_solution(std::vector<double> &solution, const uint8_t *binary,
     }
 }
 
-LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, IncumbentSink &sink,
-                               size_t total_budget, uint32_t seed, const double *initial_solution,
-                               const uint8_t *binary)
+LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
+                               size_t total_budget, uint32_t seed, const double* initial_solution,
+                               const uint8_t* binary)
     : mipsolver_(mipsolver), csc_(csc), sink_(sink), rng_(seed), ctx_(mipsolver, csc, binary) {
     base_.total_budget = total_budget;
     base_.stale_budget = total_budget >> 2;
@@ -98,7 +98,7 @@ LocalMipWorker::LocalMipWorker(HighsMipSolver &mipsolver, const CscMatrix &csc, 
     ctx_.lift.costed_vars = &costed_vars_;
 
     // Initialize solution
-    const double *src = initial_solution;
+    const double* src = initial_solution;
     if (src) {
         for (HighsInt j = 0; j < ncol; ++j) {
             double v = src[j];

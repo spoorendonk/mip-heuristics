@@ -22,7 +22,7 @@ constexpr HighsInt kMinPdlpIterCap = 100;
 // exactly how `pdlp_scaling` and `pdlp_e_restart_method` survived here
 // undetected.  Route every option write through this instead.
 template <typename T>
-void set_option_or_die(Highs &highs, const char *name, T value) {
+void set_option_or_die(Highs& highs, const char* name, T value) {
     if (highs.setOptionValue(name, value) != HighsStatus::kOk) {
         std::fprintf(stderr,
                      "ContestedPdlp: HiGHS rejected option '%s' (unknown name or invalid value). "
@@ -45,9 +45,9 @@ void set_option_or_die(Highs &highs, const char *name, T value) {
 
 }  // namespace
 
-ContestedPdlp::ContestedPdlp(HighsMipSolver &mipsolver, HighsInt pdlp_iter_cap) {
-    const auto *model = mipsolver.model_;
-    auto *mipdata = mipsolver.mipdata_.get();
+ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap) {
+    const auto* model = mipsolver.model_;
+    auto* mipdata = mipsolver.mipdata_.get();
     ncol_ = model->num_col_;
     nrow_ = model->num_row_;
     nnz_lp_ = mipdata->ARindex_.size();
@@ -92,8 +92,8 @@ ContestedPdlp::ContestedPdlp(ForTesting) {
 }
 
 ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
-    const std::vector<double> &modified_cost, const std::vector<double> &warm_start_col_value,
-    const std::vector<double> &warm_start_row_dual, bool warm_start_valid, double epsilon,
+    const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
     double time_limit) {
     SolveResult result;
 
@@ -115,7 +115,7 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     result.model_status = highs_.getModelStatus();
     highs_.getInfoValue("pdlp_iteration_count", result.pdlp_iters);
 
-    const auto &sol = highs_.getSolution();
+    const auto& sol = highs_.getSolution();
     result.col_value = sol.col_value;
     result.row_dual = sol.row_dual;
     result.value_valid = sol.value_valid;
@@ -125,8 +125,8 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
 }
 
 ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
-    const std::vector<double> &modified_cost, const std::vector<double> &warm_start_col_value,
-    const std::vector<double> &warm_start_row_dual, bool warm_start_valid, double epsilon,
+    const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
     double time_limit) {
     // One-solve-in-flight invariant: this counter should see at most
     // one concurrent writer.  `mu_` enforces the invariant; we track
@@ -136,7 +136,7 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     // a thrown exception would wedge `in_flight_count_ >= 1` and the
     // next call's assert fires spuriously.  R2 flagged this.
     struct InFlightGuard {
-        std::atomic<int> &counter;
+        std::atomic<int>& counter;
         ~InFlightGuard() { counter.fetch_sub(1, std::memory_order_acq_rel); }
     };
     int observed = in_flight_count_.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -171,7 +171,7 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     return result;
 }
 
-void ContestedPdlp::publish_snapshot_locked(const SolveResult &result) {
+void ContestedPdlp::publish_snapshot_locked(const SolveResult& result) {
     // Only publish usable snapshots (something a stale worker can round
     // against).  Failed / empty-column solves leave the previous
     // snapshot in place, which is the best we have.
@@ -223,9 +223,9 @@ void ContestedPdlp::publish_snapshot_for_test(Snapshot snap) {
     snapshot_.store(sp, std::memory_order_release);
 }
 
-ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double> &modified_cost,
-                                                const std::vector<double> &warm_start_col_value,
-                                                const std::vector<double> &warm_start_row_dual,
+ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double>& modified_cost,
+                                                const std::vector<double>& warm_start_col_value,
+                                                const std::vector<double>& warm_start_row_dual,
                                                 bool warm_start_valid, double epsilon,
                                                 double time_limit) {
     SolveResult result;
@@ -241,8 +241,8 @@ ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double> &modif
 }
 
 ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
-    const std::vector<double> &modified_cost, const std::vector<double> &warm_start_col_value,
-    const std::vector<double> &warm_start_row_dual, bool warm_start_valid, double epsilon,
+    const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
     double time_limit) {
     TrySolveResult out;
     if (!initialized_) {

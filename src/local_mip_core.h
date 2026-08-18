@@ -17,17 +17,17 @@ namespace local_mip_detail {
 // --- WorkerCtx: central context for the local search worker ---
 struct WorkerCtx {
     // Model refs
-    const HighsLp *model;
-    const std::vector<HighsInt> &ARstart;
-    const std::vector<HighsInt> &ARindex;
-    const std::vector<double> &ARvalue;
-    const std::vector<double> &col_lb;
-    const std::vector<double> &col_ub;
-    const std::vector<double> &col_cost;
-    const std::vector<double> &row_lo;
-    const std::vector<double> &row_hi;
-    const std::vector<HighsVarType> &integrality;
-    const CscMatrix &csc;
+    const HighsLp* model;
+    const std::vector<HighsInt>& ARstart;
+    const std::vector<HighsInt>& ARindex;
+    const std::vector<double>& ARvalue;
+    const std::vector<double>& col_lb;
+    const std::vector<double>& col_ub;
+    const std::vector<double>& col_cost;
+    const std::vector<double>& row_lo;
+    const std::vector<double>& row_hi;
+    const std::vector<HighsVarType>& integrality;
+    const CscMatrix& csc;
     const double feastol;
     const double epsilon;
     const bool minimize;
@@ -37,7 +37,7 @@ struct WorkerCtx {
     // `ncol` entries.  Never re-read the live root domain from here: a
     // peer's accepted solution propagates it while this worker runs
     // (issue #99).
-    const uint8_t *binary;
+    const uint8_t* binary;
 
     // Mutable state
     std::vector<double> solution;
@@ -67,7 +67,7 @@ struct WorkerCtx {
     // Effort tracking (coefficient accesses)
     size_t effort = 0;
 
-    WorkerCtx(HighsMipSolver &mipsolver, const CscMatrix &csc_, const uint8_t *binary_);
+    WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uint8_t* binary_);
 
     bool is_int(HighsInt j) const { return ::is_integer(integrality, j); }
 
@@ -101,7 +101,7 @@ struct WorkerCtx {
 
     void apply_move(HighsInt j, double new_val);
 
-    void apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, Rng &rng);
+    void apply_move_with_tabu(HighsInt j, double new_val, HighsInt step, Rng& rng);
 
     // Recompute all LHS from scratch and check feasibility.
     // update_sets: rebuild violated/satisfied partition from scratch.
@@ -115,7 +115,7 @@ struct WorkerCtx {
 
     // Paper Section 4.1: weighting scheme for MIP.
     // Called when at a local optimum (no positive operation found).
-    void update_weights(Rng &rng, bool is_feasible, bool best_feasible, double best_obj);
+    void update_weights(Rng& rng, bool is_feasible, bool best_feasible, double best_obj);
 
     // Reset constraint and objective weights to their initial state
     // (`w(obj) = 1`, `w(coni) = 1` per Lin, Zou, Cai §4.1 init).
@@ -140,16 +140,16 @@ struct WorkerCtx {
 // Paper Definitions 5-10: two-level scoring function.
 // Progress score (level 1): discrete constraint-transition scores + objective.
 // Bonus score (level 2): breakthrough bonus + robustness bonus.
-std::pair<double, double> compute_candidate_scores(WorkerCtx &ctx, HighsInt j, double new_val,
+std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, double new_val,
                                                    bool best_feasible, double best_obj);
 
-bool is_aspiration(const WorkerCtx &ctx, HighsInt j, double new_val, double best_obj,
+bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best_obj,
                    bool best_feasible);
 
-double compute_breakthrough_delta(const WorkerCtx &ctx, HighsInt j, double cur_obj,
+double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_obj,
                                   double best_obj);
 
-Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch, HighsInt step,
+Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, HighsInt step,
                                  bool aspiration, double best_obj, bool best_feasible);
 
 // --- infeasible_step: candidate generation following paper's Algorithm 2 ---
@@ -162,8 +162,8 @@ Candidate select_best_from_batch(WorkerCtx &ctx, std::vector<BatchCand> &batch, 
 // Additional (our engineering additions):
 // 5. Perturbation (generalizes Boolean flip to non-binary)
 // 6. Easy moves
-Candidate infeasible_step(WorkerCtx &ctx, Rng &rng, HighsInt step, bool best_feasible,
-                          double best_objective, const std::vector<HighsInt> &costed_vars,
-                          const std::vector<HighsInt> &binary_vars);
+Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_feasible,
+                          double best_objective, const std::vector<HighsInt>& costed_vars,
+                          const std::vector<HighsInt>& binary_vars);
 
 }  // namespace local_mip_detail

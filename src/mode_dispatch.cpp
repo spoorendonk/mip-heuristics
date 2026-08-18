@@ -181,7 +181,7 @@ constexpr double kWeightScylla = 1.00;
 // replaced were the last place a fifth heuristic would have had to be
 // wired in by hand.
 struct HeuristicConfig {
-    const char *name;
+    const char* name;
     // kSolutionSource* tag the sink attributes this heuristic's solutions
     // with, so the HiGHS log credits the right finder.
     int source_tag;
@@ -192,9 +192,8 @@ struct HeuristicConfig {
     // entry with this set, and the only one whose `weight` is unused.
     bool fixed_budget;
     // Which `mip_heuristic_suite` bit enables this entry.
-    bool HeuristicFlags::*flag;
-    size_t (*run)(const ProblemView &, const HeuristicBudget &, ExecutionContext &,
-                  IncumbentSink &);
+    bool HeuristicFlags::* flag;
+    size_t (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
 };
 
 constexpr HeuristicConfig kChain[] = {
@@ -202,8 +201,7 @@ constexpr HeuristicConfig kChain[] = {
     {"fpr", kSolutionSourceFPR, kWeightFpr, false, &HeuristicFlags::fpr, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, kWeightLocalMip, false, &HeuristicFlags::local_mip,
      &local_mip::run},
-    {"scylla", kSolutionSourceScylla, kWeightScylla, false, &HeuristicFlags::scylla,
-     &scylla::run},
+    {"scylla", kSolutionSourceScylla, kWeightScylla, false, &HeuristicFlags::scylla, &scylla::run},
 };
 
 // Weighted effort allocation: each heuristic runs in turn with its
@@ -214,10 +212,10 @@ constexpr HeuristicConfig kChain[] = {
 // become available as pool-restart seeds for later heuristics (FPR,
 // LocalMIP).  Each entry carries its originating heuristic's source tag
 // (see incumbent_sink.h / #73).
-bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFlags &flags) {
+bool run_sequential(HighsMipSolver& mipsolver, size_t budget, const HeuristicFlags& flags) {
     double rest_weight = 0.0;
     bool any_enabled = false;
-    for (const HeuristicConfig &h : kChain) {
+    for (const HeuristicConfig& h : kChain) {
         if (flags.*h.flag) {
             any_enabled = true;
             // Fixed-budget entries (FJ) are not part of the weighted share,
@@ -332,7 +330,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     // (`precompute_var_orders`, `ContestedPdlp` construction, worker
     // construction) — what users actually pay for.  The shared CSC build
     // sits outside all four, since it is no longer any one of them.
-    auto run_and_charge = [&](const char *name, auto &&call) {
+    auto run_and_charge = [&](const char* name, auto&& call) {
         // `found` is the sink's accepted-offer count moving across this
         // heuristic's dispatch.  Read either side of the call, on this
         // thread, with the parallel region joined at both points.
@@ -352,7 +350,7 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
     //
     // `slice`, not `budget`: the parameter of that name is the whole-chain
     // envelope these shares are carved out of.
-    for (const HeuristicConfig &h : kChain) {
+    for (const HeuristicConfig& h : kChain) {
         if (!(flags.*h.flag) || exec.terminated()) {
             continue;
         }
@@ -368,8 +366,8 @@ bool run_sequential(HighsMipSolver &mipsolver, size_t budget, const HeuristicFla
 
 }  // namespace
 
-HeuristicFlags effective_flags(const HighsOptions &options, bool *recognized) {
-    const std::string &suite = options.mip_heuristic_suite;
+HeuristicFlags effective_flags(const HighsOptions& options, bool* recognized) {
+    const std::string& suite = options.mip_heuristic_suite;
 
     // Fail open on an unrecognised value: running everything is the same
     // thing the default does, and silently disabling all four heuristics
@@ -402,8 +400,8 @@ HeuristicFlags effective_flags(const HighsOptions &options, bool *recognized) {
     return flags;
 }
 
-bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
-    const HighsOptions &options = *mipsolver.options_mip_;
+bool run_presolve(HighsMipSolver& mipsolver, size_t budget) {
+    const HighsOptions& options = *mipsolver.options_mip_;
 
     // The two warnings below are **API, not prose**.  Both describe a solve
     // that ran something other than what its configuration asked for while
@@ -439,7 +437,7 @@ bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     return run_sequential(mipsolver, budget, flags);
 }
 
-void log_solve_summary(HighsMipSolver &mipsolver) {
+void log_solve_summary(HighsMipSolver& mipsolver) {
     // RENS and RINS each build a sub-MIP with its own HighsMipSolver, and
     // cleanupSolve runs for those too.  Their counters describe a
     // different model, and one `[Native]` line per sub-MIP would make the
@@ -449,8 +447,8 @@ void log_solve_summary(HighsMipSolver &mipsolver) {
     }
     // No null check on `mipdata_`: `cleanupSolve`, the only caller,
     // dereferences it two statements earlier.
-    const HighsMipSolverData *mipdata = mipsolver.mipdata_.get();
-    const HighsLogOptions &log_options = mipsolver.options_mip_->log_options;
+    const HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
+    const HighsLogOptions& log_options = mipsolver.options_mip_->log_options;
 
     // `rens` is the whole-solve total and `rens_root` the root-site subset
     // of it.  The root gate is the one a presolve-found incumbent closes —
@@ -491,9 +489,8 @@ void log_solve_summary(HighsMipSolver &mipsolver) {
     // cost in total" are the two questions being asked; on a restarting
     // instance `presolve_heur_s > lp_time_s` is therefore expected rather
     // than a contradiction.
-    highsLogDev(log_options, HighsLogType::kVerbose,
-                "[Root] lp_time_s=%.3f presolve_heur_s=%.3f\n", mipdata->root_lp_time,
-                mipdata->presolve_heuristic_time);
+    highsLogDev(log_options, HighsLogType::kVerbose, "[Root] lp_time_s=%.3f presolve_heur_s=%.3f\n",
+                mipdata->root_lp_time, mipdata->presolve_heuristic_time);
 }
 
 }  // namespace heuristics

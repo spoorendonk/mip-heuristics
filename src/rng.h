@@ -68,7 +68,7 @@ private:
 
     // SplitMix64: reference https://prng.di.unimi.it/splitmix64.c.
     // `z` is advanced in place; each call returns the next output.
-    static std::uint64_t splitmix64(std::uint64_t &z) noexcept {
+    static std::uint64_t splitmix64(std::uint64_t& z) noexcept {
         z += 0x9E3779B97F4A7C15ULL;
         std::uint64_t x = z;
         x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;

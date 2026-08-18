@@ -68,15 +68,15 @@ inline size_t construction_effort_cap(size_t max_effort) {
 struct ConstructionInputs {
     HighsInt ncol;
     HighsInt nrow;
-    const std::vector<HighsInt> *ARstart;
-    const std::vector<HighsInt> *ARindex;
-    const std::vector<double> *ARvalue;
-    const std::vector<double> *col_lb;
-    const std::vector<double> *col_ub;
-    const std::vector<double> *row_lo;
-    const std::vector<double> *row_hi;
-    const std::vector<HighsVarType> *integrality;
-    const CscMatrix *csc;
+    const std::vector<HighsInt>* ARstart;
+    const std::vector<HighsInt>* ARindex;
+    const std::vector<double>* ARvalue;
+    const std::vector<double>* col_lb;
+    const std::vector<double>* col_ub;
+    const std::vector<double>* row_lo;
+    const std::vector<double>* row_hi;
+    const std::vector<HighsVarType>* integrality;
+    const CscMatrix* csc;
     double feastol;
 };
 
@@ -94,14 +94,14 @@ struct ConstructionInputs {
 // charged.  Callers are expected to add this to
 // `mipdata->heuristic_effort_used` so cold-start work counts against
 // the global effort budget (R1-3 round-3 review).
-size_t construct_initial_solution(const ConstructionInputs &inputs, Rng &rng, size_t max_effort,
-                                  std::vector<double> &out_solution);
+size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, size_t max_effort,
+                                  std::vector<double>& out_solution);
 
 // Thin wrapper over the inputs form: extracts the refs from
 // `mipsolver` (model + mipdata).  Used by `local_mip.cpp`'s
 // cold-start fallback.  Returns the construction effort (see overload
 // above); callers must book it into `mipdata->heuristic_effort_used`.
-size_t construct_initial_solution(HighsMipSolver &mipsolver, const CscMatrix &csc, Rng &rng,
-                                  size_t max_effort, std::vector<double> &out_solution);
+size_t construct_initial_solution(HighsMipSolver& mipsolver, const CscMatrix& csc, Rng& rng,
+                                  size_t max_effort, std::vector<double>& out_solution);
 
 }  // namespace local_mip_detail

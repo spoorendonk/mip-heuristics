@@ -53,7 +53,7 @@
 // one.  (FJ does not use this: it builds its worker lazily on first use and
 // has no post-attempt retry.)
 template <typename WorkerPtr, typename Rebuild>
-AttemptResult attempt_with_rebuild(WorkerPtr &worker, size_t run_cap, Rebuild rebuild) {
+AttemptResult attempt_with_rebuild(WorkerPtr& worker, size_t run_cap, Rebuild rebuild) {
     if (worker->finished()) {
         rebuild();
     }
@@ -67,8 +67,8 @@ AttemptResult attempt_with_rebuild(WorkerPtr &worker, size_t run_cap, Rebuild re
 
 // Returns total effort consumed across all workers.
 template <typename MakeState, typename RunAttempt>
-[[nodiscard]] size_t run_opportunistic_loop(const ExecutionContext &exec,
-                                            const HeuristicBudget &budget, MakeState make_state,
+[[nodiscard]] size_t run_opportunistic_loop(const ExecutionContext& exec,
+                                            const HeuristicBudget& budget, MakeState make_state,
                                             RunAttempt run_attempt) {
     const int N = static_cast<int>(exec.num_workers);
     if (N <= 0 || budget.total == 0) {

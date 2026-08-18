@@ -27,7 +27,7 @@ public:
     // dispatch's incumbent snapshot) — a reference to the live
     // `mipdata->incumbent` is what issue #98 was about, and a reference to
     // a caller local would dangle.
-    FjWorker(HighsMipSolver &mipsolver, IncumbentSink &sink, size_t total_budget, uint32_t seed,
+    FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_budget, uint32_t seed,
              std::vector<double> start);
     ~FjWorker();
 
@@ -40,8 +40,8 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
-    HighsMipSolver &mipsolver_;
-    IncumbentSink &sink_;
+    HighsMipSolver& mipsolver_;
+    IncumbentSink& sink_;
     const std::vector<double> start_;
     const uint32_t seed_;
 
