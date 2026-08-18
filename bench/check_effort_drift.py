@@ -85,7 +85,9 @@ def aggregate(root: str) -> dict[str, list[float]]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("root", help="Directory tree containing HiGHS .log files")
     parser.add_argument(
         "--max-drift",
@@ -136,7 +138,9 @@ def main() -> int:
         return 1
 
     heurs = sorted(summary.keys())
-    print(f"{'heuristic':<12} {'n':>5} {'gm(eff/ms)':>14} {'ms/eff':>12} {'suggested_w':>14}")
+    print(
+        f"{'heuristic':<12} {'n':>5} {'gm(eff/ms)':>14} {'ms/eff':>12} {'suggested_w':>14}"
+    )
     effs = [summary[h][0] for h in heurs]
     max_eff = max(effs)
     min_eff = min(effs)
@@ -145,7 +149,11 @@ def main() -> int:
     # Normalise weights against the heuristic with the smallest effort_per_ms
     # (i.e. the slowest-per-effort heuristic anchors w=1.0; faster ones scale
     # up proportionally).  --reference overrides which heuristic anchors.
-    ref = args.reference if args.reference is not None else min(summary, key=lambda h: summary[h][0])
+    ref = (
+        args.reference
+        if args.reference is not None
+        else min(summary, key=lambda h: summary[h][0])
+    )
     scale = summary[ref][0]
     for h in heurs:
         gm, n = summary[h]
@@ -153,10 +161,14 @@ def main() -> int:
         w = (gm / scale) if scale > 0 else float("inf")
         print(f"{h:<12} {n:>5d} {gm:>14.3f} {ms_per_effort:>12.6f} {w:>14.3f}")
 
-    print(f"\nDrift (max/min effort_per_ms) = {drift:.2f}× (limit {args.max_drift:.2f}×)")
+    print(
+        f"\nDrift (max/min effort_per_ms) = {drift:.2f}× (limit {args.max_drift:.2f}×)"
+    )
     if drift > args.max_drift:
-        print("FAIL: drift exceeds threshold — recalibrate kWeight* in src/mode_dispatch.cpp.",
-              file=sys.stderr)
+        print(
+            "FAIL: drift exceeds threshold — recalibrate kWeight* in src/mode_dispatch.cpp.",
+            file=sys.stderr,
+        )
         return 2
     print("OK: drift within threshold.")
     return 0

@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import subprocess
 import sys
@@ -46,8 +47,10 @@ INSTANCES: list[tuple[str, float, float]] = [
     ("p0548.mps", 8691.0, 1e-3),
 ]
 
-CONFIGS = {value: {"mip_heuristic_suite": value}
-           for value in ("off", "fj", "fpr", "local_mip", "scylla", "all")}
+CONFIGS = {
+    value: {"mip_heuristic_suite": value}
+    for value in ("off", "fj", "fpr", "local_mip", "scylla", "all")
+}
 
 
 @dataclass
@@ -81,8 +84,7 @@ def find_instances_dir(binary: str) -> str | None:
 def write_options_file(options: dict[str, str], path: str) -> None:
     """Write a HiGHS options file."""
     with open(path, "w") as f:
-        for k, v in options.items():
-            f.write(f"{k} = {v}\n")
+        f.writelines(f"{k} = {v}\n" for k, v in options.items())
 
 
 def run_solve(
@@ -103,9 +105,18 @@ def run_solve(
     opts_path = os.path.join(tmp_dir, "run.opts")
     write_options_file(all_opts, opts_path)
 
-    cmd = [binary, instance_path, "--time_limit", str(time_limit), "--options_file", opts_path]
+    cmd = [
+        binary,
+        instance_path,
+        "--time_limit",
+        str(time_limit),
+        "--options_file",
+        opts_path,
+    ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=time_limit * 2 + 30)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, timeout=time_limit * 2 + 30
+    )
     output = result.stdout + "\n" + result.stderr
 
     # Parse objective from "Primal bound" in the solving report
@@ -116,17 +127,17 @@ def run_solve(
     for line in output.splitlines():
         stripped = line.strip()
         if stripped.startswith("Status"):
-            status = stripped.split(None, 1)[-1] if len(stripped.split(None, 1)) > 1 else status
+            status = (
+                stripped.split(None, 1)[-1]
+                if len(stripped.split(None, 1)) > 1
+                else status
+            )
         if stripped.startswith("Primal bound"):
-            try:
+            with contextlib.suppress(ValueError, IndexError):
                 obj = float(stripped.split()[-1])
-            except (ValueError, IndexError):
-                pass
         if stripped.startswith("Timing"):
-            try:
+            with contextlib.suppress(ValueError, IndexError):
                 time_s = float(stripped.split()[-1])
-            except (ValueError, IndexError):
-                pass
 
     return obj, status, time_s
 
@@ -141,19 +152,39 @@ def check_objective(obj: float | None, known_opt: float, tol: float) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Correctness check across the mip_heuristic_suite values")
-    parser.add_argument("--binary", default="./build/bin/highs", help="Path to HiGHS binary")
-    parser.add_argument("--instances-dir", default=None,
-                        help="Path to check/instances/ dir (auto-detected from binary path)")
-    parser.add_argument("--time-limit", type=float, default=30,
-                        help="Time limit per solve (seconds, default 30)")
-    parser.add_argument("--seeds", nargs="+", type=int, default=[0],
-                        help="Random seeds to run (default: 0)")
-    parser.add_argument("--configs", nargs="+", default=list(CONFIGS.keys()),
-                        choices=list(CONFIGS.keys()),
-                        help="mip_heuristic_suite values to test (default: all six)")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Print per-solve details")
+        description="Correctness check across the mip_heuristic_suite values"
+    )
+    parser.add_argument(
+        "--binary", default="./build/bin/highs", help="Path to HiGHS binary"
+    )
+    parser.add_argument(
+        "--instances-dir",
+        default=None,
+        help="Path to check/instances/ dir (auto-detected from binary path)",
+    )
+    parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=30,
+        help="Time limit per solve (seconds, default 30)",
+    )
+    parser.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=[0],
+        help="Random seeds to run (default: 0)",
+    )
+    parser.add_argument(
+        "--configs",
+        nargs="+",
+        default=list(CONFIGS.keys()),
+        choices=list(CONFIGS.keys()),
+        help="mip_heuristic_suite values to test (default: all six)",
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Print per-solve details"
+    )
     args = parser.parse_args()
 
     binary = os.path.abspath(args.binary)
@@ -163,7 +194,10 @@ def main() -> None:
 
     instances_dir = args.instances_dir or find_instances_dir(binary)
     if instances_dir is None or not os.path.isdir(instances_dir):
-        print(f"Error: instances dir not found. Pass --instances-dir explicitly.", file=sys.stderr)
+        print(
+            "Error: instances dir not found. Pass --instances-dir explicitly.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Verify all instances exist
@@ -173,12 +207,16 @@ def main() -> None:
         if os.path.exists(path):
             available.append((name, opt, tol, path))
         else:
-            print(f"Warning: {name} not found in {instances_dir}, skipping", file=sys.stderr)
+            print(
+                f"Warning: {name} not found in {instances_dir}, skipping",
+                file=sys.stderr,
+            )
     if not available:
         print("Error: no instances found", file=sys.stderr)
         sys.exit(1)
 
     import tempfile
+
     tmp_dir = tempfile.mkdtemp(prefix="correctness_check_")
 
     results: list[RunResult] = []
@@ -192,21 +230,34 @@ def main() -> None:
                 done += 1
                 try:
                     obj, status, time_s = run_solve(
-                        binary, path, config_opts, seed, args.time_limit, tmp_dir)
+                        binary, path, config_opts, seed, args.time_limit, tmp_dir
+                    )
                     passed = check_objective(obj, opt, tol)
                     r = RunResult(config, name, seed, obj, status, time_s, passed)
                 except subprocess.TimeoutExpired:
-                    r = RunResult(config, name, seed, None, "TIMEOUT", args.time_limit, False,
-                                  error="process timeout")
-                except Exception as e:
-                    r = RunResult(config, name, seed, None, "ERROR", 0.0, False, error=str(e))
+                    r = RunResult(
+                        config,
+                        name,
+                        seed,
+                        None,
+                        "TIMEOUT",
+                        args.time_limit,
+                        False,
+                        error="process timeout",
+                    )
+                except Exception as e:  # noqa: BLE001 - one bad instance must not abandon the sweep
+                    r = RunResult(
+                        config, name, seed, None, "ERROR", 0.0, False, error=str(e)
+                    )
 
                 results.append(r)
                 if args.verbose:
                     mark = "PASS" if r.passed else "FAIL"
                     obj_str = f"{r.objective:.4f}" if r.objective is not None else "N/A"
-                    print(f"  [{done}/{total}] {mark}  {config:10s}  seed={seed}  "
-                          f"{name:20s}  obj={obj_str:>14s}  ref={opt:.4f}  {r.time_s:.1f}s")
+                    print(
+                        f"  [{done}/{total}] {mark}  {config:10s}  seed={seed}  "
+                        f"{name:20s}  obj={obj_str:>14s}  ref={opt:.4f}  {r.time_s:.1f}s"
+                    )
 
     # Summary table
     print()
@@ -230,15 +281,20 @@ def main() -> None:
         for seed in args.seeds:
             row = f"{config:>10s} {seed:>4d}"
             for name in inst_names:
-                matching = [r for r in results if r.config == config and r.seed == seed
-                            and r.instance == name]
+                matching = [
+                    r
+                    for r in results
+                    if r.config == config and r.seed == seed and r.instance == name
+                ]
                 if matching:
                     r = matching[0]
                     if r.passed:
                         row += f"  {'PASS':>{col_w}s}"
                         pass_count += 1
                     else:
-                        obj_str = f"{r.objective:.0f}" if r.objective is not None else "N/A"
+                        obj_str = (
+                            f"{r.objective:.0f}" if r.objective is not None else "N/A"
+                        )
                         row += f"  {obj_str:>{col_w}s}"
                         fail_count += 1
                 else:
@@ -255,8 +311,10 @@ def main() -> None:
             if not r.passed:
                 obj_str = f"{r.objective:.4f}" if r.objective is not None else "N/A"
                 ref = next(opt for name, opt, _, _ in available if name == r.instance)
-                print(f"  {r.config:10s} seed={r.seed} {r.instance:20s} "
-                      f"got={obj_str} expected={ref:.4f} status={r.status}")
+                print(
+                    f"  {r.config:10s} seed={r.seed} {r.instance:20s} "
+                    f"got={obj_str} expected={ref:.4f} status={r.status}"
+                )
                 if r.error:
                     print(f"    error: {r.error}")
         sys.exit(1)

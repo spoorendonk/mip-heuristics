@@ -351,9 +351,7 @@ _NATIVE_RE = re.compile(
     r"^\s*\[Native\] rens=(\d+) rens_root=(\d+) rins=(\d+) rcfix=(\d+) "
     r"heur_lp_iters=(-?\d+) total_lp_iters=(-?\d+) fpr_lp_lp_iters=(-?\d+)"
 )
-_ROOT_RE = re.compile(
-    r"^\s*\[Root\] lp_time_s=(-?[\d.]+) presolve_heur_s=(-?[\d.]+)"
-)
+_ROOT_RE = re.compile(r"^\s*\[Root\] lp_time_s=(-?[\d.]+) presolve_heur_s=(-?[\d.]+)")
 
 # Model header emitted by HiGHS right after reading the MPS, e.g.
 #   MIP fhnw-sq2 has 91 rows; 650 cols; 1968 nonzeros; 650 integer variables (625 binary)
@@ -420,22 +418,24 @@ def parse_log(log_text: str) -> SolveResult:
                 and not result.incumbents
                 and best_sol not in (float("inf"), float("-inf"))
             )
-            if is_event or is_presolve_seed:
-                # Record if objective improved (or first entry)
-                if best_sol != float("inf") and best_sol != float("-inf"):
-                    prev_obj = (
-                        result.incumbents[-1].objective if result.incumbents else None
-                    )
-                    if prev_obj is None or best_sol != prev_obj:
-                        result.incumbents.append(
-                            Incumbent(
-                                time=time_s,
-                                objective=best_sol,
-                                source=src_stripped or "P",  # 'P' = presolve
-                                nodes=nodes,
-                                dual_bound=best_bound,
-                            )
+            # Record if objective improved (or first entry)
+            if (is_event or is_presolve_seed) and best_sol not in (
+                float("inf"),
+                float("-inf"),
+            ):
+                prev_obj = (
+                    result.incumbents[-1].objective if result.incumbents else None
+                )
+                if prev_obj is None or best_sol != prev_obj:
+                    result.incumbents.append(
+                        Incumbent(
+                            time=time_s,
+                            objective=best_sol,
+                            source=src_stripped or "P",  # 'P' = presolve
+                            nodes=nodes,
+                            dual_bound=best_bound,
                         )
+                    )
             continue
 
         # Solving report lines

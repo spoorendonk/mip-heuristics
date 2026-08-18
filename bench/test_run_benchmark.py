@@ -88,7 +88,9 @@ def test_vanilla_on_an_external_binary_sets_nothing():
 
 
 def test_external_vanilla_does_not_leak_into_other_configs():
-    assert config_options("fpr", external_vanilla=True) == {"mip_heuristic_suite": "fpr"}
+    assert config_options("fpr", external_vanilla=True) == {
+        "mip_heuristic_suite": "fpr"
+    }
 
 
 # --- budget suffix parsing -------------------------------------------------
@@ -385,9 +387,7 @@ def test_a_run_that_ignored_its_config_is_parked_as_err(tmp_path: Path, capsys):
     )
     binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
     out = tmp_path / "results"
-    _, _, _, ok = run_single(
-        str(binary), "model.mps", "model", "off", 0, 1.0, str(out)
-    )
+    _, _, _, ok = run_single(str(binary), "model.mps", "model", "off", 0, 1.0, str(out))
     assert not ok
     seed_dir = out / "off" / "seed0"
     assert not (seed_dir / "model.log").exists()
@@ -433,9 +433,20 @@ def _main(tmp_path: Path, monkeypatch, *argv: str) -> None:
     instances = tmp_path / "none.txt"
     instances.write_text("")
     monkeypatch.setattr(
-        sys, "argv",
-        ["run_benchmark.py", "--instances", str(instances), "--binary", sys.executable,
-         "--data-dir", str(tmp_path), "--output", str(tmp_path / "out"), *argv],
+        sys,
+        "argv",
+        [
+            "run_benchmark.py",
+            "--instances",
+            str(instances),
+            "--binary",
+            sys.executable,
+            "--data-dir",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "out"),
+            *argv,
+        ],
     )
     main()
 
@@ -461,7 +472,9 @@ def test_main_exits_2_on_an_explicitly_suffixed_exempt_config(tmp_path, monkeypa
     assert exc.value.code == 2
 
 
-def test_main_warns_that_vanilla_and_off_are_the_same_run(tmp_path, monkeypatch, capsys):
+def test_main_warns_that_vanilla_and_off_are_the_same_run(
+    tmp_path, monkeypatch, capsys
+):
     """Without --vanilla-binary they are one configuration under two names."""
     _main(tmp_path, monkeypatch, "--configs", "vanilla", "off")
     err = capsys.readouterr().err
@@ -473,9 +486,17 @@ def test_main_warns_on_string_duplicate_budgets(tmp_path, monkeypatch, capsys):
     assert "identical" in capsys.readouterr().err
 
 
-def test_main_warns_when_a_config_overrides_an_extra_option(tmp_path, monkeypatch, capsys):
-    _main(tmp_path, monkeypatch, "--configs", "fpr",
-          "--extra-options", "mip_heuristic_suite=scylla")
+def test_main_warns_when_a_config_overrides_an_extra_option(
+    tmp_path, monkeypatch, capsys
+):
+    _main(
+        tmp_path,
+        monkeypatch,
+        "--configs",
+        "fpr",
+        "--extra-options",
+        "mip_heuristic_suite=scylla",
+    )
     assert "is overridden by config 'fpr'" in capsys.readouterr().err
 
 
@@ -494,10 +515,46 @@ def test_main_reports_the_instrumentation_mode(tmp_path, monkeypatch, capsys):
 
 def test_main_accepts_the_documented_readme_sweep(tmp_path, monkeypatch, capsys):
     """The README reproduce block must not warn about duplicated work."""
-    _main(tmp_path, monkeypatch,
-          "--configs", "off", "fj", "fpr", "local_mip", "scylla", "all",
-          "--budget-sweep", "0.05", "0.15", "0.30", "0.60", "1.00")
+    _main(
+        tmp_path,
+        monkeypatch,
+        "--configs",
+        "off",
+        "fj",
+        "fpr",
+        "local_mip",
+        "scylla",
+        "all",
+        "--budget-sweep",
+        "0.05",
+        "0.15",
+        "0.30",
+        "0.60",
+        "1.00",
+    )
     captured = capsys.readouterr()
     assert "identical" not in captured.err
     assert "off@e" not in captured.out and "fj@e" not in captured.out
     assert "fpr@e0.05" in captured.out and "all@e1.00" in captured.out
+
+
+def test_extra_options_override_of_dev_log_warns(capsys):
+    """`--extra-options log_dev_level=1` silently cancels `--dev-log`.
+
+    The run header still announces instrumentation and every solve succeeds,
+    so without a warning the omission surfaces only when
+    `analyze_results.py --cannibalization` reports the finished tree as not
+    instrumented — after the campaign has been paid for.
+    """
+    opts = build_base_options(None, True, ["log_dev_level=1"])
+    assert opts["log_dev_level"] == "1"  # the override still wins
+    err = capsys.readouterr().err
+    assert "overrides --dev-log" in err
+    assert "not instrumented" in err
+
+
+def test_extra_options_log_dev_level_is_quiet_without_dev_log(capsys):
+    """Setting the level by hand, without `--dev-log`, is not a collision."""
+    opts = build_base_options(None, False, ["log_dev_level=1"])
+    assert opts["log_dev_level"] == "1"
+    assert "overrides --dev-log" not in capsys.readouterr().err

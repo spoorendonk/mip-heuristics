@@ -59,7 +59,7 @@ def resolve_reference(
         return (min(finite) if sense == "min" else max(finite)) if finite else None
     if not finite:
         return solu_value
-    return min(solu_value, min(finite)) if sense == "min" else max(solu_value, max(finite))
+    return min(solu_value, *finite) if sense == "min" else max(solu_value, *finite)
 
 
 def build_best_known(
@@ -181,9 +181,7 @@ def aggregate_results(
 
         for inst in instances:
             seed_results = [
-                results[config][s][inst]
-                for s in seeds
-                if inst in results[config][s]
+                results[config][s][inst] for s in seeds if inst in results[config][s]
             ]
             if not seed_results:
                 continue
@@ -321,7 +319,14 @@ CUSTOM_SOURCE_LABELS: dict[str, str] = {
 
 # Order used when printing attribution rows (custom heuristics first, then the
 # built-in bucket).
-ATTRIBUTION_ORDER: list[str] = ["FPR", "FPR_LP", "LocalMIP", "Scylla", "FJ", "HiGHS/other"]
+ATTRIBUTION_ORDER: list[str] = [
+    "FPR",
+    "FPR_LP",
+    "LocalMIP",
+    "Scylla",
+    "FJ",
+    "HiGHS/other",
+]
 
 
 def source_label(src: str) -> str:
@@ -369,13 +374,15 @@ def print_attribution(
     """
     instances = get_common_instances(results, configs)
     print(f"\n## Heuristic attribution ({len(instances)} instances)\n")
-    print("Columns: #First = found the first feasible incumbent; "
-          "#Best = held the best incumbent at termination.\n")
+    print(
+        "Columns: #First = found the first feasible incumbent; "
+        "#Best = held the best incumbent at termination.\n"
+    )
 
     for c in configs:
         attr = heuristic_attribution(agg_results, c, instances)
         first = attr["first"]  # type: ignore[assignment]
-        best = attr["best"]    # type: ignore[assignment]
+        best = attr["best"]  # type: ignore[assignment]
         n_feas = attr["n_feasible"]
         print(f"### {c}  ({n_feas} feasible)")
         print(f"{'Heuristic':<14} {'#First':>8} {'#Best':>8}")
@@ -402,7 +409,9 @@ def print_comparison_table(
         return
 
     c1, c2 = configs[0], configs[1]
-    instances = sorted(set(agg_results.get(c1, {}).keys()) & set(agg_results.get(c2, {}).keys()))
+    instances = sorted(
+        set(agg_results.get(c1, {}).keys()) & set(agg_results.get(c2, {}).keys())
+    )
 
     if not instances:
         print("No common instances found between configs")
@@ -419,8 +428,13 @@ def print_comparison_table(
     print(f"\n{'Instance':<25} ", end="")
     print(f"{'T1st(' + c1 + ')':<10} {'T1st(' + c2 + ')':<10} ", end="")
     for tc in active_cutoffs:
-        print(f"{'Gap@' + str(int(tc)) + '(' + c1[:3] + ')':<12} {'Gap@' + str(int(tc)) + '(' + c2[:3] + ')':<12} ", end="")
-    print(f"{'PD(' + c1[:3] + ')':<12} {'PD(' + c2[:3] + ')':<12} {'Status(' + c1[:3] + ')':<15} {'Status(' + c2[:3] + ')':<15}")
+        print(
+            f"{'Gap@' + str(int(tc)) + '(' + c1[:3] + ')':<12} {'Gap@' + str(int(tc)) + '(' + c2[:3] + ')':<12} ",
+            end="",
+        )
+    print(
+        f"{'PD(' + c1[:3] + ')':<12} {'PD(' + c2[:3] + ')':<12} {'Status(' + c1[:3] + ')':<15} {'Status(' + c2[:3] + ')':<15}"
+    )
     print("-" * 180)
 
     # Per-instance rows
@@ -508,27 +522,37 @@ def print_comparison_table(
     # Summary
     print("-" * 180)
     print(f"\n## Summary: {c1} vs {c2} ({len(instances)} instances)\n")
-    print(f"Coverage: {n_both} both solved  |  "
-          f"{n_c1_only} {c1}-only  |  {n_c2_only} {c2}-only  |  {n_neither} neither\n")
+    print(
+        f"Coverage: {n_both} both solved  |  "
+        f"{n_c1_only} {c1}-only  |  {n_c2_only} {c2}-only  |  {n_neither} neither\n"
+    )
 
-    print(f"{'Metric':<25} {c1 + ' wins':<12} {c2 + ' wins':<12} {'Ties':<8} "
-          f"{'SGM(' + c1[:3] + ')':<12} {'SGM(' + c2[:3] + ')':<12}")
+    print(
+        f"{'Metric':<25} {c1 + ' wins':<12} {c2 + ' wins':<12} {'Ties':<8} "
+        f"{'SGM(' + c1[:3] + ')':<12} {'SGM(' + c2[:3] + ')':<12}"
+    )
     print("-" * 80)
 
-    print(f"{'Time to 1st feasible':<25} {wins['t1st']:<12} {losses['t1st']:<12} {ties['t1st']:<8} "
-          f"{format_float(shifted_geomean(t1st_vals[c1], 1.0), 12, 4)} "
-          f"{format_float(shifted_geomean(t1st_vals[c2], 1.0), 12, 4)}")
+    print(
+        f"{'Time to 1st feasible':<25} {wins['t1st']:<12} {losses['t1st']:<12} {ties['t1st']:<8} "
+        f"{format_float(shifted_geomean(t1st_vals[c1], 1.0), 12, 4)} "
+        f"{format_float(shifted_geomean(t1st_vals[c2], 1.0), 12, 4)}"
+    )
 
     for tc in time_cutoffs:
         if gap_vals[tc][c1]:
             label = f"Gap @ {int(tc)}s"
-            print(f"{label:<25} {wins['gap'][tc]:<12} {losses['gap'][tc]:<12} {ties['gap'][tc]:<8} "
-                  f"{format_float(shifted_geomean(gap_vals[tc][c1], 0.001), 12, 6)} "
-                  f"{format_float(shifted_geomean(gap_vals[tc][c2], 0.001), 12, 6)}")
+            print(
+                f"{label:<25} {wins['gap'][tc]:<12} {losses['gap'][tc]:<12} {ties['gap'][tc]:<8} "
+                f"{format_float(shifted_geomean(gap_vals[tc][c1], 0.001), 12, 6)} "
+                f"{format_float(shifted_geomean(gap_vals[tc][c2], 0.001), 12, 6)}"
+            )
 
-    print(f"{'P-D integral':<25} {wins['pd']:<12} {losses['pd']:<12} {ties['pd']:<8} "
-          f"{format_float(shifted_geomean(pd_vals[c1], 1.0), 12, 4)} "
-          f"{format_float(shifted_geomean(pd_vals[c2], 1.0), 12, 4)}")
+    print(
+        f"{'P-D integral':<25} {wins['pd']:<12} {losses['pd']:<12} {ties['pd']:<8} "
+        f"{format_float(shifted_geomean(pd_vals[c1], 1.0), 12, 4)} "
+        f"{format_float(shifted_geomean(pd_vals[c2], 1.0), 12, 4)}"
+    )
 
 
 def _categorize_instances(
@@ -699,7 +723,9 @@ def print_paper_metrics(
     # --- Reference coverage ---
     if best_known is not None:
         covered = sum(1 for inst in instances if best_known.get(inst) is not None)
-        print(f"\n(reference objective available for {covered}/{len(instances)} instances)")
+        print(
+            f"\n(reference objective available for {covered}/{len(instances)} instances)"
+        )
 
 
 def generate_survival_plot(
@@ -711,6 +737,7 @@ def generate_survival_plot(
     """Generate survival plot: fraction of instances solved to gap% over time."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -721,7 +748,7 @@ def generate_survival_plot(
     if not instances:
         return
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    _fig, ax = plt.subplots(figsize=(10, 6))
 
     for config in configs:
         # For each instance, find time when gap <= threshold
@@ -749,11 +776,9 @@ def generate_survival_plot(
         n = len(solve_times)
         times = [0.0]
         fractions = [0.0]
-        solved = 0
-        for t in solve_times:
+        for solved, t in enumerate(solve_times, start=1):
             if t == float("inf"):
                 break
-            solved += 1
             times.append(t)
             fractions.append(solved / n)
 
@@ -765,8 +790,8 @@ def generate_survival_plot(
         ax.step(times, fractions, where="post", label=config, linewidth=2)
 
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel(f"Fraction solved to {gap_threshold*100:.0f}% gap")
-    ax.set_title(f"Survival Plot (gap threshold = {gap_threshold*100:.0f}%)")
+    ax.set_ylabel(f"Fraction solved to {gap_threshold * 100:.0f}% gap")
+    ax.set_title(f"Survival Plot (gap threshold = {gap_threshold * 100:.0f}%)")
     ax.legend()
     ax.grid(True, alpha=0.3)
     ax.set_xlim(left=0)
@@ -798,7 +823,9 @@ def print_plato_summary(
     # PLATO shift matches Mittelmann's published methodology (sh=0.001)
     plato_shift = 0.001
 
-    print(f"\n## PLATO Headline Metrics ({len(instances)} instances, {time_limit:.0f}s, SGM shift={plato_shift})\n")
+    print(
+        f"\n## PLATO Headline Metrics ({len(instances)} instances, {time_limit:.0f}s, SGM shift={plato_shift})\n"
+    )
 
     pi_per_config: dict[str, list[float]] = {}
     feas_per_config: dict[str, int] = {}
@@ -817,7 +844,9 @@ def print_plato_summary(
         feas_per_config[c] = feas_count
 
     # Print per-config row
-    print(f"{'Config':<20} {'SGM(PrimalIntegral)':<22} {'#Feasible':>10} {'#Instances':>12}")
+    print(
+        f"{'Config':<20} {'SGM(PrimalIntegral)':<22} {'#Feasible':>10} {'#Instances':>12}"
+    )
     print("-" * 68)
     for c in configs:
         sgm = shifted_geomean(pi_per_config[c], plato_shift)
@@ -832,9 +861,13 @@ def print_plato_summary(
         if sgm2 > 0 and math.isfinite(sgm2) and math.isfinite(sgm1):
             ratio = sgm1 / sgm2
             winner = c1 if ratio < 1.0 else c2
-            print(f"SGM ratio {c1}/{c2}: {ratio:.4f}  (lower is better; winner: {winner})")
+            print(
+                f"SGM ratio {c1}/{c2}: {ratio:.4f}  (lower is better; winner: {winner})"
+            )
         feas1, feas2 = feas_per_config[c1], feas_per_config[c2]
-        print(f"Feasible delta {c1}-{c2}: {feas1 - feas2:+d}  ({c1}={feas1}, {c2}={feas2})")
+        print(
+            f"Feasible delta {c1}-{c2}: {feas1 - feas2:+d}  ({c1}={feas1}, {c2}={feas2})"
+        )
 
 
 def _config_metrics(
@@ -890,18 +923,26 @@ def print_ablation_summary(
     own row, the shape needed for the per-component ablation in the paper.
     """
     instances = get_common_instances(results, configs)
-    metrics = {c: _config_metrics(results, agg_results, c, instances, time_limit, best_known)
-               for c in configs}
+    metrics = {
+        c: _config_metrics(results, agg_results, c, instances, time_limit, best_known)
+        for c in configs
+    }
 
-    print(f"\n## Ablation summary ({len(instances)} instances, {time_limit:.0f}s horizon)\n")
-    header = (f"{'Config':<22} {'#Feas':>6} {'SGM T1st':>10} "
-              f"{'SGM Gap':>10} {'SGM PI':>10} {'PLATO SGM':>11}")
+    print(
+        f"\n## Ablation summary ({len(instances)} instances, {time_limit:.0f}s horizon)\n"
+    )
+    header = (
+        f"{'Config':<22} {'#Feas':>6} {'SGM T1st':>10} "
+        f"{'SGM Gap':>10} {'SGM PI':>10} {'PLATO SGM':>11}"
+    )
     print(header)
     print("-" * len(header))
     for c in configs:
         m = metrics[c]
-        print(f"{c:<22} {int(m['feasible']):>6} {m['sgm_t1st']:>10.4f} "
-              f"{m['sgm_gap']:>10.6f} {m['sgm_pi']:>10.4f} {m['plato_sgm']:>11.4f}")
+        print(
+            f"{c:<22} {int(m['feasible']):>6} {m['sgm_t1st']:>10.4f} "
+            f"{m['sgm_gap']:>10.6f} {m['sgm_pi']:>10.4f} {m['plato_sgm']:>11.4f}"
+        )
 
     if latex_path:
         with open(latex_path, "w") as f:
@@ -921,16 +962,19 @@ def latex_ablation_table(
     (rather than in the paper repo) so the table regenerates directly from the
     committed logs, matching the cptp-paper convention.
     """
+
     def esc(s: str) -> str:
         return s.replace("_", r"\_")
 
     lines = [
         r"\begin{table}[htbp]",
         r"\centering",
-        rf"\caption{{Per-component ablation on {n_instances} PLATO instances "
-        rf"at a {time_limit:.0f}\,s horizon (single seed). SGM = shifted "
-        r"geometric mean; PI = primal integral; PLATO SGM is the headline "
-        r"primal-integral SGM (shift $0.001$). Lower is better except \#Feas.}",
+        (
+            rf"\caption{{Per-component ablation on {n_instances} PLATO instances "
+            rf"at a {time_limit:.0f}\,s horizon (single seed). SGM = shifted "
+            r"geometric mean; PI = primal integral; PLATO SGM is the headline "
+            r"primal-integral SGM (shift $0.001$). Lower is better except \#Feas.}"
+        ),
         r"\label{tbl:ablation}",
         r"\begin{tabular}{lrrrrr}",
         r"\toprule",
@@ -1042,7 +1086,9 @@ def is_instrumented(r: SolveResult | None) -> bool:
     return r is not None and r.native is not None
 
 
-def heuristic_wall_seconds(r: SolveResult | None, phase: str | None = None) -> float | None:
+def heuristic_wall_seconds(
+    r: SolveResult | None, phase: str | None = None
+) -> float | None:
     """Wall seconds spent inside our heuristics, optionally one phase only.
 
     Returns **0.0**, not None, for an instrumented run that dispatched no
@@ -1058,8 +1104,10 @@ def heuristic_wall_seconds(r: SolveResult | None, phase: str | None = None) -> f
     """
     if r is None or not (is_instrumented(r) or r.heuristic_samples):
         return None
-    return sum(h.wall_ms for h in r.heuristic_samples
-               if phase is None or h.phase == phase) / 1000.0
+    return (
+        sum(h.wall_ms for h in r.heuristic_samples if phase is None or h.phase == phase)
+        / 1000.0
+    )
 
 
 def native_call_total(r: SolveResult | None) -> int | None:
@@ -1201,8 +1249,12 @@ def classify_cannibalization(
     # solves fast enough to need fewer RINS calls — as budget taken, inflating
     # the very count the epic quotes.  Same relative margin as the LP counters.
     row_calls, base_calls = native_call_total(row), native_call_total(base)
-    if (row_calls is not None and base_calls is not None and base_calls > 0
-            and row_calls < base_calls * (1.0 - call_drop_rel)):
+    if (
+        row_calls is not None
+        and base_calls is not None
+        and base_calls > 0
+        and row_calls < base_calls * (1.0 - call_drop_rel)
+    ):
         internal.append(f"native calls {base_calls}->{row_calls}")
     # Native LP iterations, with our dive heuristic's own charge subtracted
     # from both sides — the raw counters are shared and reading them raw bills
@@ -1252,23 +1304,29 @@ def _print_internal_budget_table(
 ) -> None:
     """Per instance x config: HiGHS's own heuristic calls and LP iterations."""
     print(f"\n### Internal budget ({len(instances)} instances)\n")
-    print("RENS is the whole-solve total; RENSroot is its root-site part, kept "
-          "as its own column\nand never collapsed into it.  The root gate is "
-          "the one a presolve-found incumbent\ncloses, so a suppressed root "
-          "call is the signal even when the merged total holds\nsteady.  "
-          "NatHeurLP / NatTotLP are the shared LP-iteration counters with our "
-          "own dive\nheuristic's charge (OurLP) subtracted, and NatShare is "
-          "their ratio — the quantity\nHiGHS's own moreHeuristicsAllowed() "
-          "tests against mip_heuristic_effort.  dNatHeurLP is\nthis row's "
-          "NatHeurLP minus the baseline's: negative means HiGHS itself did "
-          "less LP work.\n'-' means unknown — not instrumented, or nothing to "
-          "compare against.\n")
-    print("Rows are the seed `aggregate_results` selected per instance (median "
-          "primal bound),\nchosen independently per config — not a seed average.\n")
+    print(
+        "RENS is the whole-solve total; RENSroot is its root-site part, kept "
+        "as its own column\nand never collapsed into it.  The root gate is "
+        "the one a presolve-found incumbent\ncloses, so a suppressed root "
+        "call is the signal even when the merged total holds\nsteady.  "
+        "NatHeurLP / NatTotLP are the shared LP-iteration counters with our "
+        "own dive\nheuristic's charge (OurLP) subtracted, and NatShare is "
+        "their ratio — the quantity\nHiGHS's own moreHeuristicsAllowed() "
+        "tests against mip_heuristic_effort.  dNatHeurLP is\nthis row's "
+        "NatHeurLP minus the baseline's: negative means HiGHS itself did "
+        "less LP work.\n'-' means unknown — not instrumented, or nothing to "
+        "compare against.\n"
+    )
+    print(
+        "Rows are the seed `aggregate_results` selected per instance (median "
+        "primal bound),\nchosen independently per config — not a seed average.\n"
+    )
 
-    header = (f"{'Instance':<24} {'Config':<14} {'RENS':>6} {'RENSroot':>9} "
-              f"{'RINS':>6} {'RCfix':>6} {'NatHeurLP':>11} {'NatTotLP':>11} "
-              f"{'NatShare':>9} {'OurLP':>9} {'dNatHeurLP':>11}")
+    header = (
+        f"{'Instance':<24} {'Config':<14} {'RENS':>6} {'RENSroot':>9} "
+        f"{'RINS':>6} {'RCfix':>6} {'NatHeurLP':>11} {'NatTotLP':>11} "
+        f"{'NatShare':>9} {'OurLP':>9} {'dNatHeurLP':>11}"
+    )
     print(header)
     print("-" * len(header))
 
@@ -1281,27 +1339,41 @@ def _print_internal_budget_table(
             delta = None
             if n is not None and base_n is not None and c != baseline:
                 delta = n.native_heur_lp_iters - base_n.native_heur_lp_iters
-            print(f"{inst:<24} {c:<14} "
-                  f"{format_int(n.rens if n is not None else None, 6)} "
-                  f"{format_int(n.rens_root if n is not None else None, 9)} "
-                  f"{format_int(n.rins if n is not None else None, 6)} "
-                  f"{format_int(n.rcfix if n is not None else None, 6)} "
-                  f"{format_int(n.native_heur_lp_iters if n is not None else None, 11)} "
-                  f"{format_int(n.native_total_lp_iters if n is not None else None, 11)} "
-                  f"{format_float(native_lp_share(r), 9, 4)} "
-                  f"{format_int(n.fpr_lp_lp_iters if n is not None else None, 9)} "
-                  f"{format_int(delta, 11, signed=True)}")
+            print(
+                f"{inst:<24} {c:<14} "
+                f"{format_int(n.rens if n is not None else None, 6)} "
+                f"{format_int(n.rens_root if n is not None else None, 9)} "
+                f"{format_int(n.rins if n is not None else None, 6)} "
+                f"{format_int(n.rcfix if n is not None else None, 6)} "
+                f"{format_int(n.native_heur_lp_iters if n is not None else None, 11)} "
+                f"{format_int(n.native_total_lp_iters if n is not None else None, 11)} "
+                f"{format_float(native_lp_share(r), 9, 4)} "
+                f"{format_int(n.fpr_lp_lp_iters if n is not None else None, 9)} "
+                f"{format_int(delta, 11, signed=True)}"
+            )
 
     print("\n#### Aggregate (median over instrumented instances)\n")
-    agg_header = (f"{'Config':<14} {'#Instr':>7} {'RENS':>6} {'RENSroot':>9} "
-                  f"{'RINS':>6} {'RCfix':>6} {'NatHeurLP':>11} {'NatTotLP':>11} "
-                  f"{'NatShare':>9} {'OurLP':>9} {'RootRENSlost':>13}")
+    agg_header = (
+        f"{'Config':<14} {'#Instr':>7} {'RENS':>6} {'RENSroot':>9} "
+        f"{'RINS':>6} {'RCfix':>6} {'NatHeurLP':>11} {'NatTotLP':>11} "
+        f"{'NatShare':>9} {'OurLP':>9} {'RootRENSlost':>13}"
+    )
     print(agg_header)
     print("-" * len(agg_header))
     for c in configs:
-        cols: dict[str, list[float]] = {k: [] for k in
-                                        ("rens", "rens_root", "rins", "rcfix",
-                                         "heur", "tot", "share", "ours")}
+        cols: dict[str, list[float]] = {
+            k: []
+            for k in (
+                "rens",
+                "rens_root",
+                "rins",
+                "rcfix",
+                "heur",
+                "tot",
+                "share",
+                "ours",
+            )
+        }
         n_instr = 0
         lost = 0
         # Instances where a baseline row existed to compare this one against.
@@ -1331,20 +1403,24 @@ def _print_internal_budget_table(
                 comparable += 1
                 if base_n.rens_root > 0 and n.rens_root == 0:
                     lost += 1
-        print(f"{c:<14} {n_instr:>7} "
-              f"{format_float(_median_or_none(cols['rens']), 6, 1)} "
-              f"{format_float(_median_or_none(cols['rens_root']), 9, 1)} "
-              f"{format_float(_median_or_none(cols['rins']), 6, 1)} "
-              f"{format_float(_median_or_none(cols['rcfix']), 6, 1)} "
-              f"{format_float(_median_or_none(cols['heur']), 11, 1)} "
-              f"{format_float(_median_or_none(cols['tot']), 11, 1)} "
-              f"{format_float(_median_or_none(cols['share']), 9, 4)} "
-              f"{format_float(_median_or_none(cols['ours']), 9, 1)} "
-              f"{format_int(lost if comparable else None, 13)}")
-    print("\nRootRENSlost = instances where the baseline called root RENS and "
-          "this config did not\n('-' = no comparable baseline row).  Medians "
-          "are over each config's own instrumented\ninstances, which may be a "
-          "different set per config — see #Instr.")
+        print(
+            f"{c:<14} {n_instr:>7} "
+            f"{format_float(_median_or_none(cols['rens']), 6, 1)} "
+            f"{format_float(_median_or_none(cols['rens_root']), 9, 1)} "
+            f"{format_float(_median_or_none(cols['rins']), 6, 1)} "
+            f"{format_float(_median_or_none(cols['rcfix']), 6, 1)} "
+            f"{format_float(_median_or_none(cols['heur']), 11, 1)} "
+            f"{format_float(_median_or_none(cols['tot']), 11, 1)} "
+            f"{format_float(_median_or_none(cols['share']), 9, 4)} "
+            f"{format_float(_median_or_none(cols['ours']), 9, 1)} "
+            f"{format_int(lost if comparable else None, 13)}"
+        )
+    print(
+        "\nRootRENSlost = instances where the baseline called root RENS and "
+        "this config did not\n('-' = no comparable baseline row).  Medians "
+        "are over each config's own instrumented\ninstances, which may be a "
+        "different set per config — see #Instr."
+    )
 
 
 def _print_wall_clock_table(
@@ -1356,25 +1432,31 @@ def _print_wall_clock_table(
 ) -> None:
     """Per instance x config: heuristic wall time, root-LP delay, class."""
     print(f"\n### Wall clock ({len(instances)} instances)\n")
-    print("Heur_s is the sum of every [Heur] window (0.0 — not missing — for an "
-          "instrumented run\nthat dispatched none); Dive_s is the fpr_lp part of "
-          "it; HeurFrac is Heur_s over the\nsolve time, as a fraction.  Span_s "
-          "is the presolve chain's full span, which includes the\nshared setup "
-          "and accumulates across restarts, so it may exceed Troot_s on a "
-          "restarting\ninstance.  Troot_s = '-' means the root LP was never "
-          "reached — presolve solved the model,\nor a limit fired first — which "
-          "is deliberately left unclassified rather than guessed.\n")
-    print("Class: baseline = the reference row | neutral = native activity and "
-          "solve time both held\n| wall-clock = budgets held but a material "
-          "share of the solve went into our heuristics\nand/or the root LP came "
-          "materially later (a cost accounting, not a claim the config was\n"
-          "slower end to end) | internal-budget = HiGHS's own heuristics ran "
-          "less | both = both\nsignals | no-baseline = nothing to compare "
-          "against | not-instrumented = pre-#95 log.\n")
+    print(
+        "Heur_s is the sum of every [Heur] window (0.0 — not missing — for an "
+        "instrumented run\nthat dispatched none); Dive_s is the fpr_lp part of "
+        "it; HeurFrac is Heur_s over the\nsolve time, as a fraction.  Span_s "
+        "is the presolve chain's full span, which includes the\nshared setup "
+        "and accumulates across restarts, so it may exceed Troot_s on a "
+        "restarting\ninstance.  Troot_s = '-' means the root LP was never "
+        "reached — presolve solved the model,\nor a limit fired first — which "
+        "is deliberately left unclassified rather than guessed.\n"
+    )
+    print(
+        "Class: baseline = the reference row | neutral = native activity and "
+        "solve time both held\n| wall-clock = budgets held but a material "
+        "share of the solve went into our heuristics\nand/or the root LP came "
+        "materially later (a cost accounting, not a claim the config was\n"
+        "slower end to end) | internal-budget = HiGHS's own heuristics ran "
+        "less | both = both\nsignals | no-baseline = nothing to compare "
+        "against | not-instrumented = pre-#95 log.\n"
+    )
 
-    header = (f"{'Instance':<24} {'Config':<14} {'Heur_s':>8} {'Dive_s':>8} "
-              f"{'HeurFrac':>9} {'Troot_s':>9} {'dTroot_s':>9} {'Span_s':>8} "
-              f"{'Class':<16} Evidence")
+    header = (
+        f"{'Instance':<24} {'Config':<14} {'Heur_s':>8} {'Dive_s':>8} "
+        f"{'HeurFrac':>9} {'Troot_s':>9} {'dTroot_s':>9} {'Span_s':>8} "
+        f"{'Class':<16} Evidence"
+    )
     print(header)
     print("-" * len(header))
 
@@ -1384,22 +1466,28 @@ def _print_wall_clock_table(
         for c in configs:
             r = agg_results.get(c, {}).get(inst)
             t_root = r.time_to_root_lp if r is not None else None
-            d_root = (t_root - t_base
-                      if t_root is not None and t_base is not None and c != baseline
-                      else None)
+            d_root = (
+                t_root - t_base
+                if t_root is not None and t_base is not None and c != baseline
+                else None
+            )
             v = verdicts[(inst, c)]
-            print(f"{inst:<24} {c:<14} "
-                  f"{format_float(heuristic_wall_seconds(r), 8, 2)} "
-                  f"{format_float(heuristic_wall_seconds(r, 'dive'), 8, 2)} "
-                  f"{format_float(r.heuristic_wall_fraction if r is not None else None, 9, 4)} "
-                  f"{format_float(t_root, 9, 2)} "
-                  f"{format_float(d_root, 9, 2)} "
-                  f"{format_float(presolve_span_seconds(r), 8, 2)} "
-                  f"{v.category:<16} {'; '.join(v.evidence)}".rstrip())
+            print(
+                f"{inst:<24} {c:<14} "
+                f"{format_float(heuristic_wall_seconds(r), 8, 2)} "
+                f"{format_float(heuristic_wall_seconds(r, 'dive'), 8, 2)} "
+                f"{format_float(r.heuristic_wall_fraction if r is not None else None, 9, 4)} "
+                f"{format_float(t_root, 9, 2)} "
+                f"{format_float(d_root, 9, 2)} "
+                f"{format_float(presolve_span_seconds(r), 8, 2)} "
+                f"{v.category:<16} {'; '.join(v.evidence)}".rstrip()
+            )
 
     print("\n#### Aggregate (SGM shift=1 for seconds, median for HeurFrac)\n")
-    agg_header = (f"{'Config':<14} {'#Instr':>7} {'Heur_s':>8} {'Dive_s':>8} "
-                  f"{'HeurFrac':>9} {'Troot_s':>9} {'#Root':>6} {'Span_s':>8}")
+    agg_header = (
+        f"{'Config':<14} {'#Instr':>7} {'Heur_s':>8} {'Dive_s':>8} "
+        f"{'HeurFrac':>9} {'Troot_s':>9} {'#Root':>6} {'Span_s':>8}"
+    )
     print(agg_header)
     print("-" * len(agg_header))
     notes: list[str] = []
@@ -1440,21 +1528,27 @@ def _print_wall_clock_table(
         # still shows the artefact, which is why the regex accepts the sign.
         artefacts = sum(1 for v in heur + dive if v <= -1.0)
         if artefacts:
-            notes.append(f"{c}: {artefacts} negative [Heur] window(s) excluded "
-                         "from the SGM (non-monotonic solver clock)")
+            notes.append(
+                f"{c}: {artefacts} negative [Heur] window(s) excluded "
+                "from the SGM (non-monotonic solver clock)"
+            )
         heur = [v for v in heur if v > -1.0]
         dive = [v for v in dive if v > -1.0]
-        print(f"{c:<14} {n_instr:>7} "
-              f"{format_float(shifted_geomean(heur, 1.0) if heur else None, 8, 2)} "
-              f"{format_float(shifted_geomean(dive, 1.0) if dive else None, 8, 2)} "
-              f"{format_float(_median_or_none(fracs), 9, 4)} "
-              f"{format_float(shifted_geomean(troot, 1.0) if troot else None, 9, 2)} "
-              f"{len(troot):>6} "
-              f"{format_float(shifted_geomean(span, 1.0) if span else None, 8, 2)}")
-    print("\n#Root = instances behind Troot_s, i.e. those that reached the root "
-          "LP.  It can be\nsmaller than #Instr and differ between configs, so "
-          "compare Troot_s only when they match:\nan instance whose root LP a "
-          "config never reached leaves that config's column entirely.")
+        print(
+            f"{c:<14} {n_instr:>7} "
+            f"{format_float(shifted_geomean(heur, 1.0) if heur else None, 8, 2)} "
+            f"{format_float(shifted_geomean(dive, 1.0) if dive else None, 8, 2)} "
+            f"{format_float(_median_or_none(fracs), 9, 4)} "
+            f"{format_float(shifted_geomean(troot, 1.0) if troot else None, 9, 2)} "
+            f"{len(troot):>6} "
+            f"{format_float(shifted_geomean(span, 1.0) if span else None, 8, 2)}"
+        )
+    print(
+        "\n#Root = instances behind Troot_s, i.e. those that reached the root "
+        "LP.  It can be\nsmaller than #Instr and differ between configs, so "
+        "compare Troot_s only when they match:\nan instance whose root LP a "
+        "config never reached leaves that config's column entirely."
+    )
     for note in notes:
         print(f"NOTE: {note}")
 
@@ -1466,14 +1560,19 @@ def _print_classification_counts(
 ) -> None:
     """Per config, how many instances landed in each cannibalization category."""
     print("\n### Classification counts\n")
-    header = f"{'Config':<14}" + "".join(f" {cat:>17}" for cat in CANNIBALIZATION_CATEGORIES)
+    header = f"{'Config':<14}" + "".join(
+        f" {cat:>17}" for cat in CANNIBALIZATION_CATEGORIES
+    )
     print(header)
     print("-" * len(header))
     for c in configs:
         counts = {cat: 0 for cat in CANNIBALIZATION_CATEGORIES}
         for inst in instances:
             counts[verdicts[(inst, c)].category] += 1
-        print(f"{c:<14}" + "".join(f" {counts[cat]:>17}" for cat in CANNIBALIZATION_CATEGORIES))
+        print(
+            f"{c:<14}"
+            + "".join(f" {counts[cat]:>17}" for cat in CANNIBALIZATION_CATEGORIES)
+        )
 
 
 def print_cannibalization_tables(
@@ -1497,37 +1596,51 @@ def print_cannibalization_tables(
 
     any_instrumented = any(
         is_instrumented(agg_results.get(c, {}).get(inst))
-        for c in configs for inst in instances
+        for c in configs
+        for inst in instances
     )
     if not any_instrumented:
-        print("(not instrumented: no [Native] / [Heur] / [Root] lines in these "
-              "logs.\n These come from issue #95 and need log_dev_level=3 on a "
-              "patched binary;\n a results tree recorded before that carries "
-              "none of them.)")
+        print(
+            "(not instrumented: no [Native] / [Heur] / [Root] lines in these "
+            "logs.\n These come from issue #95 and need log_dev_level=3 on a "
+            "patched binary;\n a results tree recorded before that carries "
+            "none of them.)"
+        )
         return
 
     baseline = pick_baseline_config(agg_results, configs, baseline_config)
     if baseline_config is not None and baseline is None:
-        print(f"(requested baseline config '{baseline_config}' is not in this "
-              "results tree — rows cannot be compared)")
+        print(
+            f"(requested baseline config '{baseline_config}' is not in this "
+            "results tree — rows cannot be compared)"
+        )
     elif baseline is None:
-        print("(no vanilla-equivalent baseline config found — pass "
-              "--cannibalization-baseline NAME.\n Rows are reported but not "
-              "classified.)")
+        print(
+            "(no vanilla-equivalent baseline config found — pass "
+            "--cannibalization-baseline NAME.\n Rows are reported but not "
+            "classified.)"
+        )
     else:
         print(f"Baseline config: {baseline}")
         if baseline_config is None:
-            others = [c for c in baseline_candidates(agg_results, configs)
-                      if c != baseline]
+            others = [
+                c for c in baseline_candidates(agg_results, configs) if c != baseline
+            ]
             if others:
-                print("(other configs also dispatched no heuristic and could "
-                      f"serve as the baseline: {', '.join(others)} — pass "
-                      "--cannibalization-baseline to choose)")
-        if not any(is_instrumented(agg_results.get(baseline, {}).get(i)) for i in instances):
-            print(f"WARNING: baseline config '{baseline}' carries no "
-                  "instrumentation.  An externally built\n         unpatched "
-                  "binary emits none; the comparison needs the patched binary "
-                  "at\n         mip_heuristic_suite=off instead.")
+                print(
+                    "(other configs also dispatched no heuristic and could "
+                    f"serve as the baseline: {', '.join(others)} — pass "
+                    "--cannibalization-baseline to choose)"
+                )
+        if not any(
+            is_instrumented(agg_results.get(baseline, {}).get(i)) for i in instances
+        ):
+            print(
+                f"WARNING: baseline config '{baseline}' carries no "
+                "instrumentation.  An externally built\n         unpatched "
+                "binary emits none; the comparison needs the patched binary "
+                "at\n         mip_heuristic_suite=off instead."
+            )
 
     verdicts: dict[tuple[str, str], CannibalizationVerdict] = {}
     for inst in instances:
@@ -1544,22 +1657,43 @@ def print_cannibalization_tables(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze HiGHS benchmark results")
-    parser.add_argument("results_dir", help="Directory with config subdirectories of log files")
-    parser.add_argument("--configs", nargs="+", default=["patched", "vanilla"],
-                        help="Configs to compare (default: patched vanilla). An entry of the "
-                             "form NAME=DIR loads that config from an explicit directory instead "
-                             "of results_dir/NAME (used to pull ablation anchors from "
-                             "bench/results/plato).")
-    parser.add_argument("--plot", default=None, help="Path to save survival plot (e.g., bench/survival.png)")
-    parser.add_argument("--gap-threshold", type=float, default=0.01,
-                        help="Gap threshold for survival plot (default: 0.01 = 1%%)")
-    parser.add_argument("--time-limit", type=float, default=600.0,
-                        help="Time limit used in the benchmark (for gap@cutoff metric)")
-    parser.add_argument("--solu", default=os.path.join(os.path.dirname(__file__),
-                                                       "miplib2017-v22.solu"),
-                        help="MIPLIB .solu file with reference objectives")
     parser.add_argument(
-        "--baseline", action="store_true",
+        "results_dir", help="Directory with config subdirectories of log files"
+    )
+    parser.add_argument(
+        "--configs",
+        nargs="+",
+        default=["patched", "vanilla"],
+        help="Configs to compare (default: patched vanilla). An entry of the "
+        "form NAME=DIR loads that config from an explicit directory instead "
+        "of results_dir/NAME (used to pull ablation anchors from "
+        "bench/results/plato).",
+    )
+    parser.add_argument(
+        "--plot",
+        default=None,
+        help="Path to save survival plot (e.g., bench/survival.png)",
+    )
+    parser.add_argument(
+        "--gap-threshold",
+        type=float,
+        default=0.01,
+        help="Gap threshold for survival plot (default: 0.01 = 1%%)",
+    )
+    parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=600.0,
+        help="Time limit used in the benchmark (for gap@cutoff metric)",
+    )
+    parser.add_argument(
+        "--solu",
+        default=os.path.join(os.path.dirname(__file__), "miplib2017-v22.solu"),
+        help="MIPLIB .solu file with reference objectives",
+    )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
         help=(
             "Print PLATO headline metrics: primal-integral SGM (shift=0.001, "
             "matching Mittelmann's published methodology) and feasibility counts. "
@@ -1567,14 +1701,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--summary", action="store_true",
+        "--summary",
+        action="store_true",
         help=(
             "Print only the SGM/paper-metrics summary and PLATO headline; "
             "skip the per-instance comparison table. Implies --baseline."
         ),
     )
     parser.add_argument(
-        "--ablation", action="store_true",
+        "--ablation",
+        action="store_true",
         help=(
             "Print a one-row-per-config ablation table (every config on its own "
             "row) instead of the pairwise comparison/paper-metrics tables. Use "
@@ -1582,7 +1718,8 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--attribution", action="store_true",
+        "--attribution",
+        action="store_true",
         help=(
             "Print the per-config heuristic attribution: which heuristic found "
             "the first feasible incumbent and which held the best at termination "
@@ -1590,7 +1727,8 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--cannibalization", action="store_true",
+        "--cannibalization",
+        action="store_true",
         help=(
             "Print the internal-budget and wall-clock cannibalization tables "
             "(epic #88): HiGHS's own RENS/RINS/root-reduced-cost calls and its "
@@ -1603,7 +1741,9 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--cannibalization-baseline", default=None, metavar="CONFIG",
+        "--cannibalization-baseline",
+        default=None,
+        metavar="CONFIG",
         help=(
             "Config every other row is compared against in --cannibalization "
             "(default: auto-detect the vanilla-equivalent config — instrumented "
@@ -1611,7 +1751,9 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--latex", default=None, metavar="PATH",
+        "--latex",
+        default=None,
+        metavar="PATH",
         help="With --ablation, also write the ablation table as LaTeX to PATH.",
     )
     args = parser.parse_args()
@@ -1646,34 +1788,54 @@ def main() -> None:
 
     if args.ablation:
         # Per-component ablation: one row per config, plus optional attribution.
-        print_ablation_summary(results, agg_results, active_configs, args.time_limit,
-                               best_known, latex_path=args.latex)
+        print_ablation_summary(
+            results,
+            agg_results,
+            active_configs,
+            args.time_limit,
+            best_known,
+            latex_path=args.latex,
+        )
         if args.attribution:
             print_attribution(results, agg_results, active_configs)
         if args.cannibalization:
-            print_cannibalization_tables(results, agg_results, active_configs,
-                                         args.cannibalization_baseline)
+            print_cannibalization_tables(
+                results, agg_results, active_configs, args.cannibalization_baseline
+            )
         if args.plot:
-            generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)
+            generate_survival_plot(
+                agg_results, active_configs, args.plot, args.gap_threshold
+            )
         return
 
     if not args.summary:
-        print_comparison_table(agg_results, active_configs, best_known=best_known, time_limit=args.time_limit)
-    print_paper_metrics(results, agg_results, active_configs, args.time_limit,
-                        best_known=best_known)
+        print_comparison_table(
+            agg_results,
+            active_configs,
+            best_known=best_known,
+            time_limit=args.time_limit,
+        )
+    print_paper_metrics(
+        results, agg_results, active_configs, args.time_limit, best_known=best_known
+    )
 
     if args.attribution:
         print_attribution(results, agg_results, active_configs)
 
     if args.baseline or args.summary:
-        print_plato_summary(results, agg_results, active_configs, args.time_limit, best_known)
+        print_plato_summary(
+            results, agg_results, active_configs, args.time_limit, best_known
+        )
 
     if args.cannibalization:
-        print_cannibalization_tables(results, agg_results, active_configs,
-                                     args.cannibalization_baseline)
+        print_cannibalization_tables(
+            results, agg_results, active_configs, args.cannibalization_baseline
+        )
 
     if args.plot:
-        generate_survival_plot(agg_results, active_configs, args.plot, args.gap_threshold)
+        generate_survival_plot(
+            agg_results, active_configs, args.plot, args.gap_threshold
+        )
 
 
 if __name__ == "__main__":

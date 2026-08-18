@@ -6,8 +6,9 @@ import os
 import subprocess
 import sys
 
-
-SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_effort_drift.py")
+SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "check_effort_drift.py"
+)
 
 
 def _make_log(heur_rates: dict[str, float]) -> str:
@@ -40,6 +41,7 @@ def _run(root: str, max_drift: float = 3.0) -> subprocess.CompletedProcess[str]:
         [sys.executable, SCRIPT, root, "--max-drift", str(max_drift)],
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -102,6 +104,7 @@ def test_unknown_reference_arg_errors(tmp_path):
         [sys.executable, SCRIPT, str(tmp_path), "--reference", "typo_name"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 1
     assert "ERROR" in res.stderr

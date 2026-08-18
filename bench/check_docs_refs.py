@@ -114,7 +114,9 @@ def check(doc_path: Path = DOC_PATH, repo_root: Path = REPO_ROOT) -> list[str]:
 def main() -> int:
     problems = check()
     if problems:
-        print(f"{len(problems)} stale reference(s) in {DOC_PATH.relative_to(REPO_ROOT)}:\n")
+        print(
+            f"{len(problems)} stale reference(s) in {DOC_PATH.relative_to(REPO_ROOT)}:\n"
+        )
         for p in problems:
             print(f"  {p}")
         return 1

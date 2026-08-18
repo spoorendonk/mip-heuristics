@@ -268,11 +268,27 @@ def build_base_options(
         base["log_dev_level"] = "3"
     for kv in extra_options or []:
         if "=" not in kv:
-            print(f"Warning: ignoring malformed --extra-options entry (no '='): {kv!r}",
-                  file=sys.stderr)
+            print(
+                f"Warning: ignoring malformed --extra-options entry (no '='): {kv!r}",
+                file=sys.stderr,
+            )
             continue
         key, value = kv.split("=", 1)
-        base[key.strip()] = value.strip()
+        key, value = key.strip(), value.strip()
+        # `--dev-log` is the reason the whole tree is analysable, and an
+        # override here cancels it silently: the run header still announces
+        # instrumentation, every solve completes, and the omission only
+        # surfaces hours later when `analyze_results.py --cannibalization`
+        # reports the tree as not instrumented.  Same failure family as the
+        # `random_seed` collision below it.
+        if dev_log and key == "log_dev_level" and value != "3":
+            print(
+                f"Warning: --extra-options {key}={value} overrides --dev-log; "
+                "the [Heur]/[Native]/[Root] lines will not be emitted and "
+                "--cannibalization will report this tree as not instrumented",
+                file=sys.stderr,
+            )
+        base[key] = value
     return base
 
 
@@ -315,8 +331,7 @@ def find_instance_file(name: str, data_dir: str) -> str | None:
 def write_options_file(options: dict[str, str], path: str) -> None:
     """Write a HiGHS options file."""
     with open(path, "w") as f:
-        for k, v in options.items():
-            f.write(f"{k} = {v}\n")
+        f.writelines(f"{k} = {v}\n" for k, v in options.items())
 
 
 # HiGHS warnings that mean the solve did not do what its config name says.
@@ -415,14 +430,21 @@ def run_single(
     opts_path = os.path.join(seed_dir, f"{instance_name}.opts")
     write_options_file(options, opts_path)
 
-    cmd = [binary, instance_file, "--time_limit", str(time_limit),
-           "--options_file", opts_path]
+    cmd = [
+        binary,
+        instance_file,
+        "--time_limit",
+        str(time_limit),
+        "--options_file",
+        opts_path,
+    ]
 
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
+            check=False,
             timeout=time_limit * 1.5 + 120,  # generous timeout beyond HiGHS limit
         )
         # Combine stdout and stderr
@@ -437,11 +459,16 @@ def run_single(
         # run is the same silent-failure family as the old `config_opts_for`
         # returning `{}`, one layer down.
         if result.returncode not in (0, 1):
-            record_failure(log_path, output + f"\n--- runner ---\n"
-                           f"{binary} exited {result.returncode} without solving\n")
-            print(f"Error: {binary} exited {result.returncode} on {instance_name} "
-                  f"({config}, seed {seed}) without solving; see {log_path}.err",
-                  file=sys.stderr)
+            record_failure(
+                log_path,
+                output + f"\n--- runner ---\n"
+                f"{binary} exited {result.returncode} without solving\n",
+            )
+            print(
+                f"Error: {binary} exited {result.returncode} on {instance_name} "
+                f"({config}, seed {seed}) without solving; see {log_path}.err",
+                file=sys.stderr,
+            )
             return (instance_name, config, seed, False)
         # A run that solved fine but ignored the configuration it was given is
         # worse than one that failed: the exit code is 0 and the log is
@@ -449,50 +476,82 @@ def run_single(
         # directory name says something the binary did not do.
         ignored = find_ignored_config_warning(output)
         if ignored is not None:
-            record_failure(log_path, output + f"\n--- runner ---\n"
-                           f"{binary} ignored its configuration: {ignored}\n")
-            print(f"Error: {binary} ignored its configuration on {instance_name} "
-                  f"({config}, seed {seed}): {ignored}; see {log_path}.err",
-                  file=sys.stderr)
+            record_failure(
+                log_path,
+                output + f"\n--- runner ---\n"
+                f"{binary} ignored its configuration: {ignored}\n",
+            )
+            print(
+                f"Error: {binary} ignored its configuration on {instance_name} "
+                f"({config}, seed {seed}): {ignored}; see {log_path}.err",
+                file=sys.stderr,
+            )
             return (instance_name, config, seed, False)
         write_log(log_path, output)
         return (instance_name, config, seed, True)
     except subprocess.TimeoutExpired:
-        record_failure(log_path, f"TIMEOUT: process killed after {time_limit * 1.5 + 120}s\n")
+        record_failure(
+            log_path, f"TIMEOUT: process killed after {time_limit * 1.5 + 120}s\n"
+        )
         return (instance_name, config, seed, False)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - any failure becomes one FAIL row, not a dead campaign
         record_failure(log_path, f"ERROR: {e}\n")
         return (instance_name, config, seed, False)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run patched vs vanilla HiGHS benchmark")
+    parser = argparse.ArgumentParser(
+        description="Run patched vs vanilla HiGHS benchmark"
+    )
     parser.add_argument("--instances", required=True, help="File with instance names")
-    parser.add_argument("--binary", default="./build/bin/highs", help="Path to patched HiGHS binary")
-    parser.add_argument("--vanilla-binary", default=None, metavar="PATH",
-                        help="Separate binary for the vanilla config (e.g. system HiGHS). "
-                             "When set, vanilla runs with no custom options — just time limit "
-                             "and seed — since the external binary has no mip_heuristic_* options.")
-    parser.add_argument("--data-dir", default="/tmp/miplib", help="Directory with .mps.gz files")
-    parser.add_argument("--time-limit", type=float, default=60, help="Time limit per instance (seconds)")
     parser.add_argument(
-        "--output", "--output-dir", dest="output", default="bench/results",
+        "--binary", default="./build/bin/highs", help="Path to patched HiGHS binary"
+    )
+    parser.add_argument(
+        "--vanilla-binary",
+        default=None,
+        metavar="PATH",
+        help="Separate binary for the vanilla config (e.g. system HiGHS). "
+        "When set, vanilla runs with no custom options — just time limit "
+        "and seed — since the external binary has no mip_heuristic_* options.",
+    )
+    parser.add_argument(
+        "--data-dir", default="/tmp/miplib", help="Directory with .mps.gz files"
+    )
+    parser.add_argument(
+        "--time-limit", type=float, default=60, help="Time limit per instance (seconds)"
+    )
+    parser.add_argument(
+        "--output",
+        "--output-dir",
+        dest="output",
+        default="bench/results",
         help="Output directory for logs (default: bench/results)",
     )
-    parser.add_argument("--seeds", nargs="+", type=int, default=[0],
-                        help="Random seeds to run (default: 0)")
     parser.add_argument(
-        "--configs", nargs="+", default=["patched", "vanilla"],
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=[0],
+        help="Random seeds to run (default: 0)",
+    )
+    parser.add_argument(
+        "--configs",
+        nargs="+",
+        default=["patched", "vanilla"],
         help=(
             "Configs to run (default: patched vanilla). One of: "
             + ", ".join(sorted(CONFIG_SUITES))
             + ". Each selects a mip_heuristic_suite value; `patched` is an alias "
-              "for `all`, and `vanilla` runs the external --vanilla-binary when "
-              "one is given. An unknown name is an error, not a default-option run."
+            "for `all`, and `vanilla` runs the external --vanilla-binary when "
+            "one is given. An unknown name is an error, not a default-option run."
         ),
     )
     parser.add_argument(
-        "--budget-sweep", nargs="*", metavar="V", default=None,
+        "--budget-sweep",
+        nargs="*",
+        metavar="V",
+        default=None,
         help=(
             "Sweep mip_heuristic_presolve_effort: each config expands to "
             "<config>@e<V> per value, writing to <output>/<config>@e<V>/seed<N>/. "
@@ -502,19 +561,38 @@ def main() -> None:
             "each, as the sweep's anchor rows."
         ),
     )
-    parser.add_argument("--start", type=int, default=0,
-                        help="Skip the first N instances (for chunked runs, default: 0)")
-    parser.add_argument("--count", type=int, default=None,
-                        help="Run at most N instances (for chunked runs, default: all)")
-    parser.add_argument("--skip-existing", action="store_true",
-                        help="Skip instances whose log file already exists (safe to resume)")
-    parser.add_argument("--wall-time-budget", type=float, default=None, metavar="SECONDS",
-                        help="Stop launching new instances after SECONDS of wall time "
-                             "(current instance still finishes). Use with --skip-existing "
-                             "to resume later.")
-    parser.add_argument("--interleave", action="store_true",
-                        help="Run instance→config loop order (vanilla+patched per instance) "
-                             "rather than config→instance. Gives paired results sooner.")
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Skip the first N instances (for chunked runs, default: 0)",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=None,
+        help="Run at most N instances (for chunked runs, default: all)",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip instances whose log file already exists (safe to resume)",
+    )
+    parser.add_argument(
+        "--wall-time-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Stop launching new instances after SECONDS of wall time "
+        "(current instance still finishes). Use with --skip-existing "
+        "to resume later.",
+    )
+    parser.add_argument(
+        "--interleave",
+        action="store_true",
+        help="Run instance→config loop order (vanilla+patched per instance) "
+        "rather than config→instance. Gives paired results sooner.",
+    )
     parser.add_argument(
         "--threads",
         type=int,
@@ -571,8 +649,10 @@ def main() -> None:
         # `which highs` finds nothing, and this is the line a reader checks to
         # confirm which baseline they measured.
         if vanilla_binary == binary:
-            print(f"Vanilla binary : {vanilla_binary} (same path as --binary — "
-                  "vanilla runs the patched binary at mip_heuristic_suite=off)")
+            print(
+                f"Vanilla binary : {vanilla_binary} (same path as --binary — "
+                "vanilla runs the patched binary at mip_heuristic_suite=off)"
+            )
         else:
             print(f"Vanilla binary : {vanilla_binary} (external — no custom options)")
     print(f"Patched binary : {binary}")
@@ -607,9 +687,12 @@ def main() -> None:
     for plan in plans:
         key = plan.identity
         if key in seen:
-            print(f"Warning: config {plan.name!r} is identical to {seen[key]!r} "
-                  "(same binary, same options) — duplicated work, not a second "
-                  "data point", file=sys.stderr)
+            print(
+                f"Warning: config {plan.name!r} is identical to {seen[key]!r} "
+                "(same binary, same options) — duplicated work, not a second "
+                "data point",
+                file=sys.stderr,
+            )
         else:
             seen[key] = plan.name
     if budgets:
@@ -620,12 +703,15 @@ def main() -> None:
     # `SolveResult.heuristic_wall_fraction` is `None` on a plain run — not 0.0,
     # which is reserved for an instrumented `suite=off` — so the attribution
     # tables come out empty rather than wrong, hours later.
-    print("Instrumentation: " + (
-        "log_dev_level=3 ([Heur]/[Native]/[Root]/[Sequential]) — attribution "
-        "run, timings inflated"
-        if args.dev_log else
-        "off — headline timings; pass --dev-log for the attribution tables"
-    ))
+    print(
+        "Instrumentation: "
+        + (
+            "log_dev_level=3 ([Heur]/[Native]/[Root]/[Sequential]) — attribution "
+            "run, timings inflated"
+            if args.dev_log
+            else "off — headline timings; pass --dev-log for the attribution tables"
+        )
+    )
 
     instances = load_instances(args.instances)
     print(f"Loaded {len(instances)} instances from {args.instances}")
@@ -640,7 +726,10 @@ def main() -> None:
         else:
             instance_files[name] = f
     if missing:
-        print(f"Warning: {len(missing)} instances not found in {args.data_dir}:", file=sys.stderr)
+        print(
+            f"Warning: {len(missing)} instances not found in {args.data_dir}:",
+            file=sys.stderr,
+        )
         for name in missing:
             print(f"  {name}", file=sys.stderr)
         instances = [n for n in instances if n in instance_files]
@@ -649,9 +738,9 @@ def main() -> None:
 
     # Apply chunk slicing
     if args.start:
-        instances = instances[args.start:]
+        instances = instances[args.start :]
     if args.count is not None:
-        instances = instances[:args.count]
+        instances = instances[: args.count]
 
     total_runs = len(plans) * len(args.seeds) * len(instances)
     done = 0
@@ -664,16 +753,21 @@ def main() -> None:
     # make the directory name a lie.  Say so: silently dropping the flag is
     # the same "your option did nothing" failure this changeset exists to fix.
     if "random_seed" in base_opts:
-        print(f"Warning: --extra-options random_seed={base_opts['random_seed']!r} is "
-              f"ignored — the seed comes from --seeds ({' '.join(map(str, args.seeds))}) "
-              "and names the output directory", file=sys.stderr)
+        print(
+            f"Warning: --extra-options random_seed={base_opts['random_seed']!r} is "
+            f"ignored — the seed comes from --seeds ({' '.join(map(str, args.seeds))}) "
+            "and names the output directory",
+            file=sys.stderr,
+        )
     # Config options win over base options, so any --extra-options pin of a key
     # a config also sets is silently discarded on that config.
     for plan in plans:
         for key in sorted(set(base_opts) & set(plan.options)):
-            print(f"Warning: --extra-options {key}={base_opts[key]!r} is overridden "
-                  f"by config {plan.name!r} ({key}={plan.options[key]!r})",
-                  file=sys.stderr)
+            print(
+                f"Warning: --extra-options {key}={base_opts[key]!r} is overridden "
+                f"by config {plan.name!r} ({key}={plan.options[key]!r})",
+                file=sys.stderr,
+            )
 
     def should_skip(config: str, name: str, seed: int) -> bool:
         if not args.skip_existing:
@@ -699,8 +793,10 @@ def main() -> None:
         if check_budget():
             budget_exhausted = True
             elapsed = time.time() - run_start
-            print(f"\nTime budget reached ({elapsed/3600:.1f}h elapsed). "
-                  f"Re-run with same command to continue.")
+            print(
+                f"\nTime budget reached ({elapsed / 3600:.1f}h elapsed). "
+                f"Re-run with same command to continue."
+            )
             return
         extra_opts = {**base_opts, **plan.options}
         _, _, _, success = run_single(
@@ -716,8 +812,10 @@ def main() -> None:
         done += 1
         status = "OK" if success else "FAIL"
         elapsed = time.time() - run_start
-        print(f"[{done}/{total_runs}] {name} ({plan.name}) {status}  "
-              f"[{elapsed/3600:.1f}h elapsed]")
+        print(
+            f"[{done}/{total_runs}] {name} ({plan.name}) {status}  "
+            f"[{elapsed / 3600:.1f}h elapsed]"
+        )
 
     if args.interleave:
         # instance → seed → config: gives paired vanilla+patched results sooner
@@ -735,10 +833,12 @@ def main() -> None:
         # config → seed → instance: runs all of one config before the next
         for plan in plans:
             for seed in args.seeds:
-                print(f"\n{'='*60}")
-                print(f"Config: {plan.name}, seed: {seed} "
-                      f"({len(instances)} instances, {args.time_limit}s limit)")
-                print(f"{'='*60}")
+                print(f"\n{'=' * 60}")
+                print(
+                    f"Config: {plan.name}, seed: {seed} "
+                    f"({len(instances)} instances, {args.time_limit}s limit)"
+                )
+                print(f"{'=' * 60}")
                 for name in instances:
                     run_one(plan, name, seed)
                     if budget_exhausted:
@@ -749,7 +849,9 @@ def main() -> None:
                 break
 
     elapsed_total = time.time() - run_start
-    print(f"\nDone. {done} runs in {elapsed_total/3600:.1f}h. Results in {args.output}/")
+    print(
+        f"\nDone. {done} runs in {elapsed_total / 3600:.1f}h. Results in {args.output}/"
+    )
     # The config names are the directory names, so the analysis command is
     # mechanical — print it rather than making the reader reconstruct it.
     # Two configs is the pairwise/PLATO shape README.md and run_plato.sh
@@ -758,10 +860,12 @@ def main() -> None:
     # contradict the command run_plato.sh prints seconds later.
     if done:
         mode = "--ablation" if len(plans) > 2 else "--baseline --summary"
-        print("\nAnalyze with:\n"
-              f"  python3 bench/analyze_results.py {args.output} {mode} "
-              f"--configs {' '.join(p.name for p in plans)} "
-              f"--time-limit {args.time_limit:g}")
+        print(
+            "\nAnalyze with:\n"
+            f"  python3 bench/analyze_results.py {args.output} {mode} "
+            f"--configs {' '.join(p.name for p in plans)} "
+            f"--time-limit {args.time_limit:g}"
+        )
 
 
 if __name__ == "__main__":

@@ -4,3 +4,45 @@ addopts = "--ignore=build*"
 
 [tool.ruff]
 target-version = "py310"
+
+# Pinned explicitly rather than inherited from ruff's defaults.  Those
+# defaults are not stable across releases — 0.16 widened them well beyond
+# the historical E4/E7/E9/F, which turned CI red on `bench/` code nobody
+# had touched.  A lint gate whose rule set moves underneath it is a gate
+# that fails for reasons unrelated to the change under review, so the set
+# is stated here and the CI job pins the ruff version to match.
+#
+# This is the union of ruff's own defaults and every family that was
+# firing when the gate was made mandatory; the tree is clean against it.
+# Widening it is a deliberate act: add a family, fix what it finds, and
+# land both together.
+[tool.ruff.lint]
+select = [
+    "E4",   # imports
+    "E7",   # statement-level style
+    "E9",   # runtime errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "SIM",  # simplifiable constructs
+    "BLE",  # blind except
+    "PLW",  # pylint warnings
+    "RUF",  # ruff-specific
+    "FURB", # modernization
+    "ISC",  # implicit string concatenation
+    "EXE",  # shebang/executable-bit agreement
+]
+
+ignore = [
+    # The comments and docstrings in this tree are prose, and deliberately
+    # typographic: em-dashes, and `×` for "instances × seeds".  These rules
+    # exist to catch a homoglyph smuggled into an identifier or a string
+    # that code compares against; neither risk applies to prose, and the
+    # "fix" is to degrade the writing.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # Rebinding a loop variable to normalise it in place (`line =
+    # line.strip()`) is the readable idiom here.  Satisfying the rule means
+    # inventing a second name for the same value at every such site.
+    "PLW2901",
+]

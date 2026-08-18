@@ -92,21 +92,13 @@ jobs:
       # Test runs BEFORE Lint deliberately.  A failing step skips the rest of
       # the job, so linting first would mean the bench test suite never
       # executes in CI at all — the exact silent-skip this workflow exists to
-      # end.  Tests gate; lint currently does not (see below).
+      # end.  Both gate; ordering only decides which failure you see first.
       - name: Test
         run: pytest bench
 
-      # ADVISORY, not gating, and this is temporary.  `bench/` carries 21
-      # findings under ruff 0.16.3's defaults: 20 from rule families that
-      # release enabled, plus one — an F541 f-string with no placeholders in
-      # bench/correctness_check.py — that predates it and fails under any rule
-      # set.  Cleaning `bench/*.py` was out of scope for the issue that added
-      # this job, and a permanently red check trains reviewers to ignore every
-      # check.  Findings are still printed in the log.
-      #
-      # TO CLOSE: fix the 21 findings, or declare an explicit
-      # `[tool.ruff.lint] select` in pyproject.toml, then delete
-      # `continue-on-error` so this gates like the C++ job does.
-      - name: Lint (advisory)
-        continue-on-error: true
+      # Gating, not advisory.  The rule set is pinned in pyproject.toml's
+      # `[tool.ruff.lint] select` rather than inherited from ruff's defaults,
+      # so this check answers to the repository and not to ruff's release
+      # notes — which is what makes it safe to fail the build on.
+      - name: Lint
         run: ruff check bench

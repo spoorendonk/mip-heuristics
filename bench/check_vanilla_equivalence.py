@@ -93,12 +93,12 @@ VANILLA_EQUIVALENT_OPTIONS = {"mip_heuristic_suite": "off"}
 # `run_sequential` returns before the ledger exists at `suite=off`.
 _VOLATILE_LINE = re.compile(
     r"^\s*(?:"
-    r"Timing\b"                       # "Timing            0.09"
-    r"|P-D integral\b"                # objective integral, time-weighted
-    r"|mip-heuristics patch active"   # the accepted marker
-    r"|Set option\b"                  # options-file echo
-    r"|\[Native\]"                    # issue #95 instrumentation, patch-only
-    r"|\[Root\]"                      # issue #95 instrumentation, patch-only
+    r"Timing\b"  # "Timing            0.09"
+    r"|P-D integral\b"  # objective integral, time-weighted
+    r"|mip-heuristics patch active"  # the accepted marker
+    r"|Set option\b"  # options-file echo
+    r"|\[Native\]"  # issue #95 instrumentation, patch-only
+    r"|\[Root\]"  # issue #95 instrumentation, patch-only
     r"|[\d.]+\s*\((?:Presolve|Solve|Postsolve)\)\s*$"  # Timing continuation lines
     r")"
 )
@@ -199,8 +199,14 @@ class Comparison:
         return not self.failures
 
 
-def compare_runs(instance: str, seed: int, patched: str, vanilla: str,
-                 time_tolerance: float, strict_time: bool) -> Comparison:
+def compare_runs(
+    instance: str,
+    seed: int,
+    patched: str,
+    vanilla: str,
+    time_tolerance: float,
+    strict_time: bool,
+) -> Comparison:
     """Compare two raw HiGHS logs.  Pure — the tests drive this directly."""
     pm, vm = parse_metrics(patched), parse_metrics(vanilla)
     cmp = Comparison(instance, seed, patched_time=pm.time_s, vanilla_time=vm.time_s)
@@ -211,23 +217,37 @@ def compare_runs(instance: str, seed: int, patched: str, vanilla: str,
     for label, m in (("patched", pm), ("vanilla", vm)):
         missing = [k for k, v in m.comparable().items() if v is None]
         if missing:
-            cmp.failures.append(f"{label} log has no parseable solving report "
-                                f"(missing: {', '.join(missing)})")
+            cmp.failures.append(
+                f"{label} log has no parseable solving report "
+                f"(missing: {', '.join(missing)})"
+            )
 
     vanilla_fields = vm.comparable()
     for name, patched_value in pm.comparable().items():
         vanilla_value = vanilla_fields[name]
         if patched_value != vanilla_value:
-            cmp.failures.append(f"{name}: patched={patched_value!r} vanilla={vanilla_value!r}")
+            cmp.failures.append(
+                f"{name}: patched={patched_value!r} vanilla={vanilla_value!r}"
+            )
 
-    diff = list(difflib.unified_diff(normalize_log(vanilla), normalize_log(patched),
-                                     fromfile="vanilla", tofile="patched", lineterm="", n=1))
+    diff = list(
+        difflib.unified_diff(
+            normalize_log(vanilla),
+            normalize_log(patched),
+            fromfile="vanilla",
+            tofile="patched",
+            lineterm="",
+            n=1,
+        )
+    )
     if diff:
         cmp.failures.append("normalized log differs:\n    " + "\n    ".join(diff[:40]))
 
     if pm.time_s > max(vm.time_s, 0.01) * time_tolerance:
-        message = (f"solve time {pm.time_s:.2f}s vs vanilla {vm.time_s:.2f}s "
-                   f"exceeds {time_tolerance}x")
+        message = (
+            f"solve time {pm.time_s:.2f}s vs vanilla {vm.time_s:.2f}s "
+            f"exceeds {time_tolerance}x"
+        )
         (cmp.failures if strict_time else cmp.warnings).append(message)
     return cmp
 
@@ -235,8 +255,10 @@ def compare_runs(instance: str, seed: int, patched: str, vanilla: str,
 def find_instances_dir(binary: str) -> str | None:
     """Locate check/instances/ relative to the build tree holding `binary`."""
     build_dir = os.path.dirname(os.path.dirname(os.path.abspath(binary)))
-    for c in (os.path.join(build_dir, "_deps", "highs-src", "check", "instances"),
-              os.path.join(build_dir, "_deps", "highs-src", "highs", "check", "instances")):
+    for c in (
+        os.path.join(build_dir, "_deps", "highs-src", "check", "instances"),
+        os.path.join(build_dir, "_deps", "highs-src", "highs", "check", "instances"),
+    ):
         if os.path.isdir(c):
             return c
     return None
@@ -244,7 +266,9 @@ def find_instances_dir(binary: str) -> str | None:
 
 def version_of(binary: str) -> tuple[str, str]:
     """`(version, githash)` from `--version`, e.g. ("1.15.1", "04024d701f")."""
-    out = subprocess.run([binary, "--version"], capture_output=True, text=True).stdout
+    out = subprocess.run(
+        [binary, "--version"], capture_output=True, text=True, check=False
+    ).stdout
     version = re.search(r"HiGHS version (\S+)", out)
     githash = re.search(r"Githash (\w+)", out)
     return (version.group(1) if version else "?", githash.group(1) if githash else "")
@@ -264,15 +288,35 @@ def same_build(a: tuple[str, str], b: tuple[str, str]) -> bool:
     return bool(short) and long.startswith(short)
 
 
-def run_solve(binary: str, instance_path: str, options: dict[str, str], seed: int,
-              time_limit: float, tmp_dir: str) -> str:
+def run_solve(
+    binary: str,
+    instance_path: str,
+    options: dict[str, str],
+    seed: int,
+    time_limit: float,
+    tmp_dir: str,
+) -> str:
     opts_path = os.path.join(tmp_dir, "run.opts")
     with open(opts_path, "w") as f:
-        for k, v in {**options, "random_seed": str(seed)}.items():
-            f.write(f"{k} = {v}\n")
-    cmd = [binary, instance_path, "--time_limit", str(time_limit), "--options_file", opts_path]
+        f.writelines(
+            f"{k} = {v}\n" for k, v in {**options, "random_seed": str(seed)}.items()
+        )
+    cmd = [
+        binary,
+        instance_path,
+        "--time_limit",
+        str(time_limit),
+        "--options_file",
+        opts_path,
+    ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=time_limit * 2 + 30)
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=time_limit * 2 + 30,
+        )
     except subprocess.TimeoutExpired:
         # Returned rather than raised: a hung run is one FAIL row, not a
         # traceback that abandons the instances after it.
@@ -282,18 +326,32 @@ def run_solve(binary: str, instance_path: str, options: dict[str, str], seed: in
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare patched suite=off against an unpatched HiGHS binary")
+        description="Compare patched suite=off against an unpatched HiGHS binary"
+    )
     parser.add_argument("--patched-binary", default="./build/bin/highs")
-    parser.add_argument("--vanilla-binary", required=True,
-                        help="Unpatched HiGHS of the SAME version (e.g. /usr/local/bin/highs)")
-    parser.add_argument("--instances-dir", default=None,
-                        help="Path to check/instances/ (auto-detected from the patched binary)")
+    parser.add_argument(
+        "--vanilla-binary",
+        required=True,
+        help="Unpatched HiGHS of the SAME version (e.g. /usr/local/bin/highs)",
+    )
+    parser.add_argument(
+        "--instances-dir",
+        default=None,
+        help="Path to check/instances/ (auto-detected from the patched binary)",
+    )
     parser.add_argument("--time-limit", type=float, default=60)
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
-    parser.add_argument("--time-tolerance", type=float, default=1.5,
-                        help="Patched/vanilla solve-time ratio worth reporting (default 1.5)")
-    parser.add_argument("--strict-time", action="store_true",
-                        help="Fail the run when the time ratio is exceeded, not just report it")
+    parser.add_argument(
+        "--time-tolerance",
+        type=float,
+        default=1.5,
+        help="Patched/vanilla solve-time ratio worth reporting (default 1.5)",
+    )
+    parser.add_argument(
+        "--strict-time",
+        action="store_true",
+        help="Fail the run when the time ratio is exceeded, not just report it",
+    )
     args = parser.parse_args()
 
     patched = os.path.abspath(args.patched_binary)
@@ -304,8 +362,10 @@ def main() -> None:
 
     pv, vv = version_of(patched), version_of(vanilla)
     if not same_build(pv, vv):
-        sys.exit(f"Error: version mismatch, comparison would be meaningless.\n"
-                 f"  patched: {pv[0]} githash {pv[1]}\n  vanilla: {vv[0]} githash {vv[1]}")
+        sys.exit(
+            f"Error: version mismatch, comparison would be meaningless.\n"
+            f"  patched: {pv[0]} githash {pv[1]}\n  vanilla: {vv[0]} githash {vv[1]}"
+        )
 
     instances_dir = args.instances_dir or find_instances_dir(patched)
     if not instances_dir or not os.path.isdir(instances_dir):
@@ -317,22 +377,37 @@ def main() -> None:
     for name in INSTANCES:
         path = os.path.join(instances_dir, name)
         if not os.path.exists(path):
-            print(f"Warning: {name} not found in {instances_dir}, skipping", file=sys.stderr)
+            print(
+                f"Warning: {name} not found in {instances_dir}, skipping",
+                file=sys.stderr,
+            )
             continue
         for seed in args.seeds:
-            p_log = run_solve(patched, path, VANILLA_EQUIVALENT_OPTIONS, seed,
-                              args.time_limit, tmp_dir)
+            p_log = run_solve(
+                patched,
+                path,
+                VANILLA_EQUIVALENT_OPTIONS,
+                seed,
+                args.time_limit,
+                tmp_dir,
+            )
             v_log = run_solve(vanilla, path, {}, seed, args.time_limit, tmp_dir)
-            c = compare_runs(name, seed, p_log, v_log, args.time_tolerance, args.strict_time)
+            c = compare_runs(
+                name, seed, p_log, v_log, args.time_tolerance, args.strict_time
+            )
             comparisons.append(c)
             mark = "PASS" if c.passed else "FAIL"
-            print(f"  {mark}  {name:14s} seed={seed}  "
-                  f"patched={c.patched_time:.2f}s vanilla={c.vanilla_time:.2f}s"
-                  + ("  [" + "; ".join(c.warnings) + "]" if c.warnings else ""))
+            print(
+                f"  {mark}  {name:14s} seed={seed}  "
+                f"patched={c.patched_time:.2f}s vanilla={c.vanilla_time:.2f}s"
+                + ("  [" + "; ".join(c.warnings) + "]" if c.warnings else "")
+            )
 
     if not comparisons:
-        sys.exit(f"Error: compared nothing — none of {INSTANCES} was found in "
-                 f"{instances_dir}. Pass --instances-dir explicitly.")
+        sys.exit(
+            f"Error: compared nothing — none of {INSTANCES} was found in "
+            f"{instances_dir}. Pass --instances-dir explicitly."
+        )
 
     failed = [c for c in comparisons if not c.passed]
     print(f"\n{len(comparisons) - len(failed)}/{len(comparisons)} equivalent")
