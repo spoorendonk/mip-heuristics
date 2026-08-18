@@ -107,16 +107,15 @@ TEST_CASE("Options: suite defaults to all and accepts every value", "[options][s
 // harness matches — pinning more would make this test stricter than the
 // contract it exists to protect.
 namespace {
-constexpr const char *kBenchWarningUnknownSuite = "Unknown mip_heuristic_suite value";
-constexpr const char *kBenchWarningNoHeuristic = "no heuristic will run";
+constexpr const char* kBenchWarningUnknownSuite = "Unknown mip_heuristic_suite value";
+constexpr const char* kBenchWarningNoHeuristic = "no heuristic will run";
 }  // namespace
 
 TEST_CASE("Options: the warnings the bench harness greps for are emitted verbatim",
           "[options][suite][bench-contract]") {
     SECTION("unknown suite value") {
-        const auto lines = solve_capturing_log("flugpl.mps", [](Highs &h) {
-            set_suite(h, "bogus");
-        });
+        const auto lines =
+            solve_capturing_log("flugpl.mps", [](Highs& h) { set_suite(h, "bogus"); });
         REQUIRE(log_contains(lines, kBenchWarningUnknownSuite));
     }
 
@@ -124,7 +123,7 @@ TEST_CASE("Options: the warnings the bench harness greps for are emitted verbati
         // Asks for FJ and then takes it away: heuristic-free without being
         // `off`, so it also loses the native FJ call site.  A benchmark row
         // labelled "FJ isolated" would silently measure vanilla-minus-FJ.
-        const auto lines = solve_capturing_log("flugpl.mps", [](Highs &h) {
+        const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
             set_suite(h, "fj");
             require_option(h, "mip_heuristic_run_feasibility_jump", false);
         });
@@ -134,9 +133,7 @@ TEST_CASE("Options: the warnings the bench harness greps for are emitted verbati
     SECTION("an ordinary run trips neither") {
         // The other half of the contract: these must not fire on a good run,
         // or the harness would discard every result it collected.
-        const auto lines = solve_capturing_log("flugpl.mps", [](Highs &h) {
-            set_suite(h, "all");
-        });
+        const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) { set_suite(h, "all"); });
         REQUIRE_FALSE(log_contains(lines, kBenchWarningUnknownSuite));
         REQUIRE_FALSE(log_contains(lines, kBenchWarningNoHeuristic));
     }
