@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_archive import (
+    BASELINE_NAMES,
     build_archive,
     classify_baseline,
     collect_config,
@@ -203,6 +204,30 @@ def test_collect_config_counts_failed_runs(tmp_path: Path):
     assert config.failed_runs == ["seed0/flugpl.log.err"]
 
 
+def test_collect_config_counts_runs_with_no_options_file(tmp_path: Path):
+    """ "No options archived" and "given no options" render identically."""
+    root = tmp_path / "r"
+    write_run(root / "all" / "seed0", "egout", options={"threads": "8"})
+    (root / "all" / "seed0" / "egout.opts").unlink()
+    config = collect_config(root, "all")
+    assert config.runs_without_options == 1
+    assert config.options == {}
+
+
+def test_collect_config_excludes_a_bannerless_log_from_the_binary_call(
+    tmp_path: Path,
+):
+    """A log proving nothing must not count as the *stronger* claim."""
+    root = tmp_path / "r"
+    write_run(root / "vanilla" / "seed0", "egout")
+    log = root / "vanilla" / "seed0" / "egout.log"
+    log.write_text("truncated before the banner\n")
+    config = collect_config(root, "vanilla")
+    assert config.runs_without_banner == 1
+    assert config.binary == "unknown"
+    assert classify_baseline([config])["claim"] == "indeterminate"
+
+
 def test_collect_config_flags_an_instrumentation_disagreement(tmp_path: Path):
     """`--dev-log` cancelled by an override is a silently mis-labelled tree."""
     root = tmp_path / "r"
@@ -238,6 +263,15 @@ def test_baseline_on_an_unpatched_binary_is_the_stronger_claim(tmp_path: Path):
     assert baseline["claim"] == "separately built unpatched binary"
 
 
+def test_baseline_names_match_the_analyzer_that_renders_the_table():
+    """A drift here makes PROVENANCE.md name a different baseline than the
+    archived `--cannibalization` table computes against — a disagreement
+    between the archive's prose and the archive's own numbers."""
+    import analyze_results
+
+    assert BASELINE_NAMES == analyze_results.CANNIBALIZATION_BASELINE_NAMES
+
+
 def test_baseline_absent_when_no_config_stands_for_one(tmp_path: Path):
     root = tmp_path / "r"
     write_run(root / "all" / "seed0", "egout")
@@ -256,7 +290,7 @@ def test_default_tables_use_the_pairwise_shape_for_two_configs():
     assert "--ablation" not in specs[0].argv
 
 
-def test_default_tables_use_the_ablation_shape_for_three(tree: Path):
+def test_default_tables_use_the_ablation_shape_for_three():
     specs = default_table_specs(["off", "fpr", "all"], 60, instrumented=False)
     assert all("--ablation" in s.argv for s in specs)
 

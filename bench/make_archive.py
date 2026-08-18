@@ -134,6 +134,8 @@ class ConfigProvenance:
     failed_runs: list[str]
     options: dict[str, str]
     option_variants: list[dict[str, str]]
+    runs_without_options: int
+    runs_without_banner: int
     instrumentation_requested: bool
     instrumentation_observed: bool
 
@@ -245,6 +247,8 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
     versions: set[str] = set()
     hashes: set[str] = set()
     observed = False
+    missing_options = 0
+    missing_banner = 0
     variants: list[dict[str, str]] = []
 
     for seed_dir in sorted(config_dir.iterdir()):
@@ -260,14 +264,22 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
             runs += 1
             instances.add(log.stem)
             patched, version, git_hash, instrumented = inspect_log(log)
-            binaries.add("patched" if patched else "unpatched")
-            if version:
+            if version is None:
+                # No banner at all: a truncated or hand-assembled log. Absence
+                # of the marker is what "unpatched" means, so a log that proves
+                # nothing either way must not be counted as the *stronger*
+                # baseline claim by default — it is counted here instead.
+                missing_banner += 1
+            else:
+                binaries.add("patched" if patched else "unpatched")
                 versions.add(version)
             if git_hash:
                 hashes.add(git_hash)
             observed = observed or instrumented
             opts = seed_dir / f"{log.stem}.opts"
-            if opts.is_file():
+            if not opts.is_file():
+                missing_options += 1
+            else:
                 # `random_seed` is per-run by construction (it names the
                 # directory), so it is not part of "did every run of this
                 # config get the same options?".
@@ -300,6 +312,8 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
         failed_runs=failed,
         options=options,
         option_variants=variants if len(variants) > 1 else [],
+        runs_without_options=missing_options,
+        runs_without_banner=missing_banner,
         instrumentation_requested=requested,
         instrumentation_observed=observed,
     )
@@ -766,8 +780,23 @@ def build_archive(
             )
         if config.binary == "unknown":
             warnings.append(
-                f"config {config.name!r} has no readable HiGHS banner, so its "
-                f"binary could not be identified"
+                f"config {config.name!r} has no log carrying a HiGHS banner, "
+                f"so none of it can be attributed to a binary — check whether "
+                f"the directory is empty or every run failed (.log.err)"
+            )
+        if config.runs_without_banner:
+            warnings.append(
+                f"config {config.name!r} has {config.runs_without_banner} "
+                f"log(s) with no HiGHS banner; they prove nothing about which "
+                f"binary ran and are excluded from that determination"
+            )
+        if config.runs_without_options:
+            warnings.append(
+                f"config {config.name!r} has {config.runs_without_options} "
+                f"run(s) with no `.opts` file beside the log, so the options "
+                f"those runs were given are not in the archive — an empty "
+                f"Options column does not distinguish that from a run that was "
+                f"given no options"
             )
         if config.failed_runs:
             warnings.append(
@@ -792,8 +821,19 @@ def build_archive(
     instrumented = all(c.instrumentation_observed for c in provenance) and bool(
         provenance
     )
+    # Read from the option *variants* too, not only from `options`: a config
+    # whose runs disagree about anything at all reports `options == {}`, and a
+    # false "threads unset" is worse than a missing one — PROVENANCE.md states
+    # it as a fact, and thread count is the field the whole document calls
+    # load-bearing.
     threads = next(
-        (c.options.get("threads") for c in provenance if c.options.get("threads")), None
+        (
+            opts["threads"]
+            for c in provenance
+            for opts in ([c.options] if c.options else c.option_variants)
+            if opts.get("threads")
+        ),
+        None,
     )
     if threads is None:
         warnings.append(
@@ -811,12 +851,10 @@ def build_archive(
     seeds = sorted({s for c in provenance for s in c.seeds})
     instances = sorted({i for c in provenance for i in c.instances})
 
-    archive.mkdir(parents=True)
-    copy_results(results_dir, archive, configs)
-    (archive / "bench").mkdir()
-    for name in ARCHIVE_BENCH_FILES:
-        shutil.copy2(bench_dir / name, archive / "bench" / name)
-
+    # Every cheap precondition is settled before the copy: a campaign tree runs
+    # to gigabytes, and a `--table` name typo should not cost that copy and
+    # then leave a partial archive that the write-once guard blocks the retry
+    # on.
     specs = default_table_specs(configs, time_limit, instrumented)
     known = {s.name for s in specs}
     for extra in extra_tables:
@@ -828,10 +866,22 @@ def build_archive(
         known.add(extra.name)
         specs.append(extra)
 
-    for spec in specs:
-        target, digest = render_table(archive, spec, archive / "tables")
-        spec.path = target.relative_to(archive).as_posix()
-        spec.sha256 = digest
+    archive.mkdir(parents=True)
+    copy_results(results_dir, archive, configs)
+    (archive / "bench").mkdir()
+    for name in ARCHIVE_BENCH_FILES:
+        shutil.copy2(bench_dir / name, archive / "bench" / name)
+
+    try:
+        for spec in specs:
+            target, digest = render_table(archive, spec, archive / "tables")
+            spec.path = target.relative_to(archive).as_posix()
+            spec.sha256 = digest
+    except RuntimeError:
+        # A half-built archive is a by-product, not output; leaving it turns
+        # the write-once guard into an obstacle on the retry.
+        shutil.rmtree(archive, ignore_errors=True)
+        raise
 
     regenerate = archive / "REGENERATE.sh"
     regenerate.write_text(REGENERATE_SH)

@@ -2,6 +2,7 @@ build*/
 .cache/
 __pycache__/
 bench/results*/
+dist/
 .venv/
 *.pyc
 Highs.log

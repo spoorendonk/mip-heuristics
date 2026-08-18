@@ -7,8 +7,11 @@ This document is about *publishing*. It is not about reproducing a run —
 [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md) owns the reproducible recipe, what
 is deliberately not reproducible, the PLATO protocol and the `suite=off`
 equivalence — nor about the day-to-day gates, which
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) owns. Both are referenced below and
-neither is restated.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) owns. Both are referenced below rather
+than reproduced. Two things are deliberately restated: the gate commands,
+because a release runs them as one clean-tree sequence and a maintainer should
+not have to assemble it from two documents, and the clean-rebuild rule, which
+is stronger here than in day-to-day work. Everything else is a link.
 
 ## What a release consists of
 
@@ -73,7 +76,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON
 cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure -j"$(nproc)"
 .venv/bin/python -m pytest -q bench
-.venv/bin/ruff check bench
+.venv/bin/ruff check bench cmake
 ```
 
 Three things about that list are easy to get wrong:
@@ -87,8 +90,10 @@ Three things about that list are easy to get wrong:
   registered at all and `ctest` reports green having linted nothing.
   `-DMIP_HEURISTICS_REQUIRE_LINT=ON` is what turns that silence into a
   configure failure, which is why it is not optional here.
-- **`ruff check bench` gates and its rule set is pinned** in `pyproject.toml`.
-  Do not widen it to make a release pass.
+- **`ruff check bench cmake` gates and its rule set is pinned** in
+  `pyproject.toml`. The `cmake/` half is not optional — that is where the
+  clang-tidy gate's own wrapper lives. Do not widen the select list to make a
+  release pass.
 
 Plus the one gate that is not part of `ctest`, because it needs a second
 binary:
@@ -126,6 +131,18 @@ bench/make_archive.py build bench/results/plato \
 # archived logs and diffs the result; also re-checks every sha256.
 dist/mip-heuristics-v1.0.0-archive/REGENERATE.sh
 ```
+
+`verify` establishes that the logs, the analysis code and `MANIFEST.json`
+inside one archive agree with each other. It cannot establish that the archive
+is the one the release published — the manifest travels with the archive, so a
+rebuilt archive verifies clean too. What pins it to the release is the archive
+service's own checksum on the deposited tarball, which is why the dataset
+record below is not optional.
+
+Write the archive **outside the working tree**, or into the gitignored `dist/`.
+`make_archive.py` records whether the checkout was dirty, and an archive
+written into an untracked directory inside the repository reports its own
+source tree as dirty.
 
 The archive holds:
 
@@ -193,9 +210,9 @@ prevent.
 
 ### Size
 
-A `--dev-log` tree is large — 24 runs at a 10 s limit came to 27 MB, and a
-600 s PLATO campaign is orders of magnitude past that. Two limits bound where
-it can go:
+A `--dev-log` tree is large — measured at 27 MB for 24 runs (4 bundled
+instances × 3 configs × 2 seeds) at a 10 s limit, and a 600 s PLATO campaign is
+orders of magnitude past that. Two limits bound where it can go:
 
 - A GitHub release asset must be **under 2 GiB** per file.
 - A Zenodo record takes **at most 100 files and 50 GB total**, which is why
@@ -292,7 +309,9 @@ that must not be reordered.
 
 **Preconditions**
 
-- [ ] Every issue the release claims to close is merged to `main`.
+- [ ] Every issue in the closeout epic (#88) is merged to `main` — for v1.0 the
+      tag is blocked on all of them, not only on the ones the release notes
+      name.
 - [ ] `git status` is clean and `main` is up to date.
 - [ ] `README.md`'s benchmark tables and their provenance caveats describe the
       tree being tagged, not an earlier campaign.
@@ -305,8 +324,8 @@ that must not be reordered.
 - [ ] Clean rebuild from scratch (`rm -rf build`), `REQUIRE_LINT=ON`.
 - [ ] `ctest --test-dir build --output-on-failure -j"$(nproc)"` fully green,
       lint labels included.
-- [ ] `.venv/bin/python -m pytest -q bench` and `.venv/bin/ruff check bench`
-      green.
+- [ ] `.venv/bin/python -m pytest -q bench` and
+      `.venv/bin/ruff check bench cmake` green.
 - [ ] `bench/check_vanilla_equivalence.py` green against a separately built
       unpatched binary at the pinned HiGHS tag.
 - [ ] CI green on the commit being tagged.
@@ -335,7 +354,8 @@ that must not be reordered.
 6. [ ] Archive tarball(s) uploaded as a separate Zenodo **Dataset** record,
        with `isSupplementTo` → the software concept DOI.
 7. [ ] Post-release commit on `main`: concept DOI added to `CITATION.cff`
-       `identifiers:` and to the README badge, and the archive's dataset DOI
+       `identifiers:`, a DOI badge added to `README.md` (there is none today —
+       this release is the first thing to badge), and the archive's dataset DOI
        referenced wherever the tables are published.
 
 **After**
