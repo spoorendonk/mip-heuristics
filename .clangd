@@ -1,9 +1,1 @@
-# devkit's shared clangd config, checked in as a regular file for the same
-# reason as .clang-format / .clang-tidy: the pinned .devkit submodule commit
-# does not ship config/.clangd, so the symlink setup.sh installs dangles in a
-# fresh checkout and clangd loses both the compilation database and the
-# unused-include diagnostic.
-CompileFlags:
-  CompilationDatabase: build/
-Diagnostics:
-  UnusedIncludes: Strict
+.devkit/config/.clangd

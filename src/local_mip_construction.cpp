@@ -249,10 +249,11 @@ void weighted_order(const CscMatrix& csc, HighsInt ncol, Rng& rng,
 
 }  // namespace
 
-// Cognitive complexity 47 (threshold 25).  Kept whole: the two-phase cold start — Phase A bound
-// clamp, Phase B greedy feasibility sweep — which share the effort accounting. Decomposing it would
-// move work across a worker's inner loop, and the closeout takes no unmeasured performance risk;
-// the standards also rank fidelity to the reference algorithm above mechanical extraction.
+// Cognitive complexity 47 (threshold 25).  Kept whole: Phase A's bound clamp and Phase B's
+// greedy feasibility sweep share one effort budget and one running LHS cache, and the sweep
+// charges against the budget Phase A already consumed.  Splitting them means either
+// recomputing that state or passing it through a parameter pack wider than the function.
+// This runs once per cold start, so the argument is shared state, not throughput.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, size_t max_effort,
                                   std::vector<double>& out_solution) {

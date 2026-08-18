@@ -166,10 +166,9 @@ private:
     uint64_t fresh_solves_ = 0;
     uint64_t stale_rounds_ = 0;
 
-    // The initialiser
-    // `pump::kEpsilonInit` lives in pump_common.h, which this header
-    // deliberately does not include (cpp.md: minimise includes in
-    // headers).  It is set in the constructor's init list instead.
+    // The initialiser `pump::kEpsilonInit` lives in pump_common.h, which
+    // this header deliberately does not include (cpp.md: minimise includes
+    // in headers).  It is set in the constructor's init list instead.
     // NOLINTNEXTLINE(modernize-use-default-member-init)
     double epsilon_;
     double alpha_K_ = 1.0;

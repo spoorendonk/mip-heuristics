@@ -412,7 +412,10 @@ TEST_CASE("IndexedMinHeap: empty and single-element invariants", "[prop-engine][
     IndexedMinHeap heap;
     heap.reserve(4);
     REQUIRE(heap.empty());
-    REQUIRE(heap.empty());
+    // Both accessors are part of the API under test, so assert size()
+    // directly rather than letting it collapse into a second empty().
+    // NOLINTNEXTLINE(readability-container-size-empty)
+    REQUIRE(heap.size() == 0);
     REQUIRE_FALSE(heap.contains(0));
 
     heap.insert(3.0, 1);

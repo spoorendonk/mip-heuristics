@@ -158,8 +158,10 @@ double WorkerCtx::compute_tight_delta(HighsInt i, HighsInt j, double coeff) cons
     }
     double l = lhs[i];
     double gap;
-    // NOLINTBEGIN(bugprone-branch-clone) — same expression form, different
-    // bounds
+    // The first two branches share an expression form but differ in which
+    // bound they measure against.  (This used to carry a NOLINTBEGIN for
+    // bugprone-branch-clone; verified against clang-tidy 22 that the check
+    // does not fire here, so the suppression was dead and is gone.)
     if (l > row_hi[i] + feastol) {
         gap = l - row_hi[i];  // upper violated
     } else if (l < row_lo[i] - feastol) {
@@ -170,7 +172,6 @@ double WorkerCtx::compute_tight_delta(HighsInt i, HighsInt j, double coeff) cons
         double gap_lo = (row_lo[i] > -kHighsInf) ? (l - row_lo[i]) : kHighsInf;
         gap = (std::abs(gap_hi) <= std::abs(gap_lo)) ? gap_hi : gap_lo;
     }
-    // NOLINTEND(bugprone-branch-clone)
 
     double delta = -gap / coeff;
 

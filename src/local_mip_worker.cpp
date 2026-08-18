@@ -210,12 +210,12 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             lift_best.score = 0.0;
             {
                 HighsInt write = 0;
-                // This is a compaction
-                // over `positive_list`, not a traversal — the body writes back
-                // into the same vector at `write <= read`.  A range-for hides
-                // that the container is being rewritten underneath the loop,
-                // and this is LocalMIP's per-restart inner loop.
-                // NOLINTNEXTLINE(modernize-loop-convert)
+                // Compaction, not traversal: the body writes back into the same
+                // vector at `write <= read` and never resizes it (the `resize`
+                // below is what shortens the list), so the bound is
+                // loop-invariant.  Hoisting it drops a size() load per iteration
+                // of LocalMIP's per-restart loop and keeps modernize-loop-convert
+                // from proposing a range-for that would hide the rewrite.
                 const auto n_positive = static_cast<HighsInt>(ctx_.lift.positive_list.size());
                 for (HighsInt read = 0; read < n_positive; ++read) {
                     HighsInt j = ctx_.lift.positive_list[read];

@@ -99,6 +99,21 @@ private:
     // Number of integer variables (cached from integer_mask_).
     int num_integers() const;
 
+    // Whether column `j` is integer, tolerating a mask shorter than the
+    // solution vector (or absent entirely, which is how a pool built
+    // without integrality information behaves).
+    [[nodiscard]] bool is_integer_col(int j) const;
+
+    // The three restart strategies `get_restart` dispatches between; see
+    // its documentation above for the roll ranges.  All three are called
+    // with mtx_ already held and write their result into `out`.
+    void guided_crossover(const std::vector<double>& sol_a, const std::vector<double>& sol_b,
+                          Rng& rng, std::vector<double>& out) const;
+    void neighborhood_crossover(const std::vector<double>& sol_better,
+                                const std::vector<double>& sol_other, Rng& rng,
+                                std::vector<double>& out) const;
+    void biased_copy(Rng& rng, std::vector<double>& out) const;
+
     mutable HighsSpinMutex mtx_;
     std::vector<Entry> entries_;
     int capacity_;

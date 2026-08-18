@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <utility>
 
@@ -46,10 +47,11 @@ int SolutionPool::num_integers() const {
     return num_integers_;
 }
 
-// Cognitive complexity 28 (threshold 25).  Kept whole: pool insertion: capacity, dominance and
-// diversity replacement are one decision over one lock hold. Decomposing it would move work across
-// a worker's inner loop, and the closeout takes no unmeasured performance risk; the standards also
-// rank fidelity to the reference algorithm above mechanical extraction.
+// Cognitive complexity 28 (threshold 25), marginally over.  Kept whole because capacity,
+// dominance and diversity replacement are one decision taken over one hold of the pool
+// spin-lock: splitting it would either widen the critical section or thread the lock
+// through helpers.  Unlike the algorithm cores this is not a hot path — it runs once per
+// accepted solution — so the argument here is lock scope, not throughput.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int source) {
     bool accepted = false;
@@ -57,12 +59,13 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
         std::scoped_lock lock(mtx_);
 
         // Find insertion point (entries_ kept sorted, best first)
+        // Heterogeneous (const Entry&, double) on purpose.  That is fine for
+        // std::lower_bound but does not model indirect_strict_weak_order, so
+        // std::ranges::lower_bound does not accept it — hence the
+        // NOLINTs on the three call sites below.
         auto cmp = [this](const Entry& entry, double val) {
             return minimize_ ? entry.objective < val : entry.objective > val;
         };
-        // std::ranges::lower_bound requires
-        // indirect_strict_weak_order, which rejects `cmp`'s heterogeneous
-        // (const Entry&, double) signature — the range overload does not compile.
         // NOLINTNEXTLINE(modernize-use-ranges)
         auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
 
@@ -73,9 +76,6 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
             if (!dominated) {
                 // Standard path: improves on worst — replace worst.
                 entries_.pop_back();
-                // std::ranges::lower_bound requires
-                // indirect_strict_weak_order, which rejects `cmp`'s heterogeneous
-                // (const Entry&, double) signature — the range overload does not compile.
                 // NOLINTNEXTLINE(modernize-use-ranges)
                 pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
                 entries_.insert(pos, {obj, sol, source});
@@ -109,9 +109,6 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
                     if (min_frac >= kDiversityMinHammingFrac) {
                         // Replace the most similar entry.
                         entries_.erase(entries_.begin() + most_similar_idx);
-                        // std::ranges::lower_bound requires
-                        // indirect_strict_weak_order, which rejects `cmp`'s heterogeneous
-                        // (const Entry&, double) signature — the range overload does not compile.
                         // NOLINTNEXTLINE(modernize-use-ranges)
                         pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
                         entries_.insert(pos, {obj, sol, source});
@@ -141,11 +138,58 @@ SolutionPool::Snapshot SolutionPool::snapshot() {
     return {true, entries_[0].objective};
 }
 
-// Cognitive complexity 42 (threshold 25).  Kept whole: restart-strategy selection and crossover
-// construction under one lock. Decomposing it would move work across a worker's inner loop, and the
-// closeout takes no unmeasured performance risk; the standards also rank
-// fidelity to the reference algorithm above mechanical extraction.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+bool SolutionPool::is_integer_col(int j) const {
+    return !integer_mask_.empty() && std::cmp_less(j, integer_mask_.size()) && integer_mask_[j];
+}
+
+// Guided crossover: keep integer values the parents agree on, coin-flip
+// everything else.  Caller holds mtx_.
+void SolutionPool::guided_crossover(const std::vector<double>& sol_a,
+                                    const std::vector<double>& sol_b, Rng& rng,
+                                    std::vector<double>& out) const {
+    int ncol = static_cast<int>(sol_a.size());
+    out.resize(ncol);
+    for (int j = 0; j < ncol; ++j) {
+        if (is_integer_col(j) && std::round(sol_a[j]) == std::round(sol_b[j])) {
+            out[j] = sol_a[j];
+        } else {
+            // Disagree or continuous — coin flip.
+            out[j] = std::uniform_int_distribution<int>(0, 1)(rng) == 0 ? sol_a[j] : sol_b[j];
+        }
+    }
+}
+
+// Neighborhood crossover: the better parent provides the base and only
+// disagreeing integer variables are coin-flipped.  Caller holds mtx_.
+void SolutionPool::neighborhood_crossover(const std::vector<double>& sol_better,
+                                          const std::vector<double>& sol_other, Rng& rng,
+                                          std::vector<double>& out) const {
+    int ncol = static_cast<int>(sol_better.size());
+    out.resize(ncol);
+    for (int j = 0; j < ncol; ++j) {
+        if (is_integer_col(j) && std::round(sol_better[j]) != std::round(sol_other[j])) {
+            out[j] =
+                std::uniform_int_distribution<int>(0, 1)(rng) == 0 ? sol_better[j] : sol_other[j];
+        } else {
+            // Agree or continuous — keep the better parent's value.
+            out[j] = sol_better[j];
+        }
+    }
+}
+
+// Biased copy: half the time draw from the better half of the pool, half the
+// time from anywhere.  Caller holds mtx_.
+void SolutionPool::biased_copy(Rng& rng, std::vector<double>& out) const {
+    int pool_size = static_cast<int>(entries_.size());
+    int idx = 0;
+    if (pool_size > 1 && std::uniform_int_distribution<int>(0, 1)(rng) == 0) {
+        idx = std::uniform_int_distribution<int>(0, ((pool_size + 1) / 2) - 1)(rng);
+    } else {
+        idx = std::uniform_int_distribution<int>(0, pool_size - 1)(rng);
+    }
+    out = entries_[idx].solution;
+}
+
 bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
     std::scoped_lock lock(mtx_);
     if (entries_.empty()) {
@@ -155,6 +199,7 @@ bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
     int pool_size = static_cast<int>(entries_.size());
     double roll = std::uniform_real_distribution<double>(0.0, 1.0)(rng);
 
+    // Two distinct parents, drawn uniformly.
     auto pick_two_parents = [&](int& a, int& b) {
         a = std::uniform_int_distribution<int>(0, pool_size - 1)(rng);
         b = std::uniform_int_distribution<int>(0, pool_size - 2)(rng);
@@ -164,62 +209,19 @@ bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
     };
 
     if (roll < 0.4 && pool_size >= 2) {
-        // Guided crossover: keep agreed integer values, coin-flip
-        // disagreements.
-        int a;
-        int b;
+        int a = 0;
+        int b = 0;
         pick_two_parents(a, b);
-        const auto& sol_a = entries_[a].solution;
-        const auto& sol_b = entries_[b].solution;
-        int ncol = static_cast<int>(sol_a.size());
-        out.resize(ncol);
-        for (int j = 0; j < ncol; ++j) {
-            bool is_int = !integer_mask_.empty() && std::cmp_less(j, integer_mask_.size())
-                              ? integer_mask_[j]
-                              : false;
-            if (is_int && std::round(sol_a[j]) == std::round(sol_b[j])) {
-                // Parents agree on this integer value — keep it.
-                out[j] = sol_a[j];
-            } else {
-                // Disagree or continuous — coin flip.
-                out[j] = std::uniform_int_distribution<int>(0, 1)(rng) == 0 ? sol_a[j] : sol_b[j];
-            }
-        }
+        guided_crossover(entries_[a].solution, entries_[b].solution, rng, out);
     } else if (roll < 0.7 && pool_size >= 2) {
-        // Neighborhood crossover: better parent provides base, coin-flip
-        // only on disagreeing integer variables.
-        int a;
-        int b;
+        int a = 0;
+        int b = 0;
         pick_two_parents(a, b);
         // Better parent = lower index (entries_ sorted best-first).
-        int better = std::min(a, b);
-        int other = std::max(a, b);
-        const auto& sol_better = entries_[better].solution;
-        const auto& sol_other = entries_[other].solution;
-        int ncol = static_cast<int>(sol_better.size());
-        out.resize(ncol);
-        for (int j = 0; j < ncol; ++j) {
-            bool is_int = !integer_mask_.empty() && std::cmp_less(j, integer_mask_.size())
-                              ? integer_mask_[j]
-                              : false;
-            if (is_int && std::round(sol_better[j]) != std::round(sol_other[j])) {
-                // Integer var where parents disagree — coin flip.
-                out[j] = std::uniform_int_distribution<int>(0, 1)(rng) == 0 ? sol_better[j]
-                                                                            : sol_other[j];
-            } else {
-                // Agree or continuous — keep the better parent's value.
-                out[j] = sol_better[j];
-            }
-        }
+        neighborhood_crossover(entries_[std::min(a, b)].solution, entries_[std::max(a, b)].solution,
+                               rng, out);
     } else {
-        // Biased copy toward better entries.
-        int idx;
-        if (pool_size > 1 && std::uniform_int_distribution<int>(0, 1)(rng) == 0) {
-            idx = std::uniform_int_distribution<int>(0, ((pool_size + 1) / 2) - 1)(rng);
-        } else {
-            idx = std::uniform_int_distribution<int>(0, pool_size - 1)(rng);
-        }
-        out = entries_[idx].solution;
+        biased_copy(rng, out);
     }
     return true;
 }

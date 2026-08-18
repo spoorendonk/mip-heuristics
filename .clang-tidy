@@ -1,9 +1,10 @@
 # Check contract for the clang-tidy gate (see cmake/Lint.cmake).
 #
-# Content is devkit's shared C++ check set (devkit `config/.clang-tidy`),
-# checked in here as a regular file rather than the symlink `setup.sh`
-# installs — see the header of `.clang-format` for why the symlink cannot
-# carry a gate.
+# Content is devkit's shared C++ check set (devkit `config/.clang-tidy` at
+# submodule commit 9c000ac), checked in here as a regular file rather than
+# the symlink `setup.sh` installs — a symlink cannot carry the
+# project-specific divergences below, and `.clang-format` is checked in
+# alongside it so the gate's two inputs move as a unit (see its header).
 #
 # Every deviation from devkit's file is marked NARROWED and carries the
 # measurement that justifies it.  Counts are unique first-party findings
@@ -69,11 +70,16 @@ Checks: >
 #   correct call under an unmeasurable-benefit, real-risk trade.
 #
 # NOT narrowed, deliberately: readability-function-cognitive-complexity.
-#   21 functions in `src/` exceed the threshold and every one is an
-#   algorithm core whose decomposition would change generated code on a
-#   worker's inner loop.  Those carry a per-function NOLINTNEXTLINE with
-#   the measured complexity and the reason, so a *new* runaway function
-#   still fails the gate instead of sailing through a global off switch.
+#   20 functions in `src/` exceed the threshold; each carries a
+#   per-function NOLINTNEXTLINE stating its measured complexity and its
+#   own reason for staying whole, so a *new* runaway function still fails
+#   the gate instead of sailing through a global off switch.  Most are
+#   algorithm cores on a worker's per-step path, where decomposition is
+#   an unmeasurable performance risk; two are not hot and say so — they
+#   are single-critical-section or shared-state arguments instead.  The
+#   twenty-first, `SolutionPool::get_restart`, was split into three
+#   strategy helpers rather than annotated, which is what the rest would
+#   get if their reasons ever stopped holding.
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold
@@ -136,9 +142,14 @@ WarningsAsErrors: ''
 # an include — and this project compiles against a fetched, patched HiGHS
 # tree plus a fetched Catch2.  At '.*' one translation unit reports around
 # 5000 findings in upstream headers we do not own and must not touch.
-# Anchored on a literal `/src/` or `/tests/` path segment holding a `.h`
-# file directly, which cannot match `_deps/highs-src/highs/**` (the
+# Anchored on a literal `/src/` or `/tests/` path segment holding a
+# header directly, which cannot match `_deps/highs-src/highs/**` (the
 # segment there is `highs-src`, not `src`) or `_deps/catch2-src/src/**`
-# (those headers are `.hpp` and sit a directory deeper).
-HeaderFilterRegex: '.*/(src|tests)/[^/]*\.h$'
+# (those headers sit a directory deeper).  That single-directory
+# restriction is what keeps this value safe without knowing the checkout
+# path, and it is why the gate does not rely on it: `clang_tidy_gate.py`
+# passes its own `--header-filter` anchored on the absolute repository
+# root, which is both recursive and exact.  This value is the portable
+# approximation for clangd and ad-hoc `clang-tidy` runs.
+HeaderFilterRegex: '.*/(src|tests)/[^/]*\.(h|hpp)$'
 FormatStyle: file

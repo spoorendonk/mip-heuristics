@@ -35,7 +35,7 @@ namespace {
 //
 // Behaviour-identical: the per-config seed is `base_seed + config_index`,
 // independent of the worker seed, so a worker rebuilt with a fresh seed
-// computed the same order it now looks up.  It also drops n redundant
+// computed the same order it now looks up.  It also drops N redundant
 // computations of the same `kNumFprConfigs` orders at construction.
 std::vector<std::vector<HighsInt>> precompute_config_var_orders(HighsMipSolver& mipsolver) {
     std::vector<std::vector<HighsInt>> orders(kNumFprConfigs);

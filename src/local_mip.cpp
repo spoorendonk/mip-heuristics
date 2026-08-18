@@ -96,7 +96,7 @@ bool is_solution_feasible(const HighsMipSolver& mipsolver, const std::vector<dou
             return false;
         }
     }
-    // Row feasibility — walk ar_start/ar_index/ar_value once.
+    // Row feasibility — walk HiGHS's ARstart_/ARindex_/ARvalue_ once.
     for (HighsInt i = 0; i < nrow; ++i) {
         double lhs = 0.0;
         for (HighsInt k = mipdata->ARstart_[i]; k < mipdata->ARstart_[i + 1]; ++k) {
