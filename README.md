@@ -1,6 +1,10 @@
 # mip-heuristics
 
-A complete MIP primal heuristics suite integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build. Makes FJ, FPR, LocalMIP, and Scylla (PDLP-based feasibility pump) available natively within HiGHS as a research and experimentation platform. See [Heuristics](#heuristics) for algorithmic details and paper references.
+A unified open-source reference implementation and empirical evaluation of four modern primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver. All four are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions. See [Heuristics](#heuristics) for algorithmic details and paper references.
+
+The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: the combined patched solver gives only a small aggregate improvement over vanilla on the PLATO `mipfeas` benchmark, and the honest end-to-end finding is that additional heuristics may not compensate for the solver progress they displace. See [Benchmarks](#benchmarks) for the numbers and their provenance.
+
+**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the PLATO protocol) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`docs/README.md`](docs/README.md) (source papers).
 
 ## Quick Start
 
@@ -45,7 +49,7 @@ Reference PDFs are in `docs/`.
 
 The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla with a weighted effort budget. Each heuristic parallelises the same way: continuous workers that self-terminate, with no epoch barrier and no bit-identical guarantee across runs.
 
-For a reproducible run, set `threads=1` together with a fixed `random_seed`. That is the project's reproducibility contract — a single worker per heuristic, deterministic within one binary. It is not a separate mode and needs no extra option.
+For a reproducible run, set `threads=1` together with a fixed `random_seed`. That is the project's reproducibility contract — a single worker per heuristic, deterministic within one binary. It is not a separate mode and needs no extra option. It is also *not* the benchmark configuration: one worker per heuristic removes the contention Scylla is built around. [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) has the full contract, including what is deliberately not reproducible and why.
 
 One caveat for library embedders (not CLI users): HiGHS's task executor is a process-global singleton, initialised by the first `run()` in the process. A later solve that asks for a *different* thread count fails outright rather than silently using the old one, so pinning `threads=1` on a second `Highs` instance returns an error unless you first call `Highs::resetGlobalScheduler(true)`.
 
@@ -137,22 +141,51 @@ Two things the harness deliberately does not do by default:
 - **No `threads=`.** Forcing `threads=1` collapses each heuristic to a single worker. It is the right setting for reproducibility and the wrong one for a throughput benchmark, so `--threads` exists but has no default.
 - **No `log_dev_level=3`.** Pass `--dev-log` to turn on the `[Heur]` / `[Native]` / `[Root]` / `[Sequential]` instrumentation that `bench/parse_highs_log.py` reads for the cannibalization analysis. It is not free: HiGHS's own FeasibilityJump logs one line per weight bump at exactly that level, from every parallel FJ worker, with an `fflush` each. Measured on five bundled instances at a 10 s limit that is 97–750x the log volume (bell5: 16 KB → 3.5 MB) and 1.1–4.4x the total solve wall time (egout: 0.048 s → 0.212 s), concentrated in the FJ phase — i.e. in the number the analysis is reading. Without it `SolveResult.heuristic_wall_fraction` is `None` (unknown), not `0.0`, so the attribution tables come out empty rather than wrong. Use `--dev-log` for attribution runs and leave it off for headline timings.
 
+### Cannibalization analysis
+
+The closeout's central empirical question is whether running our presolve heuristics starves HiGHS's own RENS/RINS and delays the root LP. `--cannibalization` renders the two tables that separate the two kinds of cost:
+
+```bash
+python3 bench/run_benchmark.py \
+    --instances bench/instances_small.txt --data-dir /tmp/miplib \
+    --output bench/results/cannib --configs off fpr local_mip scylla all \
+    --time-limit 60 --dev-log --skip-existing
+python3 bench/analyze_results.py bench/results/cannib --cannibalization \
+    --configs off fpr local_mip scylla all --time-limit 60
+```
+
+- **`--dev-log` is mandatory here.** Without it no row carries the counters and every row classifies as `not-instrumented`.
+- **The baseline must be a *patched* `suite=off` row, not `--vanilla-binary`.** The baseline is itself compared on instrumentation, and an external unpatched binary emits none of the `[Native]` / `[Root]` / `[Heur]` lines — it classifies as `not-instrumented` and drags every other row to `no-baseline`. Auto-detection tries `vanilla`, `off`, `suite_off`, `baseline` in order; `--cannibalization-baseline NAME` overrides it.
+
+Each `(instance, config)` lands in one of seven categories: `baseline` (the reference row itself), `neutral` (native activity and solve time both held), `wall-clock` (budgets held but the root LP was pushed materially later, or a material share of the solve was spent inside our heuristics), `internal-budget` (HiGHS's own heuristics ran less — root-site RENS counted on its own, or materially fewer heuristic LP iterations of its own), `both`, `no-baseline` (instrumented, but nothing to compare against), and `not-instrumented` (log predates the instrumentation or ran below `log_dev_level=3`). The labels are triage for the closeout tables, not a statistical test; the thresholds are the `CANNIBALIZATION_*` constants in `bench/analyze_results.py`.
+
+One trap when reading the raw counters instead of the tables: `heur_lp_iters` and `total_lp_iters` are **shared**, not native. `fpr_lp` charges its dive-time work to both so it competes with RENS/RINS for one envelope, so reading them raw bills our work as HiGHS's. Subtract `fpr_lp_lp_iters` before comparing an `off` row against a patched one.
+
 ## Build Options
 
-| Flag | Description |
-|------|-------------|
-| `-DCMAKE_BUILD_TYPE=Release` | Optimized build (default) |
-| `-DMIP_HEURISTICS_CUDA=ON` | Enable cuPDLP GPU backend for Scylla. Requires `CUDA_HOME` exported; **fails the configure** rather than falling back to CPU. Verify with `ldd build-gpu/bin/highs \| grep cudart` |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-DCMAKE_BUILD_TYPE=Release` | — | Optimized build. The heuristics are unusable at `-O0`. |
+| `-DMIP_HEURISTICS_REQUIRE_LINT=ON` | `OFF` | Turn a missing or wrong-major-version clang tool into a **configure failure** instead of a warning. CI sets it; so should you — the default failure mode is a gate that silently checks nothing. |
+| `-DMIP_HEURISTICS_INSTRUMENT=OFF` | `ON` | Compile out the LocalMIP warm-start branch counters. They are consumed by two tests, so leave them on unless you are measuring their overhead in a production build. |
+| `-DMIP_HEURISTICS_CUDA=ON` | `OFF` | Enable cuPDLP GPU backend for Scylla. Requires `CUDA_HOME` exported; **fails the configure** rather than falling back to CPU, because GPU vs CPU is a compile-time `#ifdef` in HiGHS and a silent fallback would be indistinguishable at the command line. Build into a separate tree and verify with `ldd build-gpu/bin/highs \| grep cudart`. |
 
 ## Testing
 
 ```bash
-cd build && ctest --output-on-failure
-cd build && ctest -R "execution-mode: flugpl objective" --output-on-failure     # single test
-cd build && ./mip_heuristics_tests "[mode-matrix]"                            # Catch2 tag
+# Once per checkout — `.venv/bin` is the exact path the lint gates search.
+python3 -m venv .venv
+.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 pytest
+
+ctest --test-dir build --output-on-failure -j$(nproc)                     # everything
+ctest --test-dir build -LE lint --output-on-failure                       # fast loop
+ctest --test-dir build -R "execution-mode: flugpl objective" --output-on-failure
+./build/mip_heuristics_tests "[mode-matrix]"                              # Catch2 tag
 ```
 
 Catch2 v3. Characterization tests verify known-optimal objectives against MIPLIB instances bundled with HiGHS.
+
+`clang-format` and `clang-tidy` run over `src/` and `tests/` as ctest tests labelled `lint`, adding roughly 30 s to a full run — hence `ctest -LE lint` while iterating. Without the venv above they are **not registered at all** and `ctest` reports green having linted nothing, which is what `-DMIP_HEURISTICS_REQUIRE_LINT=ON` exists to prevent. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the tool-version contract.
 
 ## License
 
