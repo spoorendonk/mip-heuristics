@@ -12,17 +12,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solver via a patched fork. The heuristics run during HiGHS's presolve phase and are compiled as object files linked directly into the `highs` library target.
 
+**Reader-facing docs**, kept in sync with this file — update both when the behaviour they describe moves:
+- `README.md` — positioning, the `mip_heuristic_suite` table, recorded benchmark results, build options.
+- `CONTRIBUTING.md` — build/test/lint commands, the clean-rebuild rule for patch-script changes, the benchmarking rules, the standing code-hygiene bar.
+- `docs/REPRODUCIBILITY.md` — what is reproducible and what is not, and the exact PLATO reproduction protocol.
+- `docs/PARAMETERS.md` — every tunable `constexpr`. **Verified by ctest** (`docs_parameter_references`, via `bench/check_docs_refs.py`): renaming a documented constant fails the suite. Entries name symbols, never line numbers — line numbers drifted on essentially every refactor, which is why they were dropped. Don't reintroduce them.
+
 ## Build Commands
 
 ```bash
+# Lint tools, once per checkout.  `.venv/bin` is the exact path
+# cmake/Lint.cmake searches; without this the gates are never registered and
+# ctest reports green having linted nothing.  Include pytest — the root
+# CMakeLists prefers `.venv/bin/python`, so a venv without it unregisters
+# `bench_python_tests` rather than falling back to the system interpreter.
+python3 -m venv .venv
+.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 pytest
+
 # Configure (from repo root)
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON
 
 # Build
 cmake --build build -j$(nproc)
 
-# Run all tests
+# Run all tests, lint gates included
 cd build && ctest --output-on-failure
+
+# Fast inner loop: everything except the two lint gates
+cd build && ctest -LE lint --output-on-failure
 
 # Run a single test by name
 cd build && ctest -R "execution-mode: flugpl objective" --output-on-failure
@@ -32,6 +49,20 @@ cd build && ./mip_heuristics_tests "[mode-matrix]"
 ```
 
 First build is slow (~5 min) because it fetches and builds HiGHS via FetchContent.
+
+**The lint gates are ctest tests** (#101), labelled `lint`: `clang_format` and
+`clang_tidy`, registered by `cmake/Lint.cmake` over `src/` and `tests/` only.
+They add roughly 30 s to a full `ctest` run — `ctest -LE lint` is the fast loop
+while iterating, and the full suite is the gate. `MIP_HEURISTICS_REQUIRE_LINT=ON`
+turns a missing tool or a wrong major version into a *configure* failure instead
+of a warning that scrolls past; CI sets it, and so should you, because the
+default failure mode is silent. Tool versions are part of the contract:
+clang-format's output changes between major releases, so the pinned 22.1.8 pair
+from PyPI is what the gate is written against. clang-tidy's own exit status is
+unusable here — HiGHS's `HighsMipWorker.h` contains a construct clang rejects
+as a parse error and GCC accepts — so `cmake/clang_tidy_gate.py` wraps it and
+judges first-party diagnostics itself. Never work around a tidy finding by
+widening that wrapper's filter.
 
 ## Build & Test
 
@@ -52,7 +83,7 @@ rm -rf build
 ```
 
 ```build
-unset GIT_DIR GIT_WORK_TREE && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
+unset GIT_DIR GIT_WORK_TREE && cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON && cmake --build build -j"$(nproc)"
 ```
 
 ```test
@@ -112,5 +143,7 @@ Three further lines at the same level, added by #95 for the cannibalization anal
 **Benchmarking**: `bench/` has scripts for MIPLIB benchmarks — `run_benchmark.py` runs instances, `analyze_results.py` parses results. Don't pass `--threads` (or set `threads=` in an `.opts` file) unless asked — let HiGHS use its default; forcing `threads=1` collapses each heuristic to a single worker (the right setting for reproducibility, the wrong one for a throughput benchmark). Since #93, `mip_heuristic_suite=off` on the patched binary **is** vanilla-equivalent — the patch hands HiGHS's standalone FJ call site back at that value, which it used to hard-disable in every configuration. `bench/check_vanilla_equivalence.py` proves it against a separately built unpatched binary at the same tag (identical objective, node count, total and heuristic LP iterations, and an empty normalized log diff; verified 12/12 on the six bundled instances × 2 seeds). Prefer `--vanilla-binary` with a real unpatched build for headline benchmark baselines anyway — it is the stronger claim and costs nothing but a second checkout. Patched binaries self-identify with a `mip-heuristics patch active` line right after the version banner (injected by `apply_patch.cmake`) — the version/githash banner alone is identical between patched and unpatched builds of the same tag.
 
 `run_benchmark.py`'s config surface (#96) is one entry of `CONFIG_SUITES` per `mip_heuristic_suite` value plus `patched` as an alias for `all` — an alias, *not* a rename of the `all_opp` composition the recorded PLATO table was measured at, which the suite option cannot express. **`config_options` raises on an unknown config name**; it used to return `{}`, so `--configs patchd` produced a fully populated, plausible-looking, completely meaningless results tree. `--budget-sweep` crosses each config with `mip_heuristic_presolve_effort` values into `<output>/<config>@e<V>/seed<N>/`, which `analyze_results.py --configs` consumes unchanged (`@` needs no escaping in a path or in LaTeX text mode). `SWEEP_EXEMPT` names the three configs the option provably does not reach — `vanilla` and `off` (no presolve heuristic runs) and `fj` (fixed per-worker allowance; measured flat to 0.003% across the option's whole range, while the same sweep moves fpr/local_mip/scylla inside `all` by 22–231x) — which pass through the sweep once as anchor rows rather than becoming N identical trees; an explicit `vanilla@e0.30` raises. `resolve_config` is the single decomposer of a `<base>@e<V>` name and `build_plan` the single place that decomposition's two *consequences* — which binary, which options — are chosen together; choosing them at separate use sites is how a swept name picks one branch's binary and the other branch's options. A run that solved but ignored its configuration is routed to `<inst>.log.err` like a non-solving exit: HiGHS accepts an unknown `mip_heuristic_suite` *value* and `run_presolve` fails open to all four heuristics with a warning and exit 0, so an `off/` tree would otherwise record runs that executed `all`.
+
+**Cannibalization tables** (#100): `bench/analyze_results.py --cannibalization` renders the internal-budget and wall-clock tables over a results tree. It needs a **patched `suite=off`** row as the baseline, not a `--vanilla-binary` row — the baseline must itself be instrumented, and an external unpatched binary emits none of the `[Native]` / `[Root]` / `[Heur]` lines, so it classifies as `not-instrumented` and every other row degrades to `no-baseline`. Auto-detection tries `vanilla`, `off`, `suite_off`, `baseline` in that order after a structural test; `--cannibalization-baseline NAME` overrides it. The classification is a triage label, not a statistical test: thresholds are the `CANNIBALIZATION_*` module constants. **The "seven cannibalization categories" that #95 and #88 gesture at were never written down anywhere** — no such list exists in the repo or in either issue. The real set is `CANNIBALIZATION_CATEGORIES` in `analyze_results.py`, derived by #100 from the two axes the epic defines: `baseline`, `neutral`, `wall-clock`, `internal-budget`, `both`, `no-baseline`, `not-instrumented`. Cite that tuple, not the phantom reference.
 
 **`log_dev_level=3` is not free, so `run_benchmark.py` leaves it off** behind an opt-in `--dev-log`. Our instrumentation is `kVerbose`, which needs level 3, and HiGHS's own FeasibilityJump logs `Reached a local minimum.` at that same level from `updateWeights()` — once per weight bump, per parallel FJ worker, each with an `fflush`. Measured on five bundled instances at a 10 s limit: 97–750x log volume (bell5 16 KB → 3.5 MB) and 1.1–4.4x total solve wall time (egout 0.048 s → 0.212 s; flugpl 2.7x; p0548 only 1.1x), concentrated in the FJ phase — exactly the window `[Heur]` and `presolve_heur_s` report. Attribution runs and headline-timing runs are therefore different runs.
