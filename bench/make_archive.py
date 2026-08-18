@@ -872,8 +872,14 @@ def write_manifest(archive: Path, manifest: Manifest) -> None:
 
 
 def make_tarball(archive: Path) -> Path:
-    """Write `<archive>.tar.gz` beside the archive directory."""
-    tar_path = archive.with_suffix(archive.suffix + ".tar.gz")
+    """Write `<archive>.tar.gz` beside the archive directory.
+
+    Appends to the whole name rather than going through `with_suffix`, which
+    treats the `.0` of a version-numbered directory as the suffix to replace.
+    A single tarball is also the only shape Zenodo accepts for a results tree:
+    a record takes at most 100 files, and a campaign has thousands.
+    """
+    tar_path = Path(str(archive) + ".tar.gz")
     with tarfile.open(tar_path, "w:gz") as tar:
         tar.add(archive, arcname=archive.name)
     return tar_path

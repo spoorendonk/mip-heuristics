@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from make_archive import (
     discover_configs,
     inspect_log,
     machine_provenance,
+    make_tarball,
     parse_table_flag,
     read_options_file,
     render_provenance,
@@ -398,6 +400,17 @@ def test_manifest_checksums_cover_every_archived_file(tree: Path, tmp_path: Path
     # PROVENANCE.md is inside the checksum set: provenance that can be edited
     # without `verify` noticing is not provenance.
     assert "PROVENANCE.md" in manifest.files
+
+
+def test_tarball_keeps_a_version_numbered_name_intact(tree: Path, tmp_path: Path):
+    """`with_suffix` would treat the `.0` of `v1.0.0` as the suffix."""
+    archive = tmp_path / "mip-heuristics-v1.0.0-archive"
+    build(tree, archive)
+    tar = make_tarball(archive)
+    assert tar.name == "mip-heuristics-v1.0.0-archive.tar.gz"
+    with tarfile.open(tar) as handle:
+        names = handle.getnames()
+    assert f"{archive.name}/MANIFEST.json" in names
 
 
 def test_verify_passes_on_a_fresh_archive(tree: Path, tmp_path: Path):
