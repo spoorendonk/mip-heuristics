@@ -1,7 +1,20 @@
 name: CI
 
+# Until the closeout this workflow was `workflow_dispatch`-only, so it never
+# ran unless someone pressed the button in the Actions tab.  It is now on by
+# default, which is what makes the lint gates and the Python tests mean
+# anything.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+
+# A cold HiGHS build is about five minutes.  Only the tip of a ref has to be
+# green, so supersede an in-flight run rather than paying for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
@@ -12,11 +25,79 @@ jobs:
         with:
           submodules: true
 
+      # HiGHS is fetched *and patched* at configure time, so the key has to
+      # cover both halves: the tag in FetchHiGHS.cmake and the script whose
+      # inserted text the tree is stamped with.  Keyed on the fetch file alone,
+      # a cache entry made before a patch change would be restored into a tree
+      # that `apply_patch.cmake`'s PATCH_VERSION sentinel then rejects (epic #88
+      # coupling B) — a hard configure failure only CI would ever see.
+      #
+      # Deliberately no `restore-keys`: a near-miss fallback is exactly the
+      # stale-tree restore the two-file key exists to prevent.  A miss costs
+      # five minutes; a wrong hit costs a confusing red build.
+      - name: Cache HiGHS source and build tree
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: highs-${{ runner.os }}-${{ hashFiles('cmake/FetchHiGHS.cmake', 'third_party/highs_patch/apply_patch.cmake') }}
+
+      # `.venv/bin` is the exact HINTS path cmake/Lint.cmake searches, so this
+      # is what registers the `clang_format` and `clang_tidy` ctest tests.
+      # Without it `find_program` misses, the gates are never registered, and
+      # ctest reports green having linted nothing.  `pytest` belongs in the
+      # same venv: the root CMakeLists prefers `.venv/bin/python` over the
+      # system interpreter, so a venv without pytest unregisters
+      # `bench_python_tests` instead of falling back.
+      - name: Install clang lint tools
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 pytest
+
+      # REQUIRE_LINT=ON turns a missing or wrong-major-version tool into a
+      # configure failure.  That is the point: the default is a warning that
+      # scrolls past in a runner log.
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
 
+      # Must stay after Build: the clang-tidy gate compiles first-party
+      # translation units against HiGHS's generated headers, which do not exist
+      # until the build has run.  No explicit test selection — ctest picks up
+      # the `lint`-labelled tests along with everything else.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -j$(nproc) --output-on-failure --timeout 600
+
+  python:
+    # Second, fast job: the bench scripts are pure Python and their tests take
+    # seconds, so they should not queue behind a HiGHS build to report.
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Pinned for the same reason the clang tools are (see cmake/Lint.cmake):
+      # a lint gate on a floating tool version is a gate that turns red on
+      # someone else's release note.  Ruff 0.16 widened its *default* rule set
+      # well beyond the historical E4/E7/E9/F, which is why this pin is not
+      # cosmetic.
+      - name: Install Python tooling
+        run: python3 -m pip install ruff==0.16.3 pytest
+
+      # KNOWN RED on the first run: `bench/` carries 21 findings under ruff
+      # 0.16.3's defaults (20 of them from rule families that release enabled;
+      # 1 — an F541 f-string with no placeholders in bench/correctness_check.py
+      # — predates it and fails under any rule set).  Fixing `bench/*.py` was
+      # out of scope for the issue that added this job; the fixes or an
+      # explicit `[tool.ruff.lint] select` in pyproject.toml are the two ways
+      # to close it.
+      - name: Lint
+        run: ruff check bench
+
+      - name: Test
+        run: pytest bench
