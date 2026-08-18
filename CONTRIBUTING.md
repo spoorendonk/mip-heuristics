@@ -87,8 +87,9 @@ Two consequences worth internalising:
   that pins the HiGHS tag, for exactly this reason. A cache entry keyed on the
   tag alone would restore a stale-layout tree that the sentinel then rejects.
 
-The script's own error messages point back here rather than repeating the
-incantation nineteen times.
+All nineteen of the script's failure messages now end in one shared
+`CLEAN_REBUILD` string that names this section and carries the command, rather
+than nineteen copies free to drift apart.
 
 ## Benchmarking
 

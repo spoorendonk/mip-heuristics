@@ -2,6 +2,20 @@
 # Called by FetchContent PATCH_COMMAND
 # Idempotent: safe to run multiple times.
 
+# ── The clean-rebuild incantation, stated once ───────────────────────────────
+# Nearly every failure below needs the same remedy for the same reason: this
+# script decides "already applied?" by searching for text it previously
+# inserted, so a tree patched by an older version of the script cannot be
+# rewritten in place.  The rule and its rationale live in CONTRIBUTING.md
+# under "The clean-rebuild rule"; this string keeps the command itself in
+# front of whoever hit the error, and keeps nineteen copies of it from
+# drifting apart.
+string(CONCAT CLEAN_REBUILD
+    "Clean the HiGHS source tree and rebuild "
+    "(see CONTRIBUTING.md, \"The clean-rebuild rule\"): "
+    "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt "
+    "&& cmake -B build && cmake --build build")
+
 # Detect source layout: v1.13+ uses highs/ subdirectory
 if(EXISTS "${SOURCE_DIR}/highs/mip")
     set(MIP_DIR "${SOURCE_DIR}/highs/mip")
@@ -35,7 +49,7 @@ if(_marker_found EQUAL -1)
             "HighsIO.cpp patch failed: the thirdPartyNoticeHeader anchor in "
             "highsLogHeader no longer matches (upstream reformat?). "
             "Update the marker patch in third_party/highs_patch/apply_patch.cmake. "
-            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+            "${CLEAN_REBUILD}")
     endif()
 
     file(WRITE "${IO_DIR}/HighsIO.cpp" "${IO_CONTENT}")
@@ -89,9 +103,7 @@ if(_patch_version_found EQUAL -1)
                 "HighsOptions.h still carries '${_retired_ident}' (${_retired_why}). "
                 "The tree was patched by an older version of apply_patch.cmake; "
                 "an in-place rewrite is not safe. "
-                "Please clean the HiGHS source tree and rebuild: "
-                "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-                "cmake -B build && cmake --build build")
+                "${CLEAN_REBUILD}")
         endif()
     endforeach()
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -100,9 +112,7 @@ if(_patch_version_found EQUAL -1)
             "HighsOptions.h was patched by an older version of apply_patch.cmake "
             "(expected 'mip-heuristics patch version ${PATCH_VERSION}'). "
             "The inserted text has changed since; an in-place rewrite is not safe. "
-            "Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "${CLEAN_REBUILD}")
     endif()
 endif()
 
@@ -159,9 +169,7 @@ if(_suite_found EQUAL -1)
             "ctor=${_suite_ctor_count}, record_idx=${_suite_record_idx}). "
             "Upstream HiGHS likely reformatted HighsOptions.h so one of the "
             "three mip_heuristic_run_shifting anchors no longer matches. "
-            "Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
     message(STATUS "Applied mip_heuristic_suite option to HighsOptions.h")
@@ -200,9 +208,7 @@ else()
         "'&mip_heuristic_effort, 0.0, 0.30, 1.0' substring was found. "
         "Upstream HiGHS likely reformatted the option-record block so the "
         "exact-string REPLACE pattern no longer matches. "
-        "Please clean the HiGHS source tree and rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
+        "${CLEAN_REBUILD}")
 endif()
 
 # ── Add mip_heuristic_presolve_effort double option ──
@@ -252,9 +258,7 @@ if(_presolve_effort_found EQUAL -1)
             "mip_heuristic_presolve_effort (member=${_pe_member_count}, "
             "ctor=${_pe_ctor_count}, record_idx=${_pe_record_idx}). "
             "An anchor REPLACE pattern no longer matches. "
-            "Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
     message(STATUS "Applied mip_heuristic_presolve_effort option to HighsOptions.h")
@@ -331,9 +335,7 @@ if(_instr_fields_found EQUAL -1)
             "root_lp_time=${_instr_root_count}, atomic_include=${_instr_atomic_count}). "
             "Upstream HiGHS likely reformatted the 'double heuristic_effort;' "
             "member or the include block. "
-            "Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
     message(STATUS "Applied instrumentation counters to HighsMipSolverData.h")
@@ -382,9 +384,8 @@ if(_src_enum_found EQUAL -1)
             "HighsMipSolverData.h post-patch sanity check failed: "
             "expected exactly 1 occurrence of 'kSolutionSourceFprLp', got ${_h_fprlp_count}. "
             "Upstream HiGHS likely reformatted the source-enum block so the exact-string "
-            "REPLACE patterns no longer match. Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "REPLACE patterns no longer match."
+            "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
     message(STATUS "Applied custom solution source enums to HighsMipSolverData.h")
@@ -447,9 +448,8 @@ if(_src_cpp_found EQUAL -1)
             "HighsMipSolverData.cpp post-patch sanity check failed: "
             "expected exactly 1 occurrence of 'kSolutionSourceFprLp', got ${_cpp_fprlp_count}. "
             "Upstream HiGHS likely reformatted the source-to-string chain so the exact-string "
-            "REPLACE patterns no longer match. Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "REPLACE patterns no longer match."
+            "${CLEAN_REBUILD}")
     endif()
     string(REGEX MATCHALL "\"FPR LP\"" _cpp_fprlp_str_hits "${MIPDATA_CPP}")
     list(LENGTH _cpp_fprlp_str_hits _cpp_fprlp_str_count)
@@ -458,9 +458,8 @@ if(_src_cpp_found EQUAL -1)
             "HighsMipSolverData.cpp post-patch sanity check failed: "
             "expected exactly 1 occurrence of '\"FPR LP\"', got ${_cpp_fprlp_str_count}. "
             "Upstream HiGHS likely reformatted the source-to-string chain so the exact-string "
-            "REPLACE patterns no longer match. Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "REPLACE patterns no longer match."
+            "${CLEAN_REBUILD}")
     endif()
     string(REGEX MATCHALL "\\{4, 9, 14, 19, last_enum\\}" _cpp_limits_hits "${MIPDATA_CPP}")
     list(LENGTH _cpp_limits_hits _cpp_limits_count)
@@ -469,9 +468,8 @@ if(_src_cpp_found EQUAL -1)
             "HighsMipSolverData.cpp post-patch sanity check failed: "
             "expected exactly 1 occurrence of '{4, 9, 14, 19, last_enum}', got ${_cpp_limits_count}. "
             "Upstream HiGHS likely reformatted printSolutionSourceKey so the limits-vector "
-            "REPLACE pattern no longer matches. Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "REPLACE pattern no longer matches."
+            "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")
     message(STATUS "Applied solution source strings to HighsMipSolverData.cpp")
@@ -540,9 +538,7 @@ if(_root_instr_found EQUAL -1)
             "root_lp_time=${_root_time_count}). "
             "Upstream HiGHS likely reformatted evaluateRootNode so one of the "
             "call-site anchors no longer matches. "
-            "Please clean the HiGHS source tree and rebuild: "
-            "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-            "cmake -B build && cmake --build build")
+            "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP2}")
     message(STATUS "Applied root-node instrumentation to HighsMipSolverData.cpp")
@@ -729,7 +725,7 @@ if(_fj_effort_found EQUAL -1)
             "'heuristic_effort_used += fj_last_effort;' not found after patching. "
             "Upstream HiGHS likely reformatted the standalone feasibilityJump() "
             "callback so an exact-string anchor no longer matches. "
-            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+            "${CLEAN_REBUILD}")
     endif()
 
     file(WRITE "${MIP_DIR}/HighsFeasibilityJump.cpp" "${FJ_CONTENT2}")
@@ -752,10 +748,8 @@ if(NOT _stale_presolve_budget EQUAL -1)
     message(FATAL_ERROR
         "HighsMipSolver.cpp derives the presolve heuristic budget from "
         "'mip_heuristic_effort'; this was split into "
-        "'mip_heuristic_presolve_effort'.  Clean the HiGHS source tree and "
-        "rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
+        "'mip_heuristic_presolve_effort'."
+        "${CLEAN_REBUILD}")
 endif()
 
 string(FIND "${CONTENT}" "heuristics::run_presolve" _found)
@@ -806,7 +800,7 @@ if(_found EQUAL -1)
             "Upstream HiGHS likely restructured the pre-root-node heuristics "
             "block so an exact-string anchor no longer matches. "
             "Please update Patch A/A2 in third_party/highs_patch/apply_patch.cmake. "
-            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+            "${CLEAN_REBUILD}")
     endif()
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
@@ -834,10 +828,8 @@ if(NOT _stale_fprlp_call EQUAL -1)
     message(FATAL_ERROR
         "HighsMipSolver.cpp contains the pre-split two-argument fpr_lp::run "
         "call site.  fpr_lp now derives its budget from the shared RENS/RINS "
-        "LP-iteration headroom internally.  Clean the HiGHS source tree and "
-        "rebuild: "
-        "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt && "
-        "cmake -B build && cmake --build build")
+        "LP-iteration headroom internally."
+        "${CLEAN_REBUILD}")
 endif()
 
 string(FIND "${CONTENT}" "fpr_lp::run" _fprlp_found)
@@ -855,7 +847,7 @@ if(_fprlp_found EQUAL -1)
             "Upstream HiGHS likely restructured the runHeuristics block so the "
             "exact-string anchor no longer matches. "
             "Please update Patch C in third_party/highs_patch/apply_patch.cmake. "
-            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+            "${CLEAN_REBUILD}")
     endif()
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
@@ -902,7 +894,7 @@ if(_dive_instr_found EQUAL -1)
             "Upstream HiGHS likely reformatted the runHeuristics lambda so an "
             "exact-string anchor no longer matches. "
             "Please update Patch D in third_party/highs_patch/apply_patch.cmake. "
-            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+            "${CLEAN_REBUILD}")
     endif()
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
@@ -940,7 +932,7 @@ if(_summary_found EQUAL -1)
             "Upstream HiGHS likely reformatted cleanupSolve so the final-display-line "
             "anchor no longer matches. "
             "Please update Patch E in third_party/highs_patch/apply_patch.cmake. "
-            "Clean: rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt")
+            "${CLEAN_REBUILD}")
     endif()
 
     file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${CONTENT}")
