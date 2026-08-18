@@ -383,7 +383,7 @@ TEST_CASE("PropEngine: pointer-identity guard detects problem swap",
     // in repair_search.cpp.  If any pointer comparison is accidentally
     // dropped in a future refactor, this assertion fails.
     auto matches = [](const PropEngine& eng, const SmallModel& m, double feastol) {
-        return eng.ncol() == m.ncol && eng.nrow() == m.nrow &&
+        return eng.ncol() == SmallModel::ncol && eng.nrow() == SmallModel::nrow &&
                eng.ar_start() == m.ar_start.data() && eng.ar_index() == m.ar_index.data() &&
                eng.ar_value() == m.ar_value.data() && eng.csc_start() == m.csc.col_start.data() &&
                eng.csc_row() == m.csc.col_row.data() && eng.csc_val() == m.csc.col_val.data() &&
@@ -411,7 +411,7 @@ TEST_CASE("IndexedMinHeap: empty and single-element invariants", "[prop-engine][
     IndexedMinHeap heap;
     heap.reserve(4);
     REQUIRE(heap.empty());
-    REQUIRE(heap.size() == 0);
+    REQUIRE(heap.empty());
     REQUIRE_FALSE(heap.contains(0));
 
     heap.insert(3.0, 1);

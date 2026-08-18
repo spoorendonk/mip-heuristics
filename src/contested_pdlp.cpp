@@ -83,7 +83,7 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap) 
     initialized_ = true;
 }
 
-ContestedPdlp::ContestedPdlp(ForTesting) {
+ContestedPdlp::ContestedPdlp(ForTesting /*unused*/) {
     // Minimal init for unit tests: the subclass overrides `solve_locked`
     // so we never touch `highs_`.  ncol/nrow/nnz stay 0 by default;
     // tests that care can set them via their own friends, but most just

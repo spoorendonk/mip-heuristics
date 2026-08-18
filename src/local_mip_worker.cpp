@@ -33,7 +33,7 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
         if (coin(rng) > kPerturbBinaryFraction) {
             continue;
         }
-        if (binary[j]) {
+        if (binary[j] != 0u) {
             solution[j] = (solution[j] < 0.5) ? 1.0 : 0.0;
         } else {
             // Skip variables whose current value is non-finite (NaN or
@@ -99,7 +99,7 @@ LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, 
 
     // Initialize solution
     const double* src = initial_solution;
-    if (src) {
+    if (src != nullptr) {
         for (HighsInt j = 0; j < ncol; ++j) {
             double v = src[j];
             if (ctx_.is_int(j)) {
@@ -214,7 +214,8 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                     if (ctx_.lift.score[j] <= lift_best.score) {
                         continue;
                     }
-                    double lo = ctx_.lift.lo[j], hi = ctx_.lift.hi[j];
+                    double lo = ctx_.lift.lo[j];
+                    double hi = ctx_.lift.hi[j];
                     if (lo > hi) {
                         continue;
                     }

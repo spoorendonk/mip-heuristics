@@ -114,7 +114,7 @@ void IndexedMinHeap::sift_down(HighsInt idx) {
     const Entry entry = heap_[idx];
     const auto size = static_cast<HighsInt>(heap_.size());
     while (true) {
-        const HighsInt left = 2 * idx + 1;
+        const HighsInt left = (2 * idx) + 1;
         if (left >= size) {
             break;
         }
@@ -265,7 +265,7 @@ void PropEngine::seed_worklist(HighsInt j) {
     char* __restrict in_wl = prop_in_wl_.data();
     for (HighsInt p = kbeg; p < kend; ++p) {
         HighsInt i = col_row[p];
-        if (!in_wl[i]) {
+        if (in_wl[i] == 0) {
             in_wl[i] = 1;
             prop_worklist_.push_back(i);
         }
@@ -298,7 +298,7 @@ bool PropEngine::propagate(HighsInt fixed_var) {
         const HighsInt* __restrict col_row = col_row_;
         for (HighsInt p = cbeg; p < cend; ++p) {
             HighsInt i = col_row[p];
-            if (!in_wl[i]) {
+            if (in_wl[i] == 0) {
                 in_wl[i] = 1;
                 prop_worklist_.push_back(i);
             }
@@ -381,11 +381,11 @@ bool PropEngine::propagate(HighsInt fixed_var) {
             double min_others;
             double max_others;
             if (a > 0) {
-                min_others = min_act - a * old_lb;
-                max_others = max_act - a * old_ub;
+                min_others = min_act - (a * old_lb);
+                max_others = max_act - (a * old_ub);
             } else {
-                min_others = min_act - a * old_ub;
-                max_others = max_act - a * old_lb;
+                min_others = min_act - (a * old_ub);
+                max_others = max_act - (a * old_lb);
             }
 
             double new_lb = old_lb;
@@ -535,7 +535,8 @@ void PropEngine::init_activities() {
                       static_cast<size_t>(ncol_));  // grows with nnz touched during DFS
 
     for (HighsInt i = 0; i < nrow_; ++i) {
-        double lo = 0.0, hi = 0.0;
+        double lo = 0.0;
+        double hi = 0.0;
         for (HighsInt k = ar_start_[i]; k < ar_start_[i + 1]; ++k) {
             HighsInt j = ar_index_[k];
             double a = ar_value_[k];

@@ -246,7 +246,7 @@ void LiftCache::recompute_one(HighsInt j, WorkerCtx& ctx) {
         if (std::abs(coeff) < kEpsZero) {
             continue;
         }
-        double residual = ctx.lhs[i] - coeff * ctx.solution[j];
+        double residual = ctx.lhs[i] - (coeff * ctx.solution[j]);
         if (ctx.row_hi[i] < kHighsInf) {
             double bound = (ctx.row_hi[i] - residual) / coeff;
             if (coeff > 0) {
@@ -310,7 +310,7 @@ void LiftCache::recompute_all(WorkerCtx& ctx) {
     if (all_dirty) {
         // Only recompute columns with nonzero cost; zero-cost columns
         // always have score=0 and never need lift recomputation.
-        if (costed_vars) {
+        if (costed_vars != nullptr) {
             for (HighsInt j : *costed_vars) {
                 recompute_one(j, ctx);
             }

@@ -168,7 +168,7 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
     // Pool should be internally consistent
     auto entries = pool.sorted_entries();
     REQUIRE(entries.size() <= 10);
-    REQUIRE(entries.size() > 0);
+    REQUIRE(!entries.empty());
     for (size_t i = 1; i < entries.size(); ++i) {
         REQUIRE(entries[i - 1].objective <= entries[i].objective);
     }
@@ -225,7 +225,7 @@ TEST_CASE("SolutionPool: on_accept callback under concurrent try_add", "[pool][t
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < kOpsPerThread; ++i) {
-                double obj = static_cast<double>(t * kOpsPerThread + i);
+                double obj = static_cast<double>((t * kOpsPerThread) + i);
                 if (pool.try_add(obj, {obj}, kSolutionSourceFPR)) {
                     accepted_count.fetch_add(1, std::memory_order_relaxed);
                 }

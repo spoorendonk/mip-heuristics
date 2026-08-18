@@ -124,7 +124,8 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */, bool mi
     // Pick direction with fewer locks
     if (up_locks < down_locks) {
         return ub;
-    } else if (down_locks < up_locks) {
+    }
+    if (down_locks < up_locks) {
         return lb;
     }
     // Tie: fall back to objective direction
@@ -152,7 +153,8 @@ double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize
             v = val_badobj(lb, ub, minimize, cost);
             break;
         case ValStrategy::kLoosedyn:
-            if (min_act && max_act && row_lo && row_hi && csc) {
+            if ((min_act != nullptr) && (max_act != nullptr) && (row_lo != nullptr) &&
+                (row_hi != nullptr) && (csc != nullptr)) {
                 v = val_loosedyn(j, lb, ub, is_int, minimize, cost, row_lo, row_hi, min_act,
                                  max_act, *csc);
             } else {
@@ -163,7 +165,7 @@ double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize
         case ValStrategy::kZerolp:
         case ValStrategy::kCore:
         case ValStrategy::kLp:
-            if (lp_ref) {
+            if (lp_ref != nullptr) {
                 v = val_lp_based(lb, ub, is_int, lp_ref[j], rng);
             } else {
                 v = val_goodobj(lb, ub, minimize, cost);

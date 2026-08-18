@@ -69,25 +69,27 @@ struct WorkerCtx {
 
     WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uint8_t* binary_);
 
-    bool is_int(HighsInt j) const { return ::is_integer(integrality, j); }
+    [[nodiscard]] bool is_int(HighsInt j) const { return ::is_integer(integrality, j); }
 
-    bool is_binary(HighsInt j) const { return binary[j] != 0; }
+    [[nodiscard]] bool is_binary(HighsInt j) const { return binary[j] != 0; }
 
-    double clamp_and_round(HighsInt j, double val) const {
+    [[nodiscard]] double clamp_and_round(HighsInt j, double val) const {
         return clamp_round(val, col_lb[j], col_ub[j], is_int(j));
     }
 
-    double compute_violation(HighsInt i, double l) const {
+    [[nodiscard]] double compute_violation(HighsInt i, double l) const {
         return row_violation(l, row_lo[i], row_hi[i]);
     }
 
-    bool is_violated(HighsInt i, double l) const {
+    [[nodiscard]] bool is_violated(HighsInt i, double l) const {
         return l > row_hi[i] + feastol || l < row_lo[i] - feastol;
     }
 
-    bool is_equality(HighsInt i) const { return row_lo[i] == row_hi[i] && row_lo[i] > -kHighsInf; }
+    [[nodiscard]] bool is_equality(HighsInt i) const {
+        return row_lo[i] == row_hi[i] && row_lo[i] > -kHighsInf;
+    }
 
-    bool is_tabu(HighsInt j, double delta, HighsInt step) const {
+    [[nodiscard]] bool is_tabu(HighsInt j, double delta, HighsInt step) const {
         if (delta > 0 && step < tabu_inc_until[j]) {
             return true;
         }
@@ -111,7 +113,7 @@ struct WorkerCtx {
 
     void rebuild_state();
 
-    double compute_tight_delta(HighsInt i, HighsInt j, double coeff) const;
+    [[nodiscard]] double compute_tight_delta(HighsInt i, HighsInt j, double coeff) const;
 
     // Paper Section 4.1: weighting scheme for MIP.
     // Called when at a local optimum (no positive operation found).

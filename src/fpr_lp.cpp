@@ -270,7 +270,7 @@ public:
         return attempt;
     }
 
-    bool finished() const { return finished_; }
+    [[nodiscard]] bool finished() const { return finished_; }
 
 private:
     void randomize_arm() { arm_idx_ = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng_); }
@@ -404,7 +404,7 @@ void run(HighsMipSolver& mipsolver) {
     // budget instead of consuming unaccounted work (and the budget scales
     // with the one vanilla knob, mip_heuristic_effort).
     const double allowed_iters =
-        static_cast<double>(mipdata->total_lp_iterations) * mipdata->heuristic_effort + 10000.0;
+        (static_cast<double>(mipdata->total_lp_iterations) * mipdata->heuristic_effort) + 10000.0;
     const double headroom_iters =
         allowed_iters - static_cast<double>(mipdata->heuristic_lp_iterations);
     if (headroom_iters <= 0.0) {

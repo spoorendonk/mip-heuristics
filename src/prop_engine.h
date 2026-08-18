@@ -116,18 +116,18 @@ public:
                       HighsInt pq_mark = -1);
 
     // Current undo stack sizes (for DFS node marks).
-    HighsInt vs_mark() const;
-    HighsInt sol_mark() const;
+    [[nodiscard]] HighsInt vs_mark() const;
+    [[nodiscard]] HighsInt sol_mark() const;
 
     // Access variable state and solution values.
     VarState& var(HighsInt j) { return vs_[j]; }
-    const VarState& var(HighsInt j) const { return vs_[j]; }
+    [[nodiscard]] const VarState& var(HighsInt j) const { return vs_[j]; }
     double& sol(HighsInt j) { return solution_[j]; }
-    double sol(HighsInt j) const { return solution_[j]; }
+    [[nodiscard]] double sol(HighsInt j) const { return solution_[j]; }
 
     // Direct access to the full solution vector.
     double* sol_data() { return solution_.data(); }
-    const double* sol_data() const { return solution_.data(); }
+    [[nodiscard]] const double* sol_data() const { return solution_.data(); }
 
     // Reset all variables to global bounds, nothing fixed.
     void reset();
@@ -136,41 +136,43 @@ public:
     // variable bounds. Maintained incrementally across fix/tighten/propagate.
     // Must call init_activities() once before use.
     void init_activities();
-    double row_min_activity(HighsInt i) const { return min_activity_[i]; }
-    double row_max_activity(HighsInt i) const { return max_activity_[i]; }
-    const double* min_activity_data() const { return min_activity_.data(); }
-    const double* max_activity_data() const { return max_activity_.data(); }
-    bool activities_initialized() const { return !min_activity_.empty(); }
-    HighsInt act_mark() const;
+    [[nodiscard]] double row_min_activity(HighsInt i) const { return min_activity_[i]; }
+    [[nodiscard]] double row_max_activity(HighsInt i) const { return max_activity_[i]; }
+    [[nodiscard]] const double* min_activity_data() const { return min_activity_.data(); }
+    [[nodiscard]] const double* max_activity_data() const { return max_activity_.data(); }
+    [[nodiscard]] bool activities_initialized() const { return !min_activity_.empty(); }
+    [[nodiscard]] HighsInt act_mark() const;
 
     // Domain priority queue: unfixed integer variables sorted by domain size.
     // Maintained incrementally across fix/tighten/propagate with undo support.
     void init_domain_pq();
-    HighsInt pq_top() const;
-    HighsInt pq_mark() const;
-    bool pq_initialized() const { return pq_active_; }
+    [[nodiscard]] HighsInt pq_top() const;
+    [[nodiscard]] HighsInt pq_mark() const;
+    [[nodiscard]] bool pq_initialized() const { return pq_active_; }
 
     // Accumulated propagation effort (coefficient accesses).
-    size_t effort() const { return prop_work_; }
+    [[nodiscard]] size_t effort() const { return prop_work_; }
     void add_effort(size_t e) { prop_work_ += e; }
 
-    HighsInt ncol() const { return ncol_; }
-    HighsInt nrow() const { return nrow_; }
-    double feastol() const { return feastol_; }
-    bool is_int(HighsInt j) const { return integrality_[j] != HighsVarType::kContinuous; }
+    [[nodiscard]] HighsInt ncol() const { return ncol_; }
+    [[nodiscard]] HighsInt nrow() const { return nrow_; }
+    [[nodiscard]] double feastol() const { return feastol_; }
+    [[nodiscard]] bool is_int(HighsInt j) const {
+        return integrality_[j] != HighsVarType::kContinuous;
+    }
 
     // Read-only access to problem data.
-    const double* col_lb() const { return col_lb_; }
-    const double* col_ub() const { return col_ub_; }
-    const double* row_lo() const { return row_lo_; }
-    const double* row_hi() const { return row_hi_; }
-    const HighsVarType* integrality() const { return integrality_; }
-    const HighsInt* ar_start() const { return ar_start_; }
-    const HighsInt* ar_index() const { return ar_index_; }
-    const double* ar_value() const { return ar_value_; }
-    const HighsInt* csc_start() const { return col_start_; }
-    const HighsInt* csc_row() const { return col_row_; }
-    const double* csc_val() const { return col_val_; }
+    [[nodiscard]] const double* col_lb() const { return col_lb_; }
+    [[nodiscard]] const double* col_ub() const { return col_ub_; }
+    [[nodiscard]] const double* row_lo() const { return row_lo_; }
+    [[nodiscard]] const double* row_hi() const { return row_hi_; }
+    [[nodiscard]] const HighsVarType* integrality() const { return integrality_; }
+    [[nodiscard]] const HighsInt* ar_start() const { return ar_start_; }
+    [[nodiscard]] const HighsInt* ar_index() const { return ar_index_; }
+    [[nodiscard]] const double* ar_value() const { return ar_value_; }
+    [[nodiscard]] const HighsInt* csc_start() const { return col_start_; }
+    [[nodiscard]] const HighsInt* csc_row() const { return col_row_; }
+    [[nodiscard]] const double* csc_val() const { return col_val_; }
 
 private:
     // Problem dimensions

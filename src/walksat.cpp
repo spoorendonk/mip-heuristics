@@ -59,7 +59,7 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
         }
 
         const double old_val = solution[j];
-        double new_val = old_val + (target_rhs - ci_lhs) / a;
+        double new_val = old_val + ((target_rhs - ci_lhs) / a);
 
         if (integrality[j] != HighsVarType::kContinuous) {
             // Rounding direction depends on (overshoot_above) XOR (a < 0):
@@ -83,7 +83,7 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
             continue;
         }
 
-        const double new_ci_lhs = ci_lhs + a * delta_change;
+        const double new_ci_lhs = ci_lhs + (a * delta_change);
         const double new_ci_viol = row_violation(new_ci_lhs, row_lo_r, row_hi_r);
         if (new_ci_viol >= ci_viol_threshold) {
             continue;
@@ -104,7 +104,7 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
             }
             const double coeff = csc_val_p[p];
             const double old_lhs = lhs_cache[i2];
-            const double new_lhs = old_lhs + coeff * delta_change;
+            const double new_lhs = old_lhs + (coeff * delta_change);
             const double lo_i = row_lo[i2];
             const double hi_i = row_hi[i2];
             const double dv =
@@ -114,9 +114,7 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
             }
         }
 
-        if (damage < best_damage) {
-            best_damage = damage;
-        }
+        best_damage = std::min(damage, best_damage);
         cand.push_back({j, new_val, damage});
     }
 
@@ -355,7 +353,7 @@ void greedy_1opt(const PropEngine& data, std::vector<double>& solution,
         bool shift_feasible = true;
         for (HighsInt p = 0; p < col_deg; ++p) {
             const HighsInt row = csc_row_p[p];
-            const double new_lhs = lhs_p[row] + csc_val_p[p] * delta;
+            const double new_lhs = lhs_p[row] + (csc_val_p[p] * delta);
             if (is_row_violated(new_lhs, row_lo[row], row_hi[row], feastol)) {
                 shift_feasible = false;
                 break;

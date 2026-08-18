@@ -69,7 +69,7 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
         HighsInt i = ctx.csc.col_row[p];
         double coeff = ctx.csc.col_val[p];
         double old_lhs = ctx.lhs[i];
-        double new_lhs = old_lhs + coeff * delta;
+        double new_lhs = old_lhs + (coeff * delta);
         double old_viol = ctx.viol_cache.get_or_compute(i, old_lhs, ctx.row_lo[i], ctx.row_hi[i]);
         double new_viol = ctx.compute_violation(i, new_lhs);
         double w = static_cast<double>(ctx.weight[i]);
@@ -372,7 +372,7 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
             // Try: midpoint for continuous
             if (!ctx.is_int(j) && ctx.col_lb[j] > -1e15 && ctx.col_ub[j] < 1e15) {
                 append_candidate(ctx, batch, j,
-                                 (ctx.col_lb[j] + ctx.col_ub[j]) * 0.5 - ctx.solution[j]);
+                                 ((ctx.col_lb[j] + ctx.col_ub[j]) * 0.5) - ctx.solution[j]);
             }
         }
         auto easy_cand =

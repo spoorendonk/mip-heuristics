@@ -34,7 +34,7 @@ public:
     // Run FJ for up to attempt_budget effort, then pause via callback.
     AttemptResult run_attempt(size_t attempt_budget);
 
-    bool finished() const { return base_.finished; }
+    [[nodiscard]] bool finished() const { return base_.finished; }
 
 private:
     struct Impl;

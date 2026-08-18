@@ -47,7 +47,7 @@ public:
 
     AttemptResult run_attempt(size_t attempt_budget);
 
-    bool finished() const { return base_.finished; }
+    [[nodiscard]] bool finished() const { return base_.finished; }
 
 private:
     HighsMipSolver& mipsolver_;

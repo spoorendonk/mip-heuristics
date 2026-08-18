@@ -29,19 +29,23 @@ struct WorkerBudgetState {
     bool finished = false;
 
     // True when this worker has exceeded its staleness budget.
-    bool stale() const { return effort_since_improvement > stale_budget; }
+    [[nodiscard]] bool stale() const { return effort_since_improvement > stale_budget; }
 
     // True when already stale, or would become stale after `extra` more
     // effort.  Used for prospective inner-loop checks that avoid one attempt
     // of overshoot (see LocalMipWorker).
-    bool stale(size_t extra) const { return effort_since_improvement + extra > stale_budget; }
+    [[nodiscard]] bool stale(size_t extra) const {
+        return effort_since_improvement + extra > stale_budget;
+    }
 
     // True when this worker has consumed its total budget.
-    bool exhausted() const { return total_effort >= total_budget; }
+    [[nodiscard]] bool exhausted() const { return total_effort >= total_budget; }
 
     // True when already exhausted, or would become exhausted after `extra`
     // more effort.  Mirrors the prospective overload of `stale`.
-    bool exhausted(size_t extra) const { return total_effort + extra >= total_budget; }
+    [[nodiscard]] bool exhausted(size_t extra) const {
+        return total_effort + extra >= total_budget;
+    }
 
     // Clear the staleness counter; called by the worker itself on the
     // improvement path (and, for Scylla, when a peer broadcasts one via

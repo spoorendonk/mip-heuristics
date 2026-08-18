@@ -630,7 +630,7 @@ TEST_CASE("ProblemView::binary is a dispatch snapshot of isBinary (#99)",
     // that would quietly make the rest of this vacuous.
     HighsInt probe = -1;
     for (HighsInt j = 0; j < ncol; ++j) {
-        if (problem.binary[j]) {
+        if (problem.binary[j] != 0u) {
             probe = j;
             break;
         }

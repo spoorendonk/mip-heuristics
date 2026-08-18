@@ -163,7 +163,7 @@ protected:
     // `initialized()` is forced to true so tests can drive the lock /
     // snapshot paths with an overridden `solve_locked`.
     struct ForTesting {};
-    explicit ContestedPdlp(ForTesting);
+    explicit ContestedPdlp(ForTesting /*unused*/);
 
     // Test hook: enter the locked critical section (returns a unique_lock)
     // without running a solve.  Lets tests deterministically simulate

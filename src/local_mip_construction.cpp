@@ -108,7 +108,7 @@ CandidateEffect evaluate_move(HighsInt j, double old_val, double new_val, const 
     for (HighsInt p = csc.col_start[j]; p < csc.col_start[j + 1]; ++p) {
         HighsInt i = csc.col_row[p];
         double old_lhs = lhs[i];
-        double new_lhs = old_lhs + csc.col_val[p] * delta;
+        double new_lhs = old_lhs + (csc.col_val[p] * delta);
         double old_v = row_violation(old_lhs, row_lo[i], row_hi[i]);
         double new_v = row_violation(new_lhs, row_lo[i], row_hi[i]);
         eff.delta_viol += (new_v - old_v);

@@ -62,7 +62,7 @@ TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][s
 
     // Parse out the fresh / stale counts from the [ScyllaOverlap] line
     // so we assert the plumbing, not just the presence of a substring.
-    const std::regex re("\\[ScyllaOverlap\\] fresh=(\\d+) stale=(\\d+) ratio=([0-9.]+)");
+    const std::regex re(R"(\[ScyllaOverlap\] fresh=(\d+) stale=(\d+) ratio=([0-9.]+))");
     std::uint64_t fresh = 0;
     std::uint64_t stale = 0;
     bool seen = false;

@@ -67,7 +67,7 @@ public:
 
     AttemptResult run_attempt(size_t attempt_budget);
 
-    bool finished() const { return false; }
+    [[nodiscard]] static bool finished() { return false; }
 
 private:
     // Pick the (strategy, mode) for `attempt_idx_`.  Cycles the
@@ -102,7 +102,9 @@ private:
     // earns its keep via `fpr_attempt_step`'s assert that catches
     // "step called after step already returned kVerdictReady" — but
     // having a redundant bool in the worker is pure drift risk.
-    bool attempt_alive() const { return attempt_state_.phase != FprAttemptState::Phase::kIdle; }
+    [[nodiscard]] bool attempt_alive() const {
+        return attempt_state_.phase != FprAttemptState::Phase::kIdle;
+    }
 
     Rng rng_;
     FprScratch scratch_;
@@ -215,8 +217,9 @@ void FprWorker::select_config_for_current_attempt() {
     // looping inside `run_attempt` still lets fast workers fill the slice
     // by cycling through the 8-config list, which the issue's #1
     // acceptance bullet (FPR CPU% on tbfp-network) cares about.
-    const int idx = ((worker_idx_ + attempt_idx_) % kNumInitialFprConfigs + kNumInitialFprConfigs) %
-                    kNumInitialFprConfigs;
+    const int idx =
+        (((worker_idx_ + attempt_idx_) % kNumInitialFprConfigs) + kNumInitialFprConfigs) %
+        kNumInitialFprConfigs;
     const auto& cfg = kInitialFprConfigs[idx];
     strat_idx_ = cfg.strat_idx;
     mode_ = cfg.mode;

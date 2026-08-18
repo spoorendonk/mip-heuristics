@@ -44,7 +44,7 @@ struct AttemptCtx {
     // Dispatch-time `isBinary` snapshot; see `FprConfig::binary_mask`.
     const uint8_t* binary;
 
-    bool is_binary(HighsInt j) const { return binary[j] != 0; }
+    [[nodiscard]] bool is_binary(HighsInt j) const { return binary[j] != 0; }
 };
 
 AttemptCtx make_ctx(HighsMipSolver& mipsolver, const uint8_t* binary) {
@@ -124,7 +124,7 @@ PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMa
 // Pure (no state outside its arguments); rebuild fresh in each begin/step/finish.
 double choose_fix_value(HighsInt j, const FprConfig& cfg, const AttemptCtx& c, PropEngine& E,
                         const CscMatrix& csc, Rng& rng, bool use_hint) {
-    if (cfg.strategy) {
+    if (cfg.strategy != nullptr) {
         return choose_value(j, E.var(j).lb, E.var(j).ub, is_integer(c.integrality, j), c.minimize,
                             c.col_cost[j], cfg.strategy->val_strategy, rng, cfg.lp_ref,
                             c.row_lo.data(), c.row_hi.data(),
@@ -216,7 +216,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     if (cfg.precomputed_var_order != nullptr) {
         var_order.assign(cfg.precomputed_var_order,
                          cfg.precomputed_var_order + cfg.precomputed_var_order_size);
-    } else if (cfg.strategy) {
+    } else if (cfg.strategy != nullptr) {
         var_order = compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
     } else {
         var_order.resize(c.ncol);
@@ -237,7 +237,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     // --- Initial solution -----------------------------------------------------------
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
 
-    if (initial_solution) {
+    if (initial_solution != nullptr) {
         for (HighsInt j = 0; j < c.ncol; ++j) {
             double v = initial_solution[j];
             if (is_int(j)) {
@@ -245,7 +245,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
             }
             E.sol(j) = std::max(c.col_lb[j], std::min(c.col_ub[j], v));
         }
-    } else if (attempt_idx == 0 && cfg.hint) {
+    } else if (attempt_idx == 0 && (cfg.hint != nullptr)) {
         for (HighsInt j = 0; j < c.ncol; ++j) {
             double v = cfg.hint[j];
             if (is_int(j)) {
@@ -293,7 +293,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
         std::shuffle(var_order.begin(), var_order.begin() + shuffle_len, rng);
     }
 
-    if (cfg.strategy && cfg.strategy->val_strategy == ValStrategy::kLoosedyn) {
+    if ((cfg.strategy != nullptr) && cfg.strategy->val_strategy == ValStrategy::kLoosedyn) {
         E.init_activities();
     }
 
@@ -322,7 +322,8 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     E.propagate(-1);
 
     // --- Phase 2 setup -------------------------------------------------------------
-    state.dynamic_var = cfg.strategy && is_dynamic_var_strategy(cfg.strategy->var_strategy);
+    state.dynamic_var =
+        (cfg.strategy != nullptr) && is_dynamic_var_strategy(cfg.strategy->var_strategy);
     state.do_propagate = mode_propagates(cfg.mode);
     state.do_backtrack = mode_backtracks(cfg.mode);
     state.node_limit = c.ncol + 1;
@@ -527,7 +528,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
                 bool want_low = (c.minimize == (c.col_cost[j] > 0));
                 E.sol(j) = finite_clamp_helper(want_low ? lo : hi, lo, hi);
             } else {
-                double fallback = cfg.cont_fallback ? cfg.cont_fallback[j] : 0.0;
+                double fallback = (cfg.cont_fallback != nullptr) ? cfg.cont_fallback[j] : 0.0;
                 E.sol(j) = finite_clamp_helper(fallback, lo, hi);
             }
         } else {
@@ -631,7 +632,7 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng
 
     FprScratch local_scratch;
     CscMatrix owned_csc;
-    if (!cfg.csc) {
+    if (cfg.csc == nullptr) {
         owned_csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
     }
 

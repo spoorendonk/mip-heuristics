@@ -197,7 +197,7 @@ inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
 // are about a line being emitted at all, not about its column 0.
 inline bool log_contains(const std::vector<std::string>& lines, const std::string& tag) {
     for (const auto& line : lines) {
-        if (line.find(tag) != std::string::npos) {
+        if (line.contains(tag)) {
             return true;
         }
     }

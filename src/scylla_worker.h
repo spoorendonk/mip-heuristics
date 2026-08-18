@@ -96,13 +96,13 @@ public:
     // base_.finished when the worker cannot make further progress.
     AttemptResult run_attempt(size_t attempt_budget);
 
-    bool finished() const { return base_.finished; }
-    size_t total_effort() const { return base_.total_effort; }
+    [[nodiscard]] bool finished() const { return base_.finished; }
+    [[nodiscard]] size_t total_effort() const { return base_.total_effort; }
 
     // Observability for issue #76: how many iterations used a fresh
     // solve (held the mutex) vs rounded against a stale snapshot.
-    uint64_t fresh_solves() const { return fresh_solves_; }
-    uint64_t stale_rounds() const { return stale_rounds_; }
+    [[nodiscard]] uint64_t fresh_solves() const { return fresh_solves_; }
+    [[nodiscard]] uint64_t stale_rounds() const { return stale_rounds_; }
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
@@ -166,6 +166,10 @@ private:
     uint64_t fresh_solves_ = 0;
     uint64_t stale_rounds_ = 0;
 
+    // NOLINTNEXTLINE(modernize-use-default-member-init): the initialiser
+    // `pump::kEpsilonInit` lives in pump_common.h, which this header
+    // deliberately does not include (cpp.md: minimise includes in
+    // headers).  It is set in the constructor's init list instead.
     double epsilon_;
     double alpha_K_ = 1.0;
     int K_ = 0;

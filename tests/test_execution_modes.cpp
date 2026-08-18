@@ -78,7 +78,7 @@ namespace {
 size_t count_fj_starts(const std::vector<std::string>& lines) {
     size_t n = 0;
     for (const auto& line : lines) {
-        n += line.find("Feasibility Jump: starting solve") != std::string::npos ? 1 : 0;
+        n += line.contains("Feasibility Jump: starting solve") ? 1 : 0;
     }
     return n;
 }
@@ -150,10 +150,10 @@ SeededRun run_seeded(int seed) {
         });
     for (const auto& line : lines) {
         const auto heur = line.find("heur=");
-        if (line.find("[Sequential] ") == std::string::npos || heur == std::string::npos) {
+        if (!line.contains("[Sequential] ") || heur == std::string::npos) {
             continue;
         }
-        if (line.find("heur=fpr_lp ") != std::string::npos) {
+        if (line.contains("heur=fpr_lp ")) {
             // Dive-time heuristic; #94 gave it a [Sequential] line too, but
             // this trace is about the presolve chain.  Its per-call budget
             // is a function of `total_lp_iterations`, which HiGHS's own
@@ -214,7 +214,7 @@ namespace {
 bool lseu_emits_fj_tag() {
     const std::string codes =
         solve_capturing_source_codes("lseu.mps", [](Highs& h) { set_suite(h, "fj"); });
-    return codes.find('J') != std::string::npos;
+    return codes.contains('J');
 }
 }  // namespace
 

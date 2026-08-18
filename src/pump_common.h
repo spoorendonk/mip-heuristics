@@ -52,12 +52,12 @@ inline void compute_pump_objective(
         if (is_integer(integrality, j)) {
             double delta;
             if (col_lb[j] == 0.0 && col_ub[j] == 1.0) {
-                delta = 1.0 - 2.0 * x_rounded[j];
+                delta = 1.0 - (2.0 * x_rounded[j]);
             } else {
                 double diff = x_lp[j] - x_rounded[j];
                 delta = (diff >= 0.0) ? 1.0 : -1.0;
             }
-            modified_cost[j] = scaled_cost + (1.0 - alpha_K) * delta;
+            modified_cost[j] = scaled_cost + ((1.0 - alpha_K) * delta);
         } else {
             modified_cost[j] = scaled_cost;
         }

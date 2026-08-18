@@ -105,8 +105,8 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
             bool hasFiniteUpper = std::isfinite(model->row_upper_[row]);
             if (hasFiniteLower || hasFiniteUpper) {
                 HighsInt row_num_nz = a_matrix.start_[row + 1] - a_matrix.start_[row];
-                auto row_index = a_matrix.index_.data() + a_matrix.start_[row];
-                auto row_value = a_matrix.value_.data() + a_matrix.start_[row];
+                auto* row_index = a_matrix.index_.data() + a_matrix.start_[row];
+                auto* row_value = a_matrix.value_.data() + a_matrix.start_[row];
                 if (hasFiniteLower) {
                     impl_->solver.addConstraint(RowType::Gte, model->row_lower_[row], row_num_nz,
                                                 row_index, row_value, 0);
@@ -146,7 +146,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         if (status.solution != nullptr) {
             found_solution = true;
             best_sol.assign(status.solution, status.solution + status.numVars);
-            best_obj = model->offset_ + sense_multiplier * status.solutionObjectiveValue;
+            best_obj = model->offset_ + (sense_multiplier * status.solutionObjectiveValue);
         }
 
         // Pause at the attempt boundary.

@@ -67,9 +67,9 @@ struct IndexedSet {
         pos[i] = -1;
     }
 
-    bool contains(HighsInt i) const { return pos[i] != -1; }
-    bool empty() const { return elements.empty(); }
-    HighsInt size() const { return static_cast<HighsInt>(elements.size()); }
+    [[nodiscard]] bool contains(HighsInt i) const { return pos[i] != -1; }
+    [[nodiscard]] bool empty() const { return elements.empty(); }
+    [[nodiscard]] HighsInt size() const { return static_cast<HighsInt>(elements.size()); }
     HighsInt operator[](HighsInt idx) const { return elements[idx]; }
 
     void clear() {
@@ -79,8 +79,8 @@ struct IndexedSet {
         elements.clear();
     }
 
-    auto begin() const { return elements.begin(); }
-    auto end() const { return elements.end(); }
+    [[nodiscard]] auto begin() const { return elements.begin(); }
+    [[nodiscard]] auto end() const { return elements.end(); }
 };
 
 // --- ViolCache: memoize row violations within a candidate batch ---

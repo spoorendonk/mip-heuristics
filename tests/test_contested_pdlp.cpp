@@ -73,7 +73,9 @@ protected:
 TEST_CASE("ContestedPdlp: try_solve_or_snapshot returns fresh when uncontended",
           "[contested_pdlp][overlap]") {
     FakePdlp pdlp;
-    std::vector<double> cost, ws_col, ws_row;
+    std::vector<double> cost;
+    std::vector<double> ws_col;
+    std::vector<double> ws_row;
     auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
     REQUIRE(res.fresh);
     REQUIRE(res.solve.status == HighsStatus::kOk);
@@ -98,7 +100,9 @@ TEST_CASE("ContestedPdlp: snapshot generation increases monotonically across sol
     // relying on `shared_ptr` address identity (heap addresses can be
     // recycled).
     FakePdlp pdlp;
-    std::vector<double> cost, ws_col, ws_row;
+    std::vector<double> cost;
+    std::vector<double> ws_col;
+    std::vector<double> ws_row;
 
     auto r1 = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
     REQUIRE(r1.fresh);
@@ -144,7 +148,9 @@ TEST_CASE("ContestedPdlp: stale readers see last snapshot while peer holds mutex
     // Take the mutex on the main thread to simulate "peer is solving".
     auto lock = pdlp.acquire_for_test();
 
-    std::vector<double> cost, ws_col, ws_row;
+    std::vector<double> cost;
+    std::vector<double> ws_col;
+    std::vector<double> ws_row;
     auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
     REQUIRE_FALSE(res.fresh);
     REQUIRE(res.stale_snapshot != nullptr);
@@ -160,7 +166,9 @@ TEST_CASE("ContestedPdlp: cold try returns null snapshot before any solve",
           "[contested_pdlp][overlap]") {
     FakePdlp pdlp;
     auto lock = pdlp.acquire_for_test();  // block the solve path
-    std::vector<double> cost, ws_col, ws_row;
+    std::vector<double> cost;
+    std::vector<double> ws_col;
+    std::vector<double> ws_row;
     auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
     REQUIRE_FALSE(res.fresh);
     REQUIRE(res.stale_snapshot == nullptr);
@@ -182,7 +190,9 @@ TEST_CASE("ContestedPdlp: concurrent workers preserve one-solve-in-flight invari
     threads.reserve(kWorkers);
     for (int w = 0; w < kWorkers; ++w) {
         threads.emplace_back([&pdlp, &total_fresh, &total_stale]() {
-            std::vector<double> cost, ws_col, ws_row;
+            std::vector<double> cost;
+            std::vector<double> ws_col;
+            std::vector<double> ws_row;
             for (int i = 0; i < kIters; ++i) {
                 auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
                 if (res.fresh) {
@@ -225,7 +235,9 @@ TEST_CASE("ContestedPdlp: blocking solve() always serialises but never dead-lock
     threads.reserve(kWorkers);
     for (int w = 0; w < kWorkers; ++w) {
         threads.emplace_back([&pdlp]() {
-            std::vector<double> cost, ws_col, ws_row;
+            std::vector<double> cost;
+            std::vector<double> ws_col;
+            std::vector<double> ws_row;
             for (int i = 0; i < kIters; ++i) {
                 (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4, 1.0);
             }
@@ -265,7 +277,9 @@ TEST_CASE("ContestedPdlp: stale workers can round while one worker solves",
     // Start one worker that holds the mutex for ~50ms doing the fake
     // solve.
     std::thread solver([&pdlp, &solver_done]() {
-        std::vector<double> cost, ws_col, ws_row;
+        std::vector<double> cost;
+        std::vector<double> ws_col;
+        std::vector<double> ws_row;
         (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4, 1.0);
         solver_done.store(true);
     });
@@ -279,7 +293,9 @@ TEST_CASE("ContestedPdlp: stale workers can round while one worker solves",
     // this thread and verify we repeatedly come back with fresh=false
     // and a usable stale snapshot (no blocking).
     while (!solver_done.load()) {
-        std::vector<double> cost, ws_col, ws_row;
+        std::vector<double> cost;
+        std::vector<double> ws_col;
+        std::vector<double> ws_row;
         auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
         if (!res.fresh && res.stale_snapshot) {
             stale_hits.fetch_add(1);

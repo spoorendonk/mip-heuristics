@@ -148,7 +148,7 @@ TEST_CASE("Options: unknown suite value warns and runs everything", "[options][s
     });
     bool warned = false;
     for (const auto& line : lines) {
-        if (line.find("Unknown mip_heuristic_suite value \"bogus\"") != std::string::npos) {
+        if (line.contains("Unknown mip_heuristic_suite value \"bogus\"")) {
             warned = true;
         }
     }
@@ -161,7 +161,7 @@ TEST_CASE("Options: unknown suite value warns and runs everything", "[options][s
         const std::string tag = std::string("[Sequential] heur=") + heur + " ";
         bool dispatched = false;
         for (const auto& line : lines) {
-            dispatched = dispatched || line.find(tag) != std::string::npos;
+            dispatched = dispatched || line.contains(tag);
         }
         INFO("heuristic " << heur);
         REQUIRE(dispatched);

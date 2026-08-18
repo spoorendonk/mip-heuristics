@@ -158,7 +158,7 @@ std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
         clq_vars.push_back(CV(j, 1));
     }
 
-    if (clq_vars.empty() || !lp_ref) {
+    if (clq_vars.empty() || (lp_ref == nullptr)) {
         return rank_typecl(mipsolver);
     }
 
@@ -212,7 +212,7 @@ std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver, const doubl
     auto* mipdata = mipsolver.mipdata_.get();
     auto b = bucket_by_type(mipsolver);
 
-    if (b.bin.empty() || !lp_ref) {
+    if (b.bin.empty() || (lp_ref == nullptr)) {
         return rank_typecl(mipsolver);
     }
 

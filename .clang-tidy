@@ -3,8 +3,17 @@
 # Content is devkit's shared C++ check set (devkit `config/.clang-tidy`),
 # checked in here as a regular file rather than the symlink `setup.sh`
 # installs — see the header of `.clang-format` for why the symlink cannot
-# carry a gate.  Project-specific narrowings are marked NARROWED below,
-# each with the reason it does not apply to this codebase.
+# carry a gate.
+#
+# Every deviation from devkit's file is marked NARROWED and carries the
+# measurement that justifies it.  Counts are unique first-party findings
+# (deduplicated by file/line/column/check across translation units) from
+# the full sweep in the commit that introduced the gate.  Nothing here is
+# turned off to avoid work: each is a check whose premise does not hold
+# for a solver built against a fetched upstream tree.
+#
+# `tests/.clang-tidy` narrows two further checks for the test tree only;
+# both stay enabled here so `src/` keeps their coverage.
 ---
 Checks: >
   -*,
@@ -13,24 +22,118 @@ Checks: >
   performance-*,
   readability-*,
   -modernize-use-trailing-return-type,
-  -readability-magic-numbers
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -bugprone-easily-swappable-parameters,
+  -modernize-use-designated-initializers,
+  -modernize-use-std-print,
+  -performance-enum-size
+
+# NARROWED, in the order they appear in `Checks:` above.
+#
+# -readability-identifier-length (411 findings)
+#   The flagged set is 55 distinct names and every one is a conventional
+#   MIP or linear-algebra identifier: `i`/`j` for row/column, `lb`/`ub`
+#   for bounds, `lo`/`hi`, `w` for worker, `h` for heuristic, plus
+#   `a`/`b`/`c`/`E`/`R` matching the notation of the papers these
+#   heuristics implement.  The standards rank fidelity to the reference
+#   above generic naming, so renaming 411 index variables would make the
+#   code harder to check against its source, not easier.
+#
+# -bugprone-easily-swappable-parameters (40 findings)
+#   Fires on adjacent parameters of the same type, which in a numeric
+#   solver API means every `(HighsInt row, HighsInt col)` and every
+#   `(double lb, double ub)`.  Silencing it requires wrapper types over
+#   `HighsInt` and `double` across an interface shared with HiGHS.
+#
+# -modernize-use-designated-initializers (93 findings)
+#   Every site is a 2-to-4 field aggregate.  Most are the paper-derived
+#   strategy tables (`kInitialFprConfigs`, `kClass2Configs`, …) where the
+#   positional row plus an aligned trailing comment naming the strategy
+#   *is* the readable form and designators trade that for width; the rest
+#   are inner-loop temporaries such as LocalMIP's candidate selection.
+#   Google style does not require designated initializers.
+#
+# -modernize-use-std-print (4 findings)
+#   All four are `std::fprintf(stderr, …)` diagnostics emitted
+#   immediately before `std::abort()`.  `std::print` can throw, which is
+#   the wrong failure mode on a path whose entire job is to report why we
+#   are about to die.
+#
+# -performance-enum-size (5 findings)
+#   Suggests narrowing `VarStrategy`, `ValStrategy`, `FrameworkMode`,
+#   `Phase` and `FprStepResult` to `std::uint8_t`.  All five are stored
+#   in per-attempt config structs on the FPR hot path, so the change is a
+#   struct-layout change, and this project cannot validate a layout
+#   change without a benchmark run.  Leaving the code alone is the
+#   correct call under an unmeasurable-benefit, real-risk trade.
+#
+# NOT narrowed, deliberately: readability-function-cognitive-complexity.
+#   21 functions in `src/` exceed the threshold and every one is an
+#   algorithm core whose decomposition would change generated code on a
+#   worker's inner loop.  Those carry a per-function NOLINTNEXTLINE with
+#   the measured complexity and the reason, so a *new* runaway function
+#   still fails the gate instead of sailing through a global off switch.
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold
     value: 25
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
+  # NARROWED: devkit ships camelBack.  This codebase is uniformly
+  # lower_case (`run_sequential`, `charge_presolve`, `now_s`,
+  # `make_problem`).  Google style permits either; a gate should encode
+  # the convention the project actually has.
   - key: readability-identifier-naming.FunctionCase
-    value: camelBack
+    value: lower_case
   - key: readability-identifier-naming.VariableCase
     value: lower_case
-  - key: readability-identifier-naming.ConstantCase
-    value: UPPER_CASE
+  # NARROWED: devkit ships one ConstantCase of UPPER_CASE, a spelling
+  # this codebase uses nowhere, and clang-tidy applies "constant" to
+  # every `const` local and `const` parameter as well as to file-scope
+  # tables.  Split by scope to match what the code does: file-scope,
+  # static and constexpr constants are k-prefixed CamelCase
+  # (`kWeightFpr`, `kNumLpArms`, `kMaxStaleRounds`); `const` locals and
+  # parameters are ordinary lower_case and carry no marker.
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalConstantPointerCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstantParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstantPointerParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstantMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  - key: readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantPrefix
+    value: k
+  - key: readability-identifier-naming.ClassConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ClassConstantPrefix
+    value: k
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: _
   - key: readability-identifier-naming.NamespaceCase
     value: lower_case
 
 WarningsAsErrors: ''
-HeaderFilterRegex: '.*'
+# NARROWED: devkit ships '.*', which matches every header reached through
+# an include — and this project compiles against a fetched, patched HiGHS
+# tree plus a fetched Catch2.  At '.*' one translation unit reports around
+# 5000 findings in upstream headers we do not own and must not touch.
+# Anchored on a literal `/src/` or `/tests/` path segment holding a `.h`
+# file directly, which cannot match `_deps/highs-src/highs/**` (the
+# segment there is `highs-src`, not `src`) or `_deps/catch2-src/src/**`
+# (those headers are `.hpp` and sit a directory deeper).
+HeaderFilterRegex: '.*/(src|tests)/[^/]*\.h$'
 FormatStyle: file

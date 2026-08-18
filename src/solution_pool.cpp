@@ -143,7 +143,8 @@ bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
     if (roll < 0.4 && pool_size >= 2) {
         // Guided crossover: keep agreed integer values, coin-flip
         // disagreements.
-        int a, b;
+        int a;
+        int b;
         pick_two_parents(a, b);
         const auto& sol_a = entries_[a].solution;
         const auto& sol_b = entries_[b].solution;
@@ -164,7 +165,8 @@ bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
     } else if (roll < 0.7 && pool_size >= 2) {
         // Neighborhood crossover: better parent provides base, coin-flip
         // only on disagreeing integer variables.
-        int a, b;
+        int a;
+        int b;
         pick_two_parents(a, b);
         // Better parent = lower index (entries_ sorted best-first).
         int better = std::min(a, b);
@@ -190,7 +192,7 @@ bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
         // Biased copy toward better entries.
         int idx;
         if (pool_size > 1 && std::uniform_int_distribution<int>(0, 1)(rng) == 0) {
-            idx = std::uniform_int_distribution<int>(0, (pool_size + 1) / 2 - 1)(rng);
+            idx = std::uniform_int_distribution<int>(0, ((pool_size + 1) / 2) - 1)(rng);
         } else {
             idx = std::uniform_int_distribution<int>(0, pool_size - 1)(rng);
         }

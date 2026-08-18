@@ -120,7 +120,7 @@ struct ProblemView {
     std::vector<uint8_t> binary;
 
     // A model with no columns or no rows: every heuristic declines it.
-    bool degenerate() const { return ncol == 0 || nrow == 0; }
+    [[nodiscard]] bool degenerate() const { return ncol == 0 || nrow == 0; }
 };
 
 // Snapshot `HighsDomain::isBinary` for every column.  Must run on the
@@ -176,7 +176,7 @@ struct ExecutionContext {
     // That is only a race when a terminator is attached — the write above
     // is skipped otherwise — and predates this struct; folding the three
     // hand-rolled copies into one method is what makes it visible.
-    bool terminated() const {
+    [[nodiscard]] bool terminated() const {
         return mipsolver.mipdata_->terminatorTerminated() || mipsolver.timer_.read() >= time_limit;
     }
 
@@ -184,7 +184,9 @@ struct ExecutionContext {
     // `Rng` with this, and heuristics that pre-construct their workers seed
     // them with it too — three hand-written copies of the expression before
     // it lived here, which is three chances for one of them to drift.
-    uint32_t worker_seed(int w) const { return base_seed + static_cast<uint32_t>(w) * kSeedStride; }
+    [[nodiscard]] uint32_t worker_seed(int w) const {
+        return base_seed + (static_cast<uint32_t>(w) * kSeedStride);
+    }
 };
 
 // Derive one dispatch's execution parameters.  Shared by `run_sequential`
