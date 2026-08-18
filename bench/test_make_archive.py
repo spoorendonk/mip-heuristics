@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_archive import (
     BASELINE_NAMES,
+    HIGHS_TAG_RE,
+    REPO_ROOT,
     build_archive,
     classify_baseline,
     collect_config,
@@ -46,7 +48,7 @@ MARKER = "mip-heuristics patch active (custom MIP presolve heuristics)\n"
 # Enough of a HiGHS MIP log for parse_highs_log to produce a solved result with
 # a real incumbent, so the archived tables render actual numbers rather than a
 # table of `nan` that no edit could ever move.
-BODY = """ H       0       0         0   0.00%   -inf            {first}          Large  0 0 0    10     0.1s
+BODY = """ H       0       0         0   0.00%   -inf            120              Large  0 0 0    10     0.1s
  B       1       0         0   0.00%   100             100              0%     0 0 0    42     0.2s
 Solving report
   Status            Optimal
@@ -76,12 +78,11 @@ def write_run(
     *,
     patched: bool = True,
     instrumented: bool = True,
-    first: int = 120,
     options: dict[str, str] | None = None,
 ) -> None:
     """Write one `<instance>.log` + `<instance>.opts` pair."""
     seed_dir.mkdir(parents=True, exist_ok=True)
-    log = BANNER + (MARKER if patched else "") + BODY.format(first=first)
+    log = BANNER + (MARKER if patched else "") + BODY
     if instrumented:
         log += INSTRUMENTATION
     (seed_dir / f"{instance}.log").write_text(log)
@@ -358,6 +359,26 @@ def test_build_refuses_to_overwrite(tree: Path, tmp_path: Path):
         build(tree, archive)
 
 
+def test_build_rejects_an_empty_config(tmp_path: Path):
+    """`run_benchmark.py` makes seed dirs before solving, so an interrupted
+    campaign leaves one — and `analyze_results.py` intersects instances across
+    configs, so a single empty config zeroes every row of every table while
+    `verify` still certifies that the empty table regenerates."""
+    root = tmp_path / "r"
+    write_run(root / "off" / "seed0", "egout")
+    write_run(root / "all" / "seed0", "egout")
+    (root / "empty" / "seed0").mkdir(parents=True)
+    with pytest.raises(ValueError, match=r"no \.log files"):
+        build(root, tmp_path / "arch")
+
+
+def test_build_rejects_a_seed_directory_the_analyzer_cannot_read(tmp_path: Path):
+    root = tmp_path / "r"
+    write_run(root / "all" / "seedXYZ", "egout")
+    with pytest.raises(ValueError, match="not a seed directory"):
+        build(root, tmp_path / "arch", configs=["all"])
+
+
 def test_build_rejects_a_config_mixing_patched_and_unpatched_logs(tmp_path: Path):
     root = tmp_path / "r"
     write_run(root / "all" / "seed0", "egout", patched=True)
@@ -414,7 +435,7 @@ def test_build_renders_a_custom_table(tree: Path, tmp_path: Path):
 
 
 def test_build_fails_loudly_on_a_broken_table_command(tree: Path, tmp_path: Path):
-    with pytest.raises(RuntimeError, match="not-a-config"):
+    with pytest.raises(RuntimeError, match="with exit 1"):
         build(
             tree,
             tmp_path / "arch",
@@ -450,6 +471,21 @@ def test_tarball_keeps_a_version_numbered_name_intact(tree: Path, tmp_path: Path
 def test_verify_passes_on_a_fresh_archive(tree: Path, tmp_path: Path):
     archive = tmp_path / "arch"
     build(tree, archive)
+    assert verify_archive(archive, None) == []
+    # Twice: rendering a table imports `parse_highs_log`, and a `__pycache__/`
+    # written into the archive's own `bench/` would be checksummed as archive
+    # content on the first run and rewritten on the second.
+    assert verify_archive(archive, None) == []
+    assert not list(archive.rglob("__pycache__"))
+
+
+def test_verify_ignores_a_bytecode_cache_a_reader_created(tree: Path, tmp_path: Path):
+    """Running the documented analyze command by hand must not break verify."""
+    archive = tmp_path / "arch"
+    build(tree, archive)
+    cache = archive / "bench" / "__pycache__"
+    cache.mkdir()
+    (cache / "parse_highs_log.cpython-999.pyc").write_bytes(b"\x00machine-local")
     assert verify_archive(archive, None) == []
 
 
@@ -494,6 +530,20 @@ def test_verify_detects_a_missing_file(tree: Path, tmp_path: Path):
     assert any("missing file" in p for p in problems)
 
 
+def test_verify_reports_damage_rather_than_raising(tree: Path, tmp_path: Path):
+    """`verify` is what a reader runs on a tarball that may have arrived
+    damaged, so every failure has to be a problem line, not a traceback."""
+    archive = tmp_path / "arch"
+    build(tree, archive)
+    (archive / "MANIFEST.json").write_text("not json{")
+    assert any("not readable JSON" in p for p in verify_archive(archive, None))
+
+    (archive / "MANIFEST.json").write_text(
+        json.dumps({"manifest_version": 1, "files": {}, "tables": [{"name": "x"}]})
+    )
+    assert any("malformed table entry" in p for p in verify_archive(archive, None))
+
+
 def test_verify_reports_a_non_archive_directory(tmp_path: Path):
     assert verify_archive(tmp_path, None) == [
         "MANIFEST.json is missing — this is not an archive directory"
@@ -510,6 +560,25 @@ def test_verify_write_dir_is_not_mistaken_for_archive_content(
     assert verify_archive(archive, out) == []
     assert (out / "summary.txt").is_file()
     assert verify_archive(archive, out) == []
+
+
+def test_verify_refuses_to_regenerate_over_archived_content(tree: Path, tmp_path: Path):
+    """`REGENERATE.sh tables` would overwrite the copies being compared to."""
+    archive = tmp_path / "arch"
+    build(tree, archive)
+    before = (archive / "tables" / "summary.txt").read_text()
+    problems = verify_archive(archive, archive / "tables")
+    assert any("overlaps archived content" in p for p in problems)
+    assert (archive / "tables" / "summary.txt").read_text() == before
+
+
+def test_verify_rejects_a_manifest_from_a_future_tool(tree: Path, tmp_path: Path):
+    archive = tmp_path / "arch"
+    build(tree, archive)
+    payload = json.loads((archive / "MANIFEST.json").read_text())
+    payload["manifest_version"] = 99
+    (archive / "MANIFEST.json").write_text(json.dumps(payload))
+    assert any("manifest_version" in p for p in verify_archive(archive, None))
 
 
 # ── rendered documents ───────────────────────────────────────────────────────
@@ -545,11 +614,14 @@ def test_manifest_json_is_loadable_and_carries_the_table_argv(
 
 
 def test_source_provenance_reads_the_pins_from_the_repository():
+    """Asserted against the pin files, not a literal: a HiGHS bump should
+    change what this reports, not turn this file red."""
     src = source_provenance()
-    assert src["highs_tag"] == "v1.15.1"
+    fetch = (REPO_ROOT / "cmake" / "FetchHiGHS.cmake").read_text()
+    assert src["highs_tag"] == HIGHS_TAG_RE.search(fetch).group(1)
     assert src["patch_version"] and src["patch_version"].isdigit()
-    assert src["tool_pins"]["clang-format"] == "22.1.8"
-    assert "ruff" in src["tool_pins"]
+    assert {"clang-format", "clang-tidy", "ruff"} <= set(src["tool_pins"])
+    assert all("." in v for v in src["tool_pins"].values())
 
 
 def test_machine_provenance_says_where_it_came_from():

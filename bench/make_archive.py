@@ -100,6 +100,11 @@ _BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: (\w+)\)")
 # instrumentation state, as against the `log_dev_level` the options file asked
 # for.
 INSTRUMENTATION_TAGS = ("[Heur] ", "[Native] ", "[Root] ", "[Sequential] ")
+# An *un*instrumented log can only be recognised by reading all of it, so this
+# test runs once per line of every archived log — on a --dev-log campaign tree
+# that is a hundred million lines. Keep it one C-level scan rather than a
+# generator frame per line.
+_INSTRUMENTATION_RE = re.compile("|".join(re.escape(t) for t in INSTRUMENTATION_TAGS))
 
 # Provenance sources outside the results tree.
 HIGHS_TAG_RE = re.compile(r"GIT_TAG\s+(\S+)")
@@ -191,7 +196,7 @@ def inspect_log(path: Path) -> tuple[bool, str | None, str | None, bool]:
             if not patched and PATCH_MARKER in line:
                 patched = True
                 continue
-            if not instrumented and any(t in line for t in INSTRUMENTATION_TAGS):
+            if not instrumented and _INSTRUMENTATION_RE.search(line):
                 instrumented = True
             if patched and instrumented and version is not None:
                 break
@@ -256,6 +261,19 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
             continue
         seed = _seed_number(seed_dir)
         if seed is None:
+            if seed_dir.name.startswith("seed"):
+                # `analyze_results.py` globs `seed*` and int()s the suffix, so
+                # it would die on this — after the archive was half-written.
+                raise ValueError(
+                    f"{name}/{seed_dir.name} is not a seed directory: the "
+                    f"digits after 'seed' identify the run, and "
+                    f"analyze_results.py fails on anything else"
+                )
+            continue
+        if not any(seed_dir.glob("*.log")):
+            # Recording it would overstate the campaign: `run_benchmark.py`
+            # creates the directory before the solve, so an interrupted run
+            # leaves empty ones behind.
             continue
         seeds.append(seed)
         for err in sorted(seed_dir.glob("*.log.err")):
@@ -304,8 +322,8 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
     return ConfigProvenance(
         name=name,
         binary=binary,
-        highs_version=min(versions) if len(versions) == 1 else None,
-        highs_git_hash=min(hashes) if len(hashes) == 1 else None,
+        highs_version=next(iter(versions)) if len(versions) == 1 else None,
+        highs_git_hash=next(iter(hashes)) if len(hashes) == 1 else None,
         seeds=sorted(set(seeds)),
         instances=sorted(instances),
         runs=runs,
@@ -515,6 +533,13 @@ def parse_table_flag(value: str) -> TableSpec:
     name = name.strip()
     if not sep or not name:
         raise ValueError(f"--table {value!r} must be NAME=ARGS, e.g. 'sgm=--summary'")
+    if "/" in name or name in (".", ".."):
+        # The name becomes `tables/<name>.txt`, so a path separator would write
+        # outside the directory the manifest says the table lives in.
+        raise ValueError(
+            f"--table name {name!r} must be a plain file name; it becomes "
+            f"tables/<name>.txt inside the archive"
+        )
     argv = shlex.split(args)
     if not argv:
         raise ValueError(f"--table {value!r} has no arguments after '='")
@@ -530,14 +555,36 @@ def render_table(archive: Path, spec: TableSpec, out_dir: Path) -> tuple[Path, s
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f"{spec.name}.txt"
-    cmd = [sys.executable, "bench/analyze_results.py", "results", *spec.argv]
-    proc = subprocess.run(cmd, cwd=archive, capture_output=True, text=True, check=False)
+    # `-B`: without it, importing `parse_highs_log` writes a `__pycache__/`
+    # into the archive's own `bench/`, which then gets checksummed as archive
+    # content — and CPython rewrites that cache whenever the source mtime moves
+    # (any copy that does not preserve times) or the reader is on a different
+    # minor version. The *second* verify would then fail on a bytecode cache.
+    # `checksum_tree` skips the directory for the same reason, so a reader who
+    # runs the documented command by hand is safe too.
+    cmd = [sys.executable, "-B", "bench/analyze_results.py", "results", *spec.argv]
+    proc = subprocess.run(
+        cmd,
+        cwd=archive,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             f"table {spec.name!r} failed ({' '.join(shlex.quote(c) for c in cmd)}) "
             f"with exit {proc.returncode}:\n{proc.stderr.strip()}"
         )
-    target.write_text(proc.stdout)
+    if proc.stderr.strip():
+        # `analyze_results.py` exits 0 while warning that a `--configs` entry
+        # had no directory, so swallowing stderr archives a silently degraded
+        # table — one column short, with nothing to say so.
+        print(
+            f"Warning: table {spec.name!r} wrote to stderr:\n{proc.stderr.strip()}",
+            file=sys.stderr,
+        )
+    target.write_text(proc.stdout, encoding="utf-8")
     return target, sha256_file(target)
 
 
@@ -562,6 +609,12 @@ def checksum_tree(archive: Path) -> dict[str, str]:
     sums: dict[str, str] = {}
     for path in sorted(archive.rglob("*")):
         if not path.is_file():
+            continue
+        # A reader who runs the documented `python3 bench/analyze_results.py`
+        # command by hand creates one of these. It is a build product of their
+        # machine and their interpreter version, never archive content, and
+        # counting it makes `verify` fail on a bytecode cache.
+        if "__pycache__" in path.parts:
             continue
         rel = path.relative_to(archive).as_posix()
         if rel == MANIFEST_NAME:
@@ -772,6 +825,14 @@ def build_archive(
     warnings: list[str] = []
 
     for config in provenance:
+        if config.runs == 0:
+            raise ValueError(
+                f"config {config.name!r} holds no .log files — "
+                f"analyze_results.py intersects instances across configs, so "
+                f"archiving an empty one collapses every row of every table to "
+                f"nan while `verify` still certifies that the empty table "
+                f"regenerates faithfully"
+            )
         if config.binary == "mixed":
             raise ValueError(
                 f"config {config.name!r} mixes patched and unpatched logs — the "
@@ -818,9 +879,25 @@ def build_archive(
                 f"runs; see MANIFEST.json"
             )
 
-    instrumented = all(c.instrumentation_observed for c in provenance) and bool(
-        provenance
+    # The cannibalization table needs instrumented *patched* rows and an
+    # instrumented patched baseline; an externally built unpatched `vanilla`
+    # arm emits none of the tags by construction. Requiring every config to be
+    # instrumented would therefore drop the table from exactly the tree shape
+    # `docs/RELEASE.md` recommends — real unpatched baseline plus patched
+    # `off` and `all`.
+    patched_configs = [c for c in provenance if c.binary == "patched"]
+    instrumented = bool(patched_configs) and all(
+        c.instrumentation_observed for c in patched_configs
     )
+    uninstrumented = [c.name for c in patched_configs if not c.instrumentation_observed]
+    if uninstrumented:
+        warnings.append(
+            "no cannibalization table: patched config(s) "
+            + ", ".join(uninstrumented)
+            + " ran without log_dev_level=3, so every row would classify as "
+            "not-instrumented. Re-run those with --dev-log for an attribution "
+            "archive"
+        )
     # Read from the option *variants* too, not only from `options`: a config
     # whose runs disagree about anything at all reports `options == {}`, and a
     # false "threads unset" is worse than a missing one — PROVENANCE.md states
@@ -846,6 +923,13 @@ def build_archive(
         warnings.append(
             "no --machine-note: the machine block describes the archive host, "
             "which is only the benchmark host if they are the same machine"
+        )
+
+    source = source_provenance(repo_root)
+    if source.get("dirty"):
+        warnings.append(
+            "the archiving checkout has uncommitted changes, so `source.commit` "
+            "does not identify the tree this archive was built from"
         )
 
     seeds = sorted({s for c in provenance for s in c.seeds})
@@ -892,7 +976,7 @@ def build_archive(
         created_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         archive_name=archive.name,
         note=note,
-        source=source_provenance(repo_root),
+        source=source,
         machine=machine_provenance(machine_note),
         run={
             "time_limit_s": time_limit,
@@ -930,7 +1014,10 @@ def make_tarball(archive: Path) -> Path:
     a record takes at most 100 files, and a campaign has thousands.
     """
     tar_path = Path(str(archive) + ".tar.gz")
-    with tarfile.open(tar_path, "w:gz") as tar:
+    # Level 6, not gzip's default 9: on log text 9 buys a couple of percent for
+    # two to three times the wall time, and a --dev-log campaign tree is
+    # gigabytes.
+    with tarfile.open(tar_path, "w:gz", compresslevel=6) as tar:
         tar.add(archive, arcname=archive.name)
     return tar_path
 
@@ -943,22 +1030,61 @@ def verify_archive(archive: Path, write: Path | None) -> list[str]:
     manifest_path = archive / MANIFEST_NAME
     if not manifest_path.is_file():
         return [f"{MANIFEST_NAME} is missing — this is not an archive directory"]
-    payload = json.loads(manifest_path.read_text())
+    # `verify` is the reader-facing entry point, run on a tarball that may have
+    # arrived damaged, so every failure here has to be a problem line rather
+    # than a traceback.
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [f"{MANIFEST_NAME} is not readable JSON ({exc}) — archive damaged"]
+    if not isinstance(payload, dict):
+        return [f"{MANIFEST_NAME} is not a JSON object — archive damaged"]
+    if payload.get("manifest_version") != MANIFEST_VERSION:
+        return [
+            (
+                f"{MANIFEST_NAME} is manifest_version "
+                f"{payload.get('manifest_version')!r}; this tool reads "
+                f"{MANIFEST_VERSION}. Use the make_archive.py the archive "
+                f"ships in bench/."
+            )
+        ]
     problems: list[str] = []
 
     recorded: dict[str, str] = payload.get("files", {})
-    actual = checksum_tree(archive)
     # Anything regenerated into the archive by an earlier `verify --write` is a
     # by-product, not archive content; excluding it keeps a verify run from
-    # making the next one fail.
-    extra_roots = {write.name} if write is not None else set()
+    # making the next one fail.  Matched on the whole relative path, not the
+    # directory's basename: `--write tables` would otherwise both silence the
+    # archived `tables/` and overwrite it — regenerating over the very copies
+    # it is meant to be compared against.
+    write_rel = (
+        write.relative_to(archive).as_posix()
+        if write is not None and write.is_relative_to(archive)
+        else None
+    )
+
+    def is_regenerated(rel: str) -> bool:
+        return write_rel is not None and (
+            rel == write_rel or rel.startswith(f"{write_rel}/")
+        )
+
+    if any(is_regenerated(rel) for rel in recorded):
+        return [
+            (
+                f"--write {write_rel} overlaps archived content, so "
+                f"regenerating there would overwrite the copies being compared "
+                f"against; pick a directory the archive does not already use"
+            )
+        ]
+
+    actual = checksum_tree(archive)
     for rel, digest in sorted(recorded.items()):
         if rel not in actual:
             problems.append(f"missing file: {rel}")
         elif actual[rel] != digest:
             problems.append(f"checksum mismatch: {rel}")
     for rel in sorted(set(actual) - set(recorded)):
-        if rel.split("/", 1)[0] in extra_roots:
+        if is_regenerated(rel):
             continue
         problems.append(f"unrecorded file present: {rel}")
 
@@ -967,8 +1093,13 @@ def verify_archive(archive: Path, write: Path | None) -> list[str]:
         if out_dir is None:
             out_dir = Path(tmp)
         for entry in payload.get("tables", []):
-            spec = TableSpec(name=entry["name"], argv=list(entry["argv"]))
-            archived = archive / entry["path"]
+            try:
+                spec = TableSpec(name=entry["name"], argv=list(entry["argv"]))
+                archived = archive / entry["path"]
+                expected = entry["sha256"]
+            except (KeyError, TypeError, ValueError) as exc:
+                problems.append(f"{MANIFEST_NAME}: malformed table entry ({exc})")
+                continue
             if not archived.is_file():
                 problems.append(f"table {spec.name}: archived output is missing")
                 continue
@@ -977,7 +1108,7 @@ def verify_archive(archive: Path, write: Path | None) -> list[str]:
             except RuntimeError as exc:
                 problems.append(f"table {spec.name}: {exc}")
                 continue
-            if digest != entry["sha256"]:
+            if digest != expected:
                 problems.append(
                     f"table {spec.name}: regenerated output differs from the "
                     f"archived copy ({archived} vs {regenerated})"
@@ -1083,33 +1214,57 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {results_dir} holds no config directories", file=sys.stderr)
         return 2
 
+    duplicates = sorted({c for c in configs if configs.count(c) > 1})
+    if duplicates:
+        print(
+            f"Error: --configs repeats {', '.join(duplicates)}; each config is "
+            f"archived once",
+            file=sys.stderr,
+        )
+        return 2
+
+    archive = Path(args.output).resolve()
+    pre_existing = archive.exists()
     try:
         extra = [parse_table_flag(t) for t in args.table]
         manifest = build_archive(
             results_dir,
-            Path(args.output).resolve(),
+            archive,
             configs=configs,
             time_limit=args.time_limit,
             note=args.note,
             machine_note=args.machine_note,
             extra_tables=extra,
         )
-    except (ValueError, FileExistsError, RuntimeError) as exc:
+    except (ValueError, FileExistsError, RuntimeError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        # Our own debris would otherwise trip the write-once guard on the
+        # retry, sending the maintainer looking for a stale archive that never
+        # existed.
+        if not pre_existing and archive.is_dir():
+            shutil.rmtree(archive, ignore_errors=True)
         return 2
 
-    archive = Path(args.output).resolve()
     print(f"Archive        : {archive}")
     print(f"Configs        : {' '.join(c.name for c in manifest.configs)}")
     print(
         f"Baseline       : {manifest.baseline['config']} — {manifest.baseline['claim']}"
     )
     print(f"Tables         : {' '.join(t.name for t in manifest.tables)}")
-    print(f"Files checksum'd: {len(manifest.files)}")
+    print(f"Files hashed   : {len(manifest.files)}")
     for warning in manifest.warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     if args.tar:
-        print(f"Tarball        : {make_tarball(archive)}")
+        try:
+            tar_path = make_tarball(archive)
+        except OSError as exc:
+            print(f"Error: could not write the tarball: {exc}", file=sys.stderr)
+            return 2
+        # The deposited tarball's own checksum is what pins a downloaded copy
+        # to this release — `verify` can only show the archive is internally
+        # consistent. Print it so it can go in the release notes.
+        print(f"Tarball        : {tar_path}")
+        print(f"Tarball sha256 : {sha256_file(tar_path)}")
     print(f"\nVerify with:\n  {archive}/REGENERATE.sh")
     return 0
 

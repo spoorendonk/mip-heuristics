@@ -119,7 +119,10 @@ state produced each row.
 
 ```bash
 # Build it.  --time-limit is required: it is a HiGHS command-line argument
-# rather than an options-file entry, so it is not recoverable from the tree.
+# rather than an options-file entry, so it is in none of the archived .opts.
+# It *is* echoed in every log as `Set option time_limit to N`, and the tool
+# does not cross-check the two — a wrong value mislabels the archive and
+# shifts the gap@cutoff metric in every generated table.
 bench/make_archive.py build bench/results/plato \
     --output dist/mip-heuristics-v1.0.0-archive \
     --time-limit 600 \
@@ -132,12 +135,26 @@ bench/make_archive.py build bench/results/plato \
 dist/mip-heuristics-v1.0.0-archive/REGENERATE.sh
 ```
 
-`verify` establishes that the logs, the analysis code and `MANIFEST.json`
-inside one archive agree with each other. It cannot establish that the archive
-is the one the release published — the manifest travels with the archive, so a
-rebuilt archive verifies clean too. What pins it to the release is the archive
-service's own checksum on the deposited tarball, which is why the dataset
-record below is not optional.
+Pass the output directory as an argument (`REGENERATE.sh out`) only if you want
+the regenerated tables kept; it writes *inside* the archive, so re-tarring
+afterwards produces a tarball whose own `verify` reports the extra files.
+
+**What `verify` does and does not prove.** It establishes that the logs, the
+analysis code and `MANIFEST.json` inside one archive agree with each other. It
+cannot establish that the archive is the one the release published: the
+manifest and the analysis scripts both travel *inside* the archive, so a
+rebuilt — or doctored — archive verifies clean too. Two things close that gap,
+and neither is automatic:
+
+- The deposit's own checksum on the tarball pins a download to the published
+  release. That is why the dataset record below is not optional, and why
+  `--tar` prints the tarball's sha256 for the release notes.
+- For an archive you did not build, the analysis code is the part to check
+  independently: compare `<archive>/bench/*.py` against the repository at the
+  manifest's `source.commit`, which the manifest records for exactly this
+  purpose. `REGENERATE.sh` runs code shipped in the tarball, so it is the
+  convenience path for an archive you already trust, not a check on an
+  untrusted one.
 
 Write the archive **outside the working tree**, or into the gitignored `dist/`.
 `make_archive.py` records whether the checkout was dirty, and an archive
@@ -270,8 +287,9 @@ Two consequences that decide the rest of the process:
 
 Zenodo mints two: a **version DOI** for that specific release, and a **concept
 DOI** that always resolves to the newest version. Put the *concept* DOI in
-`CITATION.cff` and the README badge — it stays correct across v1.1 — and cite
-the version DOI when you need to pin exactly what was run.
+`CITATION.cff` and in a `README.md` DOI badge (there is none today, so this
+adds one) — it stays correct across v1.1 — and cite the version DOI when you
+need to pin exactly what was run.
 
 `CITATION.cff` takes it as an `identifiers:` entry:
 
@@ -335,6 +353,12 @@ that must not be reordered.
 - [ ] Headline-timing archive built with `bench/make_archive.py build ... --tar`.
 - [ ] `--dev-log` attribution archive built the same way, if the release
       publishes attribution or cannibalization tables.
+- [ ] Every table published in `README.md` has a recorded spec in the archive:
+      the three defaults (`summary`, `attribution`, `cannibalization`) plus one
+      `--table 'NAME=...'` for each extra — the budget sweep and the LaTeX
+      ablation are not defaults. A published table with no spec is not
+      regenerable from the archive alone, which is the criterion this whole
+      section exists for.
 - [ ] `REGENERATE.sh` exits 0 on each archive.
 - [ ] `PROVENANCE.md` read end to end: baseline claim, thread count, seeds,
       instrumentation and machine all say what you believe they say.
