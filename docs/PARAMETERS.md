@@ -4,6 +4,18 @@ This document lists every `constexpr` in the codebase that a researcher
 might want to tune. Parameters are organized by heuristic/subsystem.
 File paths are relative to the repository root.
 
+Entries name **symbols, not line numbers**. `bench/check_docs_refs.py` runs as
+the `docs_parameter_references` ctest test and fails the suite when a
+documented constant or file no longer exists — and rejects a `**File**:`
+reference that carries a line number, because those drifted on essentially
+every refactor. Renaming a constant here means updating its entry in the same
+commit.
+
+For the runtime options a user actually sets (`mip_heuristic_suite`,
+`mip_heuristic_presolve_effort`, `mip_heuristic_effort`), see the closing
+section of this file and `README.md`. For what is and is not reproducible when
+you change these, see `docs/REPRODUCIBILITY.md`.
+
 ---
 
 ## FPR (Fix, Propagate, and Repair)
@@ -16,8 +28,7 @@ File paths are relative to the repository root.
   (paper Fig. 5). The paper quotes 200; we cap at 50 because
   RepairSearch runs two full PropEngine fixpoints per node, which
   dominates cost on tight instances (~760k coefficient accesses on
-  9k-nnz LPs). 200 nodes can burn ~1.4 s regardless of the effort cap
-  (see `bench/FPR_REPAIR_SEARCH_LOCKS.md`).
+  9k-nnz LPs). 200 nodes can burn ~1.4 s regardless of the effort cap.
 - **Suggested range**: 10–200. Raise on fast instances or when
   RepairSearch quality matters; lower on dense LPs where each node is
   expensive.
