@@ -92,6 +92,55 @@ TEST_CASE("Options: suite defaults to all and accepts every value", "[options][s
     }
 }
 
+// The exact substrings `bench/run_benchmark.py` greps a solve's log for, as
+// `CONFIG_IGNORED_WARNINGS`.  Both mark a run that solved cleanly — exit 0,
+// complete log — while ignoring the configuration it was given, so the
+// harness discards it instead of recording a results directory named for one
+// configuration and holding runs of another.
+//
+// Keeping them here, spelled out, is what makes the coupling visible from
+// both ends: the emitter is `run_presolve` in `src/mode_dispatch.cpp` (which
+// carries the matching note), the consumer is the bench harness, and this
+// test is the thing that fails if either side moves without the other.  A
+// substring rather than the whole line, because that is precisely what the
+// harness matches — pinning more would make this test stricter than the
+// contract it exists to protect.
+namespace {
+constexpr const char *kBenchWarningUnknownSuite = "Unknown mip_heuristic_suite value";
+constexpr const char *kBenchWarningNoHeuristic = "no heuristic will run";
+}  // namespace
+
+TEST_CASE("Options: the warnings the bench harness greps for are emitted verbatim",
+          "[options][suite][bench-contract]") {
+    SECTION("unknown suite value") {
+        const auto lines = solve_capturing_log("flugpl.mps", [](Highs &h) {
+            set_suite(h, "bogus");
+        });
+        REQUIRE(log_contains(lines, kBenchWarningUnknownSuite));
+    }
+
+    SECTION("suite=fj with FeasibilityJump switched off") {
+        // Asks for FJ and then takes it away: heuristic-free without being
+        // `off`, so it also loses the native FJ call site.  A benchmark row
+        // labelled "FJ isolated" would silently measure vanilla-minus-FJ.
+        const auto lines = solve_capturing_log("flugpl.mps", [](Highs &h) {
+            set_suite(h, "fj");
+            require_option(h, "mip_heuristic_run_feasibility_jump", false);
+        });
+        REQUIRE(log_contains(lines, kBenchWarningNoHeuristic));
+    }
+
+    SECTION("an ordinary run trips neither") {
+        // The other half of the contract: these must not fire on a good run,
+        // or the harness would discard every result it collected.
+        const auto lines = solve_capturing_log("flugpl.mps", [](Highs &h) {
+            set_suite(h, "all");
+        });
+        REQUIRE_FALSE(log_contains(lines, kBenchWarningUnknownSuite));
+        REQUIRE_FALSE(log_contains(lines, kBenchWarningNoHeuristic));
+    }
+}
+
 TEST_CASE("Options: unknown suite value warns and runs everything", "[options][suite]") {
     const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         require_option(h, "log_dev_level", 3);

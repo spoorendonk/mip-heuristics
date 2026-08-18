@@ -405,6 +405,17 @@ HeuristicFlags effective_flags(const HighsOptions &options, bool *recognized) {
 bool run_presolve(HighsMipSolver &mipsolver, size_t budget) {
     const HighsOptions &options = *mipsolver.options_mip_;
 
+    // The two warnings below are **API, not prose**.  Both describe a solve
+    // that ran something other than what its configuration asked for while
+    // still exiting cleanly with an ordinary-looking log, so they are the only
+    // signal distinguishing such a run from a good one.
+    // `bench/run_benchmark.py` greps for them (`CONFIG_IGNORED_WARNINGS`) and
+    // discards the affected result rather than recording a mislabelled tree —
+    // a benchmark directory named for one configuration holding runs of
+    // another is exactly the silent-failure mode that harness exists to
+    // prevent.  If you reword either string, update that list in the same
+    // commit; `tests/test_smoke.cpp` pins both substrings against this
+    // binary's real output and will fail until you do.
     bool recognized = false;
     const HeuristicFlags flags = effective_flags(options, &recognized);
     if (!recognized) {

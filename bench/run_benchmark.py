@@ -335,6 +335,12 @@ def write_options_file(options: dict[str, str], path: str) -> None:
 # The second is the same class from the other side: `suite=fj` with
 # `mip_heuristic_run_feasibility_jump=false` asks for FJ and then takes it
 # away, so an "FJ isolated" row would measure vanilla-minus-FJ.
+#
+# These strings are a contract with `run_presolve` in `src/mode_dispatch.cpp`,
+# which carries the matching note.  Both ends are pinned by the
+# `[bench-contract]` case in `tests/test_smoke.cpp`, which asserts them
+# against the running binary's own output — so a reword there fails the C++
+# suite rather than silently switching this detection off.
 CONFIG_IGNORED_WARNINGS = (
     "Unknown mip_heuristic_suite value",
     "no heuristic will run",
