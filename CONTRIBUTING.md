@@ -55,6 +55,17 @@ code. `cmake/clang_tidy_gate.py` wraps the tool and judges first-party
 diagnostics itself. If a tidy finding is in the way, fix the root cause — do
 not widen the wrapper's filter and do not add a blanket `NOLINT`.
 
+> **`.clang-tidy` and `.clang-format` are checked-in regular files here, not
+> the symlinks devkit's `setup.sh` installs.** They carry project overrides
+> devkit's shared copies do not: a `HeaderFilterRegex` scoped to `src/` and
+> `tests/` (devkit's `.*` produces thousands of findings inside the fetched
+> HiGHS headers) and a `lower_case` function naming convention matching this
+> codebase. **Re-running devkit's `setup.sh` or `update.sh` will replace them**,
+> and because `clang_tidy` is now a mandatory ctest test the suite then goes
+> red for everyone with no obvious cause. If you re-run devkit setup, restore
+> both files with `git checkout -- .clang-tidy .clang-format` and check
+> `git diff --summary` for a `mode change` line.
+
 Hooks auto-format on save, so don't hand-fix formatting.
 
 ## The clean-rebuild rule
@@ -123,13 +134,17 @@ The benchmark harness is Python with its own test suite, registered in ctest as
 `pytest` from the repo root works too. Both run in CI as a separate fast job
 with no C++ build.
 
-`ruff check bench` currently reports 21 findings and the CI job is red on them.
-Twenty come from rule families ruff 0.16 turned on by default; one — an
-`F541` f-string with no placeholders in `bench/correctness_check.py` — fails
-under any rule set. `pyproject.toml` pins only `target-version`, so the
-effective rule set is whatever the installed ruff defaults to, which is why CI
-pins the version. Closing this means either fixing `bench/*.py` or declaring an
-explicit `[tool.ruff.lint] select`; do not close it by loosening the pin.
+**`ruff check bench` currently reports 21 findings, so the CI lint step is
+advisory (`continue-on-error`) rather than gating, and it runs *after* the
+tests** — a failing step skips the rest of a job, so linting first would mean
+the bench tests never ran in CI at all. Twenty of the findings come from rule
+families ruff 0.16 turned on by default; one — an `F541` f-string with no
+placeholders in `bench/correctness_check.py` — fails under any rule set.
+`pyproject.toml` pins only `target-version`, so the effective rule set is
+whatever the installed ruff defaults to, which is why CI pins the version.
+Closing this means either fixing `bench/*.py` or declaring an explicit
+`[tool.ruff.lint] select`, and then deleting `continue-on-error` so the step
+gates like the C++ job does. Do not close it by loosening the version pin.
 
 ## Code review bar
 

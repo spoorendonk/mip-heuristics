@@ -384,7 +384,7 @@ if(_src_enum_found EQUAL -1)
             "HighsMipSolverData.h post-patch sanity check failed: "
             "expected exactly 1 occurrence of 'kSolutionSourceFprLp', got ${_h_fprlp_count}. "
             "Upstream HiGHS likely reformatted the source-enum block so the exact-string "
-            "REPLACE patterns no longer match."
+            "REPLACE patterns no longer match. "
             "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${MIP_DIR}/HighsMipSolverData.h" "${MIPDATA_H}")
@@ -448,7 +448,7 @@ if(_src_cpp_found EQUAL -1)
             "HighsMipSolverData.cpp post-patch sanity check failed: "
             "expected exactly 1 occurrence of 'kSolutionSourceFprLp', got ${_cpp_fprlp_count}. "
             "Upstream HiGHS likely reformatted the source-to-string chain so the exact-string "
-            "REPLACE patterns no longer match."
+            "REPLACE patterns no longer match. "
             "${CLEAN_REBUILD}")
     endif()
     string(REGEX MATCHALL "\"FPR LP\"" _cpp_fprlp_str_hits "${MIPDATA_CPP}")
@@ -458,7 +458,7 @@ if(_src_cpp_found EQUAL -1)
             "HighsMipSolverData.cpp post-patch sanity check failed: "
             "expected exactly 1 occurrence of '\"FPR LP\"', got ${_cpp_fprlp_str_count}. "
             "Upstream HiGHS likely reformatted the source-to-string chain so the exact-string "
-            "REPLACE patterns no longer match."
+            "REPLACE patterns no longer match. "
             "${CLEAN_REBUILD}")
     endif()
     string(REGEX MATCHALL "\\{4, 9, 14, 19, last_enum\\}" _cpp_limits_hits "${MIPDATA_CPP}")
@@ -468,7 +468,7 @@ if(_src_cpp_found EQUAL -1)
             "HighsMipSolverData.cpp post-patch sanity check failed: "
             "expected exactly 1 occurrence of '{4, 9, 14, 19, last_enum}', got ${_cpp_limits_count}. "
             "Upstream HiGHS likely reformatted printSolutionSourceKey so the limits-vector "
-            "REPLACE pattern no longer matches."
+            "REPLACE pattern no longer matches. "
             "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")
@@ -748,7 +748,7 @@ if(NOT _stale_presolve_budget EQUAL -1)
     message(FATAL_ERROR
         "HighsMipSolver.cpp derives the presolve heuristic budget from "
         "'mip_heuristic_effort'; this was split into "
-        "'mip_heuristic_presolve_effort'."
+        "'mip_heuristic_presolve_effort'. "
         "${CLEAN_REBUILD}")
 endif()
 
@@ -828,7 +828,7 @@ if(NOT _stale_fprlp_call EQUAL -1)
     message(FATAL_ERROR
         "HighsMipSolver.cpp contains the pre-split two-argument fpr_lp::run "
         "call site.  fpr_lp now derives its budget from the shared RENS/RINS "
-        "LP-iteration headroom internally."
+        "LP-iteration headroom internally. "
         "${CLEAN_REBUILD}")
 endif()
 
