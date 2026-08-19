@@ -55,18 +55,43 @@ code. `cmake/clang_tidy_gate.py` wraps the tool and judges first-party
 diagnostics itself. If a tidy finding is in the way, fix the root cause — do
 not widen the wrapper's filter and do not add a blanket `NOLINT`.
 
-> **`.clang-tidy` and `.clang-format` are checked-in regular files here, not
-> the symlinks devkit's `setup.sh` installs.** They carry project overrides
-> devkit's shared copies do not: a `HeaderFilterRegex` scoped to `src/` and
-> `tests/` (devkit's `.*` produces thousands of findings inside the fetched
-> HiGHS headers) and a `lower_case` function naming convention matching this
-> codebase. **Re-running devkit's `setup.sh` or `update.sh` will replace them**,
-> and because `clang_tidy` is now a mandatory ctest test the suite then goes
-> red for everyone with no obvious cause. If you re-run devkit setup, restore
-> both files with `git checkout -- .clang-tidy .clang-format` and check
-> `git diff --summary` for a `mode change` line.
+`.clang-format`, `.clang-tidy` and `.clangd` are ordinary tracked files owned by
+this repository — nothing generates or refreshes them. Two settings in
+`.clang-tidy` are load-bearing and easy to undo by accident: a
+`HeaderFilterRegex` anchored on a literal `/src/` or `/tests/` path segment (the
+usual `.*` reports thousands of findings inside the fetched HiGHS headers), and
+a `lower_case` function naming convention matching this codebase. Each
+narrowing carries a comment explaining what it deviates from and why; read it
+before widening one.
 
-Hooks auto-format on save, so don't hand-fix formatting.
+Nothing formats on save. `clang-format` runs at commit time, from the
+pre-commit hook, over the staged C++ — so don't hand-fix formatting.
+
+## Git hooks
+
+Three hooks are tracked in `.githooks/`, plus the `resolve-venv.sh` they source:
+
+| Hook | Does | Blocks? |
+|---|---|---|
+| `commit-msg` | Conventional Commits format, subject ≤72 chars | yes |
+| `pre-commit` | formats staged C++ with the venv's pinned `clang-format`, applies safe `clang-tidy` fixes, re-stages, runs `ctest -LE lint` | yes, on test failure |
+| `pre-push` | clean rebuild plus the full suite (lint gates included), then advisory `ruff` / `shellcheck` | yes, on build or test failure |
+
+Git only runs hooks from `core.hooksPath`, which is per-checkout config and
+cannot be tracked. `cmake -B build` sets it for you
+(`-DMIP_HEURISTICS_INSTALL_GIT_HOOKS=OFF` opts out); it leaves an existing
+`.githooks` value alone and warns rather than clobbering a hooksPath someone
+else set. By hand:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`pre-push` reads the `clean` / `build` / `test` fenced blocks out of
+`CLAUDE.md`'s `## Build & Test` section, so a full push costs a from-scratch
+HiGHS build — about five to six minutes. That is deliberate: it is the same
+sequence a release runs. A docs-only or hooks-only push skips it. Edit the
+hooks in `.githooks/`; `.git/hooks/` holds none of ours.
 
 ## The clean-rebuild rule
 

@@ -1,7 +1,7 @@
 # clang-format and clang-tidy gates over the first-party sources (issue #101).
 #
 # Both are wired as ctest tests labelled `lint`, so `ctest` — the command the
-# devkit pre-push hook and CI both run — enforces them, and `ctest -LE lint`
+# pre-push hook and CI both run — enforces them, and `ctest -LE lint`
 # skips them while iterating.  They are also reachable as build targets
 # (`cmake --build build --target lint`) for a CI job that wants them separately.
 #

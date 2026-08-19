@@ -2,11 +2,116 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-@.devkit/standards/cpp.md
+Navigation: LSP → narrow Grep → sliced Read.
 
-**Testing override**: `.devkit/standards/cpp.md` currently documents the testing story in GoogleTest terms. Ignore that section — this project uses Catch2 v3 (`TEST_CASE(...)` with `[tag]` filters). Tracked upstream as [spoorendonk/devkit#1](https://github.com/spoorendonk/devkit/issues/1).
+# Standards
 
-**Git workflow**: Trunk-based development. Commit directly to `main` and push when local gates pass. No long-lived feature branches.
+## Communication Style
+
+Be terse. No preamble. No filler.
+
+## Code Navigation
+
+Prefer narrow queries over full-file reads:
+
+1. **LSP** for symbol questions — `goToDefinition`, `hover`, `documentSymbol`, `workspaceSymbol`. Use before `Read`.
+2. **Grep** with `-n` and a small `head_limit` (start at 20); raise only if inconclusive.
+3. **Read** with `offset`/`limit` for a slice around the hit. Full-file `Read` is fine under ~200 lines or when structure matters.
+
+Know the symbol → LSP. Know a string, not its location → Grep. Full-file Read is the last mile. This is a preference, not a prohibition: shelling out to `grep`/`rg` is fine when the built-in can't do the job (filtering a pipe like `git log | grep`, or a session without the `Grep` tool). What matters is bounding output, not which binary produces it.
+
+Setup: install `clangd-lsp@claude-plugins-official` plus `clangd` (`apt install clangd`, or from LLVM). `.clangd` points at `build/compile_commands.json`, produced by `CMAKE_EXPORT_COMPILE_COMMANDS ON`.
+
+## C++
+
+- Target C++23. Use modern features (`std::expected`, concepts, ranges, `constexpr`).
+- Use `#pragma once`. Minimize header includes; forward-declare where possible.
+- **Formatting** is Google, via `.clang-format`. **Naming is not Google** — `.clang-tidy` enforces what this codebase actually does:
+
+  | Kind | Style | Example |
+  |---|---|---|
+  | Functions (free and member) | `lower_case` | `run_sequential`, `charge_presolve` |
+  | Locals, parameters, `const` locals | `lower_case` | `per_worker`, `max_effort` |
+  | Private members | **trailing** `_` | `FjWorker::start_`, `seed_` |
+  | File-scope / static / class / `constexpr` constants | `k` + `CamelCase` | `kWeightFpr`, `kNumLpArms` |
+  | Classes | `CamelCase` | `ScyllaWorker`, `EffortLedger` |
+  | Namespaces | `lower_case` | `heuristics`, `fpr` |
+  | Files | `snake_case.h` / `.cpp` | |
+
+  `ConstantMemberCase` is deliberately unset: it outranks `PrivateMemberSuffix`, so setting it would reject a `const` private member spelled with this project's `_` suffix. The `.clang-tidy` comments carry the reasoning for each narrowing — read them before changing one.
+
+## Complexity
+
+When a complexity warning fires, don't extract methods mechanically. Ask what the independent responsibilities are and split along those boundaries. If the function is genuinely complex because the domain is, add a comment explaining why and suppress the warning.
+
+## CMake
+
+- `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)` for clang-tidy.
+- Use FetchContent for dependencies.
+- A single root `CMakeLists.txt`; per-directory files would only add indirection.
+
+## Testing (Catch2 v3)
+
+- `TEST_CASE("name", "[tag]")` with `[tag]` filters, in `tests/`. Not GoogleTest.
+- Instances come from HiGHS's own `check/instances/` (path injected as the `INSTANCES_DIR` compile definition).
+- `ctest --progress` collapses the running list and `CMAKE_INSTALL_MESSAGE=LAZY` suppresses install chatter. Don't remove these.
+
+## Development Workflow
+
+```
+plan (non-trivial) → implement → test → push to main
+```
+
+Nothing formats on save — there are no Claude Code hooks. `clang-format` runs at commit time: `pre-commit` formats the staged C++, applies safe `clang-tidy` fixes, and re-stages the result, so what you commit is canonical even though the file you just edited is not. Don't hand-tune formatting — let the hook normalize it, or run it yourself:
+
+```
+.venv/bin/clang-format -i <files>                       # normalize in place
+.venv/bin/clang-format --dry-run --Werror <files>       # check only, non-zero if unformatted
+```
+
+**Use the venv's clang tools, not PATH.** The pinned 22.1.8 pair lives in `.venv/bin`, which is the exact path `cmake/Lint.cmake` searches; a different major version formats differently and fails the `clang_format` ctest gate. The hooks resolve the venv first for the same reason.
+
+The hooks are **tracked in `.githooks/`** (`commit-msg`, `pre-commit`, `pre-push`, and the sourced `resolve-venv.sh`) — edit them there, not in `.git/hooks/`, which is empty of ours. Git only runs them when `core.hooksPath` points at that directory, and that setting is per-checkout config which cannot be tracked; `cmake -B build` sets it (option `MIP_HEURISTICS_INSTALL_GIT_HOOKS`, ON), leaving an existing `.githooks` value alone and warning rather than clobbering a hooksPath someone else set. To wire a clone up by hand: `git config core.hooksPath .githooks`. `.claude/` is gitignored, owned by this repo, and not part of the published artifact — edit it in place; it holds only permission rules and a statusline. A new Claude Code hook must read its file path and command from the hook JSON **on stdin**, never `$CLAUDE_FILE_PATH` (unset by Claude Code — a hook reading it no-ops silently rather than failing; the formatter this project inherited did exactly that). The clang-format and clang-tidy gates deliberately live outside the hooks, as ctest tests labelled `lint` plus the CI job, so a fresh clone still runs them. **Never `git push --no-verify` or `git commit --no-verify`** unless asked; a failing hook is a signal, so fix the root cause.
+
+## Git Workflow
+
+Trunk-based, linear history on main. Commit directly to main and push when local gates pass.
+
+Feature branches are optional for larger changes: always branch from main (`git checkout main && git pull` first), never from another feature branch, keep them short-lived, and rebase or squash merge — no merge commits on main.
+
+After a successful push:
+- **Close any gh issue the work resolved**: `gh issue close <num> -c "<one-line note>"`, for every issue the push covers.
+- **Delete the feature branch** if one was used: `git branch -d <branch>`, plus `git push origin --delete <branch>` if pushed.
+
+## Commit Messages
+
+Conventional Commits; the commit-msg hook enforces format.
+
+- `type: description` or `type(scope): description`
+- Types: `feat`, `fix`, `refactor`, `test`, `docs`, `style`, `perf`, `chore`, `build`, `ci`
+- Subject ≤72 chars. Focus on **why**, not what.
+
+## Issue Tracking
+
+GitHub Issues, via the `gh` CLI.
+
+- **Default to HTTPS** for GitHub remotes, not SSH.
+- **Read an issue** with `gh issue view <num> --json title,body,labels,state,comments`; plain `gh issue view <num>` is deprecated for programmatic use.
+- Don't defer work into a new issue unless it is substantial. Fix small follow-ups inline or leave them alone.
+
+Issues get picked up cold, in fresh sessions, often by an agent with no access to this machine. So: keep the body **self-contained** (problem, motivation, acceptance criteria, repro steps); use **no local references** (`/home/user/...`, "see my other checkout" — dead links in a fresh session); prefer **stable external links** (GitHub permalinks, papers, RFCs); and **describe local code by concept, not path**, hinting that the agent can search under `..`, `../..`, or `~/code/`.
+
+## Working Rules
+
+- **CLAUDE.md discipline.** When Claude gets something wrong, fix CLAUDE.md in the same commit. It's a living document — update it whenever better instructions would have prevented the mistake.
+- **Follow the agreed plan.** If a plan should change, stop and discuss — don't silently diverge. Same outside a written plan: if the current approach isn't working, say so rather than quietly switching strategies. Implement everything specified; no TODO placeholders or stubs unless asked.
+- **Match references exactly.** Implementing from papers, pseudocode, or open source: no early exits, iteration limits, size caps, or "optimization" shortcuts that change behaviour. Introduce heuristic approximations only when asked. Implement the edge cases rather than simplifying them away. When in doubt, be faithful and let tests verify.
+- **Don't invent APIs.** Verify functions, flags, and methods exist before using them.
+- **Don't ignore type errors.** If clang-tidy or ruff flags something, fix the root cause — don't suppress.
+- **Don't use deprecated patterns.** Check current docs, not training data.
+- **Performance matters.** Most of this is solvers: profile before micro-optimizing, but don't sacrifice perf for "clean code".
+
+# Project: mip-heuristics
 
 ## Project Overview
 
@@ -67,24 +172,22 @@ widening that wrapper's filter.
 
 ## Build & Test
 
-Used by the devkit pre-push hook.  The `unset GIT_DIR GIT_WORK_TREE`
-prefix is required: `git push` leaks `GIT_DIR=.git` into the hook
-subshell, and CMake's nested `git clone` inside FetchContent then
-treats that as the target git directory and fails with `fatal: invalid
-reference: v1.15.1` when trying to check out the HiGHS tag.
-
-TODO(devkit): this block is an in-project workaround for an upstream
-devkit hook bug.  `.devkit/standards/common.md` says local hook
-workarounds should be raised upstream — remove this whole section
-once devkit's pre-push wrapper clears `GIT_DIR` before running nested
-build commands.
+**`.githooks/pre-push` parses these three fenced blocks by tag** (`clean`,
+`build`, `test`) and runs them as the push gate, so they are the single
+definition of a full local run — keep them executable as written and keep the
+tags.  The hook unsets `GIT_DIR` / `GIT_WORK_TREE` around each one: `git push`
+exports `GIT_DIR=.git` into the hook environment, and CMake's nested `git clone`
+inside FetchContent would then treat that as the repository it is cloning into,
+failing with `fatal: invalid reference: v1.15.1` when it checks out the HiGHS
+tag.  That belongs in the hook, not here, so the documented command stays the
+one a human would type.
 
 ```clean
 rm -rf build
 ```
 
 ```build
-unset GIT_DIR GIT_WORK_TREE && cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON && cmake --build build -j"$(nproc)"
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON && cmake --build build -j"$(nproc)"
 ```
 
 ```test

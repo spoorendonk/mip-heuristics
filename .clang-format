@@ -1,27 +1,11 @@
 # Style contract for the clang-format gate (see cmake/Lint.cmake).
 #
-# Content is byte-identical to devkit's shared C++ style (devkit
-# `config/.clang-format` at submodule commit 9c000ac), checked in here as
-# a regular file rather than the symlink `setup.sh` installs.  Two
-# reasons, neither of them "the symlink was broken" — it resolves fine
-# when the submodule is populated:
-#
-#  1. The gate's style contract must not change underneath it.  Through
-#     the symlink, a `.devkit` bump or an `update.sh` run would restyle
-#     the whole tree and turn the gate red for reasons that have nothing
-#     to do with this project's code.
-#  2. The sibling `.clang-tidy` genuinely diverges from devkit's (five
-#     narrowed checks, lower_case function names, a scoped ConstantCase
-#     split, a narrowed HeaderFilterRegex), so it *has* to be a regular
-#     file.  Splitting the pair — one symlink, one not — is worse than
-#     owning both.
-#
-# `.clangd` stays a symlink: it has no divergence and no gate reads it.
-#
-# devkit's `update.sh` deliberately leaves regular files alone ("the
-# user's own customizations") and `setup.sh`'s `offer_symlink` prompts
-# rather than clobbering, so this override survives both.  Keep in sync
-# with devkit by hand if the shared style changes.
+# Owned by this repository.  It began as a shared house style carried in a
+# tooling submodule and symlinked in; the symlink is gone and nothing
+# regenerates this file, deliberately: a gate whose style contract can change
+# from outside the repository turns red for reasons that have nothing to do
+# with the code under review.  The sibling `.clang-tidy` diverges from that
+# shared set in five places anyway, so the pair is owned together.
 ---
 Language: Cpp
 BasedOnStyle: Google

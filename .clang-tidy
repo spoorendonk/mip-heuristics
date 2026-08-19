@@ -1,12 +1,11 @@
 # Check contract for the clang-tidy gate (see cmake/Lint.cmake).
 #
-# Content is devkit's shared C++ check set (devkit `config/.clang-tidy` at
-# submodule commit 9c000ac), checked in here as a regular file rather than
-# the symlink `setup.sh` installs — a symlink cannot carry the
-# project-specific divergences below, and `.clang-format` is checked in
-# alongside it so the gate's two inputs move as a unit (see its header).
+# Owned by this repository, like its sibling `.clang-format`, so the gate's two
+# inputs move as a unit and neither changes from outside (see that file's
+# header).  It began as a shared house check set carried in a tooling
+# submodule.
 #
-# Every deviation from devkit's file is marked NARROWED and carries the
+# Every deviation from that shared set is marked NARROWED and carries the
 # measurement that justifies it.  Counts are unique first-party findings
 # (deduplicated by file/line/column/check across translation units) from
 # the full sweep in the commit that introduced the gate.  Nothing here is
@@ -86,7 +85,7 @@ CheckOptions:
     value: 25
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
-  # NARROWED: devkit ships camelBack.  This codebase is uniformly
+  # NARROWED: the shared set ships camelBack.  This codebase is uniformly
   # lower_case (`run_sequential`, `charge_presolve`, `now_s`,
   # `make_problem`).  Google style permits either; a gate should encode
   # the convention the project actually has.
@@ -94,7 +93,7 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.VariableCase
     value: lower_case
-  # NARROWED: devkit ships one ConstantCase of UPPER_CASE, a spelling
+  # NARROWED: the shared set ships one ConstantCase of UPPER_CASE, a spelling
   # this codebase uses nowhere, and clang-tidy applies "constant" to
   # every `const` local and `const` parameter as well as to file-scope
   # tables.  Split by scope to match what the code does: file-scope,
@@ -138,7 +137,7 @@ CheckOptions:
     value: lower_case
 
 WarningsAsErrors: ''
-# NARROWED: devkit ships '.*', which matches every header reached through
+# NARROWED: the shared set ships '.*', which matches every header reached through
 # an include — and this project compiles against a fetched, patched HiGHS
 # tree plus a fetched Catch2.  At '.*' one translation unit reports around
 # 5000 findings in upstream headers we do not own and must not touch.
