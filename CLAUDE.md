@@ -119,7 +119,7 @@ Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solv
 
 **Reader-facing docs**, kept in sync with this file — update both when the behaviour they describe moves:
 - `README.md` — positioning, the `mip_heuristic_suite` table, recorded benchmark results, build options.
-- `CONTRIBUTING.md` — build/test/lint commands, the clean-rebuild rule for patch-script changes, the benchmarking rules, the standing code-hygiene bar.
+- `CONTRIBUTING.md` — build/test/lint commands, the git hooks and how a checkout gets them, the clean-rebuild rule for patch-script changes, the benchmarking rules, the standing code-hygiene bar.
 - `docs/REPRODUCIBILITY.md` — what is reproducible and what is not, and the exact PLATO reproduction protocol.
 - `docs/RELEASE.md` — how a version is cut and published: the gates, the artifact archive (`bench/make_archive.py`), the DOI wiring and its ordering constraint, and the release checklist. Publishing, not reproducing — it references `REPRODUCIBILITY.md` and `CONTRIBUTING.md` rather than restating them.
 - `docs/PARAMETERS.md` — every tunable `constexpr`. **Verified by ctest** (`docs_parameter_references`, via `bench/check_docs_refs.py`): renaming a documented constant fails the suite. Entries name symbols, never line numbers — line numbers drifted on essentially every refactor, which is why they were dropped. Don't reintroduce them.

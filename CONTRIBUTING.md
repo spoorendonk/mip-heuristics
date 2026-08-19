@@ -8,6 +8,7 @@
 python3 -m venv .venv
 .venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 pytest
 
+# Also points core.hooksPath at .githooks/ — see "Git hooks" below.
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure -j$(nproc)
@@ -216,8 +217,8 @@ Two further invariants that are easy to violate without a test noticing:
 Trunk-based: commit to `main` and push when the local gates pass. Conventional
 Commits (`type(scope): description`, subject ≤72 chars, focused on *why*); the
 commit-msg hook enforces the format. Run the full suite before considering work
-done — the pre-push hook is the final gate, and `--no-verify` is not an
-option. Close any GitHub issue the work resolved.
+done — the pre-push hook is the final gate ([Git hooks](#git-hooks)), and
+`--no-verify` is not an option. Close any GitHub issue the work resolved.
 
 Cutting a version is a separate procedure with an ordering constraint a normal
 push does not have: see [`docs/RELEASE.md`](docs/RELEASE.md).
