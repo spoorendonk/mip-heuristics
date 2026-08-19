@@ -1,6 +1,7 @@
 """Tests for run_benchmark's config table, budget sweep and plan resolution."""
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -10,7 +11,10 @@ from run_benchmark import (
     BUDGET_SUFFIX,
     CONFIG_SUITES,
     DEFAULT_BUDGET_SWEEP,
+    MIPLIB_MIN_INSTANCES,
+    MIPLIB_SEARCH_PATH,
     SWEEP_EXEMPT,
+    build_arg_parser,
     build_base_options,
     build_plan,
     config_options,
@@ -18,6 +22,7 @@ from run_benchmark import (
     find_ignored_config_warning,
     main,
     parse_budget,
+    resolve_data_dir,
     run_single,
     split_config,
     write_log,
@@ -558,3 +563,211 @@ def test_extra_options_log_dev_level_is_quiet_without_dev_log(capsys):
     opts = build_base_options(None, False, ["log_dev_level=1"])
     assert opts["log_dev_level"] == "1"
     assert "overrides --dev-log" not in capsys.readouterr().err
+
+
+# --- MIPLIB data-dir resolution --------------------------------------------
+#
+# The collection is 3.5 GB and shared by every checkout on the machine, so the
+# thing worth pinning is that resolution never silently re-downloads it and
+# never resolves an explicitly named directory to a different one.
+
+
+def _populate(d: Path, count: int) -> Path:
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(count):
+        (d / f"inst{i}.mps.gz").write_bytes(b"")
+    return d
+
+
+def test_explicit_data_dir_wins_even_when_empty(tmp_path, monkeypatch):
+    """An explicit --data-dir must not resolve elsewhere.
+
+    A typo'd path silently reading some other collection is worse than an
+    empty one: the run completes and reports on instances nobody asked for.
+    """
+    populated = _populate(tmp_path / "shared", MIPLIB_MIN_INSTANCES + 1)
+    monkeypatch.setattr("run_benchmark.MIPLIB_SEARCH_PATH", (str(populated),))
+    empty = tmp_path / "typo"
+    assert resolve_data_dir(str(empty)) == str(empty)
+
+
+def test_search_path_finds_a_populated_directory(tmp_path, monkeypatch):
+    empty = tmp_path / "a"
+    empty.mkdir()
+    populated = _populate(tmp_path / "b", MIPLIB_MIN_INSTANCES + 1)
+    monkeypatch.delenv("MIPLIB_DIR", raising=False)
+    monkeypatch.setattr(
+        "run_benchmark.MIPLIB_SEARCH_PATH", (str(empty), str(populated))
+    )
+    assert resolve_data_dir(None) == str(populated)
+
+
+def test_a_sparse_directory_does_not_count_as_a_collection(tmp_path, monkeypatch):
+    """Guards against a stray .mps.gz making an unrelated directory win."""
+    sparse = _populate(tmp_path / "sparse", 3)
+    populated = _populate(tmp_path / "full", MIPLIB_MIN_INSTANCES + 1)
+    monkeypatch.delenv("MIPLIB_DIR", raising=False)
+    monkeypatch.setattr(
+        "run_benchmark.MIPLIB_SEARCH_PATH", (str(sparse), str(populated))
+    )
+    assert resolve_data_dir(None) == str(populated)
+
+
+def test_env_var_outranks_the_search_path(tmp_path, monkeypatch):
+    env_dir = _populate(tmp_path / "env", MIPLIB_MIN_INSTANCES + 1)
+    default = _populate(tmp_path / "default", MIPLIB_MIN_INSTANCES + 1)
+    monkeypatch.setenv("MIPLIB_DIR", str(env_dir))
+    monkeypatch.setattr("run_benchmark.MIPLIB_SEARCH_PATH", (str(default),))
+    assert resolve_data_dir(None) == str(env_dir)
+
+
+def test_falls_back_to_the_head_of_the_search_path(tmp_path, monkeypatch):
+    """With nothing populated the diagnostic still names a concrete directory."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    monkeypatch.delenv("MIPLIB_DIR", raising=False)
+    monkeypatch.setattr("run_benchmark.MIPLIB_SEARCH_PATH", (str(a), str(b)))
+    assert resolve_data_dir(None) == str(a)
+
+
+def test_persistent_location_precedes_tmp():
+    """/tmp does not survive a reboot, so it must never outrank ~/data.
+
+    Inverting these two is how a machine re-downloads 3.5 GB after every
+    restart, which is the whole point of the search path.
+    """
+    assert MIPLIB_SEARCH_PATH.index(os.path.expanduser("~/data/miplib")) < (
+        MIPLIB_SEARCH_PATH.index("/tmp/miplib")
+    )
+
+
+def test_tmp_stays_in_the_search_path():
+    """Checkouts that already populated /tmp/miplib must keep working."""
+    assert "/tmp/miplib" in MIPLIB_SEARCH_PATH
+
+
+def test_unreadable_candidate_is_skipped_not_fatal(tmp_path, monkeypatch):
+    """A candidate we cannot read counts as absent.
+
+    /tmp/miplib is probed for every user, so on a shared machine it may be
+    someone else's mode-700 directory.  Raising there would abort exactly the
+    run that still needed to locate a collection.
+    """
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    populated = _populate(tmp_path / "ok", MIPLIB_MIN_INSTANCES + 1)
+    locked.chmod(0o000)
+    monkeypatch.delenv("MIPLIB_DIR", raising=False)
+    monkeypatch.setattr(
+        "run_benchmark.MIPLIB_SEARCH_PATH", (str(locked), str(populated))
+    )
+    try:
+        assert resolve_data_dir(None) == str(populated)
+    finally:
+        locked.chmod(0o755)
+
+
+def test_empty_explicit_data_dir_falls_through_to_the_search(tmp_path, monkeypatch):
+    """`--data-dir ""` is an unset wrapper variable, not a request for cwd."""
+    populated = _populate(tmp_path / "shared", MIPLIB_MIN_INSTANCES + 1)
+    monkeypatch.delenv("MIPLIB_DIR", raising=False)
+    monkeypatch.setattr("run_benchmark.MIPLIB_SEARCH_PATH", (str(populated),))
+    assert resolve_data_dir("") == str(populated)
+
+
+@pytest.mark.parametrize(
+    ("count", "is_collection"),
+    [(MIPLIB_MIN_INSTANCES, False), (MIPLIB_MIN_INSTANCES + 1, True)],
+)
+def test_the_threshold_boundary_is_exclusive(
+    tmp_path, monkeypatch, count, is_collection
+):
+    """Pins `> MIN` rather than `>= MIN`, so the two implementations cannot drift.
+
+    The second candidate is populated so the two outcomes are distinguishable:
+    were it absent, a rejected first candidate would still be returned as the
+    head-of-path fallback and the assertion could not tell the cases apart.
+    """
+    candidate = _populate(tmp_path / "cand", count)
+    other = _populate(tmp_path / "other", MIPLIB_MIN_INSTANCES + 1)
+    monkeypatch.delenv("MIPLIB_DIR", raising=False)
+    monkeypatch.setattr(
+        "run_benchmark.MIPLIB_SEARCH_PATH", (str(candidate), str(other))
+    )
+    expected = str(candidate) if is_collection else str(other)
+    assert resolve_data_dir(None) == expected
+
+
+def test_data_dir_default_is_resolved_not_hardcoded():
+    """The regression guard for the bug this whole change fixes.
+
+    Reintroducing `default="/tmp/miplib"` on the argparse line is invisible to
+    every other test here: `resolve_data_dir` would receive it as an explicit
+    value and hand it straight back, while the search-path constants stay
+    correct.  The default must be None so resolution actually runs.
+    """
+    parser = build_arg_parser()
+    assert parser.get_default("data_dir") is None
+
+
+# --- the bash/Python contract ----------------------------------------------
+#
+# The search path and the threshold are defined twice, once per language.
+# Drift is silent and expensive -- the downloader writes one directory and the
+# benchmark reads another -- so it is asserted here rather than in prose.
+# Same reflex as `bench/check_docs_refs.py` and the pre-push hook parsing
+# CLAUDE.md's fenced blocks: cross-artifact claims get a test.
+
+DOWNLOAD_SCRIPT = Path(__file__).resolve().parent / "download_miplib.sh"
+
+
+def test_shell_threshold_matches_python():
+    text = DOWNLOAD_SCRIPT.read_text()
+    m = re.search(r"^MIN_INSTANCES=(\d+)", text, re.MULTILINE)
+    assert m, "MIN_INSTANCES not found in download_miplib.sh"
+    assert int(m.group(1)) == MIPLIB_MIN_INSTANCES
+
+
+def _shell_default_candidates() -> list[str]:
+    """Every directory the shell script appends to its default candidate list.
+
+    `findall`, not `search`: adding a fourth candidate as its own
+    `CANDIDATES+=(...)` line is the most natural way to extend the list, and
+    matching only the first line would let exactly the drift this test exists
+    to catch pass green.  `$MIPLIB_DIR` is dropped because Python holds it in
+    the environment rather than in MIPLIB_SEARCH_PATH.
+    """
+    text = DOWNLOAD_SCRIPT.read_text()
+    groups = re.findall(r"^\s*CANDIDATES\+=\(([^)]*)\)", text, re.MULTILINE)
+    assert groups, "no CANDIDATES+=(...) line found in download_miplib.sh"
+    home = os.path.expanduser("~")
+    dirs = []
+    for group in groups:
+        for raw in group.split():
+            d = raw.strip('"').replace("${HOME}", home).replace("$HOME", home)
+            if "MIPLIB_DIR" in d:
+                continue
+            dirs.append(d)
+    return dirs
+
+
+def test_shell_search_path_matches_python():
+    """Same directories, same order, in both implementations."""
+    assert _shell_default_candidates() == list(MIPLIB_SEARCH_PATH)
+
+
+def test_shell_threshold_comparison_is_exclusive():
+    """Pins the shell's `-gt`, not just its number.
+
+    test_shell_threshold_matches_python pins 200 and
+    test_the_threshold_boundary_is_exclusive pins Python's `>`; without this,
+    flipping the shell to `-ge` drifts silently and a directory of exactly 200
+    files becomes a collection to bash but not to Python.
+    """
+    text = DOWNLOAD_SCRIPT.read_text()
+    assert re.search(r'-gt\s+"\$MIN_INSTANCES"', text), (
+        "download_miplib.sh must compare with -gt to match Python's `>`"
+    )
+
+
+def test_shell_and_python_agree_on_the_env_override():
+    assert "MIPLIB_DIR" in DOWNLOAD_SCRIPT.read_text()

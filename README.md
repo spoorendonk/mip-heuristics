@@ -113,15 +113,25 @@ python3 bench/analyze_results.py bench/results/plato --configs patched vanilla -
 
 Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`.
 
+### Where the MIPLIB collection lives
+
+The collection is a 3.5 GB download (~7.3 GB extracted), so it is stored **once per machine, outside any checkout**, and located by a search path rather than a fixed path. `bench/download_miplib.sh` and `run_benchmark.py --data-dir` share it and probe in this order:
+
+1. an explicit `--data-dir` / `DEST_DIR` argument — wins outright, even when the directory is empty, so a name is never silently resolved to some other directory. The two artifacts then differ on what that means: `run_benchmark.py` reads nothing and reports the instances as missing, whereas `download_miplib.sh` treats it as the destination and **downloads 3.5 GB into it** — so check a `DEST_DIR` before passing it
+2. `$MIPLIB_DIR`
+3. `~/data/miplib`
+4. `/tmp/miplib`
+
+The first directory holding more than 200 `.mps.gz` files wins. Only when none does is anything downloaded, and a fresh download lands in the *first* candidate — `~/data/miplib` normally, or `$MIPLIB_DIR` when that is set. `/tmp` is probed so an existing copy is reused instead of refetched, but it is never a download destination, because a collection there does not survive a reboot; the script says so and prints the `mv` that relocates it. The script prints the resolved directory on stdout and everything else on stderr, so `DATA_DIR=$(bash bench/download_miplib.sh)` works.
+
 ### Per-heuristic ablation and budget sweep
 
 `bench/run_benchmark.py` has one config per `mip_heuristic_suite` value — `vanilla`, `off`, `fj`, `fpr`, `local_mip`, `scylla`, `all` — plus `patched` as a back-compatible alias for `all`. An unknown config name is an error, not a run at default options. `--budget-sweep` crosses each config with `mip_heuristic_presolve_effort` values, writing to `<output>/<config>@e<V>/seed<N>/`; those directory names are what `analyze_results.py --configs` takes, so a sweep needs no new analysis code.
 
 ```bash
-bash bench/download_miplib.sh                       # once
+bash bench/download_miplib.sh                       # once per machine; see above
 python3 bench/run_benchmark.py \
     --instances bench/instances_small.txt \
-    --data-dir /tmp/miplib \
     --output bench/results/sweep \
     --configs off fj fpr local_mip scylla all \
     --budget-sweep 0.05 0.15 0.30 0.60 1.00 \
@@ -147,7 +157,7 @@ The closeout's central empirical question is whether running our presolve heuris
 
 ```bash
 python3 bench/run_benchmark.py \
-    --instances bench/instances_small.txt --data-dir /tmp/miplib \
+    --instances bench/instances_small.txt \
     --output bench/results/cannib --configs off fpr local_mip scylla all \
     --time-limit 60 --dev-log --skip-existing
 python3 bench/analyze_results.py bench/results/cannib --cannibalization \

@@ -140,7 +140,7 @@ comparison meaningless. Confirm it prints no patch marker.
 comparable). `bench/run_plato.sh` is built to be stopped and resumed:
 
 ```bash
-bash bench/download_miplib.sh      # once
+bash bench/download_miplib.sh      # once per machine; stores to ~/data/miplib
 bench/run_plato.sh next 8          # run for up to 8 hours, then stop
 bench/run_plato.sh status          # progress and estimated time remaining
 bench/run_plato.sh next 8          # resume; repeat until status shows 233/233

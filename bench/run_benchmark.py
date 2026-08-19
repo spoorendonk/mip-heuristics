@@ -319,6 +319,65 @@ def load_instances(path: str) -> list[str]:
     return instances
 
 
+# Where a MIPLIB collection may already live, most-preferred first.  Kept in
+# step with the same list in `bench/download_miplib.sh` — the two are one
+# contract, and a benchmark that cannot find what the downloader just wrote is
+# the failure this list exists to prevent.  `~/data/miplib` precedes
+# `/tmp/miplib` because /tmp does not survive a reboot, but /tmp stays in the
+# list so checkouts that already populated it keep working.
+MIPLIB_SEARCH_PATH: tuple[str, ...] = (
+    os.path.expanduser("~/data/miplib"),
+    "/tmp/miplib",
+)
+
+# A directory counts as a collection above this many instances, matching
+# MIN_INSTANCES in download_miplib.sh.
+MIPLIB_MIN_INSTANCES = 200
+
+
+def resolve_data_dir(explicit: str | None) -> str:
+    """Pick the MIPLIB directory to read instances from.
+
+    An explicit `--data-dir` wins outright, even when it names an empty
+    directory: asking for a specific directory must not silently resolve to a
+    different one, or a typo'd path reads a different instance set than the one
+    named and the run reports on instances nobody asked for.  An explicit
+    *empty string* is treated as absent, matching download_miplib.sh -- that is
+    a wrapper passing an unset variable through, not a request for the cwd.
+
+    With no explicit value, `$MIPLIB_DIR` then MIPLIB_SEARCH_PATH are probed
+    and the first populated one wins.  Falls back to the head of the search
+    path so the "not found" diagnostic names a concrete directory.
+    """
+    if explicit:
+        return explicit
+
+    candidates = []
+    env_dir = os.environ.get("MIPLIB_DIR")
+    if env_dir:
+        candidates.append(env_dir)
+    candidates.extend(MIPLIB_SEARCH_PATH)
+
+    for d in candidates:
+        if not os.path.isdir(d):
+            continue
+        found = 0
+        try:
+            with os.scandir(d) as it:
+                for entry in it:
+                    if entry.name.endswith(".mps.gz"):
+                        found += 1
+                        if found > MIPLIB_MIN_INSTANCES:
+                            return d
+        except OSError:
+            # Unreadable candidate counts as absent, not fatal: /tmp/miplib is
+            # probed for every user and may be another user's mode-700
+            # directory on a shared box.  Crashing there would abort exactly
+            # the run that still needed to find a collection.
+            continue
+    return candidates[0]
+
+
 def find_instance_file(name: str, data_dir: str) -> str | None:
     """Find instance file, trying .mps.gz and .mps extensions."""
     for ext in [".mps.gz", ".mps"]:
@@ -499,7 +558,14 @@ def run_single(
         return (instance_name, config, seed, False)
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser.
+
+    Split out of `main` so the defaults are assertable.  `--data-dir`'s
+    default in particular is load-bearing: it must stay None so that
+    `resolve_data_dir` actually runs, and a hardcoded path there is invisible
+    to any test that calls `resolve_data_dir` directly.
+    """
     parser = argparse.ArgumentParser(
         description="Run patched vs vanilla HiGHS benchmark"
     )
@@ -516,7 +582,11 @@ def main() -> None:
         "and seed — since the external binary has no mip_heuristic_* options.",
     )
     parser.add_argument(
-        "--data-dir", default="/tmp/miplib", help="Directory with .mps.gz files"
+        "--data-dir",
+        default=None,
+        help="Directory with .mps.gz files. Default: $MIPLIB_DIR, then "
+        + ", then ".join(MIPLIB_SEARCH_PATH)
+        + " — the first one holding a collection wins.",
     )
     parser.add_argument(
         "--time-limit", type=float, default=60, help="Time limit per instance (seconds)"
@@ -631,7 +701,13 @@ def main() -> None:
             "not for headline timings."
         ),
     )
+    return parser
+
+
+def main() -> None:
+    parser = build_arg_parser()
     args = parser.parse_args()
+    args.data_dir = resolve_data_dir(args.data_dir)
 
     binary = os.path.abspath(args.binary)
     if not os.path.exists(binary):
@@ -739,6 +815,12 @@ def main() -> None:
         )
         for name in missing:
             print(f"  {name}", file=sys.stderr)
+        print(
+            "Populate a shared collection with `bash bench/download_miplib.sh` "
+            "(writes ~/data/miplib, reused by every checkout), or point "
+            "--data-dir / $MIPLIB_DIR at an existing one.",
+            file=sys.stderr,
+        )
         instances = [n for n in instances if n in instance_files]
 
     os.makedirs(args.output, exist_ok=True)
