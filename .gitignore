@@ -6,6 +6,8 @@ dist/
 .venv/
 *.pyc
 Highs.log
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
-.claude/worktrees/
+
+# Local agent/dev tooling — not part of the published artifact.  The gates that
+# matter are tracked: .githooks/ (git hooks) and cmake/Lint.cmake (ctest).
+.claude/
+.codex/

@@ -18,6 +18,39 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(MIP_HEURISTICS_INSTRUMENT
        "Enable LocalMIP warm-start branch instrumentation counters" ON)
 
+option(MIP_HEURISTICS_INSTALL_GIT_HOOKS
+       "Point this checkout's core.hooksPath at the tracked .githooks/" ON)
+
+# The git hooks live in .githooks/ under version control, so a fresh clone gets
+# them for free -- but git only runs hooks from core.hooksPath, which is
+# per-checkout config and cannot be tracked.  Configure sets it, since
+# `cmake -B build` is the first thing anyone runs here.  Idempotent, and it
+# never overwrites a value someone else set deliberately: only an unset
+# hooksPath, or one already pointing at .githooks, is touched.
+# EXISTS, not IS_DIRECTORY: in a linked worktree .git is a file.
+if(MIP_HEURISTICS_INSTALL_GIT_HOOKS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" config --get core.hooksPath
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE MIP_HEURISTICS_HOOKS_PATH
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(NOT MIP_HEURISTICS_HOOKS_PATH)
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" config core.hooksPath .githooks
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+            message(STATUS "git hooks: core.hooksPath -> .githooks")
+        elseif(NOT MIP_HEURISTICS_HOOKS_PATH STREQUAL ".githooks")
+            message(WARNING
+                "git hooks: core.hooksPath is '${MIP_HEURISTICS_HOOKS_PATH}', not '.githooks'. "
+                "The tracked hooks under .githooks/ are NOT running. "
+                "Fix with: git config core.hooksPath .githooks")
+        endif()
+    endif()
+endif()
+
 include(cmake/FetchHiGHS.cmake)
 
 add_library(mip_heuristics OBJECT

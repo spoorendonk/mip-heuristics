@@ -1,0 +1,161 @@
+#!/bin/bash
+# Git pre-push hook.
+# Final gate before sharing code — catches what pre-commit doesn't.
+#
+# Flow:
+#   1. Clean build + test → block on failure
+#   2. Remaining issues (complexity, shell warnings) → warn and continue
+#
+# There is no /review stamp gate; it was removed together with the .claude/
+# review command when this repo was prepared for publication.
+#
+# clang-format and clang-tidy are deliberately not run here.  Both are ctest
+# tests labelled `lint` (cmake/Lint.cmake), so step 1's `ctest` already gates
+# them — from a clean tree, over the same file set, with the pinned tool
+# versions.  Running them a second time here would be slower and could
+# disagree.
+
+set -e
+
+# Get changed files vs main
+MAIN_BRANCH="main"
+git rev-parse --verify "origin/$MAIN_BRANCH" &>/dev/null || MAIN_BRANCH="master"
+git fetch origin "$MAIN_BRANCH" --quiet 2>/dev/null || true
+CHANGED_FILES=$(git diff --name-only "origin/$MAIN_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null || true)
+
+[ -z "$CHANGED_FILES" ] && exit 0
+
+PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
+SH_FILES=$(echo "$CHANGED_FILES" | grep -E '\.sh$|^\.githooks/[^/.]+$' || true)
+
+source "$(dirname "$0")/resolve-venv.sh"
+
+# Check if only non-code files changed (skip build+test for docs-only pushes).
+# .githooks/ is excluded: a hook change cannot alter build or test outcomes, so
+# a hooks-only push should not pay for a clean rebuild.
+CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|txt|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
+
+# ============================================================
+# Step 1: Clean build + test (hard block)
+# ============================================================
+
+# Extract a fenced code block under "## Build & Test" by tag (e.g. ```build ... ```)
+extract_block() {
+  local tag="$1"
+  if [ -f "CLAUDE.md" ]; then
+    sed -n -e '/^## Build & Test/,/^## /{' \
+      -e "/^\`\`\`${tag}$/,/^\`\`\`$/{ /^\`\`\`/d; p; }" \
+      -e '}' CLAUDE.md
+  fi
+}
+
+# Run one extracted block.
+#
+# GIT_DIR and GIT_WORK_TREE are unset for the duration: `git push` exports
+# GIT_DIR=.git into the hook environment, and CMake's nested `git clone` inside
+# FetchContent then treats that as the repository it is cloning into, failing
+# with `fatal: invalid reference: v1.15.1` when it tries to check out the HiGHS
+# tag.  Fixed here rather than by prefixing the CLAUDE.md build command with
+# `unset`, so the documented build command stays the one a human would type.
+# Scoped to the subshell so this hook's own `git` calls are unaffected.
+run_block() {
+  set +e
+  (
+    unset GIT_DIR GIT_WORK_TREE
+    eval "$1"
+  )
+  local rc=$?
+  set -e
+  return $rc
+}
+
+if [ -z "$CODE_FILES" ]; then
+  echo ""
+  echo "=== Skipping build+test (docs-only) ==="
+else
+  BUILD_FAILED=0
+  CLEAN_CMD=$(extract_block clean)
+  BUILD_CMD=$(extract_block build)
+  TEST_CMD=$(extract_block test)
+
+  if [ -z "$BUILD_CMD" ] || [ -z "$TEST_CMD" ]; then
+    # No auto-detect fallback: this project's build needs specific options
+    # (REQUIRE_LINT=ON, Release) and a plain `cmake -B build` would produce a
+    # debug tree with the lint gates unregistered — a green push that gated
+    # nothing.  CLAUDE.md's `## Build & Test` blocks are the contract.
+    echo ""
+    echo "Push blocked: could not extract the build/test commands from"
+    echo "CLAUDE.md's '## Build & Test' section. Restore the fenced"
+    echo "\`\`\`clean / \`\`\`build / \`\`\`test blocks there."
+    exit 1
+  fi
+
+  if [ -n "$CLEAN_CMD" ]; then
+    echo ""
+    echo "=== Clean ==="
+    run_block "$CLEAN_CMD" || BUILD_FAILED=1
+  fi
+  if [ "$BUILD_FAILED" -eq 0 ]; then
+    echo ""
+    echo "=== Build ==="
+    run_block "$BUILD_CMD" || BUILD_FAILED=1
+  fi
+  if [ "$BUILD_FAILED" -eq 0 ]; then
+    echo ""
+    echo "=== Test ==="
+    run_block "$TEST_CMD" || BUILD_FAILED=1
+  fi
+
+  if [ "$BUILD_FAILED" -ne 0 ]; then
+    echo ""
+    echo "Push blocked: build or tests failed."
+    exit 1
+  fi
+fi
+
+# ============================================================
+# Step 2: Remaining issues (warn and continue)
+# ============================================================
+
+ISSUES=""
+
+# ruff: the full pinned rule set, matching what CI gates on.  --no-fix so a
+# push never rewrites the commits being pushed.
+if [ -n "$PY_FILES" ] && [ -x "$VENV_BIN/ruff" ]; then
+  echo ""
+  echo "=== Running ruff ==="
+  RESULT=$("$VENV_BIN/ruff" check --no-fix $PY_FILES 2>&1 || true)
+  if [ -n "$RESULT" ] && ! echo "$RESULT" | grep -q "^All checks passed"; then
+    ISSUES="${ISSUES}${RESULT}"$'\n'
+  else
+    echo "ruff: clean"
+  fi
+fi
+
+# shellcheck warnings
+if [ -n "$SH_FILES" ] && command -v shellcheck &>/dev/null; then
+  for f in $SH_FILES; do
+    [ -f "$f" ] || continue
+    RESULT=$(shellcheck "$f" 2>&1 || true)
+    if [ -n "$RESULT" ]; then
+      ISSUES="${ISSUES}${RESULT}"$'\n'
+    fi
+  done
+fi
+
+# If issues found, warn but allow push
+if [ -n "$ISSUES" ]; then
+  echo ""
+  echo "═══════════════════════════════════════════"
+  echo "  Issues found:"
+  echo "═══════════════════════════════════════════"
+  echo "$ISSUES"
+  echo "═══════════════════════════════════════════"
+  echo ""
+  echo "Warning: pushing with known issues."
+else
+  echo ""
+  echo "All checks passed."
+fi
+
+exit 0
