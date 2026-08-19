@@ -22,8 +22,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       # HiGHS is fetched *and patched* at configure time, so the key has to
       # cover both halves: the tag in FetchHiGHS.cmake and the script whose
