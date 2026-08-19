@@ -1,7 +1,7 @@
 # Release process
 
 How to cut and publish a version of this project. Written so the next
-maintainer can do v1.1 without reverse-engineering v1.0.
+maintainer can do v0.2.0 without reverse-engineering v0.1.0.
 
 This document is about *publishing*. It is not about reproducing a run —
 [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md) owns the reproducible recipe, what
@@ -36,7 +36,7 @@ release asset.
 
 ## Three version numbers, only one of which is ours
 
-A reader who sees `v1.0.0` and `HiGHS 1.15.1` in the same sentence needs to
+A reader who sees `v0.1.0` and `HiGHS 1.15.1` in the same sentence needs to
 know which one moves when.
 
 | Number | Where it lives | What it means |
@@ -44,6 +44,13 @@ know which one moves when.
 | `vX.Y.Z` | the git tag; `version:` in `CITATION.cff` | this project's own version. Nothing else derives from it. |
 | `v1.15.1` | `GIT_TAG` in `cmake/FetchHiGHS.cmake` | the upstream solver the heuristics are compiled into, fetched and patched at configure time. |
 | `PATCH_VERSION` | `third_party/highs_patch/apply_patch.cmake` | the revision of *our inserted text*. Stamped into the fetched tree and checked as a sentinel on every configure. |
+
+The first release is **v0.1.0**, not v1.0.0. The 0.x line is deliberate: this
+is a research artifact whose value is the implementations and the measurements,
+and nothing here is offered as a stable API — the option surface, the
+`kWeight*` calibration and the heuristic dispatch order have all moved once and
+may move again. A 1.0 would promise a compatibility contract the project does
+not intend to keep.
 
 The relationship a release has to state: **a tag pins a project version against
 one upstream solver tag.** A HiGHS bump is release-visible even when no
@@ -124,15 +131,15 @@ state produced each row.
 # does not cross-check the two — a wrong value mislabels the archive and
 # shifts the gap@cutoff metric in every generated table.
 bench/make_archive.py build bench/results/plato \
-    --output dist/mip-heuristics-v1.0.0-archive \
+    --output dist/mip-heuristics-v0.1.0-archive \
     --time-limit 600 \
     --machine-note "16-core benchmark host, Xeon ..., 64 GB, otherwise idle" \
-    --note "PLATO mipfeas campaign for v1.0.0" \
+    --note "PLATO mipfeas campaign for v0.1.0" \
     --tar
 
 # Prove it regenerates.  Runs every recorded table command against the
 # archived logs and diffs the result; also re-checks every sha256.
-dist/mip-heuristics-v1.0.0-archive/REGENERATE.sh
+dist/mip-heuristics-v0.1.0-archive/REGENERATE.sh
 ```
 
 Pass the output directory as an argument (`REGENERATE.sh out`) only if you want
@@ -281,7 +288,7 @@ Two consequences that decide the rest of the process:
 Zenodo mints two: a **version DOI** for that specific release, and a **concept
 DOI** that always resolves to the newest version. Put the *concept* DOI in
 `CITATION.cff` and in a `README.md` DOI badge (there is none today, so this
-adds one) — it stays correct across v1.1 — and cite the version DOI when you
+adds one) — it stays correct across v0.2.0 — and cite the version DOI when you
 need to pin exactly what was run.
 
 `CITATION.cff` takes it as an `identifiers:` entry:
@@ -320,7 +327,7 @@ that must not be reordered.
 
 **Preconditions**
 
-- [ ] Every issue in the closeout epic (#88) is merged to `main` — for v1.0 the
+- [ ] Every issue in the closeout epic (#88) is merged to `main` — for v0.1.0 the
       tag is blocked on all of them, not only on the ones the release notes
       name.
 - [ ] `git status` is clean and `main` is up to date.
@@ -388,7 +395,7 @@ that must not be reordered.
 
 ## Cutting the next one
 
-v1.1 differs in three places only:
+v0.2.0 differs in three places only:
 
 - If the HiGHS tag moved, follow `CLAUDE.md`'s "Bumping the HiGHS tag" note and
   clean-rebuild; the archive's provenance will carry the new tag automatically.
