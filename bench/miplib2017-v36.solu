@@ -4,7 +4,7 @@
 =opt=      drayage-100-12                           94941.5891075
 =opt=      drayage-25-23                            101282.647018
 =opt=      drayage-100-23                           103333.87407
-=best=     tokyometro                               8329.399999999996
+=best=     tokyometro                               8263.099999999999
 =unkn=     ns1905797                                
 =opt=      savsched1                                3217.7
 =opt=      neos-933638                              275.9999999999998
@@ -13,10 +13,10 @@
 =opt=      reblock115                               -36800603.2332
 =best=     minutedispatchstrategy                   3109.903477759654
 =opt=      ran14x18-disj-8                          3712
-=best=     ex1010-pi                                235
+=best=     ex1010-pi                                233.0
 =opt=      neos-941313                              9360.999999999985
 =opt=      roi2alpha3n4                             -63.20849503
-=best=     d20200                                   12240
+=best=     d20200                                   12237.0
 =opt=      cvs16r89-60                              -65
 =opt=      in                                       58
 =best=     ns1631475                                11100
@@ -27,16 +27,16 @@
 =opt=      lectsched-1                              0
 =opt=      gasprod1-3                               2310.0993127
 =opt=      gasprod1-2                               983.039488258
-=best=     gasprod1-1                               291.51163698498203
+=best=     gasprod1-1                               291.1753206178254
 =opt=      academictimetablesmall                   0
 =opt=      academictimetablebig                     427
 =opt=      rmatr100-p5                              976
 =inf=      supportcase29                            
 =opt=      bab6                                     -284248.2307000001
-=best=     fhnw-schedule-paira200                   -19.157058350349338
-=best=     fhnw-schedule-paira400                   -35.4988125672093
+=best=     fhnw-schedule-paira200                   -19.2298568218154
+=best=     fhnw-schedule-paira400                   -35.54680465280395
 =best=     fhnw-schedule-pairb200                   -19.24094384259708
-=best=     fhnw-schedule-pairb400                   -35.45718061898704
+=best=     fhnw-schedule-pairb400                   -35.4584
 =best=     fhnw-schedule-paira100                   -15.1131226682367
 =best=     ivu06-big                                140.74
 =opt=      gen-ip002                                -4783.733392
@@ -46,7 +46,7 @@
 =opt=      gen-ip016                                -9476.155197
 =opt=      comp21-2idx                              74
 =opt=      comp08-2idx                              37
-=best=     comp12-2idx                              291
+=best=     comp12-2idx                              277.0
 =opt=      comp07-2idx                              6
 =opt=      aflow40b                                 1168
 =opt=      map14860-20                              -922
@@ -80,7 +80,7 @@
 =opt=      dsbmip                                   -305.19817501
 =opt=      air03                                    340160
 =inf=      mod008inf                                
-=best=     neos-848198                              51837.0
+=best=     neos-848198                              51797.0
 =opt=      fiball                                   138
 =opt=      neos-807639                              454.1999999999998
 =opt=      a2c1s1                                   10889.137625
@@ -101,14 +101,14 @@
 =opt=      sp97ic                                   427684487.6799999
 =opt=      air05                                    26374
 =opt=      blend2                                   7.598985
-=best=     bley_xs1                                 3940855.469999999
+=best=     bley_xs1                                 3855895.859999982
 =opt=      rococoC12-010001                         34045.0
 =opt=      gr4x6                                    202.3499999999979
 =opt=      n6-3                                     15174.999303
 =opt=      h50x2450                                 32906.880834
 =opt=      bley_xs2                                 1051266.38
 =opt=      neos-780889                              3421500
-=best=     ivu59                                    931.0
+=best=     ivu59                                    927.8947518206729
 =opt=      neos-956971                              -237.7688889
 =opt=      blp-ic98                                 4491.44758395
 =opt=      n7-3                                     15425.99999997
@@ -127,7 +127,7 @@
 =opt=      mik-250-20-75-5                          -51532
 =inf=      misc05inf                                
 =opt=      neos-911970                              54.76
-=best=     neos-1420790                             3120.439334905983
+=best=     neos-1420790                             3119.805057682128
 =opt=      neos-1067731                             1025102
 =opt=      markshare1                               0.9999999999990905
 =opt=      mik-250-20-75-3                          -52242
@@ -179,7 +179,7 @@
 =opt=      k16x240b                                 11392.99999884458
 =opt=      cost266-UUE                              25148940.55999998
 =opt=      neos-850681                              2472
-=best=     core4284-1064                            1063.0
+=best=     core4284-1064                            1062.0
 =opt=      p500x2988d                               6
 =opt=      neos-935234                              2431.999999999996
 =opt=      mik-250-20-75-2                          -50768.00000000001
@@ -210,7 +210,7 @@
 =opt=      10teams                                  923.9999999999997
 =opt=      neos-1445738                             -17380
 =opt=      neos2                                    454.86469703
-=best=     n370b                                    1236962.999999957
+=best=     n370b                                    1220708.0
 =opt=      aligninq                                 2712.999999999999
 =opt=      beasleyC2                                144
 =opt=      gt2                                      21165.99999999978
@@ -247,22 +247,22 @@
 =opt=      disctom                                  -5000
 =opt=      dcmulti                                  188182
 =opt=      neos-555343                              1512800
-=best=     core2586-950                             946
+=best=     core2586-950                             944.0
 =opt=      neos-1223462                             -751.0000000645
 =opt=      neos-960392                              -238
 =opt=      neos-574665                              5761665.2169
 =opt=      cap6000                                  -2451377
-=best=     n3709                                    1207965.0
+=best=     n3709                                    1205801.0
 =opt=      enlight_hard                             37
 =inf=      misc04inf                                
 =opt=      swath3                                   397.76134365
 =opt=      sp150x300d                               69
-=best=     dfn-bwin-DBE                             73623.79
+=best=     dfn-bwin-DBE                             73623.78788664003
 =opt=      mik-250-20-75-4                          -52301
 =opt=      timtab1CUTS                              764771.9999997859
 =opt=      dano3_3                                  576.34463303
 =opt=      p500x2988c                               15215
-=best=     neos-1420546                             23011.81329776996
+=best=     neos-1420546                             22948.10319799665
 =opt=      neos-827175                              112.00152
 =opt=      nu4-pr9                                  35520
 =opt=      nsrand-ipx                               51200
@@ -288,7 +288,7 @@
 =opt=      ab67-40-100                              -11186253442
 =opt=      ns4-pr6                                  29314
 =opt=      ger50-17-ptp-pop-6t                      8942.6328
-=best=     ger50-17-ptp-pop-3t                      5231.10985069602
+=best=     ger50-17-ptp-pop-3t                      5224.5144
 =inf=      enlight11                                
 =opt=      ns2034125                                190020.9999999982
 =opt=      gen                                      112313.3627179998
@@ -310,8 +310,8 @@
 =opt=      neos-619167                              1.664893618589958
 =opt=      aflow30a                                 1158
 =opt=      neos-1354092                             46
-=best=     liu                                      1084.0
-=opt=      maxgasflow                               -44565819157.51
+=best=     liu                                      1083.984782
+=opt=      maxgasflow                               -44565819.31886
 =opt=      ns1830653                                20622
 =inf=      p2m2p1m1p0n100                           
 =opt=      dolom1                                   6609253
@@ -320,7 +320,7 @@
 =opt=      lectsched-3                              0
 =opt=      stp3d                                    493.71965
 =opt=      map06                                    -289
-=best=     usafa                                    160.1671357657
+=opt=      usafa                                    160.1671356761785
 =opt=      acc-tight5                               0
 =inf=      ponderthis0517-inf                       
 =opt=      hawaiiv10-130                            52425028.9449536
@@ -330,19 +330,20 @@
 =opt=      neos-1605061                             11.99999999556169
 =opt=      ci-s4                                    3336.23984845
 =opt=      netdiversion                             242
-=unkn=     pb-market-split8-70-4                    
-=best=     pb-gfrd-pnc                              8890
-=best=     pb-grow22                                -415243.0
+=opt=      pb-market-split8-70-4                    0.0
+=best=     pb-gfrd-pnc                              8844.0
+=best=     pb-grow22                                -449536.0
 =opt=      pb-fit2d                                 -20425
-=best=     nsr8k                                    18177986.0
-=best=     t1722                                    109137
-=best=     neos-5044663-wairoa                      4654500.0
+=opt=      probportfolio                            16.734246764
+=best=     nsr8k                                    17974887.99753601
+=best=     t1722                                    108953.0
+=best=     neos-5044663-wairoa                      4654484.555290672
 =opt=      berlin_5_8_0                             62
 =opt=      mkc                                      -563.8460100132
 =opt=      allcolor10                               6
 =unkn=     datt256                                  
 =opt=      sp98ir                                   219676790.4
-=best=     bts4-cta                                 472243.4174959
+=opt=      bts4-cta                                 67048.96566835219
 =opt=      australia-abs-cta                        106.0589096028744
 =opt=      cbs-cta                                  0
 =opt=      dale-cta                                 0
@@ -352,18 +353,18 @@
 =opt=      breastcancer-regularized                 35.76784210526315
 =opt=      mushroom-best                            0.0553337612
 =opt=      adult-max5features                       5642.121938895418
-=best=     adult-regularized                        7022.953543477999
+=opt=      adult-regularized                        7022.953543474559
 =opt=      sct2                                     -230.9891623
-=best=     sct31                                    -29.317051745
+=opt=      sct31                                    -29.31709163566364
 =inf=      fhnw-sq3                                 
 =opt=      fhnw-sq2                                 0
 =unkn=     nucorsav                                 
 =opt=      neos-1442119                             -181.000000000003
 =best=     supportcase38                            32873.9683458331
 =opt=      neos-686190                              6730
-=best=     sorrell7                                 -196.0
+=best=     sorrell7                                 -198.0
 =opt=      sorrell3                                 -16
-=best=     sorrell4                                 -24
+=opt=      sorrell4                                 -24
 =opt=      sorrell8                                 -350
 =opt=      bnatt400                                 1
 =opt=      tbfp-network                             24.16319444
@@ -374,7 +375,7 @@
 =opt=      physiciansched5-3                        21100
 =opt=      physiciansched3-3                        2623271.326667
 =opt=      physiciansched3-4                        1480386.746666666
-=best=     r4l4-02-tree-bounds-50                   499258899.0000008
+=best=     r4l4-02-tree-bounds-50                   499132179.0015595
 =opt=      neos-5013590-toitoi                      3772.4527499
 =opt=      acc-tight4                               0
 =opt=      ex9                                      81
@@ -384,20 +385,20 @@
 =best=     allcolor58                               258.0
 =best=     t1717                                    158260
 =opt=      momentum1                                109143.4935
-=best=     stockholm                                124.9999999999667
-=best=     dlr1                                     2708148.95990256
-=best=     dlr2                                     143561683710
+=best=     stockholm                                120.9999950202855
+=best=     dlr1                                     2708064.1369803
+=best=     dlr2                                     18311711.89666227
 =opt=      rocI-4-11                                -6020203
 =opt=      rocII-5-11                               -6.675504731538
 =best=     rocII-8-11                               -8.739845350261154
-=best=     rocII-10-11                              -11.788306728252564
+=best=     rocII-10-11                              -11.79399274280434
 =opt=      rocI-3-11                                -50403
-=best=     ns1849932                                668.0
+=best=     ns1849932                                632.0
 =opt=      ns1760995                                -549.21438505
 =opt=      ns1430538                                88
-=best=     ns1679495                                2663944.15
-=best=     ns1690781                                -927.025889150118
-=best=     ns1828997                                9
+=best=     ns1679495                                2642035.198713481
+=best=     ns1690781                                -928.0853470314722
+=best=     ns1828997                                7.99999999999967
 =opt=      bab5                                     -106411.8401
 =opt=      transportmoment                          -3063103721.717
 =opt=      mine-166-5                               -566395707.9
@@ -413,31 +414,31 @@
 =opt=      neos-4295773-pissa                       0.03830719099856019
 =opt=      neos-3065804-namu                        0
 =opt=      neos-5178119-nalagi                      22.73999999763
-=best=     neos-5151569-mologa                      686789910.9169999
+=best=     neos-5151569-mologa                      686748326.4866663
 =opt=      neos-4322846-ryton                       0.41984836
 =opt=      neos-5138690-middle                      739
 =opt=      neos-3761878-oglio                       422769.02254
-=best=     neos-4321076-ruwer                       2135.200000000028
+=opt=      neos-4321076-ruwer                       2135.200000000028
 =opt=      neos-3048764-nadi                        -3883988306.4
 =opt=      neos-5076235-embley                      2362
-=best=     neos-4232544-orira                       51015596.2014
+=best=     neos-4232544-orira                       5538597.399999999
 =opt=      neos-5116085-kenana                      602
 =opt=      neos-4736745-arroux                      247345269.52
 =inf=      neos-3218348-suir                        
-=best=     neos-4535459-waipa                       26192754
+=best=     neos-4535459-waipa                       26040609.0
 =opt=      neos-3699377-maori                       135877.224265
 =opt=      neos-3530903-gauja                       168
 =unbd=     neos-3709489-menik                       
 =opt=      neos-3592146-hawea                       15465800.718
-=best=     neos-3594536-henty                       401382.0
-=best=     neos-4531126-vouga                       525053.6089188
+=best=     neos-3594536-henty                       401223.0
+=best=     neos-4531126-vouga                       13216.63396836053
 =inf=      neos-5157194-moruya                      
 =opt=      neos-5118834-korana                      757
 =opt=      neos-4532248-waihi                       61.59999999999999
 =opt=      neos-4724674-aorere                      8609.1960886
 =opt=      neos-3611447-jijia                       107
 =opt=      neos-4954672-berkel                      2612710
-=unkn=     neos-3208254-reiu                        
+=best=     neos-3208254-reiu                        -34897.00052514407
 =opt=      neos-3226448-wkra                        0
 =unkn=     neos-3603137-hoteo                       
 =opt=      neos-3024952-loue                        26756
@@ -447,8 +448,8 @@
 =opt=      neos-3352863-ancoa                       28700
 =opt=      neos-4984115-canche                      -9946659.921
 =unbd=     neos-5081619-ganges                      
-=best=     neos-4230265-orari                       81765.21022354232
-=best=     neos-4285819-pedja                       101.6254202110633
+=best=     neos-4230265-orari                       73755.00000000189
+=best=     neos-4285819-pedja                       88.49933630640803
 =opt=      neos-4300652-rahue                       2.1416
 =opt=      neos-3656078-kumeu                       -13172.2
 =opt=      neos-3610051-istra                       49
@@ -461,7 +462,7 @@
 =opt=      neos-3075395-nile                        6021719.99999999
 =opt=      neos-5108386-kalang                      729.9999999999998
 =best=     neos-4533806-waima                       4870
-=best=     neos-5045105-creuse                      20.57142909929996
+=best=     neos-5045105-creuse                      20.57124707548
 =opt=      neos-3237086-abava                       0.0
 =opt=      neos-5114902-kasavu                      655
 =opt=      neos-3755335-nizao                       50.0301565326
@@ -516,11 +517,11 @@
 =opt=      neos-4703857-ahuroa                      7868280750.275999
 =opt=      neos-5182409-nasivi                      301.99999992
 =opt=      neos-5115478-kaveri                      1233.99999999096
-=best=     neos-3754224-navua                       280713.5799432847
+=best=     neos-3754224-navua                       157909.0677610051
 =unbd=     neos-5041756-cobark                      
 =opt=      neos-2669500-cust                        2242
-=best=     neos-3426085-ticino                      225
-=best=     neos-3740487-motru                       164.4691736839999
+=opt=      neos-3426085-ticino                      225
+=opt=      neos-3740487-motru                       164.4691736839999
 =opt=      neos-5083528-gimone                      0
 =opt=      neos-2328163-agri                        27674
 =opt=      neos-5118851-kowhai                      1376
@@ -535,7 +536,7 @@
 =opt=      neos-4391920-timok                       0.00545540819999822
 =opt=      neos-2746589-doon                        2008.199999999999
 =best=     neos-4545615-waita                       6311.0
-=best=     neos-4290317-perth                       3017324.031863907
+=best=     neos-4290317-perth                       3017215.871431054
 =opt=      neos-3660371-kurow                       2270.85
 =opt=      neos-3209462-rhin                        12
 =opt=      neos-4359986-taipa                       69.79999999999997
@@ -548,7 +549,7 @@
 =opt=      neos-5079731-flyers                      2439.999999949
 =opt=      neos-3373491-avoca                       27449084632
 =opt=      neos-4413714-turia                       45.3701670199998
-=best=     neos-3634244-kauru                       1398.01568576
+=best=     neos-3634244-kauru                       1398.014670518538
 =opt=      neos-5102383-irwell                      2210
 =opt=      neos-5125849-lopori                      0
 =best=     neos-5041822-cockle                      5724245.704467608
@@ -556,13 +557,13 @@
 =opt=      neos-4332801-seret                       279835.50495
 =opt=      neos-3402294-bobin                       0.06724999999999949
 =opt=      neos-3661949-lesse                       688995225
-=best=     neos-4292145-piako                       29160.50026450142
+=best=     neos-4292145-piako                       19229.99836942454
 =opt=      neos-5193246-nerang                      0.03821976217279999
-=best=     neos-3068746-nene                        61910283.68794999
+=opt=      neos-3068746-nene                        61910283.68794999
 =opt=      neos-5049753-cuanza                      561.9999971689
 =opt=      neos-4754521-awarau                      0
-=best=     neos-3691541-lonja                       0.036086159868
-=best=     neos-3426132-dieze                       407
+=best=     neos-3691541-lonja                       -0.007441450579999998
+=opt=      neos-3426132-dieze                       407
 =opt=      neos-3627168-kasai                       988585.6199999998
 =opt=      neos-4966258-blicks                      556
 =opt=      neos-4954274-beardy                      20946.48
@@ -575,22 +576,22 @@
 =opt=      neos-3636886-kereu                       100001768.08
 =opt=      neos-5018451-chiese                      -147988824.81
 =opt=      neos-3046615-murg                        1600
-=best=     neos-3322547-alsek                       400.0
+=opt=      neos-3322547-alsek                       399.0
 =opt=      neos-5100895-inster                      3132
 =best=     neos-4555749-wards                       3759
-=opt=      neos-3754480-nidda                       12941.73838561778
+=opt=      neos-3754480-nidda                       12939.7540104743
 =best=     neos-2978205-isar                        -11.92580869
 =opt=      neos-5195221-niemur                      0.0038354326
 =opt=      neos-5129192-manaia                      0
 =inf=      neos-3402454-bohle                       
-=best=     neos-4264598-oueme                       6038453.676499
+=best=     neos-4264598-oueme                       5997393.477697832
 =opt=      neos-3072252-nete                        11807698
 =best=     neos-4358725-tagus                       4206.140099965
-=best=     neos-5196530-nuhaka                      0.006821675088566438
+=opt=      neos-5196530-nuhaka                      0.006821675088566438
 =opt=      neos-3004026-krka                        0
 =opt=      neos-5075914-elvire                      323.8387873868924
 =unbd=     neos-3654993-kolva                       
-=best=     mining                                   -833555203.4089005
+=best=     mining                                   -833589149.2736579
 =inf=      no-ip-64999                              
 =inf=      no-ip-65059                              
 =opt=      swath                                    467.407491
@@ -604,10 +605,10 @@
 =opt=      bmocbd                                   -32041010095050
 =opt=      app1-2                                   -41
 =opt=      msc98-ip                                 19839497.0058743
-=best=     momentum3                                173904.8
-=best=     z26                                      -1192.0
+=best=     momentum3                                173202.1762194289
+=best=     z26                                      -1198.0
 =opt=      neos-5149806-wieprz                      21
-=best=     ns1456591                                988.1412834399999
+=best=     ns1456591                                988.1405440676191
 =opt=      set3-20                                  159462.572721458
 =opt=      neos-5273874-yomtsa                      0
 =opt=      beasleyC3                                753.9999999999128
@@ -619,9 +620,9 @@
 =opt=      nursesched-sprint02                      57.99999999999999
 =opt=      nursesched-medium-hint03                 115
 =opt=      nursesched-medium04                      237
-=best=     sing17                                   36177046.91481996
+=best=     sing17                                   36161699.37883251
 =opt=      sing326                                  7753674.85376
-=best=     sing11                                   19108639.4603942
+=best=     sing11                                   19108639.43924989
 =opt=      sing44                                   8128831.1772
 =best=     sing5                                    18778435.60767737
 =opt=      set3-10                                  185179.043049708
@@ -633,7 +634,7 @@
 =opt=      thor50dday                               40417
 =opt=      map18                                    -847
 =opt=      blp-ic97                                 4025.023580799999
-=best=     dc1l                                     1759050.4901
+=best=     dc1l                                     1758647.6801
 =opt=      neos-1337307                             -202319
 =best=     core4872-1529                            1530.0
 =opt=      lectsched-4-obj                          4
@@ -643,35 +644,35 @@
 =best=     graph40-20-1rand                         -15
 =opt=      graph20-20-1rand                         -9
 =best=     graph40-80-1rand                         -7
-=best=     sct5                                     -228.1172303718
+=best=     sct5                                     -228.1291920717949
 =opt=      wachplan                                 -8
 =opt=      supportcase42                            7.75863072227
 =opt=      lectsched-2                              0
 =opt=      csched010                                407.999999999994
 =opt=      decomp2                                  -160
-=unkn=     lr2-22dr3-333vc4v17a-t60                 
+=best=     lr2-22dr3-333vc4v17a-t60                 -27262.58917622233
 =opt=      neos18                                   16
-=best=     supportcase39                            -1085069.602859
+=best=     supportcase39                            -1085080.906934894
 =best=     ns930473                                 821466
 =opt=      reblock354                               -39280521.2281657
 =opt=      b-ball                                   -1.50000000000001
-=best=     comp16-3idx                              24
+=opt=      comp16-3idx                              18.0
 =opt=      woodlands09                              0
 =best=     kottenpark09                             1715.0
-=best=     kosova1                                  293.0
+=opt=      kosova1                                  0.0
 =opt=      highschool1-aigio                        0
 =opt=      brazil3                                  24
 =opt=      mad                                      0.0268
 =opt=      bppc8-09                                 471.9999999999998
 =opt=      bppc4-08                                 53
 =opt=      bppc8-02                                 506.9999999999998
-=best=     bppc6-02                                 116
+=opt=      bppc6-02                                 116
 =best=     bppc6-06                                 208
 =opt=      germanrr                                 47095869.649
 =opt=      ns1208400                                2
 =opt=      queens-30                                -40
 =opt=      atm20-100                                2463621.57727541
-=best=     supportcase35                            -314.500022917186
+=best=     supportcase35                            -164208.643099287
 =opt=      decomp1                                  -120
 =opt=      newdano                                  65.66666666
 =opt=      mine-90-10                               -784302337.6332
@@ -685,31 +686,31 @@
 =opt=      n3seq24                                  52200
 =opt=      bmoipr2                                  -46416168.2981393
 =opt=      bg512142                                 184202.75
-=best=     shipsched                                114165.945759944
-=best=     ds-big                                   195.498997075249
+=best=     shipsched                                111919.8337342348
+=best=     ds-big                                   194.58674798
 =opt=      gmu-35-50                                -2607958.33
 =opt=      net12                                    214
 =opt=      30n20b8                                  302
-=best=     scpk4                                    321.0
-=best=     scpm1                                    554.0
-=best=     scpn2                                    516
+=best=     scpk4                                    318.0
+=best=     scpm1                                    540.0
+=best=     scpn2                                    485.0
 =best=     scpj4scip                                128
-=best=     scpl4                                    262
+=best=     scpl4                                    259.0
 =opt=      air04                                    56137
 =inf=      uc720-7-4-4-8                            
 =opt=      neos-824661                              33
 =best=     rmine11                                  -2508.404144
 =opt=      supportcase4                             0
 =opt=      supportcase18                            48
-=best=     supportcase23                            -12160.6593559088
+=best=     supportcase23                            -12160.6593571676
 =opt=      supportcase6                             51906.47737
 =opt=      supportcase1                             20078
 =opt=      supportcase20                            45592
-=inf=      supportcase22                            
+=best=     supportcase22                            110.0
 =opt=      supportcase11                            -14.281996107
 =opt=      supportcase16                            288
 =opt=      supportcase10                            7
-=best=     supportcase2                             65
+=opt=      supportcase2                             65
 =opt=      supportcase12                            -7559.533053817
 =opt=      supportcase14                            288
 =opt=      supportcase17                            1329.999999999999
@@ -718,12 +719,12 @@
 =opt=      supportcase26                            1745.123813
 =opt=      supportcase19                            12677205.99992052
 =opt=      supportcase7                             -1132.223177
-=best=     ramos3                                   192.0
-=best=     splan1                                   341753.1328329209
-=best=     neos-5260764-orauea                      82593.180883185
+=best=     ramos3                                   186.0
+=best=     splan1                                   -194377.6306530872
+=opt=      neos-5260764-orauea                      82593.16768840607
 =opt=      neos-5261882-treska                      51614.874
 =best=     neos-5266653-tugela                      65505.2005752763
-=best=     neos-5221106-oparau                      55.5399999999997
+=best=     neos-5221106-oparau                      52.66999999999962
 =best=     nag                                      945
 =opt=      neos-1396125                             3000.0453373
 =best=     rmine13                                  -3495.3706624382535
@@ -732,63 +733,63 @@
 =unkn=     nj2                                      
 =unkn=     nj1                                      
 =unkn=     nj3                                      
-=best=     dws012-03                                140473.60932083728
-=best=     dws012-01                                82030.55222223999
-=best=     dws012-02                                126211.9341071
+=best=     dws012-03                                140473.5764898607
+=best=     dws012-01                                82030.53014261134
+=best=     dws012-02                                119893.3107095763
 =opt=      dws008-01                                37412.60458794508
 =opt=      dws008-03                                62831.7633546923
 =opt=      tanglegram6                              1224
-=best=     cmflsp40-36-2-10                         66456407.51812819
+=best=     cmflsp40-36-2-10                         66452234.49456009
 =best=     cmflsp60-36-2-6                          73891245.38458699
 =opt=      cmflsp50-24-10-4                         58988866.7484
 =opt=      cmflsp50-24-8-8                          55789389.886
 =opt=      cmflsp40-24-10-7                         51664409.27209999
 =opt=      co-100                                   2639942.06
-=best=     eva1aprime5x5opt                         -17.52487708854096
-=best=     eva1aprime6x6opt                         -12.885929039705424
+=best=     eva1aprime5x5opt                         -17.94807560443689
+=best=     eva1aprime6x6opt                         -18.10146978964996
 =opt=      lectsched-5-obj                          24
 =opt=      supportcase43                            0
 =opt=      rococoC11-011100                         20889
 =opt=      pigeon-13                                -12000
 =opt=      tw-myciel4                               10
-=best=     siena1                                   10359207.14391836
+=best=     siena1                                   10341586.2
 =opt=      neos-5223573-tarwin                      0.1058
-=best=     dano3mip                                 665.571428571428
+=best=     dano3mip                                 664.0208333333334
 =opt=      neos-1112782                             571844066711
 =opt=      rail03                                   -867.093965444446
-=best=     nb10tb                                   13797867680.1445
+=best=     nb10tb                                   13796452423.08137
 =opt=      cvs16r70-62                              -42
-=best=     n3700                                    1227629.0
+=best=     n3700                                    1218974.9999999998
 =opt=      rail507                                  174
 =opt=      v150d30-2hopcds                          41.0
 =opt=      roll3000                                 12889.999992
 =opt=      umts                                     30090327.99999997
-=best=     neos-5189128-totara                      6459882.26
+=best=     neos-5189128-totara                      6459876.138513831
 =best=     neos-4360552-sangro                      -8.0
 =opt=      neos-3372571-onahau                      0.411055181902462
 =opt=      neos-4760493-puerua                      2665.4577364
 =opt=      neos-4797081-pakoka                      0
 =opt=      neos-4165869-wannon                      293
 =opt=      neos-3555904-turama                      -34.7
-=best=     neos-4647027-thurso                      27407.32689999996
+=opt=      neos-4647027-thurso                      27407.32689999996
 =opt=      neos-4647030-tutaki                      27265.70599999996
 =inf=      neos-3631363-vilnia                      
 =opt=      neos-3025225-shelon                      0.7727272712094
 =inf=      neos-4382714-ruvuma                      
 =opt=      neos-4763324-toguru                      1613.03884585
-=best=     neos-3695882-vesdre                      519.3374335415116
+=best=     neos-3695882-vesdre                      518.3505480226543
 =inf=      neos-3988577-wolgan                      
 =best=     neos-4647032-veleka                      27214.4801
-=best=     neos-3355120-tarago                      -11115860.31150393
+=best=     neos-3355120-tarago                      -11115971.493905
 =inf=      neos-2075418-temuka                      
-=best=     neos-3682128-sandon                      34666770
+=best=     neos-3682128-sandon                      34666767.4743958
 =opt=      neos-4408804-prosna                      1306
-=best=     neos-3615091-sutlej                      -1048730.84101147
+=best=     neos-3615091-sutlej                      -1048730.937912077
 =opt=      ns1116954                                0
 =best=     cdma                                     -2.48e+16
 =inf=      enlight9                                 
 =best=     hgms62                                   -44837.24534313961
-=best=     hgms30                                   -44338.3173275985
+=best=     hgms30                                   -44338.74480308597
 =opt=      hgms-det                                 -47314.08587415493
 =opt=      sct32                                    -17.8875590846509
 =opt=      milo-v12-6-r2-40-1                       326481.14282799
@@ -797,30 +798,30 @@
 =opt=      milo-v13-4-3d-3-0                        273238.08563337
 =best=     milo-v13-4-3d-4-0                        358152.2621937089
 =opt=      shiftreg1-4                              132.66969396
-=best=     ofi2                                     6153920483.9
+=opt=      ofi2                                     6153907910.792608
 =opt=      tanglegram4                              10696
-=best=     bmocbd3                                  -372986719.737107
-=best=     zeil                                     1109.55
+=best=     bmocbd3                                  -373568021.469342
+=best=     zeil                                     1081.358500000008
 =opt=      iis-glass-cov                            20.99999999999999
 =opt=      iis-hc-cov                               17
 =best=     f2000                                    1810.0
-=best=     van                                      4.57384993378808
+=opt=      van                                      4.57384993378808
 =opt=      bab1                                     -218764.88525
 =opt=      rmatr200-p20                             837
 =opt=      pigeon-10                                -9000
 =opt=      neos-1112787                             564772773667
-=best=     genus-sym-g62-2                          -34.0
+=best=     genus-sym-g62-2                          -38.0
 =best=     genus-g31-8                              -23
 =best=     genus-sym-grafo5708-48                   -21
-=best=     genus-sym-g31-8                          -21
-=best=     genus-g61-25                             -34
-=best=     xmas10                                   -495
+=best=     genus-sym-g31-8                          -23.0
+=best=     genus-g61-25                             -40.0
+=best=     xmas10                                   -497.0
 =opt=      moj-mining                               -1256561010.473
 =inf=      fhnw-binpack4-4                          
 =inf=      fhnw-binpack4-18                         
 =unkn=     fhnw-binpack4-58                         
 =opt=      fhnw-binpack4-48                         0
-=unkn=     fhnw-binpack4-77                         
+=opt=      fhnw-binpack4-77                         0.0
 =best=     n3705                                    1212657.0
 =opt=      splice1k1                                -394
 =best=     proteindesign121hz512p19                 3382.0
@@ -841,32 +842,32 @@
 =opt=      satellites2-60-fs                        -19.0000000001
 =opt=      uct-subprob                              314
 =opt=      peg-solitaire-a3                         1
-=best=     ns1904248                                38.22
+=best=     ns1904248                                37.01762611059417
 =opt=      neos-5251015-ogosta                      0.1058
 =opt=      cod105                                   -12
 =best=     lr1dr02vc05v8a-t360                      123046.8149370308
-=best=     lr1dr12vc10v70b-t360                     1166516.57270949
-=best=     lr1dr04vc05v17a-t360                     253167.754515788
+=best=     lr1dr12vc10v70b-t360                     1000790.979722782
+=best=     lr1dr04vc05v17a-t360                     252463.0
 =opt=      supportcase33                            -345
-=best=     ns1856153                                34.7368033946254
+=best=     ns1856153                                34.16346179965939
 =opt=      qiu                                      -132.87313695
 =opt=      neos-826650                              29
 =inf=      neos-859770                              
 =opt=      momentum2                                12314.1
-=best=     circ10-3                                 280
+=best=     circ10-3                                 256.0
 =opt=      ivu52                                    481.0068
 =opt=      usAbbrv-8-25_70                          120
 =opt=      lotsize                                  1480195
 =opt=      rail02                                   -200.4499077
 =opt=      gmu-35-40                                -2406733.3688
 =opt=      gus-sch                                  -1167
-=best=     s82                                      -33.78523764658873
+=best=     s82                                      -33.7970576238223
 =opt=      ns1952667                                0
 =opt=      ger50_17_trans                           7393.2618
 =opt=      seymour                                  423
 =opt=      shiftreg2-7                              230.326187744737
 =opt=      gmut-75-50                               -14180699.047
-=best=     rfds-4-days                              -1126397.23187544
+=best=     rfds-4-days                              -1129915.8646
 =opt=      neos-885524                              12320.092
 =opt=      neos-1601936                             2.99999999999894
 =opt=      toll-like                                610
@@ -874,7 +875,7 @@
 =opt=      pythago7824                              0
 =unkn=     pythago7825                              
 =opt=      neos-738098                              -1099
-=best=     supportcase41                            32.03376809388
+=best=     supportcase41                            32.00076832127569
 =opt=      biella1                                  3065005.78
 =opt=      vpphard2                                 81
 =opt=      bienst2                                  54.59999999999996
@@ -883,8 +884,8 @@
 =opt=      supportcase21i                           20
 =opt=      supportcase27i                           1330
 =best=     seqsolve1                                4277.0
-=unkn=     seqsolve3short4288excess384              
-=unkn=     seqsolve2short4288                       
+=best=     seqsolve3short4288excess384              -40015.0
+=best=     seqsolve2short4288                       83.9999999999994
 =opt=      rococoC10-001000                         11460
 =opt=      f2gap801600                              86678.999982707
 =opt=      f2gap401600                              82306.9999999945
@@ -899,7 +900,7 @@
 =opt=      n2seq36q                                 52200
 =opt=      triptim1                                 22.8680999999999
 =opt=      npmv07                                   104809812543.8479
-=best=     tpl-tub-ws1617                           121108.0
+=best=     tpl-tub-ws1617                           121066.0
 =opt=      tpl-tub-ss16                             150501
 =opt=      piperout-03                              74981.99999999999
 =opt=      piperout-08                              125054.9999999999
@@ -907,15 +908,15 @@
 =opt=      piperout-d20                             29948
 =opt=      piperout-27                              8123.999999999973
 =opt=      unitcal_7                                19635558.244
-=best=     cdc7-4-3-2                               -289.0
+=best=     cdc7-4-3-2                               -307.0
 =best=     rmine15                                  -5018.819990999996
 =inf=      bnatt500                                 
-=best=     shiftreg5-1                              522.1155479894852
+=opt=      shiftreg5-1                              520.2562364680399
 =opt=      neos-520729                              -1385000.000166
 =opt=      dg012142                                 2300867
 =opt=      core2536-691                             689
 =best=     fastxgemm-n3r21s3t6                      4110.99800117485
-=best=     fastxgemm-n3r22s4t6                      3101.998498499999
+=best=     fastxgemm-n3r22s4t6                      3101.998198399999
 =opt=      fastxgemm-n2r7s4t1                       41.99999999999998
 =best=     fastxgemm-n3r23s5t6                      3089.997998
 =opt=      fastxgemm-n2r6s0t2                       230
@@ -924,7 +925,7 @@
 =opt=      mspsphard01i                             35
 =opt=      shipschedule6shipsmixi                   -301650
 =opt=      cvrpsimple2i                             34
-=best=     cvrpa-n64k9vrpi                          2042.0
+=best=     cvrpa-n64k9vrpi                          1617.0
 =opt=      ghoulomb4-9-10i                          44
 =opt=      stoch-vrpvrp-s5v2c8vrp-v2c8i             329.9999999999999
 =opt=      mrcpspj30-53-3i                          34
@@ -961,18 +962,18 @@
 =inf=      maritime-jg3d9                           
 =opt=      mc11                                     11688.99999999966
 =opt=      graphdraw-domain                         19685.99997550038
-=best=     graphdraw-mainerd                        39852.99999999995
+=best=     graphdraw-mainerd                        38841.9999999991
 =opt=      graphdraw-gemcutter                      7118.5
-=best=     graphdraw-opmanager                      103535.4999999998
-=best=     graphdraw-grafo2                         72118.5
+=best=     graphdraw-opmanager                      99445.5
+=best=     graphdraw-grafo2                         68613.49999999868
 =opt=      danoint                                  65.6666666666
 =opt=      s100                                     -0.1697235270583
-=best=     gsvm2rl12                                22.12011638092
-=best=     gsvm2rl9                                 7438.181167768
+=best=     gsvm2rl12                                21.90385635871968
+=best=     gsvm2rl9                                 7438.181021170049
 =opt=      gsvm2rl5                                 5.42305352523751
 =opt=      gsvm2rl3                                 0.33652753
-=best=     gsvm2rl11                                18121.63800478
-=best=     gmut-76-40                               -14169441.78
+=best=     gsvm2rl11                                18121.6376441351
+=best=     gmut-76-40                               -14169477.79550346
 =best=     gmut-76-50                               -14171893.7789212
 =opt=      opm2-z12-s8                              -58540
 =opt=      opm2-z10-s4                              -33269
@@ -997,7 +998,7 @@
 =opt=      ej                                       25508
 =opt=      rail01                                   -70.5699643
 =opt=      pg                                       -8674.34260712
-=best=     fhnw-binschedule0                        16122.0
+=best=     fhnw-binschedule0                        16088.0
 =best=     fhnw-binschedule1                        55198.0
 =best=     fhnw-binschedule2                        2428
 =opt=      pigeon-16                                -15000
@@ -1006,7 +1007,7 @@
 =opt=      csched007                                350.9999999999955
 =opt=      rococoB10-011000                         19449
 =opt=      a1c1s1                                   11503.444125
-=best=     uccase10                                 39134.295915
+=best=     uccase10                                 39133.58410997513
 =opt=      uccase9                                  10993.131409
 =opt=      uccase12                                 11507.4050616
 =opt=      uccase8                                  11167.74532
@@ -1019,13 +1020,13 @@
 =opt=      satellites3-25                           -25
 =opt=      satellites4-25                           -25
 =opt=      ns1644855                                -1524.33333333333
-=best=     polygonpack4-15                          -63613612.41121812
-=best=     polygonpack3-15                          -54680307.392604
-=best=     polygonpack4-7                           -51837707.95034043
-=best=     polygonpack5-15                          -54950356.2656221
-=best=     polygonpack4-10                          -53594065.703
+=best=     polygonpack4-15                          -63613643.56171419
+=best=     polygonpack3-15                          -55055635.46642546
+=best=     polygonpack4-7                           -51837758.96241999
+=best=     polygonpack5-15                          -55494687.6476085
+=best=     polygonpack4-10                          -53594508.70758325
 =opt=      bab2                                     -357544.3115
-=best=     ns2124243                                77460
+=best=     ns2124243                                77459.99169057666
 =best=     shs1042                                  11070.7015802402
 =opt=      chromaticindex256-8                      4
 =opt=      chromaticindex32-8                       4
@@ -1037,7 +1038,7 @@
 =inf=      control30-5-10-4                         
 =opt=      control20-5-10-5                         406205618311810
 =opt=      control30-3-2-3                          -17.25658927192
-=opt=      binkar10_1                               6742.1998835
+=opt=      binkar10_1                               6741.38002393972
 =opt=      blp-ar98                                 6205.2147104
 =opt=      hanoi5                                   1931
 =opt=      bley_xl1                                 190
@@ -1047,18 +1048,18 @@
 =opt=      leo1                                     404227536.16
 =opt=      rmatr200-p5                              4521
 =opt=      pg5_34                                   -14339.35345
-=best=     rwth-timetable                           791001
-=best=     shs1014                                  22671.75152511
+=best=     rwth-timetable                           772998.0
+=best=     shs1014                                  22671.19742691877
 =opt=      2club200v15p5scn                         -70
 =opt=      eil33-2                                  934.007915999999
-=best=     snp-10-004-052                           5906642865.78
-=best=     snp-04-052-052                           885202237.1881002
-=best=     snp-06-004-052                           1869531919.902
-=best=     snp-10-052-052                           6364531568.73705
+=best=     snp-10-004-052                           5906642759.088037
+=best=     snp-04-052-052                           881796490.7470638
+=best=     snp-06-004-052                           1869531794.272782
+=best=     snp-10-052-052                           6059860690.259938
 =opt=      snp-02-004-104                           586803238.6567289
 =opt=      map10                                    -495
 =opt=      supportcase40                            24256.3122898
-=best=     bharat                                   4193333.93287
+=best=     bharat                                   4039608.50665507
 =opt=      s1234                                    29
 =opt=      reblock420                               -517793000
-=best=     supportcase31                            -3720089.081
+=best=     supportcase31                            -3720096.597

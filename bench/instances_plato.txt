@@ -6,6 +6,19 @@
 #   neos-2075418-temuka, neos-3402454-bohle, neos-3988577-wolgan, neos859080
 # Time limit: 600s. Metric: primal integral (area under primal-gap curve).
 # See bench/run_plato.sh for the comparison workflow.
+#
+# supportcase22 — this list is right, do not re-litigate it (issue #104).
+# It reads as an anomaly because the bundled solution file used to mark it
+# `=inf=` while this header counts it among the 233 feasible instances.  The
+# solution file was stale, not this list.  Upstream MIPLIB now records
+# `=best= supportcase22 110.0`, and the instance page lists three submitted
+# feasible solutions (117 in 2023-05, 111 in 2024-01, 110 in 2024-07):
+#   https://miplib.zib.de/instance_details_supportcase22.html
+# The bundled reference data was therefore refreshed to miplib2017-v36.solu
+# (retrieved 2026-08-20 from https://miplib.zib.de/downloads/miplib2017-v36.solu).
+# Note that intermediate versions v20..v35 carry `=opt= supportcase22 111.0`,
+# which upstream itself retracted once the 110 solution landed — do not pin an
+# older file to "fix" this, it reintroduces a reference worse than achievable.
 50v-10
 drayage-25-23
 drayage-100-23

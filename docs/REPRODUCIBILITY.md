@@ -110,6 +110,28 @@ What *is* reproducible is the protocol.
 **Solver version.** HiGHS `v1.15.1`, fetched at configure time by
 `cmake/FetchHiGHS.cmake` and patched from `third_party/highs_patch/`.
 
+**Reference objectives.** `bench/miplib2017-v36.solu`, a verbatim copy of
+upstream MIPLIB 2017's current solution file
+(<https://miplib.zib.de/downloads/miplib2017-v36.solu>, retrieved 2026-08-20).
+It replaced a bundled `v22` copy that marked `supportcase22` `=inf=` while
+`bench/instances_plato.txt` counted it among the 233 feasible instances —
+upstream has since recorded it feasible at `=best= 110.0`. Over the 233 PLATO
+instances the refresh moves exactly three entries: `supportcase22`, plus
+corrected optima for `neos-3754480-nidda` (12941.738 → 12939.754) and
+`binkar10_1` (6742.200 → 6741.380). The recorded README table predates the
+refresh, which is one more reason it is a historical row rather than a claim
+about `HEAD`. Do **not** pin an intermediate version to resolve the
+`supportcase22` question: `v20`–`v35` carry `=opt= 111.0`, which upstream
+itself retracted when a solution of 110 was submitted, and a reference worse
+than achievable yields negative primal gaps.
+
+An instance whose solution-file tag asserts no finite objective (`=inf=`,
+`=unbd=`) is excluded from every table by `bench/analyze_results.py`, with the
+exclusion printed. A gap against such an instance falls back to the best
+*observed* primal, which is zero for whichever config found it — a
+self-referential number that would enter the headline SGM looking like a real
+one.
+
 **Telling a patched binary from an unpatched one.** The version and githash
 banners are identical between them — `highs --version` prints exactly the same
 line either way. The distinguishing marker is printed by a *solve*, on the third

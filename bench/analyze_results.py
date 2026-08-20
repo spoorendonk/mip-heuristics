@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
-"""Analyze benchmark results: compute metrics, generate tables and plots."""
+"""Analyze benchmark results: compute metrics, generate tables and plots.
+
+Two distinct notions of "best" live in this module and must not be conflated:
+
+*virtual best* (`resolve_reference`) is about the **reference objective** of an
+instance — when some config observed a primal that beats the published `.solu`
+value, that observed value replaces it, so a config is never punished for
+finding something better than the library knew about.  It is a property of an
+instance, it produces a number in objective units, and it says nothing about
+which config is good.
+
+*oracle* (`build_oracle_config`) is about **config selection** — the
+hypothetical selector that, per instance, runs whichever participating config
+scores best on the headline metric.  It is a property of a set of configs, it
+produces a synthetic extra row in the tables, and it is the ceiling any real
+selection mechanism (e.g. the Thompson-sampling selector) could reach.
+
+They are unrelated.  Do not describe the oracle as a "virtual best solver",
+however standard that term is elsewhere in the benchmarking literature — in
+this file the phrase is already taken.
+"""
 
 from __future__ import annotations
 
@@ -93,6 +113,88 @@ def build_best_known(
     return refs
 
 
+# `.solu` tags that positively assert the instance has no finite optimal
+# objective.  A primal gap measured against one is not a small error, it is a
+# category error: `build_best_known` falls back to the best *observed* primal,
+# which makes the gap self-referential — zero for whichever config found it and
+# positive for the rest — and that number then enters the headline SGM looking
+# exactly like a real one.
+#
+# This is not hypothetical.  Until 2026-08 the bundled solution file marked
+# `supportcase22` `=inf=` while `bench/instances_plato.txt` counted it among the
+# 233 feasible PLATO instances; upstream had since found it feasible.  The data
+# is fixed (see the note in `bench/instances_plato.txt`), but the class of bug
+# must not be able to recur silently, so the contradiction is now detected
+# rather than averaged in.
+CONTRADICTED_REFERENCE_TAGS: tuple[str, ...] = ("=inf=", "=unbd=")
+
+# Tags carrying a usable objective.  `=fea=` is a feasible-but-not-optimal
+# value; `build_best_known` documents why it is still a sound reference.
+USABLE_REFERENCE_TAGS: tuple[str, ...] = ("=opt=", "=best=", "=fea=")
+
+
+def classify_reference_status(
+    instances: list[str],
+    solu_refs: dict[str, tuple[str, float | None]],
+) -> dict[str, str]:
+    """Per instance: "published" | "contradicted" | "unpublished".
+
+    "contradicted" means the solution file asserts no finite objective exists
+    (`=inf=` / `=unbd=`) — a reference that cannot be used and must not be
+    silently folded into an aggregate.
+
+    "unpublished" means the file simply has nothing usable (absent, `=unkn=`,
+    or a tag with no value).  That is *not* an error: it is the ordinary case
+    the virtual-best fallback in `resolve_reference` exists to cover, and when
+    no config found anything either, every config scores gap 1.0 on it, which
+    is PLATO's own convention rather than a distortion.
+    """
+    status: dict[str, str] = {}
+    for inst in instances:
+        entry = solu_refs.get(inst)
+        if entry is None:
+            status[inst] = "unpublished"
+            continue
+        tag, val = entry
+        if tag in CONTRADICTED_REFERENCE_TAGS:
+            status[inst] = "contradicted"
+        elif tag in USABLE_REFERENCE_TAGS and val is not None:
+            status[inst] = "published"
+        else:
+            status[inst] = "unpublished"
+    return status
+
+
+def contradicted_reference_instances(
+    instances: list[str],
+    solu_refs: dict[str, tuple[str, float | None]],
+) -> list[str]:
+    """Instances whose solution-file status rules out any valid reference."""
+    status = classify_reference_status(instances, solu_refs)
+    return [i for i in instances if status[i] == "contradicted"]
+
+
+def print_reference_guard(dropped: list[str], solu_path: str | None) -> None:
+    """Announce instances excluded for having no usable reference objective."""
+    if not dropped:
+        return
+    print("\n## Unusable reference objectives\n")
+    print(
+        f"{len(dropped)} instance(s) are marked "
+        f"{' / '.join(CONTRADICTED_REFERENCE_TAGS)} in "
+        f"{solu_path or 'the solution file'}, which asserts that no finite\n"
+        "optimal objective exists — so no primal gap or primal integral "
+        "against them is meaningful.\nThey are EXCLUDED from every table "
+        "below and the counts reflect that."
+    )
+    print(f"Excluded: {', '.join(dropped)}")
+    print(
+        "\nIf these instances are in fact feasible, the solution file is "
+        "stale: refresh it from\nhttps://miplib.zib.de/download.html rather "
+        "than re-including them."
+    )
+
+
 def load_results(
     results_dir: str,
     configs: list[str],
@@ -136,6 +238,142 @@ def load_results(
                 name = log_file.stem
                 results[config][0][name] = parse_log_file(str(log_file))
     return results
+
+
+def read_instance_list(path: str) -> list[str]:
+    """Read an instance-name list file into a de-duplicated, ordered list.
+
+    Same format as `bench/instances_plato.txt` and `bench/instances_small.txt`:
+    one bare instance name per line, `#` comments and blank lines ignored.  A
+    name is the log stem, i.e. the `.mps.gz` basename without suffixes.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    with open(path) as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or line in seen:
+                continue
+            seen.add(line)
+            names.append(line)
+    return names
+
+
+@dataclass
+class InstanceFilter:
+    """What an include/exclude restriction did to a loaded results tree.
+
+    `kept` is the surviving instance set.  `unknown_included` /
+    `unknown_excluded` are names the list files asked for that the tree never
+    contained — reported because a typo in a list file otherwise restricts a
+    report to silence, and an empty table looks the same as a clean one.
+    """
+
+    kept: list[str]
+    dropped: list[str]
+    unknown_included: list[str]
+    unknown_excluded: list[str]
+    include_path: str | None = None
+    exclude_path: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.include_path is not None or self.exclude_path is not None
+
+
+def filter_results(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    include_path: str | None = None,
+    exclude_path: str | None = None,
+) -> tuple[dict[str, dict[int, dict[str, SolveResult]]], InstanceFilter]:
+    """Restrict a loaded results tree to an instance list, and/or remove one.
+
+    Applied to the *raw* tree before aggregation, so every downstream table —
+    existing ones included — covers the restricted set and reports its own
+    count without needing to know a filter was applied.
+
+    Include runs first, then exclude, which is what makes a held-out
+    complement expressible as `--instances plato --exclude-instances tuning`
+    without materialising the complement as a third file that can drift out of
+    sync with the tuning set it is defined against.
+    """
+    present: set[str] = set()
+    for config_data in results.values():
+        for seed_data in config_data.values():
+            present.update(seed_data.keys())
+
+    keep = set(present)
+    unknown_included: list[str] = []
+    unknown_excluded: list[str] = []
+    if include is not None:
+        wanted = set(include)
+        unknown_included = sorted(wanted - present)
+        keep &= wanted
+    if exclude is not None:
+        unwanted = set(exclude)
+        unknown_excluded = sorted(unwanted - present)
+        keep -= unwanted
+
+    filtered: dict[str, dict[int, dict[str, SolveResult]]] = {}
+    for config, config_data in results.items():
+        filtered[config] = {
+            seed: {i: r for i, r in seed_data.items() if i in keep}
+            for seed, seed_data in config_data.items()
+        }
+    return filtered, InstanceFilter(
+        kept=sorted(keep),
+        dropped=sorted(present - keep),
+        unknown_included=unknown_included,
+        unknown_excluded=unknown_excluded,
+        include_path=include_path,
+        exclude_path=exclude_path,
+    )
+
+
+def print_instance_selection(
+    filt: InstanceFilter,
+    reference_dropped: list[str] | None = None,
+    final_count: int | None = None,
+) -> None:
+    """State which instance list a report covers, so a restricted run is obvious.
+
+    `reference_dropped` and `final_count` exist so the closing sentence is not
+    a lie.  The list filter is only the first of two things that shrink the
+    set — the unusable-reference guard runs after it — and a block that
+    announced its own retained count would be immediately contradicted by
+    tables reporting a smaller one.  The number stated here is the number the
+    tables actually cover.
+    """
+    if not filt.active:
+        return
+    print("\n## Instance selection\n")
+    if filt.include_path:
+        print(f"Restricted to: {filt.include_path}")
+    if filt.exclude_path:
+        print(f"Excluding:     {filt.exclude_path}")
+    print(f"{len(filt.kept)} instances retained, {len(filt.dropped)} removed by list.")
+    if reference_dropped:
+        print(
+            f"{len(reference_dropped)} further removed for having no usable "
+            "reference objective (see above)."
+        )
+    covered = final_count if final_count is not None else len(filt.kept)
+    print(
+        f"Every table below covers {covered} instance(s) common to the "
+        "requested configs — its\nstated count is not the full tree's."
+    )
+    for label, missing, path in (
+        ("include", filt.unknown_included, filt.include_path),
+        ("exclude", filt.unknown_excluded, filt.exclude_path),
+    ):
+        if missing:
+            print(
+                f"WARNING: {len(missing)} name(s) in the {label} list "
+                f"({path}) are absent from this results tree: "
+                f"{', '.join(missing[:10])}" + (" ..." if len(missing) > 10 else "")
+            )
 
 
 def get_seeds(results: dict[str, dict[int, dict[str, SolveResult]]]) -> list[int]:
@@ -198,6 +436,296 @@ def aggregate_results(
     return aggregated
 
 
+# ── Offline config oracle (issue #104, part 1) ───────────────────────────────
+#
+# The best-of-N-configs ceiling: per instance, the score a selector would get
+# if it always ran whichever participating config turns out to score best.  Any
+# real selection mechanism — the Thompson-sampling selector this project
+# records as a negative result — is bounded above by it, which is what makes it
+# worth reporting: a low ceiling says per-instance selection was never going to
+# pay, which is a far stronger statement than "our selector did not help".
+#
+# Read the module docstring before renaming anything here: "virtual best" means
+# something else in this file and the two must stay separable.
+
+ORACLE_DEFAULT_NAME = "oracle"
+
+# An oracle over one config is that config, relabelled.  Presenting a
+# byte-identical clone of an existing row as a "ceiling" is worse than
+# printing nothing, so it is refused.
+ORACLE_MIN_PARTICIPANTS = 2
+
+
+@dataclass
+class OracleReport:
+    """What `build_oracle_config` formed, and what it had to leave out."""
+
+    name: str
+    participants: list[str]
+    missing_participants: list[str]
+    seeds: list[int]
+    instances: list[str]
+    dropped_incomplete: list[str]
+    dropped_not_common: list[str]
+    row_picks: dict[str, str]
+    seed_picks: dict[tuple[int, str], str]
+    time_limit: float
+    refused: str | None = None
+
+    @property
+    def dropped(self) -> list[str]:
+        """Every candidate that did not make it into the oracle row."""
+        return sorted({*self.dropped_incomplete, *self.dropped_not_common})
+
+    @property
+    def pick_counts(self) -> dict[str, int]:
+        """How often each participant supplied the oracle's row, per instance."""
+        counts = {c: 0 for c in self.participants}
+        for chosen in self.row_picks.values():
+            counts[chosen] = counts.get(chosen, 0) + 1
+        return counts
+
+    @property
+    def seed_pick_counts(self) -> dict[str, int]:
+        """Per-(instance, seed) selection counts — the finer-grained diagnostic."""
+        counts = {c: 0 for c in self.participants}
+        for chosen in self.seed_picks.values():
+            counts[chosen] = counts.get(chosen, 0) + 1
+        return counts
+
+    @property
+    def formed(self) -> bool:
+        return bool(self.instances) and self.refused is None
+
+
+def _oracle_score(r: SolveResult | None, time_limit: float, ref: float | None) -> float:
+    """The headline metric, lower-is-better, with a missing row worst-possible."""
+    if r is None:
+        return float("inf")
+    return r.primal_integral(time_limit, ref)
+
+
+def build_oracle_config(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    participants: list[str],
+    best_known: dict[str, float | None] | None,
+    time_limit: float,
+    name: str = ORACLE_DEFAULT_NAME,
+    instances: list[str] | None = None,
+) -> tuple[dict[int, dict[str, SolveResult]], OracleReport]:
+    """Build a synthetic best-of-participants config.
+
+    **The ceiling property is the whole point**, so it is guaranteed by
+    construction rather than hoped for: the oracle's row at an instance is the
+    row of whichever participant scores best there *as the tables report that
+    participant*.  Since every table reads `aggregate_results`' seed-collapsed
+    rows, selecting among exactly those rows makes
+    `SGM(oracle) <= min_c SGM(c)` hold identically — the shifted geometric
+    mean is monotone, and the oracle dominates every participant instance by
+    instance.
+
+    Getting this wrong is subtle and was the first version's bug.  Selecting
+    per `(instance, seed)` on primal integral and then letting
+    `aggregate_results` collapse the picks by *median primal bound* mixes two
+    criteria: the per-seed wins are chosen on one metric and then discarded by
+    an aggregation reading another, and the resulting row can score **worse**
+    than a participant while still being labelled a ceiling.  No collapse of
+    per-seed picks can avoid this in general, because a participant's own
+    representative seed may be its best one; the only rule that would dominate
+    it is "take the best seed", which is precisely the lucky-seed cherry-pick
+    the issue rules out.  So the seed collapse is not re-derived here at all —
+    it is inherited, identically, from the rows the comparison is against.
+
+    That also settles what the oracle sees across seeds, which is the rule the
+    issue asks to be stated: **it never sees an individual seed.**  Each
+    participant is represented by its own median-seed row, so the oracle can
+    no more pick a lucky seed than a real selector could.  This is strictly
+    more conservative than per-seed selection, which is the direction the
+    issue's own reasoning points.
+
+    Per-seed selection is still computed, as `seed_picks` — a diagnostic for
+    how stable the choice is across seeds, reported alongside but never used
+    to build the row.
+
+    `instances` restricts candidates to the set the surrounding tables cover
+    (their cross-config common set).  Scoring anything outside it is what made
+    the first version mis-select: `best_known` is built over that same common
+    set, so an instance outside it has no reference, `primal_integral` falls
+    back to the dual bound, and the tie-break hands the instance to whichever
+    participant happens to be named first.  Such instances are dropped and
+    counted instead — a config the oracle does not even include cannot be
+    allowed to silently shrink the table underneath it.
+
+    Ties are broken by `participants` order, so the result is deterministic.
+    """
+    present = [c for c in participants if c in results]
+    missing = [c for c in participants if c not in results]
+
+    def _empty(refused: str | None) -> tuple[dict, OracleReport]:
+        return {}, OracleReport(
+            name=name,
+            participants=present,
+            missing_participants=missing,
+            seeds=[],
+            instances=[],
+            dropped_incomplete=[],
+            dropped_not_common=[],
+            row_picks={},
+            seed_picks={},
+            time_limit=time_limit,
+            refused=refused,
+        )
+
+    if len(present) < ORACLE_MIN_PARTICIPANTS:
+        return _empty(
+            f"an oracle needs at least {ORACLE_MIN_PARTICIPANTS} participating "
+            f"configs; {len(present)} of the requested "
+            f"{len(participants)} were loaded"
+        )
+
+    seed_sets = [set(results[c].keys()) for c in present]
+    seeds = sorted(set.intersection(*seed_sets))
+    if not seeds:
+        return _empty("the participating configs share no common seed")
+
+    # Candidates are the UNION over participants, not the intersection: an
+    # instance one participant never ran is exactly the incompleteness the
+    # report has to surface, and intersecting first would delete the evidence
+    # before it could be counted.
+    candidates: set[str] = set()
+    for c in present:
+        for seed_data in results[c].values():
+            candidates.update(seed_data.keys())
+    ordered = sorted(candidates)
+
+    agg = aggregate_results(results, present)
+    in_scope = set(instances) if instances is not None else set(ordered)
+
+    complete: list[str] = []
+    dropped_incomplete: list[str] = []
+    dropped_not_common: list[str] = []
+    for inst in ordered:
+        # Incomplete means either "a participant never ran it" or "a
+        # participant ran it at only some of the shared seeds".  The second is
+        # the same defect as the first wearing a different hat: it would put a
+        # row aggregated over two seeds next to one aggregated over one, under
+        # a single heading.
+        everywhere = all(inst in agg.get(c, {}) for c in present) and all(
+            inst in results[c][s] for c in present for s in seeds
+        )
+        if not everywhere:
+            dropped_incomplete.append(inst)
+        elif inst not in in_scope:
+            dropped_not_common.append(inst)
+        else:
+            complete.append(inst)
+
+    row_picks: dict[str, str] = {}
+    chosen: dict[str, SolveResult] = {}
+    for inst in complete:
+        ref = best_known.get(inst) if best_known else None
+        best_cfg = min(
+            present, key=lambda c: _oracle_score(agg[c].get(inst), time_limit, ref)
+        )
+        row_picks[inst] = best_cfg
+        chosen[inst] = agg[best_cfg][inst]
+
+    # Diagnostic only — never used to build the row.  See the docstring.
+    seed_picks: dict[tuple[int, str], str] = {}
+    for s in seeds:
+        for inst in complete:
+            if not all(inst in results[c][s] for c in present):
+                continue
+            ref = best_known.get(inst) if best_known else None
+            seed_picks[(s, inst)] = min(
+                present,
+                key=lambda c: _oracle_score(results[c][s].get(inst), time_limit, ref),
+            )
+
+    # The chosen row is replicated across the shared seeds so that per-seed
+    # readers (`count_feasible`'s per-seed column) see the oracle at every seed
+    # it is defined for, and so `aggregate_results` collapsing identical rows
+    # returns that same row unchanged.
+    tree: dict[int, dict[str, SolveResult]] = {s: dict(chosen) for s in seeds}
+
+    return tree, OracleReport(
+        name=name,
+        participants=present,
+        missing_participants=missing,
+        seeds=seeds,
+        instances=complete,
+        dropped_incomplete=dropped_incomplete,
+        dropped_not_common=dropped_not_common,
+        row_picks=row_picks,
+        seed_picks=seed_picks,
+        time_limit=time_limit,
+    )
+
+
+def print_oracle_report(report: OracleReport) -> None:
+    """State how the oracle row was formed, before any table uses it."""
+    print("\n## Config oracle\n")
+    for miss in report.missing_participants:
+        print(
+            f"WARNING: oracle participant '{miss}' was not loaded — it must "
+            "also be listed in --configs\n         (that is what reads a "
+            "config off disk); it is skipped."
+        )
+    if report.refused is not None:
+        print(f"(no oracle row: {report.refused})")
+        return
+    if not report.participants:
+        print("(no participating configs found — no oracle row)")
+        return
+    print(f"Row '{report.name}' = best of: {', '.join(report.participants)}")
+    print(
+        "Selection: per instance, the participant with the lowest primal "
+        f"integral at {report.time_limit:.0f}s\n"
+        "           (the headline metric); ties go to the first named.\n"
+        "Seeds:     the oracle never sees an individual seed. Each "
+        "participant is represented\n"
+        "           by the same seed-collapsed row the tables show for it, so "
+        "the oracle can no\n"
+        "           more pick a lucky seed than a real selector could, and "
+        "the row is a true\n"
+        "           ceiling: its headline SGM is <= every participant's, "
+        "instance by instance.\n"
+        "Other columns report whatever the selected config scored on them; "
+        "only the\n"
+        "primal integral is being optimised."
+    )
+    if not report.formed:
+        print("(no instance is common to every participant — no oracle row)")
+        return
+    seeds = ", ".join(str(s) for s in report.seeds)
+    print(
+        f"\nCoverage: {len(report.instances)} instances "
+        f"[seeds {seeds}]; {len(report.dropped)} dropped."
+    )
+    for label, names in (
+        ("absent from at least one participant", report.dropped_incomplete),
+        ("outside the common set the tables cover", report.dropped_not_common),
+    ):
+        if names:
+            shown = ", ".join(names[:10])
+            print(
+                f"  {len(names)} dropped, {label}: {shown}"
+                + (" ..." if len(names) > 10 else "")
+            )
+    counts = report.pick_counts
+    print("\nSupplied the oracle row (per instance):")
+    for c in report.participants:
+        print(f"  {c:<22} {counts.get(c, 0):>6}")
+    if len(report.seeds) > 1 and report.seed_picks:
+        seed_counts = report.seed_pick_counts
+        print(
+            "\nPer-(instance, seed) winner, for reference only — this does "
+            "NOT build the row:"
+        )
+        for c in report.participants:
+            print(f"  {c:<22} {seed_counts.get(c, 0):>6}")
+
+
 def shifted_geomean(values: list[float], shift: float = 1.0) -> float:
     """Shifted geometric mean: exp(mean(log(x + shift))) - shift."""
     if not values:
@@ -254,16 +782,25 @@ def count_first(
     configs: list[str],
     instances: list[str],
     tie_tol: float = 0.1,
+    synthetic: set[str] | None = None,
 ) -> dict[str, float]:
     """Count #First: instances where config finds first feasible strictly
     earliest (all others later by > tie_tol seconds). Ties within tie_tol
     split the credit evenly across the tied configs. Returns fractional
     counts per config.
+
+    `synthetic` names rows that are not competitors — the config oracle is a
+    relabelled copy of whichever participant it selected, so leaving it in
+    would have it tie with that participant on every instance and halve a real
+    config's credit.  A reporting row must not move the numbers it sits next
+    to; synthetic rows are scored 0.0 and excluded from the field.
     """
+    synthetic = synthetic or set()
+    contenders = [c for c in configs if c not in synthetic]
     firsts: dict[str, float] = {c: 0.0 for c in configs}
     for inst in instances:
         times: dict[str, float] = {}
-        for c in configs:
+        for c in contenders:
             r = agg_results.get(c, {}).get(inst)
             if r and r.time_to_first_feasible is not None:
                 times[c] = r.time_to_first_feasible
@@ -281,16 +818,22 @@ def count_wins(
     agg_results: dict[str, dict[str, SolveResult]],
     configs: list[str],
     instances: list[str],
+    synthetic: set[str] | None = None,
 ) -> dict[str, int]:
     """Count #Win: instances where one config finds a strictly better primal bound.
 
     Ties (all best-bound holders within 1e-6 of each other) are not credited
     to any config. Returns {config: win_count}.
+
+    `synthetic` excludes non-competitor rows; see `count_first` for why a
+    reporting row left in the field silently rewrites real configs' counts.
     """
+    synthetic = synthetic or set()
+    contenders = [c for c in configs if c not in synthetic]
     wins = {c: 0 for c in configs}
     for inst in instances:
         bounds = {}
-        for c in configs:
+        for c in contenders:
             r = agg_results.get(c, {}).get(inst)
             if r and r.primal_bound != float("inf"):
                 bounds[c] = r.primal_bound
@@ -424,8 +967,11 @@ def print_comparison_table(
     )
     active_cutoffs = [tc for tc in time_cutoffs if tc <= max_solve_time + 1]
 
-    # Header
-    print(f"\n{'Instance':<25} ", end="")
+    # Header.  The instance count leads the table as well as closing it: a
+    # restricted run must not be readable as a full one from the top of the
+    # output alone.
+    print(f"\n## Per-instance comparison: {c1} vs {c2} ({len(instances)} instances)\n")
+    print(f"{'Instance':<25} ", end="")
     print(f"{'T1st(' + c1 + ')':<10} {'T1st(' + c2 + ')':<10} ", end="")
     for tc in active_cutoffs:
         print(
@@ -577,8 +1123,10 @@ def _print_category_breakdown(
     instances: list[str],
     time_limit: float,
     best_known: dict[str, float | None] | None,
+    synthetic: set[str] | None = None,
 ) -> None:
     """Local-MIP Table 1 style: #Feas / #Win per category × per time cutoff."""
+    synthetic = synthetic or set()
     cats = _categorize_instances(agg_results, instances)
     ordered = ["BP", "IP", "MBP", "MIP"]
     buckets = {c: [i for i in instances if cats.get(i) == c] for c in ordered}
@@ -586,7 +1134,7 @@ def _print_category_breakdown(
     if uncls:
         buckets["?"] = uncls
 
-    print("\n### Category breakdown (#Feas / #Win)\n")
+    print(f"\n### Category breakdown (#Feas / #Win) ({len(instances)} instances)\n")
     header = f"{'Category':<8} {'#Inst':>6}"
     for c in configs:
         header += f"  {'Feas(' + c[:4] + ')':>11} {'Win(' + c[:4] + ')':>11}"
@@ -597,10 +1145,11 @@ def _print_category_breakdown(
         if not insts_in_cat:
             continue
         feas = {c: count_feasible(results, c, insts_in_cat)["any"] for c in configs}
-        wins = count_wins(agg_results, configs, insts_in_cat)
+        wins = count_wins(agg_results, configs, insts_in_cat, synthetic=synthetic)
         row = f"{cat:<8} {len(insts_in_cat):>6}"
         for c in configs:
-            row += f"  {feas[c]:>11} {wins[c]:>11}"
+            win_cell = "-" if c in synthetic else str(wins[c])
+            row += f"  {feas[c]:>11} {win_cell:>11}"
         print(row)
 
 
@@ -610,8 +1159,16 @@ def print_paper_metrics(
     configs: list[str],
     time_limit: float,
     best_known: dict[str, float | None] | None = None,
+    synthetic: set[str] | None = None,
 ) -> None:
-    """Print paper-standard metrics: #Feas, #Win, SGM of T1st, SGM of gap@cutoff."""
+    """Print paper-standard metrics: #Feas, #Win, SGM of T1st, SGM of gap@cutoff.
+
+    `synthetic` names reporting-only rows (the config oracle).  They keep
+    their metric columns, which are meaningful, but are held out of the
+    head-to-head counters, which are not: an oracle row is a copy of the
+    participant it selected and would tie with it on every instance.
+    """
+    synthetic = synthetic or set()
     instances = get_common_instances(results, configs)
     seeds = get_seeds(results)
 
@@ -638,17 +1195,19 @@ def print_paper_metrics(
         print()
 
     # --- #Win (on aggregated) ---
-    win_counts = count_wins(agg_results, configs, instances)
+    win_counts = count_wins(agg_results, configs, instances, synthetic=synthetic)
     print(f"\n{'#Win (best obj)':<25}", end="")
     for c in configs:
-        print(f" {win_counts[c]:<12}", end="")
+        cell = "-" if c in synthetic else str(win_counts[c])
+        print(f" {cell:<12}", end="")
     print()
 
     # --- #First (fastest to feasible, tie-split within 0.1s) ---
-    first_counts = count_first(agg_results, configs, instances)
+    first_counts = count_first(agg_results, configs, instances, synthetic=synthetic)
     print(f"{'#First (fastest T1st)':<25}", end="")
     for c in configs:
-        print(f" {first_counts[c]:<12.1f}", end="")
+        cell = "-" if c in synthetic else f"{first_counts[c]:.1f}"
+        print(f" {cell:<12}", end="")
     print()
 
     # --- SGM of time-to-first-feasible (shift=1s, matching FJ/FPR) ---
@@ -717,7 +1276,13 @@ def print_paper_metrics(
     # --- Category breakdown (Local-MIP Table 1 style) ---
     if len(configs) >= 1:
         _print_category_breakdown(
-            results, agg_results, configs, instances, time_limit, best_known
+            results,
+            agg_results,
+            configs,
+            instances,
+            time_limit,
+            best_known,
+            synthetic=synthetic,
         )
 
     # --- Reference coverage ---
@@ -791,7 +1356,10 @@ def generate_survival_plot(
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel(f"Fraction solved to {gap_threshold * 100:.0f}% gap")
-    ax.set_title(f"Survival Plot (gap threshold = {gap_threshold * 100:.0f}%)")
+    ax.set_title(
+        f"Survival Plot (gap threshold = {gap_threshold * 100:.0f}%, "
+        f"{len(instances)} instances)"
+    )
     ax.legend()
     ax.grid(True, alpha=0.3)
     ax.set_xlim(left=0)
@@ -1367,7 +1935,10 @@ def _print_internal_budget_table(
                 f"{format_int(delta, 11, signed=True)}"
             )
 
-    print("\n#### Aggregate (median over instrumented instances)\n")
+    print(
+        f"\n#### Aggregate (median over instrumented instances, "
+        f"{len(instances)} instances in scope)\n"
+    )
     agg_header = (
         f"{'Config':<14} {'#Instr':>7} {'RENS':>6} {'RENSroot':>9} "
         f"{'RINS':>6} {'RCfix':>6} {'NatHeurLP':>11} {'NatTotLP':>11} "
@@ -1498,7 +2069,10 @@ def _print_wall_clock_table(
                 f"{v.category:<16} {'; '.join(v.evidence)}".rstrip()
             )
 
-    print("\n#### Aggregate (SGM shift=1 for seconds, median for HeurFrac)\n")
+    print(
+        f"\n#### Aggregate (SGM shift=1 for seconds, median for HeurFrac, "
+        f"{len(instances)} instances in scope)\n"
+    )
     agg_header = (
         f"{'Config':<14} {'#Instr':>7} {'Heur_s':>8} {'Dive_s':>8} "
         f"{'HeurFrac':>9} {'Troot_s':>9} {'#Root':>6} {'Span_s':>8}"
@@ -1574,7 +2148,7 @@ def _print_classification_counts(
     verdicts: dict[tuple[str, str], CannibalizationVerdict],
 ) -> None:
     """Per config, how many instances landed in each cannibalization category."""
-    print("\n### Classification counts\n")
+    print(f"\n### Classification counts ({len(instances)} instances)\n")
     header = f"{'Config':<14}" + "".join(
         f" {cat:>17}" for cat in CANNIBALIZATION_CATEGORIES
     )
@@ -1703,7 +2277,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--solu",
-        default=os.path.join(os.path.dirname(__file__), "miplib2017-v22.solu"),
+        default=os.path.join(os.path.dirname(__file__), "miplib2017-v36.solu"),
         help="MIPLIB .solu file with reference objectives",
     )
     parser.add_argument(
@@ -1771,6 +2345,61 @@ def main() -> None:
         metavar="PATH",
         help="With --ablation, also write the ablation table as LaTeX to PATH.",
     )
+    parser.add_argument(
+        "--instances",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Restrict every report to the instance names listed in FILE (one "
+            "per line, '#' comments ignored — the format of "
+            "bench/instances_plato.txt). Applied to the loaded tree before "
+            "aggregation, so every table covers and reports the restricted "
+            "count."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-instances",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Remove the instance names listed in FILE from every report. "
+            "Applied after --instances, so the held-out complement of a "
+            "tuning set is '--instances instances_plato.txt "
+            "--exclude-instances <tuning>' with no third file to drift."
+        ),
+    )
+    parser.add_argument(
+        "--oracle",
+        nargs="+",
+        default=None,
+        metavar="CONFIG",
+        help=(
+            "Add a best-of-these-configs oracle row: per instance, the "
+            "participant with the lowest primal integral at --time-limit, "
+            "selected among exactly the seed-collapsed rows the tables show, "
+            "which makes the row a true ceiling (its headline SGM is <= every "
+            "participant's). The oracle never sees an individual seed, so it "
+            "cannot pick a lucky one. Reported alongside the individual "
+            "configs under the same headline metric, so the gap between "
+            "best-single, combined and ceiling is readable in one table. It "
+            "is additive: it does not move any existing row's numbers. "
+            "Instances absent from any participant at any shared seed, or "
+            "outside the common set the tables cover, are dropped with the "
+            "count reported. Needs at least 2 participants, which must also "
+            "appear in --configs since that is what gets loaded. NOTE: "
+            "unrelated to the 'virtual best' reference-objective handling — "
+            "see the module docstring."
+        ),
+    )
+    parser.add_argument(
+        "--oracle-name",
+        default=ORACLE_DEFAULT_NAME,
+        metavar="NAME",
+        help=(
+            f"Row label for the --oracle row (default: {ORACLE_DEFAULT_NAME}). "
+            "Change it only to avoid colliding with a real config name."
+        ),
+    )
     args = parser.parse_args()
 
     # Parse NAME=DIR config overrides so ablation anchors can be loaded from a
@@ -1792,14 +2421,84 @@ def main() -> None:
         sys.exit(1)
 
     active_configs = [c for c in config_names if c in results]
-    agg_results = aggregate_results(results, active_configs)
 
     solu_refs: dict[str, tuple[str, float | None]] = {}
     if args.solu and os.path.exists(args.solu):
         solu_refs = parse_solu_file(args.solu)
 
+    # Instance selection, then the reference guard, then the oracle — all on
+    # the raw tree, before aggregation, so every table downstream reports the
+    # set it actually covers without having to know any of this happened.
+    try:
+        include = read_instance_list(args.instances) if args.instances else None
+        exclude = (
+            read_instance_list(args.exclude_instances)
+            if args.exclude_instances
+            else None
+        )
+    except OSError as exc:
+        print(f"Error: cannot read instance list: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    filt: InstanceFilter | None = None
+    if include is not None or exclude is not None:
+        results, filt = filter_results(
+            results,
+            include,
+            exclude,
+            include_path=args.instances,
+            exclude_path=args.exclude_instances,
+        )
+
+    # An instance the solution file says has no finite objective cannot carry a
+    # primal gap; folding one into a 233-instance SGM distorts the headline
+    # silently.  Drop it loudly instead.  This runs before the selection block
+    # is printed so that block can state the count that actually survives —
+    # otherwise it announces a retained count the tables below contradict.
+    unusable = contradicted_reference_instances(
+        get_common_instances(results, active_configs), solu_refs
+    )
+    if unusable:
+        results, _ = filter_results(results, exclude=unusable)
+
     common = get_common_instances(results, active_configs)
+    print_reference_guard(unusable, args.solu)
+    if filt is not None:
+        print_instance_selection(
+            filt, reference_dropped=unusable, final_count=len(common)
+        )
+
     best_known = build_best_known(results, active_configs, common, solu_refs)
+
+    # The oracle is additive reporting: it gets its own row and must not move
+    # any existing one.  `synthetic` carries that through to the head-to-head
+    # counters and the cannibalization tables, which would otherwise treat a
+    # relabelled copy of a real run as a competitor to it.
+    synthetic: set[str] = set()
+    if args.oracle:
+        if args.oracle_name in active_configs:
+            print(
+                f"Error: --oracle-name '{args.oracle_name}' collides with a "
+                "real config in this tree; pass a different --oracle-name.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        oracle_tree, oracle_report = build_oracle_config(
+            results,
+            args.oracle,
+            best_known,
+            args.time_limit,
+            name=args.oracle_name,
+            instances=common,
+        )
+        print_oracle_report(oracle_report)
+        if oracle_report.formed:
+            results[oracle_report.name] = oracle_tree
+            active_configs = [*active_configs, oracle_report.name]
+            synthetic.add(oracle_report.name)
+
+    agg_results = aggregate_results(results, active_configs)
+    real_configs = [c for c in active_configs if c not in synthetic]
 
     if args.ablation:
         # Per-component ablation: one row per config, plus optional attribution.
@@ -1815,7 +2514,7 @@ def main() -> None:
             print_attribution(results, agg_results, active_configs)
         if args.cannibalization:
             print_cannibalization_tables(
-                results, agg_results, active_configs, args.cannibalization_baseline
+                results, agg_results, real_configs, args.cannibalization_baseline
             )
         if args.plot:
             generate_survival_plot(
@@ -1831,7 +2530,12 @@ def main() -> None:
             time_limit=args.time_limit,
         )
     print_paper_metrics(
-        results, agg_results, active_configs, args.time_limit, best_known=best_known
+        results,
+        agg_results,
+        active_configs,
+        args.time_limit,
+        best_known=best_known,
+        synthetic=synthetic,
     )
 
     if args.attribution:
@@ -1844,7 +2548,7 @@ def main() -> None:
 
     if args.cannibalization:
         print_cannibalization_tables(
-            results, agg_results, active_configs, args.cannibalization_baseline
+            results, agg_results, real_configs, args.cannibalization_baseline
         )
 
     if args.plot:

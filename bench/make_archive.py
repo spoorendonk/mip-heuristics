@@ -83,7 +83,7 @@ BENCH_DIR = Path(__file__).resolve().parent
 ARCHIVE_BENCH_FILES = (
     "analyze_results.py",
     "parse_highs_log.py",
-    "miplib2017-v22.solu",
+    "miplib2017-v36.solu",
     "make_archive.py",
 )
 

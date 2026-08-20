@@ -187,6 +187,40 @@ Each `(instance, config)` gets one label. Four are cannibalization kinds and thr
 
 One trap when reading the raw counters instead of the tables: `heur_lp_iters` and `total_lp_iters` are **shared**, not native. `fpr_lp` charges its dive-time work to both so it competes with RENS/RINS for one envelope, so reading them raw bills our work as HiGHS's. Subtract `fpr_lp_lp_iters` before comparing an `off` row against a patched one.
 
+### Instance subsets and the config oracle
+
+Any report restricts to an instance list, or excludes one, without re-running a solve:
+
+```bash
+# headline over the full PLATO set
+python3 bench/analyze_results.py bench/results/plato --configs patched vanilla \
+    --time-limit 600 --summary
+
+# the same comparison over the held-out complement of the tuning set
+python3 bench/analyze_results.py bench/results/plato --configs patched vanilla \
+    --time-limit 600 --summary \
+    --instances bench/instances_plato.txt --exclude-instances bench/instances_small.txt
+```
+
+`bench/instances_small.txt` is the 25-instance tuning list and is entirely inside the PLATO 233, so that second command is the held-out complement: exactly 208 instances.
+
+`--instances` applies first, then `--exclude-instances`, so the complement never has to exist as a third file that can drift out of sync with the tuning list it is defined against. Both are applied to the loaded tree before aggregation, so **every table reports the instance count it actually covers** and a restricted run cannot be misread as a full one.
+
+`--oracle A B C` adds a best-of-those-configs row — the ceiling any per-instance selection mechanism could reach, which is what makes a negative result about a *selector* separable from a negative result about *selection*:
+
+```bash
+python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600 \
+    --configs fpr local_mip scylla all --oracle fpr local_mip scylla
+```
+
+Selection is per instance, on the headline metric (primal integral at `--time-limit`), among exactly the seed-collapsed rows the tables already show for each participant. That is what makes the row a genuine **ceiling** — its headline SGM is less than or equal to every participant's, instance by instance — and it is guaranteed by construction rather than hoped for. The oracle never sees an individual seed, so it can no more pick a lucky run than a real selector could. Per-seed winners are still reported, as a diagnostic of how stable the choice is, but they do not build the row.
+
+The oracle is **additive**: it gets its own row and moves no existing one. It is held out of the head-to-head `#Win` / `#First` columns (it is a copy of the participant it selected and would otherwise tie with it, halving that config's credit) and out of the cannibalization tables. Instances absent from any participant at any shared seed, or outside the common set the tables cover, are dropped and counted. At least two participants are required — an oracle over one config is that config relabelled. Rename the row with `--oracle-name` if a real config is already called `oracle`.
+
+This is unrelated to the *virtual best* inside the same script, which is reference-objective handling — when an observed primal beats the published `.solu` value, that observed value becomes the reference so a config is not punished for finding something better.
+
+**Reference objectives** come from `bench/miplib2017-v36.solu` (upstream MIPLIB 2017, retrieved 2026-08-20). An instance the file marks `=inf=` or `=unbd=` has no finite objective to measure a gap against, so the script excludes it from every table and says so, rather than folding a self-referential gap into a 233-instance SGM.
+
 ## Build Options
 
 | Flag | Default | Description |
