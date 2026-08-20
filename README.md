@@ -124,6 +124,22 @@ The collection is a 3.5 GB download (~7.3 GB extracted), so it is stored **once 
 
 The first directory holding more than 200 `.mps.gz` files wins. Only when none does is anything downloaded, and a fresh download lands in the *first* candidate — `~/data/miplib` normally, or `$MIPLIB_DIR` when that is set. `/tmp` is probed so an existing copy is reused instead of refetched, but it is never a download destination, because a collection there does not survive a reboot; the script says so and prints the `mv` that relocates it. The script prints the resolved directory on stdout and everything else on stderr, so `DATA_DIR=$(bash bench/download_miplib.sh)` works.
 
+### Tuning subset
+
+Tuning on the hard instances alone would over-allocate: presolve effort buys feasibility where feasibility is hard and is pure overhead where branch-and-bound has an incumbent in the first second, and that overhead delays the root LP. `bench/make_tuning_set.py` derives a subset that spans the spectrum instead, stratified on **vanilla time-to-first-feasible** — the axis the primal integral responds to — read out of an existing vanilla results tree:
+
+```bash
+python3 bench/make_tuning_set.py bench/results/plato --config vanilla \
+    --instances bench/instances_plato.txt --size 40 --seed 0 \
+    --output bench/instances_tuning.txt
+```
+
+The list goes to `--output` (stdout by default) and the stratum table to stderr, so the distribution of the full set and of the sample are visible side by side. Strata are half-open intervals split at `--boundaries` (default `1,10,100,600`) plus a `never` bucket; a solution found at or past the time limit lands in `>=600s` rather than being filed as never-feasible. Draws are allocated proportionally by largest remainder, with one seat reserved per non-empty stratum (`--min-per-stratum`) so a small stratum is not rounded out of the set it was stratified for. The header records all of that — source tree, config, seeds, boundaries, allocation rule, and the per-stratum counts of both the full set and the sample — and carries no timestamp, because the same tree and `--seed` must regenerate the file byte for byte.
+
+It **refuses** (exit 2) a tree that does not cover the reference list for every seed of the chosen config, naming what is absent and whether the run failed (`.log.err`), was truncated, or reported a primal bound with no incumbent line. The last two both parse into a result with no incumbents, which is indistinguishable from a genuine never-feasible run and would otherwise be binned as one — and `never` is normally the smallest stratum, so `--min-per-stratum` would then reserve the misfiled instance a seat. The instances a campaign failed to run are not a random subset of it, so sampling around them biases the subset in exactly the direction the stratification measures.
+
+This does not replace `bench/instances_small.txt`, which is stratified on *optimality* solve time and is the recorded input of the `kWeight*` calibration; a re-measurement on any other set is not comparable to the recorded constants.
+
 ### Per-heuristic ablation and budget sweep
 
 `bench/run_benchmark.py` has one config per `mip_heuristic_suite` value — `vanilla`, `off`, `fj`, `fpr`, `local_mip`, `scylla`, `all` — plus `patched` as a back-compatible alias for `all`. An unknown config name is an error, not a run at default options. `--budget-sweep` crosses each config with `mip_heuristic_presolve_effort` values, writing to `<output>/<config>@e<V>/seed<N>/`; those directory names are what `analyze_results.py --configs` takes, so a sweep needs no new analysis code.
