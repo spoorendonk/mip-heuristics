@@ -1576,7 +1576,7 @@ def main() -> None:
         "--configs",
         nargs="+",
         default=["all", "vanilla"],
-        help="Configs to compare (default: patched vanilla). An entry of the "
+        help="Configs to compare (default: all vanilla). An entry of the "
         "form NAME=DIR loads that config from an explicit directory instead "
         "of results_dir/NAME (used to pull ablation anchors from "
         "bench/results/plato).",
