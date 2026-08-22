@@ -1473,6 +1473,50 @@ def _config_metrics(
     }
 
 
+def print_killed_runs(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    configs: list[str],
+) -> None:
+    """Name the runs the harness had to kill, and say what survived in each.
+
+    A killed run stays in the tables — its incumbent lines are real, and the
+    headline metrics read only those — so nothing downstream distinguishes it
+    from a clean solve.  That is fine for the arithmetic and bad for the reader:
+    a truncated run reporting no feasible solution is a different claim from a
+    completed one reporting the same, and only the first is partly an artefact
+    of where the kill landed.  Printing the list keeps that visible without
+    perturbing any number.
+    """
+    rows: list[tuple[str, int, str, int, float | None]] = []
+    for config in configs:
+        for seed in sorted(results.get(config, {})):
+            for inst, r in sorted(results[config][seed].items()):
+                if r.killed:
+                    rows.append(
+                        (config, seed, inst, len(r.incumbents), r.killed_after)
+                    )
+    if not rows:
+        return
+
+    print(f"\n## Killed runs ({len(rows)})\n")
+    print(
+        "The solver blew past the runner's grace window and was killed; HiGHS "
+        "only checks its clock\nbetween work units, so a single long solve can "
+        "run over without returning to look.  These\nlogs are truncated, not "
+        "invalid: incumbents up to the kill are present and are what the\n"
+        "metrics use, but no Solving report was reached.\n"
+    )
+    header = (
+        f"{'Config':<22} {'Seed':>4} {'Instance':<32} "
+        f"{'Incumbents':>10} {'Killed@':>9}"
+    )
+    print(header)
+    print("-" * len(header))
+    for config, seed, inst, n_inc, after in rows:
+        after_s = f"{after:.0f}s" if after is not None else "?"
+        print(f"{config:<22} {seed:>4} {inst:<32} {n_inc:>10} {after_s:>9}")
+
+
 def print_ablation_summary(
     results: dict[str, dict[int, dict[str, SolveResult]]],
     agg_results: dict[str, dict[str, SolveResult]],
@@ -1797,6 +1841,8 @@ def main() -> None:
             synthetic.add(oracle_report.name)
 
     agg_results = aggregate_results(results, active_configs)
+
+    print_killed_runs(results, active_configs)
 
     if args.ablation:
         # Per-component ablation: one row per config, plus optional attribution.

@@ -528,6 +528,31 @@ def write_log(log_path: str, output: str) -> None:
         os.remove(err_path)
 
 
+def record_partial(log_path: str, output: str, kill_after: float) -> None:
+    """Keep a killed run's streamed output as a real log, with the kill marked.
+
+    HiGHS checks the clock between work units, so one long simplex solve at the
+    root can carry a run past `time_limit` without it ever returning to look;
+    the runner then kills it.  That run is not a harness failure and re-running
+    it reproduces the same hang, so `record_failure`'s retry-on-resume
+    behaviour is wrong for it — but so is discarding the output, which is what
+    this used to do.  Everything the solver printed before the kill is real
+    measured data, and the campaign's headline metrics (T1st, primal integral)
+    are computed from those incumbent lines alone, not from the Solving report
+    the run never reached.
+
+    So it goes in as a `.log`: analysed like any other run, skipped on resume,
+    and tagged with the marker `parse_highs_log` turns into `killed`.  What is
+    lost is only the trailing summary — and, because stdout is a pipe and
+    therefore block-buffered, whatever sat in the last unflushed block.
+    """
+    write_log(
+        log_path,
+        output + f"\n--- runner ---\n"
+        f"TIMEOUT: process killed after {kill_after}s\n",
+    )
+
+
 def run_single(
     binary: str,
     instance_file: str,
@@ -612,10 +637,33 @@ def run_single(
             return (instance_name, config, seed, False)
         write_log(log_path, output)
         return (instance_name, config, seed, True)
-    except subprocess.TimeoutExpired:
-        record_failure(
-            log_path, f"TIMEOUT: process killed after {time_limit * 1.5 + 120}s\n"
-        )
+    except subprocess.TimeoutExpired as exc:
+        # On POSIX, `subprocess.run` has already drained into the exception
+        # whatever the child streamed before the kill (it documents this where
+        # it re-raises).  Binding `exc` is the whole difference between keeping
+        # that and losing it.
+        partial = exc.stdout or ""
+        if isinstance(partial, bytes):  # defensive: text=True should preclude it
+            partial = partial.decode(errors="replace")
+        stderr = exc.stderr or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        if stderr:
+            partial += "\n--- stderr ---\n" + stderr
+        kill_after = time_limit * 1.5 + 120
+        # The banner is the test for "the solver ran and printed something we
+        # can measure".  Without it there is no run to keep -- a binary that
+        # hung before its first write is a harness problem, and that is exactly
+        # the case `record_failure` exists to retry.
+        if "Running HiGHS" in partial:
+            record_partial(log_path, partial, kill_after)
+        else:
+            record_failure(
+                log_path,
+                partial + f"\n--- runner ---\n"
+                f"TIMEOUT: process killed after {kill_after}s "
+                f"before printing anything parseable\n",
+            )
         return (instance_name, config, seed, False)
     except Exception as e:  # noqa: BLE001 - any failure becomes one FAIL row, not a dead campaign
         record_failure(log_path, f"ERROR: {e}\n")

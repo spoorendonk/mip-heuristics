@@ -88,6 +88,18 @@ class SolveResult:
     thread_count: int | None = None
     hardware_threads: int | None = None
     max_workers: int | None = None
+    # True when `bench/run_benchmark.py` had to SIGKILL the solver because it
+    # blew past the runner's grace window.  HiGHS only checks the clock between
+    # its own work units, so a single long simplex solve at the root can carry
+    # a run well past `time_limit` without ever returning to look; the runner
+    # kills it and keeps whatever had been streamed to stdout by then.  Such a
+    # log is *truncated, not invalid*: it has no Solving report block, so
+    # `status` / `primal_bound` / `gap` stay at their defaults, but every
+    # incumbent line printed before the kill is present, and those are what
+    # T1st and `primal_integral` are computed from.  Distinguishing this from a
+    # clean solve that genuinely found nothing is the point of the flag.
+    killed: bool = False
+    killed_after: float | None = None
     incumbents: list[Incumbent] = field(default_factory=list)
     sequential_samples: list[SequentialSample] = field(default_factory=list)
     heuristic_samples: list[HeuristicSample] = field(default_factory=list)
@@ -187,6 +199,16 @@ class SolveResult:
         prev_time = 0.0
         prev_gap = 1.0  # No solution = 100% gap
         for t, g in curve:
+            # Ignore anything past the horizon the integral is measured over.
+            # A clean solve stops at its own limit so this never bites, but a
+            # killed run (`killed`) keeps streaming until the runner's grace
+            # window expires and can carry incumbents well beyond it.  Without
+            # the break those later points are integrated in *and* leave
+            # `prev_time > time_limit`, so the remainder term below goes
+            # negative and the instance scores better than a solve that found
+            # the same solution inside the window.
+            if t >= time_limit:
+                break
             integral += prev_gap * (t - prev_time)
             prev_time = t
             prev_gap = g
@@ -223,6 +245,13 @@ _PD_RE = re.compile(r"^\s+P-D integral\s+(.+)$")
 _TIMING_RE = re.compile(r"^\s+Timing\s+([\d.]+)$")
 _NODES_RE = re.compile(r"^\s+Nodes\s+(\d+)$")
 _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
+
+# Runner-injected marker, written by `record_partial` / `record_failure` in
+# `bench/run_benchmark.py` when the solver had to be killed.  Anchored at
+# column 0 so it cannot collide with HiGHS's own indented report lines.  Logs
+# written before the runner kept partial output consist of this single line and
+# nothing else; both shapes parse.
+_KILLED_RE = re.compile(r"^TIMEOUT: process killed after ([\d.]+)s")
 
 # [Sequential] per-heuristic effort line emitted from
 # src/effort_ledger.cpp `EffortLedger::book` (issue #71):
@@ -340,6 +369,14 @@ def parse_log(log_text: str) -> SolveResult:
                     )
             continue
 
+        # Runner marker.  Checked before the report patterns because a killed
+        # run has no report block for those to match.
+        m = _KILLED_RE.match(line)
+        if m:
+            result.killed = True
+            result.killed_after = float(m.group(1))
+            continue
+
         # Solving report lines
         m = _STATUS_RE.match(line)
         if m:
@@ -432,6 +469,14 @@ def parse_log(log_text: str) -> SolveResult:
                 result.num_integer = int(m.group(4))
                 result.num_binary = int(m.group(5))
                 continue
+
+    # A killed run never printed its Solving report, so `status` is empty here.
+    # Leaving it empty makes the run indistinguishable from an unparsed log in
+    # every status tally; naming it keeps the kill visible in reports.  Guarded
+    # rather than unconditional so a log that somehow carries both a report and
+    # a marker keeps HiGHS's own word for what happened.
+    if result.killed and not result.status:
+        result.status = "Killed (timeout)"
 
     # Sanity check: if the Solving report says there is a finite primal bound
     # but no incumbents were recorded, a source code is missing from

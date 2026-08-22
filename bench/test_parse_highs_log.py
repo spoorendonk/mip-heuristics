@@ -1,5 +1,7 @@
 """Smoke tests for parse_highs_log."""
 
+import pytest
+
 from parse_highs_log import parse_log
 
 
@@ -239,4 +241,84 @@ def test_a_single_worker_run_parses():
         1,
         12,
         1,
+    )
+
+
+def _mip_line(time_s: float, obj: float) -> str:
+    """One 'T'-source MIP log line: a new incumbent `obj` found at `time_s`."""
+    return (
+        f" T       0       0         0   0.00%   0               {obj}"
+        f"              inf        0      0      0         0     {time_s}s\n"
+    )
+
+
+def test_a_killed_run_is_flagged_and_named():
+    """The runner's marker is what separates a truncated run from an empty one.
+
+    Without it a killed run parses as a clean solve that found nothing: same
+    empty `status`, same infinite `primal_bound`. The metrics are identical
+    either way -- but the two are different claims and reports say so.
+    """
+    result = parse_log(
+        "Running HiGHS 1.15.1 (git hash: x): c\n"
+        + _mip_line(10.0, 12.0)
+        + "\n--- runner ---\nTIMEOUT: process killed after 1020.0s\n"
+    )
+    assert result.killed
+    assert result.killed_after == 1020.0
+    assert result.status == "Killed (timeout)"
+    # The incumbent printed before the kill survives: it is real measured data.
+    assert len(result.incumbents) == 1
+    assert result.time_to_first_feasible == 10.0
+
+
+def test_a_bare_timeout_stub_still_parses_as_killed():
+    """Logs predating the runner keeping partial output are this one line."""
+    result = parse_log("TIMEOUT: process killed after 1020.0s\n")
+    assert result.killed
+    assert result.killed_after == 1020.0
+    assert result.status == "Killed (timeout)"
+    assert result.incumbents == []
+
+
+def test_a_clean_run_is_not_flagged_as_killed():
+    result = parse_log("Solving report\n  Status            Optimal\n")
+    assert not result.killed
+    assert result.killed_after is None
+    assert result.status == "Optimal"
+
+
+def test_a_real_status_outranks_the_kill_marker():
+    """Belt and braces: HiGHS's own word wins if a log carries both."""
+    result = parse_log(
+        "  Status            Time limit reached\n"
+        "TIMEOUT: process killed after 1020.0s\n"
+    )
+    assert result.killed
+    assert result.status == "Time limit reached"
+
+
+def test_primal_integral_ignores_incumbents_past_the_time_limit():
+    """A killed run keeps printing past the horizon the integral is measured over.
+
+    Integrating those later points in also drags `prev_time` beyond the limit,
+    making the remainder term negative -- so the run would score *better* than
+    an identical one whose solution landed inside the window.
+    """
+    killed = parse_log(
+        "Running HiGHS 1.15.1 (git hash: x): c\n"
+        + _mip_line(10.0, 12.0)
+        + _mip_line(300.0, 11.0)
+        + _mip_line(900.0, 10.0)  # after the 600s horizon: must not count
+        + "\nTIMEOUT: process killed after 1020.0s\n"
+    )
+    truncated = parse_log(
+        "Running HiGHS 1.15.1 (git hash: x): c\n"
+        + _mip_line(10.0, 12.0)
+        + _mip_line(300.0, 11.0)
+    )
+    # 1.0*10 (no solution yet) + 0.2*290 + 0.1*300
+    assert killed.primal_integral(600.0, 10.0) == pytest.approx(98.0)
+    assert killed.primal_integral(600.0, 10.0) == truncated.primal_integral(
+        600.0, 10.0
     )

@@ -3,10 +3,12 @@
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import run_benchmark
 from run_benchmark import (
     BUDGET_SUFFIX,
     CHAIN_EFFORT_OPTIONS,
@@ -508,6 +510,78 @@ def test_the_fj_taken_away_warning_is_detected():
 
 def test_an_ordinary_log_trips_nothing():
     assert find_ignored_config_warning("Running HiGHS\n  Status  Optimal\n") is None
+
+
+# --- a killed run keeps what it printed ------------------------------------
+
+
+def _hanging_binary(tmp_path: Path, preamble: str) -> str:
+    """A stand-in for `highs` that prints `preamble`, flushes, then hangs."""
+    path = tmp_path / "hanging_highs"
+    path.write_text(
+        f"#!{sys.executable}\n"
+        "import time\n"
+        f"print({preamble!r}, flush=True)\n"
+        "time.sleep(300)\n"
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return str(path)
+
+
+def _run_until_killed(tmp_path: Path, monkeypatch, preamble: str) -> Path:
+    """Run the hanging binary with the grace window shrunk to a test-sized one."""
+    real_run = subprocess.run
+
+    def quick(cmd, **kwargs):
+        return real_run(cmd, **{**kwargs, "timeout": 2.0})
+
+    monkeypatch.setattr(run_benchmark.subprocess, "run", quick)
+    out = tmp_path / "results"
+    _, _, _, ok = run_single(
+        _hanging_binary(tmp_path, preamble),
+        "model.mps",
+        "model",
+        "fpr",
+        0,
+        1.0,
+        str(out),
+    )
+    assert not ok, "a killed run is not a success, whatever it managed to print"
+    return out / "fpr" / "seed0"
+
+
+def test_a_killed_run_keeps_its_partial_output(tmp_path: Path, monkeypatch):
+    """HiGHS checks its clock between work units, so one long solve can run over.
+
+    The output up to the kill is real measured data -- and the headline metrics
+    read only the incumbent lines, never the Solving report the run never
+    reached -- so it is kept as a `.log` and analysed like any other run.
+    """
+    seed_dir = _run_until_killed(tmp_path, monkeypatch, "Running HiGHS 1.15.1")
+    log = seed_dir / "model.log"
+    assert log.exists()
+    assert not (seed_dir / "model.log.err").exists()
+    text = log.read_text()
+    assert "Running HiGHS 1.15.1" in text
+    assert "TIMEOUT: process killed after" in text
+
+
+def test_a_killed_run_is_not_retried_on_resume(tmp_path: Path, monkeypatch):
+    """Re-running reproduces the same hang, so `.err`'s retry semantics are wrong.
+
+    A non-empty `.log` is what `should_skip` looks for; the marker inside it is
+    what keeps the kill visible in the analysis.
+    """
+    seed_dir = _run_until_killed(tmp_path, monkeypatch, "Running HiGHS 1.15.1")
+    assert (seed_dir / "model.log").stat().st_size > 0
+
+
+def test_a_hang_before_any_output_is_parked_as_err(tmp_path: Path, monkeypatch):
+    """No banner means no run to measure -- that is a harness fault, so retry it."""
+    seed_dir = _run_until_killed(tmp_path, monkeypatch, "")
+    assert not (seed_dir / "model.log").exists()
+    err = (seed_dir / "model.log.err").read_text()
+    assert "before printing anything parseable" in err
 
 
 def test_a_run_that_ignored_its_config_is_parked_as_err(tmp_path: Path, capsys):
