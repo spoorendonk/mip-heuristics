@@ -27,7 +27,9 @@
 // The cases below are the acceptance signal for that issue: with the
 // thresholds absolute, the same sweep must not buy anything like 20x the
 // effort, because the heuristic exits on staleness before it exhausts an
-// allowance it was never going to use.
+// allowance it was never going to use.  At the `threads=1` pin these
+// cases run under, the pre-#111 numbers are fpr/p0548 28.3x, fj/p0548
+// 16.0x, scylla/flugpl 17.6x; after, 1.58x / 2.00x / 1.00x.
 // ===================================================================
 
 namespace {
@@ -61,9 +63,21 @@ size_t presolve_effort(const std::vector<std::string>& lines, const std::string&
 
 // Solve `inst` with exactly `heur` enabled and its effort option set to
 // `effort`, and report what the heuristic spent.
+//
+// `threads` and `random_seed` are both pinned.  Unpinned, the worker
+// count is the *run machine's* core count, and effort depends on it: the
+// runner-level gate is aggregated over the pool, and the overshoot past
+// it is one per-worker call from each of N workers.  A ratio measured on
+// a 12-core laptop is then not the ratio a 2-vCPU CI runner measures, on
+// an issue labelled portable.  One worker also makes the comparison a
+// clean before/after of the same search rather than of two different
+// schedules.  `ScopedThreadPin` is what makes the pin survive whatever
+// initialised the global task executor first — see its comment.
 size_t effort_at(const char* inst, const char* heur, const char* option, double effort) {
     const auto lines = solve_capturing_log(inst, [&](Highs& h) {
         require_option(h, "log_dev_level", 3);
+        require_option(h, "threads", 1);
+        require_option(h, "random_seed", 0);
         require_option(h, option, effort);
         set_suite(h, heur);
     });
@@ -72,15 +86,19 @@ size_t effort_at(const char* inst, const char* heur, const char* option, double 
 
 // The sweep is 20x wide (0.05 -> 1.00, the option's whole documented
 // range).  A gate that binds holds the growth to a small constant; the
-// pre-#111 numbers in the header comment are 13x-20x.  4x is deliberately
-// loose — the worst observed post-fix ratio over five seeds on this
-// machine was 1.81x, and the bound only has to separate "bounded by an
-// absolute threshold" from "bounded by the budget".
+// pre-#111 numbers in the header comment are 16x-28x at this thread pin.
+// 4x is deliberately loose — the worst post-fix ratio measured over four
+// seeds at `threads=1` was 2.00x (fj/p0548, which sits on its structural
+// ceiling of one gate plus one call of overshoot), and the bound only has
+// to separate "bounded by an absolute threshold" from "bounded by the
+// budget".
 constexpr double kMaxGrowth = 4.0;
 constexpr double kLowEffort = 0.05;
 constexpr double kHighEffort = 1.00;
 
 void check_gate_binds(const char* inst, const char* heur, const char* option) {
+    // Held across both solves so they share one pinned worker count.
+    const ScopedThreadPin pin;
     INFO("instance=" << inst << " heuristic=" << heur);
     const size_t low = effort_at(inst, heur, option, kLowEffort);
     const size_t high = effort_at(inst, heur, option, kHighEffort);
@@ -115,9 +133,15 @@ TEST_CASE("stall gate: Scylla exits on staleness rather than spending 20x", "[st
 // correctly declines to fire; effort still tracks the option, for the
 // right reason.  `flugpl` is the one bundled instance where it stalls
 // (63x before, 1.7x after) but only on some seeds, which is too thin to
-// assert on.  The issue's own evidence (`fiball`, one solution found at
-// every budget level while effort scaled 20x) is a MIPLIB instance and
-// out of reach of this suite.
+// assert on.  The issue's own evidence is `fiball`, a MIPLIB instance out
+// of reach of this suite; read that evidence carefully, because it is
+// weaker than it looks.  It reports `found=1` at every budget level while
+// effort scaled 20x, and `found` is not a count: `EffortLedger` sets it
+// from `sink.accepted() > accepted_before` (see effort_ledger.cpp and
+// `IncumbentSink::accepted`'s own comment), so it says only that *at
+// least one* offer was accepted during that dispatch.  It is consistent
+// with one solution and with fifty.  Establishing that a dispatch stopped
+// producing needs the accepted objectives themselves, not this field.
 
 // ── Why the threshold is absolute ──
 

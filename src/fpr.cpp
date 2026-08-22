@@ -387,8 +387,13 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         FprConfig cfg{};
         // `cfg.max_effort` is the attempt-wide cap consumed by Phase 3 sub-
         // budgets (`cfg.max_effort - total_prop_work` for repair_search /
-        // walksat).  Sized at the worker's `attempt_budget_` (=
-        // HeuristicBudget::stale = max_effort/4), not the per-call
+        // walksat).  Sized at the worker's `attempt_budget_`, which is
+        // `HeuristicBudget::total >> 2` — a quarter of the dispatch
+        // allowance.  It used to be spelled `HeuristicBudget::stale`
+        // because the two were the same number; issue #111 made `stale`
+        // an absolute instance-scaled ceiling, so this is now written out
+        // at the construction site (`fpr::run`) and the two have parted
+        // company.  Not the per-call
         // `attempt_budget`: when an attempt spans multiple `run_attempt` calls,
         // the cumulative `total_prop_work` arriving at Phase 3 already
         // exceeds any single slice, so a slice-sized cap clamps the repair

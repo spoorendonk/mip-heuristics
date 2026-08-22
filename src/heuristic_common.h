@@ -173,7 +173,7 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
 // `budget == 0` means "no ceiling known"; the floor of 1 keeps a
 // degenerate `nnz == 0` model from producing a threshold that trips
 // before any work happens.
-inline size_t stall_threshold(size_t nnz, size_t per_nnz, size_t budget) {
+[[nodiscard]] constexpr size_t stall_threshold(size_t nnz, size_t per_nnz, size_t budget) {
     const size_t threshold = std::max<size_t>(nnz * per_nnz, 1);
     return budget == 0 ? threshold : std::min(threshold, budget);
 }

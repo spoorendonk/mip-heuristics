@@ -226,9 +226,15 @@ inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
 // and every caller knows the model's `nnz` and its heuristic's per-nnz
 // constant.  See `stall_threshold` in heuristic_common.h.
 inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stale) {
-    return HeuristicBudget{total, total / num_workers,
-                           std::max<size_t>(total / (num_workers * 10), 1), stale,
-                           std::max<size_t>(stale / num_workers, 1)};
+    // Designated initialisers for the same reason `make_problem` below
+    // gives them: this aggregate is five `size_t` members in a row, so a
+    // mis-ordered addition converts silently between them.  #111 appended
+    // the fifth.
+    return HeuristicBudget{.total = total,
+                           .per_worker = total / num_workers,
+                           .attempt_cap = std::max<size_t>(total / (num_workers * 10), 1),
+                           .stale = stale,
+                           .worker_stale = std::max<size_t>(stale / num_workers, 1)};
 }
 
 // Build the CSC transpose into caller-owned `csc` and return a view over it
