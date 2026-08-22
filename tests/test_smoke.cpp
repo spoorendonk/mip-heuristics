@@ -90,8 +90,10 @@ TEST_CASE("Options: suite defaults to all and accepts every value", "[options][s
     // HiGHS does not validate string option *values*, so every one of these
     // returns kOk — including the bogus one below.  What this asserts is that
     // the option exists under this exact name; the dispatcher is what
-    // distinguishes a known value from an unknown one.
-    for (const char* value : {"off", "fj", "fpr", "local_mip", "scylla", "all"}) {
+    // distinguishes a known value from an unknown one, and what the
+    // comma-separated list form means (see test_suite_option.cpp).
+    for (const char* value :
+         {"off", "fj", "fpr", "local_mip", "scylla", "all", "fj,fpr", "fj,fpr,local_mip"}) {
         REQUIRE(highs.setOptionValue("mip_heuristic_suite", std::string(value)) ==
                 HighsStatus::kOk);
     }

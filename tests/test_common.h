@@ -197,8 +197,9 @@ inline bool log_contains(const std::vector<std::string>& lines, const std::strin
     return std::ranges::any_of(lines, [&](const std::string& line) { return line.contains(tag); });
 }
 
-// Restrict the solve to one heuristic (or none).  `suite` is a
-// `mip_heuristic_suite` value: off | fj | fpr | local_mip | scylla | all.
+// Restrict the solve to a subset of the heuristics.  `suite` is a
+// `mip_heuristic_suite` value: the alias `off` or `all`, or a
+// comma-separated list of `fj`, `fpr`, `local_mip`, `scylla`.
 //
 // `require_option` rather than a bare set: a typo'd suite value would
 // otherwise leave the solve at the `all` default and the test would

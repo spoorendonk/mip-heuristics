@@ -53,7 +53,7 @@ For a reproducible run, set `threads=1` together with a fixed `random_seed`. Tha
 
 One caveat for library embedders (not CLI users): HiGHS's task executor is a process-global singleton, initialised by the first `run()` in the process. A later solve that asks for a *different* thread count fails outright rather than silently using the old one, so pinning `threads=1` on a second `Highs` instance returns an error unless you first call `Highs::resetGlobalScheduler(true)`.
 
-`mip_heuristic_suite` is the single option that selects which heuristics run (default `all`):
+`mip_heuristic_suite` is the single option that selects which heuristics run (default `all`). Its value is either one of two aliases, or a comma-separated list of heuristic names:
 
 | Value | Heuristics | Notes |
 |--------|-----------|-------|
@@ -62,9 +62,12 @@ One caveat for library embedders (not CLI users): HiGHS's task executor is a pro
 | `fpr` | FPR (+ `fpr_lp`) | isolate FPR for ablation |
 | `local_mip` | LocalMIP | isolate LocalMIP |
 | `scylla` | Scylla | PDLP pump only |
+| `fj,fpr` | FJ+FPR (+ `fpr_lp`) | any comma-separated subset — all fifteen are expressible |
 | `all` | FJ+FPR+LocalMIP+Scylla (+ `fpr_lp`) | **default** |
 
-An unrecognised value warns and falls back to `all` rather than silently disabling everything.
+Order within a list is irrelevant (`fpr,fj` is `fj,fpr`), whitespace around a name is ignored, and repeating a name is harmless. `off` and `all` are aliases for the whole value, not names inside a list: `fj,off` is rejected, because `off` means "the vanilla-equivalent configuration" — it hands HiGHS's own FeasibilityJump call site back — rather than merely "no heuristic".
+
+An unrecognised value warns and falls back to `all` rather than silently disabling everything. The warning names the offending token, since one typo inside an otherwise valid list quietly promotes the run to all four heuristics; `bench/run_benchmark.py` greps for that warning and discards the run rather than filing it under the configuration it did not honour.
 
 **`suite=off` is a true vanilla ablation on one binary.** The patch hands HiGHS's standalone FeasibilityJump call site back at `off`, so an `off` run is what an unpatched build of the same tag does. `bench/check_vanilla_equivalence.py` verifies that against an unpatched binary — identical objective, node count and total and heuristic LP iterations, and an empty log diff once wall-clock content is normalized away (the timing block, the P-D integral, the profiling seconds, the git-hash width, the options-file echo and the `mip-heuristics patch active` marker). Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside `mip_heuristic_suite = off` for the pure patch-overhead configuration, with no heuristics at all.
 
@@ -88,7 +91,7 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | SGM P-D Integral | 26.3 | **23.9** |
 | PLATO headline SGM (s=0.001) | **26.0** | 26.8 |
 
-> **Provenance.** Two reasons this row cannot be reproduced on `HEAD`, both by design. First, the configuration is gone: `all_opp` was FJ + FPR + LocalMIP without Scylla, and the single-valued `mip_heuristic_suite` (#93) cannot express that combination — the closest value, `all`, adds Scylla. Second, the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the then-shared presolve envelope is floored, and two of the three budget weights were rescaled (that envelope and its weights have since been replaced by a per-heuristic effort option each). The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
+> **Provenance.** This row cannot be reproduced on `HEAD`, by design. The configuration is expressible again — `all_opp` was FJ + FPR + LocalMIP without Scylla, which the single-valued `mip_heuristic_suite` (#93) could not name and `mip_heuristic_suite = fj,fpr,local_mip` (#112) now does — but the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the then-shared presolve envelope is floored, and two of the three budget weights were rescaled (that envelope and its weights have since been replaced by a per-heuristic effort option each, #110). The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
 
 #### Findings
 
@@ -142,7 +145,7 @@ This does not replace `bench/instances_small.txt`, which is stratified on *optim
 
 ### Per-heuristic ablation and budget sweep
 
-`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value — `vanilla`, `off`, `fj`, `fpr`, `local_mip`, `scylla`, `all` — and no aliases: one name per suite value.
+`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value and no aliases: `vanilla`, `off`, `all`, the four singletons, and the ten pairs and triples between them (`fj+fpr`, `fj+fpr+local_mip`, …). Config names join with `+` where the option value uses `,`, because the name is a results-tree directory and a table label; they list heuristics in chain order, so one subset has exactly one spelling.
 
 ```bash
 bash bench/download_miplib.sh                       # once per machine; see above
@@ -160,7 +163,7 @@ python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600
 
 `off` is the baseline here, not `vanilla`. On the patched binary the two are the same run — `vanilla` *is* `mip_heuristic_suite=off` unless `--vanilla-binary` points at a separately built unpatched binary — so asking for both without that flag runs every instance twice for one data point, and the harness says so. Add `--vanilla-binary /path/to/unpatched/highs` (plus `vanilla` back in the config list) for a headline baseline; it is the stronger claim, and the only thing that makes the two configs differ.
 
-A sweep moves the effort option each config actually reads: `fpr@e0.60` sets `mip_heuristic_fpr_effort=0.60` and nothing else, which is what makes a per-heuristic budget measurable in isolation. `all@e0.60` sets all four to `0.60` — every heuristic at that budget, not the shipped ratio between them, since the four defaults differ. `vanilla` and `off` run no presolve heuristic, so no effort option reaches them: they pass through the sweep once as unsuffixed anchor rows — note the unsuffixed `off` in the analyze command above — and naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
+A sweep moves the effort options of exactly the heuristics a config enables: `fpr@e0.60` sets `mip_heuristic_fpr_effort=0.60` and nothing else, which is what makes a per-heuristic budget measurable in isolation, and `fj+fpr@e0.60` sets those two. `all@e0.60` sets all four to `0.60` — every heuristic at that budget, not the shipped ratio between them, since the four defaults differ. `vanilla` and `off` run no presolve heuristic, so no effort option reaches them: they pass through the sweep once as unsuffixed anchor rows — note the unsuffixed `off` in the analyze command above — and naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
 
 Two things the harness deliberately does not do by default:
 

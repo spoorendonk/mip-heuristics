@@ -100,6 +100,7 @@ include(Catch)
 
 add_executable(mip_heuristics_tests
     tests/test_smoke.cpp
+    tests/test_suite_option.cpp
     tests/test_fpr.cpp
     tests/test_fj.cpp
     tests/test_local_mip.cpp

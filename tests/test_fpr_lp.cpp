@@ -49,9 +49,10 @@ TEST_CASE("fpr_lp: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]")
 }
 
 // Regression tests for suite-aware gating: fpr_lp derives its enable flag
-// via heuristics::effective_flags, so it runs only at `suite=fpr` and
-// `suite=all`.  Before that gate existed, the "vanilla" benchmark config
-// left fpr_lp running during the B&B dive and wasn't vanilla.
+// via heuristics::effective_flags, so it runs only at a `mip_heuristic_suite`
+// value naming fpr — `fpr`, `all`, `fj,fpr` — and at no other.  Before that
+// gate existed, the "vanilla" benchmark config left fpr_lp running during
+// the B&B dive and wasn't vanilla.
 //
 // `suite=local_mip` and `suite=scylla` disabling the dive-time heuristic is
 // the deliberate consequence documented in README.md and docs/PARAMETERS.md:

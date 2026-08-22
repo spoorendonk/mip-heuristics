@@ -70,7 +70,13 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # The version marker is the one probe: a tree carrying any marker other than
 # the current one is rejected outright rather than rewritten in place.
 #
-# Bump PATCH_VERSION whenever any inserted text changes.
+# Bump PATCH_VERSION whenever any inserted text changes.  It is per-tree
+# state, not a per-change counter: version 8 covers two independent
+# changes to inserted text that landed together — the four per-heuristic
+# effort option records plus the now-argument-less run_presolve call site
+# (#110), and the suite option's registered description, which enumerated
+# six values as if exhaustive (#112).  Two such changes need one bump, not
+# two; what the marker has to distinguish is trees, not commits.
 set(PATCH_VERSION "8")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
@@ -85,9 +91,29 @@ if(_patch_version_found EQUAL -1)
 endif()
 
 # ── Add the mip_heuristic_suite string option ──
-# One single-valued option selects which custom heuristics run:
-# off | fj | fpr | local_mip | scylla | all (default "all").  It replaced the
-# three mip_heuristic_run_* bools and mip_heuristic_preset in #93.
+# One option selects which custom heuristics run: the alias "off" (none) or
+# "all" (every one), or a comma-separated list of fj, fpr, local_mip, scylla
+# (default "all").  It replaced the three mip_heuristic_run_* bools and
+# mip_heuristic_preset in #93; the list form arrived in #112.
+#
+# The value is interpreted in `heuristics::effective_flags`, not here — HiGHS
+# does not validate string option *values*, so this registration only has to
+# name the option and describe it.  The description is the one part of #112
+# that is inserted text, and it is worth the PATCH_VERSION bump: it is the
+# only documentation of the legal values that ships *inside* the binary, and
+# the enumeration it carried listed six values as if they were exhaustive.
+#
+# The path that echoes it is `Highs::writeOptions(<filename>)` — an API call,
+# not a CLI flag.  Do not go looking for it in `highs --options_file`: the
+# CLI dump is `highs.writeOptions("", true)` in `app/RunHighs.cpp`, whose
+# `report_only_deviations` argument emits `Set option ... to "<value>"` lines
+# and no descriptions at all.  What makes the description reachable from the
+# full dump is an accident of *where* this record lands: `reportOptions`
+# skips every record whose `advanced` flag is set, and the insertion anchor
+# below puts ours ahead of the point where `setOptionRecords` flips its local
+# `advanced` to true, so the option registers non-advanced and survives that
+# filter.  Moving the anchor past that point would silence the description
+# without changing a character of it.
 #
 # All three insertions anchor on *upstream's* mip_heuristic_run_shifting
 # text.  Anchoring on our own inserted text is what made the previous option
@@ -110,7 +136,7 @@ if(_suite_found EQUAL -1)
     # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_suite\",\n                                          \"Custom MIP heuristic suite: \\\"off\\\", \\\"fj\\\", \\\"fpr\\\", \\\"local_mip\\\", \\\"scylla\\\" or \\\"all\\\"\", advanced,\n                                          &mip_heuristic_suite, \"all\");\n    records.push_back(record_string);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_suite\",\n                                          \"Custom MIP heuristic suite: comma-separated list of \\\"fj\\\", \\\"fpr\\\", \\\"local_mip\\\", \\\"scylla\\\", or the alias \\\"off\\\" (none) or \\\"all\\\" (every one)\", advanced,\n                                          &mip_heuristic_suite, \"all\");\n    records.push_back(record_string);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Sanity checks: all three insertions must land.  The failure mode is

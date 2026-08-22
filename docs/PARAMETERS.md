@@ -775,16 +775,30 @@ The custom patch-added options are exactly five:
   per presolve heuristic, each a double in `[0.0, 1.0]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the other three are per dispatch.
-- `mip_heuristic_suite` — which heuristics run (default `"all"`):
-  `off` | `fj` | `fpr` | `local_mip` | `scylla` | `all`. HiGHS does not
-  validate string option values, so an unrecognised value is accepted by
-  `setOptionValue` and caught at solve time: the dispatcher warns and
-  falls back to running all four.
+- `mip_heuristic_suite` — which heuristics run (default `"all"`).
+  The value is either one of the two whole-value aliases `off` (no
+  heuristic) and `all` (every one), or a **comma-separated list** of the
+  heuristic names `fj`, `fpr`, `local_mip`, `scylla` — so all fifteen
+  non-empty subsets are expressible, e.g. `fj,fpr,local_mip` (#112).
+  Order is irrelevant, whitespace around a name is ignored and repeats
+  are harmless. `off` is an alias for the whole value only, never a token
+  in a list: the patched HiGHS tree compares this option to `"off"`
+  verbatim to hand back upstream's own FeasibilityJump call site, so a
+  value that selected nothing without being that exact string would be a
+  heuristic-free run that is *not* the vanilla-equivalent one. HiGHS does
+  not validate string option values, so an unrecognised one is accepted
+  by `setOptionValue` and caught at solve time: the dispatcher warns —
+  naming the offending token, which is what makes a typo inside a list
+  diagnosable — and falls back to running all four. The single place the
+  string becomes four booleans is `heuristics::effective_flags` in
+  `src/mode_dispatch.cpp`; the legal names are the presolve chain table's
+  own, so they cannot drift from the `[Heur] name=<n>` traces.
 
 `mip_heuristic_suite` also gates the B&B-dive `fpr_lp`, on the same bit
-as presolve FPR. It therefore runs at `fpr` and `all` (and at an
-unrecognised value, which fails open to all four) — `off`, `local_mip`
-and `scylla` all disable it. That is deliberate (a
+as presolve FPR. It therefore runs at any value naming `fpr` — `fpr`,
+`all`, `fj,fpr`, and an unrecognised value, which fails open to all four
+— while `off` and every subset that omits `fpr` disable it. That is
+deliberate (a
 per-heuristic attribution run must not leave a second FPR variant
 running at dive time), but it means a dive-time result measured under
 `suite=local_mip` or `suite=scylla` says nothing about `fpr_lp`.

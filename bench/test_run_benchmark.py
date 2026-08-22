@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from run_benchmark import (
     BUDGET_SUFFIX,
+    CHAIN_EFFORT_OPTIONS,
     CONFIG_SUITES,
     CONFIG_SWEEP_OPTIONS,
     DEFAULT_BUDGET_SWEEP,
@@ -25,6 +26,7 @@ from run_benchmark import (
     resolve_data_dir,
     run_single,
     split_config,
+    sweep_options_for_suite,
     write_log,
     write_options_file,
 )
@@ -190,6 +192,106 @@ def test_expansion_rejects_an_already_suffixed_config():
 def test_expansion_rejects_a_bad_budget_before_any_run():
     with pytest.raises(ValueError):
         expand_configs(["fpr"], ["0.05", "banana"])
+
+
+# --- subset configs (#112) -------------------------------------------------
+
+# The four heuristics of the presolve chain, in chain order.
+CHAIN = ("fj", "fpr", "local_mip", "scylla")
+
+
+def test_the_local_chain_matches_the_effort_option_table():
+    """This module's CHAIN is a cross-check only while it agrees with the
+    module under test; a fifth heuristic must reach both."""
+    assert tuple(CHAIN_EFFORT_OPTIONS) == CHAIN
+
+
+def test_every_subset_of_the_chain_is_a_config():
+    """#107 sweeps all fifteen non-empty subsets plus `off`."""
+    expected = set()
+    for mask in range(1, 1 << len(CHAIN)):
+        members = [name for bit, name in enumerate(CHAIN) if mask & (1 << bit)]
+        expected.add("all" if len(members) == len(CHAIN) else "+".join(members))
+    assert expected <= set(CONFIG_SUITES)
+
+
+def test_config_names_join_with_plus_and_suite_values_with_commas():
+    """A comma in a config name is a results-tree path and a LaTeX label."""
+    for name, suite in CONFIG_SUITES.items():
+        assert "," not in name
+        if "+" in name:
+            assert name.split("+") == suite.split(",")
+        else:
+            assert "," not in suite
+
+
+def test_subset_configs_map_to_a_comma_separated_suite_value():
+    assert config_options("fj+fpr") == {"mip_heuristic_suite": "fj,fpr"}
+    assert config_options("fj+fpr+local_mip") == {
+        "mip_heuristic_suite": "fj,fpr,local_mip"
+    }
+
+
+def test_a_subset_name_is_not_an_alias_for_a_reordering():
+    """One subset, one spelling: `fpr+fj` names no config."""
+    with pytest.raises(ValueError, match="unknown config"):
+        config_options("fpr+fj")
+
+
+def test_the_budget_suffix_still_parses_on_a_subset_name():
+    """`split_config` partitions on `@e`, which a `+` name does not contain."""
+    assert split_config(f"fj+fpr{BUDGET_SUFFIX}0.30") == ("fj+fpr", "0.30")
+    plan = build_plan(f"fj+fpr{BUDGET_SUFFIX}0.30", PATCHED, EXTERNAL)
+    assert plan.base == "fj+fpr"
+    assert plan.name == f"fj+fpr{BUDGET_SUFFIX}0.30"
+    assert plan.options == {
+        "mip_heuristic_suite": "fj,fpr",
+        "mip_heuristic_fj_effort": "0.30",
+        "mip_heuristic_fpr_effort": "0.30",
+    }
+
+
+def test_a_subset_sweeps_exactly_its_own_heuristics_effort_options():
+    """The #110 x #112 join: a subset config moves the effort options of the
+    heuristics it enables and no others, so `fj+scylla@e0.60` says nothing
+    about FPR's or LocalMIP's budget."""
+    for name, suite in CONFIG_SUITES.items():
+        if "+" not in name:
+            continue
+        expected = tuple(
+            CHAIN_EFFORT_OPTIONS[h] for h in CHAIN if h in suite.split(",")
+        )
+        assert CONFIG_SWEEP_OPTIONS[name] == expected
+        assert config_options(f"{name}{BUDGET_SUFFIX}0.60") == {
+            "mip_heuristic_suite": suite,
+            **{option: "0.60" for option in expected},
+        }
+
+
+def test_no_subset_config_is_left_unswept():
+    """Every subset enables at least one heuristic, so every one is swept —
+    the `SWEEP_EXEMPT` entry that used to cover `fj` went with the shared
+    envelope, FJ having gained an option of its own (#110)."""
+    for name in CONFIG_SUITES:
+        if "+" in name:
+            assert CONFIG_SWEEP_OPTIONS[name]
+
+
+def test_sweep_options_are_derived_and_reject_an_unknown_heuristic():
+    """The drift guard: a config added to CONFIG_SUITES naming a heuristic
+    with no effort option raises on import rather than sweeping a subset of
+    what it runs and labelling the tree as if it had swept all of it."""
+    with pytest.raises(ValueError, match="names no heuristic"):
+        sweep_options_for_suite("fj,walksat")
+
+
+def test_sweep_options_are_listed_in_chain_order():
+    """One subset, one option tuple: order comes from the chain, not from the
+    order the tokens happen to appear in the suite value."""
+    assert sweep_options_for_suite("scylla,fj") == (
+        "mip_heuristic_fj_effort",
+        "mip_heuristic_scylla_effort",
+    )
 
 
 # --- vanilla / off interaction with the sweep ------------------------------

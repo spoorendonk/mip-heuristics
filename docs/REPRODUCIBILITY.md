@@ -99,11 +99,11 @@ in a benchmark options file. Let HiGHS use its default.
 The recorded PLATO mipfeas table (233 MIPLIB 2017 instances, 600 s) is in
 `README.md`, together with the provenance caveat that matters most: **it cannot
 be reproduced on `HEAD`.** It was measured at `mip_heuristic_preset=all_opp` —
-FJ + FPR + LocalMIP with Scylla deliberately excluded — and the single-valued
-`mip_heuristic_suite` cannot express that combination. The closest value, `all`,
-adds Scylla, which is a composition change and not a rename. The binary is gone
-too: the numbers predate the runner cleanup. Treat the row as the last
-full-campaign result, not as a claim about `HEAD`.
+FJ + FPR + LocalMIP with Scylla deliberately excluded. That composition is
+expressible again as `mip_heuristic_suite = fj,fpr,local_mip` (#112), having
+been unnameable while the option took a single value, but the binary is gone:
+the numbers predate the runner cleanup. Treat the row as the last full-campaign
+result, not as a claim about `HEAD`.
 
 What *is* reproducible is the protocol.
 

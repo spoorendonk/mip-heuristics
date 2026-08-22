@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <array>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace heuristics {
 
@@ -186,28 +188,122 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
     return false;
 }
 
+// ── mip_heuristic_suite ──
+//
+// The value is either one of two whole-value aliases — `off` (no heuristic)
+// and `all` (every one) — or a comma-separated list of heuristic names,
+// unioned: `fj,fpr` runs those two and nothing else.  Order is irrelevant,
+// whitespace around a token is ignored, and repeating a name is harmless.
+// Fifteen non-empty subsets exist and the six single values could express
+// five of them (#112), which left the FJ+FPR+LocalMIP composition the
+// recorded benchmark table was measured at inexpressible.
+//
+// The legal names are `kChain`'s own `name` field rather than a second
+// table, so they cannot drift from the `[Heur] name=<n>` traces those same
+// strings produce: the name a user reads in the log is the name they select
+// with, and a fifth heuristic stays a single table edit.
+//
+// `off` is an alias only as the *whole* value, never as a token in a list.
+// It is not merely "the empty set": the patched HiGHS tree tests
+// `mip_heuristic_suite == "off"` verbatim to hand back upstream's own
+// FeasibilityJump call site and its display key (see
+// `third_party/highs_patch/apply_patch.cmake`), so a value that selected
+// nothing without being that exact string would run no heuristic at all
+// while quietly not being the vanilla-equivalent configuration.  `fj,off`
+// is therefore an unrecognised token, and warns.  `setLocalOptionValue`
+// strips *spaces* — only spaces — from both ends of a string option's value
+// and lower-cases it before storing (the options-file loader strips tabs,
+// newlines and quotes first), so ` OFF ` arrives as `off` and the exact
+// comparison on both sides of the patch boundary is safe: whatever neither
+// strips fails `== "off"` identically here and in the patched tree.
+
+// `token` without surrounding ASCII whitespace.  HiGHS strips spaces around
+// the whole value but not around a separator inside it, so `fj, fpr` needs
+// this to mean the same thing as `fj,fpr`.
+std::string_view trim(std::string_view token) {
+    constexpr std::string_view kSpace = " \t\n\v\f\r";
+    const size_t first = token.find_first_not_of(kSpace);
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    return token.substr(first, token.find_last_not_of(kSpace) - first + 1);
+}
+
+// The HeuristicFlags bit `token` names, or nullptr if it names no heuristic.
+//
+// A `std::ranges::find` over `kChain` would read better, but the iterator it
+// returns has nowhere portable to live: `std::array::const_iterator` is a raw
+// pointer on libstdc++ and libc++ and a class type on MSVC, so `const auto`
+// trips readability-qualified-auto while the `const auto *const` that check
+// asks for is the assumption that breaks on MSVC.  Returning the member
+// pointer sidesteps the choice.  Do not "simplify" this back.
+bool HeuristicFlags::* suite_flag(std::string_view token) {
+    for (const HeuristicConfig& h : kChain) {
+        if (token == h.name) {
+            return h.flag;
+        }
+    }
+    return nullptr;
+}
+
+// Union the heuristics named by the comma-separated `suite`, appending every
+// token that names none to `unknown` (deduplicated) for the caller's
+// warning.  The empty string is one empty token rather than zero tokens, so
+// a bare `mip_heuristic_suite=` is an unrecognised value and not a silent
+// `off` — as is the empty token a stray trailing comma leaves behind.
+HeuristicFlags parse_suite_list(std::string_view suite, std::vector<std::string_view>& unknown) {
+    HeuristicFlags flags{false, false, false, false};
+    for (size_t pos = 0;;) {
+        const size_t comma = suite.find(',', pos);
+        const size_t count = comma == std::string_view::npos ? comma : comma - pos;
+        const std::string_view token = trim(suite.substr(pos, count));
+        if (bool HeuristicFlags::* const flag = suite_flag(token); flag != nullptr) {
+            flags.*flag = true;
+        } else if (std::ranges::find(unknown, token) == unknown.end()) {
+            unknown.push_back(token);
+        }
+        if (comma == std::string_view::npos) {
+            return flags;
+        }
+        pos = comma + 1;
+    }
+}
+
+// `tokens` quoted and comma-joined, for a warning that has to name what it
+// rejected: {fpr2, walksat} -> `"fpr2", "walksat"`.
+std::string quote_join(const std::vector<std::string_view>& tokens) {
+    std::string joined;
+    for (const std::string_view token : tokens) {
+        if (!joined.empty()) {
+            joined += ", ";
+        }
+        joined += '"';
+        joined += token;
+        joined += '"';
+    }
+    return joined;
+}
+
 }  // namespace
 
-HeuristicFlags effective_flags(const HighsOptions& options, bool* recognized) {
+HeuristicFlags effective_flags(const HighsOptions& options, SuiteDiagnosis* diagnosis) {
     const std::string& suite = options.mip_heuristic_suite;
 
-    // Fail open on an unrecognised value: running everything is the same
-    // thing the default does, and silently disabling all four heuristics
-    // because of a typo is the worse failure.  The caller warns.
+    std::vector<std::string_view> unknown;
     HeuristicFlags flags{true, true, true, true};
-    bool known = true;
     if (suite == "off") {
         flags = {false, false, false, false};
-    } else if (suite == "fj") {
-        flags = {true, false, false, false};
-    } else if (suite == "fpr") {
-        flags = {false, true, false, false};
-    } else if (suite == "local_mip") {
-        flags = {false, false, true, false};
-    } else if (suite == "scylla") {
-        flags = {false, false, false, true};
     } else if (suite != "all") {
-        known = false;
+        flags = parse_suite_list(suite, unknown);
+        // Fail open on an unrecognised token: running everything is the same
+        // thing the default does, and silently disabling heuristics because
+        // of a typo is the worse failure — inside a list it would quietly
+        // demote a two-heuristic run to a one-heuristic one, so a results
+        // tree named `fj+fpr` would hold runs of `fj`.  The caller warns and
+        // names the token.
+        if (!unknown.empty()) {
+            flags = {true, true, true, true};
+        }
     }
 
     // Upstream's own FJ switch still means what it says.  At suite=off the
@@ -216,8 +312,9 @@ HeuristicFlags effective_flags(const HighsOptions& options, bool* recognized) {
     // FeasibilityJump off in every configuration rather than only one.
     flags.fj = flags.fj && options.mip_heuristic_run_feasibility_jump;
 
-    if (recognized != nullptr) {
-        *recognized = known;
+    if (diagnosis != nullptr) {
+        diagnosis->unknown_tokens = quote_join(unknown);
+        diagnosis->unknown_count = unknown.size();
     }
     return flags;
 }
@@ -236,15 +333,22 @@ bool run_presolve(HighsMipSolver& mipsolver) {
     // prevent.  If you reword either string, update that list in the same
     // commit; `tests/test_smoke.cpp` pins both substrings against this
     // binary's real output and will fail until you do.
-    bool recognized = false;
-    const HeuristicFlags flags = effective_flags(options, &recognized);
-    if (!recognized) {
+    SuiteDiagnosis diagnosis;
+    const HeuristicFlags flags = effective_flags(options, &diagnosis);
+    if (diagnosis.unknown_count > 0) {
+        // Naming the token is what makes this usable on a list value: the
+        // value alone leaves the reader to spot which of `fj,fpr,locl_mip`
+        // is wrong, and the run it describes silently executed all four.
         highsLogUser(options.log_options, HighsLogType::kWarning,
-                     "Unknown mip_heuristic_suite value \"%s\"; running all heuristics.\n",
-                     options.mip_heuristic_suite.c_str());
+                     "Unknown mip_heuristic_suite value \"%s\": unrecognised %s %s; running all "
+                     "heuristics.\n",
+                     options.mip_heuristic_suite.c_str(),
+                     diagnosis.unknown_count == 1 ? "token" : "tokens",
+                     diagnosis.unknown_tokens.c_str());
     } else if (!flags.fj && !flags.fpr && !flags.local_mip && !flags.scylla &&
                options.mip_heuristic_suite != "off") {
-        // Only reachable as `suite=fj` with mip_heuristic_run_feasibility_jump
+        // Only reachable from a value naming FJ and nothing else (`fj`, or a
+        // list whose tokens are all `fj`) with mip_heuristic_run_feasibility_jump
         // false, which asks for FJ and then takes it away.  That run is
         // heuristic-free without being `off`, so it also loses the native FJ
         // call site — a benchmark row labelled "FJ isolated" would silently

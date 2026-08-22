@@ -24,9 +24,9 @@ import sys
 import time
 from dataclasses import dataclass
 
-# Benchmark configs.  Every one of them is a single value of
-# `mip_heuristic_suite` (#93), so the table is a name -> suite-value map
-# rather than a bag of per-config option dicts.
+# Benchmark configs.  Every one of them is a value of `mip_heuristic_suite`
+# (#93), so the table is a name -> suite-value map rather than a bag of
+# per-config option dicts.
 #
 # `vanilla` maps to `off` because on the *patched* binary `suite=off` hands
 # HiGHS's standalone FeasibilityJump call site back and disables every custom
@@ -39,12 +39,25 @@ from dataclasses import dataclass
 # `mip_heuristic_effort` to upstream's 0.05 default (vanilla semantics), and
 # the per-heuristic effort options are irrelevant with the presolve chain off.
 #
-# `all` is not the configuration the recorded PLATO table in README.md was
-# measured at: that row is `all_opp` — FJ + FPR + LocalMIP with Scylla
-# deliberately excluded, because PDLP solves are expensive enough to hurt
-# wall-clock on general instances — and the single-valued option surface
-# cannot express it.  `all` adds Scylla.  Do not compare a fresh `all` run
-# against the recorded `all_opp` numbers.
+# The ten subset configs are the pairs and triples the mix-selection stage
+# (#107) sweeps alongside the four singletons, `all` and `off` — sixteen
+# rows, one per subset of the chain.  They exist because `mip_heuristic_suite`
+# takes a comma-separated list (#112); the config *name* joins with `+`
+# instead, because the name is a results-tree directory and a column label in
+# generated LaTeX, and a comma in either is a needless escaping problem.  The
+# `<config>@e<budget>` suffix is unaffected: `split_config` partitions on
+# `@e`, which no name contains.
+#
+# Names list heuristics in chain order (FJ -> FPR -> LocalMIP -> Scylla) so
+# one subset has one spelling; `fpr+fj` is not a config even though the suite
+# value it would map to is legal.
+#
+# The recorded PLATO table in README.md was measured at `all_opp` — FJ + FPR
+# + LocalMIP with Scylla deliberately excluded, because PDLP solves are
+# expensive enough to hurt wall-clock on general instances.  That is
+# `fj+fpr+local_mip` below.  Expressible is not reproducible: the binary
+# those numbers came from predates the runner cleanup, so do not compare a
+# fresh run against the recorded `all_opp` row.
 CONFIG_SUITES: dict[str, str] = {
     "vanilla": "off",
     "off": "off",
@@ -52,6 +65,16 @@ CONFIG_SUITES: dict[str, str] = {
     "fpr": "fpr",
     "local_mip": "local_mip",
     "scylla": "scylla",
+    "fj+fpr": "fj,fpr",
+    "fj+local_mip": "fj,local_mip",
+    "fj+scylla": "fj,scylla",
+    "fpr+local_mip": "fpr,local_mip",
+    "fpr+scylla": "fpr,scylla",
+    "local_mip+scylla": "local_mip,scylla",
+    "fj+fpr+local_mip": "fj,fpr,local_mip",
+    "fj+fpr+scylla": "fj,fpr,scylla",
+    "fj+local_mip+scylla": "fj,local_mip,scylla",
+    "fpr+local_mip+scylla": "fpr,local_mip,scylla",
     "all": "all",
 }
 
@@ -72,38 +95,67 @@ BUDGET_SUFFIX = "@e"
 # invocation.
 DEFAULT_BUDGET_SWEEP = ("0.05", "0.15", "0.30", "0.60", "1.00")
 
+# The effort option each heuristic of the presolve chain reads, in chain
+# order (FJ -> FPR -> LocalMIP -> Scylla).  Keys are `mip_heuristic_suite`
+# tokens, which is what lets `CONFIG_SWEEP_OPTIONS` below be *derived* from
+# `CONFIG_SUITES` rather than hand-listed beside it (#110 replaced
+# `SWEEP_EXEMPT` with the derived table; FJ was its only non-trivial member,
+# and FJ now has an option of its own).
+CHAIN_EFFORT_OPTIONS: dict[str, str] = {
+    "fj": "mip_heuristic_fj_effort",
+    "fpr": "mip_heuristic_fpr_effort",
+    "local_mip": "mip_heuristic_local_mip_effort",
+    "scylla": "mip_heuristic_scylla_effort",
+}
+
+
+def sweep_options_for_suite(suite: str) -> tuple[str, ...]:
+    """The effort options a `--budget-sweep` moves for a suite value.
+
+    A config sweeps the effort options of exactly the heuristics its suite
+    value enables, in chain order: `fj,fpr` moves FJ's and FPR's and nothing
+    else.  `all` moves all four to the same value — with independent
+    per-heuristic budgets (#110) there is no shared envelope for one number
+    to size, so `all@e0.30` means "every heuristic at 0.30", which is not the
+    shipped ratio between them since the four defaults differ.  A
+    per-heuristic calibration sweeps a single-heuristic config instead, which
+    is the point of having four options.
+
+    `off` yields the empty tuple: no effort option reaches a run with no
+    presolve heuristic in it, so N budgets would be N identical runs under N
+    different names — the same plausible-looking-but-meaningless output that
+    the unknown-config-name raise exists to prevent.  Those configs stay in a
+    sweep as a single unsuffixed anchor row rather than being dropped; a
+    sweep still wants its baselines.
+
+    Raises ValueError on a token that names no heuristic, at import time,
+    because that is what a fifth heuristic added to `CONFIG_SUITES` and
+    nowhere else looks like: silently returning a short tuple would sweep a
+    subset of what the config runs and label the tree as if it had swept all
+    of it.
+    """
+    if suite == "off":
+        return ()
+    tokens = list(CHAIN_EFFORT_OPTIONS) if suite == "all" else suite.split(",")
+    named = {token.strip() for token in tokens}
+    unknown = sorted(named - set(CHAIN_EFFORT_OPTIONS))
+    if unknown:
+        raise ValueError(
+            f"suite value {suite!r} names no heuristic for {', '.join(unknown)}; "
+            f"add it to CHAIN_EFFORT_OPTIONS alongside its effort option"
+        )
+    return tuple(
+        option for name, option in CHAIN_EFFORT_OPTIONS.items() if name in named
+    )
+
+
 # Which effort options a `--budget-sweep` moves, per config.  One entry per
-# `CONFIG_SUITES` key, so a config's reachability by the sweep is *derived*
-# from the option surface rather than listed in a hand-maintained exemption
-# table (#110 replaced `SWEEP_EXEMPT` with this; FJ was its only non-trivial
-# member, and FJ now has an option of its own).
-#
-# An empty tuple means no effort option reaches that config: `vanilla` and
-# `off` run no presolve heuristic, so N budgets would be N identical runs
-# under N different names — the same plausible-looking-but-meaningless output
-# that the unknown-config-name raise exists to prevent.  They stay in a sweep
-# as a single unsuffixed anchor row rather than being dropped; a sweep still
-# wants its baselines.
-#
-# `all` sweeps all four options to the same value.  With independent
-# per-heuristic budgets there is no shared envelope for one number to size,
-# so `all@e0.30` means "every heuristic at 0.30" — which is not the shipped
-# ratio between them, since the four defaults differ.  A per-heuristic
-# calibration sweeps the single-heuristic configs instead, which is the
-# point of having four options.
+# `CONFIG_SUITES` key by construction, so a config cannot be added without a
+# sweep entry and the two tables cannot drift: adding a config whose suite
+# value names an unknown heuristic raises here, on import, rather than
+# producing a tree swept on the wrong options.
 CONFIG_SWEEP_OPTIONS: dict[str, tuple[str, ...]] = {
-    "vanilla": (),
-    "off": (),
-    "fj": ("mip_heuristic_fj_effort",),
-    "fpr": ("mip_heuristic_fpr_effort",),
-    "local_mip": ("mip_heuristic_local_mip_effort",),
-    "scylla": ("mip_heuristic_scylla_effort",),
-    "all": (
-        "mip_heuristic_fj_effort",
-        "mip_heuristic_fpr_effort",
-        "mip_heuristic_local_mip_effort",
-        "mip_heuristic_scylla_effort",
-    ),
+    config: sweep_options_for_suite(suite) for config, suite in CONFIG_SUITES.items()
 }
 
 
@@ -624,9 +676,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Configs to run (default: all vanilla). One of: "
             + ", ".join(sorted(CONFIG_SUITES))
-            + ". Each selects a mip_heuristic_suite value, and `vanilla` runs "
-            "the external --vanilla-binary when one is given. An unknown name "
-            "is an error, not a default-option run."
+            + ". Each selects a mip_heuristic_suite value, with `+` in a name "
+            "standing for the `,` in that value; `vanilla` runs the external "
+            "--vanilla-binary when one is given. An unknown name is an error, "
+            "not a default-option run."
         ),
     )
     parser.add_argument(
@@ -638,8 +691,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Sweep each config's effort options: each config expands to "
             "<config>@e<V> per value, writing to <output>/<config>@e<V>/seed<N>/. "
             "With no values, sweeps " + " ".join(DEFAULT_BUDGET_SWEEP) + ". "
-            "A single-heuristic config sweeps its own effort option; `all` "
-            "sweeps all four to the same value. `vanilla` and `off` run no "
+            "A config sweeps the effort options of exactly the heuristics it "
+            "enables: `fpr` moves its own, `fj+fpr` moves those two, `all` "
+            "moves all four to the same value. `vanilla` and `off` run no "
             "presolve heuristic, so no effort option reaches them: they are "
             "not swept and run once each, as the sweep's anchor rows."
         ),
