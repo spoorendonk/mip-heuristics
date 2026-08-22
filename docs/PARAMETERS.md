@@ -734,6 +734,33 @@ one-for-one. That is what makes the four independent budgets of #110
 composable — a heuristic that stops finding things exits instead of
 spending an allowance that was tuned in isolation.
 
+A gate has two operands, and #111 repaired both. The other is the
+**improvement signal** that resets the counter. Each worker used to
+supply its own — "I beat my own best" — which restarts at infinity on
+every rebuild, so a rebuilt worker cleared the dispatch's staleness by
+rediscovering a solution the pool already held. Workers now read what
+`IncumbentSink::offer` returns, which is the project's single definition
+of production and the same predicate `[Heur] found` reports; `offer` is
+`[[nodiscard]]` so the verdict cannot be dropped again. Fixing the
+threshold alone left FPR at 19.98x over a 20x sweep on `flugpl`, where
+it spent forty ceilings' worth of effort for one accepted solution.
+
+**Inert region.** `stall_threshold` clamps to the allowance, so a gate
+cannot fire at all while `nnz x k` exceeds the whole budget — that is,
+while the effort option is at or below `k / 81920`:
+
+| heuristic | inert at or below | shipped default |
+|---|---|---|
+| fj | 0.003125 | 0.0125 |
+| fpr | 0.025 | 0.0884 |
+| local_mip | 0.05 | 0.1821 |
+| scylla | 0.00625 | 0.0296 |
+
+Every gate is therefore live at its own default, and the clamp is doing
+its documented job rather than misbehaving. It matters for **#106**: a
+budget ladder that extends below these values is measuring the budget,
+not the gate, and will read as "the threshold does nothing down here".
+
 `stall_threshold(nnz, per_nnz, budget)` in `src/heuristic_common.h`
 applies one, clamped to the allowance. The runner-level gate is sized in
 `run_sequential` (multiplied by the worker count for the one constant
@@ -786,12 +813,25 @@ Scylla PDLP iterations x nnz.
 - **Default**: `4096`
 - **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
   without an improvement. 4096 is the power of two nearest the pre-#111
-  gate at the default effort 0.1821 (3729 x nnz). Note that LocalMIP
-  resets its staleness on any solution that beats a worker's own best, so
-  on instances where it keeps improving this gate correctly never fires
-  and effort still tracks the budget; what it bounds is the case the
-  issue was raised for, one solution found early and the rest of the
-  allowance spent finding nothing.
+  gate at the default effort 0.1821 (3729 x nnz).
+- **Residual**: LocalMIP is the least tightly bounded of the four, and
+  unevenly so. With both halves of #111 in place, `p0548` at `threads=1`
+  and effort 1.00 reaches the identical fifteen incumbents on 27.8M
+  effort instead of 92.7M at seed 0 — but is unchanged at seeds 1–3 and
+  halved at seed 4, giving 6.00x / 19.99x / 19.99x / 19.98x / 9.93x over
+  a 20x sweep; `gt2` lands at 7.25x. The residual is pool-fill and
+  diversity accepts: `kPoolCapacity` offers are admitted unconditionally
+  while the pool fills, and structurally diverse near-best solutions
+  afterwards, both of which legitimately reset the gate. Tightening it
+  further would mean redefining improvement as "accepted **and** beat the
+  pool's best", which #111 rules out. **#106 owns this.**
+- **Cost**: not free. At effort 1.00, `threads=1`, LocalMIP alone, the
+  final presolve-phase incumbent is unchanged on `p0548` and `flugpl` but
+  worse on `gt2` (42355 → 45341, −7%), `dcmulti` (−3.4%) and `rgn`
+  (112.8 → 134.0, −19%), for 2.6x less effort. A worker that keeps
+  improving its own solution without beating the pool's worst-of-ten now
+  retires and is rebuilt from a pool restart, so it is redirected rather
+  than killed. Whether that trade wins is a #106 question.
 - **Suggested range**: 1024–16384.
 
 ---
@@ -805,6 +845,17 @@ Scylla PDLP iterations x nnz.
   PDLP solve charges `iters x nnz`, so this is a handful of unproductive
   pump rounds rather than hundreds of matrix sweeps. 512 is the power of
   two nearest the pre-#111 gate at the default effort 0.0296 (606 x nnz).
+- **Granularity floor**: Scylla cannot honour a threshold below the cost
+  of one attempt, and one attempt charges a whole PDLP solve
+  (`iters x nnz`), which exceeds `512 x nnz` by 2–7x on the bundled
+  instances. Its effective floor is therefore `N x one PDLP solve`
+  regardless of what this constant says, and lowering it buys nothing.
+  The per-attempt cap does not help: on `dcmulti` at effort 0.05,
+  `attempt_cap` is already 45,192 — 15x below the 678k ceiling — and each
+  attempt still charges ~1.35M, because `run_cap` does not govern a PDLP
+  solve once it has started. Fixing this means bounding the solve itself
+  (a PDLP iteration cap derived from the remaining stall room), not
+  bounding the attempt. **Flagged for #106.**
 - **Suggested range**: 128–4096.
 
 ---

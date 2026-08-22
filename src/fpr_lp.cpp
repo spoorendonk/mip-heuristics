@@ -260,7 +260,16 @@ public:
         attempt.effort = result.effort;
 
         if (result.found_feasible) {
-            sink_.offer(result.objective, result.solution);
+            // Deliberately discarded, and the only worker site that does.
+            // Issue #111 repaired the improvement signal for the four
+            // *presolve* heuristics and left fpr_lp alone: it draws from
+            // upstream's dive-time LP-iteration envelope rather than a
+            // per-heuristic effort option, and it gates itself on its own
+            // `kStaleAttemptThreshold` attempt counter as well as this
+            // flag.  The prototype that measured the change did not cover
+            // it, so this stays on "reached a feasible point" until
+            // someone measures the dive-time envelope.
+            static_cast<void>(sink_.offer(result.objective, result.solution));
             attempt.found_improvement = true;
             attempts_without_improvement_ = 0;
             randomizations_without_improvement_ = 0;

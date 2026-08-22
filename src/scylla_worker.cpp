@@ -367,12 +367,18 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                 for (HighsInt j = 0; j < ncol_; ++j) {
                     obj += orig_cost[j] * x_bar[j];
                 }
-                sink_.offer(obj, x_bar);
-                base_.reset_staleness();
-                if (improvement_gen_ != nullptr) {
-                    improvement_gen_->fetch_add(1, std::memory_order_relaxed);
+                // Pool verdict, not mere MIP-feasibility (#111).  The
+                // `continue` stays unconditional: an integral x_bar means
+                // this pump round is done either way, and the peer
+                // broadcast is a *productivity* signal, so a refused
+                // offer must not clear anyone's staleness.
+                if (sink_.offer(obj, x_bar)) {
+                    base_.reset_staleness();
+                    if (improvement_gen_ != nullptr) {
+                        improvement_gen_->fetch_add(1, std::memory_order_relaxed);
+                    }
+                    attempt.found_improvement = true;
                 }
-                attempt.found_improvement = true;
                 continue;
             }
         }
@@ -409,8 +415,10 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         base_.effort_since_improvement += rounded.effort;
         attempt.effort += rounded.effort;
 
-        if (rounded.found_feasible && !rounded.solution.empty()) {
-            sink_.offer(rounded.objective, rounded.solution);
+        // Same as the fast path above: short-circuit leaves `offer`
+        // called on exactly the results it was called on before (#111).
+        if (rounded.found_feasible && !rounded.solution.empty() &&
+            sink_.offer(rounded.objective, rounded.solution)) {
             base_.reset_staleness();
             if (improvement_gen_ != nullptr) {
                 improvement_gen_->fetch_add(1, std::memory_order_relaxed);

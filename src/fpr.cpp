@@ -455,8 +455,13 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         HeuristicResult result = fpr_attempt_finish(attempt_state_, mipsolver_, cfg, rng_);
         attempt.effort += attempt_state_.effort_consumed - before_finish;
 
-        if (result.found_feasible) {
-            sink_.offer(result.objective, result.solution);
+        // Pool acceptance, not "this attempt reached a feasible point"
+        // (#111): FPR reaches the same feasible point over and over on
+        // some models, and each rediscovery used to clear the staleness
+        // counter the gate reads.  `offer` is still called for every
+        // feasible result, so nothing that reached HiGHS before stops
+        // reaching it — only the verdict is now read.
+        if (result.found_feasible && sink_.offer(result.objective, result.solution)) {
             attempt.found_improvement = true;
         }
 

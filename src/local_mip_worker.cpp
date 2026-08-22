@@ -198,11 +198,29 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 // doesn't cumulatively retire a worker that's still
                 // finding improvements.  R3-7 round-3 review.
                 feasible_random_walks_done_ = 0;
-                attempt.found_improvement = true;
 
-                sink_.offer(obj, ctx_.solution);
-                base_.reset_staleness();
-                effort_at_last_improvement = ctx_.effort;
+                // Two different notions of "improved" meet here, and
+                // issue #111 is about keeping them apart.  Everything
+                // above is the *local search's* bookkeeping and stays on
+                // the worker-local flag: beating this worker's own best
+                // is what makes a step productive to the search, and
+                // `best_objective_` restarts at infinity on every
+                // rebuild by design.  Everything below is the *stall
+                // gate's*, and it reads the project's definition instead
+                // — whether the shared pool took the solution.  Feeding
+                // the local flag to the gate is what let a rebuilt worker
+                // clear the dispatch's staleness counter by rediscovering
+                // a solution the pool already held.
+                if (sink_.offer(obj, ctx_.solution)) {
+                    attempt.found_improvement = true;
+                    base_.reset_staleness();
+                    // Part of the staleness accounting, not the search's:
+                    // the tail of `run_attempt` charges
+                    // `ctx_.effort - effort_at_last_improvement` to
+                    // `effort_since_improvement`, so advancing this on a
+                    // refused offer would silently forgive that effort.
+                    effort_at_last_improvement = ctx_.effort;
+                }
             }
 
             ctx_.lift.recompute_all(ctx_);

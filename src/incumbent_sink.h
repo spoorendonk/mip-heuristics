@@ -35,7 +35,23 @@ public:
     // Offer a candidate solution.  Returns true if the pool accepted it,
     // in which case HiGHS has already been told, from inside this call.
     // Safe to call concurrently from any worker.
-    bool offer(double objective, const std::vector<double>& solution) {
+    //
+    // `[[nodiscard]]` since issue #111.  This return value is the
+    // project's one definition of "the heuristic produced something" —
+    // `accepted()` counts it, and the `found` field of the `[Heur]` line
+    // is that counter moving.  Every presolve worker used to drop it and
+    // substitute a worker-local notion ("I beat my own best"), which
+    // resets to nothing on rebuild, so the staleness counters the stall
+    // gates read were cleared by solutions the pool had refused: on
+    // `fpr/flugpl` at one worker, 2,785,359 effort against a 69,632
+    // ceiling with exactly one accepted incumbent, i.e. 39 ceilings'
+    // worth of free resets.  A discarded verdict is now a compile error.
+    // The two deliberate discards are spelled `static_cast<void>` with a
+    // reason at the call site.
+    //
+    // The bool is computed inside `SolutionPool`'s own lock and returned
+    // by value, so reading it adds no shared state (#98/#99).
+    [[nodiscard]] bool offer(double objective, const std::vector<double>& solution) {
         const bool accepted = pool_.try_add(objective, solution, source_);
         if (accepted) {
             accepted_.fetch_add(1, std::memory_order_relaxed);

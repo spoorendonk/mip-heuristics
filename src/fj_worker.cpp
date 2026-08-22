@@ -172,8 +172,12 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     AttemptResult result{};
     result.effort = attempt_effort_consumed;
 
-    if (found_solution) {
-        sink_.offer(best_obj, best_sol);
+    // An attempt counts as productive when the pool takes what it found,
+    // not when upstream FJ hands back any solution at all (#111) — FJ's
+    // own `effortSinceLastImprovement` already tracks the latter, inside
+    // the solver, and that is the counter its callback gate reads.  This
+    // one is the dispatch's.
+    if (found_solution && sink_.offer(best_obj, best_sol)) {
         result.found_improvement = true;
         base_.charge_improvement(attempt_effort_consumed);
     } else {

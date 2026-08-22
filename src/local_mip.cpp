@@ -200,7 +200,11 @@ std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMat
     // search phase and are not inserted.
     if (!constructed.empty() && is_solution_feasible(mipsolver, constructed)) {
         double obj = compute_solution_objective(mipsolver, constructed);
-        sink.offer(obj, constructed);
+        // Discarded on purpose: this is a publish, not a worker's attempt
+        // verdict.  Construction runs before any worker exists and has no
+        // staleness counter to clear, so there is nothing for the pool's
+        // answer to feed.
+        static_cast<void>(sink.offer(obj, constructed));
     }
     if (cold_start_cache != nullptr) {
         *cold_start_cache = constructed;
