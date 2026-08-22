@@ -78,6 +78,25 @@ add_library(mip_heuristics OBJECT
     src/scylla.cpp
     src/walksat.cpp
 )
+# `IncumbentSink::offer` is `[[nodiscard]]` because dropping its verdict is
+# the bug issue #111 fixed: every presolve worker computed the pool's
+# answer, discarded it, and substituted a worker-local notion of
+# "improved" that reset on every rebuild.  `[[nodiscard]]` alone does not
+# prevent that returning — nothing in this project passes `-Werror`, the
+# `.clang-tidy` config opens with `-*` (so `clang-diagnostic-*` is off)
+# and sets `WarningsAsErrors: ''`, so a re-drop compiles to exit 0 with a
+# warning that scrolls past mid-build.  That is precisely the silent
+# failure mode CLAUDE.md warns about for the lint gates.
+#
+# Promoting just this one diagnostic to an error makes the guard real.
+# PRIVATE and per-target on purpose: `mip_heuristics` is an OBJECT library
+# whose *already compiled* objects are injected into `highs`, so the flag
+# cannot reach HiGHS's own translation units, which are third-party and
+# not ours to police.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(mip_heuristics PRIVATE -Werror=unused-result)
+endif()
+
 target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
 if(MIP_HEURISTICS_INSTRUMENT)
     target_compile_definitions(mip_heuristics PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
@@ -114,6 +133,12 @@ add_executable(mip_heuristics_tests
     tests/test_contested_pdlp.cpp
     tests/test_stall_gate.cpp
 )
+# Same guard as `mip_heuristics` above — a test that drops the verdict
+# would model the bug rather than catch it.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(mip_heuristics_tests PRIVATE -Werror=unused-result)
+endif()
+
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
 target_compile_definitions(mip_heuristics_tests PRIVATE

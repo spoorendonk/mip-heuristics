@@ -201,9 +201,14 @@ std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMat
     if (!constructed.empty() && is_solution_feasible(mipsolver, constructed)) {
         double obj = compute_solution_objective(mipsolver, constructed);
         // Discarded on purpose: this is a publish, not a worker's attempt
-        // verdict.  Construction runs before any worker exists and has no
-        // staleness counter to clear, so there is nothing for the pool's
-        // answer to feed.
+        // verdict.  `resolve_worker_start` runs at *worker construction*
+        // — on the dispatching thread for the prime, and on task threads
+        // from the runner's `MakeState` callback with peers already
+        // running — which is before the `LocalMipWorker` and its
+        // `WorkerBudgetState` exist, and `MakeState` yields no
+        // `AttemptResult` for `note_staleness` either.  So there is no
+        // staleness counter for the pool's answer to feed, at either
+        // level.
         static_cast<void>(sink.offer(obj, constructed));
     }
     if (cold_start_cache != nullptr) {

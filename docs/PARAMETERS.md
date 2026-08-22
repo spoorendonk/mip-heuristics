@@ -819,16 +819,26 @@ Scylla PDLP iterations x nnz.
   and effort 1.00 reaches the identical fifteen incumbents on 27.8M
   effort instead of 92.7M at seed 0 — but is unchanged at seeds 1–3 and
   halved at seed 4, giving 6.00x / 19.99x / 19.99x / 19.98x / 9.93x over
-  a 20x sweep; `gt2` lands at 7.25x. The residual is pool-fill and
-  diversity accepts: `kPoolCapacity` offers are admitted unconditionally
+  a 20x sweep; `gt2` over the same five seeds gives 11.22x / 7.25x /
+  6.50x / 13.36x / 5.73x. Quote a range, never one of these numbers on
+  its own. The spread is not a bimodal flip — each solve is
+  bit-reproducible at `threads=1`, and p0548 over seeds 0–9 is a
+  continuous 20.7M–92.7M with three seeds at the ceiling — LocalMIP is
+  legitimately earning acceptances wherever the ratio stays high. The
+  residual is pool-fill and diversity accepts: `kPoolCapacity` offers are
+  admitted unconditionally
   while the pool fills, and structurally diverse near-best solutions
   afterwards, both of which legitimately reset the gate. Tightening it
   further would mean redefining improvement as "accepted **and** beat the
   pool's best", which #111 rules out. **#106 owns this.**
-- **Cost**: not free. At effort 1.00, `threads=1`, LocalMIP alone, the
-  final presolve-phase incumbent is unchanged on `p0548` and `flugpl` but
-  worse on `gt2` (42355 → 45341, −7%), `dcmulti` (−3.4%) and `rgn`
-  (112.8 → 134.0, −19%), for 2.6x less effort. A worker that keeps
+- **Cost**: not free. At effort 1.00, `threads=1`, seed 0, LocalMIP
+  alone, the final presolve-phase incumbent is unchanged on `p0548`
+  (28271, and the same fifteen incumbents on the way) and `flugpl`
+  (1201500), but worse on `gt2` (42355 → 45855, **+8.3%**), `rgn`
+  (112.8 → 134.0, **+18.8%**) and `dcmulti` (212709 → 219964,
+  **+3.4%**) — all minimisations, so higher is worse. The effort saved
+  on those same five is 3.33x (p0548), 1.78x (gt2), 2.63x (rgn), 4.00x
+  (dcmulti) and 1.00x (flugpl), **geomean 2.29x**. A worker that keeps
   improving its own solution without beating the pool's worst-of-ten now
   retires and is rebuilt from a pool restart, so it is redirected rather
   than killed. Whether that trade wins is a #106 question.

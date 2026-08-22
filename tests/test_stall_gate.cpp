@@ -35,10 +35,17 @@
 //
 //                     pre-#111   threshold only   + signal
 //   fpr / flugpl        19.98x        19.98x        1.03x
-//   fpr / p0548         20.00x         1.42x        1.42x
+//   fpr / p0548         20.00x         0.89x        0.89x
 //   fpr / gt2           20.00x        20.00x        1.5-4.4x
 //   fj / p0548          15.67x         2.00x        2.00x
 //   scylla / flugpl     17.60x         1.00x        1.00x
+//
+// Read those as this file's own harness reports them: one seed (0), one
+// worker, `[Heur] ... phase=presolve effort=` summed over the solve.
+// fpr/p0548's 0.89x is not a typo and not drift — both binaries report
+// low = 4,231,951 and high = 3,770,052 — the gate simply lands below the
+// low end's budget-clamped spend.  Medians over several seeds differ
+// (that row is 1.42x over seeds 0-2), so do not mix the two.
 //
 // The gate ends up bounded everywhere but tight only in places, and this
 // file says where it is not — see the notes on `fpr/egout` and on
@@ -79,10 +86,13 @@ size_t presolve_effort(const std::vector<std::string>& lines, const std::string&
 //
 // `threads` and `random_seed` are both pinned, for reproducibility
 // rather than for coverage: the ratio turns out to be flat in the worker
-// count (fpr/flugpl is 19.98 / 19.18 / 18.96 / 19.53 before the fix at
-// N = 1 / 2 / 4 / 12, and 1.03 / 1.46 / 1.30 / 1.25 after), because each
-// worker retires at `stale / N` of its own effort so all N cross at
-// `stale` of aggregate effort and N cancels.  What an unpinned test would
+// count (fpr/flugpl is ~19-20x before the fix and ~1.0-1.5x after, at
+// N = 1, 2, 4 and 12 alike), because each worker retires at `stale / N`
+// of its own effort so all N cross at `stale` of aggregate effort and N
+// cancels.  Only the N = 1 figures are exact: above one worker the
+// schedule is nondeterministic and repeated runs of the same case move
+// within that band, which is why the multi-worker case below asserts a
+// bound rather than a value.  What an unpinned test would
 // buy is a number that differs between a 12-core laptop and a 2-vCPU CI
 // runner, on an issue labelled portable.  `ScopedThreadPin` is what makes
 // the pin survive whatever initialised the global task executor first —
@@ -167,7 +177,7 @@ TEST_CASE("stall gate: FPR on flugpl binds at four workers too", "[stall]") {
 // both absences are findings rather than omissions.
 //
 // `fpr/egout` is not fixed: 19.98x before, 19.98x after.  FPR genuinely
-// earns forty-odd pool acceptances there against only three incumbent
+// earns forty-odd pool acceptances there against only four incumbent
 // improvements, because `SolutionPool` keeps a top-`kPoolCapacity` and
 // FPR keeps beating its worst entry.  Those acceptances are the project's
 // stated notion of production — the pool admits the first
@@ -180,11 +190,16 @@ TEST_CASE("stall gate: FPR on flugpl binds at four workers too", "[stall]") {
 // `threads=1` the fix takes effort at option 1.00 from 92,736,483 to
 // 27,824,095 for the identical fifteen incumbents at seed 0, but leaves
 // it unchanged at seeds 1-3 and halves it at seed 4 — a ratio of 6.00x,
-// 19.99x, 19.99x, 19.98x, 9.93x across five seeds.  gt2 lands at 7.25x.
-// Both exceed `kMaxGrowth`, and asserting on a quantity that swings 3x
-// with the seed would be a flake, so LocalMIP's property is pinned as a
-// unit test on the signal instead (below).  The residual is pool-fill and
-// diversity accepts, same mechanism as egout.
+// 19.99x, 19.99x, 19.98x, 9.93x across five seeds.  gt2 is 11.22, 7.25,
+// 6.50, 13.36, 5.73 over the same five.  Both exceed `kMaxGrowth`, and
+// asserting on a quantity that swings 3x with the seed would be a flake,
+// so LocalMIP's property is pinned as a unit test on the signal instead
+// (below).  Neither spread is a bimodal flip — each solve is
+// bit-reproducible at `threads=1`, and p0548 over seeds 0-9 gives a
+// continuous 20.7M-92.7M with three seeds at the ceiling.  LocalMIP is
+// legitimately earning acceptances on the seeds where nothing improves.
+// The residual is pool-fill and diversity accepts, same mechanism as
+// egout.
 //
 // The issue's own motivating evidence is `fiball`, a MIPLIB instance out
 // of reach of this suite; read it carefully, because it is weaker than it
@@ -285,16 +300,29 @@ TEST_CASE("stall gate: staleness is invariant to how an attempt is sliced", "[st
 // ── Why the gate reads the pool's verdict and not the worker's ──
 
 TEST_CASE("stall gate: a refused offer does not reset staleness", "[stall][unit]") {
-    // The policy half of the improvement-signal fix.  The *wiring* half
-    // is guarded at compile time — `IncumbentSink::offer` is
-    // `[[nodiscard]]`, so a worker that drops the verdict again will not
-    // build — but nothing stops a future edit from reading the verdict
-    // and then resetting anyway.  This pins what the verdict is for.
+    // Read what this does and does not guard, because it is easy to
+    // over-read.
     //
-    // The pool is the predicate `offer` wraps: `offer` is
-    // `pool_.try_add(...)` plus an accept counter.  So drive
-    // `WorkerBudgetState` from a real `SolutionPool` exactly as the four
-    // workers now do, and again as they used to, and watch the two
+    // It is **not** a regression test for #111's signal fix: it drives
+    // `SolutionPool` and `WorkerBudgetState` directly rather than any of
+    // the four workers, so it passes against the pre-fix tree as happily
+    // as against this one.  The behavioural guard is
+    // `stall gate: FPR on flugpl needs the pool's verdict, not its own`
+    // above, which does fail pre-fix (19.96x against a 4x bound).
+    //
+    // The *wiring* — that no worker drops the verdict again — is guarded
+    // by the compiler: `IncumbentSink::offer` is `[[nodiscard]]` and
+    // `CMakeLists.txt` puts `-Werror=unused-result` on our two targets,
+    // so a re-drop is a hard build failure rather than a warning that
+    // scrolls past.  (Without that flag it was only a warning: nothing
+    // here passes `-Werror`, and the clang-tidy gate cannot see
+    // `clang-diagnostic-*` because `.clang-tidy` opens with `-*`.)
+    //
+    // What is left for a test is the *policy*: that a refused offer is
+    // not productivity.  The pool is the predicate `offer` wraps — `offer`
+    // is `pool_.try_add(...)` plus an accept counter — so drive
+    // `WorkerBudgetState` from a real `SolutionPool` the way the four
+    // workers now do, and again the way they used to, and watch the two
     // diverge.
     constexpr size_t kThreshold = 1000;
     constexpr size_t kEffortPerAttempt = 300;
@@ -324,14 +352,14 @@ TEST_CASE("stall gate: a refused offer does not reset staleness", "[stall][unit]
     WorkerBudgetState before = fresh();
 
     for (int i = 0; i < kAttempts; ++i) {
-        const bool accepted = pool.try_add(9.0, {1.0, 1.0}, kSolutionSourceLocalMIP);
-        REQUIRE_FALSE(accepted);
+        // The full pool refuses every one of these, which is what makes
+        // the two counters below diverge; a matching `charge_improvement`
+        // arm would be dead code here, so the accept path is exercised by
+        // `charge_improvement` in the sliced-attempt case above instead.
+        REQUIRE_FALSE(pool.try_add(9.0, {1.0, 1.0}, kSolutionSourceLocalMIP));
 
-        if (accepted) {
-            now.charge_improvement(kEffortPerAttempt);
-        } else {
-            now.charge_no_improvement(kEffortPerAttempt);
-        }
+        // Post-#111: no acceptance, no reset.
+        now.charge_no_improvement(kEffortPerAttempt);
 
         // The shape the workers had: "I produced a feasible solution"
         // stood in for "the dispatch produced something".
