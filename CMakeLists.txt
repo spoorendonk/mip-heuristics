@@ -125,11 +125,11 @@ if(MIP_HEURISTICS_INSTRUMENT)
 endif()
 catch_discover_tests(mip_heuristics_tests)
 
-# Python bench tests — unit tests for the log parser and
-# `check_effort_drift.py` (issue #71 AC#3).  The actual drift measurement
-# runs off a real MIPLIB results tree and stays a manual/CI step; these
-# tests only cover the script's own logic (regex, aggregation, exit codes,
-# error paths) so it's kept honest as the calibration gate evolves.
+# Python bench tests — unit tests for the log parser, the benchmark
+# harness and the results analysis.  The measurements themselves run off a
+# real MIPLIB results tree and stay a manual/CI step; these tests only cover
+# the scripts' own logic (regexes, aggregation, exit codes, error paths) so
+# they are kept honest as the harness evolves.
 #
 # Prefer `.venv/bin/python` (where `pip install pytest` typically lands in
 # this project) over the system interpreter.  Skip silently when neither

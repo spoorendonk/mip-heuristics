@@ -47,7 +47,7 @@ Reference PDFs are in `docs/`.
 
 ## Execution Modes
 
-The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla with a weighted effort budget. Each heuristic parallelises the same way: continuous workers that self-terminate, with no epoch barrier and no bit-identical guarantee across runs.
+The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla, each with its own effort budget (`mip_heuristic_fj_effort`, `mip_heuristic_fpr_effort`, `mip_heuristic_local_mip_effort`, `mip_heuristic_scylla_effort`) so one can be tuned without moving the others. Each heuristic parallelises the same way: continuous workers that self-terminate, with no epoch barrier and no bit-identical guarantee across runs.
 
 For a reproducible run, set `threads=1` together with a fixed `random_seed`. That is the project's reproducibility contract — a single worker per heuristic, deterministic within one binary. It is not a separate mode and needs no extra option. It is also *not* the benchmark configuration: one worker per heuristic removes the contention Scylla is built around. [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) has the full contract, including what is deliberately not reproducible and why.
 
@@ -88,7 +88,7 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | SGM P-D Integral | 26.3 | **23.9** |
 | PLATO headline SGM (s=0.001) | **26.0** | 26.8 |
 
-> **Provenance.** Two reasons this row cannot be reproduced on `HEAD`, both by design. First, the configuration is gone: `all_opp` was FJ + FPR + LocalMIP without Scylla, and the single-valued `mip_heuristic_suite` (#93) cannot express that combination — the closest value, `all`, adds Scylla. Second, the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the presolve envelope is floored, and two of the three `kWeight*` constants were rescaled. The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
+> **Provenance.** Two reasons this row cannot be reproduced on `HEAD`, both by design. First, the configuration is gone: `all_opp` was FJ + FPR + LocalMIP without Scylla, and the single-valued `mip_heuristic_suite` (#93) cannot express that combination — the closest value, `all`, adds Scylla. Second, the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the then-shared presolve envelope is floored, and two of the three budget weights were rescaled (that envelope and its weights have since been replaced by a per-heuristic effort option each). The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
 
 #### Findings
 
@@ -138,7 +138,7 @@ The list goes to `--output` (stdout by default) and the stratum table to stderr,
 
 It **refuses** (exit 2) a tree that does not cover the reference list for every seed of the chosen config, naming what is absent and whether the run failed (`.log.err`), was truncated, or reported a primal bound with no incumbent line. The last two both parse into a result with no incumbents, which is indistinguishable from a genuine never-feasible run and would otherwise be binned as one — and `never` is normally the smallest stratum, so `--min-per-stratum` would then reserve the misfiled instance a seat. The instances a campaign failed to run are not a random subset of it, so sampling around them biases the subset in exactly the direction the stratification measures.
 
-This does not replace `bench/instances_small.txt`, which is stratified on *optimality* solve time and is the recorded input of the `kWeight*` calibration; a re-measurement on any other set is not comparable to the recorded constants.
+This does not replace `bench/instances_small.txt`, which is stratified on *optimality* solve time and is the recorded input of the retired budget-weight calibration; it stays the small-instance set a budget sweep runs on.
 
 ### Per-heuristic ablation and budget sweep
 
@@ -153,14 +153,14 @@ python3 bench/run_benchmark.py \
     --budget-sweep 0.05 0.15 0.30 0.60 1.00 \
     --time-limit 600 --seeds 0 1 2 --skip-existing
 python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600 \
-    --configs off fj fpr@e0.05 local_mip@e0.05 scylla@e0.05 all@e0.05
+    --configs off fj@e0.05 fpr@e0.05 local_mip@e0.05 scylla@e0.05 all@e0.05
 ```
 
 `run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped.
 
 `off` is the baseline here, not `vanilla`. On the patched binary the two are the same run — `vanilla` *is* `mip_heuristic_suite=off` unless `--vanilla-binary` points at a separately built unpatched binary — so asking for both without that flag runs every instance twice for one data point, and the harness says so. Add `--vanilla-binary /path/to/unpatched/highs` (plus `vanilla` back in the config list) for a headline baseline; it is the stronger claim, and the only thing that makes the two configs differ.
 
-Three configs are not swept, because `mip_heuristic_presolve_effort` provably does not reach them: `vanilla` and `off` run no presolve heuristic at all, and `fj` runs on a fixed per-worker allowance that neither effort option scales. They run once each as the sweep's anchor rows — note the unsuffixed `off fj` in the analyze command above. Naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
+A sweep moves the effort option each config actually reads: `fpr@e0.60` sets `mip_heuristic_fpr_effort=0.60` and nothing else, which is what makes a per-heuristic budget measurable in isolation. `all@e0.60` sets all four to `0.60` — every heuristic at that budget, not the shipped ratio between them, since the four defaults differ. `vanilla` and `off` run no presolve heuristic, so no effort option reaches them: they pass through the sweep once as unsuffixed anchor rows — note the unsuffixed `off` in the analyze command above — and naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
 
 Two things the harness deliberately does not do by default:
 

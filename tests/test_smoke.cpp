@@ -43,22 +43,42 @@ TEST_CASE("Options: disable custom heuristics", "[options]") {
 TEST_CASE("Options: effort split defaults", "[options]") {
     // The effort-option split contract: mip_heuristic_effort keeps vanilla
     // HiGHS semantics and default (0.05, the B&B LP-iteration fraction that
-    // gates RENS/RINS and sizes fpr_lp), while the presolve heuristics draw
-    // their budget from mip_heuristic_presolve_effort (default 0.30, the
-    // pre-split patched default).  A patched binary at default options must
-    // match vanilla's B&B heuristic budget exactly.
+    // gates RENS/RINS and sizes fpr_lp), while each presolve heuristic draws
+    // its budget from its own mip_heuristic_<name>_effort option (#110).  A
+    // patched binary at default options must match vanilla's B&B heuristic
+    // budget exactly.
+    //
+    // The four defaults are pinned here because they are registered in
+    // third_party/highs_patch/apply_patch.cmake, which nothing else compiles
+    // or checks — a typo there is otherwise silent.  They are derived from
+    // what the retired shared envelope handed each heuristic (FJ's
+    // `nnz << 10` per worker; 0.30 x w/sum(w) for the retired weights
+    // 2.99 / 6.16 / 1.00), but they only *approximate* it — see that file
+    // for how far off, and in which direction, at each worker count and
+    // suite value.
     Highs highs;
     highs.setOptionValue("output_flag", false);
     double effort = -1.0;
     REQUIRE(highs.getOptionValue("mip_heuristic_effort", effort) == HighsStatus::kOk);
     REQUIRE(effort == 0.05);
-    double presolve_effort = -1.0;
-    REQUIRE(highs.getOptionValue("mip_heuristic_presolve_effort", presolve_effort) ==
-            HighsStatus::kOk);
-    REQUIRE(presolve_effort == 0.30);
-    // Settable across the documented [0, 1] range.
-    REQUIRE(highs.setOptionValue("mip_heuristic_presolve_effort", 0.0) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_presolve_effort", 1.0) == HighsStatus::kOk);
+    struct EffortDefault {
+        const char* name;
+        double value;
+    };
+    const auto presolve_efforts = std::to_array<EffortDefault>({
+        {"mip_heuristic_fj_effort", 0.0125},
+        {"mip_heuristic_fpr_effort", 0.0884},
+        {"mip_heuristic_local_mip_effort", 0.1821},
+        {"mip_heuristic_scylla_effort", 0.0296},
+    });
+    for (const auto& [name, expected] : presolve_efforts) {
+        double value = -1.0;
+        REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
+        REQUIRE(value == expected);
+        // Settable across the documented [0, 1] range.
+        REQUIRE(highs.setOptionValue(name, 0.0) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, 1.0) == HighsStatus::kOk);
+    }
 }
 
 TEST_CASE("Options: suite defaults to all and accepts every value", "[options][suite]") {

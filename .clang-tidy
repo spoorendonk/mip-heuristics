@@ -98,7 +98,7 @@ CheckOptions:
   # every `const` local and `const` parameter as well as to file-scope
   # tables.  Split by scope to match what the code does: file-scope,
   # static and constexpr constants are k-prefixed CamelCase
-  # (`kWeightFpr`, `kNumLpArms`, `kMaxStaleRounds`); `const` locals and
+  # (`kNumLpArms`, `kMaxStaleRounds`); `const` locals and
   # parameters are ordinary lower_case and carry no marker.
   - key: readability-identifier-naming.LocalConstantCase
     value: lower_case

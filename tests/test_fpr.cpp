@@ -140,18 +140,24 @@ TEST_CASE("FPR strategies: multi-config sequential on egout", "[fpr][strategies]
 
 namespace {
 
-// Solve `inst` end-to-end at a small `mip_heuristic_presolve_effort`
-// (the knob feeding the presolve FPR budget since the effort-option
-// split) so the FPR per-call slice is well below the cost of a full DFS
-// subtree on these instances — attempts must pause via `kBudgetGate` and
-// resume on subsequent `run_attempt` calls, or fast-fail and trigger the
-// multi-attempt fill loop.  Without this the [fpr][resume] tests can
-// pass without ever exercising the new pause/resume code path on the
-// small HiGHS check instances (egout / bell5 / flugpl all verdict in
-// one slice at the default effort).  At 0.001 the slice fell below the
-// cost of begin's initial `propagate(-1)` even on flugpl, so the loop
-// never reached `kBudgetGate`; 0.01 = 5x the budget-formula anchor effort
-// (0.05/10) gives a slice large enough that step actually runs.
+// Solve `inst` end-to-end at a small `mip_heuristic_fpr_effort` (the knob
+// feeding the presolve FPR budget) so the FPR per-call slice is well below
+// the cost of a full DFS subtree on these instances — attempts must pause
+// via `kBudgetGate` and resume on subsequent `run_attempt` calls, or
+// fast-fail and trigger the multi-attempt fill loop.  Without this the
+// [fpr][resume] tests can pass without ever exercising the new
+// pause/resume code path on the small HiGHS check instances (egout /
+// bell5 / flugpl all verdict in one slice at the default effort).
+//
+// The value is the *budget* this test needs, translated into the option
+// that now carries it (#110): FPR's slice is
+// `heuristic_effort_budget(nnz, effort)` = `nnz << 12` x effort/0.05, so
+// 0.0007 gives ~57 x nnz.  That is what the pre-#110 shared envelope gave
+// FPR at `mip_heuristic_presolve_effort=0.01` (~60 x nnz once FJ's charge
+// and the 2.99/10.15 weight came off), which is the value this test was
+// written against.  Do not round it up for tidiness: one order of
+// magnitude below it, the slice fell short of even `begin`'s initial
+// `propagate(-1)` on flugpl and the loop never reached `kBudgetGate`.
 // Returns final objective.
 double solve_with_seed_small_effort(const char* inst, int seed) {
     const ScopedThreadPin pin;
@@ -173,7 +179,7 @@ double solve_with_seed_small_effort(const char* inst, int seed) {
     highs.setOptionValue("threads", 1);
     // Small effort → small per-call slice → multi-attempt loop and/or
     // pause-resume engages on the small HiGHS check instances.
-    highs.setOptionValue("mip_heuristic_presolve_effort", 0.01);
+    highs.setOptionValue("mip_heuristic_fpr_effort", 0.0007);
     REQUIRE(highs.readModel(std::string(kInstancesDir) + "/" + inst) == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;

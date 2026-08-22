@@ -132,9 +132,10 @@ inline uint32_t heuristic_base_seed(HighsInt random_seed) {
 // Effort budget scaled by an effort fraction.  `nnz << 12` is the
 // reference base budget at the anchor effort 0.05 (upstream's
 // mip_heuristic_effort default); the formula scales linearly in `effort`.
-// Two call sites, two knobs:
-//  - presolve dispatch (Patch A2 in apply_patch.cmake) passes
-//    `mip_heuristic_presolve_effort` (default 0.30 → 6x the base budget);
+// Two kinds of call site, on two separate budgets:
+//  - the presolve chain (`run_sequential` in mode_dispatch.cpp) passes each
+//    heuristic's own `mip_heuristic_<name>_effort`, which sizes a whole
+//    dispatch — except FJ's, which sizes one worker's allowance (#110);
 //  - fpr_lp::run passes `mip_heuristic_effort` (vanilla default 0.05 →
 //    exactly the base budget) as its per-call cap on the shared RENS/RINS
 //    LP-iteration headroom.

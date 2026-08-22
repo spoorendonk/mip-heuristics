@@ -6,8 +6,8 @@ what the benchmark *measures*.  PLATO `mipfeas` scores the primal integral,
 which responds to how hard it is to **find a feasible solution** — so the
 stratification variable here is vanilla's time to first feasible solution, not
 the time to prove optimality that `bench/instances_small.txt` was selected on.
-(That list stays exactly as it is: it is the recorded input of the `kWeight*`
-calibration and a re-measurement on another set is not comparable to it.)
+(That list stays exactly as it is: it is the recorded input of the retired
+budget-weight calibration and the set per-heuristic budget work runs on.)
 
 Sampling proportionally across the whole spectrum — including the instances
 that find a solution immediately — is deliberate.  The budget question is

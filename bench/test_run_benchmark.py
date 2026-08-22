@@ -10,10 +10,10 @@ import pytest
 from run_benchmark import (
     BUDGET_SUFFIX,
     CONFIG_SUITES,
+    CONFIG_SWEEP_OPTIONS,
     DEFAULT_BUDGET_SWEEP,
     MIPLIB_MIN_INSTANCES,
     MIPLIB_SEARCH_PATH,
-    SWEEP_EXEMPT,
     build_arg_parser,
     build_base_options,
     build_plan,
@@ -112,11 +112,35 @@ def test_bad_budget_raises(bad):
         parse_budget(bad)
 
 
-def test_swept_config_carries_the_effort_option():
+def test_swept_config_carries_its_own_effort_option():
     assert config_options(f"local_mip{BUDGET_SUFFIX}0.60") == {
         "mip_heuristic_suite": "local_mip",
-        "mip_heuristic_presolve_effort": "0.60",
+        "mip_heuristic_local_mip_effort": "0.60",
     }
+
+
+def test_swept_all_carries_every_effort_option():
+    """No shared envelope left, so `all@e<V>` is every heuristic at V."""
+    assert config_options(f"all{BUDGET_SUFFIX}0.60") == {
+        "mip_heuristic_suite": "all",
+        "mip_heuristic_fj_effort": "0.60",
+        "mip_heuristic_fpr_effort": "0.60",
+        "mip_heuristic_local_mip_effort": "0.60",
+        "mip_heuristic_scylla_effort": "0.60",
+    }
+
+
+def test_fj_is_swept_now_that_it_has_an_option():
+    """The point of #110: FJ's budget was unreachable from any option."""
+    assert config_options(f"fj{BUDGET_SUFFIX}0.05") == {
+        "mip_heuristic_suite": "fj",
+        "mip_heuristic_fj_effort": "0.05",
+    }
+
+
+def test_every_config_has_a_sweep_entry():
+    """The sweep's reach is derived from this table, so it must be total."""
+    assert set(CONFIG_SWEEP_OPTIONS) == set(CONFIG_SUITES)
 
 
 def test_swept_config_with_a_bad_budget_raises():
@@ -143,15 +167,19 @@ def test_sweep_crosses_configs_with_budgets():
 
 
 def test_default_sweep_is_five_budgets_per_config():
-    """`fpr`, not `fj`: FJ's budget is fixed, so it is a sweep anchor row."""
     names, _ = expand_configs(["fpr"], list(DEFAULT_BUDGET_SWEEP))
     assert len(names) == len(DEFAULT_BUDGET_SWEEP) == 5
     assert names[0] == f"fpr{BUDGET_SUFFIX}{DEFAULT_BUDGET_SWEEP[0]}"
 
 
-def test_default_sweep_contains_the_shipped_default():
-    """A sweep always has the shipped configuration as one of its rows."""
-    assert "0.30" in DEFAULT_BUDGET_SWEEP
+def test_default_sweep_spans_the_option_range():
+    """Ascending, inside [0, 1], and wide: the shipped defaults (0.0125 ..
+    0.1821) are per-heuristic since #110, so no single value is "the
+    default" and the sweep's job is coverage rather than an anchor row."""
+    values = [float(b) for b in DEFAULT_BUDGET_SWEEP]
+    assert values == sorted(values)
+    assert values[0] >= 0.0 and values[-1] <= 1.0
+    assert values[-1] / values[0] >= 10.0
 
 
 def test_expansion_rejects_an_already_suffixed_config():
@@ -167,8 +195,15 @@ def test_expansion_rejects_a_bad_budget_before_any_run():
 # --- vanilla / off interaction with the sweep ------------------------------
 
 
-@pytest.mark.parametrize("config", sorted(SWEEP_EXEMPT))
-def test_exempt_configs_pass_through_the_sweep_once(config):
+UNSWEPT = sorted(c for c, options in CONFIG_SWEEP_OPTIONS.items() if not options)
+
+
+def test_only_the_heuristic_free_configs_are_unswept():
+    assert UNSWEPT == ["off", "vanilla"]
+
+
+@pytest.mark.parametrize("config", UNSWEPT)
+def test_unswept_configs_pass_through_the_sweep_once(config):
     """Neither runs a presolve heuristic, so N budgets would be N identical runs."""
     names, notices = expand_configs([config], ["0.05", "0.30", "1.00"])
     assert names == [config]
@@ -182,13 +217,13 @@ def test_sweep_keeps_the_anchor_alongside_swept_configs():
     assert len(notices) == 1
 
 
-@pytest.mark.parametrize("config", sorted(SWEEP_EXEMPT))
-def test_explicit_suffix_on_an_exempt_config_raises(config):
+@pytest.mark.parametrize("config", UNSWEPT)
+def test_explicit_suffix_on_an_unswept_config_raises(config):
     """`vanilla@e0.30` is a directory name that would mean nothing."""
-    with pytest.raises(ValueError, match="mip_heuristic_presolve_effort") as exc:
+    with pytest.raises(ValueError, match="effort option") as exc:
         config_options(f"{config}{BUDGET_SUFFIX}0.30")
-    # The message says *why* this config is exempt, not just that it is.
-    assert SWEEP_EXEMPT[config] in str(exc.value)
+    # The message says *why* this config is not swept, not just that it is not.
+    assert "runs no presolve heuristic" in str(exc.value)
 
 
 # --- plan resolution: base name decided once -------------------------------
@@ -220,7 +255,7 @@ def test_swept_plan_keeps_the_base_name_and_the_directory_name():
     assert plan.binary == PATCHED
     assert plan.options == {
         "mip_heuristic_suite": "scylla",
-        "mip_heuristic_presolve_effort": "0.15",
+        "mip_heuristic_scylla_effort": "0.15",
     }
 
 
@@ -527,7 +562,10 @@ def test_main_accepts_the_documented_readme_sweep(tmp_path, monkeypatch, capsys)
     )
     captured = capsys.readouterr()
     assert "identical" not in captured.err
-    assert "off@e" not in captured.out and "fj@e" not in captured.out
+    # `off` is the only anchor row left: FJ has had its own effort option
+    # since #110, so it is swept like the other three.
+    assert "off@e" not in captured.out
+    assert "fj@e0.05" in captured.out
     assert "fpr@e0.05" in captured.out and "all@e1.00" in captured.out
 
 

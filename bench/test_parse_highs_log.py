@@ -10,7 +10,7 @@ def test_empty_log_returns_default_result():
 
 
 def test_sequential_lines_parse_into_sequential_samples():
-    """`[Sequential]` lines feed kWeight* calibration (issue #71)."""
+    """`[Sequential]` lines carry per-heuristic effort (issue #71)."""
     log = (
         "[Sequential] heur=fj effort=1000 wall_ms=5.0 effort_per_ms=200\n"
         "[Sequential] heur=fpr effort=2500 wall_ms=50.0 effort_per_ms=50\n"
@@ -176,7 +176,7 @@ def test_heur_line_accepts_negative_wall_ms():
 
 def test_sequential_and_heur_lines_coexist():
     """Both tags are emitted for the same observation; `[Sequential]` is
-    what `check_effort_drift.py` calibrates on and must keep parsing."""
+    the one external tooling parses and must keep parsing."""
     log = (
         "[Sequential] heur=scylla effort=4000 wall_ms=800.0 effort_per_ms=5.000\n"
         "[Heur] name=scylla phase=presolve start_s=1.0 end_s=1.8 effort=4000 "

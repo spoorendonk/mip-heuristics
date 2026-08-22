@@ -3,7 +3,8 @@
 
 One config per `mip_heuristic_suite` value, so a per-heuristic ablation is a
 config list rather than a hand-written options file, and `--budget-sweep`
-crosses those configs with `mip_heuristic_presolve_effort` values.  Output is
+crosses those configs with values for the effort option each one reads.
+Output is
 `<output>/<config>/seed<N>/<instance>.log`, with the swept configs named
 `<config>@e<effort>` — those directory names are exactly what
 `analyze_results.py --configs` takes, so a sweep is analysable with no new
@@ -36,16 +37,14 @@ from dataclasses import dataclass
 # at all, since an unpatched binary has no `mip_heuristic_*` options to set.
 # No effort pin is needed either way: the effort-option split reverted
 # `mip_heuristic_effort` to upstream's 0.05 default (vanilla semantics), and
-# `mip_heuristic_presolve_effort` is irrelevant with the presolve chain off.
+# the per-heuristic effort options are irrelevant with the presolve chain off.
 #
-# `patched` is an **alias** for `all`, kept so existing result trees and
-# `bench/run_plato.sh` keep resolving.  It is not a rename of the
-# configuration the recorded PLATO table in README.md was measured at: that
-# row is `all_opp` — FJ + FPR + LocalMIP with Scylla deliberately excluded,
-# because PDLP solves are expensive enough to hurt wall-clock on general
-# instances — and the single-valued option surface cannot express it.  `all`
-# adds Scylla.  Do not compare a fresh `patched` run against the recorded
-# `all_opp` numbers.
+# `all` is not the configuration the recorded PLATO table in README.md was
+# measured at: that row is `all_opp` — FJ + FPR + LocalMIP with Scylla
+# deliberately excluded, because PDLP solves are expensive enough to hurt
+# wall-clock on general instances — and the single-valued option surface
+# cannot express it.  `all` adds Scylla.  Do not compare a fresh `all` run
+# against the recorded `all_opp` numbers.
 CONFIG_SUITES: dict[str, str] = {
     "vanilla": "off",
     "off": "off",
@@ -56,48 +55,61 @@ CONFIG_SUITES: dict[str, str] = {
     "all": "all",
 }
 
-# Separator between a config name and its `mip_heuristic_presolve_effort`
-# value in a swept config name / output directory, e.g. `fpr@e0.30`.
+# Separator between a config name and its swept effort value in a config
+# name / output directory, e.g. `fpr@e0.30`.
 BUDGET_SUFFIX = "@e"
 
-# Budgets for `--budget-sweep` with no explicit values.  Spans the option's
-# range from a twentieth of the shipped default to its maximum, with 0.30 —
-# the default — in the middle so a sweep always contains the shipped
-# configuration as its own row.  Effort is a normalised, wall-clock-equivalent
-# budget, so the values are comparable across heuristics but not a fixed
-# fraction of any particular time limit.
+# Budgets for `--budget-sweep` with no explicit values, spanning the options'
+# [0, 1] range.  Effort is a normalised, model-size-scaled budget
+# (`nnz << 12` units at 0.05, linear in the value), so the values mean the
+# same thing for every heuristic — but not a fixed fraction of any particular
+# time limit.
+#
+# None of them is "the shipped default" any more: since #110 each heuristic
+# has its own default (fj 0.0125, fpr 0.0884, local_mip 0.1821, scylla
+# 0.0296) and no single swept value can be all four.  A campaign that wants
+# the shipped configuration as a row runs the config unswept, in a separate
+# invocation.
 DEFAULT_BUDGET_SWEEP = ("0.05", "0.15", "0.30", "0.60", "1.00")
 
-# Configs a budget sweep cannot say anything about, mapped to the reason —
-# `mip_heuristic_presolve_effort` provably does not reach any of them.  A
-# `<config>@e<V>` tree for one of these would be N identical runs under N
-# different names, which is the same plausible-looking-but-meaningless output
+# Which effort options a `--budget-sweep` moves, per config.  One entry per
+# `CONFIG_SUITES` key, so a config's reachability by the sweep is *derived*
+# from the option surface rather than listed in a hand-maintained exemption
+# table (#110 replaced `SWEEP_EXEMPT` with this; FJ was its only non-trivial
+# member, and FJ now has an option of its own).
+#
+# An empty tuple means no effort option reaches that config: `vanilla` and
+# `off` run no presolve heuristic, so N budgets would be N identical runs
+# under N different names — the same plausible-looking-but-meaningless output
 # that the unknown-config-name raise exists to prevent.  They stay in a sweep
-# as a single unsuffixed anchor row instead of being dropped — a Layer B
-# sweep still wants its baselines.
+# as a single unsuffixed anchor row rather than being dropped; a sweep still
+# wants its baselines.
 #
-# `all` is deliberately *not* exempt even though FJ is flat inside it too: the
-# effort option decides how much of the shared envelope FJ's charge consumes
-# and therefore what FPR / LocalMIP / Scylla get.
-#
-# Measured on p0548 at a 20 s limit, seed 0, reading `[Sequential] effort` at
-# the two ends of the option's range (0.05 -> 1.00):
-#
-#   suite=fj    fj 4,500,943 -> 4,501,087            (0.003% — flat)
-#   suite=all   fj 4,500,905 -> 4,500,919            (flat here too)
-#               fpr 188,000  -> 27,422,878           (146x)
-#               local_mip 243,414 -> 56,160,051      (231x)
-#               scylla 672,428 -> 14,778,280         (22x)
-SWEEP_EXEMPT: dict[str, str] = {
-    "vanilla": "runs no presolve heuristic",
-    "off": "runs no presolve heuristic",
-    # `run_sequential` gives FJ the fixed `num_workers * (nnz << 10)`
-    # per-worker allowance (`fj_budget` in `src/mode_dispatch.cpp`), which
-    # neither effort option scales; the option moves only what FJ *charges*
-    # against the shared envelope, and at `suite=fj` there is nothing else in
-    # the chain for that charge to take budget away from.
-    "fj": "runs on a fixed per-worker allowance that the option does not scale",
+# `all` sweeps all four options to the same value.  With independent
+# per-heuristic budgets there is no shared envelope for one number to size,
+# so `all@e0.30` means "every heuristic at 0.30" — which is not the shipped
+# ratio between them, since the four defaults differ.  A per-heuristic
+# calibration sweeps the single-heuristic configs instead, which is the
+# point of having four options.
+CONFIG_SWEEP_OPTIONS: dict[str, tuple[str, ...]] = {
+    "vanilla": (),
+    "off": (),
+    "fj": ("mip_heuristic_fj_effort",),
+    "fpr": ("mip_heuristic_fpr_effort",),
+    "local_mip": ("mip_heuristic_local_mip_effort",),
+    "scylla": ("mip_heuristic_scylla_effort",),
+    "all": (
+        "mip_heuristic_fj_effort",
+        "mip_heuristic_fpr_effort",
+        "mip_heuristic_local_mip_effort",
+        "mip_heuristic_scylla_effort",
+    ),
 }
+
+
+# Why `vanilla` and `off` are not swept, in the one wording both the raise
+# and the notice use.
+NOT_SWEPT_REASON = "runs no presolve heuristic"
 
 
 @dataclass(frozen=True)
@@ -167,7 +179,7 @@ def parse_budget(value: str) -> str:
         raise ValueError(f"budget {value!r} is not a number") from exc
     if not 0.0 <= as_float <= 1.0:
         raise ValueError(
-            f"budget {value!r} is outside mip_heuristic_presolve_effort's [0.0, 1.0]"
+            f"budget {value!r} is outside the effort options' [0.0, 1.0] range"
         )
     return value
 
@@ -200,17 +212,18 @@ def config_options(config: str, *, external_vanilla: bool = False) -> dict[str, 
     base, budget = resolve_config(config)
     if budget is not None:
         parse_budget(budget)
-        if base in SWEEP_EXEMPT:
+        if not CONFIG_SWEEP_OPTIONS[base]:
             raise ValueError(
-                f"config {base!r} {SWEEP_EXEMPT[base]}, so it does not read "
-                f"mip_heuristic_presolve_effort and the budget suffix in "
-                f"{config!r} would change nothing"
+                f"config {base!r} {NOT_SWEPT_REASON}, so no effort option "
+                f"reaches it and the budget suffix in {config!r} would change "
+                f"nothing"
             )
     if base == "vanilla" and external_vanilla:
         return {}
     options = {"mip_heuristic_suite": CONFIG_SUITES[base]}
     if budget is not None:
-        options["mip_heuristic_presolve_effort"] = budget
+        for option in CONFIG_SWEEP_OPTIONS[base]:
+            options[option] = budget
     return options
 
 
@@ -220,8 +233,8 @@ def expand_configs(
     """Expand each config into one `<config>@e<V>` entry per swept budget.
 
     Returns (expanded config names, human-readable notices to print).  With an
-    empty `budgets` the config list is returned unchanged.  Configs in
-    `SWEEP_EXEMPT` pass through once, unsuffixed, with a notice.
+    empty `budgets` the config list is returned unchanged.  Configs no effort
+    option reaches pass through once, unsuffixed, with a notice.
     """
     if not budgets:
         for config in configs:
@@ -238,12 +251,12 @@ def expand_configs(
                 f"config {config!r} already carries a {BUDGET_SUFFIX} budget "
                 f"suffix; drop it or drop --budget-sweep"
             )
-        if base in SWEEP_EXEMPT:
+        if not CONFIG_SWEEP_OPTIONS[base]:
             expanded.append(config)
             notices.append(
-                f"Note: config {config!r} {SWEEP_EXEMPT[base]}, so it does not "
-                f"read mip_heuristic_presolve_effort — it is not swept, and "
-                f"runs once as the sweep's anchor row."
+                f"Note: config {config!r} {NOT_SWEPT_REASON}, so no effort "
+                f"option reaches it — it is not swept, and runs once as the "
+                f"sweep's anchor row."
             )
             continue
         expanded.extend(f"{config}{BUDGET_SUFFIX}{b}" for b in budgets)
@@ -297,7 +310,7 @@ def build_plan(config: str, patched_binary: str, vanilla_binary: str) -> ConfigP
     Both the binary choice and the options come off the same decomposed base
     name, so a swept `vanilla@e...` cannot pick the patched binary while
     taking the vanilla option branch (it is rejected outright — see
-    SWEEP_EXEMPT).
+    CONFIG_SWEEP_OPTIONS).
     """
     base, _ = resolve_config(config)
     external_vanilla = vanilla_binary != patched_binary
@@ -609,11 +622,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=["all", "vanilla"],
         help=(
-            "Configs to run (default: patched vanilla). One of: "
+            "Configs to run (default: all vanilla). One of: "
             + ", ".join(sorted(CONFIG_SUITES))
-            + ". Each selects a mip_heuristic_suite value; `patched` is an alias "
-            "for `all`, and `vanilla` runs the external --vanilla-binary when "
-            "one is given. An unknown name is an error, not a default-option run."
+            + ". Each selects a mip_heuristic_suite value, and `vanilla` runs "
+            "the external --vanilla-binary when one is given. An unknown name "
+            "is an error, not a default-option run."
         ),
     )
     parser.add_argument(
@@ -622,12 +635,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="V",
         default=None,
         help=(
-            "Sweep mip_heuristic_presolve_effort: each config expands to "
+            "Sweep each config's effort options: each config expands to "
             "<config>@e<V> per value, writing to <output>/<config>@e<V>/seed<N>/. "
             "With no values, sweeps " + " ".join(DEFAULT_BUDGET_SWEEP) + ". "
-            "`vanilla`, `off` and `fj` do not read the option (FJ's budget is a "
-            "fixed per-worker allowance) and are not swept — they run once "
-            "each, as the sweep's anchor rows."
+            "A single-heuristic config sweeps its own effort option; `all` "
+            "sweeps all four to the same value. `vanilla` and `off` run no "
+            "presolve heuristic, so no effort option reaches them: they are "
+            "not swept and run once each, as the sweep's anchor rows."
         ),
     )
     parser.add_argument(
@@ -680,7 +694,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         default=[],
         help="Extra options appended to all config options, "
-        "e.g. mip_heuristic_presolve_effort=0.10",
+        "e.g. mip_heuristic_fpr_effort=0.10",
     )
     parser.add_argument(
         "--dev-log",
@@ -751,10 +765,10 @@ def main() -> None:
         sys.exit(2)
     for notice in notices:
         print(notice)
-    # Distinct names can still resolve to one configuration — `all` and
-    # `patched` are aliases, and `vanilla` is `off` unless an external binary
-    # was given.  That is "N identical runs under N names", the thing the
-    # unknown-name raise and SWEEP_EXEMPT both exist to prevent, so warn
+    # Distinct names can still resolve to one configuration — `vanilla` is
+    # `off` unless an external binary was given.  That is "N identical runs
+    # under N names", the thing the unknown-name raise and the empty
+    # `CONFIG_SWEEP_OPTIONS` entries both exist to prevent, so warn
     # rather than silently burning the compute.  A warning, not an error:
     # run_plato.sh legitimately reaches the vanilla==off case when `which
     # highs` finds nothing.
@@ -771,7 +785,7 @@ def main() -> None:
         else:
             seen[key] = plan.name
     if budgets:
-        print(f"Budget sweep   : mip_heuristic_presolve_effort in {' '.join(budgets)}")
+        print(f"Budget sweep   : per-heuristic effort in {' '.join(budgets)}")
     print(f"Configs        : {' '.join(p.name for p in plans)}")
     # State the instrumentation decision in the header of every run.  Without
     # it, `--dev-log` is a flag you discover you needed after the campaign:

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstddef>
-
 class HighsMipSolver;
 class HighsOptions;
 
@@ -34,5 +32,11 @@ HeuristicFlags effective_flags(const HighsOptions& options, bool* recognized = n
 // and runs the fixed FJ -> FPR -> LocalMIP -> Scylla chain, each on
 // continuous parallel workers.  Returns true if the model was proven
 // infeasible.
-bool run_presolve(HighsMipSolver& mipsolver, size_t budget);
+//
+// No budget parameter: each heuristic's budget comes from its own
+// `mip_heuristic_<name>_effort` option and the model's nnz, both read here
+// (#110).  The call site is a patch string in
+// `third_party/highs_patch/apply_patch.cmake`, so keeping the arithmetic
+// out of it keeps it out of a file no compiler in this repo checks.
+bool run_presolve(HighsMipSolver& mipsolver);
 }  // namespace heuristics

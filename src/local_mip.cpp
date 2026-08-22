@@ -255,7 +255,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     // cache empty and constructs: the mutex de-duplicates the write, not
     // the work.  That is N× the cold-start cost on exactly the instances
     // where it is most expensive, and it inflates the effort LocalMIP
-    // reports into the kWeight* calibration.  Priming here restores the
+    // reports.  Priming here restores the
     // one-per-dispatch property.
     //
     // Returns via the pool or incumbent branch (cheaply, leaving the cache

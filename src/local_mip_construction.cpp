@@ -283,8 +283,8 @@ size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, si
 
     // Unit decision (R2-2 round-4 review): the rest of this function
     // accounts effort in *coefficient-access* (nnz) units, matching
-    // `WorkerCtx::effort` and the system-wide `mode_dispatch::kWeight*`
-    // calibration.  Phase A is a single column-write loop (`ncol` writes,
+    // `WorkerCtx::effort` and the unit `mode_dispatch` sizes LocalMIP's
+    // budget in.  Phase A is a single column-write loop (`ncol` writes,
     // not nnz), so charging `+= ncol` on the normal path mixes units.
     // We therefore drop the unconditional charge and only book a small
     // `ncol` charge on the early-exit branch (nrow == 0 or
@@ -425,7 +425,7 @@ size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, si
     // loop (~ncol cheap writes) is dropped from the normal-path total
     // for unit consistency: `effort` here is the coefficient-access
     // signal LocalMIP's search loop uses (`WorkerCtx::effort`), and that
-    // is the same signal `mode_dispatch::kWeight*` is calibrated against.
+    // is the unit `mode_dispatch` sizes LocalMIP's budget in.
     // See the comment near the early-exit return above for the unit
     // rationale.
     return effort;

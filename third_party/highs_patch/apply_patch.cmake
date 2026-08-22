@@ -71,7 +71,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # the current one is rejected outright rather than rewritten in place.
 #
 # Bump PATCH_VERSION whenever any inserted text changes.
-set(PATCH_VERSION "7")
+set(PATCH_VERSION "8")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -161,59 +161,161 @@ if(_effort_default_found EQUAL -1)
         "${CLEAN_REBUILD}")
 endif()
 
-# ── Add mip_heuristic_presolve_effort double option ──
-# Effort budget multiplier for the custom presolve heuristics (FPR,
-# LocalMIP, Scylla).  Split off from mip_heuristic_effort so the latter
-# keeps vanilla B&B semantics; see the block above.  Default 0.30 keeps
-# the presolve budget identical to the previous overloaded default.
+# ── Add the four per-heuristic effort options ──
+# One effort-budget multiplier per presolve heuristic (#110), replacing the
+# single shared mip_heuristic_presolve_effort and the kWeight* constants
+# that split it.  `src/mode_dispatch.cpp` reads each one and sizes that
+# heuristic's dispatch with `heuristic_effort_budget(nnz, value)`:
+# `nnz << 12` effort units at the anchor 0.05, linear in the value.  No
+# shared envelope means raising one heuristic's budget no longer lowers
+# the others', which is what makes a per-heuristic calibration possible.
 #
-# Anchored on upstream's mip_heuristic_run_shifting text, like the suite
-# block above.  It used to anchor on the *preset* block's inserted text —
-# including the whole multi-line record registration — so deleting that
-# block in #93 would have silently dropped this option from the build.
-# Both blocks insert directly after the same upstream anchor, so this one
-# (running second) lands between the anchor and the suite option in the
-# member list *and* the ctor initializer list, keeping the two in the same
-# relative order and out of -Wreorder's way.
+# The defaults are derived from what the shared envelope handed each
+# heuristic before the split:
+#   * fj 0.0125 -> `nnz << 10` per worker, exactly vanilla HiGHS's
+#     hardcoded single-thread FJ limit, which is what our N workers each
+#     ran on before.  FJ's option is a *per-worker* allowance; the other
+#     three size a whole dispatch (see mode_dispatch.cpp).
+#   * fpr / local_mip / scylla: 0.30 * w/sum(w) for the retired weights
+#     2.99 / 6.16 / 1.00, i.e. the 29.5% / 60.7% / 9.9% split of the 0.30
+#     envelope they had at suite=all.
+#
+# How close that is, stated once and referenced from CLAUDE.md and
+# docs/PARAMETERS.md:
+#
+#   These four defaults are the closest scalar approximation to the
+#   retired scheme, not an exact reproduction of it, and no scalar can be
+#   exact.  The old envelope handed a heuristic
+#   `budget × max(1 − N/(80e), ¼) × w/Σw_enabled`, which depends on two
+#   runtime facts a constant here cannot see: the worker count `N`, and
+#   which *other* heuristics the suite enabled.  These reproduce the
+#   `suite=all` share with the worker-count term dropped, so they are
+#   exact at neither end.  At `suite=all` they run 1.04x the old budget
+#   at `N=1`, 1.33x at `N=6`, 2x at `N=12` and 4x from `N=18`, where the
+#   old quarter-floor capped the FJ deduction; at a single-heuristic
+#   suite — which used to hand the sole enabled heuristic the entire
+#   envelope — they run 0.29x / 0.61x / 0.10x for fpr / local_mip /
+#   scylla.  FJ is the one exact case, at every `N` and every suite.  The
+#   anchor is a choice, not a constraint: the deviation is smallest at
+#   the low worker counts the test suite actually runs at (1–2 on CI,
+#   `(hardware_concurrency()+1)/2` locally), and erring high is the cheap
+#   direction once stall thresholds are absolute (#111) — an over-large
+#   budget is truncated by a gate that fires, an under-large one is a
+#   hard cap nothing recovers.  Treat all four as the starting point of
+#   #106's calibration, not the result of one.
+#
+# All three insertions of every option anchor on *upstream's*
+# mip_heuristic_run_shifting text, like the suite block above.  Anchoring
+# on our own inserted text is what made the older option blocks a chain,
+# where deleting one silently dropped the next from the build.
+#
+# Ordering invariant, and the reason this is one loop rather than four
+# hand-written blocks: every insertion lands directly after the same
+# anchor, so the resulting declaration order is the *reverse* of the
+# application order.  That is harmless only while the member list and the
+# constructor initializer list come out in the same relative sequence —
+# otherwise GCC's -Wreorder fires on HighsOptions' constructor, which is a
+# warning about our patch in a file nobody reads.  One loop applying the
+# member and ctor insertions together, in one iteration order, makes that
+# true by construction: both lists end up
+# `shifting, scylla, local_mip, fpr, fj, suite` (the suite block ran
+# first, so it sits last).  Add an option by appending to the list below,
+# never by writing a separate block with an ordering of its own.
+#
+# Record registrations are appended after the same anchor too, so they
+# come out in that same reversed order; nothing depends on it, but each
+# one still needs its own sanity check.  A missed *record* insertion is
+# the silent failure: the header still compiles, the option keeps its
+# constructor default, and every setOptionValue for it fails with no
+# diagnostic anywhere.
+#
+# No `;` in a list entry: set() builds a cmake list and would split on it.
+# Fields are <identifier>:<record default>:<record description>.
+set(_effort_options
+    "mip_heuristic_fj_effort:0.0125:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
+    "mip_heuristic_fpr_effort:0.0884:Effort budget multiplier for the FPR presolve heuristic"
+    "mip_heuristic_local_mip_effort:0.1821:Effort budget multiplier for the LocalMIP presolve heuristic"
+    "mip_heuristic_scylla_effort:0.0296:Effort budget multiplier for the Scylla presolve heuristic")
+
+# The upstream record block all four record insertions anchor on, spelled
+# once: four copies of a four-line exact-match string is four chances for
+# one of them to drift.
+string(CONCAT _shifting_record
+    "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n"
+    "                                       \"Use the Shifting heuristic\", advanced,\n"
+    "                                       &mip_heuristic_run_shifting, false);\n"
+    "    records.push_back(record_bool);")
+
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_presolve_effort" _presolve_effort_found)
-if(_presolve_effort_found EQUAL -1)
+set(_effort_applied FALSE)
+foreach(_entry IN LISTS _effort_options)
+    string(REGEX REPLACE "^([^:]+):.*$" "\\1" _opt_ident "${_entry}")
+    string(REGEX REPLACE "^[^:]+:([^:]+):.*$" "\\1" _opt_default "${_entry}")
+    string(REGEX REPLACE "^[^:]+:[^:]+:(.*)$" "\\1" _opt_desc "${_entry}")
+
+    string(FIND "${OPTIONS_CONTENT}" "${_opt_ident}" _opt_found)
+    if(NOT _opt_found EQUAL -1)
+        message(STATUS "${_opt_ident} option already applied, skipping")
+        continue()
+    endif()
+
     # Member variable: insert after mip_heuristic_run_shifting
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  double mip_heuristic_presolve_effort;\n"
+      "bool mip_heuristic_run_shifting;\n  double ${_opt_ident};\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer: insert after mip_heuristic_run_shifting(false),
+    # 0.0 rather than the record default, matching every other option here:
+    # OptionRecordDouble writes the record default over it at registration,
+    # so this value only decides what a *missed* record insertion would
+    # leave behind — a stable 0.0 rather than an uninitialised read.
     string(REPLACE
       "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        mip_heuristic_presolve_effort(0.0),\n"
+      "mip_heuristic_run_shifting(false),\n        ${_opt_ident}(0.0),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    # Record registration: insert after the mip_heuristic_run_shifting record block
-    string(REPLACE
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_double = new OptionRecordDouble(\n        \"mip_heuristic_presolve_effort\",\n        \"Effort budget multiplier for custom presolve heuristics\", advanced,\n        &mip_heuristic_presolve_effort, 0.0, 0.30, 1.0);\n    records.push_back(record_double);"
-      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
+    # Record registration: insert after the mip_heuristic_run_shifting record
+    string(CONCAT _opt_record
+      "${_shifting_record}\n"
+      "\n"
+      "    record_double = new OptionRecordDouble(\n"
+      "        \"${_opt_ident}\",\n"
+      "        \"${_opt_desc}\", advanced,\n"
+      "        &${_opt_ident}, 0.0, ${_opt_default}, 1.0);\n"
+      "    records.push_back(record_double);")
+    string(REPLACE "${_shifting_record}" "${_opt_record}" OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    # Sanity checks: all three insertions must land.
-    string(REGEX MATCHALL "double mip_heuristic_presolve_effort" _pe_member_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _pe_member_hits _pe_member_count)
-    string(REGEX MATCHALL "mip_heuristic_presolve_effort\\(0\\.0\\)" _pe_ctor_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _pe_ctor_hits _pe_ctor_count)
-    string(FIND "${OPTIONS_CONTENT}" "\"mip_heuristic_presolve_effort\"" _pe_record_idx)
-    if(NOT _pe_member_count EQUAL 1 OR NOT _pe_ctor_count EQUAL 1 OR _pe_record_idx EQUAL -1)
+    # Sanity checks: all three insertions must land, per option.
+    #
+    # Match the member declaration *without* its trailing semicolon: cmake
+    # splits a matched string containing `;` into list elements, which would
+    # make list(LENGTH) report 2 for a single hit.  The `double ` prefix is
+    # what keeps this from also matching the ctor init or the record.
+    string(REGEX MATCHALL "double ${_opt_ident}" _opt_member_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _opt_member_hits _opt_member_count)
+    string(REGEX MATCHALL "${_opt_ident}\\(0\\.0\\)" _opt_ctor_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _opt_ctor_hits _opt_ctor_count)
+    # string(FIND), not REGEX MATCHALL: the record text contains semicolons.
+    # The quoted identifier occurs only in the record — member and ctor
+    # spell it bare.
+    string(FIND "${OPTIONS_CONTENT}" "\"${_opt_ident}\"" _opt_record_idx)
+    if(NOT _opt_member_count EQUAL 1 OR NOT _opt_ctor_count EQUAL 1 OR _opt_record_idx EQUAL -1)
         message(FATAL_ERROR
             "HighsOptions.h post-patch sanity check failed for "
-            "mip_heuristic_presolve_effort (member=${_pe_member_count}, "
-            "ctor=${_pe_ctor_count}, record_idx=${_pe_record_idx}). "
-            "An anchor REPLACE pattern no longer matches. "
+            "${_opt_ident} (member=${_opt_member_count}, "
+            "ctor=${_opt_ctor_count}, record_idx=${_opt_record_idx}). "
+            "Upstream HiGHS likely reformatted HighsOptions.h so one of the "
+            "three mip_heuristic_run_shifting anchors no longer matches. "
             "${CLEAN_REBUILD}")
     endif()
+    set(_effort_applied TRUE)
+    message(STATUS "Applied ${_opt_ident} option to HighsOptions.h")
+endforeach()
+# Only on a change: an unconditional write would restamp the header's mtime
+# on every configure and rebuild all of HiGHS behind it.
+if(_effort_applied)
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Applied mip_heuristic_presolve_effort option to HighsOptions.h")
-else()
-    message(STATUS "mip_heuristic_presolve_effort option already applied, skipping")
 endif()
 
 # ── Patch HighsMipSolverData.h: add capture overload + custom solution source enums ──
@@ -534,18 +636,22 @@ endif()
 # ── Patch HighsMipSolver.cpp: insert heuristic call sites ──
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
 
-# Defensive check: the presolve budget used to be derived from
-# mip_heuristic_effort before the option split introduced
-# mip_heuristic_presolve_effort.  The idempotency sentinel below
-# ('heuristics::run_presolve') is present in both layouts, so an in-place
-# upgrade would silently keep the old call site and starve the presolve
-# heuristics at the reverted 0.05 default.  Force a clean rebuild.
-string(FIND "${CONTENT}" "heuristic_effort_budget(nnz, options_mip_->mip_heuristic_effort)" _stale_presolve_budget)
+# Defensive check, and the one place a retired option name still earns its
+# keep: this file carries no version marker, so the HighsOptions.h gate
+# above cannot speak for it, and the idempotency sentinel below
+# ('heuristics::run_presolve') is present in every layout the call site has
+# ever had.  An in-place upgrade would therefore keep the old call site,
+# which computed one shared budget from mip_heuristic_presolve_effort and
+# passed it in — an option that no longer exists, and an arity run_presolve
+# no longer has.  Force a clean rebuild with an actionable message rather
+# than a confusing compile error.
+string(FIND "${CONTENT}" "mip_heuristic_presolve_effort" _stale_presolve_budget)
 if(NOT _stale_presolve_budget EQUAL -1)
     message(FATAL_ERROR
-        "HighsMipSolver.cpp derives the presolve heuristic budget from "
-        "'mip_heuristic_effort'; this was split into "
-        "'mip_heuristic_presolve_effort'. "
+        "HighsMipSolver.cpp derives one shared presolve heuristic budget from "
+        "'mip_heuristic_presolve_effort'; that option was replaced by the four "
+        "per-heuristic 'mip_heuristic_<name>_effort' options, which "
+        "heuristics::run_presolve now reads itself. "
         "${CLEAN_REBUILD}")
 endif()
 
@@ -554,7 +660,7 @@ if(_found EQUAL -1)
     # Add includes at top (after existing includes)
     string(REPLACE
       "#include \"mip/HighsMipSolver.h\""
-      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr_lp.h\"\n#include \"heuristic_common.h\"\n#include \"mode_dispatch.h\""
+      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr_lp.h\"\n#include \"mode_dispatch.h\""
       CONTENT "${CONTENT}")
 
     # Patch A: hand the standalone FJ call site over to the custom presolve
@@ -572,10 +678,14 @@ if(_found EQUAL -1)
       "if (options_mip_->mip_heuristic_suite == \"off\" &&\n        options_mip_->mip_heuristic_run_feasibility_jump) { // native FJ only at suite=off"
       CONTENT "${CONTENT}")
 
-    # Patch A2: insert custom heuristics block via mode_dispatch
+    # Patch A2: insert custom heuristics block via mode_dispatch.  The call
+    # is bare: each heuristic's budget comes from its own
+    # mip_heuristic_<name>_effort option, derived inside run_presolve, so
+    # the patch string carries no budget arithmetic to drift out of sync
+    # with the source tree.
     string(REPLACE
       "    }\n    // End of pre-root-node heuristics"
-      "    }\n    {\n      const size_t nnz = mipdata_->ARindex_.size();\n      const size_t budget = heuristic_effort_budget(nnz, options_mip_->mip_heuristic_presolve_effort);\n      if (heuristics::run_presolve(*this, budget)) {\n        modelstatus_ = HighsModelStatus::kInfeasible;\n        cleanupSolve();\n        return;\n      }\n    }\n\n    // End of pre-root-node heuristics"
+      "    }\n    if (heuristics::run_presolve(*this)) {\n      modelstatus_ = HighsModelStatus::kInfeasible;\n      cleanupSolve();\n      return;\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
     # This block had no check at all, and it is the one whose miss is

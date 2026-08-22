@@ -1,11 +1,12 @@
-# kWeight* calibration set for src/mode_dispatch.cpp (issue #71, #78).
+# Small-instance effort/budget set for the presolve heuristics
+# (issue #71, #78).
 #
 # Restored in #92 after ec28780 deleted it along with six other lists whose
 # result directories had gone.  This one should not have gone with them: it
-# is the set the kWeight* constants were measured on, and without it the
-# calibration procedure in mode_dispatch.cpp has no defined input — a
-# re-measurement on some other set is not comparable to the recorded
-# numbers, and nobody can tell afterwards which set produced what.
+# is the set the retired kWeight* budget split was measured on, and it stays
+# the defined input for budget work on the per-heuristic effort options that
+# replaced it — a measurement on some other set is not comparable to it, and
+# nobody can tell afterwards which set produced what.
 #
 # (Provenance, not a measured effect: on the one comparison available here
 # this set and a 24-instance sample of instances_plato.txt differed by 9%
@@ -14,8 +15,8 @@
 # because a different one is known to shift the answer.)
 #
 # Usage: 30 s per instance, mip_root_presolve_only=true, log_dev_level=3,
-# all four heuristics on, and 16 workers — see the calibration recipe in
-# src/mode_dispatch.cpp — then bench/check_effort_drift.py <results>.
+# all four heuristics on, and 16 workers, read back through
+# bench/parse_highs_log.py's [Sequential] / [Heur] samples.
 # The worker count is load-bearing, not incidental: the same binary on this
 # set gives local_mip:scylla = 4.68 at 16 workers and 2.81 at 6.
 # Tuning subset (~25 instances) selected from Mittelmann benchmarks

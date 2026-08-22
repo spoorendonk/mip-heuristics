@@ -50,9 +50,9 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     //
     // Zero-effort observations are emitted too (local_mip often skips with
     // non-zero setup wall_ms when the incumbent is empty; a deadline can
-    // fire before setup).  `check_effort_drift.py` filters
-    // `effort_per_ms <= 0` before aggregation, so these lines inform a
-    // human reader without poisoning the geomean.  The `%.3f` format
+    // fire before setup).  A rate of 0 is a real observation rather than a
+    // parse failure, so anything aggregating these lines should filter
+    // `effort_per_ms <= 0` rather than average it in.  The `%.3f` format
     // preserves precision for slow heuristics whose rate would otherwise
     // round to 0.
     const double wall_ms = (t1_s - t0_s) * 1000.0;

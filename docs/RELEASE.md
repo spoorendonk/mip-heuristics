@@ -48,7 +48,7 @@ know which one moves when.
 The first release is **v0.1.0**, not v1.0.0. The 0.x line is deliberate: this
 is a research artifact whose value is the implementations and the measurements,
 and nothing here is offered as a stable API — the option surface, the
-`kWeight*` calibration and the heuristic dispatch order have all moved once and
+effort-budget split and the heuristic dispatch order have all moved once and
 may move again. A 1.0 would promise a compatibility contract the project does
 not intend to keep.
 

@@ -34,8 +34,10 @@
 // bookkeeping lives in
 // `WorkerBudgetState` (worker_base.h); `HeuristicBudget`
 // holds the *derived* values each worker's base struct receives on
-// construction (the three heuristics that honour it — FJ's per-worker
-// allowance comes from its own fixed total instead, see mode_dispatch.cpp).
+// construction.  All four heuristics' budgets come from their own
+// `mip_heuristic_<name>_effort` option; FJ's sizes `per_worker` and lets
+// `total` scale with the pool, the other three size `total` and are
+// divided across it (see mode_dispatch.cpp).
 
 // The uniform runner contract every presolve heuristic implements:
 //

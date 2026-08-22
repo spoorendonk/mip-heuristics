@@ -23,7 +23,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
 #ifndef NDEBUG
 // Test-only lifecycle counters for the issue #77 pause/resume path.
 // Defined in fpr.cpp.  Tests assert these are non-zero after a
-// solve at small `mip_heuristic_presolve_effort` to verify the kBudgetGate /
+// solve at small `mip_heuristic_fpr_effort` to verify the kBudgetGate /
 // multi-attempt-fill paths actually fired (objective equality alone
 // is a proxy that misses lifecycle-path regressions where the
 // rotation diverges but converges back to the same final objective).

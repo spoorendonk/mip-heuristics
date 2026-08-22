@@ -25,9 +25,8 @@ class SequentialSample:
 
     Emitted by `EffortLedger::book` in `src/effort_ledger.cpp`: once per
     presolve-chain heuristic per solve, and once per dive-time `fpr_lp`
-    dispatch.  Used by `bench/check_effort_drift.py` to calibrate
-    `kWeight*` (see issue #71), which considers only the four presolve
-    heuristics.
+    dispatch.  The four presolve heuristics and `fpr_lp` draw from separate
+    budgets, so a consumer comparing rates should say which it means.
     """
 
     heuristic: str  # fj, fpr, local_mip, scylla, fpr_lp
@@ -213,11 +212,10 @@ _TIMING_RE = re.compile(r"^\s+Timing\s+([\d.]+)$")
 _NODES_RE = re.compile(r"^\s+Nodes\s+(\d+)$")
 _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 
-# [Sequential] per-heuristic calibration line emitted from
+# [Sequential] per-heuristic effort line emitted from
 # src/effort_ledger.cpp `EffortLedger::book` (issue #71):
 #   [Sequential] heur=fpr effort=12345 wall_ms=67.8 effort_per_ms=182
-# There is one line per heuristic per solve, feeding
-# `bench/check_effort_drift.py` to calibrate `kWeight*`.
+# There is one line per heuristic per solve.
 # `wall_ms` takes an optional sign here and in `_HEUR_RE`: the ledger
 # times against HiGHS's own solver clock, which bottoms out in
 # `high_resolution_clock` (== non-monotonic `system_clock` on libstdc++),

@@ -84,7 +84,7 @@ TEST_CASE("fpr_lp: suite=local_mip disables fpr_lp dispatch", "[fpr_lp][mode-mat
 // dispatch — even though the raw run_fpr flag is true and the
 // moreHeuristicsAllowed() grace offset (+10000 LP iterations) would
 // otherwise leave headroom.  Pins that fpr_lp draws its budget from
-// mip_heuristic_effort (not mip_heuristic_presolve_effort) and that the
+// mip_heuristic_effort (not any presolve heuristic's option) and that the
 // cap actually gates dispatch.  Every sub-MIP-creating vanilla
 // heuristic (RENS, RINS, rootReducedCost — the three solveSubMip
 // callers) must be off here: sub-MIPs hard-set mip_heuristic_effort=0.8

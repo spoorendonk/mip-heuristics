@@ -62,7 +62,7 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap) 
     // `pdlp_e_restart_method=2`.  Both existed in HiGHS v1.13.1 and were
     // renamed in v1.14.0, so they have been silently rejected since that
     // bump — every result measured after it, including the round-5
-    // `kWeight*` effort calibration, was already produced on the HiGHS
+    // effort calibration, was already produced on the HiGHS
     // defaults.  They are deliberately *not* revived under their nearest
     // modern names, because neither would do anything on this code path:
     //   - `pdlp_scaling_mode` is consumed only by HiPDLP
@@ -74,8 +74,8 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap) 
     //     `CupdlpWrapper.cpp` (`intParam[E_RESTART_METHOD] = restart_on`),
     //     so the old `2` is indistinguishable from the default `1`; only
     //     `0` (restart off) changes anything.
-    // Leaving them unset keeps behaviour bit-identical to what the
-    // `kWeight*` effort calibration was measured against.
+    // Leaving them unset keeps behaviour bit-identical to what that
+    // effort calibration was measured against.
     set_option_or_die(highs_, "pdlp_iteration_limit",
                       pdlp_iter_cap > kMinPdlpIterCap ? pdlp_iter_cap : kMinPdlpIterCap);
     highs_.passModel(std::move(lp));
