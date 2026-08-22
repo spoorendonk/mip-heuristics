@@ -161,6 +161,17 @@ The benchmark harness is Python with its own test suite, registered in ctest as
 `pytest` from the repo root works too. Both run in CI as a separate fast job
 with no C++ build.
 
+Alongside the per-script unit tests, `bench/test_campaign_readiness.py` runs
+the scripts end to end against a fake `highs` that records the argv and
+options file it was handed: the tree layout, the options each run is given,
+the `--wall-time-budget` chunk boundary and its resume, and the tables
+`analyze_results.py` and `make_tuning_set.py` return. It is a readiness
+suite, not a unit suite — a benchmark campaign stage costs a night of machine
+time and reports its failures the morning after, so the pipeline is checked
+before it is launched. Its last four tests use the real `build/bin/highs`
+when one is present (they answer what a stand-in cannot: whether HiGHS
+accepts the options a stage sets) and skip in the Python-only CI job.
+
 **`ruff check bench cmake` gates.** It runs *after* the tests in the same job — a
 failing step skips the rest of a job, so linting first would mean the bench
 tests never ran in CI at all — but both fail the build.
