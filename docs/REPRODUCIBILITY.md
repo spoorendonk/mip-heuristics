@@ -157,6 +157,33 @@ export PLATO_VANILLA_BINARY=/path/to/unpatched/highs
 It must be an unpatched build of the **same tag**; a different version makes the
 comparison meaningless. Confirm it prints no patch marker.
 
+**What a stage is.** The four campaign stages differ in what they run, not in
+how they are launched, so each one is `run_plato.sh` with a different
+environment rather than a hand-written `run_benchmark.py` command line:
+
+| | |
+|---|---|
+| `PLATO_CONFIGS` | configs to run (default `vanilla all`) |
+| `PLATO_SEEDS` | seeds per config (default `0`) |
+| `PLATO_INSTANCES` | instance list (default `bench/instances_plato.txt`) |
+| `PLATO_OUTPUT` | results tree (default `bench/results/plato`) |
+| `PLATO_TIME_LIMIT` | seconds per solve (default 600, the PLATO limit) |
+| `PLATO_BINARY` / `PLATO_VANILLA_BINARY` | the two binaries |
+
+A config name may carry an effort suffix — `fpr@e0.0125` — which is how a
+budget ladder is expressed: one config per ladder point, one results directory
+each, no sweep flag involved.
+
+```bash
+# the headline: the selected configuration at three seeds, against vanilla
+PLATO_CONFIGS="fj+fpr+local_mip vanilla" PLATO_SEEDS="0 1 2" \
+  bench/run_plato.sh next 10
+```
+
+`status` counts an instance as done for a config only once *every* seed has
+it, and the campaign as done at the least complete config — resume is per
+(config, instance, seed), so a chunk boundary anywhere is harmless.
+
 **The chunking protocol.** A full campaign is roughly 77 hours (233 instances ×
 600 s × 2 configs, run interleaved so partial results are always paired and
 comparable). `bench/run_plato.sh` is built to be stopped and resumed:
@@ -168,10 +195,14 @@ bench/run_plato.sh status          # progress and estimated time remaining
 bench/run_plato.sh next 8          # resume; repeat until status shows 233/233
 ```
 
-`next` takes an hour budget (default 1) and passes it through as a wall-time
-budget, with `--skip-existing` so a resumed run never redoes completed
-instances. Results accumulate in `bench/results/plato/`. When `status` reports
-`COMPLETE` the analysis runs automatically; to run it by hand:
+`next` takes a *window* in hours (default 1) and hands the runner
+`window - time_limit` as its wall-time budget, with `--skip-existing` so a
+resumed run never redoes completed instances. The subtraction is not
+cosmetic: the budget stops new instances being *launched*, and the one already
+running still gets its full 600 s, so a chunk sized at the whole window
+overruns it by up to ten minutes. Results accumulate in
+`bench/results/plato/`. When `status` reports `COMPLETE` the analysis runs
+automatically; to run it by hand:
 
 ```bash
 python3 bench/analyze_results.py bench/results/plato \
