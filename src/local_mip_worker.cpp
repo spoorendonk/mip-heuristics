@@ -80,11 +80,11 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
 }
 
 LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
-                               size_t total_budget, uint32_t seed, const double* initial_solution,
-                               const uint8_t* binary)
+                               size_t total_budget, size_t stale_budget, uint32_t seed,
+                               const double* initial_solution, const uint8_t* binary)
     : mipsolver_(mipsolver), csc_(csc), sink_(sink), rng_(seed), ctx_(mipsolver, csc, binary) {
     base_.total_budget = total_budget;
-    base_.stale_budget = total_budget >> 2;
+    base_.stale_budget = stale_budget;
     const HighsInt ncol = mipsolver.model_->num_col_;
 
     // Precompute variable subsets

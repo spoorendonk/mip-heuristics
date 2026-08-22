@@ -718,6 +718,97 @@ budget is measured.
 
 ---
 
+## Stall Thresholds (issue #111)
+
+Every presolve heuristic stops early when improvement-free effort crosses
+a threshold, at two levels: a runner-level gate over the whole dispatch
+(`ContinuousLoopState::effort_since_improvement` against
+`HeuristicBudget::stale`) and a worker-level gate in `WorkerBudgetState`.
+
+The four constants below are those thresholds, expressed as **effort
+units per constraint-matrix nonzero** — absolute and instance-scaled,
+never a fraction of the heuristic's own budget. A fraction cannot bound
+over-budgeting: doubling the budget doubles the tolerance, so the gate
+never fires relatively sooner and charged effort tracks the effort option
+one-for-one. That is what makes the four independent budgets of #110
+composable — a heuristic that stops finding things exits instead of
+spending an allowance that was tuned in isolation.
+
+`stall_threshold(nnz, per_nnz, budget)` in `src/heuristic_common.h`
+applies one, clamped to the allowance. The runner-level gate is sized in
+`run_sequential` (multiplied by the worker count for the one constant
+whose scope is per-worker, FJ's); the worker-level gate is
+`HeuristicBudget::worker_stale`, that value divided by the worker count.
+Scylla is the documented exception and takes the dispatch-level value,
+because its per-worker counter is charged the PDLP cost already divided
+by the worker count.
+
+**All four are PROVISIONAL**, pending the per-heuristic budget
+calibration (#106). They were chosen to reproduce the pre-#111 gate at
+each heuristic's shipped default effort, not measured. #106 sweeps each
+budget and will show where each heuristic actually stops producing.
+
+The units differ per heuristic and the values are **not** comparable
+across them: FJ counts step units, FPR and LocalMIP coefficient accesses,
+Scylla PDLP iterations x nnz.
+
+### `kStallPerNnzFj` — FeasibilityJump stall threshold
+
+- **File**: `src/fj.h`
+- **Default**: `256`
+- **Meaning**: `nnz << 8` step units per worker without an improvement.
+  Scope is **per worker**, matching `mip_heuristic_fj_effort`. This is
+  the value FJ has always used — the one heuristic that was already
+  absolute, and the model the other three were moved onto. It is exactly
+  a quarter of FJ's default per-worker budget (`nnz << 10`), so both
+  gates are unchanged at the shipped default.
+- **Suggested range**: 64–1024.
+
+---
+
+### `kStallPerNnzFpr` — FPR stall threshold
+
+- **File**: `src/fpr.h`
+- **Default**: `2048`
+- **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
+  without a solution. FPR had no worker-level gate at all before #111
+  (`FprWorker::finished()` returned false unconditionally); it now has
+  one at this value divided by the worker count, and a retired FPR worker
+  stays retired rather than being rebuilt. 2048 is the power of two
+  nearest the pre-#111 gate at the default effort 0.0884 (1810 x nnz).
+- **Suggested range**: 512–8192.
+
+---
+
+### `kStallPerNnzLocalMip` — LocalMIP stall threshold
+
+- **File**: `src/local_mip.h`
+- **Default**: `4096`
+- **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
+  without an improvement. 4096 is the power of two nearest the pre-#111
+  gate at the default effort 0.1821 (3729 x nnz). Note that LocalMIP
+  resets its staleness on any solution that beats a worker's own best, so
+  on instances where it keeps improving this gate correctly never fires
+  and effort still tracks the budget; what it bounds is the case the
+  issue was raised for, one solution found early and the rest of the
+  allowance spent finding nothing.
+- **Suggested range**: 1024–16384.
+
+---
+
+### `kStallPerNnzScylla` — Scylla stall threshold
+
+- **File**: `src/scylla.h`
+- **Default**: `512`
+- **Meaning**: PDLP-iteration x nnz units per nonzero, **whole
+  dispatch**, without a solution. Small in absolute terms because one
+  PDLP solve charges `iters x nnz`, so this is a handful of unproductive
+  pump rounds rather than hundreds of matrix sweeps. 512 is the power of
+  two nearest the pre-#111 gate at the default effort 0.0296 (606 x nnz).
+- **Suggested range**: 128–4096.
+
+---
+
 ## Repair Search (`repair_search`)
 
 ### `kProgressThreshold` — no-progress trigger for best-open jump

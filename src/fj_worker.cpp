@@ -25,9 +25,10 @@ struct FjWorker::Impl {
 };
 
 FjWorker::FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_budget,
-                   uint32_t seed, std::vector<double> start)
+                   size_t stale_budget, uint32_t seed, std::vector<double> start)
     : mipsolver_(mipsolver), sink_(sink), start_(std::move(start)), seed_(seed) {
     base_.total_budget = total_budget;
+    base_.stale_budget = stale_budget;
 }
 
 FjWorker::~FjWorker() = default;
@@ -125,15 +126,6 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 }
             }
         }
-
-        // FJ counts "step-units" rather than coefficient accesses, so its
-        // staleness budget is derived from the constraint-matrix nonzero
-        // count instead of the generic `total_budget >> 2` default from
-        // WorkerBudgetState.  Coefficient-access vs step-unit semantics stays
-        // heuristic-specific — see issue #71.
-        const HighsInt nnz = a_matrix.numNz();
-        base_.stale_budget = std::min(static_cast<size_t>(nnz) << 8,
-                                      base_.total_budget > 0 ? base_.total_budget : SIZE_MAX);
     }
 
     if (!impl_) {

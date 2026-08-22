@@ -27,8 +27,8 @@ public:
     // dispatch's incumbent snapshot) — a reference to the live
     // `mipdata->incumbent` is what issue #98 was about, and a reference to
     // a caller local would dangle.
-    FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_budget, uint32_t seed,
-             std::vector<double> start);
+    FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_budget,
+             size_t stale_budget, uint32_t seed, std::vector<double> start);
     ~FjWorker();
 
     // Run FJ for up to attempt_budget effort, then pause via callback.
@@ -45,9 +45,12 @@ private:
     const std::vector<double> start_;
     const uint32_t seed_;
 
-    // Effort / staleness / finished bookkeeping.  FJ's `stale_budget` is
-    // derived from the constraint matrix nonzero count (see run_attempt)
-    // rather than the generic `total_budget >> 2` default.
+    // Effort / staleness / finished bookkeeping.  Both budgets come from
+    // the caller: FJ's stall threshold has always been an absolute
+    // `nnz << 8` rather than a fraction of the allowance, and since issue
+    // #111 the other three heuristics derive theirs the same way, so it
+    // is sized once in `mode_dispatch` (`HeuristicBudget::worker_stale`)
+    // instead of re-derived from the FJ solver's own copy of the matrix.
     WorkerBudgetState base_;
     bool initialized_ = false;
     bool first_solve_done_ = false;

@@ -10,6 +10,27 @@ struct ProblemView;
 
 namespace local_mip {
 
+// Stall threshold, in effort units (coefficient accesses) per
+// constraint-matrix nonzero (issue #111).
+//
+// Scope: **whole dispatch**, matching `mip_heuristic_local_mip_effort`.
+// Each worker's share is this divided by the worker count.
+//
+// 4096 reproduces the pre-#111 runner gate: at the default effort
+// 0.1821 that gate was `heuristic_effort_budget(nnz, 0.1821) / 4`
+// = 3729 x nnz, and 4096 is the neighbouring power of two (1.10x).
+// This is the heuristic the issue's evidence came from — LocalMIP on
+// `fiball` found its one solution at 0.6 s and then spent 11 s of a
+// 12 s limit finding nothing else, because the gate it was measured
+// against grew with the budget.
+//
+// PROVISIONAL, pending the per-heuristic budget calibration (#106).
+// #106 sweeps each heuristic's effort option and will show where each
+// one actually stops producing solutions; these values are placeholders
+// chosen to reproduce the pre-#111 gate at the shipped default effort,
+// not the result of a measurement.
+inline constexpr size_t kStallPerNnzLocalMip = 4096;
+
 // Compile-time instrumentation switch (R3-1 round-4 review).  Driven
 // by the `MIP_HEURISTICS_INSTRUMENT` CMake option, which defaults to
 // ON when tests are being built and OFF otherwise.  When false, the

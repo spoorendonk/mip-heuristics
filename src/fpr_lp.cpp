@@ -460,8 +460,17 @@ void run(HighsMipSolver& mipsolver) {
         // presolve heuristics' are, even though the setup around them is
         // fpr_lp's own.
         const ExecutionContext exec = make_exec(mipsolver);
-        worker_effort =
-            run_workers(setup, exec, make_budget(worker_budget, exec.num_workers), sink);
+        // `worker_budget >> 2` is the pre-#111 staleness rule, kept here
+        // deliberately: issue #111 replaced the fraction-of-budget stall
+        // thresholds in the *presolve* chain and put fpr_lp out of scope.
+        // fpr_lp draws from upstream's dive-time LP-iteration envelope,
+        // not from a per-heuristic effort option, and `LpFprWorker` keeps
+        // its own private stale counter (`kStaleAttemptThreshold`) besides
+        // this one — so the argument for an absolute, instance-scaled
+        // ceiling has to be made against that envelope, not restated from
+        // the presolve chain.
+        worker_effort = run_workers(
+            setup, exec, make_budget(worker_budget, exec.num_workers, worker_budget >> 2), sink);
         // Read after the worker loop has joined; the sink starts at zero
         // because it is constructed per dispatch.
         found = sink.accepted() > 0;

@@ -144,7 +144,24 @@ struct HeuristicBudget {
     size_t total = 0;        // whole-dispatch ceiling, summed over workers
     size_t per_worker = 0;   // total / N (floor division)
     size_t attempt_cap = 0;  // per-attempt cap: max(total / (N * 10), 1)
-    size_t stale = 0;        // total / 4 — generic staleness ceiling
+
+    // Runner-level staleness ceiling: the dispatch stops once
+    // `ContinuousLoopState::effort_since_improvement` — summed over every
+    // worker — crosses this.  Absolute and instance-scaled since issue
+    // #111 (`stall_threshold(nnz, kStallPerNnz*, total)`, sized by the
+    // caller), not the `total / 4` it used to be.  A quarter of the
+    // budget is not a stall criterion: it says "I have spent a quarter of
+    // what I was given", which is true at every budget and therefore
+    // bounds nothing.
+    size_t stale = 0;
+
+    // Per-worker share of the same ceiling.  The runner's counter
+    // aggregates N workers, so one worker's share is `stale / N`; that
+    // relation is not new, it is what `total / 4` per worker against
+    // `total / 4` per dispatch already meant, and what FJ's `nnz << 8`
+    // against a `N * nnz << 8` runner gate already was at the shipped
+    // default.  Scylla is the documented exception — see scylla_worker.cpp.
+    size_t worker_stale = 0;
 };
 
 // How a heuristic runs: the worker count, the RNG base seed, and the one
@@ -203,9 +220,15 @@ inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
 
 // Split a heuristic's slice of the effort envelope into the per-worker,
 // per-attempt and staleness ceilings its workers and the runner use.
-inline HeuristicBudget make_budget(size_t total, size_t num_workers) {
+//
+// `stale` is passed in rather than derived here (issue #111): it is the
+// one quantity in this struct that must *not* be a function of `total`,
+// and every caller knows the model's `nnz` and its heuristic's per-nnz
+// constant.  See `stall_threshold` in heuristic_common.h.
+inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stale) {
     return HeuristicBudget{total, total / num_workers,
-                           std::max<size_t>(total / (num_workers * 10), 1), total >> 2};
+                           std::max<size_t>(total / (num_workers * 10), 1), stale,
+                           std::max<size_t>(stale / num_workers, 1)};
 }
 
 // Build the CSC transpose into caller-owned `csc` and return a view over it

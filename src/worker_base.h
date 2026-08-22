@@ -11,12 +11,18 @@ struct AttemptResult {
 // Shared per-worker bookkeeping for the heuristic workers.
 //
 // Embed (composition, NOT inheritance) into workers that track cumulative
-// effort + staleness + a hard total budget — currently `FjWorker`,
-// `LocalMipWorker`, and `ScyllaWorker`.  Since issue #77 `FprWorker`
-// counts neither stale attempts nor stale effort: its `finished()`
-// returns `false` unconditionally — the opportunistic runner's own
-// `effort_since_improvement` is the only stale gate.  `LpFprWorker` keeps
-// a private stale counter and `finished_` flag without this struct.
+// effort + staleness + a hard total budget — `FjWorker`, `FprWorker`,
+// `LocalMipWorker` and `ScyllaWorker`.  `FprWorker` joined them in issue
+// #111 and arms only the staleness half (its `total_budget` stays at
+// SIZE_MAX; see fpr.cpp).  `LpFprWorker` keeps a private stale counter
+// and `finished_` flag without this struct.
+//
+// `stale_budget` is set by the caller from an absolute, instance-scaled
+// constant (`stall_threshold` in heuristic_common.h), never from
+// `total_budget`.  A threshold derived as a fraction of the allowance
+// grows with the allowance, so it can only ever report "I have spent
+// that fraction" — it cannot detect that the search stopped producing,
+// which is the entire job of this counter (issue #111).
 //
 // Fields are plain (non-atomic) because each worker's inner loop accesses
 // them single-threaded.  The continuous-parallel runner owns its own

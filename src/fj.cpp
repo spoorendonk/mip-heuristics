@@ -57,8 +57,14 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 if (!sink.copy_best(start)) {
                     start = problem.incumbent;
                 }
-                state.worker = std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker, seed,
-                                                          std::move(start));
+                // `budget.worker_stale` is this worker's share of the
+                // dispatch's absolute stall ceiling (issue #111) — the
+                // `nnz << 8` FJ used to compute from its own copy of the
+                // matrix, now sized once alongside every other
+                // heuristic's.
+                state.worker =
+                    std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker,
+                                               budget.worker_stale, seed, std::move(start));
             }
             return state.worker->run_attempt(run_cap);
         });

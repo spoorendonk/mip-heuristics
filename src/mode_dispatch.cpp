@@ -72,22 +72,33 @@ struct HeuristicConfig {
     // whole dispatch.  Only FJ sets it: vanilla HiGHS gives its single FJ
     // thread `nnz << 10` steps, and each of our N workers matches that, so
     // FJ's dispatch total scales with the worker count where the other
-    // three are divided across it by `make_budget`.  Spelled out rather
-    // than `per_worker`, which in this translation unit already means
+    // three are divided across it by `make_budget`.  It governs
+    // `stall_per_nnz` too — that constant is expressed in the same scope
+    // as the effort option it sits next to.  Spelled out rather than
+    // `per_worker`, which in this translation unit already means
     // `HeuristicBudget::per_worker` — a size_t budget, not a flag.
     bool budget_is_per_worker;
+    // This entry's stall threshold, in effort units per constraint-matrix
+    // nonzero (issue #111).  Absolute and instance-scaled: a heuristic
+    // that stops finding things exits on this rather than on a fraction
+    // of an allowance that someone tuned in isolation.  Defined in the
+    // heuristic's own header, since only it knows what its effort counter
+    // counts.
+    size_t stall_per_nnz;
     size_t (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
 };
 
 constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HeuristicFlags::fj, &HighsOptionsStruct::mip_heuristic_fj_effort,
-     true, &fj::run},
+     true, fj::kStallPerNnzFj, &fj::run},
     {"fpr", kSolutionSourceFPR, &HeuristicFlags::fpr, &HighsOptionsStruct::mip_heuristic_fpr_effort,
-     false, &fpr::run},
+     false, fpr::kStallPerNnzFpr, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HeuristicFlags::local_mip,
-     &HighsOptionsStruct::mip_heuristic_local_mip_effort, false, &local_mip::run},
+     &HighsOptionsStruct::mip_heuristic_local_mip_effort, false, local_mip::kStallPerNnzLocalMip,
+     &local_mip::run},
     {"scylla", kSolutionSourceScylla, &HeuristicFlags::scylla,
-     &HighsOptionsStruct::mip_heuristic_scylla_effort, false, &scylla::run},
+     &HighsOptionsStruct::mip_heuristic_scylla_effort, false, scylla::kStallPerNnzScylla,
+     &scylla::run},
 });
 
 // Each enabled heuristic runs in turn, with its own effort budget and the
@@ -179,8 +190,16 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         // whole-dispatch total, except for FJ, whose option sizes one
         // worker's allowance and therefore scales with the pool.
         const size_t sized = heuristic_effort_budget(problem.nnz, options.*h.effort);
+        const size_t total = h.budget_is_per_worker ? sized * exec.num_workers : sized;
+        // The runner-level stall gate (issue #111).  Absolute, not
+        // `total / 4`: the runner's counter aggregates every worker, so a
+        // per-worker constant is multiplied by the pool, and a
+        // whole-dispatch one is used as it stands.  Clamped to `total`,
+        // which is the only thing the gate may not exceed.
+        const size_t stall_per_nnz =
+            h.budget_is_per_worker ? h.stall_per_nnz * exec.num_workers : h.stall_per_nnz;
         const HeuristicBudget slice = make_budget(
-            h.budget_is_per_worker ? sized * exec.num_workers : sized, exec.num_workers);
+            total, exec.num_workers, stall_threshold(problem.nnz, stall_per_nnz, total));
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> size_t { return h.run(problem, slice, exec, sink); });
     }

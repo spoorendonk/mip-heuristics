@@ -42,8 +42,8 @@ public:
     // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
     // issue #99); it must outlive the worker.
     LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
-                   size_t total_budget, uint32_t seed, const double* initial_solution,
-                   const uint8_t* binary);
+                   size_t total_budget, size_t stale_budget, uint32_t seed,
+                   const double* initial_solution, const uint8_t* binary);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
@@ -56,7 +56,11 @@ private:
     Rng rng_;
 
     // Effort / staleness / finished bookkeeping.  `total_budget` and
-    // `stale_budget` are set in the constructor.
+    // `stale_budget` are set in the constructor; since issue #111 the
+    // stall threshold is the caller's absolute, instance-scaled
+    // `HeuristicBudget::worker_stale`, not `total_budget >> 2` — a
+    // quarter of an allowance grows with the allowance and so can never
+    // stop a heuristic from spending all of it.
     WorkerBudgetState base_;
 
     WorkerCtx ctx_;

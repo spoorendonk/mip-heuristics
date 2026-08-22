@@ -41,8 +41,8 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const CscMatrix& csc,
                            IncumbentSink& sink, const uint8_t* binary,
                            const std::vector<std::vector<HighsInt>>& var_orders,
-                           size_t total_budget, uint32_t seed, int worker_idx, int num_workers,
-                           std::atomic<uint64_t>* improvement_gen)
+                           size_t total_budget, size_t stale_budget, uint32_t seed, int worker_idx,
+                           int num_workers, std::atomic<uint64_t>* improvement_gen)
     : mipsolver_(mipsolver),
       pdlp_(pdlp),
       csc_(csc),
@@ -54,6 +54,7 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const
       fpr_config_index_(select_fpr_config(worker_idx, seed)),
       improvement_gen_(improvement_gen) {
     base_.total_budget = total_budget;
+    base_.stale_budget = stale_budget;
     if (!pdlp_.initialized()) {
         base_.finished = true;
         return;
@@ -111,7 +112,6 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const
     // snapshot longer).
     max_stale_rounds_ = compute_max_stale_rounds(nnz_lp_);
 
-    base_.stale_budget = base_.total_budget >> 2;
     modified_cost_ = orig_cost;
     cycle_history_.reserve(pump::kCycleWindow);
 

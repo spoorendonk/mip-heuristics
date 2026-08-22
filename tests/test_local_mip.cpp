@@ -468,7 +468,13 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
         // each runner will execute meaningful work (so `returned > 0` is
         // very likely), small enough that the test stays sub-second.
         const size_t budget = 200000;
-        const size_t returned = run_fn(problem, make_budget(budget, exec.num_workers), exec, sink);
+        // `budget >> 2` is what `make_budget` used to derive internally.
+        // This test is about the effort-booking contract, not about where
+        // the stall gate sits, so it keeps the pre-#111 number rather
+        // than picking one of the four per-heuristic constants — it runs
+        // all four `run` functions through the same `RunFn`.
+        const size_t returned =
+            run_fn(problem, make_budget(budget, exec.num_workers, budget >> 2), exec, sink);
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 
@@ -583,7 +589,7 @@ TEST_CASE("ProblemView::incumbent is a dispatch snapshot, not the live vector (#
         IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
 
         local_mip::reset_warm_start_counters();
-        local_mip::run(problem, make_budget(200000, exec.num_workers), exec, sink);
+        local_mip::run(problem, make_budget(200000, exec.num_workers, 200000 >> 2), exec, sink);
         auto counters = local_mip::warm_start_counters();
 
         // Reading the snapshot: the incumbent branch fires (at minimum on

@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <random>
 #include <vector>
@@ -56,19 +57,35 @@ using VarOrderTable = std::vector<std::vector<HighsInt>>;
 // with the same seed produce bit-identical [Sequential] traces at
 // `threads=1`.
 //
-// `finished()` always returns false; the runner's stale_budget is the
-// only termination gate.
+// Termination: `finished()` used to return false unconditionally, on the
+// grounds that the runner's stale gate was the backstop.  Issue #111
+// removed that reasoning — under an independently tuned per-heuristic
+// budget (#110) nothing else bounds one worker — so the worker now owns
+// an absolute stall gate of its own (`base_.stale_budget`, sized from
+// `kStallPerNnzFpr`).  It has no rebuild path: a retired FPR worker stays
+// retired and `run_attempt` reports zero effort, which is how the
+// opportunistic runner retires the slot.
+//
+// **Pause/resume is stall-neutral.**  The gate counts effort since this
+// worker's last accepted solution, never attempts and never calls, so a
+// `kBudgetGate` pause neither advances it by itself nor resets it: an
+// attempt spanning K calls is charged exactly the sum of what those K
+// calls spent, which is what one uninterrupted call of the same total
+// size would have charged.  A worker that was interrupted has therefore
+// not stalled *for having been interrupted*.  Counting attempts, or
+// counting "calls that returned without a solution", would break that —
+// a paused attempt returns without a solution every time.
 class FprWorker {
 public:
     // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
     // issue #99); it must outlive the worker.
     FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
               const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx, uint32_t seed,
-              size_t attempt_budget);
+              size_t attempt_budget, size_t stale_budget);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
-    [[nodiscard]] static bool finished() { return false; }
+    [[nodiscard]] bool finished() const { return base_.finished; }
 
 private:
     // Pick the (strategy, mode) for `attempt_idx_`.  Cycles the
@@ -78,6 +95,12 @@ private:
     // grid (a second `repair_search` activity-undo gap is the residual
     // blocker).
     void select_config_for_current_attempt();
+
+    // Book one call's effort against the staleness gate.  Called on both
+    // exits from `run_attempt` — the `kBudgetGate` pause and the normal
+    // return — so every unit of effort is counted exactly once, which is
+    // what makes the gate independent of how an attempt was sliced.
+    void charge(const AttemptResult& attempt);
 
     const ExecutionContext& exec_;
     HighsMipSolver& mipsolver_;
@@ -106,6 +129,15 @@ private:
     [[nodiscard]] bool attempt_alive() const {
         return attempt_state_.phase != FprAttemptState::Phase::kIdle;
     }
+
+    // Effort / staleness / finished bookkeeping, shared with FJ, LocalMIP
+    // and Scylla (worker_base.h).  Only the staleness half is armed:
+    // `total_budget` is left at SIZE_MAX because the whole-dispatch
+    // ceiling belongs to `run_opportunistic_loop`, and giving each FPR
+    // worker a hard `total / N` share as well would cap a fast worker at
+    // its share instead of letting it absorb a slow peer's — a different
+    // change from the one issue #111 asks for.
+    WorkerBudgetState base_;
 
     Rng rng_;
     FprScratch scratch_;
@@ -178,7 +210,7 @@ VarOrderTable precompute_var_orders(HighsMipSolver& mipsolver) {
 
 FprWorker::FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
                      const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx,
-                     uint32_t seed, size_t attempt_budget)
+                     uint32_t seed, size_t attempt_budget, size_t stale_budget)
     : exec_(exec),
       mipsolver_(exec.mipsolver),
       csc_(csc),
@@ -188,6 +220,8 @@ FprWorker::FprWorker(const ExecutionContext& exec, const CscMatrix& csc, Incumbe
       worker_idx_(worker_idx),
       attempt_budget_(attempt_budget),
       rng_(seed) {
+    base_.total_budget = std::numeric_limits<size_t>::max();
+    base_.stale_budget = stale_budget;
     select_config_for_current_attempt();
 }
 
@@ -226,6 +260,14 @@ void FprWorker::select_config_for_current_attempt() {
     mode_ = cfg.mode;
 }
 
+void FprWorker::charge(const AttemptResult& attempt) {
+    if (attempt.found_improvement) {
+        base_.charge_improvement(attempt.effort);
+    } else {
+        base_.charge_no_improvement(attempt.effort);
+    }
+}
+
 // Cognitive complexity 26 (threshold 25).  Kept whole: the worker's multi-attempt loop:
 // pause/resume of an in-flight DFS and rotation through kInitialFprConfigs. Decomposing it would
 // move work across a worker's inner loop, and the closeout takes no unmeasured performance risk;
@@ -233,6 +275,9 @@ void FprWorker::select_config_for_current_attempt() {
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     AttemptResult attempt{};
+    if (base_.finished) {
+        return attempt;
+    }
 
     // Issue #77 lifecycle.  Two mechanics in play:
     //
@@ -286,7 +331,21 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     int attempts_started = 0;
     size_t prev_loop_effort = 0;
 
-    while (attempt.effort < attempt_budget) {
+    // Issue #111: this call may not outrun what is left of the worker's
+    // stall allowance.  Without the clamp the *slice* bounds the call,
+    // and the slice is `HeuristicBudget::attempt_cap` = `total / (10N)`,
+    // which grows with the effort option — so a stalled worker would
+    // still overshoot its absolute ceiling by a budget-proportional
+    // amount and the gate would only half-bind.  Clamping here also makes
+    // the DFS pause at the ceiling rather than past it, since
+    // `fpr_attempt_step` is handed `budget_remaining` derived from
+    // `call_cap`.
+    const size_t stall_room = base_.stale_budget > base_.effort_since_improvement
+                                  ? base_.stale_budget - base_.effort_since_improvement
+                                  : 0;
+    const size_t call_cap = std::min(attempt_budget, std::max<size_t>(stall_room, 1));
+
+    while (attempt.effort < call_cap) {
         if (exec_.terminated()) {
             break;
         }
@@ -366,7 +425,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         if (attempt_state_.phase == FprAttemptState::Phase::kDfs) {
             const size_t before_step = attempt_state_.effort_consumed;
             const size_t budget_remaining =
-                attempt_budget > attempt.effort ? attempt_budget - attempt.effort : 0;
+                call_cap > attempt.effort ? call_cap - attempt.effort : 0;
             const FprStepResult outcome =
                 fpr_attempt_step(attempt_state_, mipsolver_, cfg, rng_, budget_remaining);
             attempt.effort += attempt_state_.effort_consumed - before_step;
@@ -375,7 +434,12 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
                 g_budget_gate_hits.fetch_add(1, std::memory_order_relaxed);
 #endif
                 // Attempt paused at the per-call slice boundary — return so
-                // peers do their next attempt's work and we resume here next call.
+                // peers do their next attempt's work and we resume here
+                // next call.  Charge what the pause spent: the stall
+                // counter is in effort units, so slicing an attempt
+                // across calls costs it exactly what running it in one
+                // call would (see the class comment).
+                charge(attempt);
                 return attempt;
             }
             // kVerdictReady — DFS ended (leaf found or stack/node-limit
@@ -396,6 +460,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         // `attempt_alive()` is false on the next iteration.
     }
 
+    charge(attempt);
     return attempt;
 }
 
@@ -418,9 +483,16 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     workers.reserve(exec.num_workers);
     for (size_t w = 0; w < exec.num_workers; ++w) {
         uint32_t seed = exec.worker_seed(static_cast<int>(w));
-        workers.push_back(std::make_unique<FprWorker>(exec, *problem.csc, sink, var_orders,
-                                                      problem.binary.data(), static_cast<int>(w),
-                                                      seed, budget.stale));
+        // `budget.total >> 2` is the *attempt-wide* `cfg.max_effort` hint,
+        // not a stall threshold: it sizes Phase 3's repair/WalkSAT
+        // sub-budgets and used to be spelled `budget.stale` only because
+        // the two happened to be the same number.  Issue #111 made
+        // `budget.stale` absolute, so the hint is written out here rather
+        // than silently following it.  `budget.worker_stale` is this
+        // worker's share of the dispatch's absolute stall ceiling.
+        workers.push_back(std::make_unique<FprWorker>(
+            exec, *problem.csc, sink, var_orders, problem.binary.data(), static_cast<int>(w), seed,
+            budget.total >> 2, budget.worker_stale));
     }
 
     struct FprOppState {
@@ -432,10 +504,13 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
         [](int worker_idx, Rng& /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
         [&](FprOppState& state, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
             auto& worker = workers[state.worker_idx];
-            // FprWorker::finished() returns false unconditionally
-            // post-#77; the opportunistic loop's own staleness gate is
-            // the termination signal.  No worker-level replacement
-            // needed.
+            // A retired worker reports zero effort, which retires its
+            // slot in `run_opportunistic_loop` (issue #111 gave FPR the
+            // worker-level gate it had been doing without).  Deliberately
+            // no `attempt_with_rebuild`: FPR's diversity already comes
+            // from the per-attempt rotation through `kInitialFprConfigs`,
+            // so a rebuilt worker would resume the same rotation with a
+            // fresh stall allowance and the gate would bound nothing.
             return worker->run_attempt(run_cap);
         });
 }

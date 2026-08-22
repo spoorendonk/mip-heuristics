@@ -148,3 +148,32 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
     double scale = effort / kEffortAnchor;
     return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);
 }
+
+// Absolute, instance-scaled stall threshold (issue #111).
+//
+// A stall threshold answers "how much improvement-free search is enough
+// before this is going nowhere?".  Three of the four presolve heuristics
+// used to answer it with a fraction of their own effort budget
+// (`total >> 2`), which cannot bound over-budgeting: doubling the budget
+// doubled the tolerance, so the gate never fired relatively sooner and
+// charged effort tracked the option one-for-one across a 20x sweep.  It
+// restated the budget instead of measuring the search.
+//
+// FeasibilityJump was the exception and is the model: `nnz << 8` step
+// units, an absolute quantity that scales with the *instance* and not
+// with the allowance.  `per_nnz` is that multiplier — effort units per
+// constraint-matrix nonzero, i.e. roughly "this many full sweeps of the
+// matrix without an improvement".  Each heuristic names its own, since
+// their effort counters are in different units (FJ step units;
+// FPR/LocalMIP coefficient accesses; Scylla PDLP iters x nnz).
+//
+// Clamped to `budget` because a threshold above the allowance can never
+// fire, and a heuristic that cannot reach its own gate should report the
+// budget as its ceiling rather than a number it will never approach.
+// `budget == 0` means "no ceiling known"; the floor of 1 keeps a
+// degenerate `nnz == 0` model from producing a threshold that trips
+// before any work happens.
+inline size_t stall_threshold(size_t nnz, size_t per_nnz, size_t budget) {
+    const size_t threshold = std::max<size_t>(nnz * per_nnz, 1);
+    return budget == 0 ? threshold : std::min(threshold, budget);
+}

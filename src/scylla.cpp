@@ -110,9 +110,12 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     workers.reserve(exec.num_workers);
     for (int w = 0; w < n; ++w) {
         uint32_t seed = exec.worker_seed(w);
+        // `budget.stale`, not `budget.worker_stale`: a Scylla worker's own
+        // counter is charged the amortised (÷N) PDLP cost, which is where
+        // its share of the pool is already taken (issue #111).
         workers.push_back(std::make_unique<ScyllaWorker>(
             mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders, budget.total,
-            seed, w, n, &improvement_gen));
+            budget.stale, seed, w, n, &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -144,7 +147,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 auto new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
                     mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
-                    budget.total, new_seed, state.worker_idx, n, &improvement_gen);
+                    budget.total, budget.stale, new_seed, state.worker_idx, n, &improvement_gen);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has

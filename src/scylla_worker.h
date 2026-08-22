@@ -89,7 +89,7 @@ public:
     ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const CscMatrix& csc,
                  IncumbentSink& sink, const uint8_t* binary,
                  const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
-                 uint32_t seed, int worker_idx, int num_workers,
+                 size_t stale_budget, uint32_t seed, int worker_idx, int num_workers,
                  std::atomic<uint64_t>* improvement_gen = nullptr);
 
     // Run iterations until attempt_budget effort is consumed.  Sets
@@ -128,9 +128,15 @@ private:
     double cost_scale_ = 1.0;
     size_t nnz_lp_ = 0;
 
-    // Effort / staleness / finished bookkeeping.  `total_budget` is set
-    // in the constructor; `stale_budget` derives from `total_budget >> 2`
-    // at init time.
+    // Effort / staleness / finished bookkeeping.  Both budgets are set in
+    // the constructor.  Since issue #111 `stale_budget` is the caller's
+    // absolute, instance-scaled ceiling rather than `total_budget >> 2`;
+    // Scylla takes the *dispatch-level* value (`HeuristicBudget::stale`)
+    // where FJ and LocalMIP take their `worker_stale` share of it,
+    // because the per-worker counters below are charged the PDLP cost
+    // divided by the worker count.  Dividing the ceiling by N as well
+    // would apply the same factor twice and retire a chain after a single
+    // pump round.
     WorkerBudgetState base_;
 
     // Number of concurrent ScyllaWorkers sharing the contested PDLP; used
