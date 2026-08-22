@@ -28,7 +28,7 @@ Full PLATO benchmark against vanilla HiGHS (requires MIPLIB instances, ~77h tota
 bash bench/download_miplib.sh
 bench/run_plato.sh next 24    # run in chunks; resumes safely
 bench/run_plato.sh status     # check progress
-python3 bench/analyze_results.py bench/results/plato --configs patched vanilla --time-limit 600 --baseline
+python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline
 ```
 
 ## Heuristics
@@ -108,7 +108,7 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 bash bench/download_miplib.sh
 bench/run_plato.sh next 24   # run in chunks; resumes safely — repeat until 233/233
-python3 bench/analyze_results.py bench/results/plato --configs patched vanilla --time-limit 600 --baseline --summary
+python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline --summary
 ```
 
 Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`.
@@ -142,7 +142,7 @@ This does not replace `bench/instances_small.txt`, which is stratified on *optim
 
 ### Per-heuristic ablation and budget sweep
 
-`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value — `vanilla`, `off`, `fj`, `fpr`, `local_mip`, `scylla`, `all` — plus `patched` as a back-compatible alias for `all`. An unknown config name is an error, not a run at default options. `--budget-sweep` crosses each config with `mip_heuristic_presolve_effort` values, writing to `<output>/<config>@e<V>/seed<N>/`; those directory names are what `analyze_results.py --configs` takes, so a sweep needs no new analysis code.
+`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value — `vanilla`, `off`, `fj`, `fpr`, `local_mip`, `scylla`, `all` — and no aliases: one name per suite value.
 
 ```bash
 bash bench/download_miplib.sh                       # once per machine; see above
@@ -173,11 +173,11 @@ Any report restricts to an instance list, or excludes one, without re-running a 
 
 ```bash
 # headline over the full PLATO set
-python3 bench/analyze_results.py bench/results/plato --configs patched vanilla \
+python3 bench/analyze_results.py bench/results/plato --configs all vanilla \
     --time-limit 600 --summary
 
 # the same comparison over the held-out complement of the tuning set
-python3 bench/analyze_results.py bench/results/plato --configs patched vanilla \
+python3 bench/analyze_results.py bench/results/plato --configs all vanilla \
     --time-limit 600 --summary \
     --instances bench/instances_plato.txt --exclude-instances bench/instances_small.txt
 ```

@@ -202,13 +202,12 @@ def load_results(
     """Load all parsed results.
 
     Returns {config: {seed: {instance: SolveResult}}}.
-    Supports both seed-aware (results/{config}/seed{N}/*.log) and
-    legacy flat (results/{config}/*.log, treated as seed 0) layouts.
+    Layout is `results/{config}/seed{N}/*.log`, which is what
+    `bench/run_benchmark.py` writes.
 
     `config_dirs` optionally maps a config name to an explicit directory,
-    overriding the default `results_dir/<config>`.  This lets the ablation
-    analysis pull the all_opp / vanilla anchors from `bench/results/plato`
-    while the ablation configs resolve under `bench/results/ablation`.
+    overriding the default `results_dir/<config>`.  This lets one report
+    pull its anchor configs from a different results tree than the rest.
     """
     config_dirs = config_dirs or {}
     results: dict[str, dict[int, dict[str, SolveResult]]] = {}
@@ -221,21 +220,19 @@ def load_results(
 
         # Check for seed subdirectories
         seed_dirs = sorted(Path(config_dir).glob("seed*"))
-        if seed_dirs:
-            for sd in seed_dirs:
-                if not sd.is_dir():
-                    continue
-                seed_num = int(sd.name.removeprefix("seed"))
-                results[config][seed_num] = {}
-                for log_file in sorted(sd.glob("*.log")):
-                    name = log_file.stem
-                    results[config][seed_num][name] = parse_log_file(str(log_file))
-        else:
-            # Legacy flat layout: treat as seed 0
-            results[config][0] = {}
-            for log_file in sorted(Path(config_dir).glob("*.log")):
+        if not seed_dirs:
+            print(
+                f"Warning: no seed*/ subdirectory under {config_dir}",
+                file=sys.stderr,
+            )
+        for sd in seed_dirs:
+            if not sd.is_dir():
+                continue
+            seed_num = int(sd.name.removeprefix("seed"))
+            results[config][seed_num] = {}
+            for log_file in sorted(sd.glob("*.log")):
                 name = log_file.stem
-                results[config][0][name] = parse_log_file(str(log_file))
+                results[config][seed_num][name] = parse_log_file(str(log_file))
     return results
 
 
@@ -1578,7 +1575,7 @@ def main() -> None:
     parser.add_argument(
         "--configs",
         nargs="+",
-        default=["patched", "vanilla"],
+        default=["all", "vanilla"],
         help="Configs to compare (default: patched vanilla). An entry of the "
         "form NAME=DIR loads that config from an explicit directory instead "
         "of results_dir/NAME (used to pull ablation anchors from "

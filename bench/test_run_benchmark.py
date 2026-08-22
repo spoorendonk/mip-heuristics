@@ -77,12 +77,6 @@ def test_config_selects_its_suite_value(config, suite):
     assert config_options(config) == {"mip_heuristic_suite": suite}
 
 
-def test_patched_is_an_alias_for_all():
-    """Alias, not rename: `patched` now composes FJ+FPR+LocalMIP+*Scylla*."""
-    assert config_options("patched") == config_options("all")
-    assert config_options("patched")["mip_heuristic_suite"] == "all"
-
-
 def test_vanilla_on_the_patched_binary_is_suite_off():
     assert config_options("vanilla") == {"mip_heuristic_suite": "off"}
 
@@ -134,7 +128,7 @@ def test_swept_config_with_a_bad_budget_raises():
 
 
 def test_no_sweep_leaves_configs_untouched():
-    assert expand_configs(["patched", "vanilla"], []) == (["patched", "vanilla"], [])
+    assert expand_configs(["all", "vanilla"], []) == (["all", "vanilla"], [])
 
 
 def test_sweep_crosses_configs_with_budgets():
@@ -421,12 +415,6 @@ def test_identity_separates_configs_that_differ_only_by_binary():
     assert (
         build_plan("vanilla", PATCHED, EXTERNAL).identity
         != build_plan("off", PATCHED, EXTERNAL).identity
-    )
-
-
-def test_aliases_share_one_identity():
-    assert build_plan("patched", PATCHED, PATCHED).identity == (
-        build_plan("all", PATCHED, PATCHED).identity
     )
 
 

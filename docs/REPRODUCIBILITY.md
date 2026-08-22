@@ -175,7 +175,7 @@ instances. Results accumulate in `bench/results/plato/`. When `status` reports
 
 ```bash
 python3 bench/analyze_results.py bench/results/plato \
-    --configs patched vanilla --time-limit 600 --baseline --summary
+    --configs all vanilla --time-limit 600 --baseline --summary
 ```
 
 ## `suite=off` is vanilla-equivalent — since August 2026

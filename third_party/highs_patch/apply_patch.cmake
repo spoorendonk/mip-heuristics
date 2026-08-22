@@ -67,45 +67,13 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # inserted, so none of them can tell a tree patched by an *earlier* version
 # from a current one: the sentinel is present in both, the block is skipped,
 # and the stale layout survives into the build as a silently wrong option set.
+# The version marker is the one probe: a tree carrying any marker other than
+# the current one is rejected outright rather than rewritten in place.
 #
-# Two probes, because the option set has been renamed out from under the
-# marker once already:
-#   * the marker itself, for any tree patched since it was introduced;
-#   * the identifiers this script *used* to insert and no longer does, for
-#     trees older than the marker.  A retired name in the tree means the old
-#     block was applied and its text is still there — the new block would be
-#     appended alongside it and the failure would surface as an unrelated
-#     compile error in mode_dispatch.cpp.  None of these is an upstream
-#     identifier, and none is a substring of anything this script inserts
-#     (`mip_heuristic_preset` does not occur inside
-#     `mip_heuristic_presolve_effort` — they diverge at `prese`/`preso`).
-#
-# Bump PATCH_VERSION whenever any inserted text changes, and add any
-# identifier this script stops inserting to the retired list.
+# Bump PATCH_VERSION whenever any inserted text changes.
 set(PATCH_VERSION "7")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
-    # No `;` in an entry: set() builds a cmake list and would split on it,
-    # truncating the explanation and adding a phantom probe for the tail.
-    set(_retired_options
-        "mip_heuristic_preset:renamed to mip_heuristic_suite"
-        "mip_heuristic_run_fpr:folded into mip_heuristic_suite"
-        "mip_heuristic_run_local_mip:folded into mip_heuristic_suite"
-        "mip_heuristic_run_scylla:folded into mip_heuristic_suite"
-        "mip_heuristic_portfolio:removed with the Thompson portfolio"
-        "mip_heuristic_opportunistic:removed, opportunistic is the only parallel mode")
-    foreach(_entry IN LISTS _retired_options)
-        string(REGEX REPLACE ":.*$" "" _retired_ident "${_entry}")
-        string(REGEX REPLACE "^[^:]*:" "" _retired_why "${_entry}")
-        string(FIND "${OPTIONS_CONTENT}" "${_retired_ident}" _retired_idx)
-        if(NOT _retired_idx EQUAL -1)
-            message(FATAL_ERROR
-                "HighsOptions.h still carries '${_retired_ident}' (${_retired_why}). "
-                "The tree was patched by an older version of apply_patch.cmake; "
-                "an in-place rewrite is not safe. "
-                "${CLEAN_REBUILD}")
-        endif()
-    endforeach()
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
     if(NOT _patch_marker_found EQUAL -1)
         message(FATAL_ERROR
@@ -177,37 +145,19 @@ else()
     message(STATUS "mip_heuristic_suite option already applied to HighsOptions.h, skipping")
 endif()
 
-# ── Keep mip_heuristic_effort at the vanilla default 0.05 ──
-# Historical: the patch used to raise the default to 0.30 because the
-# presolve heuristics were starved at 0.05.  That overloaded one option
-# with two meanings (B&B LP-iteration fraction for RENS/RINS vs nnz-based
-# presolve budget).  The presolve budget now has its own knob,
-# mip_heuristic_presolve_effort (default 0.30, added below), and
-# mip_heuristic_effort keeps upstream's exact semantics and default so a
-# patched binary at default options matches vanilla's B&B heuristic
-# budget.  The rewrite below downgrades in-place source trees that still
-# carry the old raised default; a FATAL_ERROR fires if upstream ever
-# reformats the OptionRecordDouble line and neither substring matches —
-# we'd silently ship the wrong default otherwise.
+# ── Assert mip_heuristic_effort keeps the vanilla default 0.05 ──
+# The patch leaves upstream's own B&B heuristic knob exactly as it is, so a
+# patched binary at default options matches vanilla's heuristic budget.  This
+# is a sanity check, not an edit: a FATAL_ERROR fires if upstream ever changes
+# the default or reformats the OptionRecordDouble line, because we would
+# otherwise silently ship against a different budget than the docs claim.
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 string(FIND "${OPTIONS_CONTENT}" "&mip_heuristic_effort, 0.0, 0.05, 1.0" _effort_default_found)
-string(FIND "${OPTIONS_CONTENT}" "&mip_heuristic_effort, 0.0, 0.30, 1.0" _effort_patched_found)
-if(NOT _effort_patched_found EQUAL -1)
-    string(REPLACE
-      "&mip_heuristic_effort, 0.0, 0.30, 1.0"
-      "&mip_heuristic_effort, 0.0, 0.05, 1.0"
-      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
-    file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Reverted mip_heuristic_effort default to vanilla 0.05")
-elseif(NOT _effort_default_found EQUAL -1)
-    message(STATUS "mip_heuristic_effort default already at vanilla 0.05, skipping")
-else()
+if(_effort_default_found EQUAL -1)
     message(FATAL_ERROR
-        "HighsOptions.h post-patch sanity check failed: neither the pristine "
-        "'&mip_heuristic_effort, 0.0, 0.05, 1.0' nor the legacy-patched "
-        "'&mip_heuristic_effort, 0.0, 0.30, 1.0' substring was found. "
-        "Upstream HiGHS likely reformatted the option-record block so the "
-        "exact-string REPLACE pattern no longer matches. "
+        "HighsOptions.h sanity check failed: '&mip_heuristic_effort, 0.0, "
+        "0.05, 1.0' not found. Upstream HiGHS changed the default or "
+        "reformatted the option-record block. "
         "${CLEAN_REBUILD}")
 endif()
 
@@ -297,18 +247,8 @@ else()
 endif()
 
 # Add per-heuristic solution source enum entries.
-# Idempotency key includes kSolutionSourceFprLp (added after the initial
-# four so the patch can detect a stale checkout that has the first four
-# but is missing FprLp and still re-apply only the missing entry).  The
-# older sentinel kSolutionSourceFPR alone is not sufficient.
 string(FIND "${MIPDATA_H}" "kSolutionSourceFprLp" _src_enum_found)
 if(_src_enum_found EQUAL -1)
-    # If the stale first-four patch is present, strip it so the full
-    # replacement below inserts the complete set in one go.
-    string(REPLACE
-      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceCleanup,"
-      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
-      MIPDATA_H "${MIPDATA_H}")
     string(REPLACE
       "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
       "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceFprLp,               // D (LP-dependent FPR, B&B dive)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceCleanup,"
@@ -336,22 +276,8 @@ endif()
 # ── Patch HighsMipSolverData.cpp: add source strings + fix key display ──
 file(READ "${MIP_DIR}/HighsMipSolverData.cpp" MIPDATA_CPP)
 
-# Idempotency key on kSolutionSourceFprLp so the patch re-applies on
-# top of the stale first-four-sources layout when upgrading in place.
 string(FIND "${MIPDATA_CPP}" "kSolutionSourceFprLp" _src_cpp_found)
 if(_src_cpp_found EQUAL -1)
-    # If the stale first-four-sources patch is present, strip the
-    # source-to-string chain and the 4-group limits back to pristine so
-    # the replacements below insert the complete set in one go.
-    string(REPLACE
-      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
-      "} else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
-      MIPDATA_CPP "${MIPDATA_CPP}")
-    string(REPLACE
-      "std::vector<int> limits = {4, 9, 14, 18, last_enum};"
-      "std::vector<int> limits = {4, 9, 14, last_enum};"
-      MIPDATA_CPP "${MIPDATA_CPP}")
-
     # Add source-to-string entries before kSolutionSourceCleanup
     string(REPLACE
       "} else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"

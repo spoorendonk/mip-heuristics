@@ -61,22 +61,6 @@ TEST_CASE("Options: effort split defaults", "[options]") {
     REQUIRE(highs.setOptionValue("mip_heuristic_presolve_effort", 1.0) == HighsStatus::kOk);
 }
 
-// #92 and #93 deleted their options from the patch rather than leaving
-// them silently ignored knobs.  Epic #88's coupling B is that every
-// pre-existing HiGHS build tree still registers the old option set; the
-// PATCH_VERSION and retired-identifier guards in apply_patch.cmake are the
-// primary defence and this is the runtime backstop for a stale tree or a
-// patch-script regression that re-adds one.
-TEST_CASE("Options: retired options are gone", "[options]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    REQUIRE(highs.setOptionValue("mip_heuristic_opportunistic", true) != HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_preset", std::string("off")) != HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_run_fpr", true) != HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_run_local_mip", true) != HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("mip_heuristic_run_scylla", true) != HighsStatus::kOk);
-}
-
 TEST_CASE("Options: suite defaults to all and accepts every value", "[options][suite]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);

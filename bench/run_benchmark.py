@@ -54,7 +54,6 @@ CONFIG_SUITES: dict[str, str] = {
     "local_mip": "local_mip",
     "scylla": "scylla",
     "all": "all",
-    "patched": "all",
 }
 
 # Separator between a config name and its `mip_heuristic_presolve_effort`
@@ -608,7 +607,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--configs",
         nargs="+",
-        default=["patched", "vanilla"],
+        default=["all", "vanilla"],
         help=(
             "Configs to run (default: patched vanilla). One of: "
             + ", ".join(sorted(CONFIG_SUITES))
