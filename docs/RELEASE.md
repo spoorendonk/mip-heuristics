@@ -195,7 +195,8 @@ tables/          one file per recorded table command
 | Seeds | the `seed<N>/` directory names |
 | Instances | the log file names |
 | Per-run options | each `<instance>.opts`, archived verbatim; summarised per config |
-| `threads` | the options files, if pinned there at all |
+| `threads`, requested | the options files, if pinned there at all |
+| Workers, observed | the `Thread count N (of M threads)` line in each log |
 | Instrumentation, requested | `log_dev_level` in the options files |
 | Instrumentation, observed | `[Heur]` / `[Sequential]` tags in the logs |
 | Machine | auto-detected on the archive host, plus `--machine-note` |
@@ -223,9 +224,13 @@ produces an archive that looks complete and cannot be interpreted:
 - **Thread count.** Throughput ratios here do not cancel across worker counts:
   the same binary on the same instances gives `local_mip:scylla = 4.68` at 16
   workers and `2.81` at 6. The harness deliberately does not set `threads`, so
-  the effective count is the *run* machine's core count — which is why an unset
-  `threads` warns and why `--machine-note` matters when the archive is not
-  built on the machine that ran the campaign.
+  the count is a property of the *run* machine and appears in no options file —
+  it is read instead from each log's `Thread count N (of M threads)` line and
+  recorded as `run.workers_observed`. Two values there mean the tree mixes
+  machines, and its runs are not comparable; that warns. Neither asked for nor
+  observed warns too, because then nothing in the archive says what it ran at.
+  `--machine-note` still matters: the machine *block* describes the archive
+  host, which is the benchmark host only when they are the same machine.
 
 A campaign therefore normally produces **two archives**, not one: the
 headline-timing tree and the `--dev-log` attribution tree. Publishing one and

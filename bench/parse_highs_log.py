@@ -76,6 +76,18 @@ class SolveResult:
     num_nonzeros: int | None = None
     num_integer: int | None = None
     num_binary: int | None = None
+    # Parsed from `Thread count N (of M threads). Using K max workers.`, which
+    # HiGHS prints once per MIP solve.  `thread_count` is the size of HiGHS's
+    # thread pool and therefore **the** worker count our presolve heuristics
+    # run at (`ExecutionContext::num_workers` is `highs::parallel::
+    # num_threads()`); `max_workers` is B&B's parallel-search cap, a different
+    # number.  None means the line was absent.  This is the only record of the
+    # effective worker count a benchmark run leaves behind: the harness
+    # deliberately does not pin `threads`, so it is a property of the run host
+    # rather than of any options file.
+    thread_count: int | None = None
+    hardware_threads: int | None = None
+    max_workers: int | None = None
     incumbents: list[Incumbent] = field(default_factory=list)
     sequential_samples: list[SequentialSample] = field(default_factory=list)
     heuristic_samples: list[HeuristicSample] = field(default_factory=list)
@@ -235,6 +247,14 @@ _HEUR_RE = re.compile(
     r"^\s*\[Heur\] name=(\S+) phase=(\S+) start_s=([\d.]+) end_s=([\d.]+) "
     r"effort=(\d+) wall_ms=(-?[\d.]+) effort_per_ms=([\d.]+) found=(\d+)"
 )
+# Worker counts, from HiGHS's own "Solving MIP model with:" block
+# (`HighsMipSolverData.cpp`):
+#   Thread count 16 (of 32 threads). Using 8 max workers. Parallel search on
+_THREADS_RE = re.compile(
+    r"^\s+Thread count\s+(\d+)\s+\(of\s+(\d+)\s+threads\)\.\s+"
+    r"Using\s+(\d+)\s+max workers"
+)
+
 # Model header emitted by HiGHS right after reading the MPS, e.g.
 #   MIP fhnw-sq2 has 91 rows; 650 cols; 1968 nonzeros; 650 integer variables (625 binary)
 # Used to classify instances into BP / IP / MBP / MIP (Local-MIP §6.1.1).
@@ -392,6 +412,15 @@ def parse_log(log_text: str) -> SolveResult:
                 )
             )
             continue
+
+        # Worker counts (first occurrence wins; one block per solve).
+        if result.thread_count is None:
+            m = _THREADS_RE.match(line)
+            if m:
+                result.thread_count = int(m.group(1))
+                result.hardware_threads = int(m.group(2))
+                result.max_workers = int(m.group(3))
+                continue
 
         # Model header line (first occurrence wins; HiGHS prints it once).
         if result.num_rows is None:

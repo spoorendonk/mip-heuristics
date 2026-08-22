@@ -106,13 +106,26 @@ INSTRUMENTATION_TAGS = ("[Heur] ", "[Sequential] ")
 # generator frame per line.
 _INSTRUMENTATION_RE = re.compile("|".join(re.escape(t) for t in INSTRUMENTATION_TAGS))
 
+# The effective worker count, from HiGHS's own "Solving MIP model with:"
+# block.  It is the only record of what a run actually ran at: the harness
+# deliberately does not pin `threads`, so the count is a property of the run
+# host and appears in no options file.  `parse_highs_log.py` reads the same
+# line; the pattern is repeated here because this module streams logs a line
+# at a time rather than parsing them (a --dev-log campaign tree is megabytes
+# per log).
+_WORKERS_RE = re.compile(r"^\s+Thread count\s+(\d+)\s+\(of\s+(\d+)\s+threads\)")
+
 # Provenance sources outside the results tree.
 HIGHS_TAG_RE = re.compile(r"GIT_TAG\s+(\S+)")
 PATCH_VERSION_RE = re.compile(r'set\(PATCH_VERSION\s+"([^"]+)"\)')
 TOOL_PIN_RE = re.compile(r"\b(clang-format|clang-tidy|ruff)==(\S+)")
 
 MANIFEST_NAME = "MANIFEST.json"
-MANIFEST_VERSION = 1
+# 2: `run.workers_observed` / `run.hardware_threads_observed` and the
+# per-config `worker_counts`, read off the logs.  A version bump rather than a
+# silent field addition: `verify` refuses a manifest it did not write, and a
+# v1 archive genuinely does not record what worker count produced it.
+MANIFEST_VERSION = 2
 
 # Config names that stand for "no custom heuristic", most-preferred first.
 # The order `discover_configs` sorts an auto-discovered tree into.
@@ -142,6 +155,29 @@ class ConfigProvenance:
     runs_without_banner: int
     instrumentation_requested: bool
     instrumentation_observed: bool
+    # Distinct `Thread count` values across this config's logs.  More than one
+    # means the runs did not all happen on the same machine (or under the same
+    # `threads` pin), which makes the config's own numbers incomparable — the
+    # throughput ratios in this project do not cancel across worker counts.
+    worker_counts: list[int] = field(default_factory=list)
+    hardware_thread_counts: list[int] = field(default_factory=list)
+
+
+@dataclass
+class LogFacts:
+    """What one log says about the run that produced it.
+
+    A record rather than a tuple: every field here is a separate provenance
+    question (which binary, which HiGHS, which instrumentation, how many
+    workers), and callers read them by name.
+    """
+
+    patched: bool = False
+    version: str | None = None
+    git_hash: str | None = None
+    instrumented: bool = False
+    workers: int | None = None
+    hardware_threads: int | None = None
 
 
 @dataclass
@@ -173,33 +209,40 @@ class Manifest:
 # ── log inspection ───────────────────────────────────────────────────────────
 
 
-def inspect_log(path: Path) -> tuple[bool, str | None, str | None, bool]:
-    """Read one log for (patched, highs_version, git_hash, instrumented).
+def inspect_log(path: Path) -> LogFacts:
+    """Read one log for everything the provenance is derived from.
 
     Streams rather than slurping: a `--dev-log` tree runs to megabytes per log
     and a PLATO campaign has hundreds of them.  The banner is on the first
-    line, so the loop stops as soon as the instrumentation question is also
-    settled.
+    line, so the loop stops as soon as every question is settled.
     """
-    patched = False
-    version: str | None = None
-    git_hash: str | None = None
-    instrumented = False
+    facts = LogFacts()
     with path.open(errors="replace") as handle:
         for line in handle:
-            if version is None:
+            if facts.version is None:
                 m = _BANNER_RE.search(line)
                 if m:
-                    version, git_hash = m.group(1), m.group(2)
+                    facts.version, facts.git_hash = m.group(1), m.group(2)
                     continue
-            if not patched and PATCH_MARKER in line:
-                patched = True
+            if not facts.patched and PATCH_MARKER in line:
+                facts.patched = True
                 continue
-            if not instrumented and _INSTRUMENTATION_RE.search(line):
-                instrumented = True
-            if patched and instrumented and version is not None:
+            if facts.workers is None:
+                m = _WORKERS_RE.match(line)
+                if m:
+                    facts.workers = int(m.group(1))
+                    facts.hardware_threads = int(m.group(2))
+                    continue
+            if not facts.instrumented and _INSTRUMENTATION_RE.search(line):
+                facts.instrumented = True
+            if (
+                facts.patched
+                and facts.instrumented
+                and facts.version is not None
+                and facts.workers is not None
+            ):
                 break
-    return patched, version, git_hash, instrumented
+    return facts
 
 
 def read_options_file(path: Path) -> dict[str, str]:
@@ -254,6 +297,8 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
     missing_options = 0
     missing_banner = 0
     variants: list[dict[str, str]] = []
+    workers: set[int] = set()
+    hardware: set[int] = set()
 
     for seed_dir in sorted(config_dir.iterdir()):
         if not seed_dir.is_dir():
@@ -280,7 +325,12 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
         for log in sorted(seed_dir.glob("*.log")):
             runs += 1
             instances.add(log.stem)
-            patched, version, git_hash, instrumented = inspect_log(log)
+            facts = inspect_log(log)
+            version = facts.version
+            if facts.workers is not None:
+                workers.add(facts.workers)
+            if facts.hardware_threads is not None:
+                hardware.add(facts.hardware_threads)
             if version is None:
                 # No banner at all: a truncated or hand-assembled log. Absence
                 # of the marker is what "unpatched" means, so a log that proves
@@ -288,11 +338,11 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
                 # baseline claim by default — it is counted here instead.
                 missing_banner += 1
             else:
-                binaries.add("patched" if patched else "unpatched")
+                binaries.add("patched" if facts.patched else "unpatched")
                 versions.add(version)
-            if git_hash:
-                hashes.add(git_hash)
-            observed = observed or instrumented
+            if facts.git_hash:
+                hashes.add(facts.git_hash)
+            observed = observed or facts.instrumented
             opts = seed_dir / f"{log.stem}.opts"
             if not opts.is_file():
                 missing_options += 1
@@ -333,6 +383,8 @@ def collect_config(results_dir: Path, name: str) -> ConfigProvenance:
         runs_without_banner=missing_banner,
         instrumentation_requested=requested,
         instrumentation_observed=observed,
+        worker_counts=sorted(workers),
+        hardware_thread_counts=sorted(hardware),
     )
 
 
@@ -619,6 +671,21 @@ def _yes_no(value: object) -> str:
     return "yes" if value else "no"
 
 
+def _counts(values: object) -> str:
+    """Render an observed-count list, spelling out an empty one.
+
+    "not recorded" rather than a blank cell: the row exists precisely because
+    the number is not in any options file, so an empty cell would read as
+    "zero workers" or as a rendering bug instead of as the gap it is.
+    """
+    items = list(values) if isinstance(values, (list, tuple)) else []
+    if not items:
+        return "not recorded in the logs"
+    if len(items) == 1:
+        return str(items[0])
+    return ", ".join(str(v) for v in items) + " (mixed — see warnings)"
+
+
 def render_provenance(manifest: Manifest) -> str:
     """Render the manifest as the document a reader actually reads."""
     src = manifest.source
@@ -678,6 +745,8 @@ def render_provenance(manifest: Manifest) -> str:
         "|---|---|",
         f"| Time limit | {run['time_limit_s']:g} s per instance |",
         f"| `threads` option | {run['threads_option'] or 'unset — HiGHS default'} |",
+        f"| Workers (observed in the logs) | {_counts(run['workers_observed'])} |",
+        f"| Hardware threads (observed) | {_counts(run['hardware_threads_observed'])} |",
         f"| Seeds | {', '.join(str(s) for s in run['seeds']) or 'none'} |",
         f"| Instances | {run['instances']} |",
         f"| Instrumented (`log_dev_level=3`) | {_yes_no(run['instrumented'])} |",
@@ -686,7 +755,10 @@ def render_provenance(manifest: Manifest) -> str:
             "Thread count is load-bearing, not decoration: throughput ratios in this "
             "project do not cancel across worker counts — the same binary on the "
             "same instances gives `local_mip:scylla = 4.68` at 16 workers and "
-            "`2.81` at 6."
+            "`2.81` at 6. The `threads` option says what was asked for, which is "
+            "deliberately nothing; the observed row says what HiGHS ran at, read "
+            "from each log's `Thread count N (of M threads)` line. More than one "
+            "value there means the tree mixes machines."
         ),
         "",
         (
@@ -891,12 +963,26 @@ def build_archive(
         ),
         None,
     )
-    if threads is None:
+    # The count HiGHS actually ran at, read off the logs.  This is what makes
+    # an unset `threads` recordable rather than merely disclosed: the option
+    # says what was *asked for* (nothing, by design), the logs say what was
+    # *used*.
+    workers = sorted({w for c in provenance for w in c.worker_counts})
+    hardware = sorted({h for c in provenance for h in c.hardware_thread_counts})
+    if threads is None and not workers:
         warnings.append(
-            "no `threads` in any options file, so HiGHS used its default and "
-            "the effective worker count is the *run* machine's core count — "
-            "which is recoverable from the machine block only if the archive "
-            "was built on that machine"
+            "no `threads` in any options file and no worker count in any log, "
+            "so the effective worker count of this campaign is unrecorded — "
+            "it is a property of the run machine and nothing in the tree "
+            "names it"
+        )
+    if len(workers) > 1:
+        warnings.append(
+            "the logs report "
+            + ", ".join(str(w) for w in workers)
+            + " workers across this tree, so its runs did not all happen at "
+            "one worker count — throughput in this project does not cancel "
+            "across worker counts, so those runs are not comparable"
         )
     if not machine_note:
         warnings.append(
@@ -960,6 +1046,8 @@ def build_archive(
         run={
             "time_limit_s": time_limit,
             "threads_option": threads,
+            "workers_observed": workers,
+            "hardware_threads_observed": hardware,
             "seeds": seeds,
             "instances": len(instances),
             "instrumented": instrumented,

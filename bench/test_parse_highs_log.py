@@ -201,3 +201,42 @@ def test_sequential_zero_effort_line_parses():
     assert sample.heuristic == "local_mip"
     assert sample.effort == 0
     assert sample.effort_per_ms == 0.0
+
+
+def test_worker_counts_are_read_off_the_solving_block():
+    """The effective worker count is a property of the run host, not of any
+    options file — the harness deliberately does not pin `threads` — so this
+    line is the only record a benchmark run leaves of what it ran at."""
+    log = (
+        "Solving MIP model with:\n"
+        "   31 rows\n"
+        "   42 cols (28 binary, 0 integer, 0 implied int., 14 continuous, 0 domain fixed)\n"
+        "   91 nonzeros\n"
+        "   Thread count 16 (of 32 threads). Using 8 max workers. Parallel search on\n"
+    )
+    result = parse_log(log)
+    # `thread_count` is HiGHS's pool size, which is what our presolve
+    # heuristics run at; `max_workers` is B&B's parallel-search cap.
+    assert result.thread_count == 16
+    assert result.hardware_threads == 32
+    assert result.max_workers == 8
+
+
+def test_worker_counts_are_none_when_the_line_is_absent():
+    result = parse_log("Solving report\n  Status            Optimal\n")
+    assert result.thread_count is None
+    assert result.hardware_threads is None
+    assert result.max_workers is None
+
+
+def test_a_single_worker_run_parses():
+    """`Parallel search off` is the reproducibility setting, not a defect."""
+    log = (
+        "   Thread count 1 (of 12 threads). Using 1 max workers. Parallel search off\n"
+    )
+    result = parse_log(log)
+    assert (result.thread_count, result.hardware_threads, result.max_workers) == (
+        1,
+        12,
+        1,
+    )

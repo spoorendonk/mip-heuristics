@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_archive import (
     HIGHS_TAG_RE,
+    MANIFEST_VERSION,
     REPO_ROOT,
     build_archive,
     classify_baseline,
@@ -43,6 +44,14 @@ BANNER = (
     "Includes third-party software components, see THIRD_PARTY_NOTICES.md\n"
 )
 MARKER = "mip-heuristics patch active (custom MIP presolve heuristics)\n"
+
+# The line the effective worker count is read off.  HiGHS prints it once per
+# solve, from `HighsMipSolverData.cpp`.
+SOLVING_BLOCK = (
+    "Solving MIP model with:\n"
+    "   Thread count {pool} (of {threads} threads). Using {pool} max workers. "
+    "Parallel search on\n"
+)
 
 # Enough of a HiGHS MIP log for parse_highs_log to produce a solved result with
 # a real incumbent, so the archived tables render actual numbers rather than a
@@ -74,11 +83,21 @@ def write_run(
     *,
     patched: bool = True,
     instrumented: bool = True,
+    workers: tuple[int, int] | None = (16, 32),
     options: dict[str, str] | None = None,
 ) -> None:
-    """Write one `<instance>.log` + `<instance>.opts` pair."""
+    """Write one `<instance>.log` + `<instance>.opts` pair.
+
+    `workers` is the `(pool, hardware threads)` pair HiGHS prints per solve —
+    the only record of the count a run used, since the harness pins none.
+    `None` writes a log without the line, which is what a truncated or
+    hand-assembled log looks like.
+    """
     seed_dir.mkdir(parents=True, exist_ok=True)
-    log = BANNER + (MARKER if patched else "") + BODY
+    log = BANNER + (MARKER if patched else "")
+    if workers is not None:
+        log += SOLVING_BLOCK.format(pool=workers[0], threads=workers[1])
+    log += BODY
     if instrumented:
         log += INSTRUMENTATION
     (seed_dir / f"{instance}.log").write_text(log)
@@ -109,27 +128,44 @@ def tree(tmp_path: Path) -> Path:
 
 def test_inspect_log_reads_the_marker_and_the_banner(tmp_path: Path):
     write_run(tmp_path, "egout")
-    patched, version, git_hash, instrumented = inspect_log(tmp_path / "egout.log")
-    assert patched
-    assert version == "1.15.1"
-    assert git_hash == "04024d701f"
-    assert instrumented
+    facts = inspect_log(tmp_path / "egout.log")
+    assert facts.patched
+    assert facts.version == "1.15.1"
+    assert facts.git_hash == "04024d701f"
+    assert facts.instrumented
 
 
 def test_inspect_log_separates_binaries_that_share_a_banner(tmp_path: Path):
     """The banner is identical between builds; only the marker differs."""
     write_run(tmp_path / "p", "egout", patched=True)
     write_run(tmp_path / "u", "egout", patched=False)
-    patched, p_version, p_hash, _ = inspect_log(tmp_path / "p" / "egout.log")
-    unpatched, u_version, u_hash, _ = inspect_log(tmp_path / "u" / "egout.log")
-    assert (p_version, p_hash) == (u_version, u_hash)
-    assert patched and not unpatched
+    patched = inspect_log(tmp_path / "p" / "egout.log")
+    unpatched = inspect_log(tmp_path / "u" / "egout.log")
+    assert (patched.version, patched.git_hash) == (
+        unpatched.version,
+        unpatched.git_hash,
+    )
+    assert patched.patched and not unpatched.patched
 
 
 def test_inspect_log_reports_an_uninstrumented_run(tmp_path: Path):
     write_run(tmp_path, "egout", instrumented=False)
-    *_, instrumented = inspect_log(tmp_path / "egout.log")
-    assert not instrumented
+    assert not inspect_log(tmp_path / "egout.log").instrumented
+
+
+def test_inspect_log_reads_the_worker_count(tmp_path: Path):
+    """The count a run actually used, which no options file records."""
+    write_run(tmp_path, "egout")
+    facts = inspect_log(tmp_path / "egout.log")
+    assert facts.workers == 16
+    assert facts.hardware_threads == 32
+
+
+def test_inspect_log_survives_a_log_without_a_worker_count(tmp_path: Path):
+    write_run(tmp_path, "egout", workers=None)
+    facts = inspect_log(tmp_path / "egout.log")
+    assert facts.workers is None
+    assert facts.hardware_threads is None
 
 
 def test_read_options_file_round_trips(tmp_path: Path):
@@ -366,10 +402,43 @@ def test_build_rejects_a_config_mixing_patched_and_unpatched_logs(tmp_path: Path
         build(root, tmp_path / "arch", configs=["all"])
 
 
-def test_build_warns_when_threads_is_unset(tree: Path, tmp_path: Path):
+def test_an_unset_threads_option_is_recorded_by_the_logs_instead(
+    tree: Path, tmp_path: Path
+):
+    """The harness pins no thread count on purpose, so `threads` is unset in
+    every campaign tree.  What the runs used is still recorded — HiGHS prints
+    it — and that is what closes the "record the effective worker count"
+    requirement without pinning anything."""
     manifest = build(tree, tmp_path / "arch")
     assert manifest.run["threads_option"] is None
-    assert any("threads" in w for w in manifest.warnings)
+    assert manifest.run["workers_observed"] == [16]
+    assert manifest.run["hardware_threads_observed"] == [32]
+    assert not any("unrecorded" in w for w in manifest.warnings)
+
+
+def test_build_warns_when_no_run_records_a_worker_count(tmp_path: Path):
+    """Neither asked for nor observed: the campaign cannot say what it ran at."""
+    root = tmp_path / "r"
+    for config in ("off", "all"):
+        write_run(root / config / "seed0", "egout", workers=None)
+    manifest = build(root, tmp_path / "arch")
+    assert manifest.run["workers_observed"] == []
+    assert any("unrecorded" in w for w in manifest.warnings)
+    assert (
+        "not recorded in the logs" in (tmp_path / "arch" / "PROVENANCE.md").read_text()
+    )
+
+
+def test_build_warns_when_a_tree_mixes_worker_counts(tmp_path: Path):
+    """Two machines in one tree: the runs are not comparable, and nothing else
+    in the archive would say so — the banners and options files are identical."""
+    root = tmp_path / "r"
+    write_run(root / "off" / "seed0", "egout", workers=(16, 32))
+    write_run(root / "all" / "seed0", "egout", workers=(6, 12))
+    manifest = build(root, tmp_path / "arch")
+    assert manifest.run["workers_observed"] == [6, 16]
+    assert any("not comparable" in w for w in manifest.warnings)
+    assert "mixed" in (tmp_path / "arch" / "PROVENANCE.md").read_text()
 
 
 def test_build_records_a_pinned_thread_count(tmp_path: Path):
@@ -378,7 +447,7 @@ def test_build_records_a_pinned_thread_count(tmp_path: Path):
         write_run(root / config / "seed0", "egout", options={"threads": "16"})
     manifest = build(root, tmp_path / "arch")
     assert manifest.run["threads_option"] == "16"
-    assert not any("threads" in w for w in manifest.warnings)
+    assert not any("unrecorded" in w for w in manifest.warnings)
 
 
 def test_build_warns_without_a_machine_note(tree: Path, tmp_path: Path):
@@ -518,7 +587,13 @@ def test_verify_reports_damage_rather_than_raising(tree: Path, tmp_path: Path):
     assert any("not readable JSON" in p for p in verify_archive(archive, None))
 
     (archive / "MANIFEST.json").write_text(
-        json.dumps({"manifest_version": 1, "files": {}, "tables": [{"name": "x"}]})
+        json.dumps(
+            {
+                "manifest_version": MANIFEST_VERSION,
+                "files": {},
+                "tables": [{"name": "x"}],
+            }
+        )
     )
     assert any("malformed table entry" in p for p in verify_archive(archive, None))
 
@@ -585,7 +660,7 @@ def test_manifest_json_is_loadable_and_carries_the_table_argv(
     archive = tmp_path / "arch"
     build(tree, archive)
     payload = json.loads((archive / "MANIFEST.json").read_text())
-    assert payload["manifest_version"] == 1
+    assert payload["manifest_version"] == MANIFEST_VERSION
     assert payload["source"]["highs_tag"] == "v1.15.1"
     assert payload["baseline"]["config"] == "off"
     names = {t["name"]: t for t in payload["tables"]}
