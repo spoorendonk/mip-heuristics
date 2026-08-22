@@ -427,8 +427,8 @@ void run(HighsMipSolver& mipsolver) {
     // Wall clock starts here: everything from this point on is fpr_lp's
     // spend, the reference-LP solves inside `build_setup` included.
     // The ledger is constructed first because it owns the clock — its
-    // `now_s` reads the solver's timer so this window is comparable with
-    // the `[Root]` timestamps (issue #95).
+    // `now_s` reads the solver's timer, so this window shares an origin
+    // with HiGHS's own display-line time column.
     EffortLedger ledger(mipsolver);
     const double t0_s = ledger.now_s();
 

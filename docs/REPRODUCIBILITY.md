@@ -240,7 +240,7 @@ surface both changed underneath it.
 
 ## Instrumentation caveat
 
-The cannibalization analysis needs `log_dev_level=3`, which
+The per-heuristic instrumentation needs `log_dev_level=3`, which
 `bench/run_benchmark.py` exposes as `--dev-log` and leaves off by default.
 **It is not free and it is not neutral:** HiGHS's own FeasibilityJump logs one
 line per weight bump at exactly that level, from every parallel FJ worker, each

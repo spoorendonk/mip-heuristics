@@ -26,10 +26,9 @@ class HighsMipSolver;
 // State-mutation invariant: this class is the *only* thing in `src/`
 // allowed to write upstream `HighsMipSolverData` counters, and only in
 // `charge_dive`, where depleting the envelope is the deliberate contract.
-// Neither `charge_presolve` nor `note_presolve_span` touches anything
-// upstream — `heuristic_effort_used`, `presolve_heuristic_time` and
-// `fpr_lp_lp_iterations` are all patch-added fields with no upstream
-// reader.  A heuristic that is disabled must reach none of the three.
+// `charge_presolve` touches nothing upstream — `heuristic_effort_used` is
+// a patch-added field with no upstream reader.  A heuristic that is
+// disabled must reach neither.
 //
 // Threading invariant: every counter update here is a plain non-atomic
 // `+=`.  Both methods must be called from the dispatching thread with every
@@ -53,35 +52,14 @@ public:
     // Exposed here so every caller times against one clock — and it is
     // deliberately the *solver's* clock (`HighsMipSolver::timer_`) rather
     // than a raw `steady_clock`, so the `start_s` / `end_s` fields of the
-    // `[Heur]` line share an origin with the `[Root] lp_time_s` timestamp
-    // and with HiGHS's own display-line time column.  Comparing a
-    // heuristic's window against when the root LP started is the whole
-    // point of the cannibalization instrumentation (issue #95).
+    // `[Heur]` line share an origin with HiGHS's own display-line time
+    // column.
     [[nodiscard]] double now_s() const;
 
     // A presolve-chain heuristic (FJ / FPR / LocalMIP / Scylla) consumed
     // `effort` units between `t0_s` and `t1_s`.  `found` is whether the
     // shared `IncumbentSink` accepted at least one of its solutions.
     void charge_presolve(const char* name, size_t effort, bool found, double t0_s, double t1_s);
-
-    // The whole presolve chain occupied the solver from `t0_s` to `t1_s`.
-    //
-    // Deliberately *not* the sum of the `charge_presolve` windows: those
-    // are scoped to what `kWeight*` calibrates and exclude the shared
-    // setup `run_sequential` hoisted out of all four heuristics
-    // (`make_problem` / `build_csc` / `seed_pool`) — sub-millisecond on
-    // the bundled test instances, but O(nnz) and attributed to nobody at
-    // any size.  `[Root] presolve_heur_s`
-    // asks "how much wall time did the chain cost the solver before the
-    // root node", so it takes the full span.  Keeping the two quantities
-    // separate is what lets the calibration basis stay untouched.
-    //
-    // Deliberately not `const`.  The ledger holds `HighsMipSolver&`, so
-    // this leaves the ledger object itself untouched — but it is one of
-    // the two places in src/ that write the solver's own counters, and
-    // `const` would advertise the opposite.  clang-tidy reports at the
-    // out-of-line definition, so the suppression lives in the .cpp.
-    void note_presolve_span(double t0_s, double t1_s);
 
     // A B&B-dive heuristic (fpr_lp) did the same, and additionally owes
     // the shared heuristic LP-iteration envelope: its `setup_lp_iters`
@@ -93,8 +71,9 @@ public:
                      size_t nnz, double t0_s, double t1_s);
 
 private:
-    // Deliberately not `const`, for the same reason as
-    // `note_presolve_span` above; the suppression lives at the definition.
+    // Deliberately not `const`: it holds `HighsMipSolver&`, so it leaves
+    // the ledger object untouched while mutating solver state.  The
+    // suppression lives at the definition.
     void book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
               double t1_s);
 

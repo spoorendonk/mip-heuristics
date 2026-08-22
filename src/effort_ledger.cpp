@@ -15,17 +15,6 @@ void EffortLedger::charge_presolve(const char* name, size_t effort, bool found, 
     book(name, "presolve", effort, found, t0_s, t1_s);
 }
 
-// NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
-void EffortLedger::note_presolve_span(double t0_s, double t1_s) {
-    // Patch-added field, no upstream reader: it exists so
-    // `heuristics::log_solve_summary` can report the presolve chain's
-    // total wall spend on the `[Root]` line, which is what turns "the
-    // root LP started at t" into "the root LP was delayed by t".  Written
-    // on the dispatching thread, under the same joined-region invariant
-    // as every other counter in this file.
-    mipsolver_.mipdata_->presolve_heuristic_time += t1_s - t0_s;
-}
-
 void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
                                size_t nnz, double t0_s, double t1_s) {
     assert(nnz > 0);
@@ -40,11 +29,6 @@ void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int6
     const int64_t charged = setup_lp_iters + static_cast<int64_t>(nnz == 0 ? 0 : effort / nnz);
     mipdata->heuristic_lp_iterations += charged;
     mipdata->total_lp_iterations += charged;
-    // Both counters above are shared with HiGHS's own heuristics, so the
-    // `[Native]` line reporting them raw would bill our dive work as
-    // upstream's — on flugpl at seed 1 that is 87% of the field.  Keep a
-    // running total of what we put in so an analyst can subtract it.
-    mipdata->fpr_lp_lp_iterations += charged;
     book(name, "dive", effort, found, t0_s, t1_s);
 }
 
@@ -56,16 +40,13 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // Two lines per observation, deliberately:
     //
     //   * `[Sequential] heur=<name> effort=<N> wall_ms=<X.X> effort_per_ms=<R>`
-    //     is the legacy calibration line.  `bench/check_effort_drift.py`
-    //     parses it and it is the input to the `kWeight*` recalibration
-    //     procedure in `mode_dispatch.cpp`, so it stays byte-identical.
-    //     Retiring it is a separate, later decision (epic #88 coupling F).
+    //     is the legacy calibration line, kept byte-identical because
+    //     external tooling parses it.
     //   * `[Heur] ... phase=<presolve|dive> start_s=<S> end_s=<E> ... found=<0|1>`
-    //     is the cannibalization line (issue #95).  It carries what
-    //     `[Sequential]` cannot: *when* in the solve the heuristic ran, on
-    //     the solver's own clock, so it can be placed against the root-LP
-    //     timestamp; which side of the patch boundary it ran on; and
-    //     whether it produced anything.
+    //     carries what `[Sequential]` cannot: *when* in the solve the
+    //     heuristic ran, on the solver's own clock; which side of the
+    //     patch boundary it ran on; and whether it produced anything.
+    //     This is the line the per-heuristic budget calibration reads.
     //
     // Zero-effort observations are emitted too (local_mip often skips with
     // non-zero setup wall_ms when the incumbent is empty; a deadline can

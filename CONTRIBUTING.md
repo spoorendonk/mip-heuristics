@@ -131,7 +131,8 @@ than nineteen copies free to drift apart.
 ## Benchmarking
 
 Full detail is in `README.md` (per-heuristic ablation, budget sweep,
-cannibalization tables) and `docs/REPRODUCIBILITY.md` (the PLATO protocol).
+instance subsets and the config oracle) and `docs/REPRODUCIBILITY.md` (the
+PLATO protocol).
 Two rules that are easy to get wrong:
 
 - **Do not set `threads`.** Neither `--threads` on `bench/run_benchmark.py` nor

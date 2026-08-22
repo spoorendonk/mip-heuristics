@@ -53,9 +53,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # "Which directory holds the vanilla arm?" is the same question the
-# cannibalization tables answer, so the preference order is shared rather than
+# analyzer resolves, so the preference order is shared rather than
 # copied — a second list here would drift the first time a config is renamed.
-from analyze_results import CANNIBALIZATION_BASELINE_NAMES as VANILLA_CONFIG_NAMES
+from analyze_results import BASELINE_CONFIG_NAMES as VANILLA_CONFIG_NAMES
 from analyze_results import load_results
 from parse_highs_log import SolveResult
 from run_benchmark import load_instances
@@ -551,7 +551,9 @@ def distribution_rows(sel: Selection) -> list[str]:
     """
     total_full = sum(len(sel.members[label]) for label in sel.labels)
     total_sample = sum(len(sel.sample[label]) for label in sel.labels)
-    rows = [f"{'stratum':<12}{'full':>6}{'full%':>8}{'sample':>8}{'sample%':>9}{'ideal':>8}"]
+    rows = [
+        f"{'stratum':<12}{'full':>6}{'full%':>8}{'sample':>8}{'sample%':>9}{'ideal':>8}"
+    ]
     for label in sel.labels:
         full = len(sel.members[label])
         drawn = len(sel.sample[label])
@@ -739,7 +741,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="reference instance list the tree must cover (default: %(default)s)",
     )
     parser.add_argument(
-        "--size", type=int, default=DEFAULT_SIZE, help="subset size (default: %(default)s)"
+        "--size",
+        type=int,
+        default=DEFAULT_SIZE,
+        help="subset size (default: %(default)s)",
     )
     parser.add_argument(
         "--seed", type=int, default=0, help="sampling seed (default: %(default)s)"

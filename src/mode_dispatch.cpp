@@ -245,14 +245,7 @@ bool run_sequential(HighsMipSolver& mipsolver, size_t budget, const HeuristicFla
         return false;
     }
 
-    // Spans the whole chain, shared setup included, and is reported as
-    // `[Root] presolve_heur_s` — a different question from the per-
-    // heuristic windows below, which stay scoped to what `kWeight*`
-    // calibrates.  See `EffortLedger::note_presolve_span`.  Started after
-    // the `terminated()` check above, since a dispatch that returns there
-    // costs the solver nothing.
     EffortLedger ledger(mipsolver);
-    const double chain_t0_s = ledger.now_s();
 
     // Built once for the whole chain: the CSC transpose and the derived
     // sizes are the same for all four heuristics, and the row-major buffers
@@ -361,7 +354,6 @@ bool run_sequential(HighsMipSolver& mipsolver, size_t budget, const HeuristicFla
         run_and_charge(h.name, [&]() -> size_t { return h.run(problem, slice, exec, sink); });
     }
 
-    ledger.note_presolve_span(chain_t0_s, ledger.now_s());
     return false;
 }
 
@@ -436,62 +428,6 @@ bool run_presolve(HighsMipSolver& mipsolver, size_t budget) {
     }
 
     return run_sequential(mipsolver, budget, flags);
-}
-
-void log_solve_summary(HighsMipSolver& mipsolver) {
-    // RENS and RINS each build a sub-MIP with its own HighsMipSolver, and
-    // cleanupSolve runs for those too.  Their counters describe a
-    // different model, and one `[Native]` line per sub-MIP would make the
-    // per-solve records ambiguous, so only the outer solve reports.
-    if (mipsolver.submip) {
-        return;
-    }
-    // No null check on `mipdata_`: `cleanupSolve`, the only caller,
-    // dereferences it two statements earlier.
-    const HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
-    const HighsLogOptions& log_options = mipsolver.options_mip_->log_options;
-
-    // `rens` is the whole-solve total and `rens_root` the root-site subset
-    // of it.  The root gate is the one a presolve-found incumbent closes —
-    // `upper_limit` goes finite and `moreHeuristicsAllowed()` starts
-    // mattering — so a suppressed root RENS is the cannibalization signal,
-    // and the merged total can hold steady while it disappears.
-    //
-    // `heur_lp_iters` / `total_lp_iters` are upstream's own counters, but
-    // they are *shared*: `EffortLedger::charge_dive` adds to both so
-    // fpr_lp competes with RENS/RINS for the same envelope.  Reporting
-    // them raw therefore bills our dive work as HiGHS's, which is the
-    // confound this whole line exists to remove — so `fpr_lp_lp_iters`
-    // reports exactly what we put in, for an analyst to subtract.
-    //
-    // `%lld` with an explicit cast: the LP-iteration counters are int64_t,
-    // whose printf length modifier is platform-dependent.
-    highsLogDev(log_options, HighsLogType::kVerbose,
-                "[Native] rens=%zu rens_root=%zu rins=%zu rcfix=%zu heur_lp_iters=%lld "
-                "total_lp_iters=%lld fpr_lp_lp_iters=%lld\n",
-                mipdata->rens_calls.load(std::memory_order_relaxed),
-                mipdata->rens_root_calls.load(std::memory_order_relaxed),
-                mipdata->rins_calls.load(std::memory_order_relaxed),
-                mipdata->rcfix_calls.load(std::memory_order_relaxed),
-                static_cast<long long>(mipdata->heuristic_lp_iterations),
-                static_cast<long long>(mipdata->total_lp_iterations),
-                static_cast<long long>(mipdata->fpr_lp_lp_iterations));
-
-    // `lp_time_s` is negative when the root LP was never reached (presolve
-    // solved or proved the model, or a limit fired first); the parser
-    // treats that as "no root LP" rather than "at t=0".
-    //
-    // The two fields are not on the same footing across a restart, and
-    // deliberately so: HiGHS's `goto restart` re-enters above both the
-    // presolve chain and `evaluateRootNode` without rebuilding `mipdata_`,
-    // so `presolve_heur_s` accumulates over every restart while
-    // `lp_time_s` pins the *first* root LP.  "How long until the root LP
-    // first got to start" and "how much wall time did the presolve chain
-    // cost in total" are the two questions being asked; on a restarting
-    // instance `presolve_heur_s > lp_time_s` is therefore expected rather
-    // than a contradiction.
-    highsLogDev(log_options, HighsLogType::kVerbose, "[Root] lp_time_s=%.3f presolve_heur_s=%.3f\n",
-                mipdata->root_lp_time, mipdata->presolve_heuristic_time);
 }
 
 }  // namespace heuristics

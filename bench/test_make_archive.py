@@ -20,7 +20,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_archive import (
-    BASELINE_NAMES,
     HIGHS_TAG_RE,
     REPO_ROOT,
     build_archive,
@@ -66,9 +65,6 @@ INSTRUMENTATION = (
     "[Sequential] heur=fpr effort=100 wall_ms=1.0 effort_per_ms=100.0\n"
     "[Heur] name=fpr phase=presolve start_s=0.001 end_s=0.002 effort=100 "
     "wall_ms=1.0 effort_per_ms=100.0 found=0\n"
-    "[Native] rens=0 rens_root=0 rins=0 rcfix=0 heur_lp_iters=0 "
-    "total_lp_iters=42 fpr_lp_lp_iters=0\n"
-    "[Root] lp_time_s=0.010 presolve_heur_s=0.002\n"
 )
 
 
@@ -264,15 +260,6 @@ def test_baseline_on_an_unpatched_binary_is_the_stronger_claim(tmp_path: Path):
     assert baseline["claim"] == "separately built unpatched binary"
 
 
-def test_baseline_names_match_the_analyzer_that_renders_the_table():
-    """A drift here makes PROVENANCE.md name a different baseline than the
-    archived `--cannibalization` table computes against — a disagreement
-    between the archive's prose and the archive's own numbers."""
-    import analyze_results
-
-    assert BASELINE_NAMES == analyze_results.CANNIBALIZATION_BASELINE_NAMES
-
-
 def test_baseline_absent_when_no_config_stands_for_one(tmp_path: Path):
     root = tmp_path / "r"
     write_run(root / "all" / "seed0", "egout")
@@ -285,22 +272,15 @@ def test_baseline_absent_when_no_config_stands_for_one(tmp_path: Path):
 
 
 def test_default_tables_use_the_pairwise_shape_for_two_configs():
-    specs = default_table_specs(["off", "all"], 600, instrumented=False)
+    specs = default_table_specs(["off", "all"], 600)
     assert [s.name for s in specs] == ["summary", "attribution"]
     assert "--baseline" in specs[0].argv
     assert "--ablation" not in specs[0].argv
 
 
 def test_default_tables_use_the_ablation_shape_for_three():
-    specs = default_table_specs(["off", "fpr", "all"], 60, instrumented=False)
+    specs = default_table_specs(["off", "fpr", "all"], 60)
     assert all("--ablation" in s.argv for s in specs)
-
-
-def test_cannibalization_table_only_offered_for_an_instrumented_tree():
-    plain = default_table_specs(["off", "all"], 600, instrumented=False)
-    instrumented = default_table_specs(["off", "all"], 600, instrumented=True)
-    assert "cannibalization" not in [s.name for s in plain]
-    assert "cannibalization" in [s.name for s in instrumented]
 
 
 def test_parse_table_flag_splits_name_from_args():
@@ -346,7 +326,6 @@ def test_build_produces_a_self_contained_archive(tree: Path, tmp_path: Path):
     assert [t.name for t in manifest.tables] == [
         "summary",
         "attribution",
-        "cannibalization",
     ]
     for spec in manifest.tables:
         assert (archive / spec.path).is_file()
@@ -610,7 +589,7 @@ def test_manifest_json_is_loadable_and_carries_the_table_argv(
     assert payload["source"]["highs_tag"] == "v1.15.1"
     assert payload["baseline"]["config"] == "off"
     names = {t["name"]: t for t in payload["tables"]}
-    assert "--cannibalization" in names["cannibalization"]["argv"]
+    assert "--attribution" in names["attribution"]["argv"]
 
 
 def test_source_provenance_reads_the_pins_from_the_repository():

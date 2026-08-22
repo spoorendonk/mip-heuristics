@@ -165,27 +165,7 @@ Three configs are not swept, because `mip_heuristic_presolve_effort` provably do
 Two things the harness deliberately does not do by default:
 
 - **No `threads=`.** Forcing `threads=1` collapses each heuristic to a single worker. It is the right setting for reproducibility and the wrong one for a throughput benchmark, so `--threads` exists but has no default.
-- **No `log_dev_level=3`.** Pass `--dev-log` to turn on the `[Heur]` / `[Native]` / `[Root]` / `[Sequential]` instrumentation that `bench/parse_highs_log.py` reads for the cannibalization analysis. It is not free: HiGHS's own FeasibilityJump logs one line per weight bump at exactly that level, from every parallel FJ worker, with an `fflush` each. Measured on five bundled instances at a 10 s limit that is 97–750x the log volume (bell5: 16 KB → 3.5 MB) and 1.1–4.4x the total solve wall time (egout: 0.048 s → 0.212 s), concentrated in the FJ phase — i.e. in the number the analysis is reading. Without it `SolveResult.heuristic_wall_fraction` is `None` (unknown), not `0.0`, so the attribution tables come out empty rather than wrong. Use `--dev-log` for attribution runs and leave it off for headline timings.
-
-### Cannibalization analysis
-
-The closeout's central empirical question is whether running our presolve heuristics starves HiGHS's own RENS/RINS and delays the root LP. `--cannibalization` renders the two tables that separate the two kinds of cost:
-
-```bash
-python3 bench/run_benchmark.py \
-    --instances bench/instances_small.txt \
-    --output bench/results/cannib --configs off fpr local_mip scylla all \
-    --time-limit 60 --dev-log --skip-existing
-python3 bench/analyze_results.py bench/results/cannib --cannibalization \
-    --configs off fpr local_mip scylla all --time-limit 60
-```
-
-- **`--dev-log` is mandatory here.** Without it no row carries the counters and every row classifies as `not-instrumented`.
-- **The baseline must be a *patched* `suite=off` row, not `--vanilla-binary`.** The baseline is itself compared on instrumentation, and an external unpatched binary emits none of the `[Native]` / `[Root]` / `[Heur]` lines — it classifies as `not-instrumented` and drags every other row to `no-baseline`. Auto-detection tries `vanilla`, `off`, `suite_off`, `baseline` in order; `--cannibalization-baseline NAME` overrides it.
-
-Each `(instance, config)` gets one label. Four are cannibalization kinds and three record what the data allowed: `baseline` (the reference row itself), `neutral` (native activity and solve time both held), `wall-clock` (budgets held but the root LP was pushed materially later, or a material share of the solve was spent inside our heuristics), `internal-budget` (HiGHS's own heuristics ran less — root-site RENS counted on its own, or materially fewer heuristic LP iterations of its own), `both`, `no-baseline` (instrumented, but nothing to compare against), and `not-instrumented` (log predates the instrumentation or ran below `log_dev_level=3`). The labels are triage for the closeout tables, not a statistical test; the thresholds are the `CANNIBALIZATION_*` constants in `bench/analyze_results.py`.
-
-One trap when reading the raw counters instead of the tables: `heur_lp_iters` and `total_lp_iters` are **shared**, not native. `fpr_lp` charges its dive-time work to both so it competes with RENS/RINS for one envelope, so reading them raw bills our work as HiGHS's. Subtract `fpr_lp_lp_iters` before comparing an `off` row against a patched one.
+- **No `log_dev_level=3`.** Pass `--dev-log` to turn on the `[Heur]` / `[Sequential]` instrumentation that `bench/parse_highs_log.py` reads for the per-heuristic budget analysis. It is not free: HiGHS's own FeasibilityJump logs one line per weight bump at exactly that level, from every parallel FJ worker, with an `fflush` each. Measured on five bundled instances at a 10 s limit that is 97–750x the log volume (bell5: 16 KB → 3.5 MB) and 1.1–4.4x the total solve wall time (egout: 0.048 s → 0.212 s), concentrated in the FJ phase — i.e. in the number the analysis is reading. Use `--dev-log` for attribution runs and leave it off for headline timings.
 
 ### Instance subsets and the config oracle
 
@@ -215,7 +195,7 @@ python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600
 
 Selection is per instance, on the headline metric (primal integral at `--time-limit`), among exactly the seed-collapsed rows the tables already show for each participant. That is what makes the row a genuine **ceiling** — its headline SGM is less than or equal to every participant's, instance by instance — and it is guaranteed by construction rather than hoped for. The oracle never sees an individual seed, so it can no more pick a lucky run than a real selector could. Per-seed winners are still reported, as a diagnostic of how stable the choice is, but they do not build the row.
 
-The oracle is **additive**: it gets its own row and moves no existing one. It is held out of the head-to-head `#Win` / `#First` columns (it is a copy of the participant it selected and would otherwise tie with it, halving that config's credit) and out of the cannibalization tables. Instances absent from any participant at any shared seed, or outside the common set the tables cover, are dropped and counted. At least two participants are required — an oracle over one config is that config relabelled. Rename the row with `--oracle-name` if a real config is already called `oracle`.
+The oracle is **additive**: it gets its own row and moves no existing one. It is held out of the head-to-head `#Win` / `#First` columns (it is a copy of the participant it selected and would otherwise tie with it, halving that config's credit). Instances absent from any participant at any shared seed, or outside the common set the tables cover, are dropped and counted. At least two participants are required — an oracle over one config is that config relabelled. Rename the row with `--oracle-name` if a real config is already called `oracle`.
 
 This is unrelated to the *virtual best* inside the same script, which is reference-objective handling — when an observed primal beats the published `.solu` value, that observed value becomes the reference so a config is not punished for finding something better.
 

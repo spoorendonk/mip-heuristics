@@ -187,7 +187,7 @@ inline bool heuristic_reported_effort(const std::vector<std::string>& lines,
     });
 }
 
-// Whether any captured line carries `tag`, e.g. "[Native] " or
+// Whether any captured line carries `tag`, e.g. "[Heur] " or
 // "[Heur] name=fpr ".  Requires `log_dev_level=3` on the solve.
 //
 // `find` rather than a prefix match: HiGHS routes some log lines through

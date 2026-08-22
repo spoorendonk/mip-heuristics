@@ -18,7 +18,7 @@ Hard gates, per instance and seed:
   * identical node count;
   * identical total and heuristic LP iterations.  The heuristic count is
     what `moreHeuristicsAllowed()` reads, so equality there is the proof
-    that the patch does not cannibalize the RENS/RINS budget on the `off`
+    that the patch does not consume the RENS/RINS budget on the `off`
     path.  HiGHS does not print RENS/RINS *invocation* counts, but it
     cannot invoke them differently while leaving node count, total LP
     iterations and the solution-source display lines all identical;
@@ -40,7 +40,7 @@ Two differences are known and accepted rather than fixed:
   * one `heuristic_effort_used += fj_last_effort` store per FJ callback
     inside stock `feasibilityJump()`.  No control-flow change; invisible in
     the log;
-  * the `[Native]` / `[Root]` instrumentation lines (issue #95), emitted at
+  * the per-heuristic instrumentation lines, emitted at
     `suite=off` on purpose because that run is the reference the patched
     rows are compared against.  Only visible at `log_dev_level=3`, which
     this script does not set, but normalized away regardless.
@@ -97,8 +97,6 @@ _VOLATILE_LINE = re.compile(
     r"|P-D integral\b"  # objective integral, time-weighted
     r"|mip-heuristics patch active"  # the accepted marker
     r"|Set option\b"  # options-file echo
-    r"|\[Native\]"  # issue #95 instrumentation, patch-only
-    r"|\[Root\]"  # issue #95 instrumentation, patch-only
     r"|[\d.]+\s*\((?:Presolve|Solve|Postsolve)\)\s*$"  # Timing continuation lines
     r")"
 )

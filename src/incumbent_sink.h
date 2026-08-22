@@ -54,8 +54,8 @@ public:
     // "Accepted by the pool", not "improved the incumbent": the pool also
     // admits a solution within `kDiversityObjTolerance` of the best when
     // it is structurally diverse.  `found=1` therefore means the heuristic
-    // produced a feasible solution worth keeping, which is the question
-    // the cannibalization tables ask.
+    // produced a feasible solution worth keeping, which is what the
+    // `found` field of the `[Heur]` line reports.
     size_t accepted() const { return accepted_.load(std::memory_order_relaxed); }
 
     // Retarget the attribution tag for subsequent offers.  Legal only

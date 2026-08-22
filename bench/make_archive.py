@@ -36,7 +36,7 @@ Provenance this derives from the tree rather than taking on trust:
   1.1-4.4x the wall time, concentrated in the FeasibilityJump phase, so
   attribution runs and headline-timing runs are different runs.  Both the
   requested state (the options file) and the observed state (the `[Heur]` /
-  `[Native]` / `[Root]` tags in the log) are recorded, and a disagreement is a
+  `[Heur]` / `[Sequential]` tags in the log) are recorded, and a disagreement is a
   warning rather than a silent mis-labelling.
 * **Thread count.** Several ratios in this project are strongly
   thread-count-dependent — the same binary on the same instances gives
@@ -96,10 +96,10 @@ PATCH_MARKER = "mip-heuristics patch active"
 _BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: (\w+)\)")
 
 # `log_dev_level=3` tags, from `src/effort_ledger.cpp` and
-# `heuristics::log_solve_summary`.  Their presence is the observed
+# `EffortLedger::book`.  Their presence is the observed
 # instrumentation state, as against the `log_dev_level` the options file asked
 # for.
-INSTRUMENTATION_TAGS = ("[Heur] ", "[Native] ", "[Root] ", "[Sequential] ")
+INSTRUMENTATION_TAGS = ("[Heur] ", "[Sequential] ")
 # An *un*instrumented log can only be recognised by reading all of it, so this
 # test runs once per line of every archived log — on a --dev-log campaign tree
 # that is a hundred million lines. Keep it one C-level scan rather than a
@@ -115,8 +115,7 @@ MANIFEST_NAME = "MANIFEST.json"
 MANIFEST_VERSION = 1
 
 # Config names that stand for "no custom heuristic", most-preferred first.
-# Same order `analyze_results.py` auto-detects a cannibalization baseline in,
-# and the order `discover_configs` sorts an auto-discovered tree into.
+# The order `discover_configs` sorts an auto-discovered tree into.
 BASELINE_NAMES = ("vanilla", "off", "suite_off", "baseline")
 
 DEFAULT_REPOSITORY = "https://github.com/spoorendonk/mip-heuristics"
@@ -496,16 +495,11 @@ def classify_baseline(configs: list[ConfigProvenance]) -> dict[str, object]:
 # ── table specs ──────────────────────────────────────────────────────────────
 
 
-def default_table_specs(
-    configs: list[str], time_limit: float, instrumented: bool
-) -> list[TableSpec]:
+def default_table_specs(configs: list[str], time_limit: float) -> list[TableSpec]:
     """The table set a tree of this shape supports.
 
     Two configs is the pairwise/PLATO shape; three or more is the ablation
     shape, the same split `bench/run_benchmark.py` prints at the end of a run.
-    The cannibalization table is offered only for an instrumented tree, because
-    without `log_dev_level=3` every row classifies as `not-instrumented` — an
-    empty table, archived as though it said something.
     """
     base = ["--configs", *configs, "--time-limit", f"{time_limit:g}"]
     ablation = len(configs) > 2
@@ -514,17 +508,10 @@ def default_table_specs(
     # would otherwise be repeated in full in every extra table file.
     compact = ["--ablation"] if ablation else ["--summary"]
 
-    specs = [
+    return [
         TableSpec(name="summary", argv=[*base, *headline]),
         TableSpec(name="attribution", argv=[*base, *compact, "--attribution"]),
     ]
-    if instrumented:
-        specs.append(
-            TableSpec(
-                name="cannibalization", argv=[*base, *compact, "--cannibalization"]
-            )
-        )
-    return specs
 
 
 def parse_table_flag(value: str) -> TableSpec:
@@ -870,7 +857,7 @@ def build_archive(
                 f"config {config.name!r} asked for log_dev_level="
                 f"{'3' if config.instrumentation_requested else 'off'} but its "
                 f"logs {'do not carry' if config.instrumentation_requested else 'carry'} "
-                f"the [Heur]/[Native]/[Root] tags"
+                f"the [Heur]/[Sequential] tags"
             )
         if config.option_variants:
             warnings.append(
@@ -879,25 +866,17 @@ def build_archive(
                 f"runs; see MANIFEST.json"
             )
 
-    # The cannibalization table needs instrumented *patched* rows and an
-    # instrumented patched baseline; an externally built unpatched `vanilla`
-    # arm emits none of the tags by construction. Requiring every config to be
-    # instrumented would therefore drop the table from exactly the tree shape
-    # `docs/RELEASE.md` recommends — real unpatched baseline plus patched
-    # `off` and `all`.
+    # Recorded in the manifest as observed, against the `log_dev_level` the
+    # options file asked for; a disagreement between the two is the signal
+    # that a run did not get the instrumentation it was configured for.
+    # Keyed on the patched rows only: an externally built unpatched arm emits
+    # no tags by construction, so requiring it would report every recommended
+    # tree shape as uninstrumented.
     patched_configs = [c for c in provenance if c.binary == "patched"]
     instrumented = bool(patched_configs) and all(
         c.instrumentation_observed for c in patched_configs
     )
-    uninstrumented = [c.name for c in patched_configs if not c.instrumentation_observed]
-    if uninstrumented:
-        warnings.append(
-            "no cannibalization table: patched config(s) "
-            + ", ".join(uninstrumented)
-            + " ran without log_dev_level=3, so every row would classify as "
-            "not-instrumented. Re-run those with --dev-log for an attribution "
-            "archive"
-        )
+
     # Read from the option *variants* too, not only from `options`: a config
     # whose runs disagree about anything at all reports `options == {}`, and a
     # false "threads unset" is worse than a missing one — PROVENANCE.md states
@@ -939,7 +918,7 @@ def build_archive(
     # to gigabytes, and a `--table` name typo should not cost that copy and
     # then leave a partial archive that the write-once guard blocks the retry
     # on.
-    specs = default_table_specs(configs, time_limit, instrumented)
+    specs = default_table_specs(configs, time_limit)
     known = {s.name for s in specs}
     for extra in extra_tables:
         if extra.name in known:

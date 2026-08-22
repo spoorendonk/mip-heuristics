@@ -31,6 +31,7 @@ def test_sequential_lines_parse_into_sequential_samples():
 def test_time_to_best_returns_last_incumbent_time():
     """time_to_best is the time of the last incumbent update, for SGM T_best."""
     from parse_highs_log import Incumbent, SolveResult
+
     r = SolveResult()
     assert r.time_to_best is None
     r.incumbents.append(Incumbent(time=1.5, objective=10.0, source="H", nodes=0))
@@ -107,6 +108,7 @@ def test_primal_bound_matches_best_incumbent():
     """Consistency invariant: if incumbents are recorded, the last objective
     must equal primal_bound (within float tolerance)."""
     import math
+
     log = (
         "H       0       0         0   0.00%          0              20              Large      0      0      0       0.0   1.0s\n"
         "L       5       0         5  50.00%          8              12                 0%      0      0      0      10.0   5.0s\n"
@@ -128,6 +130,7 @@ def test_primal_gap_at_returns_none_when_dual_bound_infinite():
     any B&B bound is computed).  Before the fix, abs(obj - (-inf)) / inf
     produced NaN, which propagated silently into SGM calculations."""
     import math
+
     # The first incumbent line has BestBound = '-inf' (root, no LP solved yet).
     log = (
         "J       0       0         0   0.00%   -inf            50.0              Large      0      0      0       0.0   1.0s\n"
@@ -154,35 +157,6 @@ def test_primal_gap_at_returns_none_when_dual_bound_infinite():
     assert math.isfinite(pi), f"Expected finite primal_integral but got {pi}"
 
 
-def test_heur_lines_parse_into_heuristic_samples():
-    """`[Heur]` carries phase, window and outcome (issue #95)."""
-    log = (
-        "[Heur] name=fj phase=presolve start_s=0.412 end_s=1.077 effort=8388608 "
-        "wall_ms=665.2 effort_per_ms=12610.100 found=1\n"
-        "[Heur] name=fpr_lp phase=dive start_s=3.901 end_s=4.115 effort=1048576 "
-        "wall_ms=214.0 effort_per_ms=4900.800 found=0\n"
-    )
-    result = parse_log(log)
-    assert len(result.heuristic_samples) == 2
-
-    fj, fpr_lp = result.heuristic_samples
-    assert (fj.name, fj.phase) == ("fj", "presolve")
-    assert fj.start_s == 0.412
-    assert fj.end_s == 1.077
-    assert fj.effort == 8388608
-    assert fj.wall_ms == 665.2
-    assert fj.effort_per_ms == 12610.1
-    assert fj.found is True
-
-    assert (fpr_lp.name, fpr_lp.phase) == ("fpr_lp", "dive")
-    assert fpr_lp.found is False
-
-    # heuristic_wall_fraction needs a solve time to divide by.
-    assert result.heuristic_wall_fraction is None
-    result.solve_time = 8.792
-    assert result.heuristic_wall_fraction == (665.2 + 214.0) / 1000.0 / 8.792
-
-
 def test_heur_line_accepts_negative_wall_ms():
     """The ledger times against HiGHS's solver clock, which is not
     monotonic (high_resolution_clock == system_clock on libstdc++).  A
@@ -198,113 +172,6 @@ def test_heur_line_accepts_negative_wall_ms():
     assert result.sequential_samples[0].wall_ms == -3.0
     assert len(result.heuristic_samples) == 1
     assert result.heuristic_samples[0].wall_ms == -3.0
-
-
-def test_heuristic_wall_fraction_is_zero_for_an_instrumented_off_run():
-    """A `suite=off` baseline runs no heuristics, so its true fraction is
-    0.0, not unknown — and that row is exactly where a None would be
-    dropped by aggregation.  The `[Native]` line, emitted unconditionally
-    on any instrumented run, is what distinguishes it from an old log."""
-    off_log = (
-        "[Native] rens=1 rens_root=1 rins=1 rcfix=1 heur_lp_iters=697 "
-        "total_lp_iters=2125 fpr_lp_lp_iters=0\n"
-        "[Root] lp_time_s=0.039 presolve_heur_s=0.000\n"
-        "  Timing            0.5\n"
-    )
-    result = parse_log(off_log)
-    assert result.heuristic_samples == []
-    assert result.heuristic_wall_fraction == 0.0
-
-    # Same absence of [Heur], but no instrumentation at all -> unknown.
-    old = parse_log("  Timing            0.5\n")
-    assert old.heuristic_wall_fraction is None
-
-
-def test_native_line_parses_into_native_counters():
-    """`[Native]` is the internal-budget cannibalization measurement."""
-    log = (
-        "[Native] rens=3 rens_root=1 rins=7 rcfix=1 heur_lp_iters=48211 "
-        "total_lp_iters=193044 fpr_lp_lp_iters=1125\n"
-    )
-    result = parse_log(log)
-    assert result.native is not None
-    assert result.native.rens == 3
-    assert result.native.rens_root == 1
-    assert result.native.rins == 7
-    assert result.native.rcfix == 1
-    assert result.native.heur_lp_iters == 48211
-    assert result.native.total_lp_iters == 193044
-    assert result.native.fpr_lp_lp_iters == 1125
-
-
-def test_native_heur_lp_iters_excludes_our_own_dive_charge():
-    """`heur_lp_iters` is a shared counter that `charge_dive` also writes,
-    so it over-reports HiGHS's own heuristic work by whatever fpr_lp
-    billed.  `native_heur_lp_iters` is the subtracted figure an `off` vs
-    `all` comparison actually wants."""
-    log = (
-        "[Native] rens=1 rens_root=1 rins=1 rcfix=1 heur_lp_iters=1294 "
-        "total_lp_iters=20000 fpr_lp_lp_iters=1125\n"
-    )
-    native = parse_log(log).native
-    assert native is not None
-    assert native.native_heur_lp_iters == 169
-    # `charge_dive` bills the same value to both upstream counters.
-    assert native.native_total_lp_iters == 18875
-
-
-def test_native_root_rens_is_a_subset_of_total_rens():
-    """The root gate is where a presolve-found incumbent suppresses RENS,
-    so the root count must be readable separately from the whole-solve
-    total that merges it with the B&B dive site."""
-    log = (
-        "[Native] rens=4 rens_root=0 rins=2 rcfix=1 heur_lp_iters=10 "
-        "total_lp_iters=100 fpr_lp_lp_iters=0\n"
-    )
-    native = parse_log(log).native
-    assert native is not None
-    assert native.rens == 4
-    assert native.rens_root == 0  # root RENS suppressed; dive still ran
-
-
-def test_root_line_parses_into_root_timing():
-    """`[Root]` is the wall-clock cannibalization measurement."""
-    log = "[Root] lp_time_s=1.402 presolve_heur_s=2.118\n"
-    result = parse_log(log)
-    assert result.root is not None
-    assert result.root.lp_time_s == 1.402
-    assert result.root.presolve_heur_s == 2.118
-    assert result.time_to_root_lp == 1.402
-
-
-def test_root_line_negative_lp_time_means_root_lp_not_reached():
-    """The solver emits -1 when the root LP was never started (presolve
-    solved the model, or a limit fired first).  The line must still parse,
-    and `time_to_root_lp` must report "no root LP" rather than t=0."""
-    result = parse_log("[Root] lp_time_s=-1.000 presolve_heur_s=0.000\n")
-    assert result.root is not None
-    assert result.root.lp_time_s == -1.0
-    assert result.time_to_root_lp is None
-
-
-def test_log_without_instrumentation_lines_parses_unchanged():
-    """Back-compatibility: logs predating issue #95 (or any run below
-    log_dev_level=3) carry none of the three new line types."""
-    log = (
-        "MIP ex has 50 rows; 100 cols; 200 nonzeros; 60 integer variables (40 binary)\n"
-        "[Sequential] heur=fpr effort=2500 wall_ms=50.0 effort_per_ms=50\n"
-        "  Status            Optimal\n"
-        "  Timing            5.0\n"
-    )
-    result = parse_log(log)
-    assert result.heuristic_samples == []
-    assert result.native is None
-    assert result.root is None
-    assert result.time_to_root_lp is None
-    assert result.heuristic_wall_fraction is None
-    # The legacy line still parses alongside the absent new ones.
-    assert len(result.sequential_samples) == 1
-    assert result.status == "Optimal"
 
 
 def test_sequential_and_heur_lines_coexist():

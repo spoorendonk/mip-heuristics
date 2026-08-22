@@ -249,7 +249,7 @@ def test_threads_is_only_set_when_asked_for():
 
 
 def test_dev_log_sets_level_three():
-    """Level 3 is what makes [Heur]/[Native]/[Root]/[Sequential] visible."""
+    """Level 3 is what makes [Heur]/[Sequential] visible."""
     assert build_base_options(None, True, []) == {"log_dev_level": "3"}
 
 
@@ -547,15 +547,15 @@ def test_extra_options_override_of_dev_log_warns(capsys):
     """`--extra-options log_dev_level=1` silently cancels `--dev-log`.
 
     The run header still announces instrumentation and every solve succeeds,
-    so without a warning the omission surfaces only when
-    `analyze_results.py --cannibalization` reports the finished tree as not
-    instrumented — after the campaign has been paid for.
+    so without a warning the omission surfaces only when the finished tree
+    turns out to carry no instrumentation — after the campaign has been
+    paid for.
     """
     opts = build_base_options(None, True, ["log_dev_level=1"])
     assert opts["log_dev_level"] == "1"  # the override still wins
     err = capsys.readouterr().err
     assert "overrides --dev-log" in err
-    assert "not instrumented" in err
+    assert "no per-heuristic instrumentation" in err
 
 
 def test_extra_options_log_dev_level_is_quiet_without_dev_log(capsys):

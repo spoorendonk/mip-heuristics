@@ -197,7 +197,7 @@ tables/          one file per recorded table command
 | Per-run options | each `<instance>.opts`, archived verbatim; summarised per config |
 | `threads` | the options files, if pinned there at all |
 | Instrumentation, requested | `log_dev_level` in the options files |
-| Instrumentation, observed | `[Heur]` / `[Native]` / `[Root]` / `[Sequential]` tags in the logs |
+| Instrumentation, observed | `[Heur]` / `[Sequential]` tags in the logs |
 | Machine | auto-detected on the archive host, plus `--machine-note` |
 | Time limit | `--time-limit`, because HiGHS takes it on the command line |
 
@@ -352,9 +352,9 @@ that must not be reordered.
 
 - [ ] Headline-timing archive built with `bench/make_archive.py build ... --tar`.
 - [ ] `--dev-log` attribution archive built the same way, if the release
-      publishes attribution or cannibalization tables.
+      publishes attribution tables.
 - [ ] Every table published in `README.md` has a recorded spec in the archive:
-      the three defaults (`summary`, `attribution`, `cannibalization`) plus one
+      the two defaults (`summary`, `attribution`) plus one
       `--table 'NAME=...'` for each extra — the budget sweep and the LaTeX
       ablation are not defaults. A published table with no spec is not
       regenerable from the archive alone, which is the criterion this whole

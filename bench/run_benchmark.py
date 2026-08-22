@@ -278,14 +278,14 @@ def build_base_options(
         # `--dev-log` is the reason the whole tree is analysable, and an
         # override here cancels it silently: the run header still announces
         # instrumentation, every solve completes, and the omission only
-        # surfaces hours later when `analyze_results.py --cannibalization`
-        # reports the tree as not instrumented.  Same failure family as the
-        # `random_seed` collision below it.
+        # surfaces hours later when the tree turns out to carry no
+        # instrumentation.  Same failure family as the `random_seed`
+        # collision below it.
         if dev_log and key == "log_dev_level" and value != "3":
             print(
                 f"Warning: --extra-options {key}={value} overrides --dev-log; "
-                "the [Heur]/[Native]/[Root] lines will not be emitted and "
-                "--cannibalization will report this tree as not instrumented",
+                "the [Heur]/[Sequential] lines will not be emitted, so this "
+                "tree will carry no per-heuristic instrumentation",
                 file=sys.stderr,
             )
         base[key] = value
@@ -687,14 +687,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--dev-log",
         action="store_true",
         help=(
-            "Set log_dev_level=3, which is what makes the [Heur] / [Native] / "
-            "[Root] / [Sequential] instrumentation visible to parse_highs_log.py. "
+            "Set log_dev_level=3, which is what makes the [Heur] / [Sequential] "
+            "instrumentation visible to parse_highs_log.py. "
             "OFF by default because it is not free: HiGHS's own FeasibilityJump "
             "logs one line per weight bump at exactly that level, from every "
             "parallel FJ worker, with an fflush each. Measured on five bundled "
             "instances at a 10 s limit that is 97-750x the log volume and up to "
             "4.4x the total solve wall time. The cost is concentrated in the FJ phase, so it "
-            "lands on the very numbers the cannibalization analysis reads, and "
+            "lands on the very numbers the per-heuristic analysis reads, and "
             "asymmetrically: fj's effort_per_ms is depressed by its own logging "
             "while the other three barely log at all, so a --dev-log run's rates "
             "are not comparable with a plain run's. Use it for attribution runs, "
@@ -789,8 +789,7 @@ def main() -> None:
     print(
         "Instrumentation: "
         + (
-            "log_dev_level=3 ([Heur]/[Native]/[Root]/[Sequential]) — attribution "
-            "run, timings inflated"
+            "log_dev_level=3 ([Heur]/[Sequential]) — attribution run, timings inflated"
             if base_opts.get("log_dev_level") == "3"
             else "off — headline timings; pass --dev-log for the attribution tables"
         )
@@ -948,16 +947,9 @@ def main() -> None:
     # contradict the command run_plato.sh prints seconds later.
     if done:
         mode = "--ablation" if len(plans) > 2 else "--baseline --summary"
-        # An instrumented tree is the only kind `--cannibalization` can read,
-        # and it is the whole reason `--dev-log` exists — so offer it exactly
-        # when the tree supports it, rather than leaving the reader to pair
-        # the two flags themselves.
-        cannibalization = (
-            " --cannibalization" if base_opts.get("log_dev_level") == "3" else ""
-        )
         print(
             "\nAnalyze with:\n"
-            f"  python3 bench/analyze_results.py {args.output} {mode}{cannibalization} "
+            f"  python3 bench/analyze_results.py {args.output} {mode} "
             f"--configs {' '.join(p.name for p in plans)} "
             f"--time-limit {args.time_limit:g}"
         )
