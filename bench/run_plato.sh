@@ -6,7 +6,7 @@
 #   bench/run_plato.sh status          Show progress and estimated time remaining.
 #
 # All results go to bench/results/plato (persistent across sessions).
-# Instances run interleaved (vanilla + patched per instance) so partial
+# Instances run interleaved (vanilla + all per instance) so partial
 # results are always paired and comparable.
 #
 # Example workflow:
@@ -32,92 +32,95 @@ VANILLA_BINARY="${PLATO_VANILLA_BINARY:-$(which highs 2>/dev/null || echo "$BINA
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 count_done() {
-    local config=$1
-    local dir="$OUTPUT/$config/seed0"
-    [ -d "$dir" ] || { echo 0; return 0; }
-    find "$dir" -name "*.log" -size +0c 2>/dev/null | wc -l
+	local config=$1
+	local dir="$OUTPUT/$config/seed0"
+	[ -d "$dir" ] || {
+		echo 0
+		return 0
+	}
+	find "$dir" -name "*.log" -size +0c 2>/dev/null | wc -l
 }
 
 estimate_hours() {
-    local remaining=$1
-    # Each instance: TIME_LIMIT seconds × 2 configs, but interleaved so wall
-    # time per "pair" is 2×TIME_LIMIT sequential.
-    echo $(( remaining * TIME_LIMIT * 2 / 3600 ))
+	local remaining=$1
+	# Each instance: TIME_LIMIT seconds × 2 configs, but interleaved so wall
+	# time per "pair" is 2×TIME_LIMIT sequential.
+	echo $((remaining * TIME_LIMIT * 2 / 3600))
 }
 
 # ── subcommands ───────────────────────────────────────────────────────────────
 
 cmd_status() {
-    local v p paired remaining
-    v=$(count_done vanilla)
-    p=$(count_done patched)
-    paired=$(( v < p ? v : p )) || true
-    remaining=$(( TOTAL - paired )) || true
+	local v p paired remaining
+	v=$(count_done vanilla)
+	p=$(count_done all)
+	paired=$((v < p ? v : p)) || true
+	remaining=$((TOTAL - paired)) || true
 
-    echo "PLATO mipfeas progress  ($OUTPUT)"
-    echo "  vanilla : $v / $TOTAL"
-    echo "  patched : $p / $TOTAL"
-    echo "  paired  : $paired / $TOTAL  (both configs done)"
-    if [ "$paired" -ge "$TOTAL" ]; then
-        echo "  STATUS  : COMPLETE"
-        echo ""
-        echo "Run analysis:"
-        echo "  python3 bench/analyze_results.py $OUTPUT --configs patched vanilla --time-limit $TIME_LIMIT --baseline"
-    else
-        local est
-        est=$(estimate_hours "$remaining") || true
-        echo "  remaining : ~$remaining instances  (~${est}h at 600s×2 sequential)"
-    fi
+	echo "PLATO mipfeas progress  ($OUTPUT)"
+	echo "  vanilla : $v / $TOTAL"
+	echo "  all     : $p / $TOTAL"
+	echo "  paired  : $paired / $TOTAL  (both configs done)"
+	if [ "$paired" -ge "$TOTAL" ]; then
+		echo "  STATUS  : COMPLETE"
+		echo ""
+		echo "Run analysis:"
+		echo "  python3 bench/analyze_results.py $OUTPUT --configs all vanilla --time-limit $TIME_LIMIT --baseline"
+	else
+		local est
+		est=$(estimate_hours "$remaining") || true
+		echo "  remaining : ~$remaining instances  (~${est}h at 600s×2 sequential)"
+	fi
 }
 
 cmd_next() {
-    local hours=${1:-1}
-    local budget_secs=$(( hours * 3600 )) || true
+	local hours=${1:-1}
+	local budget_secs=$((hours * 3600)) || true
 
-    if [ ! -f "$BINARY" ]; then
-        echo "ERROR: binary not found: $BINARY" >&2
-        echo "Build: cmake -B build && cmake --build build -j\$(nproc)" >&2
-        echo "Or set: export PLATO_BINARY=/path/to/highs" >&2
-        exit 1
-    fi
+	if [ ! -f "$BINARY" ]; then
+		echo "ERROR: binary not found: $BINARY" >&2
+		echo "Build: cmake -B build && cmake --build build -j\$(nproc)" >&2
+		echo "Or set: export PLATO_BINARY=/path/to/highs" >&2
+		exit 1
+	fi
 
-    local v p
-    v=$(count_done vanilla)
-    p=$(count_done patched)
-    echo "================================================================"
-    echo "PLATO benchmark — running for up to ${hours}h"
-    echo "  Progress before : vanilla $v/$TOTAL, patched $p/$TOTAL"
-    echo "  Vanilla binary  : $VANILLA_BINARY"
-    echo "  Patched binary  : $BINARY"
-    echo "  Output          : $OUTPUT"
-    echo "  (Skipping already-completed instances)"
-    echo "================================================================"
+	local v p
+	v=$(count_done vanilla)
+	p=$(count_done all)
+	echo "================================================================"
+	echo "PLATO benchmark — running for up to ${hours}h"
+	echo "  Progress before : vanilla $v/$TOTAL, all $p/$TOTAL"
+	echo "  Vanilla binary  : $VANILLA_BINARY"
+	echo "  Patched binary  : $BINARY"
+	echo "  Output          : $OUTPUT"
+	echo "  (Skipping already-completed instances)"
+	echo "================================================================"
 
-    python3 bench/run_benchmark.py \
-        --instances "$INSTANCES" \
-        --binary "$BINARY" \
-        --vanilla-binary "$VANILLA_BINARY" \
-        --time-limit "$TIME_LIMIT" \
-        --output "$OUTPUT" \
-        --configs vanilla patched \
-        --skip-existing \
-        --interleave \
-        --wall-time-budget "$budget_secs"
+	python3 bench/run_benchmark.py \
+		--instances "$INSTANCES" \
+		--binary "$BINARY" \
+		--vanilla-binary "$VANILLA_BINARY" \
+		--time-limit "$TIME_LIMIT" \
+		--output "$OUTPUT" \
+		--configs vanilla all \
+		--skip-existing \
+		--interleave \
+		--wall-time-budget "$budget_secs"
 
-    echo ""
-    cmd_status
+	echo ""
+	cmd_status
 
-    local paired
-    paired=$(( $(count_done vanilla) < $(count_done patched) ? $(count_done vanilla) : $(count_done patched) ))
-    if [ "$paired" -ge "$TOTAL" ]; then
-        echo ""
-        echo "All instances complete — running analysis..."
-        python3 bench/analyze_results.py \
-            "$OUTPUT" \
-            --configs patched vanilla \
-            --time-limit "$TIME_LIMIT" \
-            --baseline
-    fi
+	local paired
+	paired=$(($(count_done vanilla) < $(count_done all) ? $(count_done vanilla) : $(count_done all)))
+	if [ "$paired" -ge "$TOTAL" ]; then
+		echo ""
+		echo "All instances complete — running analysis..."
+		python3 bench/analyze_results.py \
+			"$OUTPUT" \
+			--configs all vanilla \
+			--time-limit "$TIME_LIMIT" \
+			--baseline
+	fi
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
@@ -126,10 +129,10 @@ CMD="${1:-status}"
 shift || true
 
 case "$CMD" in
-    next)   cmd_next "$@" ;;
-    status) cmd_status ;;
-    *)
-        echo "Usage: bench/run_plato.sh next [hours] | status" >&2
-        exit 1
-        ;;
+next) cmd_next "$@" ;;
+status) cmd_status ;;
+*)
+	echo "Usage: bench/run_plato.sh next [hours] | status" >&2
+	exit 1
+	;;
 esac
