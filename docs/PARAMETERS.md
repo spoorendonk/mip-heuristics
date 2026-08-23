@@ -647,9 +647,9 @@ budget is truncated by a gate that fires, an under-large one is a hard
 cap nothing recovers. Treat all four as the starting point of a
 calibration, not the result of one.
 
-`bench/run_benchmark.py --budget-sweep` sweeps each config's own
-option(s) into `<config>@e<V>` directories, which is how a per-heuristic
-budget is measured.
+`bench/run_benchmark.py --extra-options mip_heuristic_<name>_effort=<V>`
+moves one heuristic's budget off its default for a run; the calibration
+itself is driven by a tracked target runner rather than by config names.
 
 ### `mip_heuristic_fj_effort` — FeasibilityJump budget
 

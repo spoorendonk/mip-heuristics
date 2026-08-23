@@ -10,25 +10,17 @@ from pathlib import Path
 import pytest
 import run_benchmark
 from run_benchmark import (
-    BUDGET_SUFFIX,
-    CHAIN_EFFORT_OPTIONS,
     CONFIG_SUITES,
-    CONFIG_SWEEP_OPTIONS,
-    DEFAULT_BUDGET_SWEEP,
     MIPLIB_MIN_INSTANCES,
     MIPLIB_SEARCH_PATH,
     build_arg_parser,
     build_base_options,
     build_plan,
     config_options,
-    expand_configs,
     find_ignored_config_warning,
     main,
-    parse_budget,
     resolve_data_dir,
     run_single,
-    split_config,
-    sweep_options_for_suite,
     write_log,
     write_options_file,
 )
@@ -51,11 +43,6 @@ def test_unknown_config_message_lists_the_known_ones():
         config_options("nope")
     for name in CONFIG_SUITES:
         assert name in str(exc.value)
-
-
-def test_unknown_config_raises_from_the_sweep_too():
-    with pytest.raises(ValueError, match="unknown config 'patchd'"):
-        expand_configs(["patchd"], ["0.30"])
 
 
 def test_unknown_config_raises_through_build_plan():
@@ -96,116 +83,8 @@ def test_external_vanilla_does_not_leak_into_other_configs():
     }
 
 
-# --- budget suffix parsing -------------------------------------------------
-
-
-def test_split_config_round_trips():
-    assert split_config("fpr") == ("fpr", None)
-    assert split_config(f"fpr{BUDGET_SUFFIX}0.30") == ("fpr", "0.30")
-
-
-def test_budget_is_kept_verbatim():
-    """`0.30` must name fpr@e0.30, not the fpr@e0.3 a float round-trip gives."""
-    assert parse_budget("0.30") == "0.30"
-    assert parse_budget("1.00") == "1.00"
-
-
-@pytest.mark.parametrize("bad", ["abc", "", "1.5", "-0.1"])
-def test_bad_budget_raises(bad):
-    with pytest.raises(ValueError):
-        parse_budget(bad)
-
-
-def test_swept_config_carries_its_own_effort_option():
-    assert config_options(f"local_mip{BUDGET_SUFFIX}0.60") == {
-        "mip_heuristic_suite": "local_mip",
-        "mip_heuristic_local_mip_effort": "0.60",
-    }
-
-
-def test_swept_all_carries_every_effort_option():
-    """No shared envelope left, so `all@e<V>` is every heuristic at V."""
-    assert config_options(f"all{BUDGET_SUFFIX}0.60") == {
-        "mip_heuristic_suite": "all",
-        "mip_heuristic_fj_effort": "0.60",
-        "mip_heuristic_fpr_effort": "0.60",
-        "mip_heuristic_local_mip_effort": "0.60",
-        "mip_heuristic_scylla_effort": "0.60",
-    }
-
-
-def test_fj_is_swept_now_that_it_has_an_option():
-    """The point of #110: FJ's budget was unreachable from any option."""
-    assert config_options(f"fj{BUDGET_SUFFIX}0.05") == {
-        "mip_heuristic_suite": "fj",
-        "mip_heuristic_fj_effort": "0.05",
-    }
-
-
-def test_every_config_has_a_sweep_entry():
-    """The sweep's reach is derived from this table, so it must be total."""
-    assert set(CONFIG_SWEEP_OPTIONS) == set(CONFIG_SUITES)
-
-
-def test_swept_config_with_a_bad_budget_raises():
-    with pytest.raises(ValueError, match="not a number"):
-        config_options(f"fpr{BUDGET_SUFFIX}high")
-
-
-# --- sweep expansion -------------------------------------------------------
-
-
-def test_no_sweep_leaves_configs_untouched():
-    assert expand_configs(["all", "vanilla"], []) == (["all", "vanilla"], [])
-
-
-def test_sweep_crosses_configs_with_budgets():
-    names, notices = expand_configs(["fpr", "scylla"], ["0.05", "0.30"])
-    assert names == [
-        f"fpr{BUDGET_SUFFIX}0.05",
-        f"fpr{BUDGET_SUFFIX}0.30",
-        f"scylla{BUDGET_SUFFIX}0.05",
-        f"scylla{BUDGET_SUFFIX}0.30",
-    ]
-    assert notices == []
-
-
-def test_default_sweep_is_five_budgets_per_config():
-    names, _ = expand_configs(["fpr"], list(DEFAULT_BUDGET_SWEEP))
-    assert len(names) == len(DEFAULT_BUDGET_SWEEP) == 5
-    assert names[0] == f"fpr{BUDGET_SUFFIX}{DEFAULT_BUDGET_SWEEP[0]}"
-
-
-def test_default_sweep_spans_the_option_range():
-    """Ascending, inside [0, 1], and wide: the shipped defaults (0.0125 ..
-    0.1821) are per-heuristic since #110, so no single value is "the
-    default" and the sweep's job is coverage rather than an anchor row."""
-    values = [float(b) for b in DEFAULT_BUDGET_SWEEP]
-    assert values == sorted(values)
-    assert values[0] >= 0.0 and values[-1] <= 1.0
-    assert values[-1] / values[0] >= 10.0
-
-
-def test_expansion_rejects_an_already_suffixed_config():
-    with pytest.raises(ValueError, match="already carries"):
-        expand_configs([f"fpr{BUDGET_SUFFIX}0.30"], ["0.05"])
-
-
-def test_expansion_rejects_a_bad_budget_before_any_run():
-    with pytest.raises(ValueError):
-        expand_configs(["fpr"], ["0.05", "banana"])
-
-
-# --- subset configs (#112) -------------------------------------------------
-
 # The four heuristics of the presolve chain, in chain order.
 CHAIN = ("fj", "fpr", "local_mip", "scylla")
-
-
-def test_the_local_chain_matches_the_effort_option_table():
-    """This module's CHAIN is a cross-check only while it agrees with the
-    module under test; a fifth heuristic must reach both."""
-    assert tuple(CHAIN_EFFORT_OPTIONS) == CHAIN
 
 
 def test_every_subset_of_the_chain_is_a_config():
@@ -240,99 +119,6 @@ def test_a_subset_name_is_not_an_alias_for_a_reordering():
         config_options("fpr+fj")
 
 
-def test_the_budget_suffix_still_parses_on_a_subset_name():
-    """`split_config` partitions on `@e`, which a `+` name does not contain."""
-    assert split_config(f"fj+fpr{BUDGET_SUFFIX}0.30") == ("fj+fpr", "0.30")
-    plan = build_plan(f"fj+fpr{BUDGET_SUFFIX}0.30", PATCHED, EXTERNAL)
-    assert plan.base == "fj+fpr"
-    assert plan.name == f"fj+fpr{BUDGET_SUFFIX}0.30"
-    assert plan.options == {
-        "mip_heuristic_suite": "fj,fpr",
-        "mip_heuristic_fj_effort": "0.30",
-        "mip_heuristic_fpr_effort": "0.30",
-    }
-
-
-def test_a_subset_sweeps_exactly_its_own_heuristics_effort_options():
-    """The #110 x #112 join: a subset config moves the effort options of the
-    heuristics it enables and no others, so `fj+scylla@e0.60` says nothing
-    about FPR's or LocalMIP's budget."""
-    for name, suite in CONFIG_SUITES.items():
-        if "+" not in name:
-            continue
-        expected = tuple(
-            CHAIN_EFFORT_OPTIONS[h] for h in CHAIN if h in suite.split(",")
-        )
-        assert CONFIG_SWEEP_OPTIONS[name] == expected
-        assert config_options(f"{name}{BUDGET_SUFFIX}0.60") == {
-            "mip_heuristic_suite": suite,
-            **{option: "0.60" for option in expected},
-        }
-
-
-def test_no_subset_config_is_left_unswept():
-    """Every subset enables at least one heuristic, so every one is swept —
-    the `SWEEP_EXEMPT` entry that used to cover `fj` went with the shared
-    envelope, FJ having gained an option of its own (#110)."""
-    for name in CONFIG_SUITES:
-        if "+" in name:
-            assert CONFIG_SWEEP_OPTIONS[name]
-
-
-def test_sweep_options_are_derived_and_reject_an_unknown_heuristic():
-    """The drift guard: a config added to CONFIG_SUITES naming a heuristic
-    with no effort option raises on import rather than sweeping a subset of
-    what it runs and labelling the tree as if it had swept all of it."""
-    with pytest.raises(ValueError, match="names no heuristic"):
-        sweep_options_for_suite("fj,walksat")
-
-
-def test_sweep_options_are_listed_in_chain_order():
-    """One subset, one option tuple: order comes from the chain, not from the
-    order the tokens happen to appear in the suite value."""
-    assert sweep_options_for_suite("scylla,fj") == (
-        "mip_heuristic_fj_effort",
-        "mip_heuristic_scylla_effort",
-    )
-
-
-# --- vanilla / off interaction with the sweep ------------------------------
-
-
-UNSWEPT = sorted(c for c, options in CONFIG_SWEEP_OPTIONS.items() if not options)
-
-
-def test_only_the_heuristic_free_configs_are_unswept():
-    assert UNSWEPT == ["off", "vanilla"]
-
-
-@pytest.mark.parametrize("config", UNSWEPT)
-def test_unswept_configs_pass_through_the_sweep_once(config):
-    """Neither runs a presolve heuristic, so N budgets would be N identical runs."""
-    names, notices = expand_configs([config], ["0.05", "0.30", "1.00"])
-    assert names == [config]
-    assert len(notices) == 1
-    assert config in notices[0]
-
-
-def test_sweep_keeps_the_anchor_alongside_swept_configs():
-    names, notices = expand_configs(["vanilla", "fpr"], ["0.05", "0.30"])
-    assert names == ["vanilla", f"fpr{BUDGET_SUFFIX}0.05", f"fpr{BUDGET_SUFFIX}0.30"]
-    assert len(notices) == 1
-
-
-@pytest.mark.parametrize("config", UNSWEPT)
-def test_explicit_suffix_on_an_unswept_config_raises(config):
-    """`vanilla@e0.30` is a directory name that would mean nothing."""
-    with pytest.raises(ValueError, match="effort option") as exc:
-        config_options(f"{config}{BUDGET_SUFFIX}0.30")
-    # The message says *why* this config is not swept, not just that it is not.
-    assert "runs no presolve heuristic" in str(exc.value)
-
-
-# --- plan resolution: base name decided once -------------------------------
-
-
 def test_vanilla_takes_the_external_binary():
     plan = build_plan("vanilla", PATCHED, EXTERNAL)
     assert plan.binary == EXTERNAL
@@ -350,26 +136,6 @@ def test_every_non_vanilla_config_takes_the_patched_binary():
         if config == "vanilla":
             continue
         assert build_plan(config, PATCHED, EXTERNAL).binary == PATCHED
-
-
-def test_swept_plan_keeps_the_base_name_and_the_directory_name():
-    plan = build_plan(f"scylla{BUDGET_SUFFIX}0.15", PATCHED, EXTERNAL)
-    assert plan.base == "scylla"
-    assert plan.name == f"scylla{BUDGET_SUFFIX}0.15"
-    assert plan.binary == PATCHED
-    assert plan.options == {
-        "mip_heuristic_suite": "scylla",
-        "mip_heuristic_scylla_effort": "0.15",
-    }
-
-
-def test_swept_names_are_usable_as_directory_names():
-    names, _ = expand_configs(["fpr"], list(DEFAULT_BUDGET_SWEEP))
-    for name in names:
-        assert "/" not in name and not name.startswith(".")
-
-
-# --- base options: what the harness declines to set by default -------------
 
 
 def test_base_options_are_empty_by_default():
@@ -608,20 +374,6 @@ def test_a_run_that_ignored_its_config_is_parked_as_err(tmp_path: Path, capsys):
 # --- two names, one configuration ------------------------------------------
 
 
-def test_budgets_differing_only_as_strings_are_one_configuration():
-    """`0.3` and `0.30` are two directories but one number to HiGHS."""
-    a = build_plan(f"fpr{BUDGET_SUFFIX}0.3", PATCHED, PATCHED)
-    b = build_plan(f"fpr{BUDGET_SUFFIX}0.30", PATCHED, PATCHED)
-    assert a.name != b.name  # distinct output directories
-    assert a.identity == b.identity  # identical solver behaviour
-
-
-def test_genuinely_different_budgets_are_different_configurations():
-    a = build_plan(f"fpr{BUDGET_SUFFIX}0.30", PATCHED, PATCHED)
-    b = build_plan(f"fpr{BUDGET_SUFFIX}0.60", PATCHED, PATCHED)
-    assert a.identity != b.identity
-
-
 def test_identity_separates_configs_that_differ_only_by_binary():
     assert (
         build_plan("vanilla", PATCHED, EXTERNAL).identity
@@ -670,12 +422,6 @@ def test_main_exits_2_on_a_duplicate_config(tmp_path: Path, monkeypatch, capsys)
     assert "duplicate config" in capsys.readouterr().err
 
 
-def test_main_exits_2_on_an_explicitly_suffixed_exempt_config(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit) as exc:
-        _main(tmp_path, monkeypatch, "--configs", f"vanilla{BUDGET_SUFFIX}0.30")
-    assert exc.value.code == 2
-
-
 def test_main_warns_that_vanilla_and_off_are_the_same_run(
     tmp_path, monkeypatch, capsys
 ):
@@ -683,11 +429,6 @@ def test_main_warns_that_vanilla_and_off_are_the_same_run(
     _main(tmp_path, monkeypatch, "--configs", "vanilla", "off")
     err = capsys.readouterr().err
     assert "identical" in err and "duplicated work" in err
-
-
-def test_main_warns_on_string_duplicate_budgets(tmp_path, monkeypatch, capsys):
-    _main(tmp_path, monkeypatch, "--configs", "fpr", "--budget-sweep", "0.3", "0.30")
-    assert "identical" in capsys.readouterr().err
 
 
 def test_main_warns_when_a_config_overrides_an_extra_option(
@@ -715,34 +456,6 @@ def test_main_reports_the_instrumentation_mode(tmp_path, monkeypatch, capsys):
     assert "Instrumentation: off" in capsys.readouterr().out
     _main(tmp_path, monkeypatch, "--configs", "fpr", "--dev-log")
     assert "log_dev_level=3" in capsys.readouterr().out
-
-
-def test_main_accepts_the_documented_readme_sweep(tmp_path, monkeypatch, capsys):
-    """The README reproduce block must not warn about duplicated work."""
-    _main(
-        tmp_path,
-        monkeypatch,
-        "--configs",
-        "off",
-        "fj",
-        "fpr",
-        "local_mip",
-        "scylla",
-        "all",
-        "--budget-sweep",
-        "0.05",
-        "0.15",
-        "0.30",
-        "0.60",
-        "1.00",
-    )
-    captured = capsys.readouterr()
-    assert "identical" not in captured.err
-    # `off` is the only anchor row left: FJ has had its own effort option
-    # since #110, so it is swept like the other three.
-    assert "off@e" not in captured.out
-    assert "fj@e0.05" in captured.out
-    assert "fpr@e0.05" in captured.out and "all@e1.00" in captured.out
 
 
 def test_extra_options_override_of_dev_log_warns(capsys):

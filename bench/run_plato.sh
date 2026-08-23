@@ -26,8 +26,8 @@
 #   PLATO_TIME_LIMIT seconds per solve    (default 600, the PLATO limit)
 #   PLATO_BINARY / PLATO_VANILLA_BINARY   the two binaries
 #
-# A config name may carry an effort suffix (`fpr@e0.0125`), which is how a
-# budget ladder is expressed: one config per ladder point, one directory each.
+# Per-run option overrides go through run_benchmark.py's --extra-options;
+# a config name is exactly a `mip_heuristic_suite` value.
 #
 # So the #105 baseline is the default, and the #108 headline is
 #

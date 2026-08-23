@@ -51,7 +51,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from analyze_results import CUSTOM_SOURCE_LABELS
 from parse_highs_log import parse_log
 from run_benchmark import (
-    CHAIN_EFFORT_OPTIONS,
     CONFIG_SUITES,
     MIPLIB_MIN_INSTANCES,
     build_arg_parser,
@@ -682,99 +681,6 @@ def test_the_baseline_profile_counts_every_instance_including_never_feasible(tmp
 
 
 # ---------------------------------------------------------------------------
-# #106 — per-heuristic budget ladders
-# ---------------------------------------------------------------------------
-
-# A log-spaced ladder stepping by 2x, extending below every shipped default
-# (the smallest is fj's 0.0125) as the issue requires.
-LADDER = ("0.003125", "0.00625", "0.0125", "0.025", "0.05")
-
-
-@pytest.fixture(scope="module")
-def ladder_tree(tmp_path_factory):
-    """One heuristic's ladder, run alone, with the instrumentation on."""
-    tmp_path = tmp_path_factory.mktemp("ladder")
-    names = [f"inst{i:02d}" for i in range(2)]
-    data, listing, binary, record = make_run(tmp_path, names)
-    tree = tmp_path / "results"
-    run_benchmark(
-        "--instances",
-        str(listing),
-        "--data-dir",
-        str(data),
-        "--binary",
-        str(binary),
-        "--output",
-        str(tree),
-        "--configs",
-        "fpr",
-        "--budget-sweep",
-        *LADDER,
-        "--seeds",
-        "0",
-        "1",
-        "--time-limit",
-        "60",
-        "--dev-log",
-        env={"FAKE_HIGHS_RECORD": str(record)},
-    )
-    return tree, records(record), names
-
-
-def test_a_budget_ladder_writes_one_tree_per_point(ladder_tree):
-    tree, _, names = ladder_tree
-    for value in LADDER:
-        for seed in (0, 1):
-            assert (
-                sorted(p.stem for p in logs_under(tree, f"fpr@e{value}", seed)) == names
-            )
-
-
-def test_a_ladder_point_moves_that_heuristics_option_and_no_other(ladder_tree):
-    # Coordinate-wise is the whole search strategy: one heuristic's option
-    # sweeps while it runs alone.  A leaked second effort option would make
-    # the curve unattributable.
-    _, recorded, _ = ladder_tree
-    for record in recorded:
-        options = record["options"]
-        value = config_of(record).partition("@e")[2]
-        assert options["mip_heuristic_suite"] == "fpr"
-        assert options["mip_heuristic_fpr_effort"] == value
-        others = set(CHAIN_EFFORT_OPTIONS.values()) - {"mip_heuristic_fpr_effort"}
-        assert not (others & set(options))
-
-
-def test_the_charged_effort_per_heuristic_is_readable_off_the_ladder(ladder_tree):
-    # #106 selects on a curve and has to show the stall thresholds binding at
-    # the top of the ladder — both read charged effort per heuristic out of
-    # the `[Heur]` lines, per ladder point.
-    tree, _, _ = ladder_tree
-    charged = {}
-    for value in LADDER:
-        efforts = [
-            sample.effort
-            for log in logs_under(tree, f"fpr@e{value}")
-            for sample in parse_log(log.read_text()).heuristic_samples
-            if sample.name == "fpr"
-        ]
-        assert efforts
-        charged[value] = sum(efforts)
-    assert len(set(charged.values())) > 1, charged
-
-
-def test_the_ladder_is_analysable_under_its_directory_names(ladder_tree):
-    tree, _, _ = ladder_tree
-    configs = [f"fpr@e{v}" for v in LADDER]
-    out = analyze(
-        str(tree), "--ablation", "--configs", *configs, "--time-limit", "60"
-    ).stdout
-    assert "## Ablation summary" in out
-    assert "PLATO SGM" in out
-    for config in configs:
-        assert config in out
-
-
-# ---------------------------------------------------------------------------
 # #107 — heuristic mix selection
 # ---------------------------------------------------------------------------
 
@@ -1157,42 +1063,6 @@ def test_run_plato_sizes_its_chunk_from_the_reduced_limit_too(tmp_path):
     assert "--wall-time-budget 7140" in invocation
 
 
-def test_run_plato_runs_a_budget_ladder_as_config_names(tmp_path):
-    # #106's ladder is one config per point: `fpr@e<V>` is a legal config name
-    # on its own, so a ladder needs no sweep flag and each point is its own
-    # results directory that `status` can count.
-    names = ["inst00"]
-    _, listing, binary, record = make_run(tmp_path, names)
-    tree = tmp_path / "ladder"
-    ladder = ["fpr@e0.0055", "fpr@e0.0884", "fpr@e0.3536"]
-    result = subprocess.run(
-        ["bash", str(RUN_PLATO), "next", "1"],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(REPO),
-        env={
-            **os.environ,
-            "FAKE_HIGHS_RECORD": str(record),
-            "MIPLIB_DIR": str(miplib_dir(tmp_path, names)),
-            "PLATO_INSTANCES": str(listing),
-            "PLATO_OUTPUT": str(tree),
-            "PLATO_CONFIGS": " ".join(ladder),
-            "PLATO_SEEDS": "0 1",
-            "PLATO_TIME_LIMIT": "60",
-            "PLATO_BINARY": str(binary),
-            "PLATO_VANILLA_BINARY": str(binary),
-        },
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    delivered = {
-        config_of(r): r["options"].get("mip_heuristic_fpr_effort")
-        for r in records(record)
-    }
-    assert delivered == {name: name.partition("@e")[2] for name in ladder}
-    assert "STATUS  : COMPLETE" in result.stdout
-
-
 def test_run_plato_status_reads_a_tree_without_running_anything():
     result = subprocess.run(
         ["bash", str(RUN_PLATO), "status"],
@@ -1272,15 +1142,18 @@ def test_the_effective_worker_count_is_recoverable_from_a_real_log(tmp_path):
 
 @requires_build
 def test_the_real_binary_takes_every_per_heuristic_effort_option(tmp_path):
-    # One ladder point per heuristic, each config sweeping its own option:
-    # #106's inner loop, on the binary that has to accept those four names.
-    tree = real_run(tmp_path, list(CHAIN), "--budget-sweep", "0.05")
+    # The binary has to accept all four per-heuristic effort option names.
+    # A rejected setOptionValue is silent (every Highs instance we build sets
+    # output_flag=false), so a typo would only show up as a config that ran
+    # at its default.
+    options = [f"mip_heuristic_{name}_effort=0.05" for name in CHAIN]
+    tree = real_run(tmp_path, list(CHAIN), "--extra-options", *options)
     for name in CHAIN:
-        seed_dir = tree / f"{name}@e0.05" / "seed0"
+        seed_dir = tree / name / "seed0"
         assert (seed_dir / "egout.log").exists(), name
         assert not list(seed_dir.glob("*.log.err")), name
         opts = (seed_dir / "egout.opts").read_text()
-        assert f"{CHAIN_EFFORT_OPTIONS[name]} = 0.05" in opts
+        assert f"mip_heuristic_{name}_effort = 0.05" in opts
 
 
 @requires_build
@@ -1309,22 +1182,23 @@ def test_the_real_instrumentation_appears_only_with_dev_log(tmp_path):
 
 @requires_build
 def test_the_real_effort_option_moves_the_charged_effort(tmp_path):
-    # The measurement #106 reads: charged effort has to respond to the option
-    # before a ladder over it means anything.  Pinned to one thread so the
-    # two points are comparable rather than racing.
-    tree = real_run(
-        tmp_path,
-        ["fpr"],
-        "--budget-sweep",
-        "0.0125",
-        "1.00",
-        "--dev-log",
-        "--extra-options",
-        "threads=1",
-    )
+    # Charged effort has to respond to the option before any search over it
+    # means anything.  Pinned to one thread so the two points are comparable
+    # rather than racing.
+    trees = {
+        value: real_run(
+            tmp_path / f"e{value}",
+            ["fpr"],
+            "--dev-log",
+            "--extra-options",
+            f"mip_heuristic_fpr_effort={value}",
+            "threads=1",
+        )
+        for value in ("0.0125", "1.00")
+    }
 
     def charged(value: str) -> int:
-        log = tree / f"fpr@e{value}" / "seed0" / "egout.log"
+        log = trees[value] / "fpr" / "seed0" / "egout.log"
         return sum(
             s.effort
             for s in parse_log(log.read_text()).heuristic_samples

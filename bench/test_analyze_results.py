@@ -188,7 +188,7 @@ def test_load_results_config_dir_override(tmp_path: Path):
     assert inst_name in loaded["anchor"][0]
 
 
-# ── budget-sweep directory names (`<config>@e<effort>`) ───────────────────────
+# ── config directory names ───────────────────────────────────────────────────
 
 
 def _tiny_tree(root: Path, config: str) -> None:
@@ -199,14 +199,9 @@ def _tiny_tree(root: Path, config: str) -> None:
     )
 
 
-def test_load_results_reads_budget_sweep_directories(tmp_path: Path):
-    """run_benchmark's --budget-sweep names directories `<config>@e<V>`.
-
-    The whole point of that naming is that sweep output is analysable with no
-    new analysis code, so the default `results_dir/<config>` path has to take
-    the `@` verbatim.
-    """
-    configs = ["fpr@e0.05", "fpr@e0.30", "vanilla"]
+def test_load_results_reads_subset_config_directories(tmp_path: Path):
+    """Subset config names join with `+`, and that is a directory name."""
+    configs = ["fj+fpr", "fpr+local_mip+scylla", "vanilla"]
     for config in configs:
         _tiny_tree(tmp_path, config)
     loaded = load_results(str(tmp_path), configs)
@@ -215,10 +210,10 @@ def test_load_results_reads_budget_sweep_directories(tmp_path: Path):
         assert "toy" in loaded[config][0]
 
 
-def test_latex_ablation_table_renders_budget_sweep_config_names():
-    """`@` is an ordinary character in LaTeX text mode; `_` still is not."""
+def test_latex_ablation_table_escapes_underscores_in_config_names():
+    """`+` is an ordinary character in LaTeX text mode; `_` still is not."""
     metrics = {
-        "local_mip@e0.30": {
+        "fpr+local_mip": {
             "feasible": 5.0,
             "sgm_t1st": 1.0,
             "sgm_gap": 0.01,
@@ -226,8 +221,8 @@ def test_latex_ablation_table_renders_budget_sweep_config_names():
             "plato_sgm": 1.5,
         },
     }
-    tex = latex_ablation_table(["local_mip@e0.30"], metrics, 5, 60.0)
-    assert r"local\_mip@e0.30" in tex
+    tex = latex_ablation_table(["fpr+local_mip"], metrics, 5, 60.0)
+    assert r"fpr+local\_mip" in tex
 
 
 # ── Instance filtering, the config oracle, and the reference guard (#104) ─────

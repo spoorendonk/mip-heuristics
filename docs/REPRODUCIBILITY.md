@@ -170,9 +170,9 @@ environment rather than a hand-written `run_benchmark.py` command line:
 | `PLATO_TIME_LIMIT` | seconds per solve (default 600, the PLATO limit) |
 | `PLATO_BINARY` / `PLATO_VANILLA_BINARY` | the two binaries |
 
-A config name may carry an effort suffix — `fpr@e0.0125` — which is how a
-budget ladder is expressed: one config per ladder point, one results directory
-each, no sweep flag involved.
+A config name is exactly a `mip_heuristic_suite` value and carries no budget
+of its own; every heuristic runs at its shipped default. To move one for a
+run, pass `run_benchmark.py --extra-options mip_heuristic_<name>_effort=<V>`.
 
 ```bash
 # the headline: the selected configuration at three seeds, against vanilla

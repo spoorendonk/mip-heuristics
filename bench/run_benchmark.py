@@ -2,12 +2,10 @@
 """Run patched vs vanilla HiGHS on MIPLIB instances.
 
 One config per `mip_heuristic_suite` value, so a per-heuristic ablation is a
-config list rather than a hand-written options file, and `--budget-sweep`
-crosses those configs with values for the effort option each one reads.
-Output is
-`<output>/<config>/seed<N>/<instance>.log`, with the swept configs named
-`<config>@e<effort>` — those directory names are exactly what
-`analyze_results.py --configs` takes, so a sweep is analysable with no new
+config list rather than a hand-written options file.  Output is
+`<output>/<config>/seed<N>/<instance>.log` — those directory names are
+exactly what `analyze_results.py --configs` takes, so a run is analysable
+with no new
 analysis code.
 
 Everything goes through `--options_file`: HiGHS's CLI11 parser takes only its
@@ -44,9 +42,7 @@ from dataclasses import dataclass
 # rows, one per subset of the chain.  They exist because `mip_heuristic_suite`
 # takes a comma-separated list (#112); the config *name* joins with `+`
 # instead, because the name is a results-tree directory and a column label in
-# generated LaTeX, and a comma in either is a needless escaping problem.  The
-# `<config>@e<budget>` suffix is unaffected: `split_config` partitions on
-# `@e`, which no name contains.
+# generated LaTeX, and a comma in either is a needless escaping problem.
 #
 # Names list heuristics in chain order (FJ -> FPR -> LocalMIP -> Scylla) so
 # one subset has one spelling; `fpr+fj` is not a config even though the suite
@@ -78,104 +74,17 @@ CONFIG_SUITES: dict[str, str] = {
     "all": "all",
 }
 
-# Separator between a config name and its swept effort value in a config
-# name / output directory, e.g. `fpr@e0.30`.
-BUDGET_SUFFIX = "@e"
-
-# Budgets for `--budget-sweep` with no explicit values, spanning the options'
-# [0, 1] range.  Effort is a normalised, model-size-scaled budget
-# (`nnz << 12` units at 0.05, linear in the value), so the values mean the
-# same thing for every heuristic — but not a fixed fraction of any particular
-# time limit.
-#
-# None of them is "the shipped default" any more: since #110 each heuristic
-# has its own default (fj 0.0125, fpr 0.0884, local_mip 0.1821, scylla
-# 0.0296) and no single swept value can be all four.  A campaign that wants
-# the shipped configuration as a row runs the config unswept, in a separate
-# invocation.
-DEFAULT_BUDGET_SWEEP = ("0.05", "0.15", "0.30", "0.60", "1.00")
-
-# The effort option each heuristic of the presolve chain reads, in chain
-# order (FJ -> FPR -> LocalMIP -> Scylla).  Keys are `mip_heuristic_suite`
-# tokens, which is what lets `CONFIG_SWEEP_OPTIONS` below be *derived* from
-# `CONFIG_SUITES` rather than hand-listed beside it (#110 replaced
-# `SWEEP_EXEMPT` with the derived table; FJ was its only non-trivial member,
-# and FJ now has an option of its own).
-CHAIN_EFFORT_OPTIONS: dict[str, str] = {
-    "fj": "mip_heuristic_fj_effort",
-    "fpr": "mip_heuristic_fpr_effort",
-    "local_mip": "mip_heuristic_local_mip_effort",
-    "scylla": "mip_heuristic_scylla_effort",
-}
-
-
-def sweep_options_for_suite(suite: str) -> tuple[str, ...]:
-    """The effort options a `--budget-sweep` moves for a suite value.
-
-    A config sweeps the effort options of exactly the heuristics its suite
-    value enables, in chain order: `fj,fpr` moves FJ's and FPR's and nothing
-    else.  `all` moves all four to the same value — with independent
-    per-heuristic budgets (#110) there is no shared envelope for one number
-    to size, so `all@e0.30` means "every heuristic at 0.30", which is not the
-    shipped ratio between them since the four defaults differ.  A
-    per-heuristic calibration sweeps a single-heuristic config instead, which
-    is the point of having four options.
-
-    `off` yields the empty tuple: no effort option reaches a run with no
-    presolve heuristic in it, so N budgets would be N identical runs under N
-    different names — the same plausible-looking-but-meaningless output that
-    the unknown-config-name raise exists to prevent.  Those configs stay in a
-    sweep as a single unsuffixed anchor row rather than being dropped; a
-    sweep still wants its baselines.
-
-    Raises ValueError on a token that names no heuristic, at import time,
-    because that is what a fifth heuristic added to `CONFIG_SUITES` and
-    nowhere else looks like: silently returning a short tuple would sweep a
-    subset of what the config runs and label the tree as if it had swept all
-    of it.
-    """
-    if suite == "off":
-        return ()
-    tokens = list(CHAIN_EFFORT_OPTIONS) if suite == "all" else suite.split(",")
-    named = {token.strip() for token in tokens}
-    unknown = sorted(named - set(CHAIN_EFFORT_OPTIONS))
-    if unknown:
-        raise ValueError(
-            f"suite value {suite!r} names no heuristic for {', '.join(unknown)}; "
-            f"add it to CHAIN_EFFORT_OPTIONS alongside its effort option"
-        )
-    return tuple(
-        option for name, option in CHAIN_EFFORT_OPTIONS.items() if name in named
-    )
-
-
-# Which effort options a `--budget-sweep` moves, per config.  One entry per
-# `CONFIG_SUITES` key by construction, so a config cannot be added without a
-# sweep entry and the two tables cannot drift: adding a config whose suite
-# value names an unknown heuristic raises here, on import, rather than
-# producing a tree swept on the wrong options.
-CONFIG_SWEEP_OPTIONS: dict[str, tuple[str, ...]] = {
-    config: sweep_options_for_suite(suite) for config, suite in CONFIG_SUITES.items()
-}
-
-
-# Why `vanilla` and `off` are not swept, in the one wording both the raise
-# and the notice use.
-NOT_SWEPT_REASON = "runs no presolve heuristic"
-
-
 @dataclass(frozen=True)
 class ConfigPlan:
     """One resolved config: what to run it with, and where it lands.
 
-    `resolve_config` is the only decomposer of a `<base>@e<budget>` name;
-    `build_plan` is the only place the two *consequences* of that
-    decomposition — which binary, which options — are chosen together.
-    Choosing them at separate use sites is how `vanilla@e0.30` would silently
-    pick the patched binary while its options came from the vanilla branch.
+    `build_plan` is the only place a config name's two consequences — which
+    binary, which options — are chosen together.  Choosing them at separate
+    use sites is how `vanilla` would silently pick the patched binary while
+    its options came from the vanilla branch.
     """
 
-    name: str  # directory name under --output, e.g. `fpr@e0.30`
+    name: str  # directory name under --output, e.g. `fpr`
     base: str  # entry in CONFIG_SUITES, e.g. `fpr`
     binary: str
     options: dict[str, str]
@@ -184,11 +93,9 @@ class ConfigPlan:
     def identity(self) -> tuple[str, tuple[tuple[str, str | float], ...]]:
         """What the solver actually sees, for "is this the same run?" checks.
 
-        Not the name and not the raw options: `0.3` and `0.30` name two
-        directories but are one number to HiGHS, so `--budget-sweep 0.3 0.30`
-        would otherwise produce two identical trees with nothing to flag it.
-        Budgets stay verbatim in `name` (the directory) and are compared as
-        floats here (the behaviour).
+        Not the name and not the raw options: two names can map to the same
+        options, which would otherwise produce identical trees with nothing to
+        flag it.  Numeric option values are compared as floats.
         """
         normalized: list[tuple[str, str | float]] = []
         for key, value in sorted(self.options.items()):
@@ -199,120 +106,31 @@ class ConfigPlan:
         return (self.binary, tuple(normalized))
 
 
-def split_config(config: str) -> tuple[str, str | None]:
-    """Split `fpr@e0.30` into `("fpr", "0.30")`; `("fpr", None)` if unswept."""
-    base, sep, budget = config.partition(BUDGET_SUFFIX)
-    return base, (budget if sep else None)
-
-
-def parse_budget(value: str) -> str:
-    """Validate one `--budget-sweep` value and return it **verbatim**.
-
-    The string the caller typed is what names the output directory, so `0.30`
-    gives `fpr@e0.30` rather than the `fpr@e0.3` a float round-trip would
-    produce.  Those directory names are what `analyze_results.py --configs`
-    consumes, so they have to match the README literally.
-
-    Raises ValueError on whitespace, a non-number, or a value outside the
-    option's range.  HiGHS is not quiet about the last of those — it prints
-    `checkOptionValue: ... is above upper bound` and exits 255
-    (`HighsStatus::kError`) after the banner, without solving — but catching
-    it here is what stops a swept campaign discovering it one directory at a
-    time, hours in.
-    """
-    if value != value.strip():
-        # Surrounding whitespace survives float() but would land verbatim in a
-        # directory name, and the analyze command printed at the end of a run
-        # is unquoted.
-        raise ValueError(f"budget {value!r} has leading or trailing whitespace")
-    try:
-        as_float = float(value)
-    except ValueError as exc:
-        raise ValueError(f"budget {value!r} is not a number") from exc
-    if not 0.0 <= as_float <= 1.0:
-        raise ValueError(
-            f"budget {value!r} is outside the effort options' [0.0, 1.0] range"
-        )
-    return value
-
-
-def resolve_config(config: str) -> tuple[str, str | None]:
-    """`split_config` plus the unknown-name raise.
+def resolve_config(config: str) -> str:
+    """The config's `CONFIG_SUITES` key, with the unknown-name raise.
 
     That raise is the point of this module's config surface: the old
     implementation returned `{}` for anything it did not recognise, so a
     mistyped `--configs patchd` produced a fully populated, plausible-looking,
     completely meaningless results tree that nothing downstream noticed.
     """
-    base, budget = split_config(config)
-    if base not in CONFIG_SUITES:
+    if config not in CONFIG_SUITES:
         known = ", ".join(sorted(CONFIG_SUITES))
-        raise ValueError(
-            f"unknown config {config!r}; known configs: {known} "
-            f"(optionally suffixed {BUDGET_SUFFIX}<effort>, e.g. fpr{BUDGET_SUFFIX}0.30)"
-        )
-    return base, budget
+        raise ValueError(f"unknown config {config!r}; known configs: {known}")
+    return config
 
 
 def config_options(config: str, *, external_vanilla: bool = False) -> dict[str, str]:
-    """HiGHS options for one config name, budget suffix included.
+    """HiGHS options for one config name.
 
     Raises ValueError on an unknown name (see `resolve_config`).
     `external_vanilla` says the `vanilla` config runs on a separately built
     unpatched binary, which has no `mip_heuristic_*` options at all.
     """
-    base, budget = resolve_config(config)
-    if budget is not None:
-        parse_budget(budget)
-        if not CONFIG_SWEEP_OPTIONS[base]:
-            raise ValueError(
-                f"config {base!r} {NOT_SWEPT_REASON}, so no effort option "
-                f"reaches it and the budget suffix in {config!r} would change "
-                f"nothing"
-            )
+    base = resolve_config(config)
     if base == "vanilla" and external_vanilla:
         return {}
-    options = {"mip_heuristic_suite": CONFIG_SUITES[base]}
-    if budget is not None:
-        for option in CONFIG_SWEEP_OPTIONS[base]:
-            options[option] = budget
-    return options
-
-
-def expand_configs(
-    configs: list[str], budgets: list[str]
-) -> tuple[list[str], list[str]]:
-    """Expand each config into one `<config>@e<V>` entry per swept budget.
-
-    Returns (expanded config names, human-readable notices to print).  With an
-    empty `budgets` the config list is returned unchanged.  Configs no effort
-    option reaches pass through once, unsuffixed, with a notice.
-    """
-    if not budgets:
-        for config in configs:
-            resolve_config(config)  # the unknown-name raise applies here too
-        return list(configs), []
-    for budget in budgets:
-        parse_budget(budget)
-    expanded: list[str] = []
-    notices: list[str] = []
-    for config in configs:
-        base, existing = resolve_config(config)
-        if existing is not None:
-            raise ValueError(
-                f"config {config!r} already carries a {BUDGET_SUFFIX} budget "
-                f"suffix; drop it or drop --budget-sweep"
-            )
-        if not CONFIG_SWEEP_OPTIONS[base]:
-            expanded.append(config)
-            notices.append(
-                f"Note: config {config!r} {NOT_SWEPT_REASON}, so no effort "
-                f"option reaches it — it is not swept, and runs once as the "
-                f"sweep's anchor row."
-            )
-            continue
-        expanded.extend(f"{config}{BUDGET_SUFFIX}{b}" for b in budgets)
-    return expanded, notices
+    return {"mip_heuristic_suite": CONFIG_SUITES[base]}
 
 
 def build_base_options(
@@ -359,12 +177,11 @@ def build_base_options(
 def build_plan(config: str, patched_binary: str, vanilla_binary: str) -> ConfigPlan:
     """Resolve a config name to its binary and options, in one place.
 
-    Both the binary choice and the options come off the same decomposed base
-    name, so a swept `vanilla@e...` cannot pick the patched binary while
-    taking the vanilla option branch (it is rejected outright — see
-    CONFIG_SWEEP_OPTIONS).
+    Both the binary choice and the options come off the same resolved name, so
+    a config cannot pick one branch's binary while taking the other branch's
+    options.
     """
-    base, _ = resolve_config(config)
+    base = resolve_config(config)
     external_vanilla = vanilla_binary != patched_binary
     options = config_options(config, external_vanilla=external_vanilla)
     binary = vanilla_binary if base == "vanilla" else patched_binary
@@ -731,22 +548,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--budget-sweep",
-        nargs="*",
-        metavar="V",
-        default=None,
-        help=(
-            "Sweep each config's effort options: each config expands to "
-            "<config>@e<V> per value, writing to <output>/<config>@e<V>/seed<N>/. "
-            "With no values, sweeps " + " ".join(DEFAULT_BUDGET_SWEEP) + ". "
-            "A config sweeps the effort options of exactly the heuristics it "
-            "enables: `fpr` moves its own, `fj+fpr` moves those two, `all` "
-            "moves all four to the same value. `vanilla` and `off` run no "
-            "presolve heuristic, so no effort option reaches them: they are "
-            "not swept and run once each, as the sweep's anchor rows."
-        ),
-    )
-    parser.add_argument(
         "--start",
         type=int,
         default=0,
@@ -850,11 +651,10 @@ def main() -> None:
 
     # Resolve configs before anything else runs: an unknown name must fail
     # here, not after producing hours of default-option results.
-    budgets = args.budget_sweep
-    if budgets is not None and not budgets:
-        budgets = list(DEFAULT_BUDGET_SWEEP)
     try:
-        config_names, notices = expand_configs(args.configs, budgets or [])
+        config_names = list(args.configs)
+        for config in config_names:
+            resolve_config(config)
         dupes = sorted({n for n in config_names if config_names.count(n) > 1})
         if dupes:
             raise ValueError(
@@ -865,12 +665,9 @@ def main() -> None:
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)
-    for notice in notices:
-        print(notice)
     # Distinct names can still resolve to one configuration — `vanilla` is
     # `off` unless an external binary was given.  That is "N identical runs
-    # under N names", the thing the unknown-name raise and the empty
-    # `CONFIG_SWEEP_OPTIONS` entries both exist to prevent, so warn
+    # under N names", the thing the unknown-name raise exists to prevent, so warn
     # rather than silently burning the compute.  A warning, not an error:
     # run_plato.sh legitimately reaches the vanilla==off case when `which
     # highs` finds nothing.
@@ -886,8 +683,6 @@ def main() -> None:
             )
         else:
             seen[key] = plan.name
-    if budgets:
-        print(f"Budget sweep   : per-heuristic effort in {' '.join(budgets)}")
     print(f"Configs        : {' '.join(p.name for p in plans)}")
     # State the instrumentation decision in the header of every run.  Without
     # it, `--dev-log` is a flag you discover you needed after the campaign:

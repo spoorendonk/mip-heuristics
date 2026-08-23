@@ -153,17 +153,16 @@ python3 bench/run_benchmark.py \
     --instances bench/instances_small.txt \
     --output bench/results/sweep \
     --configs off fj fpr local_mip scylla all \
-    --budget-sweep 0.05 0.15 0.30 0.60 1.00 \
     --time-limit 600 --seeds 0 1 2 --skip-existing
 python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600 \
-    --configs off fj@e0.05 fpr@e0.05 local_mip@e0.05 scylla@e0.05 all@e0.05
+    --configs off fj fpr local_mip scylla all
 ```
 
-`run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped.
+`run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped. To move a heuristic's effort or stall option off its default, pass `--extra-options mip_heuristic_fpr_effort=0.30`; a config name is exactly a `mip_heuristic_suite` value and carries no budget of its own.
 
 `off` is the baseline here, not `vanilla`. On the patched binary the two are the same run — `vanilla` *is* `mip_heuristic_suite=off` unless `--vanilla-binary` points at a separately built unpatched binary — so asking for both without that flag runs every instance twice for one data point, and the harness says so. Add `--vanilla-binary /path/to/unpatched/highs` (plus `vanilla` back in the config list) for a headline baseline; it is the stronger claim, and the only thing that makes the two configs differ.
 
-A sweep moves the effort options of exactly the heuristics a config enables: `fpr@e0.60` sets `mip_heuristic_fpr_effort=0.60` and nothing else, which is what makes a per-heuristic budget measurable in isolation, and `fj+fpr@e0.60` sets those two. `all@e0.60` sets all four to `0.60` — every heuristic at that budget, not the shipped ratio between them, since the four defaults differ. `vanilla` and `off` run no presolve heuristic, so no effort option reaches them: they pass through the sweep once as unsuffixed anchor rows — note the unsuffixed `off` in the analyze command above — and naming one explicitly as `vanilla@e0.30` is rejected rather than producing a directory that means nothing.
+Every config runs each of its heuristics at that heuristic's own shipped default budget. To move one, pass it through `--extra-options`; the four effort options are independent, so raising one does not lower the others.
 
 Two things the harness deliberately does not do by default:
 
