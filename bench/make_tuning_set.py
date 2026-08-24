@@ -15,6 +15,17 @@ two-sided: presolve effort buys feasibility where feasibility is hard and is
 pure overhead where branch-and-bound has an incumbent in the first second.  A
 subset drawn only from the hard end sees the benefit without the cost.
 
+`--informative-instances` (issue #113) narrows the *candidate pool* to the
+informative set `bench/analyze_presolve_probe.py` derives from a presolve-only
+probe, without touching anything else: the tree must still cover the whole
+reference list, the stratification is still vanilla time-to-first-feasible,
+and the allocation is still integer largest-remainder.  A presolve-only screen
+carries no quality signal on an instance no configuration produces a solution
+for, so such an instance is a constant in every comparison the search makes;
+it goes to that script's separately scored hard tier instead.  The emitted
+header records the pool's path, its name count and a digest of its bytes, so
+the derivation is pinned rather than merely referenced.
+
 Strata are half-open intervals on the aggregated time, split at `--boundaries`,
 plus a bucket for runs that never became feasible.  The default split
 `1,10,100,600` gives the five suggested strata (immediate / fast / moderate /
@@ -42,6 +53,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import os
 import random
@@ -77,6 +89,17 @@ DEFAULT_INSTANCES = os.path.join(BENCH_DIR, "instances_plato.txt")
 
 # How many names a refusal message spells out before summarising the rest.
 MAX_LISTED = 20
+
+# Hex digits of the candidate pool's SHA-256 recorded in the header.  Enough
+# to pin which file was used without turning the header into a hash dump; the
+# point is that a regenerated list disagrees when the pool's bytes moved.
+DIGEST_CHARS = 12
+
+
+def file_digest(path: str) -> str:
+    """A short content digest of a candidate-pool file, for the header."""
+    with open(path, "rb") as f:
+        return "sha256:" + hashlib.sha256(f.read()).hexdigest()[:DIGEST_CHARS]
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +490,15 @@ class Selection:
     reference_path: str
     reference_count: int
     allowed_incomplete: bool
+    # The `--informative-instances` pool, when one narrowed the candidates:
+    # its path, the number of names it holds, a digest of its bytes, and how
+    # many stratifiable instances survived the intersection.  All four go in
+    # the header — the path alone would not say *which* version of the file
+    # produced this list.
+    pool_path: str | None = None
+    pool_count: int = 0
+    pool_digest: str = ""
+    pool_used: int = 0
 
     @property
     def instances(self) -> list[str]:
@@ -506,11 +538,24 @@ def build_selection(
     reference_path: str,
     reference_count: int,
     allowed_incomplete: bool = False,
+    pool: list[str] | None = None,
+    pool_path: str | None = None,
+    pool_digest: str = "",
 ) -> Selection:
-    """Bin the scanned instances, allocate the draws, and sample each stratum."""
+    """Bin the scanned instances, allocate the draws, and sample each stratum.
+
+    `pool` narrows which of the scanned instances may be drawn — the #113
+    informative set.  It restricts the *candidates*, never the scan: the
+    tree still has to cover the whole reference list, because the instances a
+    campaign failed to run are not a random subset of it and a subset drawn
+    around them is biased in the direction the stratification measures.
+    """
     labels = stratum_labels(boundaries)
     members: dict[str, list[str]] = {label: [] for label in labels}
+    allowed = None if pool is None else set(pool)
     for name in sorted(scan.observations):
+        if allowed is not None and name not in allowed:
+            continue
         members[assign_stratum(scan.observations[name], boundaries)].append(name)
 
     counts = [len(members[label]) for label in labels]
@@ -533,6 +578,10 @@ def build_selection(
         reference_path=reference_path,
         reference_count=reference_count,
         allowed_incomplete=allowed_incomplete,
+        pool_path=pool_path,
+        pool_count=0 if pool is None else len(pool),
+        pool_digest=pool_digest,
+        pool_used=sum(counts),
     )
 
 
@@ -578,6 +627,10 @@ def regeneration_command(sel: Selection, results_dir: str) -> str:
         results_dir,
         f"--config {sel.scan.config}",
         f"--instances {sel.reference_path}",
+    ]
+    if sel.pool_path:
+        parts.append(f"--informative-instances {sel.pool_path}")
+    parts += [
         f"--size {sel.size}",
         f"--seed {sel.seed}",
     ]
@@ -617,6 +670,32 @@ def render_list(sel: Selection, results_dir: str) -> str:
         f"#   config           {scan.config}",
         f"#   config_seeds     {seeds}",
         f"#   reference_list   {sel.reference_path} ({sel.reference_count} instances)",
+    ]
+    if sel.pool_path:
+        lines += [
+            (
+                f"#   informative_set  {sel.pool_path} ({sel.pool_count} names, "
+                f"{sel.pool_digest})"
+            ),
+            (
+                "#   candidate_pool   "
+                f"{sel.pool_used} stratifiable instance(s) after intersecting it"
+                " with the tree"
+            ),
+            (
+                "#   pool_rule        instances a presolve-only probe produced an"
+                " accepted solution"
+            ),
+            (
+                "#                    on in ANY configuration (issue #113).  The"
+                " rest are not"
+            ),
+            (
+                "#                    discarded: they are scored as a separate"
+                " hard tier."
+            ),
+        ]
+    lines += [
         f"#   sample_seed      {sel.seed}",
         f"#   sample_size      {sel.size}",
         "#   boundaries_s     " + ", ".join(_num(b) for b in sel.boundaries),
@@ -741,6 +820,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="reference instance list the tree must cover (default: %(default)s)",
     )
     parser.add_argument(
+        "--informative-instances",
+        default=None,
+        help=(
+            "restrict the candidates to this list — the informative set "
+            "bench/analyze_presolve_probe.py derives from a presolve-only "
+            "probe; it must be a subset of --instances, and the tree must "
+            "still cover all of --instances"
+        ),
+    )
+    parser.add_argument(
         "--size",
         type=int,
         default=DEFAULT_SIZE,
@@ -803,6 +892,41 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {args.instances} names no instances", file=sys.stderr)
         return 1
 
+    pool: list[str] | None = None
+    pool_digest = ""
+    if args.informative_instances:
+        if not os.path.isfile(args.informative_instances):
+            print(
+                f"ERROR: no such instance list: {args.informative_instances}",
+                file=sys.stderr,
+            )
+            return 1
+        pool = load_instances(args.informative_instances)
+        pool_digest = file_digest(args.informative_instances)
+        if not pool:
+            print(
+                f"ERROR: {args.informative_instances} names no instances",
+                file=sys.stderr,
+            )
+            return 1
+        # A pool naming instances the reference list does not is a mismatched
+        # pair — a probe of a different set, or a stale file — and sampling
+        # from the intersection would quietly hide it.
+        # Once the pool is a subset of the reference list, the coverage
+        # refusal below guarantees every one of its names is stratifiable —
+        # so there is no separate "empty intersection" case to handle.
+        stray = sorted(set(pool) - set(reference))
+        if stray:
+            shown = ", ".join(stray[:MAX_LISTED])
+            hidden = len(stray) - MAX_LISTED
+            more = "" if hidden <= 0 else f", ... and {hidden} more"
+            print(
+                f"ERROR: {len(stray)} instance(s) in {args.informative_instances} "
+                f"are not in {args.instances}: {shown}{more}",
+                file=sys.stderr,
+            )
+            return 1
+
     scan = scan_tree(args.results_dir, config, reference, config_dir=config_dir)
     errors = coverage_errors(scan, args.allow_incomplete_seeds)
     if errors:
@@ -825,6 +949,9 @@ def main(argv: list[str] | None = None) -> int:
             reference_path=args.instances,
             reference_count=len(reference),
             allowed_incomplete=bool(scan.incomplete) and args.allow_incomplete_seeds,
+            pool=pool,
+            pool_path=args.informative_instances,
+            pool_digest=pool_digest,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -842,10 +969,19 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     seed_list = ", ".join(str(s) for s in scan.seeds)
+    narrowed = (
+        ""
+        if pool is None
+        else (
+            f"  Candidates narrowed to {selection.pool_used} by "
+            f"{args.informative_instances} ({selection.pool_count} names, "
+            f"{selection.pool_digest})."
+        )
+    )
     report = [
         (
             f"Stratified {len(scan.observations)} instances from "
-            f"{args.results_dir} (config {scan.config}, seeds {seed_list})."
+            f"{args.results_dir} (config {scan.config}, seeds {seed_list})." + narrowed
         ),
         *distribution_rows(selection),
     ]

@@ -47,10 +47,8 @@ _REPORT = (
 def feasible_log(seconds: float) -> str:
     """A run whose first incumbent lands at `seconds`."""
     return (
-        _HEADER
-        + f"H       0       0         0   0.00%          0              10"
-        f"              Large      0      0      0       0.0   {seconds}s\n"
-        + _REPORT
+        _HEADER + f"H       0       0         0   0.00%          0              10"
+        f"              Large      0      0      0       0.0   {seconds}s\n" + _REPORT
     )
 
 
@@ -68,8 +66,7 @@ def solved_without_incumbent_log() -> str:
     source code looks like from here.
     """
     return (
-        _HEADER
-        + "Q       0       0         0   0.00%          0              10"
+        _HEADER + "Q       0       0         0   0.00%          0              10"
         "              Large      0      0      0       0.0   1.2s\n"
         "Solving report\n"
         "  Status            Optimal\n"
@@ -272,9 +269,7 @@ def test_allocation_properties_hold_over_a_sweep():
                 assert all(a <= n for a, n in zip(alloc, counts))
                 assert all(a >= 0 for a in alloc)
                 # Every non-empty stratum keeps its reserved seat.
-                assert all(
-                    a >= min(min_per, n) for a, n in zip(alloc, counts) if n > 0
-                )
+                assert all(a >= min(min_per, n) for a, n in zip(alloc, counts) if n > 0)
                 assert all(a == 0 for a, n in zip(alloc, counts) if n == 0)
                 if nonempty and size == total:
                     assert list(alloc) == list(counts)
@@ -427,7 +422,9 @@ def test_draw_ignores_reference_list_order(tmp_path):
 
     # Vary PYTHONHASHSEED at the same time: set and dict iteration order must
     # not reach the draw either.
-    second = run(tree, "--instances", ref, "--size", "12", "--seed", "5", hash_seed="12345")
+    second = run(
+        tree, "--instances", ref, "--size", "12", "--seed", "5", hash_seed="12345"
+    )
     assert second.returncode == 0, second.stderr
     assert second.stdout == first.stdout
 
@@ -556,7 +553,10 @@ def test_empty_tree_and_bad_arguments_are_usage_errors(tmp_path):
     ref = write_reference(tmp_path, sorted(times))
 
     assert run(os.path.join(str(tmp_path), "nope"), "--instances", ref).returncode == 1
-    assert run(tree, "--instances", os.path.join(str(tmp_path), "nope.txt")).returncode == 1
+    assert (
+        run(tree, "--instances", os.path.join(str(tmp_path), "nope.txt")).returncode
+        == 1
+    )
     assert run(tree, "--instances", ref, "--boundaries", "10,1").returncode == 1
     assert run(tree, "--instances", ref, "--config", "ghost").returncode == 1
     # More draws than the tree holds is a refusal, not a truncated sample.
@@ -602,9 +602,134 @@ def test_instances_outside_the_reference_list_are_ignored_with_a_note(tmp_path):
     times = _spread()
     times["stranger"] = 4.0
     tree = write_tree(tmp_path, times)
-    ref = write_reference(tmp_path, sorted(name for name in times if name != "stranger"))
+    ref = write_reference(
+        tmp_path, sorted(name for name in times if name != "stranger")
+    )
 
     res = run(tree, "--instances", ref, "--size", "5")
     assert res.returncode == 0, res.stderr
     assert "1 instance(s) in the tree are not in" in res.stderr
     assert "stranger" not in res.stdout
+
+
+# ---------------------------------------------------------------------------
+# The informative candidate pool (issue #113)
+# ---------------------------------------------------------------------------
+
+
+def test_informative_pool_restricts_only_the_candidates(tmp_path):
+    """#113 samples from what a presolve-only screen can see.
+
+    The stratification, the aggregation and the coverage contract are
+    unchanged; only which instances may be *drawn* narrows.  The stratum
+    table therefore reports the pool's populations, not the tree's.
+    """
+    times = _spread()
+    tree = write_tree(tmp_path, times)
+    ref = write_reference(tmp_path, sorted(times))
+    pool_names = ["imm0", "imm1", "never0", "never1"]
+    pool = write_reference(tmp_path, pool_names, filename="informative.txt")
+    out = os.path.join(str(tmp_path), "subset.txt")
+
+    res = run(
+        tree,
+        "--instances",
+        ref,
+        "--informative-instances",
+        pool,
+        "--size",
+        "3",
+        "--output",
+        out,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    picked = load_instances(out)
+    assert len(picked) == 3
+    assert set(picked) <= set(pool_names)
+    # Only the two strata the pool populates exist; the tree's other 16
+    # instances are not candidates and are not counted.
+    with open(out) as f:
+        text = f.read()
+    assert "# <1s (" in text and "# never (" in text
+    assert "# 10-100s (" not in text
+    assert "informative_set" in text and "sha256:" in text
+    assert "--informative-instances" in text
+
+
+def test_informative_pool_does_not_relax_the_coverage_refusal(tmp_path):
+    """The tree must still cover the whole reference list.
+
+    The instances a campaign failed to run are not a random subset of it, so
+    a hole outside the pool is still a refusal — the pool narrows candidates,
+    it does not narrow what the tree has to have run.
+    """
+    times = _spread()
+    times["mod0"] = {0: "absent"}
+    tree = write_tree(tmp_path, times)
+    ref = write_reference(tmp_path, sorted(times))
+    pool = write_reference(tmp_path, ["imm0", "never0"], filename="informative.txt")
+
+    res = run(tree, "--instances", ref, "--informative-instances", pool, "--size", "2")
+    assert res.returncode == 2
+    assert "mod0" in res.stderr
+
+
+def test_informative_pool_must_be_a_subset_of_the_reference_list(tmp_path):
+    """A pool naming unknown instances is a mismatched pair, not a filter."""
+    times = _spread()
+    tree = write_tree(tmp_path, times)
+    ref = write_reference(tmp_path, sorted(times))
+    pool = write_reference(tmp_path, ["imm0", "ghost"], filename="informative.txt")
+
+    res = run(tree, "--instances", ref, "--informative-instances", pool, "--size", "1")
+    assert res.returncode == 1
+    assert "ghost" in res.stderr
+
+    missing = run(
+        tree,
+        "--instances",
+        ref,
+        "--informative-instances",
+        os.path.join(str(tmp_path), "nope.txt"),
+        "--size",
+        "1",
+    )
+    assert missing.returncode == 1
+
+
+def test_informative_pool_digest_pins_the_file_not_just_its_path(tmp_path):
+    """The header records which *version* of the pool produced the list."""
+    times = _spread()
+    tree = write_tree(tmp_path, times)
+    ref = write_reference(tmp_path, sorted(times))
+    pool = write_reference(tmp_path, ["imm0", "imm1", "never0"], filename="inf.txt")
+    out = os.path.join(str(tmp_path), "subset.txt")
+
+    def emit() -> str:
+        res = run(
+            tree,
+            "--instances",
+            ref,
+            "--informative-instances",
+            pool,
+            "--size",
+            "2",
+            "--output",
+            out,
+        )
+        assert res.returncode == 0, res.stderr
+        with open(out) as f:
+            return f.read()
+
+    first = emit()
+    assert emit() == first  # byte-identical on a rerun
+    with open(pool, "a") as f:
+        f.write("# a comment, no new names\n")
+    second = emit()
+    assert second != first
+    # The names it draws are unchanged; only the recorded digest moved.
+    assert load_instances(out) == [
+        line.split("#")[0].strip()
+        for line in first.splitlines()
+        if line and not line.startswith("#")
+    ]
