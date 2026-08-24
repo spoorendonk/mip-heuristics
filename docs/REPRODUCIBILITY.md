@@ -209,6 +209,60 @@ python3 bench/analyze_results.py bench/results/plato \
     --configs all vanilla --time-limit 600 --baseline --summary
 ```
 
+## The presolve-only screen and the tuning search
+
+`mip_heuristic_presolve_only` exits after the presolve chain and before the root
+LP, which is what makes the #107 tuning search affordable: roughly 25x cheaper
+than a full solve, and it measures the chain rather than a chain diluted by
+B&B. Such a run reports `Solution limit reached`, `Nodes 0`, `LP iterations 0`,
+`Dual bound -inf` and CLI exit 1. **A presolve-only tree is therefore not
+comparable to a full-solve tree on any dual-side metric, and its "gap" is
+meaningless.** It is reproducible on the same terms as everything else here:
+`threads=1` plus a fixed `random_seed`.
+
+**Do not pin `threads` for a tuning run.** It is tempting — the presolve chain
+races N workers to submit, so the presolve-exit objective varies ~3 % run to run
+at a fixed seed, and `threads=1` is bit-stable. But pinning does not narrow that
+distribution, it *moves* it: measured, the single-worker regime is steadier and
+strictly worse, never sampling the outcome the multi-worker chain occasionally
+wins. It is also a transfer error — FJ's budget is per-worker x N while the
+other three are whole-dispatch, so changing N *reallocates* budget between
+heuristics rather than rescaling it (measured p0548, N=1 -> N=8: local_mip
+1.08x, fj 12.0x). Racing selects under noise; it cannot detect a reallocation.
+A tuned vector is only valid at the worker count it was tuned at, which is why
+`workers_observed` is recorded.
+
+### Reading a trace
+
+`[HeurSol]` and `[Heur] nnz=` both require `log_dev_level=3`, so they belong to
+attribution runs, never to headline-timing runs. Note the trap that shaped the
+design: level 3 *suppresses* the one-line model header, so `[Heur] nnz=` is the
+only correct nonzero count available on any log that carries a trace.
+`DispatchTrace.normalized_gaps()` is already scaled into the option's own unit —
+do not rescale it. `stale_effort` is deliberately unavailable for Scylla: its
+`[Heur]` total charges the full PDLP cost while its per-worker counter charges
+it divided by N, and only the PDLP half is amortised, so no scalar corrects it.
+
+### What the probe decides, and on what evidence
+
+`bench/analyze_presolve_probe.py` **refuses a tree that is not a presolve-only
+run of a patched binary**, so a list pinned by digest into a tuning-set header
+cannot silently have come from a full-solve tree. Informativeness means *the
+chain produced the incumbent* — a display row with one of the chain's own source
+codes — not merely that a solution exists: HiGHS's own trivial heuristics run
+inside `runSetup()`, before the chain, and their solutions route to the hard tier
+as `trivial-only`. The verdict deliberately follows the incumbent rather than
+the pool's accept signal, for three reasons: it is the predicate the search's
+objective actually scores; it is the only one both probe passes can evaluate,
+since the filtering pass runs without `--dev-log`; and `[Heur]` is written when a
+dispatch *ends*, so a killed run — which the probe's own per-run cap produces by
+design — has incumbent rows and no ledger at all.
+
+The artifact chain is **probe tree -> informative list + hard tier -> tuning
+list**, every link byte-identical for the same inputs and carrying no timestamp,
+with each generated file recording its own `Regenerate with:` line.
+
+
 ## `suite=off` is vanilla-equivalent — since August 2026
 
 As of the option-surface collapse (issue #93, landed 2026-08-07),
