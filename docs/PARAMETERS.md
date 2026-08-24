@@ -786,11 +786,17 @@ by the worker count.
 
 ### These options do not mean the same thing at every worker count
 
+- **File**: `src/mode_dispatch.cpp` (`kChain`, `budget_is_per_worker`, `make_budget`, `heuristic_effort_budget`, `stall_threshold`)
+
 A tuned parameter vector is only valid at the worker count `N` it was
-tuned at, and the reason is the `budget_is_per_worker` split. Writing
+tuned at. Two distinct things vary with `N`, and they must not be
+conflated: what a heuristic is **allowed** to spend, and what it
+**actually** spends.
+
+**What the budget arithmetic says.** Writing
 `sized = heuristic_effort_budget(nnz, effort)`, `make_budget` yields:
 
-| quantity | FJ (`per_worker`) | FPR / LocalMIP / Scylla |
+| quantity | FJ (`budget_is_per_worker`) | FPR / LocalMIP / Scylla |
 |---|---|---|
 | dispatch `total` | `sized x N` — **scales with N** | `sized` — invariant |
 | `per_worker` | `sized` — invariant | `sized / N` |
@@ -798,30 +804,54 @@ tuned at, and the reason is the `budget_is_per_worker` split. Writing
 | `worker_stale` | invariant | `stale / N` |
 | `attempt_cap` | `sized / 10` — invariant | `sized / (10 N)` |
 
-So for the three whole-dispatch heuristics both aggregates — the total
-and the runner-level gate — are N-invariant, and only the per-worker
-slicing moves. FJ is the mirror image: every per-worker quantity is
-invariant and the dispatch total grows with the pool.
+**The `stale` rows assume `stall > 0`.** At `stall = 0` the gate is
+disabled and `stall_threshold` returns an unbounded threshold before any
+clamp, in **both** columns — so the runner gate is `SIZE_MAX` rather than
+`N x 0` or `0`, and `worker_stale` is `SIZE_MAX / N` everywhere. Read
+literally the table would say zero, i.e. a gate retiring every worker
+before it did any work, which is the exact misreading the `per_nnz == 0`
+special case exists to prevent. The irace ranges include `0`, so this is
+not a hypothetical corner.
 
-**The consequence is a shift in the balance *between* heuristics, not a
-uniform rescale**, and it is large. Measured on `p0548` at the shipped
-defaults, charged presolve effort:
+So on **budget**, the three whole-dispatch heuristics are N-invariant in
+both aggregates — total and runner gate — and only the per-worker slicing
+moves. FJ is the mirror image: every per-worker quantity invariant, the
+dispatch total growing with the pool.
+
+**Charged spend is a different question, and Scylla answers it
+differently from its budget.** Measured on `p0548` at the shipped
+defaults, seed 0, charged presolve effort from `[Heur]`:
 
 | heuristic | N=1 | N=8 | ratio |
 |---|---|---|---|
-| local_mip | 16,889,772 | 18,316,837 | 1.08x |
 | fj | 500,104 | 6,001,362 | 12.0x |
+| fpr | 3,972,738 | 2,884,999 | 0.73x |
+| local_mip | 16,889,772 | 18,316,837 | 1.08x |
+| scylla | 684,860 | 5,478,908 | **8.0x** |
 
-Identical option values; FJ's share of the chain goes from 1:34 against
-LocalMIP to 1:3. (FJ's 12x rather than 8x is its 500k callback
-granularity on an instance this small — see the dead zone under
-`mip_heuristic_fj_effort`.) A vector tuned at one worker count and
-deployed at another therefore allocates the chain differently, and
-nothing in a score reveals it. **Record the worker count alongside any
-tuned vector**; `bench/make_archive.py` already derives it per run from
-each log's `Thread count N (of M threads)` line into `workers_observed`
-and warns when a tree mixes two values, so reuse that rather than
-inventing a second channel.
+Scylla's budget is N-invariant exactly as the table above says, and its
+spend still scales nearly linearly with the pool — 8.0x, reproducible to
+the digit across repetitions at both counts. The cause is the granularity
+floor documented under `mip_heuristic_scylla_stall`: one attempt charges
+a whole PDLP solve (`iters x nnz`), and `attempt_cap` does not govern a
+solve once started, so `N` workers each charge whole solves however small
+the dispatch budget is. **"Budget is N-invariant" therefore does not
+imply "spend is N-invariant", and Scylla is the counterexample** — tuning
+`mip_heuristic_scylla_effort` at `N=1` and transferring to 16 workers
+buys roughly 8–16x the spend the screen measured. FJ's 12x rather than
+8x is its 500k callback granularity on an instance this small (see the
+dead zone under `mip_heuristic_fj_effort`); FPR's 0.73x is the stall gate
+firing on aggregate effort while each worker's share shrinks.
+
+**The consequence is a shift in the balance *between* heuristics, not a
+uniform rescale.** FJ's share against LocalMIP goes from 1:34 to 1:3 on
+identical option values. A vector tuned at one worker count and deployed
+at another allocates the chain differently, and nothing in a score
+reveals it. **Record the worker count alongside any tuned vector**;
+`bench/make_archive.py` already derives it per run from each log's
+`Thread count N (of M threads)` line into `workers_observed` and warns
+when a tree mixes two values, so reuse that rather than inventing a
+second channel.
 
 One quantity *is* transferable: the inert-region boundary
 `stall >= 81920 x effort` above is N-independent for all four, because

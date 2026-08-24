@@ -200,7 +200,9 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         // `total / 4`: the runner's counter aggregates every worker, so a
         // per-worker option is multiplied by the pool, and a
         // whole-dispatch one is used as it stands.  Clamped to `total`,
-        // which is the only thing the gate may not exceed.
+        // which is the only thing a *gate* may not exceed — except at
+        // `stall_option == 0`, which is not a gate at all: the threshold
+        // is unbounded and no clamp applies.  See `stall_threshold`.
         //
         // The option is registered over `[0, kHighsIInf]`, so the cast is
         // widening and cannot lose a value; `saturating_mul` covers the
