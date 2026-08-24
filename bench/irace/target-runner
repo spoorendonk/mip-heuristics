@@ -51,8 +51,23 @@ fi
 config_id="$1"
 instance_id="$2"
 seed="$3"
-instance="$4"
+instance_raw="$4"
 shift 4
+
+# Drop a trailing `# <comment>` from the instance token, then surrounding
+# whitespace.  `bench/instances_tuning.txt` puts a `# 0.60s` on every line, so
+# an unstripped token makes the instance name `0.60s` and refuses every
+# evaluation in the campaign.  `run_target.py` strips this too, deliberately:
+# either program can be the first to see the token, and neither should depend
+# on irace doing it (plausible, but not executable on this machine — see
+# scenario.txt).  Stripping twice is idempotent; assuming once is not.
+instance=${instance_raw%%#*}
+instance=$(printf '%s' "$instance" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -z "$instance" ]; then
+    echo "$0: instance argument '$instance_raw' is empty or a comment only;" >&2
+    echo "$0: an instance file line must name an instance." >&2
+    exit 1
+fi
 
 case "$1" in
     --*) ;;

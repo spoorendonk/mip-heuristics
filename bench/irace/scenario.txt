@@ -41,9 +41,20 @@ targetRunner = "./target-runner"
 ## Instances.  `trainInstancesDir` is empty so each line reaches the target
 ## runner verbatim; `run_target.py` resolves a bare MIPLIB name through the
 ## same search path as `run_benchmark.py` (--data-dir, then $MIPLIB_DIR, then
-## ~/data/miplib, then /tmp/miplib).  irace strips `#` comments from this file
-## exactly as `run_benchmark.load_instances` does, so a commented instance list
-## is read identically by both.
+## ~/data/miplib, then /tmp/miplib).
+##
+## The file carries a `#` header block and a trailing `# <time-to-first-
+## feasible>` on every instance line.  **Our side tolerates that regardless of
+## what irace does with it**: `target-runner` and `run_target.py` both drop
+## everything from the first `#` and then trim, and both refuse loudly on a
+## token that is empty or comment-only.  irace's own documentation describes it
+## as ignoring comments in the instance file, and it very likely does — but that
+## has not been executed here (irace is not installed on this machine), and it
+## is the highest-blast-radius assumption in the stage: if it were false, every
+## instance name would become its own timing comment and all thousands of
+## evaluations would refuse, discovered at the end of a ten-hour run.  So
+## nothing depends on it.  That is also why the scenario names the generated
+## list directly rather than a comment-free copy, which could drift from it.
 ##
 ## This points at the tuning subset.  #113 replaces that file with a 75-100
 ## instance set sampled from the instances a presolve-only screen can see at

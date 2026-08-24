@@ -48,6 +48,7 @@ from run_target import (
     scalar_cost,
     score_output,
     solver_options,
+    strip_instance_token,
     suite_value,
 )
 
@@ -679,6 +680,62 @@ def test_instance_name_strips_paths_and_extensions():
     assert instance_name(" egout.mps \n") == "egout"
 
 
+# --- instance tokens carrying comments --------------------------------------
+#
+# `bench/instances_tuning.txt` is generated with a `#` header block and a
+# trailing `# <vanilla time-to-first-feasible>` on every instance line.  irace
+# very likely strips those, but that is not executable here, and if it were
+# false every evaluation in a ten-hour campaign would refuse with the instance
+# named `0.60s`.  So the runner does not depend on it.
+
+
+def test_instance_name_drops_a_trailing_comment():
+    """The exact shape `bench/instances_tuning.txt` uses, spaces and all."""
+    assert instance_name("comp21-2idx               # 0.60s") == "comp21-2idx"
+
+
+def test_instance_name_drops_a_comment_after_a_path():
+    token = "/data/miplib/comp21-2idx.mps.gz    # 0.60s"
+    assert instance_name(token) == "comp21-2idx"
+
+
+def test_stripping_an_instance_token_is_idempotent():
+    """`target-runner` strips before `run_target.py` sees the token, so the
+    second strip has to be a no-op rather than a second bite at the string."""
+    once = strip_instance_token("comp21-2idx               # 0.60s")
+    assert once == "comp21-2idx"
+    assert strip_instance_token(once) == once
+
+
+def test_bare_and_path_tokens_are_untouched():
+    assert strip_instance_token("mad") == "mad"
+    assert strip_instance_token("/data/miplib/mad.mps.gz") == "/data/miplib/mad.mps.gz"
+
+
+@pytest.mark.parametrize("token", ["", "   ", "# 0.60s", "   # just a comment"])
+def test_comment_only_instance_token_is_refused(token):
+    """Loud, not an empty instance name: an empty name would look up an empty
+    reference and refuse somewhere far less legible, or resolve to a directory."""
+    with pytest.raises(Refusal, match="empty or contains only a comment"):
+        instance_name(token)
+
+
+def test_every_line_of_the_tuning_list_survives_stripping():
+    """Against the real file, not a fixture of what it is assumed to look like."""
+    with open(os.path.join(BENCH_DIR, "instances_tuning.txt")) as f:
+        lines = f.read().splitlines()
+    names = [
+        instance_name(line)
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert names, "the tuning list is empty; the comment filter is wrong"
+    assert "comp21-2idx" in names
+    for name in names:
+        assert "#" not in name and name == name.strip()
+        assert not re.fullmatch(r"[\d.]+s", name), f"{name!r} is a timing comment"
+
+
 # --- the CLI ----------------------------------------------------------------
 
 
@@ -790,8 +847,27 @@ def test_target_runner_is_executable():
     assert mode & stat.S_IXUSR
 
 
+_ARGV_DUMPER = """#!/bin/sh
+# Stands in for the Python interpreter and prints one argument per line.
+# `echo` cannot serve here: the assertions below are about argument
+# *boundaries*, and echo joins them with spaces so a token that still carries
+# its `# 0.60s` comment is indistinguishable from a stripped one.
+shift  # the run_target.py path
+printf '%s\\n' "$@"
+"""
+
+
+@pytest.fixture
+def argv_dumper(tmp_path):
+    path = tmp_path / "argv-dump"
+    path.write_text(_ARGV_DUMPER)
+    path.chmod(0o755)
+    return str(path)
+
+
 def _run_target_runner(argv: list[str], **env):
-    environment = dict(os.environ, RUN_TARGET_PYTHON="echo", **env)
+    # `**env` last so a caller can override the default stand-in interpreter.
+    environment = dict(os.environ, **{"RUN_TARGET_PYTHON": "echo", **env})
     return subprocess.run(
         [os.path.join(IRACE_DIR, "target-runner"), *argv],
         capture_output=True,
@@ -825,6 +901,33 @@ def test_target_runner_refuses_a_capping_bound():
 def test_target_runner_refuses_a_short_call():
     proc = _run_target_runner(["7", "3", "1234"])
     assert proc.returncode == 1
+
+
+def test_target_runner_strips_a_trailing_comment_from_the_instance(argv_dumper):
+    """The wrapper can be the first thing to see the token, so it strips too.
+    The shape is the one every line of `bench/instances_tuning.txt` has.
+
+    One argument per line, not `echo` plus `.split()`: the latter reads green
+    against a wrapper that does not strip at all, because joining the argv on
+    spaces makes `comp21-2idx  # 0.60s` and `comp21-2idx` indistinguishable
+    once split again.  Verified by mutation — this assertion fails when the
+    `%%#*` expansion is removed, and the split-based one did not.
+    """
+    proc = _run_target_runner(
+        ["7", "3", "1234", "comp21-2idx               # 0.60s", "--fj-effort", "0.5"],
+        RUN_TARGET_PYTHON=argv_dumper,
+    )
+    assert proc.returncode == 0, proc.stderr
+    argv = proc.stdout.splitlines()
+    assert argv[argv.index("--instance") + 1] == "comp21-2idx"
+    # The comment must not have shifted the switches along.
+    assert argv[argv.index("--fj-effort") + 1] == "0.5"
+
+
+def test_target_runner_refuses_a_comment_only_instance():
+    proc = _run_target_runner(["7", "3", "1234", "# 0.60s", "--fj-effort", "0.5"])
+    assert proc.returncode == 1
+    assert "comment only" in proc.stderr
 
 
 # --- end to end against a fake solver ---------------------------------------

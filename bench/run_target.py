@@ -362,13 +362,42 @@ def solver_options(
     return options
 
 
+def strip_instance_token(token: str) -> str:
+    """One instance-file line reduced to the token it names.
+
+    Removes anything from the first `#` onward, then surrounding whitespace.
+    `bench/instances_tuning.txt` is generated with a `#` header block *and* a
+    trailing `# <vanilla time-to-first-feasible>` on every instance line, so a
+    line arrives as `comp21-2idx               # 0.60s`.
+
+    This exists so that nothing in this stage depends on irace stripping those
+    comments itself.  It plausibly does — but irace is not installed on the
+    machine this was written on, so that is an unexecuted assumption guarding a
+    ten-hour campaign: were it false, `os.path.basename` would yield `0.60s`,
+    every one of the search's thousands of evaluations would refuse, and it
+    would be discovered at hour ten.  Stripping here costs two lines and is
+    correct either way, which is strictly better than a comment-free copy of
+    the list that can drift from the list itself.
+
+    A token that is empty or comment-only is a `Refusal`, not an empty name:
+    the whole point is that a malformed instance line must be loud.
+    """
+    stripped = token.split("#", 1)[0].strip()
+    if not stripped:
+        raise Refusal(
+            f"instance token {token!r} is empty or contains only a comment; "
+            "an instance file line must name an instance"
+        )
+    return stripped
+
+
 def instance_name(token: str) -> str:
     """The MIPLIB name behind an instance token.
 
-    irace's instance file may hold bare names or full paths; the reference
-    lookup needs the name either way.
+    irace's instance file may hold bare names or full paths, with or without a
+    trailing comment; the reference lookup needs the name either way.
     """
-    base = os.path.basename(token.strip())
+    base = os.path.basename(strip_instance_token(token))
     for ext in (".mps.gz", ".lp.gz", ".mps", ".lp", ".gz"):
         if base.endswith(ext):
             return base[: -len(ext)]
@@ -798,6 +827,12 @@ def evaluate(
     presolve_only: bool = True,
 ) -> Evaluation:
     """Run one instance at one parameter vector and score it."""
+    # Once, up front: the token is used twice — for the reference lookup and as
+    # a candidate path — and a trailing comment has to be gone for both.  The
+    # path branch would otherwise survive by accident (a commented path does not
+    # exist, so it falls through to the name-based search) which is exactly the
+    # kind of accident that stops holding when someone reorders the branch.
+    instance = strip_instance_token(instance)
     name = instance_name(instance)
     check_penalty_dominates(no_solution_penalty, cost_weight, time_limit)
     solu_refs = parse_solu_file(solu_path)
