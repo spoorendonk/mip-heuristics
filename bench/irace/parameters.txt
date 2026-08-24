@@ -1,0 +1,67 @@
+###############################################################################
+# irace parameter space for issue #107: the joint search over heuristic mix,
+# effort and stall thresholds.  Read by `bench/irace/scenario.txt`; every
+# `switch` here is a contract with `bench/run_target.py`'s CLI, which is the
+# single definition of what a configuration means.
+#
+# Format (irace >= 3.0): name, switch, type, domain, [| condition].
+# Types used here: `c` categorical, `r,log` log-sampled real, `i,log`
+# log-sampled integer.
+#
+# The space is eight-dimensional: four efforts and four stall thresholds.  The
+# four `<h>` categoricals below are NOT a ninth through twelfth dimension —
+# they are sampling machinery.  #107's reduction is that the fifteen non-empty
+# heuristic subsets plus `off` are exactly the zero-patterns of the four
+# efforts, and a real sampled from a continuous domain essentially never lands
+# on exactly 0, so "off" would be unreachable without a discrete switch.
+# `--<h>-enabled 0` is shorthand for that heuristic's effort being 0;
+# `run_target.py` collapses it into the effort vector before anything else sees
+# it, so the recorded configuration is always the eight numbers.
+###############################################################################
+
+# --- inclusion: the zero-pattern of the four efforts -------------------------
+fj                  "--fj-enabled "         c     (0, 1)
+fpr                 "--fpr-enabled "        c     (0, 1)
+local_mip           "--local-mip-enabled "  c     (0, 1)
+scylla              "--scylla-enabled "     c     (0, 1)
+
+# --- effort: budget multiplier, budget = nnz * 81920 * value -----------------
+#
+# Log-sampled, because the region of interest spans three decades: the shipped
+# defaults are 0.0125 / 0.0884 / 0.1821 / 0.0296 and #106's evidence is that
+# the low end (where each gate goes inert, at effort <= stall/81920) is where
+# the behaviour actually changes.
+#
+# The lower bound is 0.001 rather than something smaller because of FJ's hard
+# granularity floor: charged effort moves in steps of CALLBACK_EFFORT =
+# 500000, so `mip_heuristic_fj_effort` is a complete no-op whenever
+# `nnz * value < 6.1`.  At 0.001 that binds below nnz ~= 6100; below it the
+# parameter would be measuring nothing on a large part of any instance set.
+fj_effort           "--fj-effort "          r,log (0.001, 1.0)  | fj == "1"
+fpr_effort          "--fpr-effort "         r,log (0.001, 1.0)  | fpr == "1"
+local_mip_effort    "--local-mip-effort "   r,log (0.001, 1.0)  | local_mip == "1"
+scylla_effort       "--scylla-effort "      r,log (0.001, 1.0)  | scylla == "1"
+
+# --- stall threshold: effort units per matrix nonzero ------------------------
+#
+# The parameter #106 concluded actually does the limiting.  Shipped defaults
+# are 256 / 2048 / 4096 / 512, every one of them the pre-#111 `budget >> 2`
+# gate evaluated at that heuristic's default effort — inherited from a line of
+# code, never measured.  The four are in different units (FJ step units,
+# LocalMIP coefficient accesses, Scylla `iters x nnz` per PDLP solve, FPR DFS
+# work) and are not comparable to each other; equal numbers are meaningless.
+#
+# The upper bound is 131072 > 81920 so that "no gate at all" is reachable at
+# every effort: `stall_threshold` clamps to the budget, and the budget is
+# `81920 * effort` per nonzero, so any `stall >= 81920 * effort` is inert.  The
+# option also accepts 0 for "unbounded" outright, which is what #113's probe
+# sets; it is deliberately not sampled here because it is redundant with the
+# top of this range and would waste a level of a discrete jump.
+#
+# Conditional on inclusion: a stall threshold for a heuristic that does not run
+# is a free parameter with no effect, and irace's model should not have to
+# learn that.
+fj_stall            "--fj-stall "           i,log (1, 131072)   | fj == "1"
+fpr_stall           "--fpr-stall "          i,log (1, 131072)   | fpr == "1"
+local_mip_stall     "--local-mip-stall "    i,log (1, 131072)   | local_mip == "1"
+scylla_stall        "--scylla-stall "       i,log (1, 131072)   | scylla == "1"

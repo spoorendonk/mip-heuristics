@@ -1,0 +1,68 @@
+#!/bin/sh
+# irace target runner for issue #107.  Translates irace's positional calling
+# convention into `bench/run_target.py`'s named one and does nothing else: the
+# meaning of a configuration lives in that script, which is tested, and a
+# wrapper that computed anything would be a second definition of it.
+#
+# irace calls this as
+#
+#     target-runner <configuration_id> <instance_id> <seed> <instance> \
+#                   [<bound>] --switch value --switch value ...
+#
+# and reads one number from stdout, which it minimises.  `run_target.py` prints
+# exactly that number (gap + lambda * heuristic seconds; see its docstring for
+# why the minimised cost is #107's `gap_improvement - lambda * tau` up to a
+# per-instance constant) and everything else to stderr.
+#
+# The `<bound>` argument appears only when capping is enabled, which
+# `scenario.txt` deliberately does not do.  Rather than assume it away, the
+# check below refuses anything between the instance and the first switch: a
+# bound silently consumed as a parameter value would shift every switch by one
+# and produce a plausible cost for a configuration nobody chose.
+#
+# Campaign-level settings — which binary, which instance collection, the time
+# cap, lambda, where the artifacts land — are environment variables rather than
+# arguments, because irace owns the argument list.  Set them in the shell that
+# launches irace.
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+run_target="$here/../run_target.py"
+repo=$(CDPATH= cd -- "$here/../.." && pwd)
+
+: "${MIP_HEURISTICS_BINARY:=$repo/build/bin/highs}"
+: "${RUN_TARGET_LAMBDA:=0.0016666667}"
+: "${RUN_TARGET_TIME_LIMIT:=60}"
+: "${RUN_TARGET_RUN_DIR:=$PWD/target-runs}"
+: "${RUN_TARGET_PYTHON:=python3}"
+
+if [ "$#" -lt 5 ]; then
+    echo "$0: expected at least 5 arguments from irace, got $#" >&2
+    exit 1
+fi
+
+config_id="$1"
+instance_id="$2"
+seed="$3"
+instance="$4"
+shift 4
+
+case "$1" in
+    --*) ;;
+    *)
+        echo "$0: expected a parameter switch after the instance, got '$1'." >&2
+        echo "$0: capping (maxTime / boundMax) prepends a bound argument and" >&2
+        echo "$0: this scenario does not enable it; see scenario.txt." >&2
+        exit 1
+        ;;
+esac
+
+exec "$RUN_TARGET_PYTHON" "$run_target" \
+    --instance "$instance" \
+    --seed "$seed" \
+    --tag "c${config_id}-i${instance_id}-s${seed}" \
+    --binary "$MIP_HEURISTICS_BINARY" \
+    --lambda "$RUN_TARGET_LAMBDA" \
+    --time-limit "$RUN_TARGET_TIME_LIMIT" \
+    --run-dir "$RUN_TARGET_RUN_DIR" \
+    "$@"

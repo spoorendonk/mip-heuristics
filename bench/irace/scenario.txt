@@ -1,0 +1,83 @@
+###############################################################################
+# irace scenario for issue #107: joint search over heuristic mix, effort and
+# stall thresholds, screened presolve-only.
+#
+# Run it from this directory:
+#
+#     cd bench/irace
+#     MIP_HEURISTICS_BINARY=/abs/path/to/build/bin/highs \
+#     MIPLIB_DIR=$HOME/data/miplib \
+#     RUN_TARGET_LAMBDA=0.0016666667 \
+#         irace --scenario scenario.txt
+#
+# Before launching, run one evaluation by hand with `--require-trace`.  It is
+# the pre-flight for the one failure this whole scenario cannot survive: if the
+# `[Heur]` line is missing — unpatched binary, `log_dev_level` that did not
+# take, a HiGHS bump that moved the line — every configuration scores zero cost
+# on the time axis, the search silently becomes quality-only, and nothing in
+# the output says so.
+#
+#     ../run_target.py --instance egout --seed 1 --require-trace \
+#         --fj-effort 0.0125 --fj-stall 256 --binary ../../build/bin/highs
+#
+# #107 asks for the search to be repeated at two or three values of lambda
+# around g(0)/T ~ 1/600 per second, keeping the resulting family of
+# configurations rather than a single point.  Lambda is not in this file: it is
+# `RUN_TARGET_LAMBDA` in the target runner's environment, so each lambda is a
+# separate irace run into its own `logFile` and `execDir`.
+###############################################################################
+
+## The parameter space and the program under configuration.
+parameterFile = "./parameters.txt"
+targetRunner = "./target-runner"
+
+## Instances.  `trainInstancesDir` is empty so each line reaches the target
+## runner verbatim; `run_target.py` resolves a bare MIPLIB name through the
+## same search path as `run_benchmark.py` (--data-dir, then $MIPLIB_DIR, then
+## ~/data/miplib, then /tmp/miplib).  irace strips `#` comments from this file
+## exactly as `run_benchmark.load_instances` does, so a commented instance list
+## is read identically by both.
+##
+## This points at the tuning subset.  #113 replaces that file with a 75-100
+## instance set sampled from the instances a presolve-only screen can see at
+## all; the point of naming the file rather than a copy is that the scenario
+## follows it.
+trainInstancesDir = ""
+trainInstancesFile = "../instances_tuning.txt"
+
+## The runs are not deterministic — the heuristics run on parallel workers, so
+## the same seed on the same instance is not the same run.  Telling irace so is
+## what lets it evaluate an instance more than once with different seeds
+## instead of caching one result forever.
+deterministic = 0
+
+## Budget.  A presolve-only run costs roughly 8 s mean (2 s median, long tail
+## from HiGHS's own presolve, which `--time-limit` caps), so 3000 experiments
+## is on the order of 7 h and explores hundreds of configurations.
+maxExperiments = 3000
+
+## Enough decimals that the log-sampled efforts keep their resolution at the
+## bottom of the range (0.001) rather than collapsing onto a handful of values.
+digits = 6
+
+## Fixed so the search is re-derivable rather than re-run.  Record it, the
+## instance list and the binary alongside the results tree.
+seed = 1
+
+## Racing: elitist irace with the default Friedman test.  The output is the
+## surviving *set*, which #107 requires reported rather than only its argmax.
+elitist = 1
+firstTest = 5
+
+## Capping (`maxTime` / `boundMax`) is deliberately not enabled: it would
+## prepend a bound argument to the target runner's arguments, and the cost axis
+## here is the heuristics' own `[Heur] wall_ms`, not the wall time of the
+## process irace would be capping.  Per-run time is bounded by the solver's own
+## `--time-limit` instead.
+
+## Uncomment to evaluate configurations concurrently.  Each evaluation writes
+## its own `<tag>.opts` / `.log` / `.json`, so parallel runs do not collide —
+## but they do share the machine with the parallel workers inside each solve,
+## which is what the measurement is about.  Leave it at 1 unless the effective
+## worker count is pinned and recorded.
+# parallel = 1
