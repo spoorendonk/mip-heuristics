@@ -81,6 +81,57 @@ TEST_CASE("Options: effort split defaults", "[options]") {
     }
 }
 
+TEST_CASE("Options: stall threshold defaults", "[options][stall]") {
+    // The four stall thresholds were `constexpr` values in the heuristics'
+    // own headers until #106 made them options, because the stall gate —
+    // not the effort budget — is what actually limits a presolve dispatch,
+    // and a constant cannot be swept without a rebuild per point.
+    //
+    // Pinned here for the same reason the effort defaults above are: they
+    // are registered in third_party/highs_patch/apply_patch.cmake, which
+    // nothing else compiles or checks.  Units are effort units per matrix
+    // nonzero and are **not** comparable across heuristics (FJ counts step
+    // units, FPR and LocalMIP coefficient accesses, Scylla PDLP iters x
+    // nnz), so read these as four unrelated numbers that happen to share a
+    // suffix.
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    struct StallDefault {
+        const char* name;
+        HighsInt value;
+    };
+    const auto stalls = std::to_array<StallDefault>({
+        {"mip_heuristic_fj_stall", 256},
+        {"mip_heuristic_fpr_stall", 2048},
+        {"mip_heuristic_local_mip_stall", 4096},
+        {"mip_heuristic_scylla_stall", 512},
+    });
+    for (const auto& [name, expected] : stalls) {
+        HighsInt value = -1;
+        REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
+        REQUIRE(value == expected);
+        // 0 is legal and means "no staleness gate at all" — load-bearing
+        // for the stall-axis search, which needs a point where the gate
+        // provably never fires.  If the registered lower bound ever moved
+        // above zero that semantic would become inexpressible from the
+        // option, silently.
+        REQUIRE(highs.setOptionValue(name, HighsInt{0}) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, kHighsIInf) == HighsStatus::kOk);
+    }
+}
+
+TEST_CASE("Options: presolve-only defaults to false", "[options][presolve-only]") {
+    // Registered in apply_patch.cmake like the rest, so nothing but this
+    // checks the default.  It has to be false: true makes every solve stop
+    // before the root LP, which is a measurement mode, not a solver.
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    bool presolve_only = true;
+    REQUIRE(highs.getOptionValue("mip_heuristic_presolve_only", presolve_only) == HighsStatus::kOk);
+    REQUIRE_FALSE(presolve_only);
+    REQUIRE(highs.setOptionValue("mip_heuristic_presolve_only", true) == HighsStatus::kOk);
+}
+
 TEST_CASE("Options: suite defaults to all and accepts every value", "[options][suite]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);

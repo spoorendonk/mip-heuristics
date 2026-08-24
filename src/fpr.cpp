@@ -62,7 +62,7 @@ using VarOrderTable = std::vector<std::vector<HighsInt>>;
 // removed that reasoning — under an independently tuned per-heuristic
 // budget (#110) nothing else bounds one worker — so the worker now owns
 // an absolute stall gate of its own (`base_.stale_budget`, sized from
-// `kStallPerNnzFpr`).  It has no rebuild path: a retired FPR worker stays
+// `mip_heuristic_fpr_stall`).  It has no rebuild path: a retired FPR worker stays
 // retired and `run_attempt` reports zero effort, which is how the
 // opportunistic runner retires the slot.
 //

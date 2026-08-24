@@ -78,27 +78,31 @@ struct HeuristicConfig {
     // `per_worker`, which in this translation unit already means
     // `HeuristicBudget::per_worker` — a size_t budget, not a flag.
     bool budget_is_per_worker;
-    // This entry's stall threshold, in effort units per constraint-matrix
-    // nonzero (issue #111).  Absolute and instance-scaled: a heuristic
-    // that stops finding things exits on this rather than on a fraction
-    // of an allowance that someone tuned in isolation.  Defined in the
-    // heuristic's own header, since only it knows what its effort counter
-    // counts.
-    size_t stall_per_nnz;
+    // This entry's stall-threshold option, in effort units per
+    // constraint-matrix nonzero (issue #111; an option since #106).
+    // Absolute and instance-scaled: a heuristic that stops finding things
+    // exits on this rather than on a fraction of an allowance that
+    // someone tuned in isolation.  It was a `constexpr` in each
+    // heuristic's own header until the calibration needed to search the
+    // stall axis, which a rebuild-per-point cannot do; the per-heuristic
+    // header still carries what that heuristic's effort counter counts,
+    // which is why the four values are not comparable with each other.
+    // **0 means no gate at all** — see `stall_threshold`.
+    HighsInt HighsOptionsStruct::* stall;
     size_t (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
 };
 
 constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HeuristicFlags::fj, &HighsOptionsStruct::mip_heuristic_fj_effort,
-     true, fj::kStallPerNnzFj, &fj::run},
+     true, &HighsOptionsStruct::mip_heuristic_fj_stall, &fj::run},
     {"fpr", kSolutionSourceFPR, &HeuristicFlags::fpr, &HighsOptionsStruct::mip_heuristic_fpr_effort,
-     false, fpr::kStallPerNnzFpr, &fpr::run},
+     false, &HighsOptionsStruct::mip_heuristic_fpr_stall, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HeuristicFlags::local_mip,
-     &HighsOptionsStruct::mip_heuristic_local_mip_effort, false, local_mip::kStallPerNnzLocalMip,
-     &local_mip::run},
+     &HighsOptionsStruct::mip_heuristic_local_mip_effort, false,
+     &HighsOptionsStruct::mip_heuristic_local_mip_stall, &local_mip::run},
     {"scylla", kSolutionSourceScylla, &HeuristicFlags::scylla,
-     &HighsOptionsStruct::mip_heuristic_scylla_effort, false, scylla::kStallPerNnzScylla,
-     &scylla::run},
+     &HighsOptionsStruct::mip_heuristic_scylla_effort, false,
+     &HighsOptionsStruct::mip_heuristic_scylla_stall, &scylla::run},
 });
 
 // Each enabled heuristic runs in turn, with its own effort budget and the
@@ -190,14 +194,23 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         // whole-dispatch total, except for FJ, whose option sizes one
         // worker's allowance and therefore scales with the pool.
         const size_t sized = heuristic_effort_budget(problem.nnz, options.*h.effort);
-        const size_t total = h.budget_is_per_worker ? sized * exec.num_workers : sized;
+        const size_t total =
+            h.budget_is_per_worker ? saturating_mul(sized, exec.num_workers) : sized;
         // The runner-level stall gate (issue #111).  Absolute, not
         // `total / 4`: the runner's counter aggregates every worker, so a
-        // per-worker constant is multiplied by the pool, and a
+        // per-worker option is multiplied by the pool, and a
         // whole-dispatch one is used as it stands.  Clamped to `total`,
         // which is the only thing the gate may not exceed.
+        //
+        // The option is registered over `[0, kHighsIInf]`, so the cast is
+        // widening and cannot lose a value; `saturating_mul` covers the
+        // top of that range against a large `nnz` and a large pool, where
+        // a wrapped product would hand the gate a tiny threshold and stop
+        // the heuristic almost immediately.  Zero survives both, which is
+        // what makes "no gate" expressible from the option.
+        const auto stall_option = static_cast<size_t>(options.*h.stall);
         const size_t stall_per_nnz =
-            h.budget_is_per_worker ? h.stall_per_nnz * exec.num_workers : h.stall_per_nnz;
+            h.budget_is_per_worker ? saturating_mul(stall_option, exec.num_workers) : stall_option;
         const HeuristicBudget slice = make_budget(
             total, exec.num_workers, stall_threshold(problem.nnz, stall_per_nnz, total));
         sink.set_source(h.source_tag);

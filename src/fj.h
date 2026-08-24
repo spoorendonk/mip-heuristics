@@ -8,26 +8,27 @@ struct ProblemView;
 
 namespace fj {
 
-// Stall threshold, in effort units per constraint-matrix nonzero
-// (issue #111).  FJ's counter is in step units, so this is not
-// comparable with the other three heuristics' constants.
+// Stall threshold: `mip_heuristic_fj_stall`, in effort units per
+// constraint-matrix nonzero (issue #111, made an option by #106).  FJ's
+// counter is in step units, so its value is not comparable with the
+// other three heuristics' — do not read equal numbers as equal
+// tolerances.
 //
 // Scope: **per worker**, matching `mip_heuristic_fj_effort`, which sizes
-// one worker's allowance rather than a whole dispatch (`per_worker` in
-// mode_dispatch's `kChain`).  The runner-level gate is therefore
-// `num_workers` times this.
+// one worker's allowance rather than a whole dispatch
+// (`budget_is_per_worker` in mode_dispatch's `kChain`).  The
+// runner-level gate is therefore `num_workers` times this, and the
+// worker-level gate is the value itself.  FJ is the only entry with that
+// scope; the other three size a whole dispatch and are divided across
+// the pool.
 //
-// 256 = `nnz << 8`, the value FJ has always used and the model the other
-// three were moved onto: it is exactly a quarter of FJ's default
-// per-worker budget (`nnz << 10`), so both the worker-level and the
-// runner-level gate are unchanged at the shipped default.
-//
-// PROVISIONAL, pending the per-heuristic budget calibration (#106).
-// #106 sweeps each heuristic's effort option and will show where each
-// one actually stops producing solutions; these values are placeholders
-// chosen to reproduce the pre-#111 gate at the shipped default effort,
-// not the result of a measurement.
-inline constexpr size_t kStallPerNnzFj = 256;
+// The default 256 is `nnz << 8`, the value FJ has always used and the
+// model the other three were moved onto: exactly a quarter of FJ's
+// default per-worker budget (`nnz << 10`).  0 disables the gate
+// entirely.  The default is registered in
+// `third_party/highs_patch/apply_patch.cmake` and pinned by
+// `tests/test_smoke.cpp`; `docs/PARAMETERS.md` carries the calibration
+// notes.
 
 // Runs N continuous `parallel::for_each` FjWorkers with per-worker
 // self-termination, each seeded differently; a worker that finishes is

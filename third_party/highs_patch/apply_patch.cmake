@@ -71,13 +71,18 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # the current one is rejected outright rather than rewritten in place.
 #
 # Bump PATCH_VERSION whenever any inserted text changes.  It is per-tree
-# state, not a per-change counter: version 8 covers two independent
+# state, not a per-change counter: version 8 covered two independent
 # changes to inserted text that landed together — the four per-heuristic
 # effort option records plus the now-argument-less run_presolve call site
 # (#110), and the suite option's registered description, which enumerated
 # six values as if exhaustive (#112).  Two such changes need one bump, not
 # two; what the marker has to distinguish is trees, not commits.
-set(PATCH_VERSION "8")
+#
+# Version 9 is #106's calibration surface: the four
+# `mip_heuristic_<name>_stall` option records, the
+# `mip_heuristic_presolve_only` record, and the presolve-only early exit
+# inserted into HighsMipSolver.cpp beside the run_presolve call site.
+set(PATCH_VERSION "9")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -187,7 +192,7 @@ if(_effort_default_found EQUAL -1)
         "${CLEAN_REBUILD}")
 endif()
 
-# ── Add the four per-heuristic effort options ──
+# ── Add the per-heuristic calibration options ──
 # One effort-budget multiplier per presolve heuristic (#110), replacing the
 # single shared mip_heuristic_presolve_effort and the kWeight* constants
 # that split it.  `src/mode_dispatch.cpp` reads each one and sizes that
@@ -243,10 +248,12 @@ endif()
 # otherwise GCC's -Wreorder fires on HighsOptions' constructor, which is a
 # warning about our patch in a file nobody reads.  One loop applying the
 # member and ctor insertions together, in one iteration order, makes that
-# true by construction: both lists end up
-# `shifting, scylla, local_mip, fpr, fj, suite` (the suite block ran
-# first, so it sits last).  Add an option by appending to the list below,
-# never by writing a separate block with an ordering of its own.
+# true by construction: both lists come out in the reverse of the list
+# below, with the suite option last (its block ran first).  Add an option
+# by appending to the list below — of any kind; the loop dispatches on
+# the entry's `kind` field — never by writing a separate block with an
+# ordering of its own.  A second loop would keep the invariant only by
+# accident.
 #
 # Record registrations are appended after the same anchor too, so they
 # come out in that same reversed order; nothing depends on it, but each
@@ -255,13 +262,55 @@ endif()
 # constructor default, and every setOptionValue for it fails with no
 # diagnostic anywhere.
 #
-# No `;` in a list entry: set() builds a cmake list and would split on it.
-# Fields are <identifier>:<record default>:<record description>.
-set(_effort_options
-    "mip_heuristic_fj_effort:0.0125:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
-    "mip_heuristic_fpr_effort:0.0884:Effort budget multiplier for the FPR presolve heuristic"
-    "mip_heuristic_local_mip_effort:0.1821:Effort budget multiplier for the LocalMIP presolve heuristic"
-    "mip_heuristic_scylla_effort:0.0296:Effort budget multiplier for the Scylla presolve heuristic")
+# ── The stall-threshold options, and the presolve-only switch (#106) ──
+#
+# The four `mip_heuristic_<name>_stall` options were `constexpr` values in
+# each heuristic's own header until #106.  They are the parameter that
+# actually limits a presolve dispatch — a 64x sweep of the LocalMIP effort
+# option moved median presolve wall time by under 4%, because the stall
+# gate, not the budget, is what stops the search — and a constant cannot
+# be swept without a rebuild per point, so the calibration could not reach
+# it at all.
+#
+# Units are effort units per constraint-matrix nonzero, and they are **not
+# comparable across heuristics**: FJ counts step units, FPR and LocalMIP
+# coefficient accesses, Scylla PDLP iterations x nnz.  Scope follows each
+# heuristic's effort option — FJ's is per worker, the other three size a
+# whole dispatch (see `kChain` in src/mode_dispatch.cpp).  The defaults
+# reproduce the pre-#111 gate at each heuristic's shipped default effort,
+# rounded to the neighbouring power of two, and are provisional.
+#
+# **0 means no staleness gate at all**, not "give up immediately" — see
+# `stall_threshold` in src/heuristic_common.h.  That is why the range is
+# `[0, kHighsIInf]` and why the zero end is load-bearing: a search of the
+# stall axis needs a point where the gate provably never fires.
+#
+# `mip_heuristic_presolve_only` exits the solve after the presolve
+# heuristic chain, before the root LP, keeping whatever incumbent the
+# chain produced.  It is what makes a presolve-heuristic measurement
+# possible at all: in a full solve a heuristic runs for ~2 s of a 60 s
+# limit and B&B owns the rest, so the campaign's primal-integral metric
+# dilutes the thing being tuned into seed noise.  The two alternatives
+# that look like they should work do not — `mip_max_nodes = 0` is checked
+# inside the B&B loop, so the root LP and the dive heuristics all run
+# first, and `mip_root_presolve_only` controls where presolve is applied,
+# not termination.  The early exit itself is inserted into
+# HighsMipSolver.cpp further down.
+#
+# No `;` and no `:` in a list entry: set() builds a cmake list and would
+# split on the first, and the field split below uses the second.
+# Fields are <identifier>:<kind>:<record default>:<record description>,
+# where <kind> is one of double / int / bool.
+set(_patch_options
+    "mip_heuristic_fj_effort:double:0.0125:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
+    "mip_heuristic_fpr_effort:double:0.0884:Effort budget multiplier for the FPR presolve heuristic"
+    "mip_heuristic_local_mip_effort:double:0.1821:Effort budget multiplier for the LocalMIP presolve heuristic"
+    "mip_heuristic_scylla_effort:double:0.0296:Effort budget multiplier for the Scylla presolve heuristic"
+    "mip_heuristic_fj_stall:int:256:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_fpr_stall:int:2048:Staleness threshold for the FPR presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_local_mip_stall:int:4096:Staleness threshold for the LocalMIP presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_scylla_stall:int:512:Staleness threshold for the Scylla presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_presolve_only:bool:false:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
 
 # The upstream record block all four record insertions anchor on, spelled
 # once: four copies of a four-line exact-match string is four chances for
@@ -273,11 +322,52 @@ string(CONCAT _shifting_record
     "    records.push_back(record_bool);")
 
 file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
-set(_effort_applied FALSE)
-foreach(_entry IN LISTS _effort_options)
+set(_opt_applied FALSE)
+foreach(_entry IN LISTS _patch_options)
     string(REGEX REPLACE "^([^:]+):.*$" "\\1" _opt_ident "${_entry}")
-    string(REGEX REPLACE "^[^:]+:([^:]+):.*$" "\\1" _opt_default "${_entry}")
-    string(REGEX REPLACE "^[^:]+:[^:]+:(.*)$" "\\1" _opt_desc "${_entry}")
+    string(REGEX REPLACE "^[^:]+:([^:]+):.*$" "\\1" _opt_kind "${_entry}")
+    string(REGEX REPLACE "^[^:]+:[^:]+:([^:]+):.*$" "\\1" _opt_default "${_entry}")
+    string(REGEX REPLACE "^[^:]+:[^:]+:[^:]+:(.*)$" "\\1" _opt_desc "${_entry}")
+
+    # Everything the kind decides, in one place.  `_opt_ctor_value` is
+    # deliberately *not* the record default: OptionRecord* writes the record
+    # default over the member at registration, so the constructor initializer
+    # only decides what a *missed* record insertion would leave behind — a
+    # stable zero rather than an uninitialised read.  `_opt_ctor_regex` is
+    # that same value escaped for the sanity check below.
+    #
+    # Ranges are a property of the kind here, not of the entry, because that
+    # is what these options happen to be: every effort multiplier is a
+    # fraction in [0, 1] and every stall threshold a non-negative count.  An
+    # option needing a range of its own is the point at which this gains a
+    # fifth field, not the point at which it gains a second loop.
+    if(_opt_kind STREQUAL "double")
+        set(_opt_cxx_type "double")
+        set(_opt_ctor_value "0.0")
+        set(_opt_ctor_regex "\\(0\\.0\\)")
+        set(_opt_record_var "record_double")
+        set(_opt_record_ctor "OptionRecordDouble")
+        set(_opt_record_args "0.0, ${_opt_default}, 1.0")
+    elseif(_opt_kind STREQUAL "int")
+        set(_opt_cxx_type "HighsInt")
+        set(_opt_ctor_value "0")
+        set(_opt_ctor_regex "\\(0\\)")
+        set(_opt_record_var "record_int")
+        set(_opt_record_ctor "OptionRecordInt")
+        set(_opt_record_args "0, ${_opt_default}, kHighsIInf")
+    elseif(_opt_kind STREQUAL "bool")
+        set(_opt_cxx_type "bool")
+        set(_opt_ctor_value "false")
+        set(_opt_ctor_regex "\\(false\\)")
+        set(_opt_record_var "record_bool")
+        set(_opt_record_ctor "OptionRecordBool")
+        set(_opt_record_args "${_opt_default}")
+    else()
+        message(FATAL_ERROR
+            "apply_patch.cmake: unknown option kind '${_opt_kind}' for "
+            "${_opt_ident}. Add it to the kind dispatch in this file; the "
+            "entry format is <identifier>:<kind>:<default>:<description>.")
+    endif()
 
     string(FIND "${OPTIONS_CONTENT}" "${_opt_ident}" _opt_found)
     if(NOT _opt_found EQUAL -1)
@@ -288,39 +378,35 @@ foreach(_entry IN LISTS _effort_options)
     # Member variable: insert after mip_heuristic_run_shifting
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  double ${_opt_ident};\n"
+      "bool mip_heuristic_run_shifting;\n  ${_opt_cxx_type} ${_opt_ident};\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Constructor initializer: insert after mip_heuristic_run_shifting(false),
-    # 0.0 rather than the record default, matching every other option here:
-    # OptionRecordDouble writes the record default over it at registration,
-    # so this value only decides what a *missed* record insertion would
-    # leave behind — a stable 0.0 rather than an uninitialised read.
     string(REPLACE
       "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        ${_opt_ident}(0.0),\n"
+      "mip_heuristic_run_shifting(false),\n        ${_opt_ident}(${_opt_ctor_value}),\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Record registration: insert after the mip_heuristic_run_shifting record
     string(CONCAT _opt_record
       "${_shifting_record}\n"
       "\n"
-      "    record_double = new OptionRecordDouble(\n"
+      "    ${_opt_record_var} = new ${_opt_record_ctor}(\n"
       "        \"${_opt_ident}\",\n"
       "        \"${_opt_desc}\", advanced,\n"
-      "        &${_opt_ident}, 0.0, ${_opt_default}, 1.0);\n"
-      "    records.push_back(record_double);")
+      "        &${_opt_ident}, ${_opt_record_args});\n"
+      "    records.push_back(${_opt_record_var});")
     string(REPLACE "${_shifting_record}" "${_opt_record}" OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Sanity checks: all three insertions must land, per option.
     #
     # Match the member declaration *without* its trailing semicolon: cmake
     # splits a matched string containing `;` into list elements, which would
-    # make list(LENGTH) report 2 for a single hit.  The `double ` prefix is
-    # what keeps this from also matching the ctor init or the record.
-    string(REGEX MATCHALL "double ${_opt_ident}" _opt_member_hits "${OPTIONS_CONTENT}")
+    # make list(LENGTH) report 2 for a single hit.  The type prefix is what
+    # keeps this from also matching the ctor init or the record.
+    string(REGEX MATCHALL "${_opt_cxx_type} ${_opt_ident}" _opt_member_hits "${OPTIONS_CONTENT}")
     list(LENGTH _opt_member_hits _opt_member_count)
-    string(REGEX MATCHALL "${_opt_ident}\\(0\\.0\\)" _opt_ctor_hits "${OPTIONS_CONTENT}")
+    string(REGEX MATCHALL "${_opt_ident}${_opt_ctor_regex}" _opt_ctor_hits "${OPTIONS_CONTENT}")
     list(LENGTH _opt_ctor_hits _opt_ctor_count)
     # string(FIND), not REGEX MATCHALL: the record text contains semicolons.
     # The quoted identifier occurs only in the record — member and ctor
@@ -335,12 +421,12 @@ foreach(_entry IN LISTS _effort_options)
             "three mip_heuristic_run_shifting anchors no longer matches. "
             "${CLEAN_REBUILD}")
     endif()
-    set(_effort_applied TRUE)
+    set(_opt_applied TRUE)
     message(STATUS "Applied ${_opt_ident} option to HighsOptions.h")
 endforeach()
 # Only on a change: an unconditional write would restamp the header's mtime
 # on every configure and rebuild all of HiGHS behind it.
-if(_effort_applied)
+if(_opt_applied)
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
 endif()
 
@@ -709,9 +795,39 @@ if(_found EQUAL -1)
     # mip_heuristic_<name>_effort option, derived inside run_presolve, so
     # the patch string carries no budget arithmetic to drift out of sync
     # with the source tree.
+    #
+    # Patch A3 rides along directly behind it: the mip_heuristic_presolve_only
+    # early exit (#106).  It takes the same path the infeasibility exit above
+    # takes — this is the last point in `run()` before `evaluateRootNode`, so
+    # returning here is what "before the root LP" means — with a status that
+    # keeps the incumbent instead of discarding it.
+    #
+    # The status is `kSolutionLimit`, and the choice is not arbitrary:
+    #
+    #  * It is what HiGHS itself assigns when a user-configured *search-size*
+    #    limit stops the solve — `mip_max_nodes`, `mip_max_leaves` and
+    #    `mip_max_improving_sols` all set it in `HighsMipSolverData::
+    #    checkLimits`.  Presolve-only is that same kind of limit; it is
+    #    morally `mip_max_nodes = 0`, which is the option this feature exists
+    #    because HiGHS checks *inside* the B&B loop, after the root LP.
+    #  * `cleanupSolve` overwrites only `kNotset` and `kInfeasible`, so this
+    #    survives to the caller.  `kNotset` would be rewritten to `kOptimal`
+    #    whenever the chain found anything — claiming optimality for a solve
+    #    that never computed a dual bound — and `kInfeasible` would do the
+    #    same, having lied in the log line on the way.
+    #  * It maps to `HighsStatus::kWarning`, so a caller sees that the solve
+    #    did not run to completion, and the solution is still extracted:
+    #    `Highs::callSolveMip` keys that off `solution_objective_`, never off
+    #    the model status.
+    #  * It stays honest when the chain found nothing: status kSolutionLimit,
+    #    infinite primal bound, solution status "-".
+    #
+    # No `!submip` guard: presolve-only never reaches B&B, so it never
+    # reaches the dive heuristics that build sub-MIPs, and no sub-MIP can be
+    # constructed under this option in the first place.
     string(REPLACE
       "    }\n    // End of pre-root-node heuristics"
-      "    }\n    if (heuristics::run_presolve(*this)) {\n      modelstatus_ = HighsModelStatus::kInfeasible;\n      cleanupSolve();\n      return;\n    }\n\n    // End of pre-root-node heuristics"
+      "    }\n    if (heuristics::run_presolve(*this)) {\n      modelstatus_ = HighsModelStatus::kInfeasible;\n      cleanupSolve();\n      return;\n    }\n    if (options_mip_->mip_heuristic_presolve_only) {\n      // mip-heuristics: stop before the root LP, keeping the incumbent.\n      // kSolutionLimit is what HiGHS assigns for its own search-size\n      // limits (mip_max_nodes/leaves/improving_sols), and cleanupSolve\n      // leaves it alone, so the presolve incumbent is reported as found.\n      modelstatus_ = HighsModelStatus::kSolutionLimit;\n      cleanupSolve();\n      return;\n    }\n\n    // End of pre-root-node heuristics"
       CONTENT "${CONTENT}")
 
     # This block had no check at all, and it is the one whose miss is
@@ -724,12 +840,21 @@ if(_found EQUAL -1)
     # and quietly invalidates the vanilla-equivalence row of the benchmark
     # matrix (epic #88 coupling I).  Neither shows up as a build failure,
     # so nothing else would catch it.
+    #
+    # A3's miss is quieter still: `mip_heuristic_presolve_only` would be a
+    # registered option that silently does nothing, so a presolve-only
+    # screen would run full solves and score them as if they had stopped
+    # after presolve.  It shares A2's anchor, so in practice it lands or
+    # misses with it — check it anyway, because it is the half whose
+    # failure produces plausible numbers rather than none.
     string(FIND "${CONTENT}" "heuristics::run_presolve" _presolve_check)
     string(FIND "${CONTENT}" "native FJ only at suite=off" _fj_off_check)
-    if(_presolve_check EQUAL -1 OR _fj_off_check EQUAL -1)
+    string(FIND "${CONTENT}" "mip_heuristic_presolve_only" _presolve_only_check)
+    if(_presolve_check EQUAL -1 OR _fj_off_check EQUAL -1 OR _presolve_only_check EQUAL -1)
         message(FATAL_ERROR
             "HighsMipSolver.cpp presolve patch failed "
-            "(run_presolve=${_presolve_check}, fj_disable=${_fj_off_check}). "
+            "(run_presolve=${_presolve_check}, fj_disable=${_fj_off_check}, "
+            "presolve_only=${_presolve_only_check}). "
             "Upstream HiGHS likely restructured the pre-root-node heuristics "
             "block so an exact-string anchor no longer matches. "
             "Please update Patch A/A2 in third_party/highs_patch/apply_patch.cmake. "

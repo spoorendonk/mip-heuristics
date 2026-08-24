@@ -718,14 +718,14 @@ itself is driven by a tracked target runner rather than by config names.
 
 ---
 
-## Stall Thresholds (issue #111)
+## Stall Thresholds (issue #111; options since #106)
 
 Every presolve heuristic stops early when improvement-free effort crosses
 a threshold, at two levels: a runner-level gate over the whole dispatch
 (`ContinuousLoopState::effort_since_improvement` against
 `HeuristicBudget::stale`) and a worker-level gate in `WorkerBudgetState`.
 
-The four constants below are those thresholds, expressed as **effort
+The four options below are those thresholds, expressed as **effort
 units per constraint-matrix nonzero** — absolute and instance-scaled,
 never a fraction of the heuristic's own budget. A fraction cannot bound
 over-budgeting: doubling the budget doubles the tolerance, so the gate
@@ -745,11 +745,20 @@ of production and the same predicate `[Heur] found` reports; `offer` is
 threshold alone left FPR at 19.98x over a 20x sweep on `flugpl`, where
 it spent forty ceilings' worth of effort for one accepted solution.
 
+**Zero means no gate at all.** `stall_threshold` returns an unbounded
+threshold when the multiplier is `0`, before the clamp below — not a
+threshold of zero, which would retire every worker before it did any
+work. That semantic is load-bearing rather than defensive: searching the
+stall axis needs a point where the gate provably never fires, or "what
+does this gate cost?" has no zero to measure against. `0` is the bottom
+of every one of the four ranges, and the top is `kHighsIInf`.
+
 **Inert region.** `stall_threshold` clamps to the allowance, so a gate
 cannot fire at all while `nnz x k` exceeds the whole budget — that is,
-while the effort option is at or below `k / 81920`:
+while the effort option is at or below `k / 81920`. At the shipped stall
+defaults that boundary sits here:
 
-| heuristic | inert at or below | shipped default |
+| heuristic | inert at or below | shipped effort default |
 |---|---|---|
 | fj | 0.003125 | 0.0125 |
 | fpr | 0.025 | 0.0884 |
@@ -757,45 +766,58 @@ while the effort option is at or below `k / 81920`:
 | scylla | 0.00625 | 0.0296 |
 
 Every gate is therefore live at its own default, and the clamp is doing
-its documented job rather than misbehaving. It matters for **#106**: a
-budget ladder that extends below these values is measuring the budget,
-not the gate, and will read as "the threshold does nothing down here".
+its documented job rather than misbehaving. The boundary now **moves with
+the stall option**: the column is `stall / 81920`, so halving a stall
+value halves the effort below which that gate is inert. A search over
+both axes at once crosses this region, and inside it the run measures the
+budget rather than the gate.
 
 `stall_threshold(nnz, per_nnz, budget)` in `src/heuristic_common.h`
-applies one, clamped to the allowance. The runner-level gate is sized in
-`run_sequential` (multiplied by the worker count for the one constant
-whose scope is per-worker, FJ's); the worker-level gate is
+applies one, clamped to the allowance, with the product taken through
+`saturating_mul` — both factors are user-supplied now, and a wrapped
+product would hand the gate a *small* threshold, silently reducing the
+heuristic to nothing at the top of the option's range. The runner-level
+gate is sized in `run_sequential` (multiplied by the worker count for the
+one option whose scope is per-worker, FJ's); the worker-level gate is
 `HeuristicBudget::worker_stale`, that value divided by the worker count.
 Scylla is the documented exception and takes the dispatch-level value,
 because its per-worker counter is charged the PDLP cost already divided
 by the worker count.
 
-**All four are PROVISIONAL**, pending the per-heuristic budget
+**All four defaults are PROVISIONAL**, pending the per-heuristic
 calibration (#106). They were chosen to reproduce the pre-#111 gate at
-each heuristic's shipped default effort, not measured. #106 sweeps each
-budget and will show where each heuristic actually stops producing.
+each heuristic's shipped default effort, not measured — and they are the
+reason the constants became options: a 64x sweep of the LocalMIP effort
+option moved median presolve wall time by under 4%, because the gate, not
+the budget, is what stops the search, and a `constexpr` cannot be swept
+without a rebuild per point. They are registered in
+`third_party/highs_patch/apply_patch.cmake` and pinned by
+`tests/test_smoke.cpp`, which nothing else checks.
 
 The units differ per heuristic and the values are **not** comparable
 across them: FJ counts step units, FPR and LocalMIP coefficient accesses,
-Scylla PDLP iterations x nnz.
+Scylla PDLP iterations x nnz. Do not align them numerically; align the
+semantics (the same quantile of each heuristic's own inter-acceptance
+effort-gap distribution).
 
-### `kStallPerNnzFj` — FeasibilityJump stall threshold
+### `mip_heuristic_fj_stall` — FeasibilityJump stall threshold
 
-- **File**: `src/fj.h`
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `256`
 - **Meaning**: `nnz << 8` step units per worker without an improvement.
-  Scope is **per worker**, matching `mip_heuristic_fj_effort`. This is
-  the value FJ has always used — the one heuristic that was already
-  absolute, and the model the other three were moved onto. It is exactly
-  a quarter of FJ's default per-worker budget (`nnz << 10`), so both
-  gates are unchanged at the shipped default.
-- **Suggested range**: 64–1024.
+  Scope is **per worker**, matching `mip_heuristic_fj_effort` — the only
+  one of the four with that scope, so the runner-level gate is this times
+  the worker count. This is the value FJ has always used: the one
+  heuristic that was already absolute, and the model the other three were
+  moved onto. It is exactly a quarter of FJ's default per-worker budget
+  (`nnz << 10`), so both gates are unchanged at the shipped defaults.
+- **Suggested range**: 64–1024, plus `0` for no gate.
 
 ---
 
-### `kStallPerNnzFpr` — FPR stall threshold
+### `mip_heuristic_fpr_stall` — FPR stall threshold
 
-- **File**: `src/fpr.h`
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `2048`
 - **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
   without a solution. FPR had no worker-level gate at all before #111
@@ -803,13 +825,13 @@ Scylla PDLP iterations x nnz.
   one at this value divided by the worker count, and a retired FPR worker
   stays retired rather than being rebuilt. 2048 is the power of two
   nearest the pre-#111 gate at the default effort 0.0884 (1810 x nnz).
-- **Suggested range**: 512–8192.
+- **Suggested range**: 512–8192, plus `0` for no gate.
 
 ---
 
-### `kStallPerNnzLocalMip` — LocalMIP stall threshold
+### `mip_heuristic_local_mip_stall` — LocalMIP stall threshold
 
-- **File**: `src/local_mip.h`
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `4096`
 - **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
   without an improvement. 4096 is the power of two nearest the pre-#111
@@ -842,13 +864,13 @@ Scylla PDLP iterations x nnz.
   improving its own solution without beating the pool's worst-of-ten now
   retires and is rebuilt from a pool restart, so it is redirected rather
   than killed. Whether that trade wins is a #106 question.
-- **Suggested range**: 1024–16384.
+- **Suggested range**: 1024–16384, plus `0` for no gate.
 
 ---
 
-### `kStallPerNnzScylla` — Scylla stall threshold
+### `mip_heuristic_scylla_stall` — Scylla stall threshold
 
-- **File**: `src/scylla.h`
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `512`
 - **Meaning**: PDLP-iteration x nnz units per nonzero, **whole
   dispatch**, without a solution. Small in absolute terms because one
@@ -866,7 +888,44 @@ Scylla PDLP iterations x nnz.
   solve once it has started. Fixing this means bounding the solve itself
   (a PDLP iteration cap derived from the remaining stall room), not
   bounding the attempt. **Flagged for #106.**
-- **Suggested range**: 128–4096.
+- **Suggested range**: 128–4096, plus `0` for no gate — though on Scylla
+  `0` and any value below one PDLP solve are observationally the same,
+  for the reason above.
+
+---
+
+## Presolve-Only Exit (issue #106)
+
+### `mip_heuristic_presolve_only` — stop after the presolve chain
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false`
+- **Meaning**: When true, the solve exits after the presolve heuristic
+  chain and **before the root LP**, keeping whatever incumbent the chain
+  produced. It is a measurement mode, not a solver mode: inside a full
+  solve a presolve heuristic runs for ~2 s of a 60 s limit and B&B owns
+  the rest, so a primal-integral score over the whole solve dilutes the
+  thing being tuned into seed noise. A presolve-only run scores exactly
+  the chain.
+- **Reported status**: `kSolutionLimit`, which maps to
+  `HighsStatus::kWarning`. That is what HiGHS itself assigns when a
+  user-configured search-size limit stops the solve (`mip_max_nodes`,
+  `mip_max_leaves`, `mip_max_improving_sols`), and presolve-only is that
+  kind of limit. It is also the shape of status that survives
+  `cleanupSolve`, which overwrites only `kNotset` and `kInfeasible` —
+  either of those would be rewritten to `kOptimal` whenever the chain
+  found anything, claiming optimality for a solve that never computed a
+  dual bound. The solution is still extracted; `Highs::callSolveMip` keys
+  that off `solution_objective_`, never off the model status. With no
+  solution the run reports an infinite primal bound and solution status
+  `-`.
+- **Not** `mip_max_nodes = 0` (checked inside the B&B loop, so the root
+  LP and the dive heuristics run first) and **not**
+  `mip_root_presolve_only` (controls where presolve is applied, not when
+  the solve stops). Both were tried.
+- **Side effects**: no root LP means no dual bound (`mip_dual_bound` is
+  `-inf`), no B&B nodes, no LP iterations, and no dive-time heuristics —
+  `fpr_lp` never runs under this option, and neither do RENS/RINS.
 
 ---
 

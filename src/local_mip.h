@@ -10,26 +10,25 @@ struct ProblemView;
 
 namespace local_mip {
 
-// Stall threshold, in effort units (coefficient accesses) per
-// constraint-matrix nonzero (issue #111).
+// Stall threshold: `mip_heuristic_local_mip_stall`, in effort units
+// (coefficient accesses) per constraint-matrix nonzero (issue #111, made
+// an option by #106).
 //
 // Scope: **whole dispatch**, matching `mip_heuristic_local_mip_effort`.
-// Each worker's share is this divided by the worker count.
+// Each worker's share is this divided by the worker count
+// (`HeuristicBudget::worker_stale`); the runner-level gate uses the
+// value as it stands.
 //
-// 4096 reproduces the pre-#111 runner gate: at the default effort
-// 0.1821 that gate was `heuristic_effort_budget(nnz, 0.1821) / 4`
-// = 3729 x nnz, and 4096 is the neighbouring power of two (1.10x).
-// This is the heuristic the issue's evidence came from — LocalMIP on
-// `fiball` found its one solution at 0.6 s and then spent 11 s of a
-// 12 s limit finding nothing else, because the gate it was measured
-// against grew with the budget.
-//
-// PROVISIONAL, pending the per-heuristic budget calibration (#106).
-// #106 sweeps each heuristic's effort option and will show where each
-// one actually stops producing solutions; these values are placeholders
-// chosen to reproduce the pre-#111 gate at the shipped default effort,
-// not the result of a measurement.
-inline constexpr size_t kStallPerNnzLocalMip = 4096;
+// The default 4096 reproduces the pre-#111 runner gate: at the default
+// effort 0.1821 that gate was `heuristic_effort_budget(nnz, 0.1821) / 4`
+// = 3729 x nnz, and 4096 is the neighbouring power of two (1.10x).  This
+// is the heuristic #111's evidence came from — LocalMIP on `fiball`
+// found its one solution at 0.6 s and then spent 11 s of a 12 s limit
+// finding nothing else, because the gate it was measured against grew
+// with the budget.  0 disables the gate entirely.  The default is
+// registered in `third_party/highs_patch/apply_patch.cmake` and pinned
+// by `tests/test_smoke.cpp`; `docs/PARAMETERS.md` carries the
+// calibration notes.
 
 // Compile-time instrumentation switch (R3-1 round-4 review).  Driven
 // by the `MIP_HEURISTICS_INSTRUMENT` CMake option, which defaults to

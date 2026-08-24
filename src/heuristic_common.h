@@ -149,6 +149,25 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
     return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);
 }
 
+// `a * b`, saturating at SIZE_MAX instead of wrapping.
+//
+// Every factor these budgets are built from is now user-supplied: the
+// stall multipliers are options with an upper bound of `kHighsIInf`
+// (#106), and `nnz` is whatever model was loaded, so `nnz * per_nnz`
+// overflows on a large instance at the top of the option's range.  A
+// wrapped product is the worst possible failure here — it produces a
+// *small* threshold, so the gate fires almost immediately and the
+// heuristic silently does nothing, which reads as "this parameter value
+// is terrible" to whatever is searching the space.  Saturating gives the
+// monotone answer instead: a bigger multiplier never means a tighter
+// gate.
+[[nodiscard]] constexpr size_t saturating_mul(size_t a, size_t b) {
+    if (a == 0 || b == 0) {
+        return 0;
+    }
+    return a > SIZE_MAX / b ? SIZE_MAX : a * b;
+}
+
 // Absolute, instance-scaled stall threshold (issue #111).
 //
 // A stall threshold answers "how much improvement-free search is enough
@@ -165,7 +184,10 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
 // constraint-matrix nonzero, i.e. roughly "this many full sweeps of the
 // matrix without an improvement".  Each heuristic names its own, since
 // their effort counters are in different units (FJ step units;
-// FPR/LocalMIP coefficient accesses; Scylla PDLP iters x nnz).
+// FPR/LocalMIP coefficient accesses; Scylla PDLP iters x nnz).  Each
+// heuristic names its own, as a `mip_heuristic_<name>_stall` option
+// since #106 — the four are read in `kChain` (mode_dispatch.cpp) and are
+// **not** comparable across heuristics.
 //
 // Clamped to `budget` because a threshold above the allowance can never
 // fire, and a heuristic that cannot reach its own gate should report the
@@ -173,7 +195,20 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
 // `budget == 0` means "no ceiling known"; the floor of 1 keeps a
 // degenerate `nnz == 0` model from producing a threshold that trips
 // before any work happens.
+//
+// `per_nnz == 0` means **no staleness gate at all** (issue #106), not
+// "give up immediately".  Since #106 the multiplier is an option
+// (`mip_heuristic_<name>_stall`), and a search of the stall axis needs a
+// point where the gate provably never fires — otherwise "how much does
+// this gate cost?" has no zero to measure against.  The unbounded value
+// is returned *before* the clamp: clamping to `budget` would make the
+// gate fire exactly at budget exhaustion, which looks the same on most
+// runs but is not the same thing, and is not what a probe asking "run
+// with the gate disabled" can rely on.
 [[nodiscard]] constexpr size_t stall_threshold(size_t nnz, size_t per_nnz, size_t budget) {
-    const size_t threshold = std::max<size_t>(nnz * per_nnz, 1);
+    if (per_nnz == 0) {
+        return SIZE_MAX;
+    }
+    const size_t threshold = std::max<size_t>(saturating_mul(nnz, per_nnz), 1);
     return budget == 0 ? threshold : std::min(threshold, budget);
 }

@@ -20,7 +20,8 @@
 // heuristics.  A quarter of the budget cannot bound over-budgeting:
 // doubling the budget doubles the tolerance, so the gate never fires
 // relatively sooner.  It is now an absolute, instance-scaled
-// `kStallPerNnz<H> x nnz`.
+// `mip_heuristic_<name>_stall x nnz` — a `constexpr` per heuristic at
+// first, an option since #106, where `0` means no gate at all.
 //
 // The *signal* was each worker's own "I beat my own best", which restarts
 // at infinity on every rebuild, so the pool's verdict was computed,
@@ -97,13 +98,20 @@ size_t presolve_effort(const std::vector<std::string>& lines, const std::string&
 // runner, on an issue labelled portable.  `ScopedThreadPin` is what makes
 // the pin survive whatever initialised the global task executor first —
 // see its comment.
-size_t effort_at(const char* inst, const char* heur, const char* option, double effort,
-                 int threads) {
+// `stall` is that heuristic's `mip_heuristic_<name>_stall` option, or a
+// negative value to leave it at its shipped default.  Since #106 the
+// threshold is an option rather than a constant, which is what lets the
+// gate be switched off from a test instead of from a rebuild.
+size_t effort_at(const char* inst, const char* heur, const char* option, double effort, int threads,
+                 HighsInt stall = -1) {
     const auto lines = solve_capturing_log(inst, [&](Highs& h) {
         require_option(h, "log_dev_level", 3);
         require_option(h, "threads", threads);
         require_option(h, "random_seed", 0);
         require_option(h, option, effort);
+        if (stall >= 0) {
+            require_option(h, std::string("mip_heuristic_") + heur + "_stall", stall);
+        }
         set_suite(h, heur);
     });
     return presolve_effort(lines, heur);
@@ -173,6 +181,31 @@ TEST_CASE("stall gate: FPR on flugpl binds at four workers too", "[stall]") {
     check_gate_binds("flugpl.mps", "fpr", "mip_heuristic_fpr_effort", /*threads=*/4);
 }
 
+// ── The option, end to end: 0 really does remove the gate ──
+
+TEST_CASE("stall gate: mip_heuristic_fpr_stall=0 restores budget-tracking", "[stall]") {
+    // The unit assertions below pin `stall_threshold(nnz, 0, budget) ==
+    // SIZE_MAX`; this pins that the option reaches it, through the record
+    // registration, `kChain`, `run_sequential` and `make_budget`.  #113's
+    // probe needs a run where the gate provably never fires, and a
+    // semantic that is only true in a header is no use to it.
+    //
+    // flugpl/FPR is the case where the gate is measurably doing the work:
+    // 19.98x charged-effort growth over a 20x budget sweep before #111,
+    // 1.03x after.  Switching the gate off at the top of that sweep has to
+    // put the spend back where the budget puts it — so the ratio here is
+    // between two solves at the *same* effort, differing only in the
+    // stall option, and the bound is the same 4x that separates "bounded
+    // by an absolute threshold" from "bounded by the budget".
+    const ScopedThreadPin pin;
+    const size_t gated = effort_at("flugpl.mps", "fpr", "mip_heuristic_fpr_effort", kHighEffort, 1);
+    const size_t ungated =
+        effort_at("flugpl.mps", "fpr", "mip_heuristic_fpr_effort", kHighEffort, 1, /*stall=*/0);
+    REQUIRE(gated > 0);
+    INFO("gated=" << gated << " ungated=" << ungated);
+    REQUIRE(static_cast<double>(ungated) > kMaxGrowth * static_cast<double>(gated));
+}
+
 // Two instances are deliberately absent from the ratio cases above, and
 // both absences are findings rather than omissions.
 //
@@ -237,6 +270,53 @@ TEST_CASE("stall gate: the threshold does not move with the budget", "[stall][un
     // work happened.
     REQUIRE(stall_threshold(0, kPerNnz, 1000) == 1);
     REQUIRE(stall_threshold(kNnz, kPerNnz, 0) == kNnz * kPerNnz);
+}
+
+TEST_CASE("stall gate: a zero multiplier disables the gate outright", "[stall][unit]") {
+    // `mip_heuristic_<name>_stall = 0` means **no staleness gate at all**
+    // (#106), not "give up immediately".  The stall axis cannot be
+    // searched without a point where the gate provably never fires —
+    // otherwise "how much does this gate cost?" has no zero to measure
+    // against — and that point has to be reachable from the option.
+    constexpr size_t kNnz = 1000;
+
+    // Unbounded, and unbounded *before* the clamp.  Clamping to the budget
+    // would make the gate fire exactly at budget exhaustion, which looks
+    // the same on most runs and is not the same thing.
+    REQUIRE(stall_threshold(kNnz, 0, 1000) == SIZE_MAX);
+    REQUIRE(stall_threshold(kNnz, 0, 0) == SIZE_MAX);
+    REQUIRE(stall_threshold(0, 0, 1000) == SIZE_MAX);
+
+    // And a worker handed that threshold never retires on staleness.
+    WorkerBudgetState worker;
+    worker.total_budget = SIZE_MAX;
+    worker.stale_budget = stall_threshold(kNnz, 0, 1000);
+    for (int i = 0; i < 1000; ++i) {
+        worker.charge_no_improvement(1'000'000);
+    }
+    REQUIRE_FALSE(worker.stale());
+    REQUIRE_FALSE(worker.finished);
+}
+
+TEST_CASE("stall gate: the threshold saturates instead of wrapping", "[stall][unit]") {
+    // Both factors are now user-supplied — the multiplier is an option
+    // with an upper bound of `kHighsIInf`, and `nnz` is whatever model was
+    // loaded — so the product overflows at the top of the range on a large
+    // instance.  A wrapped product is the worst possible answer: it yields
+    // a *small* threshold, so the gate fires almost immediately and the
+    // heuristic silently does nothing, which reads as "this parameter
+    // value is terrible" to whatever is searching the space.
+    REQUIRE(saturating_mul(SIZE_MAX, 2) == SIZE_MAX);
+    REQUIRE(saturating_mul(2, SIZE_MAX) == SIZE_MAX);
+    REQUIRE(saturating_mul(SIZE_MAX, 0) == 0);
+    REQUIRE(saturating_mul(3, 5) == 15);
+
+    // Monotone, which is the property the search actually depends on: a
+    // larger multiplier never produces a tighter gate.
+    REQUIRE(stall_threshold(SIZE_MAX, 2, 0) == SIZE_MAX);
+    REQUIRE(stall_threshold(SIZE_MAX / 2, 4, 0) == SIZE_MAX);
+    // Still clamped to a finite allowance.
+    REQUIRE(stall_threshold(SIZE_MAX, 2, 1000) == 1000);
 }
 
 // ── Why FPR's pause/resume cannot falsely trip its new gate ──
