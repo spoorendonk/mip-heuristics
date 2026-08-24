@@ -79,7 +79,16 @@ def solver_log(
     marker: bool = True,
     killed: bool = False,
 ) -> str:
-    """A HiGHS log of the shape a presolve-only run produces."""
+    """A HiGHS log of the shape a presolve-only run produces.
+
+    Not invented: Track A measured this shape against the built binary.  The
+    exit is `kSolutionLimit` -> `Status Solution limit reached`, and because the
+    root LP never runs, `Dual bound` is -inf and `Gap` is inf on *every*
+    presolve-only run.  A run that found nothing still prints the report, with
+    `Primal bound inf`.  The fixture carries all three so the scoring path is
+    exercised against what the campaign will actually see rather than against a
+    full-solve log with the heuristic lines pasted in.
+    """
     out = "Running HiGHS 1.15.1 (git hash: 04024d70): Copyright (c) 2026\n"
     if marker:
         out += PATCH_MARKER + " (custom MIP presolve heuristics)\n"
@@ -92,9 +101,10 @@ def solver_log(
         )
     out += heur
     if not killed:
-        out += "Solving report\n  Status            Time limit reached\n"
-        if objective is not None:
-            out += f"  Primal bound      {objective}\n"
+        out += "Solving report\n  Status            Solution limit reached\n"
+        out += f"  Primal bound      {'inf' if objective is None else objective}\n"
+        out += "  Dual bound        -inf\n  Gap               inf\n"
+        out += "  Nodes             0\n  LP iterations     0\n"
         out += f"  Timing            {timing}\n"
     else:
         out += "\n--- runner ---\nTIMEOUT: process killed after 150s\n"
@@ -399,6 +409,50 @@ def test_killed_run_is_scored_from_its_incumbents():
     result = parse_log(solver_log(objective=42.0, killed=True))
     assert result.killed
     assert presolve_objective(result) == pytest.approx(42.0)
+
+
+# --- the presolve-only exit path, as Track A measured it --------------------
+#
+# `mip_heuristic_presolve_only` exits with `HighsModelStatus::kSolutionLimit`
+# (kOk and kInfeasible are both rewritten by `cleanupSolve`, which would report
+# a presolve-exit run as a proven optimum).  That maps to `HighsStatus::kWarning`
+# and CLI exit 1, and it prints a complete Solving report.  All three facts are
+# load-bearing here and none of them is ours to change, so they are pinned.
+
+
+def test_presolve_only_exit_code_is_accepted():
+    """kSolutionLimit -> kWarning -> exit 1, which must not read as a rejected
+    option."""
+    check_run_usable(solver_log(heur=heur_line("fj", 10.0)), 1, "good")
+
+
+def test_presolve_only_status_is_recorded():
+    ev = _score(solver_log(heur=heur_line("fj", 10.0)))
+    assert ev.status == "Solution limit reached"
+
+
+def test_missing_dual_bound_does_not_reach_the_score():
+    """The root LP never runs, so every presolve-only run reports `Dual bound
+    -inf` and `Gap inf`.  Quality is the primal gap against the `.solu`
+    reference, which is why that is harmless — but only as long as nothing on
+    this path reads the dual side."""
+    from parse_highs_log import parse_log
+
+    result = parse_log(solver_log(objective=110.0))
+    assert result.dual_bound == float("-inf")
+    assert result.gap == float("inf")
+    ev = _score(solver_log(objective=110.0, heur=heur_line("fj", 10.0)))
+    assert ev.gap == pytest.approx(0.1)  # |110 - 100| / 100, not the dual side
+
+
+def test_no_solution_shape_is_an_infinite_primal_bound():
+    """How a presolve-only run that found nothing actually looks: the report is
+    printed, with `Primal bound inf` rather than no line at all."""
+    log = solver_log(objective=None, heur=heur_line("fj", 10.0))
+    assert "Primal bound      inf" in log
+    ev = _score(log)
+    assert ev.no_solution is True
+    assert ev.cost == pytest.approx(1.0)
 
 
 # --- runs that cannot mean what their parameters say ------------------------
