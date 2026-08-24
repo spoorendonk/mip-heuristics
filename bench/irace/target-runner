@@ -21,9 +21,15 @@
 # and produce a plausible cost for a configuration nobody chose.
 #
 # Campaign-level settings — which binary, which instance collection, the time
-# cap, lambda, where the artifacts land — are environment variables rather than
-# arguments, because irace owns the argument list.  Set them in the shell that
-# launches irace.
+# cap, lambda, the no-solution penalty, where the artifacts land — are
+# environment variables rather than arguments, because irace owns the argument
+# list.  Set them in the shell that launches irace.
+#
+# The penalty is a campaign knob for the same reason lambda is, and the two are
+# coupled: the penalty must exceed `1 + lambda * time cap`, or finding nothing
+# outscores finding something bad and the search inverts.  Raising
+# RUN_TARGET_LAMBDA or RUN_TARGET_TIME_LIMIT without raising this is the way to
+# reintroduce that; `run_target.py` warns when the inequality fails.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -32,6 +38,7 @@ repo=$(CDPATH= cd -- "$here/../.." && pwd)
 
 : "${MIP_HEURISTICS_BINARY:=$repo/build/bin/highs}"
 : "${RUN_TARGET_LAMBDA:=0.0016666667}"
+: "${RUN_TARGET_NO_SOLUTION_PENALTY:=2.0}"
 : "${RUN_TARGET_TIME_LIMIT:=60}"
 : "${RUN_TARGET_RUN_DIR:=$PWD/target-runs}"
 : "${RUN_TARGET_PYTHON:=python3}"
@@ -63,6 +70,7 @@ exec "$RUN_TARGET_PYTHON" "$run_target" \
     --tag "c${config_id}-i${instance_id}-s${seed}" \
     --binary "$MIP_HEURISTICS_BINARY" \
     --lambda "$RUN_TARGET_LAMBDA" \
+    --no-solution-penalty "$RUN_TARGET_NO_SOLUTION_PENALTY" \
     --time-limit "$RUN_TARGET_TIME_LIMIT" \
     --run-dir "$RUN_TARGET_RUN_DIR" \
     "$@"

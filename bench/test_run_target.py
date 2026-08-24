@@ -29,10 +29,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from make_archive import PATCH_MARKER
 from run_target import (
     DEFAULT_LAMBDA,
+    DEFAULT_NO_SOLUTION_PENALTY,
+    DEFAULT_TIME_LIMIT,
     HEURISTICS,
     Parameters,
     Refusal,
     build_arg_parser,
+    check_penalty_dominates,
     check_run_usable,
     heuristic_wall_ms,
     instance_name,
@@ -78,6 +81,7 @@ def solver_log(
     timing: float = 12.0,
     marker: bool = True,
     killed: bool = False,
+    workers: bool = True,
 ) -> str:
     """A HiGHS log of the shape a presolve-only run produces.
 
@@ -92,7 +96,8 @@ def solver_log(
     out = "Running HiGHS 1.15.1 (git hash: 04024d70): Copyright (c) 2026\n"
     if marker:
         out += PATCH_MARKER + " (custom MIP presolve heuristics)\n"
-    out += "  Thread count 16 (of 32 threads). Using 8 max workers.\n"
+    if workers:
+        out += "  Thread count 16 (of 32 threads). Using 8 max workers.\n"
     out += _HEADER
     if objective is not None:
         out += (
@@ -205,6 +210,19 @@ def test_options_write_all_eight_even_when_disabled():
     assert options["mip_heuristic_fpr_effort"] == "0"
     assert options["mip_heuristic_fpr_stall"] == "2048"
     assert options["mip_heuristic_suite"] == "fj"
+
+
+def test_zero_fj_effort_gates_highs_own_feasibility_jump():
+    """The other FJ call site.  At `suite=off` the patch restores HiGHS's
+    standalone FeasibilityJump, which emits no `[Heur]` line — so the all-zero
+    vector banked real FJ quality at tau = 0 and `off` outscored configurations
+    that found objectives 28x better.  Effort 0 has to reach both sites."""
+    off = solver_options(params(), seed=1)
+    assert off["mip_heuristic_run_feasibility_jump"] == "false"
+    without_fj = solver_options(params(fpr_effort=0.5), seed=1)
+    assert without_fj["mip_heuristic_run_feasibility_jump"] == "false"
+    with_fj = solver_options(params(fj_effort=0.0125), seed=1)
+    assert with_fj["mip_heuristic_run_feasibility_jump"] == "true"
 
 
 def test_options_do_not_pin_threads_by_default():
@@ -321,7 +339,13 @@ def test_negative_wall_ms_is_floored():
 # --- the no-solution penalty ------------------------------------------------
 
 
-def _score(log: str, *, penalty: float = 1.0, weight: float = 0.0, **kwargs):
+def _score(
+    log: str,
+    *,
+    penalty: float = DEFAULT_NO_SOLUTION_PENALTY,
+    weight: float = 0.0,
+    **kwargs,
+):
     return score_output(
         log,
         kwargs.pop("params", params(fj_effort=0.1)),
@@ -339,8 +363,8 @@ def test_no_solution_is_penalised_not_dropped():
     ev = _score(solver_log(objective=None, heur=heur_line("fj", 200.0)))
     assert ev.no_solution is True
     assert ev.objective is None
-    assert ev.gap == 1.0
-    assert ev.cost == pytest.approx(1.0)
+    assert ev.gap == DEFAULT_NO_SOLUTION_PENALTY
+    assert ev.cost == pytest.approx(DEFAULT_NO_SOLUTION_PENALTY)
 
 
 def test_no_solution_penalty_is_explicit():
@@ -348,12 +372,49 @@ def test_no_solution_penalty_is_explicit():
     assert ev.cost == pytest.approx(3.0)
 
 
-def test_found_solution_never_scores_worse_than_the_default_penalty():
-    """The gap cap is what makes 1.0 the natural penalty: nothing found can beat
-    a terrible solution otherwise."""
-    ev = _score(solver_log(objective=1e9, heur=heur_line("fj", 1.0)))
-    assert ev.gap == 1.0
-    assert ev.no_solution is False
+def test_finding_nothing_never_beats_finding_something_bad():
+    """The property the old version of this test only appeared to check.
+
+    It asserted `gap == 1.0` and `no_solution is False`, never touched `cost`,
+    and ran at the helper's default `weight=0.0` — the single lambda at which a
+    penalty equal to the gap cap is safe.  So it passed while the shipped
+    configuration was inverted: at lambda = 1/600 a run that found a terrible
+    solution and spent 60 s scored 1.1 against the 1.0 charged for finding
+    nothing, and the search preferred nothing.  Asserted here at the shipped
+    lambda and the largest tau the default time cap allows.
+    """
+    worst_found = _score(
+        solver_log(objective=1e9, heur=heur_line("fj", 1000 * DEFAULT_TIME_LIMIT)),
+        weight=DEFAULT_LAMBDA,
+    )
+    nothing_found = _score(
+        solver_log(objective=None, heur=heur_line("fj", 0.0)),
+        weight=DEFAULT_LAMBDA,
+    )
+    assert worst_found.gap == 1.0  # the cap, so this is as bad as found gets
+    assert worst_found.no_solution is False
+    assert worst_found.cost < nothing_found.cost
+
+
+def test_penalty_dominance_is_checked_not_assumed(capsys):
+    """The shipped triple is safe, and a hostile one says so out loud."""
+    check_penalty_dominates(
+        DEFAULT_NO_SOLUTION_PENALTY, DEFAULT_LAMBDA, DEFAULT_TIME_LIMIT
+    )
+    assert capsys.readouterr().err == ""
+    check_penalty_dominates(1.0, DEFAULT_LAMBDA, DEFAULT_TIME_LIMIT)
+    assert "search is inverted" in capsys.readouterr().err
+
+
+def test_penalty_dominance_tracks_lambda_and_the_time_cap(capsys):
+    """It is the triple that has to hold, not the constant: a big enough lambda
+    or a long enough cap breaks any fixed penalty.  Asserted on the output, not
+    just called — an assertion-free test is the defect the test above exists to
+    stop shipping."""
+    check_penalty_dominates(2.0, 1.0, 60.0)  # worst found = 1 + 60 = 61 > 2
+    assert "search is inverted" in capsys.readouterr().err
+    check_penalty_dominates(2.0, DEFAULT_LAMBDA, 600.0)  # 1 + 1 = 2, not >
+    assert "search is inverted" in capsys.readouterr().err
 
 
 # --- the scalar and its sign ------------------------------------------------
@@ -452,7 +513,7 @@ def test_no_solution_shape_is_an_infinite_primal_bound():
     assert "Primal bound      inf" in log
     ev = _score(log)
     assert ev.no_solution is True
-    assert ev.cost == pytest.approx(1.0)
+    assert ev.cost == pytest.approx(DEFAULT_NO_SOLUTION_PENALTY)
 
 
 # --- runs that cannot mean what their parameters say ------------------------
@@ -514,6 +575,70 @@ def test_killed_run_needs_no_trace():
     assert ev.trace_missing is False
 
 
+# --- chain truncation -------------------------------------------------------
+
+
+def test_chain_truncation_is_recorded():
+    """A generous head starves the tail: the chain runs FJ, FPR, LocalMIP,
+    Scylla against a shared time limit, so Scylla's parameters can be recorded
+    without ever being exercised."""
+    ev = _score(
+        solver_log(heur=heur_line("fj", 20000.0) + heur_line("fpr", 4000.0)),
+        params=params(
+            fj_effort=1.0, fpr_effort=1.0, local_mip_effort=1.0, scylla_effort=1.0
+        ),
+    )
+    assert ev.heuristics_traced == ["fj", "fpr"]
+    assert ev.chain_truncated == ["local_mip", "scylla"]
+    assert ev.trace_missing is False  # a different failure, kept distinct
+
+
+def test_untruncated_chain_records_nothing():
+    ev = _score(
+        solver_log(heur=heur_line("fj", 10.0) + heur_line("local_mip", 10.0)),
+        params=params(fj_effort=0.1, local_mip_effort=0.1),
+    )
+    assert ev.chain_truncated == []
+
+
+def test_total_absence_is_trace_missing_not_truncation(capsys):
+    """Partial absence is truncation; total absence is missing instrumentation.
+    Reporting the second as the first would hide a campaign-wide failure inside
+    a field that reads as an ordinary scheduling artefact."""
+    ev = _score(solver_log(heur=""), params=params(fj_effort=0.1, scylla_effort=0.1))
+    assert ev.trace_missing is True
+    assert ev.chain_truncated == []
+    capsys.readouterr()
+
+
+# --- the worker-count stamp -------------------------------------------------
+#
+# The same vector does not mean the same thing at every worker count: Track A's
+# algebra out of `make_budget` shows the whole-dispatch aggregates are
+# N-invariant while the per-worker slicing moves, so the cross-N effect is a
+# reallocation *between* heuristics (measured on p0548: LocalMIP 1.08x, FJ 12x
+# from N=1 to N=8 at identical options).  That makes the worker count part of
+# the result, and an unattributable run worse than a mis-attributed one.
+
+
+def test_worker_count_is_recorded():
+    ev = _score(solver_log(heur=heur_line("fj", 10.0)))
+    assert ev.thread_count == 16
+
+
+def test_missing_worker_count_warns(capsys):
+    ev = _score(solver_log(heur=heur_line("fj", 10.0), workers=False))
+    assert ev.thread_count is None
+    assert "records no worker count" in capsys.readouterr().err
+
+
+def test_killed_run_does_not_warn_about_the_worker_count(capsys):
+    """A truncated log may have been cut before the line was printed; that is
+    the kill, not a regime that cannot be attributed."""
+    _score(solver_log(killed=True, heur="", workers=False))
+    assert "records no worker count" not in capsys.readouterr().err
+
+
 # --- reproducibility --------------------------------------------------------
 
 
@@ -524,6 +649,28 @@ def test_tag_is_deterministic_and_parameter_sensitive():
     assert a != run_tag(params(fj_effort=0.2, fj_stall=256), "egout", 3)
     assert a != run_tag(params(fj_effort=0.1, fj_stall=256), "egout", 4)
     assert a != run_tag(params(fj_effort=0.1, fj_stall=256), "flugpl", 3)
+
+
+def test_tag_separates_runs_that_are_not_the_same_measurement():
+    """Two runs of one vector at different caps are different measurements, and
+    two scorings of one run at different lambdas are different numbers — but the
+    `.json` records the number, so a shared tag silently overwrites the first.
+    #107 sweeps lambda by construction, so that collision is the common case."""
+    base = params(fj_effort=0.1, fj_stall=256)
+    tag = run_tag(base, "mad", 3)
+    assert tag != run_tag(base, "mad", 3, time_limit=30.0)
+    assert tag != run_tag(base, "mad", 3, threads=1)
+    assert tag != run_tag(base, "mad", 3, cost_weight=3 * DEFAULT_LAMBDA)
+    assert tag != run_tag(base, "mad", 3, no_solution_penalty=3.0)
+    assert tag == run_tag(base, "mad", 3)  # still deterministic
+
+
+def test_end_to_end_tag_follows_the_time_limit(campaign):
+    """The collision that mattered: same vector, two caps, one set of files."""
+    assert main(_cli(campaign, "--fj-effort", "0.1", "--time-limit", "30")) == 0
+    assert main(_cli(campaign, "--fj-effort", "0.1", "--time-limit", "45")) == 0
+    opts = list((campaign / "runs" / "toy").glob("*.opts"))
+    assert len(opts) == 2
 
 
 def test_instance_name_strips_paths_and_extensions():
@@ -831,11 +978,18 @@ def test_end_to_end_refuses_an_excluded_instance(campaign, capsys):
 
 
 def test_end_to_end_off_configuration_scores_the_penalty(campaign, capsys):
-    """All four at zero is `off`, which finds nothing and costs nothing — the
-    implicit baseline of the whole search."""
+    """All four at zero is `off`: it must find nothing, and be *charged* for it.
+
+    Also the end-to-end guard on the inversion that made `off` a plausible
+    winner — at `suite=off` the patch restores HiGHS's own FeasibilityJump call
+    site, which emits no `[Heur]` line, so without the flag below this run banks
+    real FJ quality at tau = 0.
+    """
     (campaign / "canned.log").write_text(solver_log(objective=None))
     assert main(_cli(campaign)) == 0
-    assert float(capsys.readouterr().out) == pytest.approx(1.0)
+    assert float(capsys.readouterr().out) == pytest.approx(DEFAULT_NO_SOLUTION_PENALTY)
     opts_dir = campaign / "runs" / "toy"
     tag = run_tag(params(), "toy", 5)
-    assert "mip_heuristic_suite = off\n" in (opts_dir / f"{tag}.opts").read_text()
+    opts = (opts_dir / f"{tag}.opts").read_text()
+    assert "mip_heuristic_suite = off\n" in opts
+    assert "mip_heuristic_run_feasibility_jump = false\n" in opts

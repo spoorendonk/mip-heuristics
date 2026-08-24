@@ -17,8 +17,15 @@
 # on the time axis, the search silently becomes quality-only, and nothing in
 # the output says so.
 #
-#     ../run_target.py --instance egout --seed 1 --require-trace \
+#     ../run_target.py --instance mad --seed 1 --require-trace \
 #         --fj-effort 0.0125 --fj-stall 256 --binary ../../build/bin/highs
+#
+# The instance has to be one with a published reference objective — a
+# tuning-set instance, not a HiGHS `check/instances` model.  An earlier version
+# of this line named `egout`, which is absent from `bench/miplib2017-v36.solu`,
+# so the command exited 2 inside `reference_objective` *before* invoking the
+# solver: the documented guard against the one failure this scenario cannot
+# survive verified nothing at all.  `mad` is in the tuning set and runs in 0.1 s.
 #
 # #107 asks for the search to be repeated at two or three values of lambda
 # around g(0)/T ~ 1/600 per second, keeping the resulting family of
@@ -76,6 +83,15 @@ seed = 1
 
 ## Racing: elitist irace with the default Friedman test.  The output is the
 ## surviving *set*, which #107 requires reported rather than only its argmax.
+##
+## Note what that means, because it is easy to assume otherwise: irace
+## eliminates on **per-instance Friedman ranks of the scalar**, not on #107's
+## pre-registered shifted geometric mean of it.  The two can disagree — ranks
+## are insensitive to the size of a win, an SGM is not — so irace narrows the
+## field but does not itself optimise the pre-registered objective.  Selection
+## *among the survivors* is where the SGM governs, re-aggregated at the #107
+## stage from the per-run `.json` records this runner leaves behind (each
+## carries `gap`, `tau_s` and `cost`, so it is recoverable without re-running).
 elitist = 1
 firstTest = 5
 

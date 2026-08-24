@@ -42,13 +42,17 @@ where `gap` is the primal gap of the presolve-exit incumbent (capped at 1, and
 replaced by `--no-solution-penalty` when the run found nothing) and `tau` is the
 heuristics' own wall time in **seconds**.  Lower is better.  #107 states the
 objective as `gap_improvement - lambda * tau`, to be maximised, with
-`gap_improvement` measured against the no-solution baseline `gap = 1`; the two
+`gap_improvement` measured against a no-solution baseline of `gap = 1`; the two
 are the same ranking:
 
     cost = 1 - (gap_improvement - lambda * tau),   gap_improvement = 1 - gap
 
 The additive 1 is identical for every configuration on a given instance, so it
-cancels out of every paired comparison irace makes.  `lambda` is a parameter of
+cancels out of every paired comparison irace makes.  Note that `gap_improvement`
+is therefore **not** floored at 0: `--no-solution-penalty` exceeds the gap cap by
+construction (see `check_penalty_dominates`), so a run that found nothing records
+a negative improvement — which is the point, since at the baseline value of 1.0
+finding nothing was the cheapest outcome in the space.  `lambda` is a parameter of
 this runner (`--lambda`), not a constant: #107 runs the search at two or three
 values around `g(0)/T` ~ 0.0017 per second at the campaign's 600 s limit, and
 keeps the resulting family of configurations.
@@ -113,10 +117,26 @@ reasoning matters more than the default:
 * Pinning `threads = 1` would estimate a **different expectation** precisely,
   rather than the right one noisily — and precision about the wrong quantity
   does not improve with budget.  It also changes what the parameter vector
-  *means*: three of the four effort options size a whole dispatch, which
-  `make_budget` divides by N, and `worker_stale` is divided by N as well, while
-  FJ's option is per worker.  A vector tuned at N=1 does not carry to N=16, and
-  that transfer error is a bias no amount of racing can detect.
+  *means*, though not in the blunt way an earlier version of this note claimed.
+  Track A worked the algebra out of `make_budget` and measured it (the table and
+  the numbers are in `docs/PARAMETERS.md`, "These options do not mean the same
+  thing at every worker count"): for the three whole-dispatch heuristics both
+  aggregates — total spend and the runner-level stall gate — are **N-invariant**,
+  and only the per-worker slicing moves; FJ is the exact mirror, per-worker
+  quantities invariant and the dispatch total growing with the pool.  So the
+  cross-N distortion is not a uniform rescale but a **reallocation between
+  heuristics**: on p0548 at the shipped defaults, charged presolve effort goes
+  16.9M -> 18.3M (1.08x) for LocalMIP and 500k -> 6.0M (12x) for FJ between N=1
+  and N=8, moving FJ's share against LocalMIP from 1:34 to 1:3 at identical
+  option values.  Racing might partly absorb a uniform rescale; a reallocation
+  between heuristics it cannot, and nothing in the score reveals it.  That is
+  the bias, and it is why the search runs at the deployment worker count.
+* One quantity *does* transfer, which is what makes the stall ranges in
+  `bench/irace/parameters.txt` meaningful across machines: the inert-region
+  boundary `stall >= 81920 * effort` is N-independent for all four heuristics
+  (the N factors cancel for FJ and are absent for the other three).  "This
+  configuration's gate is inert" therefore means the same thing at every worker
+  count, even though the effort it is inert relative to does not.
 * #113 draws the same line for the same reason: trajectory characterisation runs
   at `threads=1` because the effort timeline has to be reproducible, while the
   instance-filtering pass runs at the normal worker count "since that is the
@@ -133,6 +153,17 @@ available and is the right setting for a bit-reproducible re-derivation or a
 trajectory trace; a run that used it records `threads` in its `.opts` and its
 observed worker count in the `.json`, so the two regimes can never be silently
 mixed in one results tree.
+
+Because of that reallocation effect, **the worker count is part of the result,
+not part of the environment**.  A vector tuned at one worker count and deployed
+at another is not a configuration with some noise on it, it is a configuration
+for a different machine, and nothing downstream of the score can tell.  Every
+`.json` therefore carries `thread_count`, read from HiGHS's own
+`Thread count N (of M threads)` line — the same quantity `bench/make_archive.py`
+derives into `run.workers_observed` and warns about when a tree mixes two values,
+deliberately the same channel rather than a second one.  A run whose log carries
+no such line warns, because an unattributable stamp is worse than a wrong one:
+it cannot even be checked.
 """
 
 from __future__ import annotations
@@ -172,12 +203,18 @@ HEURISTICS: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla")
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SOLU = os.path.join(BENCH_DIR, "miplib2017-v36.solu")
 
-# Gap of a run that produced no solution at all.  1.0 is the project's own
-# sentinel (`SolveResult.primal_gap_at` caps every gap there, so no found
-# solution can ever score worse than nothing found) and therefore the natural
-# default; `--no-solution-penalty` can be raised above it to punish infeasible
-# outcomes harder than the worst feasible one.
-DEFAULT_NO_SOLUTION_PENALTY = 1.0
+# Gap charged to a run that produced no solution at all.
+#
+# It must be **strictly greater than the worst score any found solution can
+# reach**, which is `gap_cap + lambda * tau_max` = 1.0 + lambda x the per-run
+# time cap.  At 1.0 — the old value, chosen to match the project's gap sentinel
+# — that inequality fails by exactly the cost term: a configuration that found
+# a bad solution and spent time on it scored *worse* than one that found
+# nothing, so the search was rewarded for producing nothing at all.  1.1 is the
+# floor at lambda = 1/600 and a 60 s cap; 2.0 leaves room for the larger lambda
+# values #107 sweeps and for a longer cap, and `check_penalty_dominates` checks
+# the inequality at run time rather than trusting this comment to stay true.
+DEFAULT_NO_SOLUTION_PENALTY = 2.0
 
 # Cost weight, per second of heuristic wall time.  Derived, not fitted: the
 # primal integral is int g(t) dt, so spending tau extra seconds shifts the
@@ -292,6 +329,24 @@ def solver_options(
     the measured cost of that choice and why it is still the right one.
     """
     options: dict[str, str] = {"mip_heuristic_suite": suite_value(params)}
+    # Effort 0 for FJ has to disable *both* FeasibilityJump call sites, and this
+    # is the only option that reaches the other one.  At `suite=off` the patch
+    # hands HiGHS's own standalone FJ back — deliberately, so that value is a
+    # vanilla-equivalent ablation — and that native call site emits no `[Heur]`
+    # line, because the patch's `heuristic_effort_used +=` inside HiGHS's
+    # `feasibilityJump()` logs nothing.  The all-zero vector therefore banked
+    # real FJ quality at tau = 0: free quality, zero measured cost, and `off`
+    # beating configurations that found objectives 28x better (markshare2: 375
+    # against 10512, scoring 1.000120 against 1.000000).  A search reachable
+    # from the initial uniform sample with probability 1/16 would have reported
+    # "disable all four heuristics" as its winner.
+    #
+    # `false` gates the native site at `off` and ours everywhere else, so it is
+    # a no-op except at that corner — which is what keeps `off` a *scorable*
+    # point of the space rather than one that has to be excluded from it.
+    options["mip_heuristic_run_feasibility_jump"] = (
+        "true" if params.efforts["fj"] > 0.0 else "false"
+    )
     for name in HEURISTICS:
         options[f"mip_heuristic_{name}_effort"] = _format_effort(params.efforts[name])
     for name in HEURISTICS:
@@ -439,12 +494,21 @@ class Evaluation:
     thread_count: int | None
     heuristics_traced: list[str] = field(default_factory=list)
     trace_missing: bool = False
+    chain_truncated: list[str] = field(default_factory=list)
     log_path: str = ""
     opts_path: str = ""
 
 
 def run_tag(
-    params: Parameters, name: str, seed: int, *, presolve_only: bool = True
+    params: Parameters,
+    name: str,
+    seed: int,
+    *,
+    presolve_only: bool = True,
+    time_limit: float = DEFAULT_TIME_LIMIT,
+    threads: int | None = None,
+    cost_weight: float = DEFAULT_LAMBDA,
+    no_solution_penalty: float = DEFAULT_NO_SOLUTION_PENALTY,
 ) -> str:
     """A short, deterministic name for one (parameters, instance, seed) point.
 
@@ -461,6 +525,19 @@ def run_tag(
         # stay stable; a full-solve diagnostic of the same vector is a
         # different measurement and must not overwrite the screening run.
         + ([] if presolve_only else ["full-solve"])
+        # Everything else that changes either the run or its score.  The first
+        # two change what the solver did — the same vector at a 30 s and a 60 s
+        # cap are different measurements, and so are one at N=1 and one
+        # unpinned.  The second two change only the number, but the `.json`
+        # records that number, so sharing a tag across two lambdas means the
+        # second scoring silently overwrites the first.  #107 sweeps lambda by
+        # construction, so that collision is the common case, not the corner.
+        + [
+            f"tl={time_limit:g}",
+            f"threads={'auto' if threads is None else threads}",
+            f"lambda={cost_weight:.10g}",
+            f"penalty={no_solution_penalty:.10g}",
+        ]
     )
     return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
@@ -578,6 +655,34 @@ def score_result(
         if require_trace:
             raise Refusal(f"{name}: {message}")
         print(f"Warning: {name}: {message}", file=sys.stderr)
+    # Enabled heuristics that never got a dispatch.  `run_sequential` runs the
+    # chain in order — FJ, FPR, LocalMIP, Scylla — against a shared solver time
+    # limit, so a generous head starves the tail and the parameter vector stops
+    # describing the run: Scylla's effort and stall are recorded but never
+    # exercised.  The deficit is *correlated* with the other three efforts, so
+    # a search that could not see it would read the tail as "does not matter"
+    # rather than as "did not run".
+    #
+    # Recorded, not fixed.  The search mostly lives below effort 1.0 and a
+    # truncating configuration already pays for its own greed through tau; what
+    # was missing was any way to measure how often it happens.  Partial absence
+    # is the truncation signature — total absence is `trace_missing` above, a
+    # different failure (no instrumentation at all), and the two stay distinct.
+    chain_truncated = sorted(set(params.enabled) - set(traced)) if traced else []
+    # The worker count is part of the result, not part of the environment: the
+    # same vector reallocates effort between heuristics as N changes (see the
+    # module docstring), so a run nobody can attribute to a worker count cannot
+    # be compared to anything.  A stamp that is merely *wrong* would at least be
+    # checkable against `make_archive.py`'s `workers_observed`; a missing one is
+    # not, which is why its absence is said out loud rather than left as a null
+    # in the record.
+    if result.thread_count is None and not result.killed:
+        print(
+            f"Warning: {name}: no 'Thread count N (of M threads)' line in the "
+            "log, so this run records no worker count and cannot be checked for "
+            "regime mixing against the rest of the tree",
+            file=sys.stderr,
+        )
     return Evaluation(
         instance=name,
         seed=seed,
@@ -600,7 +705,37 @@ def score_result(
         thread_count=result.thread_count,
         heuristics_traced=traced,
         trace_missing=trace_missing,
+        chain_truncated=chain_truncated,
     )
+
+
+def check_penalty_dominates(
+    no_solution_penalty: float, cost_weight: float, time_limit: float
+) -> None:
+    """Warn if "found nothing" can score better than "found something bad".
+
+    The scalar is `gap + lambda * tau`, `gap` is capped at 1, and `tau` cannot
+    exceed the per-run time cap, so every scorable found solution lands at or
+    below `1 + lambda * time_limit`.  A no-solution penalty at or below that
+    bound inverts the objective: producing nothing becomes the cheapest outcome
+    available, and a racing configurator converges on the configuration that
+    does least.  That is not hypothetical — it is what a penalty of 1.0 did.
+
+    A warning rather than a refusal, because the three quantities are all
+    campaign knobs and someone may deliberately want a lenient penalty for a
+    diagnostic run; but loud, because nothing downstream of the scalar can see
+    the inversion.
+    """
+    worst_found = 1.0 + cost_weight * time_limit
+    if no_solution_penalty <= worst_found:
+        print(
+            f"Warning: --no-solution-penalty {no_solution_penalty:g} does not "
+            f"exceed the worst score a found solution can reach "
+            f"({worst_found:g} = gap cap 1 + lambda {cost_weight:g} x time limit "
+            f"{time_limit:g}), so a run that finds nothing scores better than a "
+            "run that finds something bad and the search is inverted",
+            file=sys.stderr,
+        )
 
 
 def check_run_usable(
@@ -664,6 +799,7 @@ def evaluate(
 ) -> Evaluation:
     """Run one instance at one parameter vector and score it."""
     name = instance_name(instance)
+    check_penalty_dominates(no_solution_penalty, cost_weight, time_limit)
     solu_refs = parse_solu_file(solu_path)
     published = reference_objective(name, solu_refs)
 
@@ -676,7 +812,16 @@ def evaluate(
             f"{name}: no .mps/.mps.gz found; pass --data-dir or set $MIPLIB_DIR"
         )
 
-    tag = tag or run_tag(params, name, seed, presolve_only=presolve_only)
+    tag = tag or run_tag(
+        params,
+        name,
+        seed,
+        presolve_only=presolve_only,
+        time_limit=time_limit,
+        threads=threads,
+        cost_weight=cost_weight,
+        no_solution_penalty=no_solution_penalty,
+    )
     out_dir = os.path.join(run_dir, name)
     os.makedirs(out_dir, exist_ok=True)
     opts_path = os.path.join(out_dir, f"{tag}.opts")
@@ -792,7 +937,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_NO_SOLUTION_PENALTY,
         metavar="P",
         help="gap charged when the run found nothing (default "
-        f"{DEFAULT_NO_SOLUTION_PENALTY}, the capped no-solution gap)",
+        f"{DEFAULT_NO_SOLUTION_PENALTY}; must exceed 1 + lambda x the time "
+        "limit, or finding nothing outscores finding something bad)",
     )
     parser.add_argument(
         "--binary", default="build/bin/highs", help="patched HiGHS binary"
