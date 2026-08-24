@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 import warnings
@@ -58,6 +59,130 @@ class HeuristicSample:
 
 
 @dataclass
+class HeurSolSample:
+    """A single `[HeurSol]` per-offered-solution observation.
+
+    Emitted by `IncumbentSink::offer` in `src/incumbent_sink.cpp`, once per
+    solution any heuristic worker offers the shared pool — accepted or not.
+    `[Heur]` is one line per *dispatch* and therefore cannot show what
+    happens inside one; this is the line the stall-threshold calibration
+    (#106 / #107) reads.
+
+    `effort_at` is the offering worker's own charged effort at the moment of
+    the offer, in that heuristic's own effort unit, and is monotone
+    non-decreasing within a `(name, dispatch, worker)` triple — the C++ side
+    carries a retired worker's charge into its replacement so a rebuild does
+    not restart the count.  Units are *not* comparable across heuristics.
+    """
+
+    name: str  # fj, fpr, local_mip, scylla, fpr_lp
+    dispatch: int  # process-global; unique per dispatch, not dense per solve
+    worker: int  # worker slot index; -1 for an offer made off any slot
+    effort_at: int
+    wall_ms: float  # since the dispatch started; may be negative (see below)
+    objective: float
+    accepted: bool
+    # Index into `SolveResult.heuristic_samples` of the `[Heur]` line that
+    # closed this dispatch, or None when the log ended before it (a killed
+    # run).  Bound by position: a dispatch's `[HeurSol]` lines all precede
+    # its `[Heur]` line and follow the previous one for the same name.
+    heur_index: int | None = None
+
+
+@dataclass
+class DispatchTrace:
+    """All `[HeurSol]` lines of one `(name, dispatch)`, plus its totals.
+
+    Produced by `SolveResult.dispatch_traces()`.  This is the unit #107
+    calibrates a stall threshold on: a stall threshold answers "how much
+    improvement-free effort is enough before this is going nowhere?", and
+    the answer is a high quantile (p90-p95) of `normalized_gaps()`.
+    """
+
+    name: str
+    dispatch: int
+    samples: list[HeurSolSample]
+    # `[Heur] effort` for this dispatch — the effort actually charged,
+    # summed over every worker.  None when the matching `[Heur]` line is
+    # absent (truncated log).
+    total_effort: int | None = None
+    # Model nonzeros, for `normalized_gaps`.  None when the log carried no
+    # model header.
+    nnz: int | None = None
+
+    @property
+    def accepted_samples(self) -> list[HeurSolSample]:
+        """Offers the pool took, in emission order."""
+        return [s for s in self.samples if s.accepted]
+
+    @property
+    def productive_effort(self) -> int:
+        """Charged effort at the last accepted solution, summed over workers.
+
+        Per worker because `effort_at` is per worker: summing each worker's
+        value at its own last accepted offer is the dispatch-level quantity
+        that is comparable with `total_effort`.  Zero when nothing was
+        accepted.
+        """
+        last: dict[int, int] = {}
+        for s in self.accepted_samples:
+            last[s.worker] = s.effort_at
+        return sum(last.values())
+
+    @property
+    def stale_effort(self) -> int | None:
+        """Charged effort spent after the last acceptance — the gate's target.
+
+        `total_effort - productive_effort`, floored at zero, and None when
+        `total_effort` is unknown.  The floor is not cosmetic: LocalMIP's
+        cold-start construction is charged to the dispatch total but not to
+        any worker's counter, and Scylla's per-worker counter is amortised
+        by the worker count while the dispatch total is not, so the two
+        quantities are close but not two views of one number.
+        """
+        if self.total_effort is None:
+            return None
+        return max(self.total_effort - self.productive_effort, 0)
+
+    def acceptance_gaps(self, *, include_first: bool = True) -> list[int]:
+        """Effort between consecutive accepted offers, per worker.
+
+        Gaps are taken *within* a worker, since `effort_at` is that worker's
+        own counter and the sequences of different workers interleave in the
+        log.  With `include_first` (the default) each worker's first
+        acceptance also contributes the effort it spent getting there, which
+        is a genuine improvement-free interval and the one a stall gate
+        would have cut first.
+        """
+        per_worker: dict[int, list[int]] = {}
+        for s in self.accepted_samples:
+            per_worker.setdefault(s.worker, []).append(s.effort_at)
+        gaps: list[int] = []
+        for values in per_worker.values():
+            if include_first:
+                gaps.append(values[0])
+            gaps.extend(b - a for a, b in itertools.pairwise(values))
+        return gaps
+
+    def normalized_gaps(
+        self, nnz: int | None = None, *, include_first: bool = True
+    ) -> list[float]:
+        """`acceptance_gaps` divided by the model's nonzero count.
+
+        The unit the four `mip_heuristic_*_stall` options are expressed in,
+        so a quantile of this list is directly a candidate value for one.
+        Raises when the nonzero count is unknown rather than inventing one.
+        """
+        n = self.nnz if nnz is None else nnz
+        if not n:
+            raise ValueError(
+                f"nonzero count unknown for dispatch {self.name}/{self.dispatch}; "
+                "pass nnz explicitly"
+            )
+        return [g / n for g in self.acceptance_gaps(include_first=include_first)]
+
+
+@dataclass
 class SolveResult:
     """Parsed result from a HiGHS MIP solve."""
 
@@ -105,6 +230,9 @@ class SolveResult:
     heuristic_samples: list[HeuristicSample] = field(default_factory=list)
     # Both None for a log produced before issue #95, or by any run below
     # log_dev_level=3.
+    # One entry per offered solution (#106); empty for the same reasons, and
+    # for a run in which no heuristic offered anything.
+    heursol_samples: list[HeurSolSample] = field(default_factory=list)
 
     @property
     def category(self) -> str | None:
@@ -128,6 +256,34 @@ class SolveResult:
         if cont > 0 and gen_int > 0:
             return "MIP"
         return None
+
+    def dispatch_traces(self) -> list[DispatchTrace]:
+        """Group the `[HeurSol]` lines into one `DispatchTrace` per dispatch.
+
+        Order of first appearance.  Dispatch ids are process-global, so they
+        are neither zero-based nor dense within a solve and nothing here
+        assumes otherwise — grouping is on the `(name, dispatch)` pair.
+        """
+        traces: dict[tuple[str, int], DispatchTrace] = {}
+        for sample in self.heursol_samples:
+            key = (sample.name, sample.dispatch)
+            trace = traces.get(key)
+            if trace is None:
+                total = None
+                if sample.heur_index is not None and sample.heur_index < len(
+                    self.heuristic_samples
+                ):
+                    total = self.heuristic_samples[sample.heur_index].effort
+                trace = DispatchTrace(
+                    name=sample.name,
+                    dispatch=sample.dispatch,
+                    samples=[],
+                    total_effort=total,
+                    nnz=self.num_nonzeros,
+                )
+                traces[key] = trace
+            trace.samples.append(sample)
+        return list(traces.values())
 
     @property
     def time_to_first_feasible(self) -> float | None:
@@ -276,6 +432,58 @@ _HEUR_RE = re.compile(
     r"^\s*\[Heur\] name=(\S+) phase=(\S+) start_s=([\d.]+) end_s=([\d.]+) "
     r"effort=(\d+) wall_ms=(-?[\d.]+) effort_per_ms=([\d.]+) found=(\d+)"
 )
+# Per-offered-solution instrumentation at log_dev_level=3, emitted by
+# `IncumbentSink::offer`:
+#   [HeurSol] name=fpr dispatch=2 worker=3 effort_at=91238 wall_ms=12.4 \
+#             obj=778.45908999999983 accepted=1
+#
+# Parsed as a `key=value` dict rather than a positional pattern, unlike
+# `[Heur]` and `[Sequential]` above.  The line already gained a field once
+# (`worker`, added during #106 while three tracks were consuming it), and a
+# positional pattern turns the next such addition into a silent parse
+# failure in every archived log — including the release archive, which
+# re-derives its tables from logs it did not produce.  Unknown keys are
+# ignored and missing known keys drop the line.
+_HEURSOL_PREFIX = "[HeurSol]"
+_HEURSOL_KEYS = (
+    "name",
+    "dispatch",
+    "worker",
+    "effort_at",
+    "wall_ms",
+    "obj",
+    "accepted",
+)
+
+
+def _parse_heursol(line: str) -> HeurSolSample | None:
+    """Parse one `[HeurSol]` line, or None if it is not one / is malformed."""
+    stripped = line.strip()
+    if not stripped.startswith(_HEURSOL_PREFIX):
+        return None
+    fields: dict[str, str] = {}
+    for token in stripped[len(_HEURSOL_PREFIX) :].split():
+        key, sep, value = token.partition("=")
+        if sep:
+            fields[key] = value
+    if not all(k in fields for k in _HEURSOL_KEYS):
+        return None
+    try:
+        return HeurSolSample(
+            name=fields["name"],
+            dispatch=int(fields["dispatch"]),
+            worker=int(fields["worker"]),
+            effort_at=int(fields["effort_at"]),
+            # Signed for the same reason `[Heur] wall_ms` is: the solver
+            # clock is not monotonic, so a window can come out negative.
+            wall_ms=float(fields["wall_ms"]),
+            objective=float(fields["obj"]),
+            accepted=fields["accepted"] != "0",
+        )
+    except ValueError:
+        return None
+
+
 # Worker counts, from HiGHS's own "Solving MIP model with:" block
 # (`HighsMipSolverData.cpp`):
 #   Thread count 16 (of 32 threads). Using 8 max workers. Parallel search on
@@ -322,6 +530,12 @@ _INCUMBENT_SOURCES = set("ABCDFGHIJLMPRSTUXYZzlup")
 def parse_log(log_text: str) -> SolveResult:
     """Parse HiGHS stdout log text and return structured result."""
     result = SolveResult()
+    # `[HeurSol]` indices not yet bound to a `[Heur]` line, per heuristic
+    # name.  A dispatch's offers all precede the `[Heur]` line that closes
+    # it and follow the previous one for that name, so binding on that line
+    # is exact — and, unlike zipping the two lists, it survives a dispatch
+    # that offered nothing (which emits `[Heur]` and no `[HeurSol]` at all).
+    pending_heursol: dict[str, list[int]] = {}
 
     for line in log_text.splitlines():
         # Try MIP log data line
@@ -433,9 +647,21 @@ def parse_log(log_text: str) -> SolveResult:
             )
             continue
 
+        # Per-offered-solution instrumentation (key=value, not positional).
+        heursol = _parse_heursol(line)
+        if heursol is not None:
+            pending_heursol.setdefault(heursol.name, []).append(
+                len(result.heursol_samples)
+            )
+            result.heursol_samples.append(heursol)
+            continue
+
         # Per-heuristic instrumentation.
         m = _HEUR_RE.match(line)
         if m:
+            heur_index = len(result.heuristic_samples)
+            for i in pending_heursol.pop(m.group(1), []):
+                result.heursol_samples[i].heur_index = heur_index
             result.heuristic_samples.append(
                 HeuristicSample(
                     name=m.group(1),

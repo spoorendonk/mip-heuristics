@@ -1,7 +1,6 @@
 """Smoke tests for parse_highs_log."""
 
 import pytest
-
 from parse_highs_log import parse_log
 
 
@@ -319,6 +318,245 @@ def test_primal_integral_ignores_incumbents_past_the_time_limit():
     )
     # 1.0*10 (no solution yet) + 0.2*290 + 0.1*300
     assert killed.primal_integral(600.0, 10.0) == pytest.approx(98.0)
-    assert killed.primal_integral(600.0, 10.0) == truncated.primal_integral(
-        600.0, 10.0
+    assert killed.primal_integral(600.0, 10.0) == truncated.primal_integral(600.0, 10.0)
+
+
+# ---------------------------------------------------------------------------
+# `[HeurSol]` — the per-offered-solution trace (#106)
+# ---------------------------------------------------------------------------
+
+
+def _heursol(name, dispatch, worker, effort_at, wall_ms, obj, accepted):
+    return (
+        f"[HeurSol] name={name} dispatch={dispatch} worker={worker} "
+        f"effort_at={effort_at} wall_ms={wall_ms} obj={obj} accepted={accepted}\n"
     )
+
+
+def _heur(name, effort, found=1, phase="presolve"):
+    return (
+        f"[Heur] name={name} phase={phase} start_s=0.100 end_s=0.200 "
+        f"effort={effort} wall_ms=100.0 effort_per_ms=1.0 found={found}\n"
+    )
+
+
+def test_heursol_lines_parse_into_heursol_samples():
+    log = (
+        _heursol("fpr", 7, 0, 100, 1.5, 778.4590899999998, 1)
+        + _heursol("fpr", 7, 1, 250, 2.5, 800.0, 0)
+        + _heur("fpr", 900)
+    )
+    result = parse_log(log)
+    assert len(result.heursol_samples) == 2
+
+    first, second = result.heursol_samples
+    assert first.name == "fpr"
+    assert first.dispatch == 7
+    assert first.worker == 0
+    assert first.effort_at == 100
+    assert first.wall_ms == 1.5
+    assert first.objective == 778.4590899999998
+    assert first.accepted is True
+    assert second.accepted is False
+
+
+def test_heursol_is_parsed_as_key_value_not_positionally():
+    """Field order must not matter, and an unknown key must be ignored.
+
+    The line already gained `worker` once while three consumers were being
+    written against it; a positional pattern would turn the next such
+    addition into a silent parse failure in every archived log.
+    """
+    log = (
+        "[HeurSol] accepted=1 obj=1.5 wall_ms=2.0 effort_at=42 "
+        "worker=3 dispatch=9 name=scylla lane=17\n"
+    )
+    (sample,) = parse_log(log).heursol_samples
+    assert (sample.name, sample.dispatch, sample.worker, sample.effort_at) == (
+        "scylla",
+        9,
+        3,
+        42,
+    )
+    assert sample.accepted is True
+
+
+def test_heursol_line_missing_a_key_is_dropped():
+    log = "[HeurSol] name=fj dispatch=1 worker=0 effort_at=5 wall_ms=1.0 obj=2.0\n"
+    assert parse_log(log).heursol_samples == []
+
+
+def test_heursol_accepts_negative_wall_ms_and_scientific_objective():
+    """Same non-monotonic solver clock `[Heur] wall_ms` is signed for."""
+    log = _heursol("local_mip", 3, 2, 7, -0.4, "-1.2345e+06", 0)
+    (sample,) = parse_log(log).heursol_samples
+    assert sample.wall_ms == -0.4
+    assert sample.objective == -1234500.0
+
+
+def test_heursol_worker_minus_one_is_accepted():
+    """LocalMIP's cold-start publish runs off any worker slot."""
+    log = _heursol("local_mip", 3, -1, 900, 0.5, 12.0, 1)
+    (sample,) = parse_log(log).heursol_samples
+    assert sample.worker == -1
+
+
+def test_dispatch_traces_group_by_name_and_dispatch():
+    """Ids are process-global: neither zero-based nor dense within a solve."""
+    log = (
+        _heursol("fpr", 41, 0, 10, 1.0, 5.0, 1)
+        + _heursol("fpr", 41, 1, 20, 1.0, 4.0, 1)
+        + _heur("fpr", 500)
+        + _heursol("scylla", 44, 0, 30, 1.0, 3.0, 1)
+        + _heur("scylla", 700)
+    )
+    traces = parse_log(log).dispatch_traces()
+    assert [(t.name, t.dispatch, t.total_effort) for t in traces] == [
+        ("fpr", 41, 500),
+        ("scylla", 44, 700),
+    ]
+    assert len(traces[0].samples) == 2
+
+
+def test_dispatch_trace_binds_to_its_own_heur_line_across_a_silent_dispatch():
+    """A dispatch that offered nothing emits `[Heur]` and no `[HeurSol]`.
+
+    Zipping the two lists positionally would then bind every later trace to
+    the wrong total, so the parser binds on the `[Heur]` line itself: a
+    dispatch's offers all precede it and follow the previous one for the
+    same name.
+    """
+    log = (
+        _heur("fj", 111, found=0)  # ran, offered nothing
+        + _heursol("fpr", 2, 0, 10, 1.0, 5.0, 1)
+        + _heur("fpr", 222)
+        + _heursol("fpr_lp", 5, 0, 30, 1.0, 3.0, 1)
+        + _heur("fpr_lp", 333, phase="dive")
+        + _heursol("fpr_lp", 6, 0, 40, 1.0, 2.0, 1)
+        + _heur("fpr_lp", 444, phase="dive")
+    )
+    traces = {
+        (t.name, t.dispatch): t.total_effort for t in parse_log(log).dispatch_traces()
+    }
+    assert traces == {("fpr", 2): 222, ("fpr_lp", 5): 333, ("fpr_lp", 6): 444}
+
+
+def test_dispatch_trace_without_a_heur_line_has_no_total():
+    """A killed run is truncated mid-dispatch; the trace survives, the total does not."""
+    log = _heursol("fpr", 2, 0, 10, 1.0, 5.0, 1)
+    (trace,) = parse_log(log).dispatch_traces()
+    assert trace.total_effort is None
+    assert trace.stale_effort is None
+
+
+def test_productive_and_stale_effort_sum_over_workers():
+    """Productive effort is each worker's charge at *its* last acceptance."""
+    log = (
+        _heursol("local_mip", 3, 0, 100, 1.0, 9.0, 1)
+        + _heursol("local_mip", 3, 1, 150, 1.0, 8.0, 1)
+        + _heursol("local_mip", 3, 0, 400, 1.0, 7.0, 1)
+        + _heursol("local_mip", 3, 1, 900, 1.0, 6.0, 0)  # refused: not productive
+        + _heur("local_mip", 2000)
+    )
+    (trace,) = parse_log(log).dispatch_traces()
+    assert len(trace.accepted_samples) == 3
+    assert trace.productive_effort == 400 + 150
+    assert trace.stale_effort == 2000 - 550
+
+
+def test_stale_effort_floors_at_zero():
+    """LocalMIP charges cold-start construction to the dispatch but to no worker,
+    and Scylla's per-worker counter is amortised by the worker count while the
+    dispatch total is not — so the two quantities are close, not identical.
+    """
+    log = _heursol("scylla", 3, 0, 5000, 1.0, 9.0, 1) + _heur("scylla", 1000)
+    (trace,) = parse_log(log).dispatch_traces()
+    assert trace.stale_effort == 0
+
+
+def test_no_acceptance_makes_the_whole_dispatch_stale():
+    log = _heursol("fj", 1, 0, 100, 1.0, 9.0, 0) + _heur("fj", 800, found=0)
+    (trace,) = parse_log(log).dispatch_traces()
+    assert trace.productive_effort == 0
+    assert trace.stale_effort == 800
+
+
+def test_acceptance_gaps_are_taken_within_a_worker():
+    """Two workers interleave in the log; their counters must not be subtracted
+    from one another."""
+    log = (
+        _heursol("fpr", 4, 0, 100, 1.0, 9.0, 1)
+        + _heursol("fpr", 4, 1, 30, 1.0, 8.0, 1)
+        + _heursol("fpr", 4, 0, 250, 1.0, 7.0, 1)
+        + _heursol("fpr", 4, 1, 90, 1.0, 6.0, 1)
+        + _heur("fpr", 1000)
+    )
+    (trace,) = parse_log(log).dispatch_traces()
+    assert sorted(trace.acceptance_gaps()) == sorted([100, 150, 30, 60])
+    assert sorted(trace.acceptance_gaps(include_first=False)) == sorted([150, 60])
+
+
+def test_normalized_gaps_use_the_model_nonzero_count():
+    """The unit `mip_heuristic_*_stall` is expressed in, so a quantile of this
+    is directly a candidate value for one."""
+    log = (
+        "MIP egout has 98 rows; 141 cols; 282 nonzeros; 55 integer variables (55 binary)\n"
+        + _heursol("fpr", 4, 0, 282, 1.0, 9.0, 1)
+        + _heursol("fpr", 4, 0, 846, 1.0, 8.0, 1)
+        + _heur("fpr", 1000)
+    )
+    result = parse_log(log)
+    assert result.num_nonzeros == 282
+    (trace,) = result.dispatch_traces()
+    assert trace.normalized_gaps() == [1.0, 2.0]
+    assert trace.normalized_gaps(141) == [2.0, 4.0]
+
+
+def test_normalized_gaps_refuse_an_unknown_nonzero_count():
+    log = _heursol("fpr", 4, 0, 10, 1.0, 9.0, 1) + _heur("fpr", 100)
+    (trace,) = parse_log(log).dispatch_traces()
+    with pytest.raises(ValueError, match="nonzero count unknown"):
+        trace.normalized_gaps()
+
+
+def test_heursol_absent_from_a_log_without_dev_level_3():
+    """The line is `kVerbose`, like `[Heur]` and `[Sequential]`."""
+    log = "Solving report\n  Status            Optimal\n"
+    result = parse_log(log)
+    assert result.heursol_samples == []
+    assert result.dispatch_traces() == []
+
+
+def test_presolve_only_log_shape_parses_its_traces():
+    """`mip_heuristic_presolve_only` exits after the chain, before the root LP.
+
+    The run leaves a complete Solving report with a finite primal bound,
+    `Nodes 0`, `LP iterations 0` and a free-form status, and returns a
+    non-zero exit code — none of which the parser keys on.  It is the log
+    shape the tuning target runner scores, so the traces have to survive it.
+    """
+    log = (
+        " H       0       0         0   0.00%   inf             1.5e+01 "
+        "            inf        0      0      0         0     0.0s\n"
+        + _heursol("fj", 1, 0, 100, 1.0, 15.0, 1)
+        + _heur("fj", 400)
+        + _heursol("fpr", 2, 0, 50, 1.0, 15.0, 1)
+        + _heur("fpr", 900)
+        + "Solving report\n"
+        "  Status            Solution limit reached\n"
+        "  Primal bound      15\n"
+        "  Dual bound        -inf\n"
+        "  Gap               inf\n"
+        "  Nodes             0\n"
+        "  LP iterations     0\n"
+    )
+    result = parse_log(log)
+    assert result.status == "Solution limit reached"
+    assert result.primal_bound == 15.0
+    assert result.nodes == 0
+    assert [
+        (t.name, t.total_effort, t.productive_effort) for t in result.dispatch_traces()
+    ] == [
+        ("fj", 400, 100),
+        ("fpr", 900, 50),
+    ]
