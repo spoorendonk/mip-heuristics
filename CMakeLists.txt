@@ -133,6 +133,8 @@ add_executable(mip_heuristics_tests
     tests/test_contested_pdlp.cpp
     tests/test_stall_gate.cpp
     tests/test_presolve_only.cpp
+    tests/test_effort_zero.cpp
+    tests/test_heursol_trace.cpp
 )
 # Same guard as `mip_heuristics` above — a test that drops the verdict
 # would model the bug rather than catch it.

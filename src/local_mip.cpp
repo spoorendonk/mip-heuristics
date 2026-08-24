@@ -157,8 +157,9 @@ double compute_solution_objective(const HighsMipSolver& mipsolver,
 // cold-start cache hit).  Callers add it to
 // `mipdata->heuristic_effort_used` (R1-3 round-3 review).
 std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMatrix& csc,
-                                         IncumbentSink& sink, const std::vector<double>& incumbent,
-                                         size_t max_effort, uint32_t seed,
+                                         IncumbentSink& sink, const WorkerTrace& trace,
+                                         const std::vector<double>& incumbent, size_t max_effort,
+                                         uint32_t seed,
                                          std::vector<double>* cold_start_cache = nullptr,
                                          size_t* effort_out = nullptr) {
     // `copy_best` takes the pool lock once and copies only the top
@@ -209,12 +210,30 @@ std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMat
         // `AttemptResult` for `note_staleness` either.  So there is no
         // staleness counter for the pool's answer to feed, at either
         // level.
-        static_cast<void>(sink.offer(obj, constructed));
+        // `effort_at` is the construction sweep this call has just paid.
+        // The `LocalMipWorker` the caller builds for this slot takes the
+        // same number as its `WorkerTrace::effort_base`, so the slot's
+        // `effort_at` continues from here rather than restarting at the
+        // worker's own zeroed `ctx_.effort` (#106).
+        static_cast<void>(sink.offer(obj, constructed, trace, trace.at(construction_effort)));
     }
     if (cold_start_cache != nullptr) {
         *cold_start_cache = constructed;
     }
     return constructed;
+}
+
+// Carry a retiring worker's charge into its slot's trace base, so the
+// slot's `[HeurSol] effort_at` keeps rising across a rebuild instead of
+// restarting at the replacement's zeroed `ctx_.effort` (#106).  A free
+// function rather than two lines inside the runner callback: `run` is
+// already at the cognitive-complexity threshold, and this is a
+// self-contained responsibility that has nothing to do with restart
+// selection.
+void retire_trace(const std::unique_ptr<LocalMipWorker>& worker, WorkerTrace& trace) {
+    if (worker) {
+        trace.effort_base = worker->traced_effort();
+    }
 }
 
 }  // namespace
@@ -227,7 +246,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     // incumbent has a solution.  The sibling issue #74 handles the
     // warm-start-with-pool path; this function stays neutral on that
     // (pool-first lookup in `resolve_worker_start` already covers it).
-    if (problem.degenerate()) {
+    if (problem.degenerate() || budget.disabled()) {
         return 0;
     }
 
@@ -236,6 +255,11 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
 
     struct LmState {
         std::unique_ptr<LocalMipWorker> worker;
+        // Trace-only slot identity, carried across rebuilds (#106).  Its
+        // `effort_base` also absorbs the cold-start construction sweeps,
+        // which are charged to the dispatch total but not to any worker's
+        // `ctx_.effort`.
+        WorkerTrace trace;
     };
 
     // Cold-start cache shared across all workers of this dispatch: the
@@ -275,8 +299,10 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     // no-search dispatch report non-zero effort where it used to report 0.
     if (budget.total > 0) {
         size_t primed_effort = 0;
-        resolve_worker_start(mipsolver, *problem.csc, sink, problem.incumbent, budget.per_worker,
-                             exec.base_seed, &cold_start_cache, &primed_effort);
+        // `worker = -1`: the prime runs on the dispatching thread, before
+        // any worker slot exists, so its publish belongs to no slot.
+        resolve_worker_start(mipsolver, *problem.csc, sink, WorkerTrace{-1, 0}, problem.incumbent,
+                             budget.per_worker, exec.base_seed, &cold_start_cache, &primed_effort);
         construction_effort.fetch_add(primed_effort, std::memory_order_relaxed);
     }
 
@@ -291,8 +317,8 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
             }
             size_t my_construction_effort = 0;
             std::vector<double> start = resolve_worker_start(
-                mipsolver, *problem.csc, sink, problem.incumbent, budget.per_worker, seed,
-                &local_cache, &my_construction_effort);
+                mipsolver, *problem.csc, sink, WorkerTrace{worker_idx, 0}, problem.incumbent,
+                budget.per_worker, seed, &local_cache, &my_construction_effort);
             if (my_construction_effort > 0) {
                 construction_effort.fetch_add(my_construction_effort, std::memory_order_relaxed);
             }
@@ -313,14 +339,23 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 perturb_solution(start, problem.binary.data(), problem.model->integrality_,
                                  problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
             }
-            return LmState{std::make_unique<LocalMipWorker>(
-                mipsolver, *problem.csc, sink, budget.per_worker, budget.worker_stale, seed,
-                start.data(), problem.binary.data())};
+            // The construction this slot just paid seeds its trace base, so
+            // the worker's zeroed `ctx_.effort` continues the slot's count
+            // instead of restarting below the value already emitted.
+            const WorkerTrace trace{worker_idx, my_construction_effort};
+            return LmState{
+                std::make_unique<LocalMipWorker>(mipsolver, *problem.csc, sink, budget.per_worker,
+                                                 budget.worker_stale, seed, start.data(),
+                                                 problem.binary.data(), trace),
+                trace};
         },
         [&](LmState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             if (!state.worker || state.worker->finished()) {
                 // Restart from pool, incumbent, or fresh construction
                 // (cold-start), with fresh perturbation.
+                // Retire the outgoing occupant's charge into the slot's
+                // trace base before it is destroyed (#106).
+                retire_trace(state.worker, state.trace);
                 std::vector<double> restart_sol;
                 if (!sink.get_restart(rng, restart_sol)) {
                     // Snapshot, not `problem.mipdata->incumbent`: this runs
@@ -351,6 +386,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                             construction_effort_cap(budget.per_worker), restart_sol);
                         construction_effort.fetch_add(my_construction_effort,
                                                       std::memory_order_relaxed);
+                        state.trace.effort_base += my_construction_effort;
                     }
                 }
                 perturb_solution(restart_sol, problem.binary.data(), problem.model->integrality_,
@@ -358,7 +394,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 auto seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LocalMipWorker>(
                     mipsolver, *problem.csc, sink, budget.per_worker, budget.worker_stale, seed,
-                    restart_sol.data(), problem.binary.data());
+                    restart_sol.data(), problem.binary.data(), state.trace);
             }
             return state.worker->run_attempt(run_cap);
         });

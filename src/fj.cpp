@@ -15,7 +15,7 @@ namespace fj {
 
 size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
            IncumbentSink& sink) {
-    if (problem.degenerate()) {
+    if (problem.degenerate() || budget.disabled()) {
         return 0;
     }
 
@@ -26,13 +26,16 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
         std::unique_ptr<FjWorker> worker;
         uint32_t initial_seed = 0;
         bool first_creation = true;
+        // Trace-only slot identity, carried across rebuilds (#106).
+        WorkerTrace trace;
     };
 
     return run_opportunistic_loop(
         exec, budget,
         [random_seed_opp](int worker_idx, Rng& /*rng*/) -> FjState {
             // Pin first attempt to random_seed + w; worker 0 matches vanilla FJ's seed.
-            return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx), true};
+            return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx), true,
+                           WorkerTrace{worker_idx, 0}};
         },
         [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             if (!state.worker || state.worker->finished()) {
@@ -57,14 +60,22 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 if (!sink.copy_best(start)) {
                     start = problem.incumbent;
                 }
+                // Carry the outgoing worker's charge into the replacement's
+                // trace base, so the `[HeurSol] effort_at` of this slot keeps
+                // rising instead of restarting with the fresh
+                // `WorkerBudgetState` (#106).  Nothing about what the budget
+                // counts changes: `base_` still starts at zero.
+                if (state.worker) {
+                    state.trace.effort_base = state.worker->traced_effort();
+                }
                 // `budget.worker_stale` is this worker's share of the
                 // dispatch's absolute stall ceiling (issue #111) — the
                 // `nnz << 8` FJ used to compute from its own copy of the
                 // matrix, now sized once alongside every other
                 // heuristic's.
-                state.worker =
-                    std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker,
-                                               budget.worker_stale, seed, std::move(start));
+                state.worker = std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker,
+                                                          budget.worker_stale, seed,
+                                                          std::move(start), state.trace);
             }
             return state.worker->run_attempt(run_cap);
         });

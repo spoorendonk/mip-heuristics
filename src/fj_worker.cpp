@@ -25,8 +25,8 @@ struct FjWorker::Impl {
 };
 
 FjWorker::FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_budget,
-                   size_t stale_budget, uint32_t seed, std::vector<double> start)
-    : mipsolver_(mipsolver), sink_(sink), start_(std::move(start)), seed_(seed) {
+                   size_t stale_budget, uint32_t seed, std::vector<double> start, WorkerTrace trace)
+    : mipsolver_(mipsolver), sink_(sink), start_(std::move(start)), seed_(seed), trace_(trace) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
 }
@@ -177,7 +177,11 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     // own `effortSinceLastImprovement` already tracks the latter, inside
     // the solver, and that is the counter its callback gate reads.  This
     // one is the dispatch's.
-    if (found_solution && sink_.offer(best_obj, best_sol)) {
+    // `effort_at`: this worker's cumulative charge *including* the attempt
+    // that just produced the solution — `base_` is charged below, after the
+    // offer, so it does not yet contain it.
+    if (found_solution && sink_.offer(best_obj, best_sol, trace_,
+                                      trace_.at(base_.total_effort + attempt_effort_consumed))) {
         result.found_improvement = true;
         base_.charge_improvement(attempt_effort_consumed);
     } else {

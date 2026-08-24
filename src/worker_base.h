@@ -8,6 +8,38 @@ struct AttemptResult {
     bool found_improvement = false;
 };
 
+// Trace identity of one *worker slot* within a dispatch, for the
+// `[HeurSol]` line (issue #106).  Purely derived: nothing here feeds a
+// budget, a gate or an effort total, and no effort counter changes what it
+// counts because of it.
+//
+// Why a slot and not a worker: FJ, LocalMIP, Scylla and fpr_lp all retire a
+// stalled worker and construct a fresh one in the same runner slot, and the
+// replacement starts its `WorkerBudgetState` (or `WorkerCtx::effort`) at
+// zero.  Reporting the raw counter would make `effort_at` sawtooth within
+// one `(name, dispatch, worker)` triple, and the inter-acceptance gaps
+// #107 sets the stall thresholds from would then silently lose a whole
+// occupant's worth of effort at every rebuild — biasing the p90/p95
+// quantiles *downward*, i.e. towards a tighter gate, which is the direction
+// that costs solutions.
+//
+// So `effort_base` carries the charge of every previous occupant of this
+// slot, and a rebuild site reads the outgoing worker's `traced_effort()`
+// into the incoming one's base.  `at()` is then monotone non-decreasing for
+// the life of the slot, which is what the contract requires.
+struct WorkerTrace {
+    // Slot index within the dispatch.  `-1` marks an offer that is not made
+    // from a worker slot at all — LocalMIP's cold-start publish on the
+    // dispatching thread is the one such site.
+    int worker = -1;
+    // Total charge retired by previous occupants of this slot.
+    size_t effort_base = 0;
+
+    // Monotone charged effort to report, given the current occupant's own
+    // running counter.
+    [[nodiscard]] size_t at(size_t charged) const { return effort_base + charged; }
+};
+
 // Shared per-worker bookkeeping for the heuristic workers.
 //
 // Embed (composition, NOT inheritance) into workers that track cumulative

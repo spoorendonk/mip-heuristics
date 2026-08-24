@@ -2,9 +2,11 @@
 
 #include "rng.h"
 #include "solution_pool.h"
+#include "worker_base.h"
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <vector>
 
@@ -51,13 +53,24 @@ public:
     //
     // The bool is computed inside `SolutionPool`'s own lock and returned
     // by value, so reading it adds no shared state (#98/#99).
-    [[nodiscard]] bool offer(double objective, const std::vector<double>& solution) {
-        const bool accepted = pool_.try_add(objective, solution, source_);
-        if (accepted) {
-            accepted_.fetch_add(1, std::memory_order_relaxed);
-        }
-        return accepted;
-    }
+    //
+    // `effort_at` is the offering worker's own charged effort at the moment
+    // of the offer — the counter that worker's *own* stall gate reads, so a
+    // difference between two `effort_at` values is directly comparable with
+    // `HeuristicBudget::worker_stale` (#106).  Every worker keeps such a
+    // counter already; none of them is recomputed or redefined for this,
+    // and Scylla's stays the amortised (PDLP cost ÷ N) one its gate uses.
+    // It is *not* monotone across a dispatch: FJ, LocalMIP and Scylla all
+    // rebuild a retired worker in place and a rebuild starts a fresh
+    // counter at zero, so the per-dispatch sequence is sawtooth.
+    //
+    // `trace` names the worker slot the offer comes from and carries the
+    // charge of that slot's retired occupants, so `trace.at(effort_at)` is
+    // monotone across rebuilds; see `WorkerTrace` in worker_base.h.
+    //
+    // Emits the `[HeurSol]` trace line (see incumbent_sink.cpp).
+    [[nodiscard]] bool offer(double objective, const std::vector<double>& solution,
+                             const WorkerTrace& trace, size_t effort_at);
 
     // Number of offers the pool has accepted since construction.  The
     // `found` field of the `[Heur]` instrumentation line (issue #95) is
@@ -79,7 +92,21 @@ public:
     // region joined — `mode_dispatch::run_sequential` is the sole caller,
     // and that is the same invariant which lets it book effort without
     // synchronisation.
-    void set_source(int source) { source_ = source; }
+    //
+    // This is also *the* dispatch boundary, and `[HeurSol]` uses it as one
+    // (#106): a retarget happens exactly once per presolve-chain dispatch,
+    // immediately before it, and the only other way an offer can reach a
+    // new source tag is a freshly constructed sink — which is what `fpr_lp`
+    // does, one per dive dispatch.  So construction and retarget together
+    // enumerate every dispatch, and both take the next `dispatch` id.
+    void set_source(int source) { begin_dispatch(source); }
+
+    // Trace id of the dispatch currently being attributed.  Drawn from a
+    // process-global counter, so `(name, dispatch)` identifies one dispatch
+    // uniquely across the whole process — not merely within one solve, which
+    // a per-sink counter could not manage: `fpr_lp` builds a new sink per
+    // dive, and a per-sink counter would hand every dive the same id.
+    [[nodiscard]] uint64_t dispatch_id() const { return dispatch_id_; }
 
     // Restart material for a worker beginning a fresh attempt.  Both are
     // thread-safe (the pool takes its own lock).
@@ -87,6 +114,16 @@ public:
     bool copy_best(std::vector<double>& out) { return pool_.copy_best(out); }
 
 private:
+    // Take the next process-global dispatch id, remember the heuristic name
+    // the tag maps to, and stamp the dispatch's start on the solver clock.
+    void begin_dispatch(int source);
+
+    // Emit one `[HeurSol]` line.  `const` and lock-free by construction —
+    // see the definition for the threading argument.
+    void trace_offer(const WorkerTrace& trace, size_t effort_at, double objective,
+                     bool accepted) const;
+
+    HighsMipSolver& mipsolver_;
     SolutionPool pool_;
     // Serialises `trySolution`: `HighsMipSolverData::addIncumbent` is not
     // thread-safe and the accept callback fires on whichever worker
@@ -94,4 +131,15 @@ private:
     std::mutex highs_mtx_;
     int source_;
     std::atomic<size_t> accepted_{0};
+
+    // `[HeurSol]` dispatch context.  Written only by `begin_dispatch`, i.e.
+    // at construction and at `set_source`, both of which run on the
+    // dispatching thread with every parallel region joined — the same
+    // invariant `set_source` and `EffortLedger` already rely on.  Workers
+    // only ever read them, so no synchronisation is needed and none is
+    // added: a log mutex here would serialise every offer a second time,
+    // on top of the pool's own lock.
+    const char* dispatch_name_ = "unknown";
+    uint64_t dispatch_id_ = 0;
+    double dispatch_start_s_ = 0.0;
 };

@@ -86,7 +86,7 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
 
 size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
            IncumbentSink& sink) {
-    if (problem.degenerate()) {
+    if (problem.degenerate() || budget.disabled()) {
         return 0;
     }
 
@@ -115,11 +115,13 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
         // its share of the pool is already taken (issue #111).
         workers.push_back(std::make_unique<ScyllaWorker>(
             mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders, budget.total,
-            budget.stale, seed, w, n, &improvement_gen));
+            budget.stale, seed, w, n, WorkerTrace{w, 0}, &improvement_gen));
     }
 
     struct ScyllaOppState {
         int worker_idx;
+        // Trace-only slot identity, carried across rebuilds (#106).
+        WorkerTrace trace;
     };
 
     // Retired-worker counters so `log_overlap_ratio` can include the
@@ -132,7 +134,9 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
 
     size_t total_effort = run_opportunistic_loop(
         exec, budget,
-        [](int worker_idx, Rng& /*rng*/) -> ScyllaOppState { return ScyllaOppState{worker_idx}; },
+        [](int worker_idx, Rng& /*rng*/) -> ScyllaOppState {
+            return ScyllaOppState{worker_idx, WorkerTrace{worker_idx, 0}};
+        },
         [&](ScyllaOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             auto& worker = workers[state.worker_idx];
             auto attempt = attempt_with_rebuild(worker, run_cap, [&]() {
@@ -140,6 +144,12 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 // the rebuild drops its destructor on the floor.
                 retired_fresh.fetch_add(worker->fresh_solves(), std::memory_order_relaxed);
                 retired_stale.fetch_add(worker->stale_rounds(), std::memory_order_relaxed);
+                // Same harvest for the trace: the outgoing worker's charge
+                // becomes the replacement's `effort_base`, so this slot's
+                // `[HeurSol] effort_at` keeps rising across the rebuild
+                // instead of restarting at the fresh `WorkerBudgetState`
+                // (#106).
+                state.trace.effort_base = worker->traced_effort();
                 // Rebuild stale worker with a fresh seed so the runner
                 // doesn't lose parallelism over time (mirrors the fpr_lp
                 // path).  `pdlp` is shared, so warm-start etc. are
@@ -147,7 +157,8 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 auto new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
                     mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
-                    budget.total, budget.stale, new_seed, state.worker_idx, n, &improvement_gen);
+                    budget.total, budget.stale, new_seed, state.worker_idx, n, state.trace,
+                    &improvement_gen);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has

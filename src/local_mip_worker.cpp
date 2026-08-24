@@ -81,8 +81,14 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
 
 LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
                                size_t total_budget, size_t stale_budget, uint32_t seed,
-                               const double* initial_solution, const uint8_t* binary)
-    : mipsolver_(mipsolver), csc_(csc), sink_(sink), rng_(seed), ctx_(mipsolver, csc, binary) {
+                               const double* initial_solution, const uint8_t* binary,
+                               WorkerTrace trace)
+    : mipsolver_(mipsolver),
+      csc_(csc),
+      sink_(sink),
+      rng_(seed),
+      trace_(trace),
+      ctx_(mipsolver, csc, binary) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
     const HighsInt ncol = mipsolver.model_->num_col_;
@@ -211,7 +217,11 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 // the local flag to the gate is what let a rebuilt worker
                 // clear the dispatch's staleness counter by rediscovering
                 // a solution the pool already held.
-                if (sink_.offer(obj, ctx_.solution)) {
+                // `effort_at`: `ctx_.effort` is this worker's cumulative
+                // coefficient-access counter — the same quantity
+                // `base_.total_effort` accumulates at the end of each
+                // attempt, read here mid-attempt.
+                if (sink_.offer(obj, ctx_.solution, trace_, trace_.at(ctx_.effort))) {
                     attempt.found_improvement = true;
                     base_.reset_staleness();
                     // Part of the staleness accounting, not the search's:

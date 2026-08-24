@@ -43,11 +43,18 @@ public:
     // issue #99); it must outlive the worker.
     LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
-                   const double* initial_solution, const uint8_t* binary);
+                   const double* initial_solution, const uint8_t* binary, WorkerTrace trace);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
     [[nodiscard]] bool finished() const { return base_.finished; }
+
+    // Monotone charged effort for the `[HeurSol]` trace (#106): this
+    // worker's own `WorkerCtx::effort` plus what the slot's retired
+    // occupants — and this occupant's own cold-start construction, which is
+    // charged outside `ctx_` — already spent.  `local_mip::run` reads it
+    // off the outgoing worker to seed the replacement's `WorkerTrace`.
+    [[nodiscard]] size_t traced_effort() const { return trace_.at(ctx_.effort); }
 
 private:
     HighsMipSolver& mipsolver_;
@@ -62,6 +69,9 @@ private:
     // quarter of an allowance grows with the allowance and so can never
     // stop a heuristic from spending all of it.
     WorkerBudgetState base_;
+
+    // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
+    const WorkerTrace trace_;
 
     WorkerCtx ctx_;
     std::vector<HighsInt> costed_vars_;

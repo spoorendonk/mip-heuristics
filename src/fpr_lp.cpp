@@ -210,8 +210,13 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver& mipsolver, size_t max_effo
 class LpFprWorker {
 public:
     LpFprWorker(HighsMipSolver& mipsolver, const LpFprSetup& setup, IncumbentSink& sink,
-                int arm_idx, uint32_t seed)
-        : mipsolver_(mipsolver), setup_(setup), sink_(sink), arm_idx_(arm_idx), rng_(seed) {}
+                int arm_idx, uint32_t seed, WorkerTrace trace)
+        : mipsolver_(mipsolver),
+          setup_(setup),
+          sink_(sink),
+          arm_idx_(arm_idx),
+          trace_(trace),
+          rng_(seed) {}
 
     AttemptResult run_attempt(size_t attempt_budget) {
         AttemptResult attempt{};
@@ -269,7 +274,13 @@ public:
             // flag.  The prototype that measured the change did not cover
             // it, so this stays on "reached a feasible point" until
             // someone measures the dive-time envelope.
-            static_cast<void>(sink_.offer(result.objective, result.solution));
+            // `effort_at`: this worker's cumulative charge including the
+            // attempt that just produced the solution.  `LpFprWorker` keeps
+            // no `WorkerBudgetState`, so `total_effort_` below is the
+            // running sum it charges; nothing else reads it, and no budget
+            // or gate is derived from it (#106).
+            static_cast<void>(sink_.offer(result.objective, result.solution, trace_,
+                                          trace_.at(total_effort_ + result.effort)));
             attempt.found_improvement = true;
             attempts_without_improvement_ = 0;
             randomizations_without_improvement_ = 0;
@@ -277,10 +288,17 @@ public:
             ++attempts_without_improvement_;
         }
 
+        total_effort_ += attempt.effort;
         return attempt;
     }
 
     [[nodiscard]] bool finished() const { return finished_; }
+
+    // Monotone charged effort for the `[HeurSol]` trace (#106); see
+    // `WorkerTrace` in worker_base.h.  `fpr_lp` rebuilds a retired worker
+    // in place like Scylla does, so the slot's base has to absorb the
+    // outgoing worker's charge.
+    [[nodiscard]] size_t traced_effort() const { return trace_.at(total_effort_); }
 
 private:
     void randomize_arm() { arm_idx_ = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng_); }
@@ -290,6 +308,12 @@ private:
     IncumbentSink& sink_;
 
     int arm_idx_;
+    // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
+    const WorkerTrace trace_;
+    // Trace-only running charge.  `LpFprWorker` has no `WorkerBudgetState`
+    // (it gates on its own attempt counters), so the `[HeurSol]` line needs
+    // this sum; it feeds nothing else.
+    size_t total_effort_ = 0;
     int attempt_idx_ = 0;
     int attempts_without_improvement_ = 0;
     int randomizations_without_improvement_ = 0;
@@ -341,6 +365,8 @@ size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
     // Per-worker lightweight state: just the LpFprWorker instance.
     struct LpFprOppState {
         std::unique_ptr<LpFprWorker> worker;
+        // Trace-only slot identity, carried across rebuilds (#106).
+        WorkerTrace trace;
     };
 
     return run_opportunistic_loop(
@@ -349,7 +375,9 @@ size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
             uint32_t seed = exec.worker_seed(worker_idx);
-            return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed)};
+            return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed,
+                                                               WorkerTrace{worker_idx, 0}),
+                                 WorkerTrace{worker_idx, 0}};
         },
         [&](LpFprOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             // A retired worker here hit its hard randomisation cap; the
@@ -357,7 +385,9 @@ size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
             return attempt_with_rebuild(state.worker, run_cap, [&]() {
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
                 auto seed = static_cast<uint32_t>(rng());
-                state.worker = std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed);
+                state.trace.effort_base = state.worker->traced_effort();
+                state.worker =
+                    std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed, state.trace);
             });
         });
 }

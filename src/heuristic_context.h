@@ -162,6 +162,24 @@ struct HeuristicBudget {
     // against a `N * nnz << 8` runner gate already was at the shipped
     // default.  Scylla is the documented exception — see scylla_worker.cpp.
     size_t worker_stale = 0;
+
+    // This heuristic was handed nothing, and must therefore do nothing
+    // (issue #106).
+    //
+    // `mip_heuristic_<name>_effort = 0` sizes `total` to zero, and #107
+    // spells "this heuristic is excluded from the configuration" exactly
+    // that way — a zero-pattern of four continuous parameters rather than a
+    // separate discrete subset dimension, which is what keeps its search
+    // tractable.  That reduction is only sound if a zero budget is
+    // *indistinguishable* from omitting the heuristic, so every entry point
+    // checks this alongside `ProblemView::degenerate()` and returns before
+    // any setup.  `run_opportunistic_loop` already declined a zero total,
+    // but three of the four heuristics do real work before they reach it —
+    // Scylla builds a `ContestedPdlp` (a whole `Highs` LP copy), the
+    // per-config variable orders and N workers; FPR precomputes its
+    // variable orders — and that work is neither free nor charged, so it
+    // was invisible in the effort total while still costing wall time.
+    [[nodiscard]] bool disabled() const { return total == 0; }
 };
 
 // How a heuristic runs: the worker count, the RNG base seed, and the one
@@ -226,6 +244,18 @@ inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
 // and every caller knows the model's `nnz` and its heuristic's per-nnz
 // constant.  See `stall_threshold` in heuristic_common.h.
 inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stale) {
+    // A zero total is "this heuristic is excluded" (issue #106), so every
+    // derived ceiling is zero too and `disabled()` holds.  Spelling it out
+    // rather than letting the expressions below run: `attempt_cap` floors
+    // at 1, so a zero budget used to license one attempt — the whole of
+    // Scylla's, which charges a full PDLP solve and does not stop for
+    // `attempt_cap` once started — and `stale` arrives here *unclamped*,
+    // because `stall_threshold` special-cases a zero budget by skipping
+    // the clamp.  Both are ceilings that only make sense above a budget
+    // that exists.
+    if (total == 0) {
+        return HeuristicBudget{};
+    }
     // Designated initialisers for the same reason `make_problem` below
     // gives them: this aggregate is five `size_t` members in a row, so a
     // mis-ordered addition converts silently between them.  #111 appended

@@ -139,6 +139,14 @@ private:
     // change from the one issue #111 asks for.
     WorkerBudgetState base_;
 
+    // Trace-only slot identity for the `[HeurSol]` line (#106).  Its
+    // `effort_base` is permanently zero and it is derived here rather than
+    // passed in, unlike FJ / LocalMIP / Scylla: `fpr::run` deliberately
+    // does *not* rebuild a retired worker (see the comment on its runner
+    // callback), so an FPR slot has exactly one occupant and its raw
+    // counter is already monotone.
+    const WorkerTrace trace_;
+
     Rng rng_;
     FprScratch scratch_;
     // Reused across attempts to avoid `std::vector<double>` churn — the
@@ -219,6 +227,7 @@ FprWorker::FprWorker(const ExecutionContext& exec, const CscMatrix& csc, Incumbe
       binary_(binary),
       worker_idx_(worker_idx),
       attempt_budget_(attempt_budget),
+      trace_(WorkerTrace{worker_idx, 0}),
       rng_(seed) {
     base_.total_budget = std::numeric_limits<size_t>::max();
     base_.stale_budget = stale_budget;
@@ -461,7 +470,11 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         // counter the gate reads.  `offer` is still called for every
         // feasible result, so nothing that reached HiGHS before stops
         // reaching it — only the verdict is now read.
-        if (result.found_feasible && sink_.offer(result.objective, result.solution)) {
+        // `effort_at`: the worker's cumulative charge including this
+        // attempt's work so far.  `charge(attempt)` runs at both exits from
+        // this function, so `base_.total_effort` does not yet contain it.
+        if (result.found_feasible && sink_.offer(result.objective, result.solution, trace_,
+                                                 trace_.at(base_.total_effort + attempt.effort))) {
             attempt.found_improvement = true;
         }
 
@@ -480,7 +493,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 
 size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
            IncumbentSink& sink) {
-    if (problem.degenerate()) {
+    if (problem.degenerate() || budget.disabled()) {
         return 0;
     }
 

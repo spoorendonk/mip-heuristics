@@ -90,7 +90,7 @@ public:
                  IncumbentSink& sink, const uint8_t* binary,
                  const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
                  size_t stale_budget, uint32_t seed, int worker_idx, int num_workers,
-                 std::atomic<uint64_t>* improvement_gen = nullptr);
+                 WorkerTrace trace, std::atomic<uint64_t>* improvement_gen = nullptr);
 
     // Run iterations until attempt_budget effort is consumed.  Sets
     // base_.finished when the worker cannot make further progress.
@@ -98,6 +98,15 @@ public:
 
     [[nodiscard]] bool finished() const { return base_.finished; }
     [[nodiscard]] size_t total_effort() const { return base_.total_effort; }
+
+    // Monotone charged effort for the `[HeurSol]` trace (#106): this
+    // worker's own counter plus what the slot's retired occupants spent.
+    // The counter is Scylla's *amortised* one — a PDLP solve enters it
+    // divided by the worker count, exactly as it enters the staleness gate
+    // this trace exists to calibrate — so a gap between two `effort_at`
+    // values is directly comparable with `HeuristicBudget::stale`, which is
+    // what a Scylla worker's gate is armed with.
+    [[nodiscard]] size_t traced_effort() const { return trace_.at(base_.total_effort); }
 
     // Observability for issue #76: how many iterations used a fresh
     // solve (held the mutex) vs rounded against a stale snapshot.
@@ -138,6 +147,8 @@ private:
     // would apply the same factor twice and retire a chain after a single
     // pump round.
     WorkerBudgetState base_;
+    // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
+    WorkerTrace trace_;
 
     // Number of concurrent ScyllaWorkers sharing the contested PDLP; used
     // to amortize per-iteration effort so each worker charges its fair
