@@ -1000,6 +1000,15 @@ def classify_run(run: ProbeRun) -> RunVerdict:
        classify differently in the two passes — a reproducibility hazard in
        the one artifact that gets pinned by digest into a tuning-set header.
        The source test reads display rows, which every level prints.
+    3. **A killed run has incumbents and no ledger.**  `[Heur]` is written
+       when a dispatch *ends*, so a run the probe's per-run cap SIGKILLs
+       mid-dispatch carries none — while every incumbent row printed before
+       the kill survives.  On the pilot `fj` tree this is not a corner case:
+       `neos-4532248-waihi` and `nursesched-medium-hint03` were both killed
+       at 210 s with `J`-sourced rows and no `[Heur]` line at all, so an
+       acceptance-based predicate scores them as having produced nothing on
+       instances where FJ demonstrably produced the incumbent.  The probe
+       *needs* that cap, so this shape is built into the data it collects.
 
     What acceptance still buys, when it is there: it splits the hard tier's
     *reason* (see `informative_set`) and it flags the disagreement, so a

@@ -753,6 +753,26 @@ def test_the_verdict_does_not_move_with_the_log_level():
         assert traced.informative is expected
 
 
+def test_a_killed_run_can_still_show_the_chain_produced_the_incumbent():
+    """`[Heur]` is written when a dispatch ends, so a kill leaves none.
+
+    The probe needs a per-run cap, so this shape is built into the data it
+    collects: on the pilot `fj` tree, `neos-4532248-waihi` and
+    `nursesched-medium-hint03` were killed at 210 s with `J`-sourced rows
+    and no `[Heur]` line, which an acceptance-based predicate would score as
+    having produced nothing.
+    """
+    verdict = classify_run(make_run(probe_log(rows=(("J", 77.4),), killed=True)))
+    assert verdict.informative
+    assert verdict.produced is None  # no ledger to say
+    assert verdict.killed
+
+    scan = informative_set(
+        {"neos-4532248-waihi": [make_run(probe_log(rows=(("J", 77.4),), killed=True))]}
+    )
+    assert scan.informative == ["neos-4532248-waihi"]
+
+
 def test_produced_but_never_improved_is_its_own_reason():
     """A heuristic that produces and never improves is a datum about it.
 
