@@ -115,12 +115,21 @@ void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, doub
     // `const` read of clock 0, which the runner's termination poller
     // already performs from worker threads.
     //
-    // `highsLogDev` bottoms out in a single `vfprintf` per stream, and
-    // glibc holds that stream's lock for the whole call, so a line cannot
-    // interleave with another worker's.  HiGHS's own FeasibilityJump
-    // already logs from parallel workers at this very level, so this path
-    // is not new contention — it is the same one, at a far lower rate
-    // (once per offer, not once per weight bump).
+    // `highsLogDev` has three delivery paths and the line survives all
+    // three whole.  To a file or to the console it is one `vfprintf`, and
+    // glibc holds that stream's lock for the call, so it cannot interleave
+    // with another worker's.  To a user callback — the path
+    // `solve_capturing_log` in `tests/test_common.h` installs, and the one
+    // this project's own tests read — it is one `vsnprintf` into a
+    // *caller-local* buffer followed by a direct call on the offering
+    // thread, so the message is still delivered as a unit; what the
+    // callback then does with it, including any locking, is the callback's
+    // own business (the test harness takes a mutex).  Either way no
+    // ordering between workers is promised and none is needed: consumers
+    // group by `(name, dispatch, worker)`, never by position.  HiGHS's own
+    // FeasibilityJump already logs from parallel workers at this very
+    // level, so this path is not new contention — it is the same one, at a
+    // far lower rate (once per offer, not once per weight bump).
     const HighsLogOptions& log_options = mipsolver_.options_mip_->log_options;
     // Check the level before touching the clock: `highsLogDev` would drop
     // the line anyway, but the timer read and the formatting would already

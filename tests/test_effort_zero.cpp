@@ -5,6 +5,7 @@
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -58,7 +59,16 @@ struct HeurLine {
     unsigned long long effort = 0;
     bool found = false;
 
-    bool operator==(const HeurLine&) const = default;
+    // Deliberately outside `operator==`: the equivalence assertions below
+    // compare traces across two solves, and wall time is the one field that
+    // is not reproducible.  It is carried anyway for the setup-cost test,
+    // which is the only reader.
+    double wall_ms = 0.0;
+
+    bool operator==(const HeurLine& other) const {
+        return name == other.name && phase == other.phase && effort == other.effort &&
+               found == other.found;
+    }
 };
 
 // Value of `key=` in `line`, or an empty string when absent.
@@ -81,7 +91,8 @@ std::vector<HeurLine> heur_lines(const std::vector<std::string>& lines) {
         }
         out.push_back(HeurLine{field_of(line, "name"), field_of(line, "phase"),
                                std::strtoull(field_of(line, "effort").c_str(), nullptr, 10),
-                               field_of(line, "found") == "1"});
+                               field_of(line, "found") == "1",
+                               std::strtod(field_of(line, "wall_ms").c_str(), nullptr)});
     }
     return out;
 }
@@ -199,6 +210,60 @@ TEST_CASE("effort-zero: scylla builds no PDLP wrapper at effort 0", "[effort-zer
                        "[ScyllaOverlap]"));
     CHECK(!log_contains(zeroed("flugpl.mps", "scylla"), "[ScyllaOverlap]"));
     CHECK(!log_contains(omitted("flugpl.mps", "fj,fpr,local_mip"), "[ScyllaOverlap]"));
+}
+
+// The half the assertions above cannot reach: that the guard removes the
+// *setup*, not merely the search.
+//
+// Charged effort and offer counts are both blind to it — `precompute_var_orders`
+// and `ContestedPdlp` construction are uncharged, so deleting
+// `budget.disabled()` from all four entry points leaves every other
+// assertion in this file passing (measured: 3 of 4 cases green, only the
+// `[ScyllaOverlap]` one below failing).  The only observable that moves is
+// the wall-clock window the ledger already reports.
+//
+// This is therefore the one test here that reads a time, and it is written
+// to be a *structural* comparison rather than a performance one.  With the
+// guard, a disabled heuristic's `[Heur]` window is two `timer_.read()`
+// calls around a function that returns immediately: `%.1f` prints `0.0`,
+// i.e. under 0.05 ms, on every bundled instance, 3 runs each.  Without it,
+// on `p0548` — the bundled instance with the most columns, so the one whose
+// setup costs most — FPR reports 0.7 ms and Scylla 0.5 ms, reproducibly to
+// the digit.  The threshold below sits an order of magnitude above the
+// guarded value and well under half the unguarded one.
+//
+// The minimum over repeats, not one sample: a scheduler hiccup between two
+// clock reads can inflate any single window on a loaded machine, while the
+// cost the counterfactual pays is real work that every repeat pays again.
+// So the min keeps the false-failure rate near zero without weakening what
+// the test detects.
+TEST_CASE("effort-zero: a zeroed heuristic runs no setup either", "[effort-zero]") {
+    constexpr int kRepeats = 3;
+    constexpr double kSetupFreeMs = 0.3;
+
+    std::map<std::string, double> fastest;
+    for (int repeat = 0; repeat < kRepeats; ++repeat) {
+        // `p0548`, and every heuristic zeroed at once: the point is that no
+        // entry point pays for setup, and one solve measures all four.
+        const auto lines = trace_solve("p0548.mps", [](Highs& h) {
+            set_suite(h, "all");
+            for (const Case& c : kCases) {
+                require_option(h, std::string("mip_heuristic_") + c.name + "_effort", 0.0);
+            }
+        });
+        for (const HeurLine& entry : presolve_lines(lines)) {
+            const auto it = fastest.find(entry.name);
+            if (it == fastest.end() || entry.wall_ms < it->second) {
+                fastest[entry.name] = entry.wall_ms;
+            }
+        }
+    }
+
+    REQUIRE(fastest.size() == kCases.size());
+    for (const auto& [name, wall_ms] : fastest) {
+        INFO("heuristic " << name << " best-of-" << kRepeats << " wall_ms " << wall_ms);
+        CHECK(wall_ms < kSetupFreeMs);
+    }
 }
 
 // The equivalence #107's parameter encoding rests on: zeroing a

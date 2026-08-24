@@ -59,6 +59,10 @@ public:
     // A presolve-chain heuristic (FJ / FPR / LocalMIP / Scylla) consumed
     // `effort` units between `t0_s` and `t1_s`.  `found` is whether the
     // shared `IncumbentSink` accepted at least one of its solutions.
+    //
+    // The `nnz` reported on the `[Heur]` line is read from the solver
+    // rather than passed in, so no call site had to grow an argument for
+    // it; see `book`.
     void charge_presolve(const char* name, size_t effort, bool found, double t0_s, double t1_s);
 
     // A B&B-dive heuristic (fpr_lp) did the same, and additionally owes

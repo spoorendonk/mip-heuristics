@@ -333,11 +333,109 @@ def _heursol(name, dispatch, worker, effort_at, wall_ms, obj, accepted):
     )
 
 
-def _heur(name, effort, found=1, phase="presolve"):
-    return (
+def _heur(name, effort, found=1, phase="presolve", nnz=100):
+    line = (
         f"[Heur] name={name} phase={phase} start_s=0.100 end_s=0.200 "
-        f"effort={effort} wall_ms=100.0 effort_per_ms=1.0 found={found}\n"
+        f"effort={effort} wall_ms=100.0 effort_per_ms=1.0 found={found}"
     )
+    if nnz is not None:
+        line += f" nnz={nnz}"
+    return line + "\n"
+
+
+def _threads(n=1):
+    return f"   Thread count {n} (of 32 threads). Using {n} max workers. Parallel search off\n"
+
+
+# A real `log_dev_level=3` solve of `lseu.mps` by this branch's binary,
+# trimmed to the lines the parser reads.  It is the shape that matters and
+# the one a synthetic fixture keeps getting wrong: the trace exists **only**
+# at dev level 3, and at dev level 3 HiGHS prints the `Nonzeros :` block
+# instead of the one-line `MIP <name> has ... nonzeros;` header that
+# `_MODEL_HEADER_RE` reads.  So `num_nonzeros` is None here by construction,
+# `Nonzeros : 309` is the pre-presolve model, and `[Heur] nnz=242` — the
+# post-presolve MIP matrix the stall options are denominated in — is the
+# only correct source in the file.
+_REAL_DEV_LOG = """Running HiGHS 1.15.1 (git hash: n/a)
+mip-heuristics patch active
+Coefficient ranges:
+  Matrix [1e+00, 5e+02]
+MIP        : lseu
+Rows       : 28
+Cols       : 89
+Nonzeros   : 309
+Integer    : 89 (89 binary)
+   Thread count 16 (of 32 threads). Using 1 max workers. Parallel search off
+[HeurSol] name=fj dispatch=1 worker=3 effort_at=500012 wall_ms=5.2 obj=1284 accepted=1
+[HeurSol] name=fj dispatch=1 worker=3 effort_at=1000024 wall_ms=9.1 obj=1178 accepted=1
+[Heur] name=fj phase=presolve start_s=0.002 end_s=0.289 effort=9272245 wall_ms=287.1 \
+effort_per_ms=32297.795 found=1 nnz=242
+[HeurSol] name=fpr dispatch=2 worker=0 effort_at=4356 wall_ms=1.1 obj=1150 accepted=1
+[Heur] name=fpr phase=presolve start_s=0.289 end_s=0.297 effort=747887 wall_ms=7.5 \
+effort_per_ms=99662.127 found=1 nnz=242
+"""
+
+
+def test_real_dev_log_fixture_has_no_model_header():
+    """The premise of the `[Heur] nnz=` field, pinned so it cannot rot.
+
+    If HiGHS ever printed the one-line header at dev level 3 as well, this
+    would fail and the fallback ordering below could be revisited.
+    """
+    result = parse_log(_REAL_DEV_LOG)
+    assert result.num_nonzeros is None
+    assert result.heursol_samples, "fixture must carry a trace"
+
+
+def test_normalized_gaps_work_on_a_real_dev_log():
+    """The case that matters: `[HeurSol]` and `num_nonzeros` are mutually
+    exclusive, so before the `nnz=` field this raised on every log that had
+    a trace at all."""
+    traces = {t.name: t for t in parse_log(_REAL_DEV_LOG).dispatch_traces()}
+    assert traces["fj"].nnz == 242  # not 309, which is the pre-presolve model
+    # fj's stall option is per-worker scoped, so the gaps need no scaling.
+    assert traces["fj"].gap_scale == 1
+    assert traces["fj"].normalized_gaps() == [500012 / 242, 500012 / 242]
+    # fpr's is whole-dispatch scoped, so they are scaled by the 16 workers.
+    assert traces["fpr"].gap_scale == 16
+    assert traces["fpr"].normalized_gaps() == [4356 * 16 / 242]
+
+
+def test_heur_lines_are_parsed_as_key_value():
+    """Field order must not matter and an unknown key must be ignored — the
+    line gained `nnz` mid-issue and archived logs must survive the next one."""
+    log = (
+        "[Heur] found=1 nnz=242 effort_per_ms=1.0 wall_ms=100.0 effort=500 "
+        "end_s=0.2 start_s=0.1 phase=presolve name=fpr lane=7\n"
+    )
+    (sample,) = parse_log(log).heuristic_samples
+    assert (sample.name, sample.phase, sample.effort, sample.nnz) == (
+        "fpr",
+        "presolve",
+        500,
+        242,
+    )
+    assert sample.found is True
+
+
+def test_heur_line_without_nnz_still_parses():
+    """Logs written before #106 carry no `nnz=`; they must not be dropped."""
+    (sample,) = parse_log(_heur("fj", 400, nnz=None)).heuristic_samples
+    assert sample.effort == 400
+    assert sample.nnz is None
+
+
+def test_heur_line_missing_a_required_key_is_dropped():
+    log = "[Heur] name=fj phase=presolve start_s=0.1 end_s=0.2 effort=5 wall_ms=1.0\n"
+    assert parse_log(log).heuristic_samples == []
+
+
+def test_heur_line_accepts_negative_wall_ms_via_key_value():
+    (sample,) = parse_log(
+        "[Heur] name=fpr phase=presolve start_s=0.2 end_s=0.1 effort=5 "
+        "wall_ms=-3.0 effort_per_ms=0.0 found=0 nnz=9\n"
+    ).heuristic_samples
+    assert sample.wall_ms == -3.0
 
 
 def test_heursol_lines_parse_into_heursol_samples():
@@ -361,12 +459,6 @@ def test_heursol_lines_parse_into_heursol_samples():
 
 
 def test_heursol_is_parsed_as_key_value_not_positionally():
-    """Field order must not matter, and an unknown key must be ignored.
-
-    The line already gained `worker` once while three consumers were being
-    written against it; a positional pattern would turn the next such
-    addition into a silent parse failure in every archived log.
-    """
     log = (
         "[HeurSol] accepted=1 obj=1.5 wall_ms=2.0 effort_at=42 "
         "worker=3 dispatch=9 name=scylla lane=17\n"
@@ -447,6 +539,7 @@ def test_dispatch_trace_without_a_heur_line_has_no_total():
     (trace,) = parse_log(log).dispatch_traces()
     assert trace.total_effort is None
     assert trace.stale_effort is None
+    assert "truncated log" in trace.stale_effort_unavailable_reason
 
 
 def test_productive_and_stale_effort_sum_over_workers():
@@ -465,13 +558,26 @@ def test_productive_and_stale_effort_sum_over_workers():
 
 
 def test_stale_effort_floors_at_zero():
-    """LocalMIP charges cold-start construction to the dispatch but to no worker,
-    and Scylla's per-worker counter is amortised by the worker count while the
-    dispatch total is not — so the two quantities are close, not identical.
-    """
-    log = _heursol("scylla", 3, 0, 5000, 1.0, 9.0, 1) + _heur("scylla", 1000)
+    """LocalMIP charges its cold-start construction sweep to the dispatch
+    total but to no worker's counter, so a small mismatch is genuine."""
+    log = _heursol("local_mip", 3, 0, 5000, 1.0, 9.0, 1) + _heur("local_mip", 1000)
     (trace,) = parse_log(log).dispatch_traces()
     assert trace.stale_effort == 0
+
+
+def test_stale_effort_is_withheld_for_scylla():
+    """`[Heur] effort` takes the full PDLP cost; the per-worker counter
+    `effort_at` reports takes it divided by the worker count.  Measured on a
+    `gt2` dispatch where *every* offer was accepted, the subtraction still
+    called 90% of the dispatch improvement-free — a number a calibration
+    would act on, so it is withheld rather than floored."""
+    log = _heursol("scylla", 3, 0, 100, 1.0, 9.0, 1) + _heur("scylla", 900_000)
+    (trace,) = parse_log(log).dispatch_traces()
+    assert trace.stale_effort is None
+    assert "not in the same unit" in trace.stale_effort_unavailable_reason
+    # The quantities that *are* differences within that one counter survive.
+    assert trace.productive_effort == 100
+    assert trace.normalized_gaps(nnz=10) == [10.0]
 
 
 def test_no_acceptance_makes_the_whole_dispatch_stale():
@@ -496,27 +602,88 @@ def test_acceptance_gaps_are_taken_within_a_worker():
     assert sorted(trace.acceptance_gaps(include_first=False)) == sorted([150, 60])
 
 
-def test_normalized_gaps_use_the_model_nonzero_count():
-    """The unit `mip_heuristic_*_stall` is expressed in, so a quantile of this
-    is directly a candidate value for one."""
+def test_gap_scale_follows_the_option_scope_not_the_counter():
+    """`fj_stall` and `scylla_stall` arm a worker gate at their face value;
+    `fpr_stall` and `local_mip_stall` are whole-dispatch and are divided by
+    the worker count into `worker_stale`.  Reading a p90 off an unscaled
+    fpr gap at the probe's 16 workers would ship a default 16x too tight."""
+    body = _threads(16)
+    for name in ("fj", "fpr", "local_mip", "scylla"):
+        body += _heursol(name, 10, 0, 320, 1.0, 1.0, 1) + _heur(name, 999, nnz=32)
+    traces = {t.name: t for t in parse_log(body).dispatch_traces()}
+    assert traces["fj"].gap_scale == 1
+    assert traces["scylla"].gap_scale == 1
+    assert traces["fpr"].gap_scale == 16
+    assert traces["local_mip"].gap_scale == 16
+    assert traces["fj"].normalized_gaps() == [10.0]
+    assert traces["fpr"].normalized_gaps() == [160.0]
+
+
+def test_gap_scale_refuses_fpr_lp():
+    """The dive heuristic has no stall option, so its gaps have no scope."""
     log = (
-        "MIP egout has 98 rows; 141 cols; 282 nonzeros; 55 integer variables (55 binary)\n"
-        + _heursol("fpr", 4, 0, 282, 1.0, 9.0, 1)
-        + _heursol("fpr", 4, 0, 846, 1.0, 8.0, 1)
-        + _heur("fpr", 1000)
+        _threads(4)
+        + _heursol("fpr_lp", 5, 0, 10, 1.0, 1.0, 1)
+        + _heur("fpr_lp", 20, phase="dive")
+    )
+    (trace,) = parse_log(log).dispatch_traces()
+    with pytest.raises(ValueError, match=r"no mip_heuristic_.*_stall option"):
+        trace.normalized_gaps()
+
+
+def test_gap_scale_refuses_a_dispatch_scoped_option_without_a_worker_count():
+    """Wrong by a factor of N is worse than absent."""
+    log = _heursol("fpr", 4, 0, 100, 1.0, 9.0, 1) + _heur("fpr", 1000)
+    (trace,) = parse_log(log).dispatch_traces()
+    assert trace.workers is None
+    with pytest.raises(ValueError, match="Thread count"):
+        trace.normalized_gaps()
+    # The per-worker-scoped heuristics are unaffected by a missing count.
+    log = _heursol("fj", 4, 0, 100, 1.0, 9.0, 1) + _heur("fj", 1000, nnz=10)
+    (trace,) = parse_log(log).dispatch_traces()
+    assert trace.normalized_gaps() == [10.0]
+
+
+def test_nnz_prefers_the_heur_field_over_the_model_header():
+    """The header is the pre-presolve model; the field is the matrix the
+    heuristics search and the stall options are denominated in."""
+    log = (
+        "MIP lseu has 28 rows; 89 cols; 309 nonzeros; 89 integer variables (89 binary)\n"
+        + _threads(1)
+        + _heursol("fj", 4, 0, 242, 1.0, 9.0, 1)
+        + _heur("fj", 1000, nnz=242)
     )
     result = parse_log(log)
-    assert result.num_nonzeros == 282
+    assert result.num_nonzeros == 309
     (trace,) = result.dispatch_traces()
-    assert trace.normalized_gaps() == [1.0, 2.0]
-    assert trace.normalized_gaps(141) == [2.0, 4.0]
+    assert trace.nnz == 242
+    assert trace.normalized_gaps() == [1.0]
+    assert trace.normalized_gaps(309) == [242 / 309]
 
 
-def test_normalized_gaps_refuse_an_unknown_nonzero_count():
-    log = _heursol("fpr", 4, 0, 10, 1.0, 9.0, 1) + _heur("fpr", 100)
+def test_nnz_falls_back_to_the_model_header_for_a_pre_106_log():
+    log = (
+        "MIP lseu has 28 rows; 89 cols; 309 nonzeros; 89 integer variables (89 binary)\n"
+        + _threads(1)
+        + _heursol("fj", 4, 0, 309, 1.0, 9.0, 1)
+        + _heur("fj", 1000, nnz=None)
+    )
     (trace,) = parse_log(log).dispatch_traces()
-    with pytest.raises(ValueError, match="nonzero count unknown"):
+    assert trace.nnz == 309
+    assert trace.normalized_gaps() == [1.0]
+
+
+def test_normalized_gaps_refuse_and_name_the_log_shape_when_nnz_is_unavailable():
+    log = (
+        _threads(1) + _heursol("fj", 4, 0, 10, 1.0, 9.0, 1) + _heur("fj", 100, nnz=None)
+    )
+    (trace,) = parse_log(log).dispatch_traces()
+    assert trace.nnz is None
+    with pytest.raises(ValueError) as excinfo:
         trace.normalized_gaps()
+    message = str(excinfo.value)
+    assert "no nnz= field" in message
+    assert "log_dev_level=3" in message
 
 
 def test_heursol_absent_from_a_log_without_dev_level_3():
@@ -530,18 +697,19 @@ def test_heursol_absent_from_a_log_without_dev_level_3():
 def test_presolve_only_log_shape_parses_its_traces():
     """`mip_heuristic_presolve_only` exits after the chain, before the root LP.
 
-    The run leaves a complete Solving report with a finite primal bound,
-    `Nodes 0`, `LP iterations 0` and a free-form status, and returns a
-    non-zero exit code — none of which the parser keys on.  It is the log
-    shape the tuning target runner scores, so the traces have to survive it.
+    The run leaves a Solving report with a finite primal bound, `Nodes 0`
+    and a free-form status, and returns a non-zero exit code — none of which
+    the parser keys on.  It is the log shape the tuning target runner
+    scores, so the traces have to survive it.
     """
     log = (
         " H       0       0         0   0.00%   inf             1.5e+01 "
         "            inf        0      0      0         0     0.0s\n"
+        + _threads(1)
         + _heursol("fj", 1, 0, 100, 1.0, 15.0, 1)
-        + _heur("fj", 400)
+        + _heur("fj", 400, nnz=50)
         + _heursol("fpr", 2, 0, 50, 1.0, 15.0, 1)
-        + _heur("fpr", 900)
+        + _heur("fpr", 900, nnz=50)
         + "Solving report\n"
         "  Status            Solution limit reached\n"
         "  Primal bound      15\n"
@@ -560,3 +728,5 @@ def test_presolve_only_log_shape_parses_its_traces():
         ("fj", 400, 100),
         ("fpr", 900, 50),
     ]
+    # And the calibration quantity is reachable, which is the whole point.
+    assert result.dispatch_traces()[0].normalized_gaps() == [2.0]

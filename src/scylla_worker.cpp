@@ -53,8 +53,8 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const
       epsilon_(pump::kEpsilonInit),
       rng_(seed),
       fpr_config_index_(select_fpr_config(worker_idx, seed)),
+      trace_(trace),
       improvement_gen_(improvement_gen) {
-    trace_ = trace;
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
     if (!pdlp_.initialized()) {

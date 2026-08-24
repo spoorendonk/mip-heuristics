@@ -55,6 +55,20 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // `effort_per_ms <= 0` rather than average it in.  The `%.3f` format
     // preserves precision for slow heuristics whose rate would otherwise
     // round to 0.
+    // The model's constraint-matrix nonzero count, taken from the same
+    // buffer `make_problem` reads (`ProblemView::nnz`).  It is on this
+    // line because it is the denominator every stall threshold is
+    // expressed in — `mip_heuristic_<name>_stall` counts effort units per
+    // nonzero — and because **no other line of a presolve-only log
+    // carries it**.  HiGHS prints `MIP <name> has <r> rows; <c> cols;
+    // <n> nonzeros;` on entry to branch and bound, which is exactly what
+    // `mip_heuristic_presolve_only` exits before, and the two size figures
+    // such a log does carry are both the wrong matrix: `Nonzeros : N` is
+    // the *original* model and `<r> rows, <c> cols, <n> nonzeros` is the
+    // post-presolve *LP*.  This is the post-presolve *MIP* matrix, which
+    // is the one the heuristics actually search.  Derived here rather than
+    // passed in so no call site had to change.
+    const size_t nnz = mipsolver_.mipdata_->ARindex_.size();
     const double wall_ms = (t1_s - t0_s) * 1000.0;
     const double effort_per_ms =
         (effort > 0 && wall_ms > 0.0) ? static_cast<double>(effort) / wall_ms : 0.0;
@@ -62,8 +76,11 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Sequential] heur=%s effort=%zu wall_ms=%.1f effort_per_ms=%.3f\n", name, effort,
                 wall_ms, effort_per_ms);
+    // `nnz` is appended rather than inserted: `[Heur]` was a positional
+    // pattern for two issues, and anything still matching a prefix of it
+    // keeps working.
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Heur] name=%s phase=%s start_s=%.3f end_s=%.3f effort=%zu wall_ms=%.1f "
-                "effort_per_ms=%.3f found=%d\n",
-                name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0);
+                "effort_per_ms=%.3f found=%d nnz=%zu\n",
+                name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0, nnz);
 }

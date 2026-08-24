@@ -148,8 +148,9 @@ struct HeuristicBudget {
     // Runner-level staleness ceiling: the dispatch stops once
     // `ContinuousLoopState::effort_since_improvement` — summed over every
     // worker — crosses this.  Absolute and instance-scaled since issue
-    // #111 (`stall_threshold(nnz, kStallPerNnz*, total)`, sized by the
-    // caller), not the `total / 4` it used to be.  A quarter of the
+    // #111 (`stall_threshold(nnz, <this heuristic's per-nonzero stall
+    // value>, total)`, sized by the caller from
+    // `mip_heuristic_<name>_stall`), not the `total / 4` it used to be.  A quarter of the
     // budget is not a stall criterion: it says "I have spent a quarter of
     // what I was given", which is true at every budget and therefore
     // bounds nothing.
@@ -170,10 +171,20 @@ struct HeuristicBudget {
     // spells "this heuristic is excluded from the configuration" exactly
     // that way — a zero-pattern of four continuous parameters rather than a
     // separate discrete subset dimension, which is what keeps its search
-    // tractable.  That reduction is only sound if a zero budget is
-    // *indistinguishable* from omitting the heuristic, so every entry point
-    // checks this alongside `ProblemView::degenerate()` and returns before
-    // any setup.  `run_opportunistic_loop` already declined a zero total,
+    // tractable.  That reduction needs a zero budget to be worth exactly
+    // what omitting the heuristic is worth, so every entry point checks
+    // this alongside `ProblemView::degenerate()` and returns before any
+    // setup.
+    //
+    // For the *presolve chain* that makes the two indistinguishable.  It
+    // does not extend to the whole solve for `fpr`: omitting `fpr` from
+    // `mip_heuristic_suite` also disables the dive-time `fpr_lp`, through
+    // `heuristics::effective_flags`, while a zero presolve effort does not
+    // — `fpr_lp` draws from upstream's `mip_heuristic_effort` envelope and
+    // never reads this option.  That is a property of the two option
+    // surfaces, not something this check could repair; #107's target runner
+    // derives the suite value from the zero-pattern, which is where they
+    // are reconciled.  `run_opportunistic_loop` already declined a zero total,
     // but three of the four heuristics do real work before they reach it —
     // Scylla builds a `ContestedPdlp` (a whole `Highs` LP copy), the
     // per-config variable orders and N workers; FPR precomputes its
@@ -241,8 +252,8 @@ inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
 //
 // `stale` is passed in rather than derived here (issue #111): it is the
 // one quantity in this struct that must *not* be a function of `total`,
-// and every caller knows the model's `nnz` and its heuristic's per-nnz
-// constant.  See `stall_threshold` in heuristic_common.h.
+// and every caller knows the model's `nnz` and its heuristic's
+// per-nonzero stall value.  See `stall_threshold` in heuristic_common.h.
 inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stale) {
     // A zero total is "this heuristic is excluded" (issue #106), so every
     // derived ceiling is zero too and `disabled()` holds.  Spelling it out

@@ -148,7 +148,7 @@ private:
     // pump round.
     WorkerBudgetState base_;
     // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
-    WorkerTrace trace_;
+    const WorkerTrace trace_;
 
     // Number of concurrent ScyllaWorkers sharing the contested PDLP; used
     // to amortize per-iteration effort so each worker charges its fair

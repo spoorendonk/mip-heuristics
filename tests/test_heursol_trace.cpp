@@ -2,6 +2,7 @@
 #include "test_common.h"
 
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <cstdlib>
@@ -153,6 +154,52 @@ std::vector<std::string> traced_solve(int dev_level) {
     });
 }
 
+// One fixture per rebuild path, because `egout` at default options covers
+// only two of them.
+//
+// The carry that keeps `effort_at` monotone is written out separately at
+// every site that replaces a retired worker, so a test that never sees a
+// site cannot fail when its carry is deleted — measured: removing FJ's
+// harvest alone left the monotonicity case green, because every one of its
+// assertions came from `local_mip` slots.  `egout` emits no Scylla or
+// `fpr_lp` offers at all at the shipped defaults.
+//
+// So: `egout` at defaults for FJ / FPR / LocalMIP, `gt2` with Scylla's
+// effort raised (25 offers against 1 at the default), and `bell5` at
+// `suite=fpr` for the dive-time `fpr_lp` — the recipe `test_fpr_lp.cpp`
+// already uses, and the reason it is not `bell5` at defaults: with the
+// whole chain enabled the presolve heuristics usually solve bell5 before
+// the dive needs `fpr_lp`, and the offer count came out 0, 0, 520, 0 over
+// four runs.  At `suite=fpr` it was 360-457 over six.
+//
+// `kTracedNames` below asserts the union actually covers all five, so the
+// coverage cannot silently lapse again if a default moves.
+struct Fixture {
+    const char* instance;
+    const char* suite;
+    double scylla_effort;  // negative to leave the option alone
+};
+
+constexpr std::array<Fixture, 3> kFixtures = {{
+    {"egout.mps", "all", -1.0},
+    {"gt2.mps", "all", 1.0},
+    {"bell5.mps", "fpr", -1.0},
+}};
+
+std::vector<std::string> traced_fixture(const Fixture& fixture) {
+    return solve_capturing_log(fixture.instance, [&](Highs& h) {
+        require_option(h, "log_dev_level", 3);
+        set_suite(h, fixture.suite);
+        if (fixture.scylla_effort >= 0.0) {
+            require_option(h, "mip_heuristic_scylla_effort", fixture.scylla_effort);
+        }
+    });
+}
+
+// Every heuristic that can offer a solution, so the fixture set can be
+// checked for coverage rather than assumed to have it.
+const std::set<std::string> kTracedNames = {"fj", "fpr", "local_mip", "scylla", "fpr_lp"};
+
 }  // namespace
 
 TEST_CASE("heursol: a dev-level-3 solve emits well-formed lines", "[heursol]") {
@@ -211,19 +258,33 @@ TEST_CASE("heursol: (name, dispatch) identifies one dispatch", "[heursol]") {
 }
 
 TEST_CASE("heursol: effort_at is monotone within a worker slot", "[heursol]") {
-    const auto parsed = offers(traced_solve(3));
-    REQUIRE(!parsed.empty());
+    std::set<std::string> covered;
+    size_t checked = 0;
 
-    std::map<std::tuple<std::string, unsigned long long, long long>, unsigned long long> last;
-    for (const auto& offer : parsed) {
-        const auto key = std::tuple{offer.name, offer.dispatch, offer.worker};
-        const auto it = last.find(key);
-        if (it != last.end()) {
-            INFO("slot " << offer.name << "/" << offer.dispatch << "/" << offer.worker);
-            CHECK(offer.effort_at >= it->second);
+    for (const Fixture& fixture : kFixtures) {
+        INFO("fixture " << fixture.instance);
+        const auto parsed = offers(traced_fixture(fixture));
+        REQUIRE(!parsed.empty());
+
+        std::map<std::tuple<std::string, unsigned long long, long long>, unsigned long long> last;
+        for (const auto& offer : parsed) {
+            covered.insert(offer.name);
+            const auto key = std::tuple{offer.name, offer.dispatch, offer.worker};
+            const auto it = last.find(key);
+            if (it != last.end()) {
+                INFO("slot " << offer.name << "/" << offer.dispatch << "/" << offer.worker);
+                CHECK(offer.effort_at >= it->second);
+                ++checked;
+            }
+            last[key] = offer.effort_at;
         }
-        last[key] = offer.effort_at;
     }
+
+    // The assertions above are vacuous for a slot that offered once, and
+    // the whole case is vacuous for a heuristic that never appeared.  Both
+    // are checked, so a shifted default cannot quietly empty this test.
+    CHECK(checked > 0);
+    CHECK(covered == kTracedNames);
 }
 
 TEST_CASE("heursol: an accepted offer is what [Heur] reports as found", "[heursol]") {
