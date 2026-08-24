@@ -784,6 +784,49 @@ Scylla is the documented exception and takes the dispatch-level value,
 because its per-worker counter is charged the PDLP cost already divided
 by the worker count.
 
+### These options do not mean the same thing at every worker count
+
+A tuned parameter vector is only valid at the worker count `N` it was
+tuned at, and the reason is the `budget_is_per_worker` split. Writing
+`sized = heuristic_effort_budget(nnz, effort)`, `make_budget` yields:
+
+| quantity | FJ (`per_worker`) | FPR / LocalMIP / Scylla |
+|---|---|---|
+| dispatch `total` | `sized x N` — **scales with N** | `sized` — invariant |
+| `per_worker` | `sized` — invariant | `sized / N` |
+| runner gate `stale` | `N x min(nnz x stall, sized)` | `min(nnz x stall, sized)` — invariant |
+| `worker_stale` | invariant | `stale / N` |
+| `attempt_cap` | `sized / 10` — invariant | `sized / (10 N)` |
+
+So for the three whole-dispatch heuristics both aggregates — the total
+and the runner-level gate — are N-invariant, and only the per-worker
+slicing moves. FJ is the mirror image: every per-worker quantity is
+invariant and the dispatch total grows with the pool.
+
+**The consequence is a shift in the balance *between* heuristics, not a
+uniform rescale**, and it is large. Measured on `p0548` at the shipped
+defaults, charged presolve effort:
+
+| heuristic | N=1 | N=8 | ratio |
+|---|---|---|---|
+| local_mip | 16,889,772 | 18,316,837 | 1.08x |
+| fj | 500,104 | 6,001,362 | 12.0x |
+
+Identical option values; FJ's share of the chain goes from 1:34 against
+LocalMIP to 1:3. (FJ's 12x rather than 8x is its 500k callback
+granularity on an instance this small — see the dead zone under
+`mip_heuristic_fj_effort`.) A vector tuned at one worker count and
+deployed at another therefore allocates the chain differently, and
+nothing in a score reveals it. **Record the worker count alongside any
+tuned vector**; `bench/make_archive.py` already derives it per run from
+each log's `Thread count N (of M threads)` line into `workers_observed`
+and warns when a tree mixes two values, so reuse that rather than
+inventing a second channel.
+
+One quantity *is* transferable: the inert-region boundary
+`stall >= 81920 x effort` above is N-independent for all four, because
+the N factors cancel in FJ's case and are absent in the other three's.
+
 **All four defaults are PROVISIONAL**, pending the per-heuristic
 calibration (#106). They were chosen to reproduce the pre-#111 gate at
 each heuristic's shipped default effort, not measured — and they are the
