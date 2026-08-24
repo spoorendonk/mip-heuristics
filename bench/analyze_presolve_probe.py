@@ -34,13 +34,32 @@ therefore defaults to *every* config in the tree and the predicate is a union
 over `config x seed`; naming one config is the narrowing special case, and
 the report says so.
 
-**A solution is only evidence if the chain produced it.**  HiGHS runs its own
-trivial heuristics inside `runSetup()`, before the chain, and a
-presolve-only run reports what they found like any other solution — the
-display sources `l`, `p`, `u`, `z`, `X`, `Y`.  An instance solved only by
-Trivial-upper carries no signal about any candidate configuration, so it
-belongs in the hard tier; `CHAIN_SOURCES` is the set of codes the patch
-assigns to our four heuristics and is what the evidence tests against.
+**Informative means the chain produced the reported incumbent.**  Two
+signals are available and they do not agree, so the choice is explicit.
+`[Heur] found=1` says the solution pool accepted a chain offer — CLAUDE.md's
+"single definition of production".  A chain-sourced display row says that
+offer actually became the incumbent.  They diverge whenever the chain
+produced something that never beat what was already there: on
+`supportcase10` FJ reports `found=1` while the only display row is `u`,
+HiGHS's Trivial-upper at 70.
+
+This module decides on the **display row**, at every log level, for two
+reasons.  It is the predicate the tuning objective scores — #107 ranks
+candidates on the presolve-exit primal bound, so an instance where no
+candidate's solution can become the incumbent is a constant in every
+comparison, which is exactly what the hard tier is for.  And it is the only
+predicate both passes can use: `[Heur]` needs `log_dev_level=3`, the
+filtering pass is prescribed to run without it and the trajectory pass with
+it, so deciding on acceptance would let the same solve classify differently
+in the two passes — a reproducibility hazard in the one artifact that gets
+pinned by digest into a tuning-set header.
+
+Acceptance is still read.  It splits the hard tier's *reason*
+(`produced-not-improved` — the chain works here and is never good enough,
+which is a datum about the heuristic) and it raises a diagnostic wherever
+the two signals disagree.  That refinement needs the trace; membership does
+not.  `CHAIN_SOURCES` is the set of display codes the patch assigns to our
+four heuristics.
 
 Trajectories come from the `[HeurSol]` trace, one line per
 `IncumbentSink::offer`, emitted at `log_dev_level=3`.  Everything about how
@@ -903,6 +922,9 @@ def check_is_probe(tree: ProbeTree) -> ProbeCheck:
 # The informative set
 # ---------------------------------------------------------------------------
 
+# Which corroborating signals a run carried.  These are *availability*
+# labels, not decision paths: the verdict below is the same predicate at
+# every log level (see `classify_run`).
 EVIDENCE_HEURSOL = "heursol"
 EVIDENCE_HEUR = "heur"
 EVIDENCE_SOURCE = "source"
@@ -910,6 +932,22 @@ EVIDENCE_SOURCE = "source"
 REASON_NO_ACCEPTANCE = "no-acceptance"
 REASON_UNREACHED = "unreached"
 REASON_TRIVIAL_ONLY = "trivial-only"
+REASON_PRODUCED_NOT_IMPROVED = "produced-not-improved"
+
+# Width of the reason column, derived so a new reason cannot silently run
+# into the count beside it.
+_REASON_WIDTH = (
+    max(
+        len(r)
+        for r in (
+            REASON_NO_ACCEPTANCE,
+            REASON_UNREACHED,
+            REASON_TRIVIAL_ONLY,
+            REASON_PRODUCED_NOT_IMPROVED,
+        )
+    )
+    + 2
+)
 
 
 @dataclass(frozen=True)
@@ -918,73 +956,89 @@ class RunVerdict:
 
     config: str
     seed: int
+    # Which corroborating signal the log carried, strongest first.
     evidence: str
+    # The verdict: a chain-sourced display row exists.
     informative: bool
     killed: bool
-    # A solution HiGHS's own trivial heuristics found before the chain ran.
+    # A solution exists and none of it is ours.
     trivial_only: bool
+    # The pool accepted at least one chain offer.  None when the log carries
+    # no trace to say — a run without `--dev-log`.
+    produced: bool | None
     accepted: int | None
+
+    @property
+    def disagrees(self) -> bool:
+        """The chain produced, and none of it reached the display."""
+        return bool(self.produced) and not self.informative
 
 
 def classify_run(run: ProbeRun) -> RunVerdict:
-    """Did the presolve *chain* produce an accepted solution in this run?
+    """Did the presolve chain produce a solution that became the incumbent?
 
-    Three tiers of evidence, strongest first, because the filtering pass is
-    prescribed to run without `--dev-log` (level 3 costs 1.1-4.4x the wall
-    time, concentrated in exactly the window being measured):
+    **The verdict is the source test, at every log level.**  An instance is
+    informative when some run shows a display row whose source is one of
+    `CHAIN_SOURCES`.  The pool-acceptance signal — `[HeurSol] accepted=1`,
+    equivalently `[Heur] found=1` — is read alongside it as `produced`, but
+    it does not decide membership.  Two reasons, and the second is the one
+    that forces the choice:
 
-    1. `[HeurSol]`: count the accepted offers of the presolve chain directly.
-    2. `[Heur]`: its `found` flag is the same `IncumbentSink` accept counter,
-       aggregated per dispatch.
-    3. Neither: the display rows, filtered to `CHAIN_SOURCES`.  This is the
-       *primary* path, and it is a source test rather than a "did the run
-       report any solution" test — HiGHS's own trivial heuristics run inside
-       `runSetup()`, before the chain, and a run whose only solution came
-       from Trivial-upper (`u`) carries no signal about any candidate
-       configuration.  `trivial_only` records that case so the hard tier can
-       say which kind of nothing it found.
+    1. **It is the predicate the tuning objective actually scores.**  #107
+       ranks candidates on the presolve-exit primal bound, so two candidates
+       differ on an instance only if one of them produces a solution that
+       *becomes the reported incumbent*.  A pool acceptance that never beat
+       HiGHS's own trivial bound leaves the score identical for every
+       candidate, which is the definition of a constant instance.
+       `supportcase10` is the real case: FJ reports `found=1` while the only
+       display row is `u` at 70, so no candidate can be told apart there on
+       what the chain did.
+    2. **It is the only predicate available at both log levels.**  `[Heur]`
+       and `[HeurSol]` need `log_dev_level=3`, and the campaign runs the
+       filtering pass *without* `--dev-log` and the trajectory pass *with*
+       it.  Deciding membership on acceptance would make the same solve
+       classify differently in the two passes — a reproducibility hazard in
+       the one artifact that gets pinned by digest into a tuning-set header.
+       The source test reads display rows, which every level prints.
+
+    What acceptance still buys, when it is there: it splits the hard tier's
+    *reason* (see `informative_set`) and it flags the disagreement, so a
+    heuristic that produces without ever improving is visible rather than
+    silently filed under "found nothing".  That refinement is
+    instrumentation-dependent; membership is not.
     """
     result = run.result
+    ours = any(inc.source in CHAIN_SOURCES for inc in result.incumbents)
+    trivial_only = bool(result.incumbents) and not ours
+
     chain = [s for s in run.heursols if s.name in PRESOLVE_HEURISTICS]
-    trivial_only = bool(result.incumbents) and not any(
-        inc.source in CHAIN_SOURCES for inc in result.incumbents
-    )
-    if chain:
-        accepted = sum(1 for s in chain if s.accepted)
-        return RunVerdict(
-            config=run.config,
-            seed=run.seed,
-            evidence=EVIDENCE_HEURSOL,
-            informative=accepted > 0,
-            killed=result.killed,
-            trivial_only=trivial_only and accepted == 0,
-            accepted=accepted,
-        )
     presolve = [
         s
         for s in result.heuristic_samples
         if s.phase == "presolve" and s.name in PRESOLVE_HEURISTICS
     ]
-    if presolve:
-        found = any(s.found for s in presolve)
-        return RunVerdict(
-            config=run.config,
-            seed=run.seed,
-            evidence=EVIDENCE_HEUR,
-            informative=found,
-            killed=result.killed,
-            trivial_only=trivial_only and not found,
-            accepted=None,
-        )
-    ours = any(inc.source in CHAIN_SOURCES for inc in result.incumbents)
+    if chain:
+        accepted: int | None = sum(1 for s in chain if s.accepted)
+        produced: bool | None = bool(accepted)
+        evidence = EVIDENCE_HEURSOL
+    elif presolve:
+        accepted = None
+        produced = any(s.found for s in presolve)
+        evidence = EVIDENCE_HEUR
+    else:
+        accepted = None
+        produced = None
+        evidence = EVIDENCE_SOURCE
+
     return RunVerdict(
         config=run.config,
         seed=run.seed,
-        evidence=EVIDENCE_SOURCE,
+        evidence=evidence,
         informative=ours,
         killed=result.killed,
         trivial_only=trivial_only,
-        accepted=None,
+        produced=produced,
+        accepted=accepted,
     )
 
 
@@ -998,6 +1052,11 @@ class InformativeScan:
     reasons: dict[str, str]
     details: dict[str, str]
     evidence_counts: dict[str, int]
+    # instance -> the `config/seed` runs whose pool accepted a chain solution
+    # that never reached the display.  The two signals disagreeing is a fact
+    # about the heuristic, not a defect, and is reported rather than resolved
+    # silently.
+    disagreements: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def covered(self) -> int:
@@ -1014,17 +1073,26 @@ def informative_set(runs: dict[str, list[ProbeRun]]) -> InformativeScan:
     already good at, and a candidate that would crack a different instance
     then gets no credit for it.
 
-    An excluded instance is *unreached* when every run was killed — the
-    screen never got to look at the model; *trivial-only* when the only
-    solutions anywhere came from HiGHS's own pre-chain heuristics; and
-    *no-acceptance* otherwise.  All three are hard tier, and which one it is
-    is the difference between "our heuristics failed" and "we never asked".
+    An excluded instance carries one of four reasons, in this order of
+    precedence:
+
+    * *produced-not-improved* — the chain accepted a solution somewhere and
+      none of them ever became the incumbent.  The most specific thing that
+      can be said, and a real datum about the heuristic rather than about
+      the instance.  Needs the trace, so a no-`--dev-log` tree reports the
+      same instances under *trivial-only* or *no-acceptance* instead; the
+      **membership is identical either way**, only the label is coarser.
+    * *unreached* — every run was killed before the chain reported.
+    * *trivial-only* — a solution exists everywhere it was looked for, and
+      none of it is ours: HiGHS's own pre-chain heuristics did it.
+    * *no-acceptance* — nothing was produced at all.
     """
     informative: list[str] = []
     excluded: list[str] = []
     verdicts: dict[str, list[RunVerdict]] = {}
     reasons: dict[str, str] = {}
     details: dict[str, str] = {}
+    disagreements: dict[str, list[str]] = {}
     evidence_counts: dict[str, int] = defaultdict(int)
 
     for instance in sorted(runs):
@@ -1032,13 +1100,23 @@ def informative_set(runs: dict[str, list[ProbeRun]]) -> InformativeScan:
         verdicts[instance] = vs
         for v in vs:
             evidence_counts[v.evidence] += 1
+        clashing = [f"{v.config}/seed{v.seed}" for v in vs if v.disagrees]
+        if clashing:
+            disagreements[instance] = clashing
         if any(v.informative for v in vs):
             informative.append(instance)
             continue
         excluded.append(instance)
         killed = sum(1 for v in vs if v.killed)
         trivial = sum(1 for v in vs if v.trivial_only)
-        if killed == len(vs):
+        produced = sum(1 for v in vs if v.produced)
+        if produced:
+            reasons[instance] = REASON_PRODUCED_NOT_IMPROVED
+            details[instance] = (
+                f"{produced} of {len(vs)} run(s) had a chain solution accepted, "
+                "none of which ever became the incumbent"
+            )
+        elif killed == len(vs):
             reasons[instance] = REASON_UNREACHED
             details[instance] = f"all {len(vs)} run(s) killed before the chain reported"
         elif trivial:
@@ -1061,6 +1139,7 @@ def informative_set(runs: dict[str, list[ProbeRun]]) -> InformativeScan:
         reasons=reasons,
         details=details,
         evidence_counts=dict(evidence_counts),
+        disagreements=disagreements,
     )
 
 
@@ -1447,14 +1526,34 @@ def render_informative_list(
         "#",
         *_provenance(tree, check, args.instances, reference_count),
         (
-            "#   rule             at least one accepted solution from the presolve"
-            " chain in ANY"
+            "#   rule             a chain-sourced incumbent (display source"
+            " A/M/G/J) in ANY run"
         ),
         (
-            "#                    run (union over configs).  HiGHS's own trivial"
-            " heuristics run"
+            "#                    (union over configs).  Not `the pool accepted"
+            " something`: the"
         ),
-        ("#                    before the chain and their solutions do not count."),
+        (
+            "#                    tuning objective scores the presolve-exit primal"
+            " bound, so a"
+        ),
+        (
+            "#                    solution that never became the incumbent leaves"
+            " every candidate"
+        ),
+        (
+            "#                    with the same score.  HiGHS's own pre-chain"
+            " heuristics do not"
+        ),
+        (
+            "#                    count either.  The rule reads display rows, which"
+            " every log"
+        ),
+        (
+            "#                    level prints, so a --dev-log run and a plain one"
+            " of the same"
+        ),
+        ("#                    solve yield the same set."),
         f"#   informative      {len(scan.informative)} of {scan.covered} analysed",
         f"#   hard_tier        {len(scan.excluded)} excluded, kept and scored apart",
         "#",
@@ -1485,9 +1584,18 @@ def render_hard_tier_list(
         "#",
         *_provenance(tree, check, args.instances, reference_count),
         (
-            "#   rule             no accepted chain solution in ANY run"
-            " (union over configs)"
+            "#   rule             no chain-sourced incumbent in ANY run"
+            " (union over configs).  A"
         ),
+        (
+            "#                    pool acceptance that never became the"
+            " incumbent does not count:"
+        ),
+        (
+            "#                    the tuning objective scores the"
+            " presolve-exit primal bound, so"
+        ),
+        ("#                    such an instance is a constant for every candidate."),
         f"#   excluded         {len(scan.excluded)} of {scan.covered} analysed",
         f"#   retained         {len(chosen)}",
     ]
@@ -1501,6 +1609,12 @@ def render_hard_tier_list(
         "#                    for.  Reported separately and never pooled into",
         "#                    the quality ranking, so it cannot dilute the",
         "#                    comparison but a breakthrough still shows up.",
+        "#   produced-not-improved",
+        "#                    the chain had a solution accepted and it never",
+        "#                    became the incumbent.  Needs log_dev_level=3; a",
+        "#                    tree without it reports the same instances under",
+        "#                    trivial-only or no-acceptance.  The membership is",
+        "#                    identical either way, only the label is coarser.",
         "#   unreached        killed before the chain reported: the screen never",
         "#                    looked at the model.",
         "#   trivial-only     a solution was found, but by HiGHS's own pre-chain",
@@ -1531,9 +1645,18 @@ def _header_notes(
         )
     if scan.evidence_counts.get(EVIDENCE_HEURSOL, 0) == 0:
         notes.append(
-            "  NOTE: no [HeurSol] trace in this tree; informativeness was "
-            "inferred without per-solution attribution.  Rerun with --dev-log "
-            "for the trajectories."
+            "  NOTE: no [HeurSol] trace in this tree.  The informative set is "
+            "unaffected — it reads display rows, which every log level prints "
+            "— but the trajectories need one, and a hard-tier instance cannot "
+            "be told apart as produced-not-improved.  Rerun with --dev-log."
+        )
+    if scan.disagreements:
+        runs = sum(len(v) for v in scan.disagreements.values())
+        notes.append(
+            f"  NOTE: on {len(scan.disagreements)} instance(s) ({runs} run(s)) "
+            "the pool accepted a chain solution that never became the "
+            "incumbent, so [Heur] found=1 and the display disagree.  The "
+            "verdict follows the display; see produced-not-improved."
         )
     if tree.parse_warnings:
         notes.append(
@@ -1572,7 +1695,7 @@ def render_report(
             f"{check.patched}/{check.runs} patched"
         ),
         f"  trace source   {tree.heursol_source}",
-        "  evidence       "
+        "  signals        "
         + ", ".join(
             f"{tier}={scan.evidence_counts.get(tier, 0)}"
             for tier in (EVIDENCE_HEURSOL, EVIDENCE_HEUR, EVIDENCE_SOURCE)
@@ -1590,8 +1713,13 @@ def render_report(
     by_reason: dict[str, int] = defaultdict(int)
     for name in scan.excluded:
         by_reason[scan.reasons[name]] += 1
-    for reason in (REASON_NO_ACCEPTANCE, REASON_TRIVIAL_ONLY, REASON_UNREACHED):
-        lines.append(f"  {reason:<16}{by_reason.get(reason, 0)}")
+    for reason in (
+        REASON_NO_ACCEPTANCE,
+        REASON_TRIVIAL_ONLY,
+        REASON_PRODUCED_NOT_IMPROVED,
+        REASON_UNREACHED,
+    ):
+        lines.append(f"  {reason:<{_REASON_WIDTH}}{by_reason.get(reason, 0)}")
     width = max((len(n) for n in scan.excluded), default=0) + 2
     for name in scan.excluded:
         lines.append(f"  {name:<{width}}{scan.reasons[name]}: {scan.details[name]}")

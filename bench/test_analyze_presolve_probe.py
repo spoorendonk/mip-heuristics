@@ -31,6 +31,7 @@ from analyze_presolve_probe import (
     CHAIN_SOURCES,
     PRESOLVE_HEURISTICS,
     REASON_NO_ACCEPTANCE,
+    REASON_PRODUCED_NOT_IMPROVED,
     REASON_TRIVIAL_ONLY,
     REASON_UNREACHED,
     AdapterError,
@@ -534,7 +535,9 @@ def test_the_off_slot_worker_is_kept_out_of_the_gap_distribution():
     assert views[0].gaps == [400]
     assert views[0].off_slot_accepts == 1
     assert views[0].productive == 400
-    assert classify_run(make_run(text)).informative
+    # It is production, so it counts toward `produced`; whether the instance
+    # is informative is the display's call, as everywhere else.
+    assert classify_run(make_run(text)).produced
 
 
 def test_non_monotone_effort_drops_the_dispatch_rather_than_clipping():
@@ -687,17 +690,29 @@ def test_a_chain_sourced_solution_is_evidence():
     assert not verdict.trivial_only
 
 
-def test_heursol_evidence_counts_accepted_chain_offers():
-    text = probe_log(
-        heursol=(
-            heursol_line("fj", 0, 0, 100, accepted=0),
-            heursol_line("fj", 0, 0, 200, accepted=1),
-        ),
-        heur=(heur_line("fj", 1000),),
+def test_heursol_counts_acceptance_without_deciding_membership():
+    """`produced` and `informative` are different questions.
+
+    The pool accepting an offer is production; the offer becoming the
+    reported incumbent is what a candidate configuration can be scored on.
+    """
+    offers = (
+        heursol_line("fj", 0, 0, 100, accepted=0),
+        heursol_line("fj", 0, 0, 200, accepted=1),
     )
-    verdict = classify_run(make_run(text))
-    assert verdict.evidence == "heursol" and verdict.accepted == 1
-    assert verdict.informative
+    ledger = (heur_line("fj", 1000),)
+
+    unimproving = classify_run(make_run(probe_log(heursol=offers, heur=ledger)))
+    assert unimproving.evidence == "heursol" and unimproving.accepted == 1
+    assert unimproving.produced
+    assert not unimproving.informative
+    assert unimproving.disagrees
+
+    improving = classify_run(
+        make_run(probe_log(rows=(("J", 5.0),), heursol=offers, heur=ledger))
+    )
+    assert improving.produced and improving.informative
+    assert not improving.disagrees
 
 
 def test_fpr_lp_offers_are_not_presolve_evidence():
@@ -710,10 +725,69 @@ def test_fpr_lp_offers_are_not_presolve_evidence():
     assert not verdict.informative
 
 
-def test_heur_evidence_is_used_when_the_trace_is_absent():
-    text = probe_log(heur=(heur_line("fj", 1000, found=1),))
-    verdict = classify_run(make_run(text))
-    assert verdict.evidence == "heur" and verdict.informative
+def test_heur_found_is_read_as_production_not_as_membership():
+    verdict = classify_run(make_run(probe_log(heur=(heur_line("fj", 1000, found=1),))))
+    assert verdict.evidence == "heur"
+    assert verdict.produced and not verdict.informative
+
+
+def test_the_verdict_does_not_move_with_the_log_level():
+    """The reproducibility hazard the source test exists to remove.
+
+    The filtering pass runs without `--dev-log` and the trajectory pass with
+    it.  A predicate only one of them can evaluate would let the same solve
+    land in different informative sets.
+    """
+    for rows, expected in ((("A", 5.0),), True), ((("u", 70.0),), False):
+        plain = classify_run(make_run(probe_log(rows=rows)))
+        traced = classify_run(
+            make_run(
+                probe_log(
+                    rows=rows,
+                    heursol=(heursol_line("fj", 0, 0, 200),),
+                    heur=(heur_line("fj", 1000),),
+                )
+            )
+        )
+        assert plain.informative is expected
+        assert traced.informative is expected
+
+
+def test_produced_but_never_improved_is_its_own_reason():
+    """A heuristic that produces and never improves is a datum about it.
+
+    Distinct from trivial-only, where our chain produced nothing at all.
+    """
+    run_obj = make_run(
+        probe_log(
+            rows=(("u", 70.0),),
+            heursol=(heursol_line("fj", 0, 0, 200),),
+            heur=(heur_line("fj", 1000),),
+        ),
+        config="all",
+    )
+    scan = informative_set({"supportcase10": [run_obj]})
+    assert scan.excluded == ["supportcase10"]
+    assert scan.reasons["supportcase10"] == REASON_PRODUCED_NOT_IMPROVED
+    assert scan.disagreements["supportcase10"] == ["all/seed0"]
+
+
+def test_a_tree_without_the_trace_keeps_the_membership_and_loses_the_label():
+    """Same instances excluded; only the reason is coarser."""
+    traced = make_run(
+        probe_log(
+            rows=(("u", 70.0),),
+            heursol=(heursol_line("fj", 0, 0, 200),),
+            heur=(heur_line("fj", 1000),),
+        )
+    )
+    plain = make_run(probe_log(rows=(("u", 70.0),)))
+    with_trace = informative_set({"x": [traced]})
+    without = informative_set({"x": [plain]})
+    assert with_trace.excluded == without.excluded == ["x"]
+    assert with_trace.reasons["x"] == REASON_PRODUCED_NOT_IMPROVED
+    assert without.reasons["x"] == REASON_TRIVIAL_ONLY
+    assert not without.disagreements
 
 
 def test_informative_filter_is_a_union_over_configurations():
@@ -926,6 +1000,13 @@ def _tree(tmp_path):
         heur=(heur_line("fpr", 1000), heur_line("local_mip", 2000, found=0)),
     )
     barren = probe_log()
+    # The chain accepted a solution that never beat HiGHS's trivial upper
+    # bound: production without a signal any candidate can be scored on.
+    unimproving = probe_log(
+        rows=(("u", 70),),
+        heursol=(heursol_line("fj", 0, 0, 200),),
+        heur=(heur_line("fj", 1000),),
+    )
     logs = {
         "a": {
             "easy": traced,
@@ -933,6 +1014,7 @@ def _tree(tmp_path):
             "barren": barren,
             "ns1760995": probe_log(killed=True),
             "trivial": probe_log(rows=(("u", 70),)),
+            "unimproving": unimproving,
         },
         "b": {
             "easy": traced,
@@ -940,6 +1022,7 @@ def _tree(tmp_path):
             "barren": barren,
             "ns1760995": probe_log(killed=True),
             "trivial": probe_log(rows=(("u", 70),)),
+            "unimproving": unimproving,
         },
     }
     tree = write_tree(tmp_path, logs)
@@ -963,16 +1046,31 @@ def test_end_to_end_splits_the_set_and_reports_trajectories(tmp_path):
     assert res.returncode == 0, res.stdout + res.stderr
 
     assert load_instances(informative) == ["easy", "onlyb"]
-    assert load_instances(hard) == ["barren", "ns1760995", "trivial"]
+    assert load_instances(hard) == [
+        "barren",
+        "ns1760995",
+        "trivial",
+        "unimproving",
+    ]
 
     with open(hard) as f:
         hard_text = f.read()
     assert "did any configuration crack it" in hard_text
-    for reason in ("unreached", "trivial-only", "no-acceptance"):
+    for reason in (
+        "unreached",
+        "trivial-only",
+        "no-acceptance",
+        "produced-not-improved",
+    ):
         assert reason in hard_text
+    # The rule the set was drawn under is stated where the set lives.
+    with open(informative) as f:
+        assert "never became the incumbent" in f.read()
 
     assert "ns1760995" in res.stdout and "trivial" in res.stdout
-    assert "Informative set: 2 of 5" in res.stdout
+    assert "Informative set: 2 of 6" in res.stdout
+    # The two signals disagreeing is reported, not silently resolved.
+    assert "found=1 and the display disagree" in res.stdout
     assert "stall_lo" in res.stdout and "stall_hi" in res.stdout
     assert "mip_heuristic_fpr_stall" in res.stdout
 
