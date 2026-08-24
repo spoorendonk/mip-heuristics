@@ -4,9 +4,13 @@
 
 ```bash
 # Lint tools, once per checkout.  `.venv/bin` is the exact path the CMake
-# lint module searches, so this install is what registers the gates.
+# lint module searches, so this install is what registers the gates.  `ruff`
+# belongs here and not only in the Python section below: both git hooks guard
+# their ruff step on `[ -x "$VENV_BIN/ruff" ]`, so a venv without it skips
+# Python linting *silently* while CI still gates on it — local hooks pass, CI
+# goes red.
 python3 -m venv .venv
-.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 pytest
+.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 ruff==0.16.3 pytest
 
 # Also points core.hooksPath at .githooks/ — see "Git hooks" below.
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON
@@ -152,7 +156,6 @@ The benchmark harness is Python with its own test suite, registered in ctest as
 `bench_python_tests` and also runnable directly:
 
 ```bash
-.venv/bin/pip install ruff==0.16.3 pytest
 .venv/bin/ruff check bench cmake
 .venv/bin/python -m pytest bench
 ```

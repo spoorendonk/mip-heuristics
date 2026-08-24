@@ -132,8 +132,12 @@ Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solv
 # ctest reports green having linted nothing.  Include pytest — the root
 # CMakeLists prefers `.venv/bin/python`, so a venv without it unregisters
 # `bench_python_tests` rather than falling back to the system interpreter.
+# Include ruff for the same class of reason: both git hooks guard their ruff
+# step on `[ -x "$VENV_BIN/ruff" ]`, so a venv without it skips Python linting
+# silently while CI still gates on `ruff check bench cmake` — the hooks pass
+# and CI goes red.
 python3 -m venv .venv
-.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 pytest
+.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 ruff==0.16.3 pytest
 
 # Configure (from repo root)
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON
