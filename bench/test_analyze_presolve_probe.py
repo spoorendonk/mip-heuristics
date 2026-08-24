@@ -737,6 +737,33 @@ def test_an_err_file_is_named_as_a_failed_run(tmp_path):
     assert ".log.err" in res.stderr
 
 
+def test_a_tree_that_mixes_worker_counts_says_so(tmp_path):
+    """A stall suggestion is only valid at the worker count it was measured at.
+
+    Two machines in one tree therefore make the single summary number a
+    fiction, and the report must not present it as one.
+    """
+
+    def traced(threads: int) -> str:
+        return probe_log(
+            threads=threads,
+            heursol=(heursol_line("fpr", 0, 0, 100),),
+            heur=(heur_line("fpr", 1000),),
+        )
+
+    logs = {"a": {"easy": traced(2)}, "b": {"easy": traced(16)}}
+    tree = write_tree(tmp_path, logs, name="mixed")
+    ref = write_reference(tmp_path, ["easy"])
+    res = run(tree, "--instances", ref)
+    assert res.returncode == 0, res.stderr
+    assert "mixes machines" in res.stdout
+
+    same = write_tree(tmp_path, {"a": {"easy": traced(2)}}, name="same")
+    res = run(same, "--instances", ref)
+    assert res.returncode == 0, res.stderr
+    assert "mixes machines" not in res.stdout
+
+
 def test_a_single_config_directory_is_its_own_config(tmp_path):
     logs = {"probeconf": {"easy": probe_log(primal=10.0)}}
     root = write_tree(tmp_path, logs, name="solo")

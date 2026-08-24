@@ -899,12 +899,18 @@ def summarise_traces(traces: list[DispatchTrace]) -> dict[str, HeuristicTrajecto
     return out
 
 
-def observed_workers(traces: list[DispatchTrace]) -> int | None:
-    """The worker count the trajectories were measured at, if it is one.
+def worker_counts(traces: list[DispatchTrace]) -> list[int]:
+    """The distinct observed worker counts of the traced dispatches, sorted.
 
-    Median-low over the traced dispatches.  A tree that mixes machines has no
-    single answer, which the report says outright rather than averaging.
+    More than one means the tree mixes machines, which the report says
+    outright: a stall suggestion is only valid at the worker count it was
+    measured at, so a mixed tree's single summary number is a fiction.
     """
+    return sorted({t.workers for t in traces if t.workers is not None})
+
+
+def observed_workers(traces: list[DispatchTrace]) -> int | None:
+    """The worker count the trajectories were measured at, median-low."""
     counts = [t.workers for t in traces if t.workers is not None]
     if not counts:
         return None
@@ -1153,6 +1159,7 @@ def render_report(
     tree: ProbeTree,
     scan: InformativeScan,
     hard_tier: list[str],
+    traces: list[DispatchTrace],
     trajectories: dict[str, HeuristicTrajectory],
     diagnostics: list[str],
     traced_runs: int,
@@ -1205,8 +1212,17 @@ def render_report(
         "  heuristics; gap columns are per matrix nonzero per (dispatch, worker)",
         "  series, and the tail column is per nonzero per dispatch, i.e. summed",
         "  over that dispatch's workers.",
-        "",
     ]
+    counts = worker_counts(traces)
+    if len(counts) > 1:
+        lines.append(
+            "  NOTE: the traced dispatches ran at "
+            + ", ".join(str(c) for c in counts)
+            + " workers, so this tree mixes machines and the single summary "
+            "worker count above is a fiction; the stall suggestions below are "
+            "only valid at one worker count."
+        )
+    lines.append("")
     lines += ["  " + row for row in trajectory_rows(trajectories, quantiles, workers)]
     lines += [
         "",
@@ -1415,6 +1431,7 @@ def main(argv: list[str] | None = None) -> int:
             tree,
             scan,
             hard_tier,
+            traces,
             trajectories,
             diagnostics,
             traced_runs,
