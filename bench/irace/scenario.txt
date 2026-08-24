@@ -49,6 +49,16 @@ trainInstancesFile = "../instances_tuning.txt"
 ## the same seed on the same instance is not the same run.  Telling irace so is
 ## what lets it evaluate an instance more than once with different seeds
 ## instead of caching one result forever.
+##
+## This setting is load-bearing, and the size of what it is covering is
+## measured: five consecutive presolve-only runs of flugpl from one identical
+## options file at `random_seed = 0` produced objectives spanning 3.2%, purely
+## from which worker won the race to the solution pool.  That variance is a
+## property of the multi-worker chain being configured, not of the harness, so
+## it is sampled rather than suppressed — see the "what is *not* reproducible"
+## section of `bench/run_target.py` for why the answer is not `threads = 1`.
+## The lever against it is more instances and seeds, which is what #113's
+## 75-100 instance tuning set buys.
 deterministic = 0
 
 ## Budget.  A presolve-only run costs roughly 8 s mean (2 s median, long tail

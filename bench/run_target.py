@@ -72,14 +72,67 @@ self-referential zero.  Such an instance must be kept out of the training list.
 An instance with a usable reference but no solution is scored by an explicit
 penalty and never dropped.
 
-Reproducibility
----------------
+Reproducibility, and what is *not* reproducible
+-----------------------------------------------
 Every run writes `<run-dir>/<instance>/<tag>.opts` (the exact options file the
 solver was given), `<tag>.log.gz` (its full output, compressed because
 `log_dev_level=3` runs to millions of lines) and `<tag>.json` (the parsed
 scoring record).  `tag` defaults to a hash of the parameter vector, instance and
 seed, so the same evaluation re-runs into the same three files, and any recorded
 run can be replayed from its `.opts` alone.
+
+The *definition* of a run is therefore reproducible.  Its **score is not**, and
+the gap is not small.  At unpinned `threads` the presolve chain runs N workers
+racing to submit, and which one wins the pool varies between runs of an
+identical options file: five consecutive presolve-only runs of flugpl at
+`random_seed = 0` gave 1202400 / 1240500 / 1240500 / 1201500 / 1201500, a 3.2%
+spread on the exact quantity the quality metric scores.  Pinned to `threads = 1`
+the same five runs gave 1240500 every time.  (Measured by Track A of #106
+against the patched build; it is structural, not a flugpl quirk.)
+
+`threads` is nevertheless left unpinned by default, deliberately, and the
+reasoning matters more than the default:
+
+* That spread is **not measurement error, it is the variance of the thing being
+  configured**.  The deployed solver runs multi-worker, so the quantity worth
+  maximising is the expected quality at the deployment worker count.  A
+  configuration that only looks good when one particular worker wins the race is
+  genuinely worse than one that produces a good solution reliably, and averaging
+  over evaluations is how a racing configurator sees that difference.
+* Pinning does not merely narrow the distribution, **it moves it**.  Five
+  repeats of the shipped defaults on flugpl at `random_seed = 0`, scored by this
+  runner: unpinned gave costs 0.0332 / 0.0333 / 0.0333 / **0.0016** / 0.0333 —
+  one run in five reached the optimum — while `threads = 1` gave 0.03253 /
+  0.03254 / 0.03253 / 0.03255 / 0.03253, reliably and never the optimum.  The
+  single-worker regime is *steadier and worse*: it does not sample the case the
+  multi-worker chain occasionally wins.  Suppressing that is the wrong trade for
+  a feasibility campaign whose headline capability is cracking an instance
+  nothing cracked before (#113), because the configuration that does it would be
+  scored as though it never could.  (One instance, one seed, five repeats —
+  enough to show the effect exists, not to size it.)
+* Pinning `threads = 1` would estimate a **different expectation** precisely,
+  rather than the right one noisily — and precision about the wrong quantity
+  does not improve with budget.  It also changes what the parameter vector
+  *means*: three of the four effort options size a whole dispatch, which
+  `make_budget` divides by N, and `worker_stale` is divided by N as well, while
+  FJ's option is per worker.  A vector tuned at N=1 does not carry to N=16, and
+  that transfer error is a bias no amount of racing can detect.
+* #113 draws the same line for the same reason: trajectory characterisation runs
+  at `threads=1` because the effort timeline has to be reproducible, while the
+  instance-filtering pass runs at the normal worker count "since that is the
+  regime the search runs in".  This runner is the second case.
+* It is also the project's standing rule (see CLAUDE.md's benchmarking note):
+  pinning `threads` collapses each heuristic to a single worker, which is the
+  reproducible configuration and the wrong one for measuring what the parallel
+  chain does.
+
+So the lever against run-to-run noise here is **more (instance, seed) pairs**,
+not fewer workers — sigma falls as 1/sqrt(instances x seeds), which is exactly
+why #113 sizes the tuning set at 75-100 instead of 25.  `--threads 1` remains
+available and is the right setting for a bit-reproducible re-derivation or a
+trajectory trace; a run that used it records `threads` in its `.opts` and its
+observed worker count in the `.json`, so the two regimes can never be silently
+mixed in one results tree.
 """
 
 from __future__ import annotations
@@ -235,7 +288,8 @@ def solver_options(
     `threads` is left unset by default.  Pinning it collapses each heuristic to
     a single worker, which is the reproducible configuration (`threads=1` plus a
     fixed `random_seed`) but not the regime the search runs in; #113's
-    trajectory traces want it, the screen does not.
+    trajectory traces want it, the screen does not.  The module docstring has
+    the measured cost of that choice and why it is still the right one.
     """
     options: dict[str, str] = {"mip_heuristic_suite": suite_value(params)}
     for name in HEURISTICS:
@@ -764,8 +818,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--threads",
         type=int,
         default=None,
-        help="pin HiGHS's thread count; unset by default, since pinning it "
-        "collapses each heuristic to one worker",
+        help="pin HiGHS's thread count.  Unset by default: pinning it collapses "
+        "each heuristic to one worker, which makes a run bit-reproducible (a "
+        "3.2%% objective spread on flugpl disappears) but changes what the "
+        "parameter vector means, since three of the four effort budgets and the "
+        "per-worker stall threshold are divided by the worker count.  Use it "
+        "for a trajectory trace or an exact re-derivation, not for the search",
     )
     parser.add_argument(
         "--require-trace",
