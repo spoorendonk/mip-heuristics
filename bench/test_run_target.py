@@ -703,6 +703,22 @@ def test_end_to_end_keeps_opts_log_and_record(campaign):
     assert record["heuristics_traced"] == ["fj", "fpr"]
 
 
+def test_beating_the_published_objective_scores_zero_gap(campaign, capsys):
+    """The virtual-best branch of `resolve_reference`: an observed primal that
+    beats the `.solu` value becomes the reference, so a configuration is never
+    punished for finding something better than the library knew about."""
+    (campaign / "canned.log").write_text(
+        solver_log(objective=90.0, heur=heur_line("fj", 400.0))
+    )
+    assert main(_cli(campaign, "--fj-effort", "0.1")) == 0
+    # Not |90 - 100| / 100 = 0.1: the reference moves to 90 and the gap is 0.
+    assert float(capsys.readouterr().out) == pytest.approx(DEFAULT_LAMBDA * 0.4)
+    tag = run_tag(params(fj_effort=0.1), "toy", 5)
+    record = json.loads((campaign / "runs" / "toy" / f"{tag}.json").read_text())
+    assert record["reference"] == 90.0
+    assert record["gap"] == 0.0
+
+
 def test_no_presolve_only_reaches_the_options_file(campaign):
     """The escape hatch has to actually reach the options file — and land in
     its own artifacts, since a full solve of the same vector is a different
