@@ -593,6 +593,48 @@ def test_a_barren_dispatch_beside_a_productive_one_is_not_double_counted():
     assert {v.name: v.stale for v in views} == {"fpr": 900, "scylla": 500}
 
 
+def test_a_truncated_chain_keeps_its_gaps_without_a_total():
+    """The third real shape: SIGKILLed mid-dispatch, after some offers.
+
+    The `[Heur]` line closing the dispatch never printed, so `heur_index`
+    stays None and the dispatch has no total.  Its completed gaps are still
+    real observations; what it cannot contribute is a productive/stale split,
+    and inventing one from the offers alone would understate the spend.
+    """
+    text = probe_log(
+        killed=True,
+        heursol=(
+            heursol_line("fpr", 0, 0, 100),
+            heursol_line("fpr", 0, 0, 350),
+        ),
+    )
+    views, notes = dispatch_views("i", "all", 0, *_run_parts(text))
+    assert notes == []
+    assert len(views) == 1
+    assert views[0].total_effort is None
+    assert views[0].stale is None
+    assert views[0].gaps == [100, 250]
+
+    summary = summarise_traces(views)["fpr"]
+    assert summary.unknown_total == 1
+    assert summary.total_effort == 0 and summary.productive_effort == 0
+    assert summary.gaps_per_nnz  # the gaps still count
+    assert summary.censored_per_nnz == []
+
+
+def test_a_truncated_chain_is_reported_as_such(tmp_path):
+    logs = {
+        "all": {
+            "cut": probe_log(killed=True, heursol=(heursol_line("fpr", 0, 0, 100),))
+        }
+    }
+    tree = write_tree(tmp_path, logs, name="truncated")
+    ref = write_reference(tmp_path, ["cut"])
+    res = run(tree, "--instances", ref)
+    assert res.returncode == 0, res.stderr
+    assert "no [Heur] line (a killed run)" in res.stdout
+
+
 def test_single_worker_flag_filters_out_multiworker_logs():
     text = probe_log(
         threads=16,
