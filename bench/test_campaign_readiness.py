@@ -1116,97 +1116,109 @@ def probe_run(tmp_path: Path, mode: str, names: list[str], **env: str):
 def test_the_probe_runs_every_heuristic_alone_and_the_chain_alongside():
     # The informative set is a union over the singles because the chain runs
     # FJ -> FPR -> LocalMIP -> Scylla *sequentially*: a wall-clock cap
-    # truncates its tail, so a chained-only probe reports "nothing found here"
-    # for instances where three of the four never executed.  `all` is kept
-    # because it is the only run that measures the chain interaction.
+    # truncates its tail, and with neither budget nor gate the first
+    # heuristic takes the whole cap on every instance.  `all` is kept
+    # because it is the only run that measures the deployed chain.
     text = (BENCH / "run_presolve_probe.sh").read_text()
     default = re.search(r"PROBE_CONFIGS:-([^}]*)\}", text).group(1).split()
     assert default == [*CHAIN, "all"]
     assert set(default) <= set(CONFIG_SUITES)
 
 
-def test_the_probe_hands_every_heuristic_its_most_generous_setting(tmp_path):
+def test_the_experiment_leaves_the_clock_as_the_only_stopping_rule(tmp_path):
+    # `WorkerBudgetState` retires a worker only when it is `exhausted()` or
+    # `stale()`.  Disable both and the wall clock is the single stopping
+    # rule, identical for all four heuristics on every instance — which is
+    # what makes the trace a measurement of the heuristic rather than of the
+    # setting being derived from it.  Any binding budget reintroduces a
+    # second rule that binds at a different model size per heuristic.
     names = ["inst00", "inst01"]
-    result, _, recorded = probe_run(tmp_path, "filter", names)
+    result, _, recorded = probe_run(tmp_path, "preprobe", names)
     assert result.returncode == 0, result.stdout + result.stderr
     assert {config_of(r) for r in recorded} == {*CHAIN, "all"}
     assert {seed_of(r) for r in recorded} == {0, 1}
     for run in recorded:
         options = run["options"]
         for heur in CHAIN:
-            assert options[f"mip_heuristic_{heur}_effort"] == "1.0"
-            # 0 is *no gate*, which is what makes the trajectory a
-            # measurement of the heuristic rather than of the threshold.
+            # The option's ceiling: a budget of 8.2e8 units per nonzero,
+            # which no run inside the cap can reach.
+            assert float(options[f"mip_heuristic_{heur}_effort"]) == 1e4
+            # 0 is *no gate*, not "give up immediately".
             assert options[f"mip_heuristic_{heur}_stall"] == "0"
         assert options["mip_heuristic_presolve_only"] == "true"
-        assert float(run["time_limit"]) == 60
+        assert float(run["time_limit"]) == 30
+        # Every pass is a trace: the yield curve, the gap quantiles and the
+        # effort rate all come off [HeurSol].
+        assert options["log_dev_level"] == "3"
 
 
-def test_the_filter_pass_runs_in_the_regime_the_search_runs_in(tmp_path):
-    # No pinned worker count and no developer logging: the filter pass decides
-    # membership, and membership must not depend on instrumentation.
-    _, _, recorded = probe_run(tmp_path, "filter", ["inst00"])
-    for run in recorded:
-        assert "threads" not in run["options"]
-        assert "log_dev_level" not in run["options"]
-
-
-def test_the_trace_pass_is_reproducible_and_instrumented(tmp_path):
-    # The trajectory is an effort *timeline*, so it needs the [HeurSol] trace
-    # (level 3) and one worker: multi-worker interleaving makes the timeline
-    # non-reproducible and lets pool interactions confound attribution.
-    names = ["inst00"]
-    listing = instance_list(tmp_path / "informative.txt", names)
-    _, _, recorded = probe_run(tmp_path, "trace", names, PLATO_INSTANCES=str(listing))
+def test_the_experiment_runs_in_the_regime_the_search_runs_in(tmp_path):
+    _, _, recorded = probe_run(tmp_path, "preprobe", ["inst00"])
     assert recorded
     for run in recorded:
-        assert run["options"]["threads"] == "1"
-        assert run["options"]["log_dev_level"] == "3"
-        assert run["options"]["mip_heuristic_fpr_effort"] == "1.0"
+        assert "threads" not in run["options"]
 
 
-def test_the_low_budget_trace_moves_the_budget_and_nothing_else(tmp_path):
-    # The confound this pass measures: `attempt_cap` is derived from the total
-    # budget, so a trajectory taken at one budget does not exactly reproduce
-    # another.  Two passes that differed in anything else could not separate
-    # that from the difference being measured.
+def test_the_budget_control_moves_the_budget_and_nothing_else(tmp_path):
+    # `attempt_cap` is derived from the total budget, so a trace at one
+    # budget does not exactly reproduce another.  A control that differed in
+    # anything else could not separate that from the effect it measures.
     names = ["inst00"]
-    listing = instance_list(tmp_path / "informative.txt", names)
-    _, _, high = probe_run(
-        tmp_path / "hi", "trace", names, PLATO_INSTANCES=str(listing)
+    listing = instance_list(tmp_path / "subset.txt", names)
+    _, _, free = probe_run(
+        tmp_path / "free", "preprobe", names, PLATO_INSTANCES=str(listing)
     )
-    _, _, low = probe_run(
-        tmp_path / "lo", "trace-low", names, PLATO_INSTANCES=str(listing)
+    _, _, bounded = probe_run(
+        tmp_path / "bounded",
+        "budget",
+        names,
+        PROBE_CONTROL_INSTANCES=str(listing),
     )
-    assert high and low
+    assert free and bounded
 
     def without_effort(options):
         return {k: v for k, v in options.items() if not k.endswith("_effort")}
 
-    assert without_effort(high[0]["options"]) == without_effort(low[0]["options"])
+    assert without_effort(free[0]["options"]) == without_effort(bounded[0]["options"])
     for heur in CHAIN:
-        assert high[0]["options"][f"mip_heuristic_{heur}_effort"] == "1.0"
-        assert low[0]["options"][f"mip_heuristic_{heur}_effort"] == "0.1"
+        assert float(free[0]["options"][f"mip_heuristic_{heur}_effort"]) == 1e4
+        assert float(bounded[0]["options"][f"mip_heuristic_{heur}_effort"]) == 1.0
     # Separate trees, so neither pass resumes into the other's runs.
     assert (
-        Path(high[0]["options_file"]).parents[2].name
-        != Path(low[0]["options_file"]).parents[2].name
+        Path(free[0]["options_file"]).parents[2].name
+        != Path(bounded[0]["options_file"]).parents[2].name
     )
 
 
-def test_the_trace_pass_refuses_a_missing_informative_set(tmp_path):
-    # The trace runs over the filter pass's output.  Falling back to the full
-    # list would silently trace instances no configuration can crack — hours
-    # of machine time characterising nothing.
-    result, _, recorded = probe_run(
-        tmp_path,
-        "trace",
-        ["inst00"],
-        PROBE_INFORMATIVE=str(tmp_path / "absent.txt"),
-        PLATO_INSTANCES="",
+def test_the_serial_control_pins_one_worker_and_nothing_else(tmp_path):
+    # The experiment runs multi-worker because that is the regime the search
+    # runs in; this control says whether its quantiles are an artifact of
+    # worker interleaving, so it may differ in the worker count alone.
+    names = ["inst00"]
+    listing = instance_list(tmp_path / "subset.txt", names)
+    _, _, free = probe_run(
+        tmp_path / "free", "preprobe", names, PLATO_INSTANCES=str(listing)
     )
+    _, _, serial = probe_run(
+        tmp_path / "serial",
+        "serial",
+        names,
+        PROBE_CONTROL_INSTANCES=str(listing),
+    )
+    assert serial
+    assert serial[0]["options"]["threads"] == "1"
+    assert {k: v for k, v in serial[0]["options"].items() if k != "threads"} == free[0][
+        "options"
+    ]
+
+
+def test_an_unknown_probe_mode_is_a_refusal(tmp_path):
+    # The three modes differ in what they are evidence *for*.  A typo that
+    # fell through to a default would write a plausible tree answering a
+    # question nobody asked.
+    result, _, recorded = probe_run(tmp_path, "trace", ["inst00"])
     assert result.returncode != 0
-    assert "informative" in (result.stdout + result.stderr)
+    assert "preprobe" in (result.stdout + result.stderr)
     assert not recorded
 
 
@@ -1215,20 +1227,39 @@ def test_the_probe_does_not_offer_a_table_a_presolve_tree_cannot_support(tmp_pat
     # presolve-only run never computes.  The probe reads its tree with
     # analyze_presolve_probe.py instead, so the launcher's completion message
     # must not point at the other one.
-    result, _, _ = probe_run(tmp_path, "filter", ["inst00"])
+    result, _, _ = probe_run(tmp_path, "preprobe", ["inst00"])
     assert "STATUS  : COMPLETE" in result.stdout
     assert "analyze_results.py" not in result.stdout
 
 
+def test_a_count_bounded_chunk_advances_instead_of_re_skipping(tmp_path):
+    # `--count` bounds the work, not the list.  Sliced off the raw list it
+    # composes with `--skip-existing` to do nothing: a resumed tree's first N
+    # instances are the ones already finished, so every chunk skips N runs
+    # and exits.  Borrowing the machine for a bounded amount of work is the
+    # whole point of the count chunk, so it has to advance.
+    names = [f"inst{i:02d}" for i in range(6)]
+    done = set()
+    for _ in range(3):
+        result, tree, _ = probe_run(
+            tmp_path, "preprobe", names, PROBE_COUNT="2", PROBE_SEEDS="0"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        now = {p.stem for p in logs_under(tree / "preprobe", "fj", 0)}
+        assert len(now - done) == 2, f"chunk did no new work: {sorted(now)}"
+        done = now
+    assert done == set(names[:6])
+
+
 def test_run_plato_forwards_the_probe_environment_to_flags_the_runner_defines():
-    # The three probe knobs are passed through an array rather than spelled
+    # The four probe knobs are passed through an array rather than spelled
     # into the invocation, because each is absent by default — which puts them
     # outside the reach of `plato_python_flags`.
     text = RUN_PLATO.read_text()
     body = text[text.index("local extra_args=()") :]
     body = body[: body.index("python3 bench/run_benchmark.py")]
     forwarded = set(re.findall(r"(--[a-z-]+)", body))
-    assert forwarded == {"--extra-options", "--dev-log", "--threads"}
+    assert forwarded == {"--extra-options", "--dev-log", "--threads", "--count"}
     defined = {
         option
         for action in build_arg_parser()._actions

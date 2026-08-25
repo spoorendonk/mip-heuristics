@@ -29,6 +29,10 @@
 #                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_stall=0"
 #   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
 #   PLATO_THREADS    pin the solver thread count (default: unset — see below)
+#   PLATO_COUNT      run at most N *pending* instances, then stop.  The
+#                    count-based chunk: `next` bounds a window in hours,
+#                    this bounds it in work, and a campaign that has to give
+#                    the machine back uses whichever is easier to predict.
 #   PLATO_ANALYZE    0 to skip the end-of-tree analyze_results.py call
 #                    (default 1; a presolve-only tree has no dual side, so the
 #                    probe stage turns it off and reads the tree with
@@ -195,6 +199,9 @@ cmd_next() {
 	fi
 	if [ -n "${PLATO_THREADS:-}" ]; then
 		extra_args+=(--threads "$PLATO_THREADS")
+	fi
+	if [ -n "${PLATO_COUNT:-}" ]; then
+		extra_args+=(--count "$PLATO_COUNT")
 	fi
 
 	echo "================================================================"

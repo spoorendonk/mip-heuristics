@@ -1,90 +1,110 @@
 #!/usr/bin/env bash
-# Presolve-only probe launcher (issue #113).
-#
-# One deliberately generous configuration over the PLATO list, run
-# presolve-only, to answer the two questions the tuning search cannot start
-# without: which instances a presolve screen can see at all, and what each
-# heuristic's effort trajectory looks like when nothing stops it.
+# Presolve-only calibration probe (issue #113).
 #
 # Usage:
-#   bench/run_presolve_probe.sh filter    next [hours] | status
-#   bench/run_presolve_probe.sh trace     next [hours] | status
-#   bench/run_presolve_probe.sh trace-low next [hours] | status
+#   bench/run_presolve_probe.sh preprobe next [hours]   the experiment
+#   bench/run_presolve_probe.sh budget   next [hours]   bounded-budget control
+#   bench/run_presolve_probe.sh serial   next [hours]   single-worker control
+#   bench/run_presolve_probe.sh <mode>   status
 #
-# This is bench/run_plato.sh with the probe environment — the chunking,
-# resume and progress accounting are that script's, and this file is only the
-# configuration.  Chunk boundaries and `--skip-existing` therefore work the
-# same way: `next 8` overnight, `status` in the morning, repeat.
+#   PROBE_COUNT=20 bench/run_presolve_probe.sh preprobe next 4
+#     ...stops after 20 *pending* instances even if the window is longer.
+#     Use it to borrow the machine for a bounded amount of work rather than
+#     for a whole tree; every chunk resumes exactly where the last stopped.
 #
-# ── the generous configuration ───────────────────────────────────────────────
+# This is bench/run_plato.sh with the probe environment, so the chunking,
+# resume and progress accounting are that script's and a stage is an
+# environment rather than a launcher (#109).
 #
-#   * every presolve heuristic at effort 1.0, the top of its range;
-#   * every stall gate at 0, which means *no gate*, so the run measures what
-#     the heuristic does when nothing stops it — that is what makes the
-#     trajectory usable to calibrate a threshold;
+# ── the experiment ───────────────────────────────────────────────────────────
+#
+# One question: **what does each heuristic do with 30 seconds of presolve,
+# alone, when nothing but the clock stops it?**
+#
+#   * effort `$PROBE_EFFORT` (1e4, the option's ceiling since #113) — the
+#     budget is then `8.2e8` effort units per matrix nonzero, which no run
+#     inside the cap can reach;
+#   * every stall gate at 0, which means *no gate*;
 #   * `mip_heuristic_presolve_only`, so the run exits before the root LP;
-#   * a 60 s per-run cap, enforced by the harness as a wall-clock kill rather
-#     than by `time_limit` alone: HiGHS checks its clock between work units
-#     and an instance that does not return from its own presolve never looks
-#     at it.  A truncated log is *evidence* that the instance is not
-#     screenable, not a lost run, and the analyser reads it as such.
+#   * a 30 s cap, enforced by the harness as a wall-clock kill as well as by
+#     `time_limit`, since HiGHS checks its clock between work units and an
+#     instance that does not return from its own presolve never looks at it;
+#   * `log_dev_level=3`, so every run carries the [HeurSol] trace.
 #
-# ── why the probe is four singles plus the chain, not one chained run ────────
+# `WorkerBudgetState` retires a worker only when it is `exhausted()` (total
+# budget) or `stale()`.  Disable both and no worker ever retires, so the
+# wall clock is the single stopping rule — the same one for all four
+# heuristics on every instance.  That is the whole point of the design: at
+# any binding budget the trace measures the setting we are trying to derive
+# from it, and each heuristic's budget binds at a different model size (FJ
+# exhausts its effort-1.0 budget in 7.8 s on a 41 k-nonzero model while
+# Scylla is already clock-bound there).
 #
-# `run_sequential` runs FJ → FPR → LocalMIP → Scylla in order, so a wall-clock
-# cap truncates the chain's *tail*.  At effort 1.0 with the gates off, FJ's
-# budget is enormous, and on a 12-instance pilot the full chain ran on only 5
-# of 12 — three of four heuristics never executed on the rest.  Filtering on
-# that run encodes "what FeasibilityJump can do in 60 seconds", which is the
-# config-dependent filter #113 exists to avoid, and it is biased against
-# exactly the case the campaign wants to detect: an instance only a different
-# heuristic can crack.  Measured on that pilot, the singles union saw 10/12
-# where the chained run saw 7/12, and the three it gained were cracked by
-# heuristics the chain never reached.
+# What comes off one such tree:
+#   * the informative set — instances where the chain produced the reported
+#     incumbent — and its complement, the retained hard tier;
+#   * the tuning set, stratified out of the informative set;
+#   * per-heuristic productive vs stale effort, and the inter-acceptance
+#     effort-gap quantiles that are literally the unit
+#     `mip_heuristic_<name>_stall` is denominated in;
+#   * effort at last acceptance — the yield knee — which is a *measured*
+#     initial effort vector rather than the inherited one;
+#   * charged effort per millisecond, which converts an effort vector into
+#     seconds and back.
 #
-# So the informative set is the union over `(config, seed)` of the four
-# singles, and the chained run is kept alongside because it is the only thing
-# that measures the chain interaction — and it is what the campaign deploys.
+# ── why singles, and why `all` alongside ─────────────────────────────────────
 #
-# ── the three passes ─────────────────────────────────────────────────────────
+# `run_sequential` runs FJ → FPR → LocalMIP → Scylla in order, so a
+# wall-clock cap truncates the chain's *tail*, and with no budget and no
+# gate the first heuristic takes the entire cap on every instance.  A
+# chained probe would therefore report "produced nothing here" for
+# instances where three of the four never executed — the config-dependent
+# filter #113 exists to avoid, biased against exactly the case the campaign
+# wants to find.  Membership is the union over the four singles; `all` is
+# run because it is the only arm that measures what the deployed chain
+# actually does, and it is held out of the union.
 #
-#   filter     the instance screen.  Two seeds, no developer logging, HiGHS's
-#              own thread default — that is the regime the search runs in.
-#   trace      the trajectory characterisation.  `log_dev_level=3` for the
-#              [HeurSol] trace, and `threads=1` with a fixed seed, the
-#              project's reproducible configuration: multi-worker interleaving
-#              makes the effort timeline non-reproducible and lets the
-#              solution pool confound attribution.  Runs over the informative
-#              set the filter pass emits, since a trajectory on an instance no
-#              configuration can crack characterises nothing.
-#   trace-low  the same trace one decade down in effort.  The per-attempt
-#              slice is derived from the total budget
-#              (`attempt_cap = max(total / (10 N), 1)`), so a trajectory taken
-#              at a large budget does not exactly reproduce a small one; the
-#              two passes are compared over the effort range they share and
-#              the discrepancy is reported.
+# ── the two controls ─────────────────────────────────────────────────────────
+#
+#   budget  The same thing at effort 1.0, where the budget binds on small
+#           models.  `attempt_cap` is derived from the total budget, so a
+#           trace at one budget does not exactly reproduce another; this is
+#           the second budget level that measurement needs.  It also says
+#           whether membership moved.
+#   serial  The same thing at `threads=1`, the project's reproducible
+#           configuration.  The multi-worker regime is the one the search
+#           runs in, so it is what the experiment uses; this control says
+#           whether its quantiles are an artifact of worker interleaving.
+#
+# Both controls run over a subset — they answer a question about the
+# experiment, not about the instances.
 #
 # Read a finished tree with bench/analyze_presolve_probe.py, never with
-# analyze_results.py: a presolve-only run has no dual side, so its gap is
-# meaningless (docs/REPRODUCIBILITY.md).
+# analyze_results.py: a presolve-only run computes no dual bound, so its
+# gap is meaningless (docs/REPRODUCIBILITY.md).
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# The four presolve heuristics, one config each, plus the chain.  Singles
-# first: the union over them is the informative set, and `all` is the
-# interaction control.
 PROBE_CONFIGS="${PROBE_CONFIGS:-fj fpr local_mip scylla all}"
 PROBE_OUTPUT_ROOT="${PROBE_OUTPUT_ROOT:-bench/results/probe}"
-# 60 s truncates 6 of 233 instances on HiGHS's own presolve time alone and
-# holds the probe's floor at ~18 min/seed; 30 s truncates 4 more to save 3
-# minutes, and 300 s buys 4 instances for 15 minutes each (issue #113).
-PROBE_TIME_LIMIT="${PROBE_TIME_LIMIT:-60}"
+# 30 s, decided on the measured shape of the cost: HiGHS's own root presolve
+# is the floor under any presolve-only run (median 0.45 s, mean 9.98 s over
+# the #105 tree, six instances carrying the whole tail), and with the budget
+# no longer binding every run now spends its whole cap.
+PROBE_TIME_LIMIT="${PROBE_TIME_LIMIT:-30}"
 PROBE_SEEDS="${PROBE_SEEDS:-0 1}"
-# The trace passes are reproducible runs, so one seed and one worker.
-PROBE_TRACE_SEEDS="${PROBE_TRACE_SEEDS:-0}"
-PROBE_INFORMATIVE="${PROBE_INFORMATIVE:-$PROBE_OUTPUT_ROOT/informative.txt}"
+# The controls answer a question about the experiment, so one seed each.
+PROBE_CONTROL_SEEDS="${PROBE_CONTROL_SEEDS:-0}"
+# The option's ceiling.  Not "infinity": the analysis checks that no run was
+# budget-bound rather than assuming it, and a finite ceiling keeps the
+# `nnz << 12` product far from overflowing a size_t on the largest model.
+PROBE_EFFORT="${PROBE_EFFORT:-1e4}"
+# The bounded-budget control's effort: the top of the range everything else
+# ships and tunes at.
+PROBE_BUDGET_EFFORT="${PROBE_BUDGET_EFFORT:-1.0}"
+PROBE_CONTROL_INSTANCES="${PROBE_CONTROL_INSTANCES:-bench/instances_tuning.txt}"
 
 probe_options() {
 	# $1 — the effort every heuristic runs at.
@@ -100,46 +120,43 @@ probe_options() {
 MODE="${1:-}"
 shift || true
 case "$MODE" in
-filter)
-	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/filter"
+preprobe)
+	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/preprobe"
 	export PLATO_SEEDS="$PROBE_SEEDS"
 	export PLATO_INSTANCES="${PLATO_INSTANCES:-bench/instances_plato.txt}"
-	PLATO_EXTRA_OPTIONS="$(probe_options 1.0)"
-	export PLATO_EXTRA_OPTIONS
+	PLATO_EXTRA_OPTIONS="$(probe_options "$PROBE_EFFORT")"
 	;;
-trace | trace-low)
-	effort=1.0
-	suffix=e100
-	if [ "$MODE" = "trace-low" ]; then
-		effort=0.1
-		suffix=e010
-	fi
-	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/trace-$suffix"
-	export PLATO_SEEDS="$PROBE_TRACE_SEEDS"
-	export PLATO_INSTANCES="${PLATO_INSTANCES:-$PROBE_INFORMATIVE}"
-	PLATO_EXTRA_OPTIONS="$(probe_options "$effort")"
-	export PLATO_EXTRA_OPTIONS
-	export PLATO_DEV_LOG=1
+budget)
+	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/control-budget"
+	export PLATO_SEEDS="$PROBE_CONTROL_SEEDS"
+	export PLATO_INSTANCES="${PLATO_INSTANCES:-$PROBE_CONTROL_INSTANCES}"
+	PLATO_EXTRA_OPTIONS="$(probe_options "$PROBE_BUDGET_EFFORT")"
+	;;
+serial)
+	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/control-serial"
+	export PLATO_SEEDS="$PROBE_CONTROL_SEEDS"
+	export PLATO_INSTANCES="${PLATO_INSTANCES:-$PROBE_CONTROL_INSTANCES}"
+	PLATO_EXTRA_OPTIONS="$(probe_options "$PROBE_EFFORT")"
 	export PLATO_THREADS=1
-	if [ ! -f "$PLATO_INSTANCES" ]; then
-		echo "ERROR: no instance list at $PLATO_INSTANCES" >&2
-		echo "       The trace passes run over the informative set, which the" >&2
-		echo "       filter pass produces:" >&2
-		echo "         bench/run_presolve_probe.sh filter next 8" >&2
-		echo "         python3 bench/analyze_presolve_probe.py $PROBE_OUTPUT_ROOT/filter \\" >&2
-		echo "           --informative-output $PROBE_INFORMATIVE" >&2
-		exit 1
-	fi
 	;;
 *)
-	echo "Usage: bench/run_presolve_probe.sh {filter|trace|trace-low} next [hours] | status" >&2
+	echo "Usage: bench/run_presolve_probe.sh {preprobe|budget|serial} next [hours] | status" >&2
 	exit 1
 	;;
 esac
+export PLATO_EXTRA_OPTIONS
 
 export PLATO_CONFIGS="$PROBE_CONFIGS"
 export PLATO_TIME_LIMIT="$PROBE_TIME_LIMIT"
+# Every pass is a trace: the yield curve, the gap quantiles and the effort
+# rate all come off [HeurSol], and membership is instrumentation-independent
+# by construction (it reads display rows), so there is no reason to run a
+# pass that cannot answer the calibration questions.
+export PLATO_DEV_LOG=1
 # A presolve-only tree has no dual side; analyze_presolve_probe.py reads it.
 export PLATO_ANALYZE=0
+if [ -n "${PROBE_COUNT:-}" ]; then
+	export PLATO_COUNT="$PROBE_COUNT"
+fi
 
 exec "$HERE/run_plato.sh" "$@"

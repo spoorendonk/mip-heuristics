@@ -134,6 +134,17 @@ def config_options(config: str, *, external_vanilla: bool = False) -> dict[str, 
     return {"mip_heuristic_suite": CONFIG_SUITES[base]}
 
 
+def existing_log(output: str, config: str, name: str, seed: int) -> bool:
+    """True when this run already has a non-empty log in the tree.
+
+    One definition, because `--skip-existing` and `--count` have to agree on
+    what "already done" means: a chunk that counted an instance as pending
+    and then skipped every one of its runs would burn the chunk on nothing.
+    """
+    log_path = os.path.join(output, config, f"seed{seed}", f"{name}.log")
+    return os.path.exists(log_path) and os.path.getsize(log_path) > 0
+
+
 def build_base_options(
     threads: int | None, dev_log: bool, extra_options: list[str] | None
 ) -> dict[str, str]:
@@ -738,6 +749,23 @@ def main() -> None:
     if args.start:
         instances = instances[args.start :]
     if args.count is not None:
+        # `--count` bounds the *work*, not the list.  Sliced off the raw list
+        # it composes with `--skip-existing` to do nothing at all: a resumed
+        # tree's first N instances are exactly the ones already finished, so
+        # the chunk skips N runs and exits, and every later chunk repeats it.
+        # A count-bounded chunk is how a campaign borrows the machine for a
+        # bounded time without holding it for the whole tree, so it has to
+        # advance.
+        if args.skip_existing:
+            instances = [
+                name
+                for name in instances
+                if any(
+                    not existing_log(args.output, plan.name, name, seed)
+                    for plan in plans
+                    for seed in args.seeds
+                )
+            ]
         instances = instances[: args.count]
 
     total_runs = len(plans) * len(args.seeds) * len(instances)
@@ -769,9 +797,7 @@ def main() -> None:
     def should_skip(config: str, name: str, seed: int) -> bool:
         if not args.skip_existing:
             return False
-        seed_dir = os.path.join(args.output, config, f"seed{seed}")
-        log_path = os.path.join(seed_dir, f"{name}.log")
-        return os.path.exists(log_path) and os.path.getsize(log_path) > 0
+        return existing_log(args.output, config, name, seed)
 
     def check_budget() -> bool:
         """Return True if wall-time budget is exhausted."""
