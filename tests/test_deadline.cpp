@@ -88,7 +88,13 @@ constexpr double kPdlpSlack = 0.60;
 // it is the one direction that is machine-dependent: a slower runner
 // spends less and passes more easily, while a runner ~4x faster than the
 // development machine would begin to erode it.
-constexpr size_t kAttemptCapUnits = size_t{4968} * 8192;  // gesa2 nnz * 8192
+// gesa2's post-presolve nonzero count, which the two sizes below are
+// derived from.  Read back off the `[Heur] nnz=` field of every line these
+// cases parse rather than trusted: a HiGHS tag bump that changes presolve
+// would otherwise erode the margins silently instead of failing here.
+constexpr size_t kNnz = 4968;
+
+constexpr size_t kAttemptCapUnits = kNnz * 8192;
 
 // The whole allowance, `heuristic_effort_budget(nnz, 1.0)` — what a
 // heuristic spends when nothing stops it before the budget does.  Scylla
@@ -98,7 +104,7 @@ constexpr size_t kAttemptCapUnits = size_t{4968} * 8192;  // gesa2 nnz * 8192
 // budget still separates "stopped by the clock" (3.5e7 measured, and the
 // same number idle or loaded) from "ran to the budget" (4.07e8, measured
 // at a 60 s limit).
-constexpr size_t kBudgetUnits = size_t{4968} * 81920;  // gesa2 nnz * 81920
+constexpr size_t kBudgetUnits = kNnz * 81920;
 
 // Value of `key=` in `line`, as text.
 std::string field_of(const std::string& line, const std::string& key) {
@@ -120,6 +126,12 @@ double end_s_of(const std::string& line) {
 
 size_t effort_of(const std::string& line) {
     return std::strtoull(field_of(line, "effort").c_str(), nullptr, 10);
+}
+
+// Fail loudly if the model these sizes were derived from has moved.
+void require_expected_nnz(const std::string& line) {
+    INFO(line);
+    REQUIRE(std::strtoull(field_of(line, "nnz").c_str(), nullptr, 10) == kNnz);
 }
 
 // Every presolve-phase `[Heur]` line of one solve.
@@ -191,6 +203,7 @@ std::string alone_at_limit(const std::string& heuristic) {
         require_option(h, "mip_heuristic_" + heuristic + "_stall", 0);
     });
     REQUIRE(lines.size() == 1);
+    require_expected_nnz(lines.front());
     return lines.front();
 }
 
@@ -260,6 +273,7 @@ TEST_CASE("deadline: no presolve heuristic outlives the limit", "[deadline]") {
     });
     REQUIRE(!lines.empty());
     for (const auto& line : lines) {
+        require_expected_nnz(line);
         INFO(line);
         CHECK(end_s_of(line) <= kLimit + kPdlpSlack);
     }
