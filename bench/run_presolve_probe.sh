@@ -52,17 +52,18 @@
 #   * charged effort per millisecond, which converts an effort vector into
 #     seconds and back.
 #
-# ── why singles, and why `all` alongside ─────────────────────────────────────
+# ── why four singles and no chain ────────────────────────────────────────────
 #
 # `run_sequential` runs FJ → FPR → LocalMIP → Scylla in order, so a
 # wall-clock cap truncates the chain's *tail*, and with no budget and no
 # gate the first heuristic takes the entire cap on every instance.  A
 # chained probe would therefore report "produced nothing here" for
 # instances where three of the four never executed — the config-dependent
-# filter #113 exists to avoid, biased against exactly the case the campaign
-# wants to find.  Membership is the union over the four singles; `all` is
-# run because it is the only arm that measures what the deployed chain
-# actually does, and it is held out of the union.
+# filter #113 exists to avoid, and biased against exactly the case the
+# campaign wants to find, an instance only a *different* heuristic cracks.
+# Membership is the union over the four singles, which dominates every
+# subset: a heuristic that cracks an instance inside some mix also cracks it
+# running alone, earlier and with the whole cap to itself.
 #
 # ── the two controls ─────────────────────────────────────────────────────────
 #
@@ -87,14 +88,26 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PROBE_CONFIGS="${PROBE_CONFIGS:-fj fpr local_mip scylla all}"
+# The four singles, and only them.  The informative set is their union, and
+# the chained arm was never in it: at a budget that cannot bind, the first
+# heuristic of `run_sequential` takes the whole cap on every instance, so
+# `all` measures FJ-for-30-seconds and costs a fifth of the campaign to do
+# it.  What it would have contributed — how often the deployed chain starves
+# its own tail — is a headline question, not a probe input, and it is
+# answerable later at a shipped budget for far less.
+PROBE_CONFIGS="${PROBE_CONFIGS:-fj fpr local_mip scylla}"
 PROBE_OUTPUT_ROOT="${PROBE_OUTPUT_ROOT:-bench/results/probe}"
 # 30 s, decided on the measured shape of the cost: HiGHS's own root presolve
 # is the floor under any presolve-only run (median 0.45 s, mean 9.98 s over
 # the #105 tree, six instances carrying the whole tail), and with the budget
 # no longer binding every run now spends its whole cap.
 PROBE_TIME_LIMIT="${PROBE_TIME_LIMIT:-30}"
-PROBE_SEEDS="${PROBE_SEEDS:-0 1}"
+# One seed.  This is a screen, not a measurement of a difference between
+# configurations: it asks whether a heuristic can *ever* produce here, and
+# the union over four heuristics already carries most of the diversity a
+# second seed would add.  Coarse is the right register for it, and the
+# stall/effort quantiles it feeds are pooled over hundreds of dispatches.
+PROBE_SEEDS="${PROBE_SEEDS:-0}"
 # The controls answer a question about the experiment, so one seed each.
 PROBE_CONTROL_SEEDS="${PROBE_CONTROL_SEEDS:-0}"
 # The option's ceiling.  Not "infinity": the analysis checks that no run was

@@ -103,6 +103,24 @@ bool IncumbentSink::offer(double objective, const std::vector<double>& solution,
 
 void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, double objective,
                                 bool accepted) const {
+    // Only accepted offers are traced (#113).  Every consumer reads
+    // acceptances — the productive/stale split, the inter-acceptance gap
+    // distribution, and the hard-tier verdicts all filter to `accepted` —
+    // so a rejected offer's line fed nothing, and there are a great many of
+    // them: on a 30 s clock-bound probe run of a small model FPR offers
+    // ~11k/s, which was 327k lines and 36 MB from one run, 65 % of a whole
+    // probe tree's volume, and a few percent of the wall time the run is
+    // being measured on.  The `accepted=` field stays in the format: the
+    // parser's contract requires it, and logs written before this carry
+    // both values.
+    //
+    // What this gives up is the raw *offer rate* — how often a heuristic
+    // produces anything at all, admitted or not.  Nothing consumes it
+    // today; if something needs it, it wants a counter in `[Heur]`, not a
+    // line per offer.
+    if (!accepted) {
+        return;
+    }
     // Threading, and why there is no mutex here.
     //
     // `offer` is called concurrently by every worker of a dispatch.  This
@@ -129,7 +147,8 @@ void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, doub
     // group by `(name, dispatch, worker)`, never by position.  HiGHS's own
     // FeasibilityJump already logs from parallel workers at this very
     // level, so this path is not new contention — it is the same one, at a
-    // far lower rate (once per offer, not once per weight bump).
+    // far lower rate (once per *accepted* offer, not once per weight
+    // bump).
     const HighsLogOptions& log_options = mipsolver_.options_mip_->log_options;
     // Check the level before touching the clock: `highsLogDev` would drop
     // the line anyway, but the timer read and the formatting would already

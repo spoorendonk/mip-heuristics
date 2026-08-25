@@ -1113,15 +1113,17 @@ def probe_run(tmp_path: Path, mode: str, names: list[str], **env: str):
     return result, tree, records(record)
 
 
-def test_the_probe_runs_every_heuristic_alone_and_the_chain_alongside():
+def test_the_probe_runs_every_heuristic_alone_and_nothing_chained():
     # The informative set is a union over the singles because the chain runs
     # FJ -> FPR -> LocalMIP -> Scylla *sequentially*: a wall-clock cap
     # truncates its tail, and with neither budget nor gate the first
-    # heuristic takes the whole cap on every instance.  `all` is kept
-    # because it is the only run that measures the deployed chain.
+    # heuristic takes the whole cap on every instance.  A chained arm at
+    # this configuration therefore measures FJ and nothing else, which is
+    # the config-dependent filter #113 exists to avoid — so it is not run,
+    # and the union of singles dominates every subset anyway.
     text = (BENCH / "run_presolve_probe.sh").read_text()
     default = re.search(r"PROBE_CONFIGS:-([^}]*)\}", text).group(1).split()
-    assert default == [*CHAIN, "all"]
+    assert default == list(CHAIN)
     assert set(default) <= set(CONFIG_SUITES)
 
 
@@ -1135,8 +1137,9 @@ def test_the_experiment_leaves_the_clock_as_the_only_stopping_rule(tmp_path):
     names = ["inst00", "inst01"]
     result, _, recorded = probe_run(tmp_path, "preprobe", names)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert {config_of(r) for r in recorded} == {*CHAIN, "all"}
-    assert {seed_of(r) for r in recorded} == {0, 1}
+    assert {config_of(r) for r in recorded} == set(CHAIN)
+    # One seed: this is a screen, not a comparison between configurations.
+    assert {seed_of(r) for r in recorded} == {0}
     for run in recorded:
         options = run["options"]
         for heur in CHAIN:

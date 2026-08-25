@@ -206,7 +206,7 @@ class HeurSolSample:
     """One `IncumbentSink::offer`, as the #106 contract spells it.
 
         [HeurSol] name=<n> dispatch=<i> worker=<w> effort_at=<E> wall_ms=<X> \
-    obj=<O> accepted=<0|1>
+    obj=<O> accepted=<0|1>   (only accepted offers are emitted since #113)
 
     `effort_at` is the charged effort of the *offering worker* at the moment
     of the offer, monotone non-decreasing within a `(name, dispatch, worker)`

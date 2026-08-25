@@ -22,7 +22,11 @@
 // calibrates are exactly an intra-dispatch quantity ("how much
 // improvement-free effort is enough before this is going nowhere?").  This
 // line is emitted from `IncumbentSink::offer`, the project's single
-// definition of production, once per offered solution, accepted or not.
+// definition of production, once per *accepted* offer.  Rejected offers
+// were traced too until #113, when a clock-bound probe run turned out to
+// spend a few percent of its wall time and 65 % of a whole results tree
+// writing lines nothing reads: every consumer filters to `accepted`.  The
+// field stays in the format, since logs predating that carry both values.
 //
 // Three properties are load-bearing and are asserted here rather than left
 // to the consumers in `bench/`:
@@ -182,7 +186,13 @@ struct Fixture {
 
 constexpr std::array<Fixture, 3> kFixtures = {{
     {"egout.mps", "all", -1.0},
-    {"gt2.mps", "all", 1.0},
+    // Scylla alone, not inside the chain.  Since #113 only *accepted*
+    // offers are traced, and at `suite=all` Scylla offers into a pool three
+    // predecessors have already filled with better solutions, so its 25
+    // offers on gt2 became 25 rejected ones and it vanished from the trace.
+    // Running it alone leaves the pool empty at its first offer, which
+    // `SolutionPool::try_add` admits unconditionally while filling.
+    {"gt2.mps", "scylla", 1.0},
     {"bell5.mps", "fpr", -1.0},
 }};
 
