@@ -1076,6 +1076,168 @@ def test_run_plato_status_reads_a_tree_without_running_anything():
 
 
 # ---------------------------------------------------------------------------
+# the #113 presolve probe: the launcher *is* the configuration
+# ---------------------------------------------------------------------------
+#
+# The probe is `run_plato.sh` with an environment, so what has to be pinned is
+# the environment: every heuristic at the top of its effort range with its
+# stall gate off, the presolve-only exit, and the union-over-singles config
+# set the informative filter is taken on.  Getting any of those wrong is not
+# visible in the tree it writes — a probe run at the shipped defaults, or with
+# the gates live, produces perfectly well-formed logs that answer a different
+# question than the one the tuning set is derived from.
+
+
+def probe_run(tmp_path: Path, mode: str, names: list[str], **env: str):
+    """Run one probe chunk against the stand-in and return its records."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    _, listing, binary, record = make_run(tmp_path, names)
+    tree = tmp_path / "probe"
+    result = subprocess.run(
+        ["bash", str(BENCH / "run_presolve_probe.sh"), mode, "next", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(REPO),
+        env={
+            **os.environ,
+            "FAKE_HIGHS_RECORD": str(record),
+            "MIPLIB_DIR": str(miplib_dir(tmp_path, names)),
+            "PLATO_INSTANCES": str(listing),
+            "PROBE_OUTPUT_ROOT": str(tree),
+            "PLATO_BINARY": str(binary),
+            "PLATO_VANILLA_BINARY": str(binary),
+            **env,
+        },
+    )
+    return result, tree, records(record)
+
+
+def test_the_probe_runs_every_heuristic_alone_and_the_chain_alongside():
+    # The informative set is a union over the singles because the chain runs
+    # FJ -> FPR -> LocalMIP -> Scylla *sequentially*: a wall-clock cap
+    # truncates its tail, so a chained-only probe reports "nothing found here"
+    # for instances where three of the four never executed.  `all` is kept
+    # because it is the only run that measures the chain interaction.
+    text = (BENCH / "run_presolve_probe.sh").read_text()
+    default = re.search(r"PROBE_CONFIGS:-([^}]*)\}", text).group(1).split()
+    assert default == [*CHAIN, "all"]
+    assert set(default) <= set(CONFIG_SUITES)
+
+
+def test_the_probe_hands_every_heuristic_its_most_generous_setting(tmp_path):
+    names = ["inst00", "inst01"]
+    result, _, recorded = probe_run(tmp_path, "filter", names)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert {config_of(r) for r in recorded} == {*CHAIN, "all"}
+    assert {seed_of(r) for r in recorded} == {0, 1}
+    for run in recorded:
+        options = run["options"]
+        for heur in CHAIN:
+            assert options[f"mip_heuristic_{heur}_effort"] == "1.0"
+            # 0 is *no gate*, which is what makes the trajectory a
+            # measurement of the heuristic rather than of the threshold.
+            assert options[f"mip_heuristic_{heur}_stall"] == "0"
+        assert options["mip_heuristic_presolve_only"] == "true"
+        assert float(run["time_limit"]) == 60
+
+
+def test_the_filter_pass_runs_in_the_regime_the_search_runs_in(tmp_path):
+    # No pinned worker count and no developer logging: the filter pass decides
+    # membership, and membership must not depend on instrumentation.
+    _, _, recorded = probe_run(tmp_path, "filter", ["inst00"])
+    for run in recorded:
+        assert "threads" not in run["options"]
+        assert "log_dev_level" not in run["options"]
+
+
+def test_the_trace_pass_is_reproducible_and_instrumented(tmp_path):
+    # The trajectory is an effort *timeline*, so it needs the [HeurSol] trace
+    # (level 3) and one worker: multi-worker interleaving makes the timeline
+    # non-reproducible and lets pool interactions confound attribution.
+    names = ["inst00"]
+    listing = instance_list(tmp_path / "informative.txt", names)
+    _, _, recorded = probe_run(tmp_path, "trace", names, PLATO_INSTANCES=str(listing))
+    assert recorded
+    for run in recorded:
+        assert run["options"]["threads"] == "1"
+        assert run["options"]["log_dev_level"] == "3"
+        assert run["options"]["mip_heuristic_fpr_effort"] == "1.0"
+
+
+def test_the_low_budget_trace_moves_the_budget_and_nothing_else(tmp_path):
+    # The confound this pass measures: `attempt_cap` is derived from the total
+    # budget, so a trajectory taken at one budget does not exactly reproduce
+    # another.  Two passes that differed in anything else could not separate
+    # that from the difference being measured.
+    names = ["inst00"]
+    listing = instance_list(tmp_path / "informative.txt", names)
+    _, _, high = probe_run(
+        tmp_path / "hi", "trace", names, PLATO_INSTANCES=str(listing)
+    )
+    _, _, low = probe_run(
+        tmp_path / "lo", "trace-low", names, PLATO_INSTANCES=str(listing)
+    )
+    assert high and low
+
+    def without_effort(options):
+        return {k: v for k, v in options.items() if not k.endswith("_effort")}
+
+    assert without_effort(high[0]["options"]) == without_effort(low[0]["options"])
+    for heur in CHAIN:
+        assert high[0]["options"][f"mip_heuristic_{heur}_effort"] == "1.0"
+        assert low[0]["options"][f"mip_heuristic_{heur}_effort"] == "0.1"
+    # Separate trees, so neither pass resumes into the other's runs.
+    assert (
+        Path(high[0]["options_file"]).parents[2].name
+        != Path(low[0]["options_file"]).parents[2].name
+    )
+
+
+def test_the_trace_pass_refuses_a_missing_informative_set(tmp_path):
+    # The trace runs over the filter pass's output.  Falling back to the full
+    # list would silently trace instances no configuration can crack — hours
+    # of machine time characterising nothing.
+    result, _, recorded = probe_run(
+        tmp_path,
+        "trace",
+        ["inst00"],
+        PROBE_INFORMATIVE=str(tmp_path / "absent.txt"),
+        PLATO_INSTANCES="",
+    )
+    assert result.returncode != 0
+    assert "informative" in (result.stdout + result.stderr)
+    assert not recorded
+
+
+def test_the_probe_does_not_offer_a_table_a_presolve_tree_cannot_support(tmp_path):
+    # analyze_results.py scores a primal integral against a dual bound that a
+    # presolve-only run never computes.  The probe reads its tree with
+    # analyze_presolve_probe.py instead, so the launcher's completion message
+    # must not point at the other one.
+    result, _, _ = probe_run(tmp_path, "filter", ["inst00"])
+    assert "STATUS  : COMPLETE" in result.stdout
+    assert "analyze_results.py" not in result.stdout
+
+
+def test_run_plato_forwards_the_probe_environment_to_flags_the_runner_defines():
+    # The three probe knobs are passed through an array rather than spelled
+    # into the invocation, because each is absent by default — which puts them
+    # outside the reach of `plato_python_flags`.
+    text = RUN_PLATO.read_text()
+    body = text[text.index("local extra_args=()") :]
+    body = body[: body.index("python3 bench/run_benchmark.py")]
+    forwarded = set(re.findall(r"(--[a-z-]+)", body))
+    assert forwarded == {"--extra-options", "--dev-log", "--threads"}
+    defined = {
+        option
+        for action in build_arg_parser()._actions
+        for option in action.option_strings
+    }
+    assert forwarded <= defined
+
+
+# ---------------------------------------------------------------------------
 # the real binary — what a stand-in cannot answer
 # ---------------------------------------------------------------------------
 

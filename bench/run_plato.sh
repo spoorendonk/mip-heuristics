@@ -25,6 +25,14 @@
 #   PLATO_OUTPUT     results tree         (default bench/results/plato)
 #   PLATO_TIME_LIMIT seconds per solve    (default 600, the PLATO limit)
 #   PLATO_BINARY / PLATO_VANILLA_BINARY   the two binaries
+#   PLATO_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
+#                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_stall=0"
+#   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
+#   PLATO_THREADS    pin the solver thread count (default: unset — see below)
+#   PLATO_ANALYZE    0 to skip the end-of-tree analyze_results.py call
+#                    (default 1; a presolve-only tree has no dual side, so the
+#                    probe stage turns it off and reads the tree with
+#                    bench/analyze_presolve_probe.py instead)
 #
 # Per-run option overrides go through run_benchmark.py's --extra-options;
 # a config name is exactly a `mip_heuristic_suite` value.
@@ -34,8 +42,14 @@
 #   PLATO_CONFIGS="fj+fpr+local_mip vanilla" PLATO_SEEDS="0 1 2" \
 #     bench/run_plato.sh next 10
 #
-# NOTE: Do NOT set threads= — HiGHS uses its default (all cores).
-#       Forcing a thread count collapses opportunistic parallelism.
+# The #113 probe is the same script with the generous presolve-only
+# environment, which bench/run_presolve_probe.sh sets.
+#
+# NOTE: Do NOT set PLATO_THREADS — HiGHS uses its default (all cores).
+#       Forcing a thread count collapses opportunistic parallelism, and for a
+#       tuning run it *moves* the objective's distribution rather than
+#       narrowing it (docs/REPRODUCIBILITY.md).  The one legitimate use is a
+#       trajectory trace, where a reproducible effort timeline is the point.
 
 set -euo pipefail
 shopt -s nullglob
@@ -133,9 +147,11 @@ cmd_status() {
 	echo "  paired  : $paired / $TOTAL  (every config, every seed)"
 	if [ "$paired" -ge "$TOTAL" ]; then
 		echo "  STATUS  : COMPLETE"
-		echo ""
-		echo "Run analysis:"
-		echo "  python3 bench/analyze_results.py $OUTPUT --configs $(analysis_configs)--time-limit $TIME_LIMIT --baseline"
+		if [ "${PLATO_ANALYZE:-1}" = "1" ]; then
+			echo ""
+			echo "Run analysis:"
+			echo "  python3 bench/analyze_results.py $OUTPUT --configs $(analysis_configs)--time-limit $TIME_LIMIT --baseline"
+		fi
 	else
 		local est
 		est=$(estimate_hours "$remaining") || true
@@ -164,6 +180,23 @@ cmd_next() {
 		exit 1
 	fi
 
+	# Held in an array rather than spelled into the invocation: each of the
+	# three is absent by default, and a flag that is only sometimes passed
+	# cannot be written inline.
+	local extra_args=()
+	if [ -n "${PLATO_EXTRA_OPTIONS:-}" ]; then
+		# Word-split on purpose: it is a list of key=value pairs.
+		# shellcheck disable=SC2206
+		local extra_opts=(${PLATO_EXTRA_OPTIONS})
+		extra_args+=(--extra-options "${extra_opts[@]}")
+	fi
+	if [ "${PLATO_DEV_LOG:-0}" = "1" ]; then
+		extra_args+=(--dev-log)
+	fi
+	if [ -n "${PLATO_THREADS:-}" ]; then
+		extra_args+=(--threads "$PLATO_THREADS")
+	fi
+
 	echo "================================================================"
 	echo "PLATO benchmark — ${hours}h window (launching for ${budget_secs}s)"
 	echo "  Progress before : $(paired_done)/$TOTAL paired"
@@ -171,6 +204,10 @@ cmd_next() {
 	echo "  Vanilla binary  : $VANILLA_BINARY"
 	echo "  Patched binary  : $BINARY"
 	echo "  Output          : $OUTPUT"
+	echo "  Time limit      : ${TIME_LIMIT}s"
+	if [ ${#extra_args[@]} -gt 0 ]; then
+		echo "  Extra runner args: ${extra_args[*]}"
+	fi
 	echo "  (Skipping already-completed instances)"
 	echo "================================================================"
 
@@ -184,12 +221,13 @@ cmd_next() {
 		--seeds "${SEEDS[@]}" \
 		--skip-existing \
 		--interleave \
-		--wall-time-budget "$budget_secs"
+		--wall-time-budget "$budget_secs" \
+		${extra_args[@]+"${extra_args[@]}"}
 
 	echo ""
 	cmd_status
 
-	if [ "$(paired_done)" -ge "$TOTAL" ]; then
+	if [ "$(paired_done)" -ge "$TOTAL" ] && [ "${PLATO_ANALYZE:-1}" = "1" ]; then
 		echo ""
 		echo "All instances complete — running analysis..."
 		# shellcheck disable=SC2046

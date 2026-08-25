@@ -279,6 +279,40 @@ The artifact chain is **probe tree -> informative list + hard tier -> tuning
 list**, every link byte-identical for the same inputs and carrying no timestamp,
 with each generated file recording its own `Regenerate with:` line.
 
+### Running the probe
+
+`bench/run_presolve_probe.sh` is `run_plato.sh` with the probe environment, so
+it chunks and resumes the same way — `next <hours>` overnight, `status` to check
+in. The launcher *is* the configuration: every heuristic at effort 1.0 with its
+stall gate at 0 (which means no gate), `mip_heuristic_presolve_only`, and a 60 s
+per-run cap the harness enforces as a wall-clock kill.
+
+```bash
+bench/run_presolve_probe.sh filter next 8      # the instance screen
+python3 bench/analyze_presolve_probe.py bench/results/probe/filter \
+    --informative-output bench/results/probe/informative.txt \
+    --hard-tier-output bench/results/probe/hard_tier.txt
+bench/run_presolve_probe.sh trace next 4       # the trajectories
+bench/run_presolve_probe.sh trace-low next 4   # the same, one decade down
+```
+
+It runs each heuristic **alone**, plus the chain: `run_sequential` is
+sequential, so a wall-clock cap truncates the chain's *tail*, and at effort 1.0
+with the gates off FJ's budget is large enough to consume the whole cap. On a
+12-instance pilot the chained run alone would have filed three instances as
+"produced nothing at a generous configuration" that a different heuristic
+cracks. The informative set is therefore the union over `(single, seed)`, and
+the chained arm is kept because it is the only one that measures the chain
+interaction.
+
+The filter pass runs at HiGHS's own thread default, which is the regime the
+search runs in; the trace passes pin `threads=1` and `log_dev_level=3`, because
+a trajectory is an effort *timeline* and multi-worker interleaving makes it
+non-reproducible. `trace-low` exists to measure one confound: `attempt_cap` is
+derived from the total budget, so a trajectory taken at effort 1.0 does not
+exactly reproduce one taken at 0.1, and the two are compared over the effort
+range they share.
+
 
 ## `suite=off` is vanilla-equivalent — since August 2026
 

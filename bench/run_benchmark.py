@@ -74,6 +74,7 @@ CONFIG_SUITES: dict[str, str] = {
     "all": "all",
 }
 
+
 @dataclass(frozen=True)
 class ConfigPlan:
     """One resolved config: what to run it with, and where it lands.
@@ -365,8 +366,7 @@ def record_partial(log_path: str, output: str, kill_after: float) -> None:
     """
     write_log(
         log_path,
-        output + f"\n--- runner ---\n"
-        f"TIMEOUT: process killed after {kill_after}s\n",
+        output + f"\n--- runner ---\nTIMEOUT: process killed after {kill_after}s\n",
     )
 
 
@@ -856,13 +856,24 @@ def main() -> None:
     # produces.  Suggesting --ablation for a `patched vanilla` run would
     # contradict the command run_plato.sh prints seconds later.
     if done:
-        mode = "--ablation" if len(plans) > 2 else "--baseline --summary"
-        print(
-            "\nAnalyze with:\n"
-            f"  python3 bench/analyze_results.py {args.output} {mode} "
-            f"--configs {' '.join(p.name for p in plans)} "
-            f"--time-limit {args.time_limit:g}"
-        )
+        # A presolve-only tree has no dual side at all — `Dual bound -inf`,
+        # zero nodes, zero LP iterations — so every gap and primal-integral
+        # column analyze_results.py prints for it is meaningless.  It reads
+        # with analyze_presolve_probe.py instead, and the suggestion is where
+        # a reader looks for which one to run.
+        if base_opts.get("mip_heuristic_presolve_only", "").lower() == "true":
+            print(
+                "\nAnalyze with:\n"
+                f"  python3 bench/analyze_presolve_probe.py {args.output}"
+            )
+        else:
+            mode = "--ablation" if len(plans) > 2 else "--baseline --summary"
+            print(
+                "\nAnalyze with:\n"
+                f"  python3 bench/analyze_results.py {args.output} {mode} "
+                f"--configs {' '.join(p.name for p in plans)} "
+                f"--time-limit {args.time_limit:g}"
+            )
 
 
 if __name__ == "__main__":
