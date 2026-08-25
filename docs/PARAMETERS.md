@@ -686,7 +686,8 @@ itself is driven by a tracked target runner rather than by config names.
   detector (`stale_budget = min(nnz << 8, total)`), which ends a worker
   early on models where FJ converges.
 - **Suggested range**: 0.003–0.10 (a quarter to eight times vanilla's
-  per-thread depth), subject to the dead zone above.
+  per-thread depth), subject to the dead zone above. The record's ceiling
+  is `1e4`; see "A budget that cannot bind" below.
 
 ---
 
@@ -697,7 +698,8 @@ itself is driven by a tracked target runner rather than by config names.
 - **Meaning**: Whole-dispatch budget for the presolve FPR chain, divided
   across the workers by `make_budget`. The default is `0.30 x 2.99/10.15`
   — FPR's 29.5% share of the retired shared envelope at its 0.30 default.
-- **Suggested range**: 0.01–1.0.
+- **Suggested range**: 0.01–1.0. The record's ceiling is `1e4`; see
+  "A budget that cannot bind" below.
 
 ---
 
@@ -710,7 +712,8 @@ itself is driven by a tracked target runner rather than by config names.
   largest of the three because the retired weights were proportional to
   `effort_per_ms` and LocalMIP has the highest coefficient-access rate.
   Its effort counter includes the cold-start construction sweep.
-- **Suggested range**: 0.01–1.0.
+- **Suggested range**: 0.01–1.0. The record's ceiling is `1e4`; see
+  "A budget that cannot bind" below.
 
 ---
 
@@ -723,7 +726,37 @@ itself is driven by a tracked target runner rather than by config names.
   effort is measured in PDLP iters x nnz, a different unit from the other
   heuristics' coefficient accesses, and it saturates: PDLP stalls and
   stale rounds usually bound a Scylla dispatch before the budget does.
-- **Suggested range**: 0.01–1.0.
+- **Suggested range**: 0.01–1.0. The record's ceiling is `1e4`; see
+  "A budget that cannot bind" below.
+
+---
+
+### A budget that cannot bind
+
+All four effort records are bounded at **`1e4`**, not at `1.0`. Nothing
+ships or tunes above `1.0` — the suggested ranges above are the real
+operating range — but one measurement needs a value outside it.
+
+`WorkerBudgetState` retires a worker in exactly two places: `exhausted()`
+(its total budget) and `stale()` (its staleness gate). Set the gate to `0`
+and hand the heuristic a budget it cannot reach, and neither fires, so the
+solver's wall clock becomes the *single* stopping rule — the same one for
+all four heuristics on every instance. That is what #113's calibration
+probe runs at, and it is the difference between measuring a heuristic and
+measuring the setting being derived from it: at any binding budget the
+trace stops where the budget stops, and each heuristic's budget binds at a
+different model size (at effort `1.0`, FJ exhausts its budget after 7.8 s
+on a 41k-nonzero model while Scylla is already clock-bound there).
+
+At `1e4` the budget is `8.2e8` effort units per matrix nonzero — `2e5`
+times the vanilla anchor, unreachable inside any per-run cap the campaign
+uses, and far enough below `size_t` overflow on the largest MIPLIB model
+that `heuristic_effort_budget` never has to saturate (it does anyway; a
+`double -> size_t` conversion out of range is undefined, and the same
+reasoning that gives `saturating_mul` its guard applies one level up).
+"Cannot bind" is checked rather than assumed:
+`bench/analyze_presolve_probe.py` reports charged effort against the
+budget, so a run that did hit it is visible.
 
 ---
 
@@ -1077,7 +1110,7 @@ The custom patch-added options are exactly five:
   `mip_heuristic_fpr_effort` (`0.0884`),
   `mip_heuristic_local_mip_effort` (`0.1821`),
   `mip_heuristic_scylla_effort` (`0.0296`) — one effort budget multiplier
-  per presolve heuristic, each a double in `[0.0, 1.0]`. See
+  per presolve heuristic, each a double in `[0.0, 1e4]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the other three are per dispatch.
 - `mip_heuristic_suite` — which heuristics run (default `"all"`).

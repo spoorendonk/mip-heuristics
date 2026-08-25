@@ -82,7 +82,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # `mip_heuristic_<name>_stall` option records, the
 # `mip_heuristic_presolve_only` record, and the presolve-only early exit
 # inserted into HighsMipSolver.cpp beside the run_presolve call site.
-set(PATCH_VERSION "9")
+#
+# Version 10 widens the four effort records' upper bound from 1.0 to
+# `kEffortMax` (#113).  The bound is what a *record* carries, so it is
+# inserted text and needs the bump even though nothing else moved.
+set(PATCH_VERSION "10")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -296,21 +300,36 @@ endif()
 # first, and `mip_root_presolve_only` controls where presolve is applied,
 # not termination.  The early exit itself is inserted into
 # HighsMipSolver.cpp further down.
-#
+
+# The upper bound of an effort option.  1.0 was the natural ceiling while
+# the option only ever expressed a fraction of a fixed envelope, and it is
+# still the top of the range anything ships or tunes at.  #113's
+# calibration probe needs one configuration the bound cannot express: a
+# budget so large that it never binds, so the only thing that stops a
+# heuristic is the wall clock and the trace measures the heuristic rather
+# than the setting being derived from it.  `1e4` is `2e5` times the
+# vanilla anchor — unreachable inside any per-run cap the campaign uses,
+# and two orders of magnitude below where `nnz << 12` times it would
+# trouble a `size_t` on the largest MIPLIB model.
+set(kEffortMax "1e4")
+
 # No `;` and no `:` in a list entry: set() builds a cmake list and would
 # split on the first, and the field split below uses the second.
-# Fields are <identifier>:<kind>:<record default>:<record description>,
-# where <kind> is one of double / int / bool.
+# Fields are <identifier>:<kind>:<record default>:<record bound>:<record
+# description>, where <kind> is one of double / int / bool.  <record
+# bound> is the record's upper bound, or `-` for a kind that has none
+# (bool); it sits *before* the description because the description is the
+# one field allowed to contain anything, so it has to be last.
 set(_patch_options
-    "mip_heuristic_fj_effort:double:0.0125:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
-    "mip_heuristic_fpr_effort:double:0.0884:Effort budget multiplier for the FPR presolve heuristic"
-    "mip_heuristic_local_mip_effort:double:0.1821:Effort budget multiplier for the LocalMIP presolve heuristic"
-    "mip_heuristic_scylla_effort:double:0.0296:Effort budget multiplier for the Scylla presolve heuristic"
-    "mip_heuristic_fj_stall:int:256:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_fpr_stall:int:2048:Staleness threshold for the FPR presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_local_mip_stall:int:4096:Staleness threshold for the LocalMIP presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_scylla_stall:int:512:Staleness threshold for the Scylla presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_presolve_only:bool:false:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
+    "mip_heuristic_fj_effort:double:0.0125:${kEffortMax}:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
+    "mip_heuristic_fpr_effort:double:0.0884:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
+    "mip_heuristic_local_mip_effort:double:0.1821:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
+    "mip_heuristic_scylla_effort:double:0.0296:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
+    "mip_heuristic_fj_stall:int:256:kHighsIInf:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_fpr_stall:int:2048:kHighsIInf:Staleness threshold for the FPR presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_local_mip_stall:int:4096:kHighsIInf:Staleness threshold for the LocalMIP presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_scylla_stall:int:512:kHighsIInf:Staleness threshold for the Scylla presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
 
 # The upstream record block all four record insertions anchor on, spelled
 # once: four copies of a four-line exact-match string is four chances for
@@ -327,7 +346,8 @@ foreach(_entry IN LISTS _patch_options)
     string(REGEX REPLACE "^([^:]+):.*$" "\\1" _opt_ident "${_entry}")
     string(REGEX REPLACE "^[^:]+:([^:]+):.*$" "\\1" _opt_kind "${_entry}")
     string(REGEX REPLACE "^[^:]+:[^:]+:([^:]+):.*$" "\\1" _opt_default "${_entry}")
-    string(REGEX REPLACE "^[^:]+:[^:]+:[^:]+:(.*)$" "\\1" _opt_desc "${_entry}")
+    string(REGEX REPLACE "^[^:]+:[^:]+:[^:]+:([^:]+):.*$" "\\1" _opt_bound "${_entry}")
+    string(REGEX REPLACE "^[^:]+:[^:]+:[^:]+:[^:]+:(.*)$" "\\1" _opt_desc "${_entry}")
 
     # Everything the kind decides, in one place.  `_opt_ctor_value` is
     # deliberately *not* the record default: OptionRecord* writes the record
@@ -336,25 +356,25 @@ foreach(_entry IN LISTS _patch_options)
     # stable zero rather than an uninitialised read.  `_opt_ctor_regex` is
     # that same value escaped for the sanity check below.
     #
-    # Ranges are a property of the kind here, not of the entry, because that
-    # is what these options happen to be: every effort multiplier is a
-    # fraction in [0, 1] and every stall threshold a non-negative count.  An
-    # option needing a range of its own is the point at which this gains a
-    # fifth field, not the point at which it gains a second loop.
+    # The lower bound is a property of the kind — every one of these is
+    # non-negative, and `0` means the same thing for all of them (an inert
+    # heuristic, a disabled gate).  The *upper* bound is the entry's own,
+    # because it stopped being uniform when #113 needed an effort budget
+    # that cannot bind; a bool carries `-` and uses neither.
     if(_opt_kind STREQUAL "double")
         set(_opt_cxx_type "double")
         set(_opt_ctor_value "0.0")
         set(_opt_ctor_regex "\\(0\\.0\\)")
         set(_opt_record_var "record_double")
         set(_opt_record_ctor "OptionRecordDouble")
-        set(_opt_record_args "0.0, ${_opt_default}, 1.0")
+        set(_opt_record_args "0.0, ${_opt_default}, ${_opt_bound}")
     elseif(_opt_kind STREQUAL "int")
         set(_opt_cxx_type "HighsInt")
         set(_opt_ctor_value "0")
         set(_opt_ctor_regex "\\(0\\)")
         set(_opt_record_var "record_int")
         set(_opt_record_ctor "OptionRecordInt")
-        set(_opt_record_args "0, ${_opt_default}, kHighsIInf")
+        set(_opt_record_args "0, ${_opt_default}, ${_opt_bound}")
     elseif(_opt_kind STREQUAL "bool")
         set(_opt_cxx_type "bool")
         set(_opt_ctor_value "false")
@@ -366,7 +386,20 @@ foreach(_entry IN LISTS _patch_options)
         message(FATAL_ERROR
             "apply_patch.cmake: unknown option kind '${_opt_kind}' for "
             "${_opt_ident}. Add it to the kind dispatch in this file; the "
-            "entry format is <identifier>:<kind>:<default>:<description>.")
+            "entry format is "
+            "<identifier>:<kind>:<default>:<bound>:<description>.")
+    endif()
+
+    # A missing field does not fail the regexes above — it leaves the
+    # variable holding the whole entry — so an entry written in the old
+    # four-field format would reach the record as a bound spelled like a
+    # description, and the first sign of it would be a HiGHS compile error
+    # a full clean rebuild away.
+    if(NOT _opt_kind STREQUAL "bool" AND NOT _opt_bound MATCHES "^[A-Za-z0-9_.+-]+$")
+        message(FATAL_ERROR
+            "apply_patch.cmake: option '${_opt_ident}' has no usable upper "
+            "bound (got '${_opt_bound}'). The entry format is "
+            "<identifier>:<kind>:<default>:<bound>:<description>.")
     endif()
 
     string(FIND "${OPTIONS_CONTENT}" "${_opt_ident}" _opt_found)

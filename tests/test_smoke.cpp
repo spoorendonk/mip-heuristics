@@ -75,9 +75,21 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         double value = -1.0;
         REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
         REQUIRE(value == expected);
-        // Settable across the documented [0, 1] range.
+        // Settable across the documented range.  `1.0` is the top of what
+        // ships and tunes; the ceiling is `1e4`, which exists so #113's
+        // calibration probe can hand a heuristic a budget that cannot bind
+        // — with the stall gate off as well, the wall clock is then the
+        // single stopping rule and the trace measures the heuristic rather
+        // than the setting being derived from it.
         REQUIRE(highs.setOptionValue(name, 0.0) == HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, 1.0) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, 1e4) == HighsStatus::kOk);
+        // Still bounded: an out-of-range write is rejected, not clamped,
+        // and a rejected write is silent on every Highs instance we build
+        // (they all set output_flag=false).
+        REQUIRE(highs.setOptionValue(name, 1e4 * 10) != HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, -1.0) != HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, expected) == HighsStatus::kOk);
     }
 }
 

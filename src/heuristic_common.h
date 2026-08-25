@@ -139,6 +139,12 @@ inline uint32_t heuristic_base_seed(HighsInt random_seed) {
 //  - fpr_lp::run passes `mip_heuristic_effort` (vanilla default 0.05 →
 //    exactly the base budget) as its per-call cap on the shared RENS/RINS
 //    LP-iteration headroom.
+//
+// The product saturates rather than converting out of range.  The option's
+// upper bound is `1e4` since #113 — a budget that cannot bind, so that a
+// calibration probe measures the heuristic and not the setting derived from
+// it — and `double -> size_t` is undefined when the value does not fit, so
+// the guard is the same one `saturating_mul` exists for one level down.
 inline size_t heuristic_effort_budget(size_t nnz, double effort) {
     if (effort <= 0.0) {
         return 0;
@@ -146,7 +152,11 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
     constexpr int kBaseShift = 12;
     constexpr double kEffortAnchor = 0.05;
     double scale = effort / kEffortAnchor;
-    return static_cast<size_t>(static_cast<double>(nnz << kBaseShift) * scale);
+    double budget = static_cast<double>(nnz << kBaseShift) * scale;
+    if (!(budget < static_cast<double>(SIZE_MAX))) {
+        return SIZE_MAX;
+    }
+    return static_cast<size_t>(budget);
 }
 
 // `a * b`, saturating at SIZE_MAX instead of wrapping.
