@@ -726,6 +726,52 @@ else()
     message(STATUS "feasibilityJumpCapture already applied, skipping")
 endif()
 
+# ── Patch feasibilityjump.hh: drop upstream FJ's per-bump log line ──────
+# `updateWeights()` logs "Reached a local minimum." at kVerbose, once per
+# weight bump, from every parallel FJ worker, each with an fflush.  Our own
+# `[Heur]` / `[HeurSol]` instrumentation is kVerbose too, so anything that
+# reads a trace pays for this line as well — and it is not a rounding cost.
+# Measured on one 30 s presolve-only probe run of `50v-10` (2745 nonzeros,
+# 16 workers): **453 MB**, of which 99.8 % is this line, which puts the
+# 233-instance probe of #113 past 400 GB.
+#
+# It is also a measurement error and not only a disk problem.  Such a run is
+# bounded by the wall clock, so an fflush per bump is time FJ does not spend
+# searching, and it lands asymmetrically — FJ logs this per bump while the
+# other three heuristics barely log at all, so a traced FJ dispatch is a
+# different regime from an untraced one.  That is where nearly all of the
+# documented 1.1-4.4x `log_dev_level=3` cost lives.
+#
+# The line is dropped rather than moved to a quieter level: kVerbose is the
+# quietest level there is, and adding an option to gate it is a larger
+# change to upstream code than removing one diagnostic.
+#
+# Consequence to keep in mind: at `log_dev_level=3` a patched binary's FJ
+# output is no longer identical to vanilla's, and `suite=off` is faster than
+# vanilla there.  The vanilla-equivalence claim is at the default log level,
+# which is where `bench/check_vanilla_equivalence.py` makes it.
+file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_CONTENT)
+string(FIND "${FJ_CONTENT}" "Reached a local minimum" _fj_log_found)
+if(NOT _fj_log_found EQUAL -1)
+    string(REPLACE
+      "    highsLogDev(logOptions, HighsLogType::kVerbose,\n                FJ_LOG_PREFIX \"Reached a local minimum.\\n\");"
+      "    // mip-heuristics: per-bump local-minimum log removed.  It is\n    // kVerbose, the same level our [Heur]/[HeurSol] trace needs, and one\n    // fflushed line per weight bump per worker is 99.8% of a traced run's\n    // log volume and most of level 3's wall-time cost."
+      FJ_CONTENT "${FJ_CONTENT}")
+
+    string(FIND "${FJ_CONTENT}" "Reached a local minimum" _fj_log_check)
+    if(NOT _fj_log_check EQUAL -1)
+        message(FATAL_ERROR
+            "feasibilityjump.hh patch failed: the updateWeights() log anchor "
+            "no longer matches (upstream reformat?). Update the FJ log patch "
+            "in third_party/highs_patch/apply_patch.cmake. ${CLEAN_REBUILD}")
+    endif()
+
+    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_CONTENT}")
+    message(STATUS "Removed upstream FJ per-bump log line from feasibilityjump.hh")
+else()
+    message(STATUS "FJ per-bump log line already removed, skipping")
+endif()
+
 # ── Patch feasibilityjump.hh: add resume parameter to solve() ──
 file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_HH)
 

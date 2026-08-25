@@ -616,16 +616,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Set log_dev_level=3, which is what makes the [Heur] / [Sequential] "
             "instrumentation visible to parse_highs_log.py. "
-            "OFF by default because it is not free: HiGHS's own FeasibilityJump "
-            "logs one line per weight bump at exactly that level, from every "
-            "parallel FJ worker, with an fflush each. Measured on five bundled "
-            "instances at a 10 s limit that is 97-750x the log volume and up to "
-            "4.4x the total solve wall time. The cost is concentrated in the FJ phase, so it "
-            "lands on the very numbers the per-heuristic analysis reads, and "
-            "asymmetrically: fj's effort_per_ms is depressed by its own logging "
-            "while the other three barely log at all, so a --dev-log run's rates "
-            "are not comparable with a plain run's. Use it for attribution runs, "
-            "not for headline timings."
+            "OFF by default because it is still not free, though far cheaper "
+            "than it was: HiGHS's own FeasibilityJump logged one fflushed line "
+            "per weight bump per worker at exactly this level, which was 99.8% "
+            "of a traced run's volume and most of its cost, and apply_patch.cmake "
+            "now removes it (453 MB -> 8.7 MB, and 21.6x more FJ search, on a "
+            "30 s run of 50v-10). What is left is FJ's periodic table plus our "
+            "own two lines. A --dev-log run's rates are still not a plain run's, "
+            "so use it for attribution, not for headline timings."
         ),
     )
     return parser
