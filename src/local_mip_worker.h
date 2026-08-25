@@ -1,6 +1,7 @@
 #pragma once
 
 #include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "incumbent_sink.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
@@ -41,8 +42,8 @@ public:
     // means the pool and the incumbent were empty too.
     // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
     // issue #99); it must outlive the worker.
-    LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
-                   size_t total_budget, size_t stale_budget, uint32_t seed,
+    LocalMipWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec, const CscMatrix& csc,
+                   IncumbentSink& sink, size_t total_budget, size_t stale_budget, uint32_t seed,
                    const double* initial_solution, const uint8_t* binary, WorkerTrace trace);
 
     AttemptResult run_attempt(size_t attempt_budget);
@@ -58,6 +59,10 @@ public:
 
 private:
     HighsMipSolver& mipsolver_;
+    // Read only for `past_deadline()`, every `kTermCheckInterval` steps of
+    // the search loop: one attempt at a large effort option runs far past
+    // the solve's `time_limit` otherwise (issue #114).
+    const ExecutionContext& exec_;
     const CscMatrix& csc_;
     IncumbentSink& sink_;
     Rng rng_;

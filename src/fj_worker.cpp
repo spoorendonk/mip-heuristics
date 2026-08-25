@@ -1,5 +1,6 @@
 #include "fj_worker.h"
 
+#include "heuristic_context.h"
 #include "incumbent_sink.h"
 #include "mip/feasibilityjump.hh"
 #include "mip/HighsMipSolver.h"
@@ -24,9 +25,15 @@ struct FjWorker::Impl {
         : solver(log_options, seed, epsilon, feastol) {}
 };
 
-FjWorker::FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_budget,
-                   size_t stale_budget, uint32_t seed, std::vector<double> start, WorkerTrace trace)
-    : mipsolver_(mipsolver), sink_(sink), start_(std::move(start)), seed_(seed), trace_(trace) {
+FjWorker::FjWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec, IncumbentSink& sink,
+                   size_t total_budget, size_t stale_budget, uint32_t seed,
+                   std::vector<double> start, WorkerTrace trace)
+    : mipsolver_(mipsolver),
+      exec_(exec),
+      sink_(sink),
+      start_(std::move(start)),
+      seed_(seed),
+      trace_(trace) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
 }
@@ -149,6 +156,28 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
             best_obj = model->offset_ + (sense_multiplier * status.solutionObjectiveValue);
         }
 
+        // The solve's wall-clock deadline (issue #114).  Every other gate
+        // here is denominated in effort units, and the runner checks the
+        // clock only between attempts — where one attempt is
+        // `attempt_cap` = `total / (10N)`, which scales with
+        // `mip_heuristic_fj_effort`.  At the shipped 0.0125 that is
+        // `nnz * 102` and the between-attempts check is tight; at 1.0 it is
+        // `nnz * 8192` and FJ was measured 1.4-2.0x past the limit, twice
+        // to an external SIGKILL.
+        //
+        // This costs one clock read per `CALLBACK_EFFORT` (500000) effort
+        // units, which is upstream FJ's own callback cadence — not a
+        // per-iteration read.  `past_deadline()` is the write-free half of
+        // `ExecutionContext::terminated()` and needs no poller seat.
+        //
+        // Deliberately does *not* set `base_.finished`: `fj::run` rebuilds
+        // a worker that reports `finished()`, and constructing a fresh
+        // FeasibilityJumpSolver is the last thing to do at the deadline.
+        // Returning is enough — the runner polls the same predicate on
+        // every iteration and stops the loop.
+        if (exec_.past_deadline()) {
+            return CallbackControlFlow::Terminate;
+        }
         // Pause at the attempt boundary.
         if (attempt_effort_consumed >= attempt_budget) {
             return CallbackControlFlow::Terminate;

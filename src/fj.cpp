@@ -73,7 +73,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 // `nnz << 8` FJ used to compute from its own copy of the
                 // matrix, now sized once alongside every other
                 // heuristic's.
-                state.worker = std::make_unique<FjWorker>(mipsolver, sink, budget.per_worker,
+                state.worker = std::make_unique<FjWorker>(mipsolver, exec, sink, budget.per_worker,
                                                           budget.worker_stale, seed,
                                                           std::move(start), state.trace);
             }

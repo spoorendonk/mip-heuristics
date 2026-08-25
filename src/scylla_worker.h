@@ -18,6 +18,7 @@
 
 class HighsMipSolver;
 class IncumbentSink;
+struct ExecutionContext;
 
 // Per-worker default cap on consecutive stale-snapshot rounds before the
 // worker must force a blocking `solve()` to refresh its view.  Stale
@@ -86,8 +87,8 @@ public:
     // when `scylla::run` rebuilds a retired worker, and computing a var
     // order there would read the live root domain and mutate the clique
     // table under a concurrent `addIncumbent`.
-    ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const CscMatrix& csc,
-                 IncumbentSink& sink, const uint8_t* binary,
+    ScyllaWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec, ContestedPdlp& pdlp,
+                 const CscMatrix& csc, IncumbentSink& sink, const uint8_t* binary,
                  const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
                  size_t stale_budget, uint32_t seed, int worker_idx, int num_workers,
                  WorkerTrace trace, std::atomic<uint64_t>* improvement_gen = nullptr);
@@ -127,6 +128,12 @@ private:
                             const std::vector<double>*& x_bar_ptr);
 
     HighsMipSolver& mipsolver_;
+    // The dispatch's deadline, one source of truth with the other three
+    // heuristics (issue #114).  Read for `time_limit` rather than
+    // `past_deadline()`: the pump loop needs the *scalar* remaining time to
+    // hand PDLP, and computing it is the same clock read the predicate
+    // would make.
+    const ExecutionContext& exec_;
     ContestedPdlp& pdlp_;
     const CscMatrix& csc_;
     const uint8_t* binary_;

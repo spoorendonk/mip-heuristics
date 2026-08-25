@@ -57,6 +57,10 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
     // blown past the outer deadline we must short-circuit before constructing
     // `Highs`; otherwise we would accidentally disable the cap and let the
     // analytic-center LP run unbounded.
+    // Same shape as Scylla's pump guard: the shared deadline
+    // (`ExecutionContext::past_deadline()`) inlined, because what is needed
+    // here is the *scalar* remaining time to hand the sub-solver, not the
+    // predicate (issue #114).
     const double outer_limit = mipsolver.options_mip_->time_limit;
     const double remaining = outer_limit - mipsolver.timer_.read();
     if (remaining <= 0.0) {

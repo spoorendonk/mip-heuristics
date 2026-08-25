@@ -4,6 +4,7 @@
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "incumbent_sink.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -38,13 +39,15 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 
 }  // namespace
 
-ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, ContestedPdlp& pdlp, const CscMatrix& csc,
-                           IncumbentSink& sink, const uint8_t* binary,
+ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec,
+                           ContestedPdlp& pdlp, const CscMatrix& csc, IncumbentSink& sink,
+                           const uint8_t* binary,
                            const std::vector<std::vector<HighsInt>>& var_orders,
                            size_t total_budget, size_t stale_budget, uint32_t seed, int worker_idx,
                            int num_workers, WorkerTrace trace,
                            std::atomic<uint64_t>* improvement_gen)
     : mipsolver_(mipsolver),
+      exec_(exec),
       pdlp_(pdlp),
       csc_(csc),
       binary_(binary),
@@ -169,17 +172,18 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     auto* mipdata = mipsolver_.mipdata_.get();
     const auto& integrality = model->integrality_;
     const auto& orig_cost = model->col_cost_;
-    const double time_limit = mipsolver_.options_mip_->time_limit;
+    const double time_limit = exec_.time_limit;
 
     AttemptResult attempt{};
 
     while (attempt.effort < attempt_budget && !base_.exhausted()) {
         // Wall-clock `time_limit` is enforced by the outer loop between
-        // attempts and by the `remaining <= 0` guard below (which also
-        // computes PDLP's input time_limit from the same timer read).
-        // A redundant worker-level check before that guard would just
-        // double the clock_gettime cost per iteration for no extra
-        // precision.
+        // attempts and by the `remaining <= 0` guard below, which is
+        // `ExecutionContext::past_deadline()` inlined so that the same
+        // clock read also yields PDLP's input time_limit.  Calling the
+        // predicate here as well — as FJ, FPR and LocalMIP do, having no
+        // scalar to reuse (issue #114) — would just double the
+        // clock_gettime cost per iteration for no extra precision.
         if (improvement_gen_ != nullptr) {
             uint64_t gen = improvement_gen_->load(std::memory_order_relaxed);
             if (gen != last_seen_gen_) {

@@ -79,11 +79,12 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
     }
 }
 
-LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const CscMatrix& csc, IncumbentSink& sink,
-                               size_t total_budget, size_t stale_budget, uint32_t seed,
-                               const double* initial_solution, const uint8_t* binary,
-                               WorkerTrace trace)
+LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec,
+                               const CscMatrix& csc, IncumbentSink& sink, size_t total_budget,
+                               size_t stale_budget, uint32_t seed, const double* initial_solution,
+                               const uint8_t* binary, WorkerTrace trace)
     : mipsolver_(mipsolver),
+      exec_(exec),
       csc_(csc),
       sink_(sink),
       rng_(seed),
@@ -146,16 +147,28 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     size_t effort_start = ctx_.effort;
     size_t effort_at_last_improvement = effort_start;
 
-    // Effort is the deterministic work signal; wall-clock `time_limit` is
-    // enforced by the outer loop (opportunistic_runner.h / continuous_loop.h)
-    // between attempts.  Inner-loop polling would buy sub-attempt deadline
-    // precision at the cost of a clock_gettime per iteration, which on
-    // small instances was ~3% of total instruction refs.  One attempt of
-    // overshoot on time_limit trip is the accepted trade.
+    // Effort is the deterministic work signal, and the outer loop
+    // (opportunistic_runner.h / continuous_loop.h) still enforces the
+    // wall-clock deadline between attempts.  That alone is not a bound:
+    // one attempt is `attempt_cap` = `total / (10N)`, which scales with
+    // `mip_heuristic_local_mip_effort`, so the overshoot grows with the
+    // option (issue #114).  Poll the deadline here too, every
+    // `kTermCheckInterval` steps — the cadence this constant has
+    // documented since it was introduced, and which it now actually
+    // controls.
+    //
+    // The cadence is the point.  A clock_gettime per iteration was
+    // measured at ~3% of total instruction refs on small instances, which
+    // is why this loop had no deadline check at all; at 1-in-1000 it is
+    // not measurable, and `past_deadline()` is the write-free half of
+    // `ExecutionContext::terminated()`, so it needs no poller seat.
     auto spent = [&]() { return ctx_.effort - effort_start; };
     while (spent() < attempt_budget && !base_.exhausted(spent())) {
         if (base_.stale(spent())) {
             base_.finished = true;
+            break;
+        }
+        if (step_ % kTermCheckInterval == 0 && exec_.past_deadline()) {
             break;
         }
 

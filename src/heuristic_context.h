@@ -210,22 +210,44 @@ struct ExecutionContext {
     uint32_t base_seed;  // seeded from `random_seed` via heuristic_base_seed
     double time_limit;
 
-    // The single "should we stop?" predicate.  Three hand-rolled copies of
+    // The wall-clock half of "should we stop?", and the only half a worker
+    // thread may call (issue #114).
+    //
+    // `HighsTimer::read()` is `const` and, for the solve clock, writes
+    // nothing — it reads `clock_start`/`clock_time` and calls
+    // `getWallTime()`.  Nothing starts or stops that clock while a
+    // heuristic dispatch is in flight, so concurrent readers are safe.
+    // That is what separates this from `terminated()` below, and it is why
+    // every presolve heuristic can poll the deadline from inside its own
+    // inner loop without a poller seat.
+    //
+    // Deliberately the solver's own clock rather than a `steady_clock`
+    // snapshot: a second origin would no longer agree with the `[Heur]
+    // start_s`/`end_s` the ledger emits, which the tests and
+    // `bench/parse_highs_log.py` both read against this same limit.
+    // `HighsTimer` bottoms out in `high_resolution_clock` and is therefore
+    // not monotonic (see `effort_ledger.h`); that risk is pre-existing and
+    // is the price of one shared origin.
+    [[nodiscard]] bool past_deadline() const { return mipsolver.timer_.read() >= time_limit; }
+
+    // The full "should we stop?" predicate.  Three hand-rolled copies of
     // it existed before this struct.
     //
     // Not thread-safe for concurrent callers: `terminatorTerminated()`
     // writes `mipsolver.termination_status_` when a terminator is attached.
-    // `mode_dispatch` calls this between heuristics, with every parallel
-    // region already joined, and inside a parallel region the worker
-    // holding `ContinuousLoopState`'s claimable poller seat calls it on
-    // everyone's behalf.  One pre-existing exception: FPR's multi-attempt
-    // inner loop (`FprWorker::run_attempt`) polls it directly from its own
-    // worker thread so a 32-attempt fill cannot outrun a solver timeout.
-    // That is only a race when a terminator is attached — the write above
-    // is skipped otherwise — and predates this struct; folding the three
-    // hand-rolled copies into one method is what makes it visible.
+    // That write — not the clock read — is the whole reason this one needs
+    // a single caller.  `mode_dispatch` calls it between heuristics, with
+    // every parallel region already joined, and inside a parallel region
+    // the worker holding `ContinuousLoopState`'s claimable poller seat
+    // calls it on everyone's behalf.
+    //
+    // There is no longer an exception: FPR's multi-attempt inner loop used
+    // to poll this directly from its own worker thread, which was a race
+    // whenever a terminator was attached.  It polls `past_deadline()`
+    // instead (issue #114), which is the half it actually needed, so the
+    // seat is now the only route to the terminator.
     [[nodiscard]] bool terminated() const {
-        return mipsolver.mipdata_->terminatorTerminated() || mipsolver.timer_.read() >= time_limit;
+        return mipsolver.mipdata_->terminatorTerminated() || past_deadline();
     }
 
     // Deterministic seed for worker `w`.  The runner seeds its own per-worker

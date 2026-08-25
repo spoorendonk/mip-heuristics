@@ -184,10 +184,19 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 - **File**: `src/local_mip_caches.h`
 - **Default**: `1000`
-- **Meaning**: Interval (in steps) between checks for termination
-  conditions (time limit, effort budget). Finer values add overhead but
-  improve deadline precision.
+- **Meaning**: Interval (in steps) between checks of the solve's
+  wall-clock deadline (`ExecutionContext::past_deadline()`) in
+  `LocalMipWorker::run_attempt`'s search loop. Finer values add a
+  `clock_gettime` per interval but bound the overshoot more tightly.
 - **Suggested range**: 100–10000.
+- **Note**: until #114 this constant was defined, documented here, and
+  referenced nowhere — LocalMIP had no sub-attempt deadline check at all,
+  and the `docs_parameter_references` gate passed because it verifies that
+  a documented symbol *exists*, not that anything uses it. The cadence is
+  the reason the check is affordable: a clock read per inner iteration was
+  measured at ~3% of total instruction refs on small instances, which is
+  why the check was originally declined; at 1-in-1000 it is not
+  measurable.
 
 ---
 
@@ -863,7 +872,19 @@ each heuristic's shipped default effort, not measured — and they are the
 reason the constants became options: a 64x sweep of the LocalMIP effort
 option moved median presolve wall time by under 4%, because the gate, not
 the budget, is what stops the search, and a `constexpr` cannot be swept
-without a rebuild per point. They are registered in
+without a rebuild per point.
+
+A third bound now competes with those two at the top of the effort range:
+since #114 the solve's own `time_limit` stops every presolve heuristic
+within one polling interval, so a heuristic given more budget than it can
+spend in the time available is **limit**-bound rather than budget-bound.
+That is the intended behaviour — before it, FeasibilityJump at
+`effort=1.0` ran 1.4-2.0x past a 60 s limit and twice to an external
+SIGKILL — but it changes what a high-effort sweep point measures: at
+`effort=1.0` on gesa2 the four heuristics need 1.5-8.5 s each to exhaust
+their budgets, so any limit below that measures the machine and not the
+option. Size a calibration run's limit above the budget-bound time, or
+read the reported effort rather than assuming the option was spent. They are registered in
 `third_party/highs_patch/apply_patch.cmake` and pinned by
 `tests/test_smoke.cpp`, which nothing else checks.
 

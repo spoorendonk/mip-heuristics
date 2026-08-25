@@ -355,7 +355,15 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     const size_t call_cap = std::min(attempt_budget, std::max<size_t>(stall_room, 1));
 
     while (attempt.effort < call_cap) {
-        if (exec_.terminated()) {
+        // `past_deadline()`, not `terminated()` (issue #114).  This poll
+        // exists so a 32-attempt fill cannot outrun a solver timeout, and
+        // the deadline is the half it needs; `terminatorTerminated()`
+        // *writes* `mipsolver.termination_status_`, so calling it from
+        // this worker thread was a data race whenever a terminator was
+        // attached — the one documented exception to the poller seat, now
+        // retired.  The terminator is still observed by the runner between
+        // attempts, one attempt later than before.
+        if (exec_.past_deadline()) {
             break;
         }
         if (attempts_started > 0 && attempt.effort == prev_loop_effort) {

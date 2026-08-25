@@ -72,7 +72,24 @@ barrier the closeout deleted.
 
 The guarantee is **deterministic algorithm behaviour, not deterministic parallel
 scheduling.** Which worker wins a race, which solution reaches the pool first,
-and how much a heuristic overshoots its slice are all scheduling facts.
+and how much a heuristic overshoots its effort slice are all scheduling facts.
+
+The *wall-clock* limit is a separate axis and is bounded at every worker count,
+including `threads=1` (#114). Each of the four presolve heuristics polls
+`ExecutionContext::past_deadline()` from inside its own inner loop, on a cadence
+of its own — FeasibilityJump per upstream callback (every 500 000 effort units),
+LocalMIP every `kTermCheckInterval` steps, FPR per inner attempt, Scylla per
+pump iteration — and the runner polls it unconditionally on every iteration.
+The overshoot is therefore one polling interval, not one *attempt*, and it no
+longer grows with the effort option. Scylla keeps a documented floor of one
+whole PDLP solve, which no constant can cross.
+
+**The other side of that bound:** a run whose deadline actually binds is
+wall-clock dependent, so it is not reproducible even at `threads=1` with a fixed
+seed. This does not affect a normal solve — at the shipped effort defaults the
+presolve chain finishes long inside any usable limit — but it does mean a
+measurement run at a large effort option must be given a limit the chain does
+not reach, or it measures the machine.
 
 A deterministic epoch-gated parallel mode used to exist and was removed in the
 closeout: it carried substantial complexity, it was not the production mode, and

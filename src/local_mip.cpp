@@ -344,9 +344,9 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
             // instead of restarting below the value already emitted.
             const WorkerTrace trace{worker_idx, my_construction_effort};
             return LmState{
-                std::make_unique<LocalMipWorker>(mipsolver, *problem.csc, sink, budget.per_worker,
-                                                 budget.worker_stale, seed, start.data(),
-                                                 problem.binary.data(), trace),
+                std::make_unique<LocalMipWorker>(mipsolver, exec, *problem.csc, sink,
+                                                 budget.per_worker, budget.worker_stale, seed,
+                                                 start.data(), problem.binary.data(), trace),
                 trace};
         },
         [&](LmState& state, Rng& rng, size_t run_cap) -> AttemptResult {
@@ -393,8 +393,8 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                                  problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
                 auto seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LocalMipWorker>(
-                    mipsolver, *problem.csc, sink, budget.per_worker, budget.worker_stale, seed,
-                    restart_sol.data(), problem.binary.data(), state.trace);
+                    mipsolver, exec, *problem.csc, sink, budget.per_worker, budget.worker_stale,
+                    seed, restart_sol.data(), problem.binary.data(), state.trace);
             }
             return state.worker->run_attempt(run_cap);
         });

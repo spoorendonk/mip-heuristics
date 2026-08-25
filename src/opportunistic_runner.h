@@ -29,7 +29,8 @@
 // Thread-safety constraints:
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
 //   - Terminator polling is done by whichever worker holds the claimable
-//     seat; at most one at a time.  See `ContinuousLoopState`.
+//     seat; at most one at a time.  The wall-clock deadline is polled by
+//     every worker on every iteration — see `ContinuousLoopState`.
 //   - Budget overshoot: concurrent workers can overshoot `budget.total`
 //     by up to `n * budget.attempt_cap` because each worker checks
 //     the atomic total before starting an attempt.  Bounded overshoot
@@ -87,10 +88,15 @@ template <typename MakeState, typename RunAttempt>
                 auto state = make_state(static_cast<int>(w), rng);
 
                 while (!loop.stopped()) {
-                    if ((attempt_counter & 1) == 0 && loop.claim_poller(static_cast<int>(w))) {
-                        loop.poll_termination(exec);
-                    }
-                    if (loop.stopped()) {
+                    // Flag, deadline and terminator in one predicate — see
+                    // `ContinuousLoopState::should_stop`.  The deadline
+                    // half runs on every iteration and from this thread
+                    // (issue #114), which is what keeps a worker that
+                    // stopped its attempt *on* the deadline from
+                    // re-entering `run_attempt` and spinning on
+                    // immediately-terminating attempts until whoever holds
+                    // the poller seat next looks at the clock.
+                    if (loop.should_stop(exec, static_cast<int>(w), attempt_counter)) {
                         break;
                     }
 

@@ -9,6 +9,7 @@
 
 class HighsMipSolver;
 class IncumbentSink;
+struct ExecutionContext;
 
 // FeasibilityJump worker.  Owns a FeasibilityJumpSolver
 // and supports pause/resume across attempt boundaries via the `resume`
@@ -27,8 +28,9 @@ public:
     // dispatch's incumbent snapshot) — a reference to the live
     // `mipdata->incumbent` is what issue #98 was about, and a reference to
     // a caller local would dangle.
-    FjWorker(HighsMipSolver& mipsolver, IncumbentSink& sink, size_t total_budget,
-             size_t stale_budget, uint32_t seed, std::vector<double> start, WorkerTrace trace);
+    FjWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec, IncumbentSink& sink,
+             size_t total_budget, size_t stale_budget, uint32_t seed, std::vector<double> start,
+             WorkerTrace trace);
     ~FjWorker();
 
     // Run FJ for up to attempt_budget effort, then pause via callback.
@@ -48,6 +50,10 @@ private:
     std::unique_ptr<Impl> impl_;
 
     HighsMipSolver& mipsolver_;
+    // Read only for `past_deadline()`, from inside upstream FJ's callback:
+    // one attempt at a large effort option runs far past the solve's
+    // `time_limit` otherwise (issue #114).
+    const ExecutionContext& exec_;
     IncumbentSink& sink_;
     const std::vector<double> start_;
     const uint32_t seed_;

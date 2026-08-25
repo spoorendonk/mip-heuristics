@@ -13,14 +13,27 @@
 // on its own calling an attempt function until a global stop condition is
 // hit.  Its stop conditions:
 //
-//   - Exactly one worker at a time polls `terminatorTerminated()` and
-//     `timer_.read() >= time_limit` on every other attempt (the HiGHS
-//     timer and terminator are not thread-safe for concurrent callers)
-//     and sets the shared atomic `stop` flag; other workers observe it
-//     within one attempt.  Since inner-loop timer polling was removed
-//     from the workers themselves, the overshoot on time_limit trip is
-//     bounded by ~2 attempts per worker.  The duty is a claimable seat
-//     rather than a fixed worker index — see `poller` below.
+//   - Every worker polls the wall-clock deadline (`poll_deadline`) on
+//     every iteration, and each heuristic's own inner loop polls it too
+//     on a bounded cadence of its own (issue #114).  Only the terminator
+//     needs the claimable seat, because only `terminatorTerminated()`
+//     writes; the clock read does not.  See `ExecutionContext` for the
+//     split.
+//
+//     This used to be one seat-gated `terminated()` poll on every other
+//     attempt, with no inner-loop polling anywhere but FPR, so the
+//     overshoot on a time_limit trip was "~2 attempts per worker".  That
+//     bound is proportional to `HeuristicBudget::attempt_cap` =
+//     `total / (10N)`, which scales with the effort option: tight at the
+//     shipped defaults, and worthless at `effort=1.0`, where FJ was
+//     measured running 1.4-2.0x past the limit and twice to an external
+//     SIGKILL.  A bound that stops binding as a knob is turned is not a
+//     bound.
+//
+//   - Exactly one worker at a time polls `terminatorTerminated()` on
+//     every other attempt and sets the shared atomic `stop` flag; other
+//     workers observe it within one attempt.  The duty is a claimable
+//     seat rather than a fixed worker index — see `poller` below.
 //
 //   - `total_effort >= budget` — may be overshot by up to
 //     `N * per_attempt_cap` due to the lock-free increment.
@@ -99,6 +112,42 @@ struct ContinuousLoopState {
         if (exec.terminated()) {
             request_stop();
         }
+    }
+
+    // Callable from any worker thread, unlike `poll_termination`: the
+    // clock read writes nothing (issue #114).  Returns whether the loop
+    // should stop, so a caller can `break` on the same expression that
+    // publishes the flag.
+    bool poll_deadline(const ExecutionContext& exec) {
+        if (stopped()) {
+            return true;
+        }
+        if (exec.past_deadline()) {
+            request_stop();
+            return true;
+        }
+        return false;
+    }
+
+    // "Has this dispatch been told to stop?", for worker `w` about to
+    // begin its `attempt_counter`-th attempt.  The whole answer: the
+    // shared flag, the wall-clock deadline (every iteration, any thread),
+    // and the terminator (every other attempt, seat-holder only).
+    //
+    // One method rather than three checks inline in the runner because the
+    // three operands are not independent — the seat is what makes the
+    // terminator poll legal, and the deadline poll has to run whether or
+    // not this worker holds it.  Keeping them together is also what keeps
+    // the asymmetry in one place to read: two of the three conditions are
+    // polled by everyone and the third is not.
+    bool should_stop(const ExecutionContext& exec, int w, int attempt_counter) {
+        if (poll_deadline(exec)) {
+            return true;
+        }
+        if ((attempt_counter & 1) == 0 && claim_poller(w)) {
+            poll_termination(exec);
+        }
+        return stopped();
     }
 
     // Bump the cumulative-effort atomic and set `stop` if the cumulative

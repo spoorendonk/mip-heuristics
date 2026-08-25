@@ -114,8 +114,8 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
         // counter is charged the amortised (÷N) PDLP cost, which is where
         // its share of the pool is already taken (issue #111).
         workers.push_back(std::make_unique<ScyllaWorker>(
-            mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders, budget.total,
-            budget.stale, seed, w, n, WorkerTrace{w, 0}, &improvement_gen));
+            mipsolver, exec, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
+            budget.total, budget.stale, seed, w, n, WorkerTrace{w, 0}, &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -156,7 +156,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                 // reinitialized from scratch but the underlying LP stays.
                 auto new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
-                    mipsolver, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
+                    mipsolver, exec, pdlp, *problem.csc, sink, problem.binary.data(), var_orders,
                     budget.total, budget.stale, new_seed, state.worker_idx, n, state.trace,
                     &improvement_gen);
             });
