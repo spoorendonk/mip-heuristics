@@ -143,6 +143,29 @@ STALL_SCALES_WITH_WORKERS: dict[str, bool] = {
     "scylla": False,
 }
 
+# Whether a heuristic's effort option sizes one worker's allowance rather
+# than a whole dispatch.  FJ is the only one, flagged `budget_is_per_worker`
+# in `kChain`; the other three are divided by N in `make_budget`.  It is
+# here for the same reason `STALL_SCALES_WITH_WORKERS` is: a measured
+# dispatch total is only comparable to an option value through this.
+BUDGET_IS_PER_WORKER: dict[str, bool] = {
+    "fj": True,
+    "fpr": False,
+    "local_mip": False,
+    "scylla": False,
+}
+
+# `heuristic_effort_budget`'s anchor and base shift, from
+# `src/heuristic_common.h`: the budget is `nnz << 12` effort units at effort
+# 0.05, scaling linearly.
+EFFORT_BASE_SHIFT = 12
+EFFORT_ANCHOR = 0.05
+
+# What counts as having reached the budget.  Not equality: concurrent
+# workers overshoot `budget.total` by up to `n * attempt_cap`, and a
+# dispatch that stopped a hair short still stopped *because of* the budget.
+BUDGET_BOUND_FRACTION = 0.95
+
 # Quantiles of the inter-acceptance gap distribution.  p90-p95 is the natural
 # stall-threshold setting and the tail beyond it is the sharpness, so both are
 # in the default set.
@@ -691,6 +714,12 @@ class ProbeRun:
     heursols: list[HeurSolSample]
     presolve_only: bool | None
     patched: bool
+    # `mip_heuristic_<name>_effort` as the run was given it, per heuristic.
+    # Absent for a heuristic the `.opts` did not set, which is the shipped
+    # default rather than a known value — this records what the run was
+    # *told*, and inferring the rest would make an unrecorded configuration
+    # look recorded.
+    efforts: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -774,6 +803,100 @@ def run_is_presolve_only(opts_path: str) -> bool | None:
     return value is not None and value.strip().lower() in _TRUE_VALUES
 
 
+def run_efforts(opts_path: str) -> dict[str, float]:
+    """The per-heuristic effort multipliers a run's `.opts` set."""
+    if not os.path.isfile(opts_path):
+        return {}
+    options = read_options_file(Path(opts_path))
+    out: dict[str, float] = {}
+    for name in PRESOLVE_HEURISTICS:
+        raw = options.get(f"mip_heuristic_{name}_effort")
+        if raw is None:
+            continue
+        try:
+            out[name] = float(raw)
+        except ValueError:
+            continue
+    return out
+
+
+def effort_budget(nnz: int, effort: float) -> int:
+    """`heuristic_effort_budget` from `src/heuristic_common.h`, in Python.
+
+    Duplicated deliberately: the alternative is inferring the budget from
+    the measured effort, which is exactly the quantity being checked
+    against it.  If the C++ formula moves, this must move with it.
+    """
+    if effort <= 0.0:
+        return 0
+    return int(float(nnz << EFFORT_BASE_SHIFT) * (effort / EFFORT_ANCHOR))
+
+
+@dataclass
+class BudgetCheck:
+    """Whether any dispatch was stopped by its effort budget.
+
+    The calibration probe runs at an effort the budget cannot reach, so that
+    the wall clock is the single stopping rule and the trajectory measures
+    the heuristic rather than the setting being derived from it.  That is a
+    property of the *tree*, not of the launcher that wrote it — an arm run
+    at a shipped default, or a model large enough to make even a huge budget
+    reachable, produces a truncated yield curve that looks exactly like a
+    converged one.  So it is checked here rather than assumed.
+
+    `unknown` is dispatches with no recorded effort or no nonzero count;
+    they are neither evidence for nor against.
+    """
+
+    dispatches: int = 0
+    unknown: int = 0
+    bound: list[tuple[str, str, float]] = field(default_factory=list)
+
+    @property
+    def checked(self) -> int:
+        return self.dispatches - self.unknown
+
+    @property
+    def problems(self) -> list[str]:
+        if not self.bound:
+            return []
+        worst = sorted(self.bound, key=lambda b: -b[2])[:MAX_LISTED]
+        listed = ", ".join(
+            f"{heur} on {inst} ({frac:.0%})" for heur, inst, frac in worst
+        )
+        return [
+            (
+                f"{len(self.bound)} of {self.checked} traced dispatch(es) "
+                f"reached {BUDGET_BOUND_FRACTION:.0%} of their effort budget, "
+                "so the budget and not the clock stopped them and their yield "
+                f"curves are truncated: {listed}"
+            )
+        ]
+
+
+def check_budget_headroom(
+    views: list[DispatchView], efforts: dict[tuple[str, str, int], dict[str, float]]
+) -> BudgetCheck:
+    """Audit traced dispatches against the budget they were given."""
+    check = BudgetCheck()
+    for view in views:
+        check.dispatches += 1
+        effort = efforts.get((view.instance, view.config, view.seed), {}).get(view.name)
+        if effort is None or view.nnz is None or view.total_effort is None:
+            check.unknown += 1
+            continue
+        budget = effort_budget(view.nnz, effort)
+        if BUDGET_IS_PER_WORKER[view.name] and view.workers:
+            budget *= view.workers
+        if budget <= 0:
+            check.unknown += 1
+            continue
+        fraction = view.total_effort / budget
+        if fraction >= BUDGET_BOUND_FRACTION:
+            check.bound.append((view.name, view.instance, fraction))
+    return check
+
+
 def unusable_reason(result: SolveResult) -> str | None:
     """Why a probe log cannot be classified at all, or None when it can.
 
@@ -842,6 +965,7 @@ def load_probe_tree(
                             path[: -len(".log")] + ".opts"
                         ),
                         patched=log_is_patched(path),
+                        efforts=run_efforts(path[: -len(".log")] + ".opts"),
                     )
                 )
         if problems:
@@ -1691,6 +1815,7 @@ def render_report(
     workers: int | None,
     quantiles: tuple[float, ...],
     reference_count: int,
+    budget: BudgetCheck,
 ) -> str:
     """The human-facing report: counts, both listings, and the trajectories."""
     seeds = ", ".join(f"{c}:{len(tree.seeds[c])}" for c in tree.configs)
@@ -1704,6 +1829,11 @@ def render_report(
             f"{check.patched}/{check.runs} patched"
         ),
         f"  trace source   {tree.heursol_source}",
+        (
+            f"  budget check   {budget.checked - len(budget.bound)}/"
+            f"{budget.checked} traced dispatch(es) clock-bound, "
+            f"{budget.unknown} unrecorded"
+        ),
         "  signals        "
         + ", ".join(
             f"{tier}={scan.evidence_counts.get(tier, 0)}"
@@ -1711,6 +1841,8 @@ def render_report(
         ),
     ]
     lines += _header_notes(tree, check, scan)
+    for problem in budget.problems:
+        lines.append(f"  WARNING: {problem}")
 
     pct = 100.0 * len(scan.informative) / scan.covered if scan.covered else 0.0
     lines += [
@@ -1979,6 +2111,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     trajectories = summarise_traces(views)
     workers = observed_workers(views)
+    budget_check = check_budget_headroom(
+        views,
+        {
+            (run.instance, run.config, run.seed): run.efforts
+            for runs in tree.runs.values()
+            for run in runs
+        },
+    )
 
     hard_tier = list(scan.excluded)
     if args.hard_tier_size is not None:
@@ -2018,6 +2158,7 @@ def main(argv: list[str] | None = None) -> int:
             workers,
             quantiles,
             len(reference),
+            budget_check,
         )
         if args.report_output == "-":
             sys.stdout.write(report)

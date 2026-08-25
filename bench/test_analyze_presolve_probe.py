@@ -1250,3 +1250,114 @@ def test_a_single_config_directory_is_its_own_config(tmp_path):
     res = run(os.path.join(root, "probeconf"), "--instances", ref)
     assert res.returncode == 0, res.stderr
     assert "Informative set: 1 of 1" in res.stdout
+
+
+# ---------------------------------------------------------------------------
+# The budget headroom check (#113)
+# ---------------------------------------------------------------------------
+#
+# The calibration probe runs at an effort whose budget cannot be reached, so
+# that the wall clock is the single stopping rule and the trace measures the
+# heuristic rather than the setting being derived from it.  A tree that
+# violates that produces a truncated yield curve which looks exactly like a
+# converged one, so it is checked rather than assumed.
+
+
+def _traced_run(effort_charged: int, nnz: int = 4096) -> str:
+    return probe_log(
+        rows=(("A", 1.0),),
+        nnz=nnz,
+        heursol=(heursol_line("fpr", 0, 0, effort_charged // 2),),
+        heur=(heur_line("fpr", effort_charged),),
+    )
+
+
+def _opts(effort: float) -> str:
+    return (
+        "mip_heuristic_suite = fpr\n"
+        f"mip_heuristic_fpr_effort = {effort}\n"
+        "mip_heuristic_fpr_stall = 0\n"
+        "mip_heuristic_presolve_only = true\n"
+        "random_seed = 0\n"
+    )
+
+
+def test_a_clock_bound_dispatch_passes_the_budget_check(tmp_path):
+    # nnz 4096 at effort 1e4 is a budget of 3.4e12; a dispatch charging 1e6
+    # stopped for some other reason, which is what the probe wants.
+    tree = write_tree(
+        tmp_path,
+        {"fpr": {"easy": _traced_run(1_000_000)}},
+        name="free",
+        opts=_opts(1e4),
+    )
+    ref = write_reference(tmp_path, ["easy"])
+    res = run(tree, "--instances", ref)
+    assert res.returncode == 0, res.stderr
+    assert "budget check   1/1 traced dispatch(es) clock-bound" in res.stdout
+    assert "effort budget" not in res.stdout
+
+
+def test_a_budget_bound_dispatch_is_a_warning_naming_it(tmp_path):
+    # Same charged effort against the shipped default: nnz 4096 at effort
+    # 0.0884 is a budget of 2.97e7... so charge past it.
+    tree = write_tree(
+        tmp_path,
+        {"fpr": {"easy": _traced_run(30_000_000)}},
+        name="bound",
+        opts=_opts(0.0884),
+    )
+    ref = write_reference(tmp_path, ["easy"])
+    res = run(tree, "--instances", ref)
+    assert res.returncode == 0, res.stderr
+    assert "budget check   0/1 traced dispatch(es) clock-bound" in res.stdout
+    assert "reached 95% of their effort budget" in res.stdout
+    # Naming it is the point: which heuristic on which instance is what says
+    # whether the tree is unusable or one arm of it is.
+    assert "fpr on easy" in res.stdout
+
+
+def test_an_unrecorded_effort_is_neither_evidence_nor_a_warning(tmp_path):
+    # A `.opts` that never set the option records the shipped default, not a
+    # known value.  Inferring it would make an unrecorded configuration look
+    # recorded — and the inference would have to come from the very effort
+    # the check is comparing against.
+    tree = write_tree(
+        tmp_path,
+        {"fpr": {"easy": _traced_run(30_000_000)}},
+        name="silent",
+        opts="mip_heuristic_presolve_only = true\nrandom_seed = 0\n",
+    )
+    ref = write_reference(tmp_path, ["easy"])
+    res = run(tree, "--instances", ref)
+    assert res.returncode == 0, res.stderr
+    assert "budget check   0/0 traced dispatch(es) clock-bound, 1 unrecorded" in (
+        res.stdout
+    )
+    assert "effort budget" not in res.stdout
+
+
+def test_fj_budget_is_read_per_worker(tmp_path):
+    # FJ's option sizes one *worker's* allowance, so a dispatch's budget is
+    # the option times the worker count.  Read as a dispatch budget, this run
+    # would be 8x over and reported as budget-bound.
+    charged = 4 * (4096 << 12) * 8  # 8 workers x 4x the anchor budget
+    log = probe_log(
+        threads=8,
+        nnz=4096,
+        rows=(("J", 1.0),),
+        heursol=(heursol_line("fj", 0, 0, charged // 2),),
+        heur=(heur_line("fj", charged),),
+    )
+    opts = (
+        "mip_heuristic_suite = fj\n"
+        "mip_heuristic_fj_effort = 0.25\n"  # 5x the anchor, per worker
+        "mip_heuristic_fj_stall = 0\n"
+        "mip_heuristic_presolve_only = true\n"
+        "random_seed = 0\n"
+    )
+    tree = write_tree(tmp_path, {"fj": {"easy": log}}, name="perworker", opts=opts)
+    ref = write_reference(tmp_path, ["easy"])
+    res = run(tree, "--instances", ref)
+    assert res.returncode == 0, res.stderr
+    assert "budget check   1/1 traced dispatch(es) clock-bound" in res.stdout
