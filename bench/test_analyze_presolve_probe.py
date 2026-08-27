@@ -19,11 +19,13 @@ Two shapes matter most:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import subprocess
 import sys
 import warnings
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -44,8 +46,10 @@ from analyze_presolve_probe import (
     dispatch_views,
     heursol_from_lines,
     heursol_samples,
+    improving_offers,
     informative_set,
     km_quantile,
+    objective_sense,
     parse_heursol_line,
     parse_quantiles,
     parser_supports_heursol,
@@ -326,9 +330,16 @@ class _StandInResult:
         return list(self._traces)
 
 
-def sample(name, dispatch, worker, effort_at, accepted=True):
+def sample(name, dispatch, worker, effort_at, accepted=True, obj=10.0):
+    """One parsed `[HeurSol]` line.
+
+    `obj` defaults to a constant, so a fixture that wants a *series* has to
+    say what each offer's objective was: since #113 the trajectory is built
+    from offers that improved the dispatch's best, and identical objectives
+    are one improvement followed by repeats.
+    """
     return parse_heursol_line(
-        heursol_line(name, dispatch, worker, effort_at, int(accepted))
+        heursol_line(name, dispatch, worker, effort_at, int(accepted), obj=obj)
     )
 
 
@@ -469,7 +480,10 @@ def test_grouping_delegates_to_the_parser_when_it_offers_it():
             9182,
             4000,
             1000,
-            [sample("fpr", 9182, 0, 100), sample("fpr", 9182, 1, 250)],
+            [
+                sample("fpr", 9182, 0, 100, obj=10.0),
+                sample("fpr", 9182, 1, 250, obj=9.0),
+            ],
         ),
         _StandInTrace("scylla", 9183, 2000, 1000, [sample("scylla", 9183, 0, 800)]),
     ]
@@ -501,13 +515,19 @@ def test_a_devlog_run_without_a_nonzero_count_is_a_diagnostic():
 
 
 def test_gaps_are_taken_within_one_worker_series():
-    """Two workers interleaved in the log must not be differenced together."""
+    """Two workers interleaved in the log must not be differenced together.
+
+    Objectives descend across the four offers so that every one of them is an
+    improvement: since #113 the series is built from offers that moved the
+    dispatch's best objective, not from every accepted offer, so a fixture
+    that leaves them all at one value has a one-offer series and no gaps.
+    """
     text = probe_log(
         heursol=(
-            heursol_line("fpr", 0, 0, 100),
-            heursol_line("fpr", 0, 1, 50),
-            heursol_line("fpr", 0, 0, 300),
-            heursol_line("fpr", 0, 1, 400),
+            heursol_line("fpr", 0, 0, 100, obj=10.0),
+            heursol_line("fpr", 0, 1, 50, obj=9.0),
+            heursol_line("fpr", 0, 0, 300, obj=8.0),
+            heursol_line("fpr", 0, 1, 400, obj=7.0),
         ),
         heur=(heur_line("fpr", 1000),),
     )
@@ -525,8 +545,8 @@ def test_the_off_slot_worker_is_kept_out_of_the_gap_distribution():
     """
     text = probe_log(
         heursol=(
-            heursol_line("local_mip", 0, -1, 0),
-            heursol_line("local_mip", 0, 0, 400),
+            heursol_line("local_mip", 0, -1, 0, obj=10.0),
+            heursol_line("local_mip", 0, 0, 400, obj=9.0),
         ),
         heur=(heur_line("local_mip", 1000),),
     )
@@ -607,8 +627,8 @@ def test_a_truncated_chain_keeps_its_gaps_without_a_total():
     text = probe_log(
         killed=True,
         heursol=(
-            heursol_line("fpr", 0, 0, 100),
-            heursol_line("fpr", 0, 0, 350),
+            heursol_line("fpr", 0, 0, 100, obj=10.0),
+            heursol_line("fpr", 0, 0, 350, obj=9.0),
         ),
     )
     views, notes = dispatch_views("i", "all", 0, *_run_parts(text))
@@ -1361,3 +1381,98 @@ def test_fj_budget_is_read_per_worker(tmp_path):
     res = run(tree, "--instances", ref)
     assert res.returncode == 0, res.stderr
     assert "budget check   1/1 traced dispatch(es) clock-bound" in res.stdout
+
+
+# ---------------------------------------------------------------------------
+# Smoke: the pieces the report is assembled from still fit together (#113)
+# ---------------------------------------------------------------------------
+#
+# Deliberately shallow.  These do not check the statistics — that is what the
+# cases above are for — they check the joins that broke while this was being
+# built and that a full run only reveals four minutes in: reading a field
+# through the parser's spelling rather than ours, and the CLI actually
+# producing the artifacts the campaign consumes.
+
+
+def test_the_improvement_filter_reads_either_sample_shape():
+    """`obj` in our own adapter type, `objective` in the parser's.
+
+    Reading it by direct attribute access works against whichever type
+    happens to be in the fixtures and raises against the other, and only on
+    a tree big enough to have taken the other branch.
+    """
+    ours = [
+        parse_heursol_line(heursol_line("fpr", 0, 0, 100, obj=10.0)),
+        parse_heursol_line(heursol_line("fpr", 0, 0, 200, obj=9.0)),
+    ]
+    assert improving_offers(ours, "min") == {id(ours[0]), id(ours[1])}
+
+    theirs = [_AliasSample(), _AliasSample()]
+    theirs[0].objective, theirs[1].objective = 10.0, 9.0
+    assert improving_offers(theirs, "min") == {id(theirs[0]), id(theirs[1])}
+
+
+def test_only_offers_that_move_the_best_objective_count():
+    # The third is accepted, but for the pool's top-K, not for beating best.
+    offers = [
+        parse_heursol_line(heursol_line("fpr", 0, 0, effort, obj=obj))
+        for effort, obj in ((100, 10.0), (200, 9.0), (300, 9.5))
+    ]
+    improving = improving_offers(offers, "min")
+    assert improving == {id(offers[0]), id(offers[1])}
+    # ... and the sense decides which way "better" runs: read as a
+    # maximisation, the same descending sequence improves exactly once.
+    assert improving_offers(offers, "max") == {id(offers[0])}
+
+
+def test_the_sense_comes_off_the_incumbent_trajectory():
+    falling = probe_log(rows=(("A", 10.0), ("A", 4.0)))
+    rising = probe_log(rows=(("A", 4.0), ("A", 10.0)))
+    assert objective_sense(parse_log(falling)) == "min"
+    assert objective_sense(parse_log(rising)) == "max"
+    # One row says nothing; MIPLIB's convention is the fallback.
+    assert objective_sense(parse_log(probe_log(rows=(("A", 4.0),)))) == "min"
+
+
+def test_the_cli_writes_the_artifacts_the_campaign_consumes(tmp_path):
+    logs = {
+        "fpr": {
+            "easy": probe_log(
+                rows=(("A", 1.0),),
+                heursol=(heursol_line("fpr", 0, 0, 100, obj=1.0),),
+                heur=(heur_line("fpr", 1000),),
+            )
+        }
+    }
+    tree = write_tree(tmp_path, logs, name="smoke")
+    ref = write_reference(tmp_path, ["easy"])
+    defaults = os.path.join(str(tmp_path), "defaults.json")
+    report = os.path.join(str(tmp_path), "report.txt")
+    res = run(
+        tree,
+        "--instances",
+        ref,
+        "--defaults-output",
+        defaults,
+        "--report-output",
+        report,
+    )
+    assert res.returncode == 0, res.stderr
+
+    data = json.loads(Path(defaults).read_text())
+    assert set(data) == {"source_tree", "provenance", "heuristics"}
+    assert set(data["heuristics"]) == set(PRESOLVE_HEURISTICS)
+    fpr = data["heuristics"]["fpr"]
+    # The four numbers #107 is handed, and the scope they are only valid in.
+    for key in ("effort", "stall", "effort_shipped", "median_gap_to_best_known"):
+        assert key in fpr, key
+    assert data["provenance"]["workers_observed"] is not None
+
+    text = Path(report).read_text()
+    for section in (
+        "Informative set:",
+        "Solution quality against best known",
+        "Proposed stall ranges",
+        "Proposed effort vector",
+    ):
+        assert section in text, section

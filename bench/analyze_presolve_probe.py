@@ -78,6 +78,8 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import itertools
+import json
 import math
 import os
 import statistics
@@ -89,7 +91,7 @@ from itertools import pairwise
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from analyze_results import load_results
+from analyze_results import load_results, parse_solu_file, resolve_reference
 from make_archive import PATCH_MARKER, read_options_file
 from make_tuning_set import (
     MAX_LISTED,
@@ -100,6 +102,7 @@ from make_tuning_set import (
 )
 from parse_highs_log import SolveResult
 from run_benchmark import load_instances
+from run_target import presolve_objective, primal_gap
 
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -165,6 +168,22 @@ EFFORT_ANCHOR = 0.05
 # workers overshoot `budget.total` by up to `n * attempt_cap`, and a
 # dispatch that stopped a hair short still stopped *because of* the budget.
 BUDGET_BOUND_FRACTION = 0.95
+
+# The shipped effort defaults, for the report's comparison column only.  They
+# are inherited rather than measured — fj is pinned to vanilla HiGHS's
+# hardcoded `nnz << 10` per worker, and the other three are `0.30 x w/Sw` for
+# weights proportional to a geomean `effort_per_ms` measured on a different
+# instance set — which is the whole reason #113 derives a vector instead.
+SHIPPED_EFFORT: dict[str, float] = {
+    "fj": 0.0125,
+    "fpr": 0.0884,
+    "local_mip": 0.1821,
+    "scylla": 0.0296,
+}
+
+# The quantile the proposed effort is read off: a budget that suffices to
+# reach the last acceptance on 90 % of the dispatches that produced anything.
+KNEE_QUANTILE = 0.9
 
 # Quantiles of the inter-acceptance gap distribution.  p90-p95 is the natural
 # stall-threshold setting and the tail beyond it is the sharpness, so both are
@@ -505,6 +524,64 @@ class DispatchView:
         return [gap for s in self.series for gap in s.gaps]
 
 
+def objective_sense(result: SolveResult) -> str:
+    """ "min" or "max", inferred from the run's own incumbent trajectory.
+
+    HiGHS does not print the sense, but incumbents only ever move one way, so
+    the direction of the display rows is the sense.  A run with fewer than two
+    distinct incumbent objectives falls back to "min", the MIPLIB benchmark
+    convention `analyze_results.resolve_reference` already assumes.
+    """
+    values = [inc.objective for inc in result.incumbents]
+    for earlier, later in itertools.pairwise(values):
+        if later < earlier:
+            return "min"
+        if later > earlier:
+            return "max"
+    return "min"
+
+
+def improving_offers(members: list, sense: str) -> set[int]:
+    """The ids of the offers that moved this dispatch's best objective.
+
+    An accepted offer is not necessarily an improvement: `SolutionPool` keeps
+    a top-`kPoolCapacity`, so a heuristic that keeps beating its own *worst*
+    entry accepts indefinitely without the incumbent moving — measured on
+    `egout`, FPR earns 40+ acceptances against 4 incumbent improvements.
+    Calibrating on acceptances therefore reads the pool's admission policy
+    rather than the heuristic's productivity, and it does so in both
+    directions at once: it inflates the knee (the last acceptance lands near
+    the clock, so "enough budget" becomes "the whole cap") while distorting
+    the gaps.
+
+    So the trajectory is taken over offers that strictly improved the best
+    objective seen so far *within the dispatch*.  The first accepted offer
+    counts as improving: what the pool held when the dispatch opened is not
+    in the trace, so the alternative is to discard the opening solution of
+    every dispatch, which is worse than over-counting by at most one.
+    """
+    best: float | None = None
+    out: set[int] = set()
+    for sample in members:
+        if not sample.accepted:
+            continue
+        # `_field_of` and not attribute access: this reads the *parser's*
+        # sample when parse_highs_log offers one, where the field is
+        # `objective`, and this module's own adapter type when it does not,
+        # where the wire name `obj` is kept.  The alias table is the one
+        # place that pairing lives.
+        obj = float(_field_of(sample, "obj"))
+        if best is None:
+            best, _ = obj, out.add(id(sample))
+            continue
+        margin = 1e-9 * max(1.0, abs(best))
+        better = obj < best - margin if sense == "min" else obj > best + margin
+        if better:
+            best = obj
+            out.add(id(sample))
+    return out
+
+
 def _monotone(values: list[int]) -> bool:
     return all(b >= a for a, b in pairwise(values))
 
@@ -615,6 +692,7 @@ def dispatch_views(
     """
     diagnostics: list[str] = []
     where = f"{instance} [{config}/seed{seed}]"
+    sense = objective_sense(result)
     workers = result.thread_count
 
     if single_worker_only and workers != 1:
@@ -663,12 +741,13 @@ def dispatch_views(
         seen: dict[int, list[int]] = defaultdict(list)
         taken: dict[int, list[int]] = defaultdict(list)
         off_slot = 0
+        improving = improving_offers(members, sense)
         for sample in members:
             if sample.worker == OFF_SLOT_WORKER:
-                off_slot += int(bool(sample.accepted))
+                off_slot += int(id(sample) in improving)
                 continue
             seen[sample.worker].append(sample.effort_at)
-            if sample.accepted:
+            if id(sample) in improving:
                 taken[sample.worker].append(sample.effort_at)
         broken = sorted(w for w, values in seen.items() if not _monotone(values))
         if broken:
@@ -927,7 +1006,11 @@ def load_probe_tree(
     configs = list(config_dirs)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        loaded = load_results(results_dir, configs, config_dirs=config_dirs)
+        # Only the reference instances are ever looked at, so only they are
+        # read: this tree carries a trace and is gigabytes.
+        loaded = load_results(
+            results_dir, configs, config_dirs=config_dirs, instances=set(instances)
+        )
     parse_warnings = len(caught)
 
     from_parser = parser_supports_heursol()
@@ -1470,6 +1553,338 @@ def summarise_traces(views: list[DispatchView]) -> dict[str, HeuristicTrajectory
     return out
 
 
+@dataclass
+class EffortKnee:
+    """Where one heuristic stops producing, expressed as its own option.
+
+    The `[HeurSol]` trace stamps every accepted solution with the charged
+    effort at which it arrived, so one clock-bound dispatch is a whole
+    cumulative-yield curve rather than a point on one.  The *knee* is the
+    budget that would have sufficed to reach that dispatch's last
+    acceptance: spend beyond it bought nothing on that instance.  Read as a
+    high quantile over dispatches, it is a measured answer to "how much
+    budget should this heuristic get?" — which the shipped vector, inherited
+    from a retired envelope's weights, has never had.
+
+    `barren` counts dispatches that never accepted.  They have no knee — the
+    budget they would have needed is unknown and larger than what they
+    spent — so they are excluded and reported rather than folded in as zero,
+    which would drag the quantile down by exactly the instances the
+    heuristic is worst at.
+    """
+
+    name: str
+    options: list[float] = field(default_factory=list)
+    censored: list[Observation] = field(default_factory=list)
+    barren: int = 0
+    still_improving: int = 0
+
+    def quantile(self, p: float) -> float | None:
+        """The events-only quantile — a *lower* bound on the knee.
+
+        It sees only dispatches that produced, so it answers "how much
+        budget did the ones that worked need?" and says nothing about the
+        ones that did not.
+        """
+        return quantile(sorted(self.options), p) if self.options else None
+
+    def censored_quantile(self, p: float) -> float | None:
+        """The censoring-aware quantile, barren dispatches included.
+
+        A barren dispatch is not a knee of zero and not a missing
+        observation: it is a *right-censored* one.  The budget it would have
+        needed is unknown and strictly greater than what it spent, which is
+        exactly the shape Kaplan-Meier is for, and the same treatment
+        `HeuristicTrajectory.censored_p95` already gives the improvement-free
+        intervals that never ended.  Excluding them biases the answer
+        low — they are the instances the heuristic is worst at — and folding
+        them in as zero biases it lower still.
+
+        `None` when the censoring never reaches `1 - p`, i.e. when no finite
+        budget is implied by this data.
+        """
+        events = [
+            Observation(v, f"{self.name}#{i}", True) for i, v in enumerate(self.options)
+        ]
+        return km_quantile(events + self.censored, p)
+
+
+def effort_option_for(
+    charged: int, nnz: int, workers: int | None, per_worker: bool
+) -> float:
+    """Invert `heuristic_effort_budget`: charged effort -> option value.
+
+    FJ's option sizes one worker's allowance and the other three size a
+    whole dispatch, so a dispatch total has to be divided by the worker
+    count for FJ alone — the same asymmetry `BUDGET_IS_PER_WORKER` carries
+    for the headroom check.
+    """
+    scale = workers if (per_worker and workers and workers > 0) else 1
+    return (charged / scale) * EFFORT_ANCHOR / float(nnz << EFFORT_BASE_SHIFT)
+
+
+def still_improving_at_the_end(view: DispatchView) -> bool:
+    """Whether this dispatch was cut off mid-search rather than finished.
+
+    Every dispatch of the probe ends on the clock, so "it stopped improving"
+    is never something the run *reports* — it has to be inferred, and the
+    dispatch's own rhythm is the only scale available to infer it against.
+    If the silence since the last improvement is shorter than this
+    dispatch's typical wait between improvements, nothing has been
+    established: the next improvement may simply not have arrived yet.
+
+    Such a dispatch's observed knee is a *lower* bound — the true one is
+    larger — so counting it as a completed observation drags the upper
+    quantiles down onto the cap.  It is right-censored, exactly like a
+    barren dispatch and for the same reason.
+    """
+    if view.stale is None or not view.gaps:
+        return False
+    workers = view.workers if view.workers and view.workers > 0 else 1
+    return view.stale / workers <= statistics.median(view.gaps)
+
+
+def summarise_knees(views: list[DispatchView]) -> dict[str, EffortKnee]:
+    """One yield knee per heuristic, pooled over every traced dispatch."""
+    out = {name: EffortKnee(name=name) for name in PRESOLVE_HEURISTICS}
+    for view in views:
+        knee = out[view.name]
+        if view.nnz is None or view.nnz <= 0:
+            continue
+        if view.productive <= 0:
+            knee.barren += 1
+            # The reverse knee: what it spent without ever producing, which
+            # is a lower bound on what it would have needed.
+            if view.total_effort:
+                knee.censored.append(
+                    Observation(
+                        effort_option_for(
+                            view.total_effort,
+                            view.nnz,
+                            view.workers,
+                            BUDGET_IS_PER_WORKER[view.name],
+                        ),
+                        f"{view.name}#{view.instance}",
+                        False,
+                    )
+                )
+            continue
+        option = effort_option_for(
+            view.productive, view.nnz, view.workers, BUDGET_IS_PER_WORKER[view.name]
+        )
+        if still_improving_at_the_end(view):
+            knee.still_improving += 1
+            knee.censored.append(
+                Observation(option, f"{view.name}#{view.instance}", False)
+            )
+            continue
+        knee.options.append(option)
+    return out
+
+
+def effort_suggestions(knees: dict[str, EffortKnee]) -> list[str]:
+    """The proposed effort vector, beside the vector that ships today."""
+    lines = []
+    for name in PRESOLVE_HEURISTICS:
+        knee = knees[name]
+        option = f"mip_heuristic_{name}_effort"
+        value = knee.quantile(KNEE_QUANTILE)
+        if value is None:
+            # Not the same as "it produced nothing": every dispatch may have
+            # produced and none of them have *finished* producing, which is
+            # what a heuristic that improves rarely and late looks like at a
+            # 30 s cap.  Its knee is simply not identified by this data, and
+            # saying so is the result.
+            why = (
+                "no dispatch produced"
+                if not knee.still_improving
+                else f"none finished improving ({knee.still_improving} were still "
+                f"improving at the cap, {knee.barren} barren)"
+            )
+            lines.append(f"  {option:<33} not identified: {why}")
+            continue
+        shipped = SHIPPED_EFFORT[name]
+        censored = knee.censored_quantile(KNEE_QUANTILE)
+        top = "unbnd" if censored is None else f"{censored:.4f}"
+        lines.append(
+            f"  {option:<33} {value:>9.4f} .. {top:<10} (shipped {shipped:.4f}; "
+            f"p50 {knee.quantile(0.5):.4f}; {len(knee.options)} finished, "
+            f"{knee.still_improving} still improving, {knee.barren} barren)"
+        )
+    return lines
+
+
+def derived_defaults(
+    trajectories: dict[str, HeuristicTrajectory],
+    knees: dict[str, EffortKnee],
+    workers: int | None,
+    tree: ProbeTree,
+    traced_runs: int,
+    quality: QualityScan,
+) -> dict:
+    """The per-heuristic parameter vector this probe derives, as data.
+
+    The report renders these for a human; this is the same numbers in a form
+    a run, a search or a diff can consume, with enough provenance attached
+    that a value can never be read without the worker count and the tree it
+    came from.  Both are load-bearing: an effort value is only valid at the
+    worker count it was measured at (FJ's option is per worker and the other
+    three are divided by N), and a stall value is in that heuristic's own
+    effort unit, which is not comparable across heuristics.
+
+    `stall` is the *lower* end of the reported range — the events-only p95,
+    i.e. the largest improvement-free interval that actually ended in an
+    acceptance on 95 % of them.  The censoring-aware upper end is carried
+    alongside as `stall_max` rather than chosen: it is frequently unbounded,
+    which is a statement about the data, not a default anyone can ship.
+    """
+    out: dict = {
+        "source_tree": tree.root,
+        "provenance": {
+            "configs": list(tree.configs),
+            "instances_analysed": len(tree.runs),
+            "runs_traced": traced_runs,
+            "workers_observed": workers,
+            "knee_quantile": KNEE_QUANTILE,
+            "stall_quantile": STALL_QUANTILE,
+        },
+        "heuristics": {},
+    }
+    for name in PRESOLVE_HEURISTICS:
+        knee, trajectory = knees[name], trajectories[name]
+        low, high = trajectory.stall_range(workers)
+        effort = knee.quantile(KNEE_QUANTILE)
+        out["heuristics"][name] = {
+            "effort": None if effort is None else round(effort, 6),
+            "effort_shipped": SHIPPED_EFFORT[name],
+            "effort_max": (
+                None
+                if knee.censored_quantile(KNEE_QUANTILE) is None
+                else round(knee.censored_quantile(KNEE_QUANTILE), 6)
+            ),
+            "effort_p50": (
+                None if knee.quantile(0.5) is None else round(knee.quantile(0.5), 6)
+            ),
+            "effort_scope": (
+                "per_worker" if BUDGET_IS_PER_WORKER[name] else "per_dispatch"
+            ),
+            "stall": low,
+            "stall_max": high,
+            "stall_scales_with_workers": STALL_SCALES_WITH_WORKERS[name],
+            "dispatches_finished": len(knee.options),
+            "dispatches_still_improving": knee.still_improving,
+            "dispatches_barren": knee.barren,
+            "median_gap_to_best_known": (
+                round(statistics.median(quality.gaps[name]), 6)
+                if quality.gaps.get(name)
+                else None
+            ),
+            "stale_fraction": (
+                None
+                if math.isnan(trajectory.stale_fraction)
+                else round(trajectory.stale_fraction, 4)
+            ),
+        }
+    return out
+
+
+# A reference this close to zero makes the capped primal gap
+# (`|obj - ref| / max(|ref|, 1)`) saturate: the denominator is pinned at 1,
+# so every candidate that is not near-exact scores the same 1.0 and the
+# instance ranks on cost alone.  Counted and reported rather than dropped —
+# it is a property of the instance, and #107 needs to know what fraction of
+# its objective is decided that way.
+SATURATION_REFERENCE = 1.0
+
+# Reference tags that carry no usable objective: an instance MIPLIB records
+# as infeasible or unbounded would otherwise fall back to the best observed
+# primal, which is a self-referential zero gap.
+UNUSABLE_REFERENCE_TAGS = frozenset({"=inf=", "=unbd=", "=unkn="})
+
+
+@dataclass
+class QualityScan:
+    """How good the solutions were, not merely that there were solutions.
+
+    The informative set answers "can a presolve screen see this instance at
+    all".  This answers "and how good is what it found", against the best
+    known objective — which is what #107's objective actually scores, so it
+    is the axis on which one heuristic's budget is worth more than
+    another's.
+
+    Gaps are `run_target.primal_gap` on `run_target.presolve_objective`: the same
+    two functions the tuning search uses, deliberately reused rather than
+    restated, so a candidate cannot score differently here than there.
+    """
+
+    gaps: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
+    wins: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    scored_instances: int = 0
+    saturating: list[str] = field(default_factory=list)
+    unusable_reference: list[str] = field(default_factory=list)
+
+
+def score_quality(
+    runs: dict[str, list[ProbeRun]], solu_path: str | None
+) -> QualityScan:
+    """Gap-to-best-known per heuristic, over the instances that carry one."""
+    scan = QualityScan()
+    refs = parse_solu_file(solu_path) if solu_path and os.path.isfile(solu_path) else {}
+    for instance in sorted(runs):
+        tag, published = refs.get(instance, (None, None))
+        if tag in UNUSABLE_REFERENCE_TAGS:
+            scan.unusable_reference.append(instance)
+            continue
+        objectives = {
+            run.config: presolve_objective(run.result) for run in runs[instance]
+        }
+        observed = [o for o in objectives.values() if o is not None]
+        reference = resolve_reference(published, observed)
+        if reference is None:
+            scan.unusable_reference.append(instance)
+            continue
+        if abs(reference) <= SATURATION_REFERENCE:
+            scan.saturating.append(instance)
+        scored = {
+            config: primal_gap(objective, reference)
+            for config, objective in objectives.items()
+            if objective is not None
+        }
+        if not scored:
+            continue
+        scan.scored_instances += 1
+        for config, gap in scored.items():
+            scan.gaps[config].append(gap)
+        best = min(scored.values())
+        # A tie is a win for everyone that reached it: these are single-arm
+        # runs of one heuristic each, and "nobody wins" would understate a
+        # heuristic that matched the best on every instance.
+        for config, gap in scored.items():
+            if gap <= best:
+                scan.wins[config] += 1
+    return scan
+
+
+def quality_rows(scan: QualityScan) -> list[str]:
+    """The per-heuristic quality table."""
+    header = (
+        f"{'heur':<10} {'scored':>7} {'median gap':>11} {'mean gap':>9} "
+        f"{'exact':>6} {'best-of':>8}"
+    )
+    rows = [header]
+    for name in PRESOLVE_HEURISTICS:
+        gaps = scan.gaps.get(name, [])
+        if not gaps:
+            rows.append(f"{name:<10} {0:>7}")
+            continue
+        exact = sum(1 for g in gaps if g <= 0.0)
+        rows.append(
+            f"{name:<10} {len(gaps):>7} {statistics.median(gaps):>11.4f} "
+            f"{statistics.fmean(gaps):>9.4f} {exact:>6} {scan.wins.get(name, 0):>8}"
+        )
+    return rows
+
+
 def worker_counts(views: list[DispatchView]) -> list[int]:
     """The distinct observed worker counts of the traced dispatches, sorted.
 
@@ -1540,7 +1955,7 @@ def trajectory_rows(
     the `stall` range's upper end accounts for and these columns do not.
     """
     head = (
-        f"{'heur':<10}{'disp':>6}{'accept':>7}{'productive':>12}{'stale':>12}"
+        f"{'heur':<10}{'disp':>6}{'improve':>8}{'productive':>12}{'stale':>12}"
         f"{'stale%':>8}{'gaps':>6}"
     )
     head += "".join(f"{_q_label(p):>10}" for p in quantiles)
@@ -1551,7 +1966,7 @@ def trajectory_rows(
         fraction = t.stale_fraction
         stale_pct = "-" if math.isnan(fraction) else f"{100 * fraction:.1f}"
         row = (
-            f"{name:<10}{t.dispatches:>6}{t.accepts:>7}"
+            f"{name:<10}{t.dispatches:>6}{t.accepts:>8}"
             f"{_effort(t.productive_effort):>12}{_effort(t.stale_effort):>12}"
             f"{stale_pct:>8}{len(t.gaps_per_nnz):>6}"
         )
@@ -1816,6 +2231,8 @@ def render_report(
     quantiles: tuple[float, ...],
     reference_count: int,
     budget: BudgetCheck,
+    knees: dict[str, EffortKnee],
+    quality: QualityScan,
 ) -> str:
     """The human-facing report: counts, both listings, and the trajectories."""
     seeds = ", ".join(f"{c}:{len(tree.seeds[c])}" for c in tree.configs)
@@ -1893,7 +2310,7 @@ def render_report(
     off_slot = sum(t.off_slot_accepts for t in trajectories.values())
     if off_slot:
         lines.append(
-            f"  NOTE: {off_slot} accepted offer(s) came from worker -1 (off any "
+            f"  NOTE: {off_slot} improving offer(s) came from worker -1 (off any "
             "slot, e.g. LocalMIP's cold-start publish); they count for the "
             "informative set and are excluded from the gap distribution."
         )
@@ -1907,8 +2324,39 @@ def render_report(
     lines += ["  " + row for row in trajectory_rows(trajectories, quantiles, workers)]
     lines += [
         "",
+        (
+            f"Solution quality against best known ({quality.scored_instances} "
+            "instance(s) with a usable reference):"
+        ),
+        *["  " + row for row in quality_rows(quality)],
+        (
+            f"  {len(quality.saturating)} instance(s) have |reference| <= "
+            f"{SATURATION_REFERENCE:g}, where the capped gap saturates and the "
+            "objective ranks on cost alone"
+        ),
+    ]
+    if quality.unusable_reference:
+        lines.append(
+            f"  {len(quality.unusable_reference)} instance(s) carry no usable "
+            "reference and are excluded from the table"
+        )
+    lines += [
+        "",
         (f"Proposed stall ranges for #107 (per nnz, at {worker_note} worker(s)):"),
         *stall_suggestions(trajectories, workers),
+        "",
+        (
+            f"Proposed effort vector for #107 (p{KNEE_QUANTILE:.0%} yield knee, "
+            f"at {worker_note} worker(s)):"
+        ),
+        *effort_suggestions(knees),
+        (
+            "  low: the budget that reaches the last improvement on "
+            f"{KNEE_QUANTILE:.0%} of the dispatches that *finished* improving.  "
+            "high: the same quantile with the rest carried as right-censored -- "
+            "a dispatch still improving when the cap fired, and a barren one, "
+            "both have a knee larger than what they were seen to spend."
+        ),
     ]
     if diagnostics:
         lines += ["", "Trajectory diagnostics:"]
@@ -1999,6 +2447,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--quantiles",
         default=",".join(f"{p:g}" for p in DEFAULT_QUANTILES),
         help="gap-distribution quantiles to report (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--solu",
+        default=os.path.join(BENCH_DIR, "miplib2017-v36.solu"),
+        metavar="FILE",
+        help=(
+            "MIPLIB .solu reference objectives for the gap-to-best-known "
+            "table (default: the bundled v36 copy)"
+        ),
+    )
+    parser.add_argument(
+        "--defaults-output",
+        metavar="FILE",
+        help=(
+            "write the derived per-heuristic effort and stall values here as "
+            "JSON, with the worker count and tree they are only valid for"
+        ),
     )
     parser.add_argument(
         "--report-output", default="-", help="write the report here; '-' is stdout"
@@ -2110,6 +2575,8 @@ def main(argv: list[str] | None = None) -> int:
         tree, args.single_worker_trajectories
     )
     trajectories = summarise_traces(views)
+    knees = summarise_knees(views)
+    quality = score_quality(tree.runs, args.solu)
     workers = observed_workers(views)
     budget_check = check_budget_headroom(
         views,
@@ -2139,6 +2606,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.informative_output,
                 render_informative_list(tree, check, scan, args, len(reference)),
             )
+        if args.defaults_output:
+            _write(
+                args.defaults_output,
+                json.dumps(
+                    derived_defaults(
+                        trajectories, knees, workers, tree, traced_runs, quality
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
         if args.hard_tier_output:
             _write(
                 args.hard_tier_output,
@@ -2159,6 +2638,8 @@ def main(argv: list[str] | None = None) -> int:
             quantiles,
             len(reference),
             budget_check,
+            knees,
+            quality,
         )
         if args.report_output == "-":
             sys.stdout.write(report)

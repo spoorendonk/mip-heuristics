@@ -731,6 +731,45 @@ itself is driven by a tracked target runner rather than by config names.
 
 ---
 
+### Where these defaults come from, and how to re-derive them
+
+The four effort defaults above are **inherited**, not measured: FJ's is
+vanilla HiGHS's hardcoded `nnz << 10` per-worker limit, and the other three
+are `0.30 x w/Sw` for weights proportional to a geomean `effort_per_ms`
+measured on a different instance set. #113's calibration probe measured them
+for the first time, and `bench/derive_from_probe.sh` re-derives the whole
+vector from a probe results tree in one command.
+
+The rule, so a number in this file can always be traced to a measurement:
+
+* **effort** = the p50 of the *yield knee* over dispatches that finished
+  improving. Every `[HeurSol]` line stamps an accepted solution with the
+  charged effort at which it arrived, so one clock-bound dispatch is a whole
+  cumulative-yield curve; the knee is the budget that reached its last
+  incumbent improvement. Barren dispatches have no knee and are excluded —
+  they are a cost question, not a budget question — and a dispatch still
+  improving when the cap fired is right-censored, its true knee being larger
+  than what it was seen to spend.
+* **stall** = `min(p95 of the inter-improvement gaps, a fraction of the
+  ceiling)`. The p95 is a retention claim: at most 5 % of the improvements
+  that would ever arrive are cut off. The clamp is a cost claim: a barren
+  dispatch spends exactly the threshold, on 30-46 % of dispatches depending
+  on the heuristic.
+
+Measured over the 233-instance PLATO list, presolve-only, 30 s, 16 workers,
+the p50 knee lands within a factor of two of every shipped value and within
+8 % for FPR — so the inherited numbers were roughly right, and now there is
+evidence. The directional result is **double LocalMIP, halve Scylla, hold
+FPR**; FJ's knee is not identified at that cap (8 of 220 dispatches finished
+improving, 115 were still improving) and its quality argues against giving it
+more.
+
+Both are valid only at the worker count they were measured at. FJ's budget is
+per worker while the other three are per dispatch, so changing the count
+**reallocates** budget between heuristics rather than rescaling it.
+
+---
+
 ### A budget that cannot bind
 
 All four effort records are bounded at **`1e4`**, not at `1.0`. Nothing

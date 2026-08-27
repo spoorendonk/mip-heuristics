@@ -198,6 +198,7 @@ def load_results(
     results_dir: str,
     configs: list[str],
     config_dirs: dict[str, str] | None = None,
+    instances: set[str] | None = None,
 ) -> dict[str, dict[int, dict[str, SolveResult]]]:
     """Load all parsed results.
 
@@ -208,6 +209,13 @@ def load_results(
     `config_dirs` optionally maps a config name to an explicit directory,
     overriding the default `results_dir/<config>`.  This lets one report
     pull its anchor configs from a different results tree than the rest.
+
+    `instances` restricts *parsing*, not just the report: a caller that
+    already knows which instances it will look at should not pay to read the
+    rest.  It matters once a tree carries traces — a `--dev-log` probe tree
+    is gigabytes, and asking it about ten instances used to cost the whole
+    read (measured: >2 min against 5 s).  `None` keeps the old behaviour of
+    reading everything, which is what an unfiltered report wants.
     """
     config_dirs = config_dirs or {}
     results: dict[str, dict[int, dict[str, SolveResult]]] = {}
@@ -232,6 +240,8 @@ def load_results(
             results[config][seed_num] = {}
             for log_file in sorted(sd.glob("*.log")):
                 name = log_file.stem
+                if instances is not None and name not in instances:
+                    continue
                 results[config][seed_num][name] = parse_log_file(str(log_file))
     return results
 
@@ -1492,9 +1502,7 @@ def print_killed_runs(
         for seed in sorted(results.get(config, {})):
             for inst, r in sorted(results[config][seed].items()):
                 if r.killed:
-                    rows.append(
-                        (config, seed, inst, len(r.incumbents), r.killed_after)
-                    )
+                    rows.append((config, seed, inst, len(r.incumbents), r.killed_after))
     if not rows:
         return
 
@@ -1507,8 +1515,7 @@ def print_killed_runs(
         "metrics use, but no Solving report was reached.\n"
     )
     header = (
-        f"{'Config':<22} {'Seed':>4} {'Instance':<32} "
-        f"{'Incumbents':>10} {'Killed@':>9}"
+        f"{'Config':<22} {'Seed':>4} {'Instance':<32} {'Incumbents':>10} {'Killed@':>9}"
     )
     print(header)
     print("-" * len(header))
