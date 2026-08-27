@@ -9,10 +9,11 @@ struct ProblemView;
 
 namespace fpr {
 
-// Stall threshold: `mip_heuristic_fpr_stall`, in effort units
-// (coefficient accesses) per constraint-matrix nonzero (issue #111, made
-// an option by #106) — roughly "this many full sweeps of the matrix
-// without a solution".
+// Patience: `mip_heuristic_fpr_patience`, a multiple of `nnz << 10` — the
+// same unit as this heuristic's effort option (issue #111, made an option
+// by #106, put on the effort unit by #116).  FPR's counter is in
+// coefficient accesses, so one unit is roughly 1,024 full sweeps of the
+// matrix without an incumbent improvement.
 //
 // Scope: **whole dispatch**, matching `mip_heuristic_fpr_effort`.  Each
 // worker's share is this divided by the worker count

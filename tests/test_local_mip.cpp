@@ -233,8 +233,8 @@ TEST_CASE("SolutionPool::copy_best returns exactly the seeded best entry (#74 un
     // Seed a worse and a better entry; copy_best must return the better.
     const std::vector<double> worse_sol{1.0, 2.0, 3.0};
     const std::vector<double> better_sol{4.0, 5.0, 6.0};
-    REQUIRE(pool.try_add(/*obj=*/100.0, worse_sol, kSolutionSourceFJ));
-    REQUIRE(pool.try_add(/*obj=*/10.0, better_sol, kSolutionSourceLocalMIP));
+    REQUIRE(pool.try_add(/*obj=*/100.0, worse_sol, kSolutionSourceFJ).accepted);
+    REQUIRE(pool.try_add(/*obj=*/10.0, better_sol, kSolutionSourceLocalMIP).accepted);
     probe.clear();
     REQUIRE(pool.copy_best(probe));
     REQUIRE(probe == better_sol);
@@ -470,7 +470,7 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
         const size_t budget = 200000;
         // `budget >> 2` is what `make_budget` used to derive internally.
         // This test is about the effort-booking contract, not about where
-        // the stall gate sits, so it keeps the pre-#111 number rather
+        // the patience gate sits, so it keeps the pre-#111 number rather
         // than picking one of the four per-heuristic constants — it runs
         // all four `run` functions through the same `RunFn`.
         const size_t returned =

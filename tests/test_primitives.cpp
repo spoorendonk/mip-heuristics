@@ -19,9 +19,9 @@ TEST_CASE("SolutionPool: basic operations", "[pool]") {
     REQUIRE(pool.size() == 0);
 
     // Add solutions
-    REQUIRE(pool.try_add(10.0, {1.0, 2.0}, kSolutionSourceFPR));
-    REQUIRE(pool.try_add(5.0, {3.0, 4.0}, kSolutionSourceFJ));
-    REQUIRE(pool.try_add(8.0, {5.0, 6.0}, kSolutionSourceLocalMIP));
+    REQUIRE(pool.try_add(10.0, {1.0, 2.0}, kSolutionSourceFPR).accepted);
+    REQUIRE(pool.try_add(5.0, {3.0, 4.0}, kSolutionSourceFJ).accepted);
+    REQUIRE(pool.try_add(8.0, {5.0, 6.0}, kSolutionSourceLocalMIP).accepted);
 
     snap = pool.snapshot();
     REQUIRE(snap.has_solution);
@@ -29,10 +29,10 @@ TEST_CASE("SolutionPool: basic operations", "[pool]") {
     REQUIRE(pool.size() == 3);
 
     // Adding worse solution when full should fail
-    REQUIRE_FALSE(pool.try_add(15.0, {7.0, 8.0}, kSolutionSourceScylla));
+    REQUIRE_FALSE(pool.try_add(15.0, {7.0, 8.0}, kSolutionSourceScylla).accepted);
 
     // Adding better solution when full should replace worst
-    REQUIRE(pool.try_add(3.0, {9.0, 10.0}, kSolutionSourceScylla));
+    REQUIRE(pool.try_add(3.0, {9.0, 10.0}, kSolutionSourceScylla).accepted);
     snap = pool.snapshot();
     REQUIRE(snap.best_objective == Catch::Approx(3.0));
 
@@ -81,7 +81,7 @@ TEST_CASE("SolutionPool: diversity replacement preserves source tag", "[pool]") 
     for (int i = 0; i < kPoolCapacity; ++i) {
         std::vector<double> sol(kNumIntVars, 0.0);
         sol[i] = 1.0;
-        REQUIRE(pool.try_add(kObj, sol, kSolutionSourceFJ));
+        REQUIRE(pool.try_add(kObj, sol, kSolutionSourceFJ).accepted);
     }
     REQUIRE(pool.size() == kPoolCapacity);
 
@@ -98,7 +98,7 @@ TEST_CASE("SolutionPool: diversity replacement preserves source tag", "[pool]") 
     new_sol[kPoolCapacity] = 1.0;
     new_sol[kPoolCapacity + 1] = 1.0;
 
-    REQUIRE(pool.try_add(new_obj, new_sol, kSolutionSourceFPR));
+    REQUIRE(pool.try_add(new_obj, new_sol, kSolutionSourceFPR).accepted);
 
     // The new entry must land in the pool with its own source tag intact.
     auto entries = pool.sorted_entries();
@@ -119,9 +119,9 @@ TEST_CASE("SolutionPool: diversity replacement preserves source tag", "[pool]") 
 
 TEST_CASE("SolutionPool: restart strategies", "[pool]") {
     SolutionPool pool(5, true);
-    pool.try_add(10.0, {0.0, 1.0, 0.0}, kSolutionSourceFPR);
-    pool.try_add(5.0, {1.0, 0.0, 1.0}, kSolutionSourceFPR);
-    pool.try_add(7.0, {0.0, 0.0, 1.0}, kSolutionSourceFPR);
+    static_cast<void>(pool.try_add(10.0, {0.0, 1.0, 0.0}, kSolutionSourceFPR));
+    static_cast<void>(pool.try_add(5.0, {1.0, 0.0, 1.0}, kSolutionSourceFPR));
+    static_cast<void>(pool.try_add(7.0, {0.0, 0.0, 1.0}, kSolutionSourceFPR));
 
     Rng rng(42);
     std::vector<double> restart;
@@ -140,7 +140,7 @@ TEST_CASE("SolutionPool: restart strategies", "[pool]") {
 
 TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-safety]") {
     SolutionPool pool(10, true);
-    pool.try_add(100.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR);
+    static_cast<void>(pool.try_add(100.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR));
 
     constexpr int kNumThreads = 4;
     constexpr int kOpsPerThread = 200;
@@ -151,7 +151,8 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
             Rng rng(42 + t);
             for (int i = 0; i < kOpsPerThread; ++i) {
                 double obj = std::uniform_real_distribution<double>(1.0, 200.0)(rng);
-                pool.try_add(obj, {obj, obj + 1.0, obj + 2.0}, kSolutionSourceFPR);
+                static_cast<void>(
+                    pool.try_add(obj, {obj, obj + 1.0, obj + 2.0}, kSolutionSourceFPR));
 
                 std::vector<double> restart;
                 pool.get_restart(rng, restart);
@@ -184,9 +185,9 @@ TEST_CASE("SolutionPool: on_accept fires for accepted solutions only", "[pool]")
         [&](const std::vector<double>& sol, int src) { fired.emplace_back(sol, src); });
 
     // Three insertions into an empty pool — all accepted.
-    REQUIRE(pool.try_add(10.0, {10.0}, kSolutionSourceFPR));
-    REQUIRE(pool.try_add(8.0, {8.0}, kSolutionSourceLocalMIP));
-    REQUIRE(pool.try_add(6.0, {6.0}, kSolutionSourceFJ));
+    REQUIRE(pool.try_add(10.0, {10.0}, kSolutionSourceFPR).accepted);
+    REQUIRE(pool.try_add(8.0, {8.0}, kSolutionSourceLocalMIP).accepted);
+    REQUIRE(pool.try_add(6.0, {6.0}, kSolutionSourceFJ).accepted);
     REQUIRE(fired.size() == 3);
     REQUIRE(fired[0].second == kSolutionSourceFPR);
     REQUIRE(fired[1].second == kSolutionSourceLocalMIP);
@@ -194,11 +195,11 @@ TEST_CASE("SolutionPool: on_accept fires for accepted solutions only", "[pool]")
     REQUIRE(fired[2].first == std::vector<double>{6.0});
 
     // Pool is full (capacity 3). Inserting a dominated solution must not fire.
-    REQUIRE_FALSE(pool.try_add(999.0, {999.0}, kSolutionSourceFPR));
+    REQUIRE_FALSE(pool.try_add(999.0, {999.0}, kSolutionSourceFPR).accepted);
     REQUIRE(fired.size() == 3);  // unchanged
 
     // Inserting an improving solution fires the callback.
-    REQUIRE(pool.try_add(4.0, {4.0}, kSolutionSourceFPR));
+    REQUIRE(pool.try_add(4.0, {4.0}, kSolutionSourceFPR).accepted);
     REQUIRE(fired.size() == 4);
     REQUIRE(fired[3].first == std::vector<double>{4.0});
 }
@@ -226,7 +227,7 @@ TEST_CASE("SolutionPool: on_accept callback under concurrent try_add", "[pool][t
         threads.emplace_back([&, t]() {
             for (int i = 0; i < kOpsPerThread; ++i) {
                 auto obj = static_cast<double>((t * kOpsPerThread) + i);
-                if (pool.try_add(obj, {obj}, kSolutionSourceFPR)) {
+                if (pool.try_add(obj, {obj}, kSolutionSourceFPR).accepted) {
                     accepted_count.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -252,7 +253,7 @@ TEST_CASE("SolutionPool: empty pool restart returns false", "[pool][edge]") {
 
 TEST_CASE("SolutionPool: single-entry restart is always copy", "[pool][edge]") {
     SolutionPool pool(5, true);
-    pool.try_add(10.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR);
+    static_cast<void>(pool.try_add(10.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR));
 
     Rng rng(42);
     for (int i = 0; i < 20; ++i) {

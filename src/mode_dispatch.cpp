@@ -26,8 +26,8 @@ namespace {
 // heuristics reads its own `mip_heuristic_<name>_effort` multiplier —
 // registered by `third_party/highs_patch/apply_patch.cmake`, defaults
 // documented in `docs/PARAMETERS.md` — and turns it into a budget with
-// `heuristic_effort_budget(nnz, value)`: `nnz << 12` effort units at the
-// anchor 0.05, linear in the value, so a budget still scales with model
+// `heuristic_effort_budget(nnz, value)`: `nnz << 10` effort units per
+// unit of the option, linear in it, so a budget still scales with model
 // size.
 //
 // This replaced one shared envelope split by `kWeight*` constants
@@ -72,39 +72,40 @@ struct HeuristicConfig {
     // whole dispatch.  Only FJ sets it: vanilla HiGHS gives its single FJ
     // thread `nnz << 10` steps, and each of our N workers matches that, so
     // FJ's dispatch total scales with the worker count where the other
-    // three are divided across it by `make_budget`.  It governs
-    // `stall_per_nnz` too — that constant is expressed in the same scope
-    // as the effort option it sits next to.  Spelled out rather than
+    // three are divided across it by `make_budget`.  It governs the
+    // patience option too — that value is expressed in the same scope as
+    // the effort option it sits next to.  Spelled out rather than
     // `per_worker`, which in this translation unit already means
     // `HeuristicBudget::per_worker` — a size_t budget, not a flag.
     bool budget_is_per_worker;
-    // This entry's stall-threshold option, as a multiple of `nnz << 10` --
-    // the same unit as `effort` above, so the two are directly comparable
-    // and `stall < effort` is legible without a conversion (#116; an
-    // option since #106, absolute since #111).
-    // Absolute and instance-scaled: a heuristic that stops finding things
-    // exits on this rather than on a fraction of an allowance that
-    // someone tuned in isolation.  It was a `constexpr` in each
+    // This entry's patience option, as a multiple of `nnz << 10` -- the
+    // same unit as `effort` above, so the two are directly comparable and
+    // `patience < effort` is legible without a conversion (#116; an option
+    // since #106, absolute since #111).
+    // Absolute and instance-scaled: a heuristic that stops improving the
+    // incumbent exits on this rather than on a fraction of an allowance
+    // that someone tuned in isolation.  It was a `constexpr` in each
     // heuristic's own header until the calibration needed to search the
-    // stall axis, which a rebuild-per-point cannot do; the per-heuristic
-    // header still carries what that heuristic's effort counter counts,
-    // which is why the four values are not comparable with each other.
-    // **0 means no gate at all** — see `stall_threshold`.
-    double HighsOptionsStruct::* stall;
+    // patience axis, which a rebuild-per-point cannot do; the
+    // per-heuristic header still carries what that heuristic's effort
+    // counter counts, which is why the four values are not comparable with
+    // each other.
+    // **0 means no gate at all** — see `patience_threshold`.
+    double HighsOptionsStruct::* patience;
     size_t (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
 };
 
 constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HeuristicFlags::fj, &HighsOptionsStruct::mip_heuristic_fj_effort,
-     true, &HighsOptionsStruct::mip_heuristic_fj_stall, &fj::run},
+     true, &HighsOptionsStruct::mip_heuristic_fj_patience, &fj::run},
     {"fpr", kSolutionSourceFPR, &HeuristicFlags::fpr, &HighsOptionsStruct::mip_heuristic_fpr_effort,
-     false, &HighsOptionsStruct::mip_heuristic_fpr_stall, &fpr::run},
+     false, &HighsOptionsStruct::mip_heuristic_fpr_patience, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HeuristicFlags::local_mip,
      &HighsOptionsStruct::mip_heuristic_local_mip_effort, false,
-     &HighsOptionsStruct::mip_heuristic_local_mip_stall, &local_mip::run},
+     &HighsOptionsStruct::mip_heuristic_local_mip_patience, &local_mip::run},
     {"scylla", kSolutionSourceScylla, &HeuristicFlags::scylla,
      &HighsOptionsStruct::mip_heuristic_scylla_effort, false,
-     &HighsOptionsStruct::mip_heuristic_scylla_stall, &scylla::run},
+     &HighsOptionsStruct::mip_heuristic_scylla_patience, &scylla::run},
 });
 
 // Each enabled heuristic runs in turn, with its own effort budget and the
@@ -198,13 +199,15 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         const size_t sized = heuristic_effort_budget(problem.nnz, options.*h.effort);
         const size_t total =
             h.budget_is_per_worker ? saturating_mul(sized, exec.num_workers) : sized;
-        // The runner-level stall gate (issue #111).  Absolute, not
+        // The runner-level patience gate (issue #111).  Absolute, not
         // `total / 4`: the runner's counter aggregates every worker, so a
         // per-worker option is multiplied by the pool, and a
-        // whole-dispatch one is used as it stands.  Clamped to `total`,
-        // which is the only thing a *gate* may not exceed — except at
-        // `stall_option == 0`, which is not a gate at all: the threshold
-        // is unbounded and no clamp applies.  See `stall_threshold`.
+        // whole-dispatch one is used as it stands.  Clamped to a quarter
+        // of `total` rather than to `total`, so a gate that exists fires
+        // strictly before exhaustion instead of coinciding with it (#116)
+        // — except at `patience_option == 0`, which is not a gate at all:
+        // the threshold is unbounded and no clamp applies.  See
+        // `patience_threshold`.
         //
         // FJ's option is per worker, like its effort option, so the
         // runner-level gate is it times the pool size; the other three are
@@ -214,12 +217,12 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         // against a large `nnz` cannot wrap into a tiny threshold that
         // stops the heuristic almost immediately.  Zero survives it, which
         // is what makes "no gate" expressible from the option.
-        const double stall_option = options.*h.stall;
-        const double stall_per_base = h.budget_is_per_worker
-                                          ? stall_option * static_cast<double>(exec.num_workers)
-                                          : stall_option;
+        const double patience_option = options.*h.patience;
+        const double patience_per_base =
+            h.budget_is_per_worker ? patience_option * static_cast<double>(exec.num_workers)
+                                   : patience_option;
         const HeuristicBudget slice = make_budget(
-            total, exec.num_workers, stall_threshold(problem.nnz, stall_per_base, total));
+            total, exec.num_workers, patience_threshold(problem.nnz, patience_per_base, total));
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> size_t { return h.run(problem, slice, exec, sink); });
     }

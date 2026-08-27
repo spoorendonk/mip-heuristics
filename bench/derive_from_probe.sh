@@ -98,8 +98,8 @@ print(f"  measured at {p['workers_observed']} workers over "
       f"{p['runs_traced']} traced run(s) on {p['instances_analysed']} instance(s)")
 for name, h in sorted(data["heuristics"].items()):
     effort = "-" if h["effort"] is None else f"{h['effort']:.4f}"
-    stall = "-" if h["stall"] is None else str(h["stall"])
+    patience = "-" if h["patience"] is None else str(h["patience"])
     stale = "-" if h["stale_fraction"] is None else f"{100 * h['stale_fraction']:.1f}%"
     print(f"  {name:<10} effort {effort:>9} (shipped {h['effort_shipped']:.4f})"
-          f"   stall {stall:>10}   stale {stale:>6}")
+          f"   patience {patience:>10}   stale {stale:>6}")
 PY

@@ -373,15 +373,19 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                 for (HighsInt j = 0; j < ncol_; ++j) {
                     obj += orig_cost[j] * x_bar[j];
                 }
-                // Pool verdict, not mere MIP-feasibility (#111).  The
-                // `continue` stays unconditional: an integral x_bar means
-                // this pump round is done either way, and the peer
-                // broadcast is a *productivity* signal, so a refused
-                // offer must not clear anyone's staleness.
+                // Incumbent improvement, not mere MIP-feasibility (#111)
+                // and not mere pool acceptance (#116).  The `continue`
+                // stays unconditional: an integral x_bar means this pump
+                // round is done either way, and the peer broadcast below
+                // is a *productivity* signal, so an offer that moved
+                // nothing must not clear anyone's staleness — 367,801
+                // acceptances against 374 incumbent improvements over
+                // #113's 233 instances is how far apart the two are here.
                 // `effort_at`: the worker's own amortised counter, already
                 // charged for everything spent up to this point in the
                 // attempt (the PDLP solve and any preceding rounding).
-                if (sink_.offer(obj, x_bar, trace_, trace_.at(base_.total_effort))) {
+                if (sink_.offer(obj, x_bar, trace_, trace_.at(base_.total_effort))
+                        .improved_incumbent) {
                     base_.reset_staleness();
                     if (improvement_gen_ != nullptr) {
                         improvement_gen_->fetch_add(1, std::memory_order_relaxed);
@@ -427,8 +431,8 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // Same as the fast path above: short-circuit leaves `offer`
         // called on exactly the results it was called on before (#111).
         if (rounded.found_feasible && !rounded.solution.empty() &&
-            sink_.offer(rounded.objective, rounded.solution, trace_,
-                        trace_.at(base_.total_effort))) {
+            sink_.offer(rounded.objective, rounded.solution, trace_, trace_.at(base_.total_effort))
+                .improved_incumbent) {
             base_.reset_staleness();
             if (improvement_gen_ != nullptr) {
                 improvement_gen_->fetch_add(1, std::memory_order_relaxed);

@@ -12,9 +12,12 @@ tracked tooling with tests rather than a scratch script.
 
 The eight parameters
 --------------------
-Four efforts (`fj`, `fpr`, `local_mip`, `scylla`), each a double in [0, 1]
-sizing that heuristic's presolve budget, and four stall thresholds, each a
-non-negative integer in effort units per matrix nonzero.  **Effort 0 means the
+Four efforts (`fj`, `fpr`, `local_mip`, `scylla`), each a non-negative double
+sizing that heuristic's presolve budget, and four patiences, each a
+non-negative double in the same unit as the effort beside it -- both are
+multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump
+limit, so `effort = 1.0` is one vanilla FJ budget and `patience < effort` reads
+on its face (#116).  **Effort 0 means the
 heuristic does not run**, so the fifteen non-empty heuristic subsets plus `off`
 are exactly the zero-patterns of the four efforts; inclusion is not a separate
 dimension.  `suite_value` performs that reduction, naming in `mip_heuristic_suite`
@@ -28,9 +31,12 @@ option is never read by `fpr_lp` at all — it draws from the separate
 that difference; #107's full-limit confirmation of the same configuration can,
 and would be measuring a heuristic the parameter vector said was off.
 
-A stall threshold of 0 means "no staleness gate at all", not "give up
-immediately" — see `docs/PARAMETERS.md` and the option records in
-`third_party/highs_patch/apply_patch.cmake`.
+A patience of 0 means "no staleness gate at all", not "give up immediately",
+and any patience at or above a quarter of its own effort is clamped to that
+quarter — see `docs/PARAMETERS.md` and the option records in
+`third_party/highs_patch/apply_patch.cmake`.  So the effective patience range
+is `(0, effort/4]` plus the disabling zero; a sampler is free to propose more,
+it simply buys nothing.
 
 Sign convention
 ---------------
@@ -121,7 +127,7 @@ reasoning matters more than the default:
   Track A worked the algebra out of `make_budget` and measured it (the table and
   the numbers are in `docs/PARAMETERS.md`, "These options do not mean the same
   thing at every worker count"): for the three whole-dispatch heuristics both
-  aggregates — total spend and the runner-level stall gate — are **N-invariant**,
+  aggregates — total spend and the runner-level patience gate — are **N-invariant**,
   and only the per-worker slicing moves; FJ is the exact mirror, per-worker
   quantities invariant and the dispatch total growing with the pool.  So the
   cross-N distortion is not a uniform rescale but a **reallocation between
@@ -131,12 +137,12 @@ reasoning matters more than the default:
   option values.  Racing might partly absorb a uniform rescale; a reallocation
   between heuristics it cannot, and nothing in the score reveals it.  That is
   the bias, and it is why the search runs at the deployment worker count.
-* One quantity *does* transfer, which is what makes the stall ranges in
-  `bench/irace/parameters.txt` meaningful across machines: the inert-region
-  boundary `stall >= 81920 * effort` is N-independent for all four heuristics
-  (the N factors cancel for FJ and are absent for the other three).  "This
-  configuration's gate is inert" therefore means the same thing at every worker
-  count, even though the effort it is inert relative to does not.
+* One quantity *does* transfer, which is what makes the patience ranges in
+  `bench/irace/parameters.txt` meaningful across machines: the clamp boundary
+  `patience >= effort / 4` is N-independent for all four heuristics (the N
+  factors cancel for FJ and are absent for the other three).  "This
+  configuration's gate is at its ceiling" therefore means the same thing at
+  every worker count, even though the effort it is measured against does not.
 * #113 draws the same line for the same reason: trajectory characterisation runs
   at `threads=1` because the effort timeline has to be reproducible, while the
   instance-filtering pass runs at the normal worker count "since that is the
@@ -200,6 +206,15 @@ from run_benchmark import (
 # matching `run_benchmark.CONFIG_SUITES`.
 HEURISTICS: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla")
 
+# The registered upper bound of all eight options, from `kEffortMax` in
+# `third_party/highs_patch/apply_patch.cmake`.  It exists so #113's calibration
+# probe can hand a heuristic a budget that cannot bind; nothing a search
+# proposes should come near it.  Mirrored here rather than parsed out of the
+# cmake because this module has to reject an out-of-range vector *before* the
+# solve, and HiGHS reports a rejected write only through a return status that
+# `output_flag=false` swallows.
+OPTION_MAX = 1e6
+
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SOLU = os.path.join(BENCH_DIR, "miplib2017-v36.solu")
 
@@ -245,30 +260,36 @@ class Refusal(Exception):
 class Parameters:
     """The eight-dimensional configuration point.
 
-    `efforts` and `stalls` are keyed by `HEURISTICS`; every key must be present
-    so that the vector a run recorded is complete rather than partly implied by
-    whatever the binary's defaults happened to be that week.
+    `efforts` and `patiences` are keyed by `HEURISTICS`; every key must be
+    present so that the vector a run recorded is complete rather than partly
+    implied by whatever the binary's defaults happened to be that week.
+
+    Both are doubles on the same scale, bounded above by `OPTION_MAX`, which is
+    the registered upper bound of every one of the eight options.  Rejecting a
+    value the binary would reject anyway is the point: HiGHS reports an
+    out-of-range write only through a return status, and every instance we
+    build sets `output_flag=false`, so a run configured out of range would
+    silently execute the defaults and be scored as if it were the vector asked
+    for.
     """
 
     efforts: dict[str, float]
-    stalls: dict[str, int]
+    patiences: dict[str, float]
 
     def __post_init__(self) -> None:
         for name in HEURISTICS:
             if name not in self.efforts:
                 raise ValueError(f"missing effort for {name!r}")
-            if name not in self.stalls:
-                raise ValueError(f"missing stall threshold for {name!r}")
-        for name, value in self.efforts.items():
-            if name not in HEURISTICS:
-                raise ValueError(f"unknown heuristic {name!r}")
-            if not (0.0 <= value <= 1.0) or not math.isfinite(value):
-                raise ValueError(f"{name} effort {value} outside [0.0, 1.0]")
-        for name, value in self.stalls.items():
-            if name not in HEURISTICS:
-                raise ValueError(f"unknown heuristic {name!r}")
-            if int(value) != value or value < 0:
-                raise ValueError(f"{name} stall {value} is not a non-negative integer")
+            if name not in self.patiences:
+                raise ValueError(f"missing patience for {name!r}")
+        for kind, values in (("effort", self.efforts), ("patience", self.patiences)):
+            for name, value in values.items():
+                if name not in HEURISTICS:
+                    raise ValueError(f"unknown heuristic {name!r}")
+                if not (0.0 <= value <= OPTION_MAX) or not math.isfinite(value):
+                    raise ValueError(
+                        f"{name} {kind} {value} outside [0.0, {OPTION_MAX:g}]"
+                    )
 
     @property
     def enabled(self) -> tuple[str, ...]:
@@ -350,7 +371,9 @@ def solver_options(
     for name in HEURISTICS:
         options[f"mip_heuristic_{name}_effort"] = _format_effort(params.efforts[name])
     for name in HEURISTICS:
-        options[f"mip_heuristic_{name}_stall"] = str(int(params.stalls[name]))
+        options[f"mip_heuristic_{name}_patience"] = _format_effort(
+            params.patiences[name]
+        )
     if presolve_only:
         options["mip_heuristic_presolve_only"] = "true"
     # The `[Heur]` line the cost metric reads is `kVerbose`.  Without this the
@@ -507,7 +530,7 @@ class Evaluation:
     tag: str
     suite: str
     efforts: dict[str, float]
-    stalls: dict[str, int]
+    patiences: dict[str, float]
     cost: float
     gap: float
     gap_improvement: float
@@ -549,7 +572,7 @@ def run_tag(
     payload = "|".join(
         [name, str(seed), suite_value(params)]
         + [f"{h}={_format_effort(params.efforts[h])}" for h in HEURISTICS]
-        + [f"{h}_stall={int(params.stalls[h])}" for h in HEURISTICS]
+        + [f"{h}_patience={_format_effort(params.patiences[h])}" for h in HEURISTICS]
         # Only when it differs from the screen, so the tags a search produces
         # stay stable; a full-solve diagnostic of the same vector is a
         # different measurement and must not overwrite the screening run.
@@ -687,7 +710,7 @@ def score_result(
     # Enabled heuristics that never got a dispatch.  `run_sequential` runs the
     # chain in order — FJ, FPR, LocalMIP, Scylla — against a shared solver time
     # limit, so a generous head starves the tail and the parameter vector stops
-    # describing the run: Scylla's effort and stall are recorded but never
+    # describing the run: Scylla's effort and patience are recorded but never
     # exercised.  The deficit is *correlated* with the other three efforts, so
     # a search that could not see it would read the tail as "does not matter"
     # rather than as "did not run".
@@ -718,7 +741,7 @@ def score_result(
         tag=tag,
         suite=suite,
         efforts=dict(params.efforts),
-        stalls=dict(params.stalls),
+        patiences=dict(params.patiences),
         cost=scalar_cost(gap, tau_s, cost_weight),
         gap=gap,
         gap_improvement=1.0 - gap,
@@ -797,7 +820,7 @@ def check_run_usable(
             f"{name}: solver exited {returncode} without solving; an unknown or "
             "out-of-range option in the options file is the usual cause — check "
             "the binary is built from a tree carrying mip_heuristic_presolve_only "
-            f"and the four mip_heuristic_*_stall options{where}"
+            f"and the four mip_heuristic_*_patience options{where}"
         )
     if PATCH_MARKER not in output:
         raise Refusal(
@@ -932,18 +955,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
             type=float,
             default=0.0,
             metavar="F",
-            help=f"{name} effort in [0,1]; 0 (the default) means {name} does "
-            "not run and is not named in the suite",
+            help=f"{name} effort as a multiple of nnz<<10; 0 (the default) "
+            f"means {name} does not run and is not named in the suite",
         )
     for name in HEURISTICS:
         switch = name.replace("_", "-")
         parser.add_argument(
-            f"--{switch}-stall",
-            type=int,
-            default=0,
-            metavar="N",
-            help=f"{name} stall threshold in effort units per nonzero; "
-            "0 (the default) means no staleness gate at all",
+            f"--{switch}-patience",
+            type=float,
+            default=0.0,
+            metavar="F",
+            help=f"{name} patience, in the same unit as its effort; 0 (the "
+            "default) means no staleness gate at all, and anything above a "
+            "quarter of the effort is clamped to that quarter",
         )
     for name in HEURISTICS:
         switch = name.replace("_", "-")
@@ -1003,7 +1027,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "each heuristic to one worker, which makes a run bit-reproducible (a "
         "3.2%% objective spread on flugpl disappears) but changes what the "
         "parameter vector means, since three of the four effort budgets and the "
-        "per-worker stall threshold are divided by the worker count.  Use it "
+        "per-worker patience are divided by the worker count.  Use it "
         "for a trajectory trace or an exact re-derivation, not for the search",
     )
     parser.add_argument(
@@ -1034,13 +1058,13 @@ def parameters_from_args(args: argparse.Namespace) -> Parameters:
     numbers.
     """
     efforts: dict[str, float] = {}
-    stalls: dict[str, int] = {}
+    patiences: dict[str, float] = {}
     for name in HEURISTICS:
         effort = getattr(args, f"{name}_effort")
         enabled = getattr(args, f"{name}_enabled")
         efforts[name] = 0.0 if enabled == 0 else effort
-        stalls[name] = getattr(args, f"{name}_stall")
-    return Parameters(efforts=efforts, stalls=stalls)
+        patiences[name] = getattr(args, f"{name}_patience")
+    return Parameters(efforts=efforts, patiences=patiences)
 
 
 def main(argv: list[str] | None = None) -> int:

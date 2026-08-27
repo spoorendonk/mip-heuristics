@@ -266,14 +266,16 @@ public:
 
         if (result.found_feasible) {
             // Deliberately discarded, and the only worker site that does.
-            // Issue #111 repaired the improvement signal for the four
-            // *presolve* heuristics and left fpr_lp alone: it draws from
-            // upstream's dive-time LP-iteration envelope rather than a
-            // per-heuristic effort option, and it gates itself on its own
+            // Issues #111 and #116 both moved the improvement signal for
+            // the four *presolve* heuristics and both left fpr_lp alone:
+            // it draws from upstream's dive-time LP-iteration envelope
+            // rather than a per-heuristic effort option, it has no
+            // patience option, and it gates itself on its own
             // `kStaleAttemptThreshold` attempt counter as well as this
-            // flag.  The prototype that measured the change did not cover
-            // it, so this stays on "reached a feasible point" until
-            // someone measures the dive-time envelope.
+            // flag.  Neither the prototype that measured #111 nor #113's
+            // presolve-only probe covered the dive, so this stays on
+            // "reached a feasible point" until someone measures that
+            // envelope.
             // `effort_at`: this worker's cumulative charge including the
             // attempt that just produced the solution.  `LpFprWorker` keeps
             // no `WorkerBudgetState`, so `total_effort_` below is the
@@ -500,7 +502,7 @@ void run(HighsMipSolver& mipsolver) {
         // fpr_lp's own.
         const ExecutionContext exec = make_exec(mipsolver);
         // `worker_budget >> 2` is the pre-#111 staleness rule, kept here
-        // deliberately: issue #111 replaced the fraction-of-budget stall
+        // deliberately: issue #111 replaced the fraction-of-budget stale
         // thresholds in the *presolve* chain and put fpr_lp out of scope.
         // fpr_lp draws from upstream's dive-time LP-iteration envelope,
         // not from a per-heuristic effort option, and `LpFprWorker` keeps

@@ -131,7 +131,7 @@ add_executable(mip_heuristics_tests
     tests/test_prop_engine.cpp
     tests/test_continuous_loop.cpp
     tests/test_contested_pdlp.cpp
-    tests/test_stall_gate.cpp
+    tests/test_patience_gate.cpp
     tests/test_presolve_only.cpp
     tests/test_effort_zero.cpp
     tests/test_heursol_trace.cpp

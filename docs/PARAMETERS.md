@@ -651,7 +651,7 @@ a whole PDLP solve (measured 0.25x rather than 0.10x on p0548 at N=6).
 The anchor is a choice, not a constraint: the deviation is smallest at
 the low worker counts the test suite actually runs at (1–2 on CI,
 `(hardware_concurrency()+1)/2` locally), and erring high is the cheap
-direction once stall thresholds are absolute (#111) — an over-large
+direction once patience is absolute (#111) — an over-large
 budget is truncated by a gate that fires, an under-large one is a hard
 cap nothing recovers. Treat all four as the starting point of a
 calibration, not the result of one.
@@ -682,10 +682,10 @@ itself is driven by a tracked target runner rather than by config names.
   at `threads=1`, p0548 moves 500k -> 24.0M across 0.0125 -> 1.00 while
   flugpl sits at 500,009 until 1.00. Real MIPLIB instances (nnz 10^4-10^6)
   are clear of it, but a budget sweep that includes small instances will
-  read as noise at the bottom of the range. The other bound is the stall
-  detector (`stale_budget = min(nnz << 8, total)`), which ends a worker
-  early on models where FJ converges.
-- **Suggested range**: 0.003–0.10 (a quarter to eight times vanilla's
+  read as noise at the bottom of the range. The other bound is the
+  patience gate (`stale_budget`, from `mip_heuristic_fj_patience`), which
+  ends a worker early on models where FJ converges.
+- **Suggested range**: 0.25–8 (a quarter to eight times vanilla's
   per-thread depth), subject to the dead zone above. The record's ceiling
   is `1e6`; see "A budget that cannot bind" below.
 
@@ -750,11 +750,15 @@ The rule, so a number in this file can always be traced to a measurement:
   they are a cost question, not a budget question — and a dispatch still
   improving when the cap fired is right-censored, its true knee being larger
   than what it was seen to spend.
-* **stall** = `min(p95 of the inter-improvement gaps, a fraction of the
-  ceiling)`. The p95 is a retention claim: at most 5 % of the improvements
-  that would ever arrive are cut off. The clamp is a cost claim: a barren
-  dispatch spends exactly the threshold, on 30-46 % of dispatches depending
-  on the heuristic.
+* **patience** = `min(p95 of the inter-improvement gaps, 0.25 x effort)`.
+  The p95 is a retention claim: at most 5 % of the improvements that would
+  ever arrive are cut off. The clamp is a cost claim: a barren dispatch
+  spends exactly the patience, on 30-46 % of dispatches depending on the
+  heuristic. Both an *improvement* here and the improvement the shipped
+  gate resets on are "moved the best objective known", which is the whole
+  point of #116 — a patience measured on improvements and spent against a
+  gate that reset on pool acceptances would be a number in one unit
+  charged in another.
 
 Measured over the 233-instance PLATO list, presolve-only, 30 s, 16 workers,
 the p50 knee lands within a factor of two of every shipped value and within
@@ -772,18 +776,36 @@ per worker while the other three are per dispatch, so changing the count
 
 ### One unit for both parameters
 
-Since #116 the effort option and the stall threshold are **multiples of the
-same base**, `nnz << 10` — vanilla HiGHS's hardcoded single-thread
-FeasibilityJump limit, the one figure in this arithmetic upstream itself
-picked:
+### One axis, a floor and a ceiling
+
+The two options bound the *same* quantity — the effort one heuristic spends
+in one dispatch — from below and from above, and since #116 they are
+**multiples of the same base**, `nnz << 10`, vanilla HiGHS's hardcoded
+single-thread FeasibilityJump limit and the one figure in this arithmetic
+upstream itself picked:
 
 ```
-ceiling = effort x (nnz << 10)      the most this heuristic may spend
-floor   = stall  x (nnz << 10)      what it spends before giving up unimproved
+ceiling = effort   x (nnz << 10)    the most this heuristic may spend
+floor   = patience x (nnz << 10)    what it spends before giving up unimproved
 ```
 
-So `effort = 1.0` is exactly one vanilla FJ budget, and `stall < effort` is
-legible without a conversion. Before that the effort option multiplied
+A dispatch that never improves the incumbent spends exactly the floor and
+stops; one that keeps improving spends up to the ceiling. So `effort = 1.0`
+is exactly one vanilla FJ budget, and the constraint between the two —
+
+```
+0 < patience <= effort / 4          (0 means no gate at all)
+```
+
+— is legible without a conversion. **The upper half of that constraint is
+enforced, not merely advised**: `patience_threshold` clamps to
+`effort / kPatienceCeilingDivisor`, a quarter, because a patience at or
+above the ceiling fires exactly at exhaustion and is then indistinguishable
+from having no gate at all. That is not a corner case — the p95 #113
+measured exceeds the ceiling on three of the four heuristics, FJ's by 4,400x
+— so without the clamp an honestly derived value would silently mean "never
+give up". A quarter is the shape FJ has always shipped (`nnz << 8` against
+`nnz << 10`), and where all four shipped defaults already sat. Before that the effort option multiplied
 `nnz << 12` scaled by `value / 0.05` while the threshold was already absolute
 per nonzero, so comparing the pair meant knowing that `(1 << 12) / 0.05` is
 81,920. Both constants were historical — the 4096 existed only so FJ's
@@ -793,10 +815,10 @@ default came out at `nnz << 10` anyway, and the 0.05 was upstream's own
 Two consequences worth knowing. `mip_heuristic_effort` — upstream's *own* B&B
 knob, which `fpr_lp` caps itself against — is on the old scale and goes
 through `vanilla_effort_budget`, which restores the anchor so its meaning is
-unchanged. And every shipped stall default is now visibly `0.25 x` its effort,
-because the clamp bound all four: the measured waits contributed nothing to
-them, which is a statement about how slowly these heuristics improve rather
-than about the calibration.
+unchanged. And every shipped patience default is visibly `0.25 x` its
+effort, because the clamp bound all four: the measured waits contributed
+nothing to them, which is a statement about how slowly these heuristics
+improve rather than about the calibration.
 
 ---
 
@@ -829,65 +851,77 @@ budget, so a run that did hit it is visible.
 
 ---
 
-## Stall Thresholds (issue #111; options since #106)
+## Patience (issue #111; options since #106; named and clamped by #116)
 
 Every presolve heuristic stops early when improvement-free effort crosses
 a threshold, at two levels: a runner-level gate over the whole dispatch
 (`ContinuousLoopState::effort_since_improvement` against
 `HeuristicBudget::stale`) and a worker-level gate in `WorkerBudgetState`.
 
-The four options below are those thresholds, expressed as **effort
-units per constraint-matrix nonzero** — absolute and instance-scaled,
-never a fraction of the heuristic's own budget. A fraction cannot bound
-over-budgeting: doubling the budget doubles the tolerance, so the gate
-never fires relatively sooner and charged effort tracks the effort option
-one-for-one. That is what makes the four independent budgets of #110
-composable — a heuristic that stops finding things exits instead of
-spending an allowance that was tuned in isolation.
+The four options below are that threshold. It is a **patience** — the
+improvement-free effort a heuristic tolerates before giving up, and hence
+a floor on what a dispatch spends — expressed as a multiple of
+`nnz << 10`, the same unit as the effort option beside it. It is absolute
+and instance-scaled, never a fraction of the heuristic's own budget: a
+fraction cannot bound over-budgeting, because doubling the budget doubles
+the tolerance, so the gate never fires relatively sooner and charged
+effort tracks the effort option one-for-one. That is what makes the four
+independent budgets of #110 composable — a heuristic that stops finding
+things exits instead of spending an allowance that was tuned in isolation.
+(They were spelled `mip_heuristic_<name>_stall` until #116, which renamed
+them with no alias.)
 
-A gate has two operands, and #111 repaired both. The other is the
-**improvement signal** that resets the counter. Each worker used to
-supply its own — "I beat my own best" — which restarts at infinity on
-every rebuild, so a rebuilt worker cleared the dispatch's staleness by
-rediscovering a solution the pool already held. Workers now read what
-`IncumbentSink::offer` returns, which is the project's single definition
-of production and the same predicate `[Heur] found` reports; `offer` is
-`[[nodiscard]]` so the verdict cannot be dropped again. Fixing the
-threshold alone left FPR at 19.98x over a 20x sweep on `flugpl`, where
-it spent forty ceilings' worth of effort for one accepted solution.
+A gate has two operands, and the other is the **improvement signal** that
+resets the counter. It has been wrong twice. Each worker used to supply
+its own — "I beat my own best" — which restarts at infinity on every
+rebuild, so a rebuilt worker cleared the dispatch's staleness by
+rediscovering a solution the pool already held; fixing the threshold alone
+left FPR at 19.98x over a 20x sweep on `flugpl`, where it spent forty
+ceilings' worth of effort for one accepted solution. #111 pointed both
+gates at `IncumbentSink::offer`'s verdict instead, and called pool
+acceptance the project's definition of production. **#116 reverses that
+for the gate**, on the probe's evidence: the pool keeps a top-K, so a
+heuristic that merely beats its own worst entry resets staleness forever.
+Over 233 instances, presolve-only, 30 s, 16 workers, FPR earns ~3.3 M pool
+acceptances against 590 incumbent improvements, LocalMIP ~3.3 M against
+24,598, Scylla 367,801 against 374, FJ 1,557 against 297. Five orders of
+magnitude on FPR — so a patience calibrated on improvements (the only
+thing it can honestly be calibrated on) cannot be spent against a gate
+that resets on acceptances. Both gates now read
+`IncumbentSink::OfferResult::improved_incumbent`, decided inside
+`SolutionPool`'s own lock against the best it held before the offer, while
+`accepted()`, `[Heur] found` and `[HeurSol] accepted` keep reporting the
+acceptance for the tooling that consumes them. `offer` is `[[nodiscard]]`
+and returns both facts, so neither can be dropped or silently substituted
+for the other. Each local search's own bookkeeping — FJ's
+`effortSinceLastImprovement`, LocalMIP's `best_objective_` /
+`steps_since_improvement_` — is untouched: those are the search's notion,
+not the dispatch's.
 
-**Zero means no gate at all.** `stall_threshold` returns an unbounded
+**Zero means no gate at all.** `patience_threshold` returns an unbounded
 threshold when the multiplier is `0`, before the clamp below — not a
 threshold of zero, which would retire every worker before it did any
 work. That semantic is load-bearing rather than defensive: searching the
-stall axis needs a point where the gate provably never fires, or "what
+patience axis needs a point where the gate provably never fires, or "what
 does this gate cost?" has no zero to measure against. `0` is the bottom
-of every one of the four ranges, and the top is `kHighsIInf`.
+of every one of the four ranges, and the top is `1e6`.
 
-**Inert region.** `stall_threshold` clamps to the allowance, so a gate
-cannot fire at all while `nnz x k` exceeds the whole budget — that is,
-while the effort option is at or below `k / 81920`. At the shipped stall
-defaults that boundary sits here:
+**The clamp.** `patience_threshold` clamps to a quarter of the allowance,
+so a live gate always fires strictly *before* budget exhaustion. Clamping
+to the allowance itself — which is what it did until #116 — made a
+too-large patience fire exactly at exhaustion, which is behaviourally
+identical to no gate at all and reported nowhere. Since the measured p95
+exceeds the ceiling on three of the four heuristics, that was the common
+case for an honest value rather than a corner. Two consequences for a
+search: any `patience >= effort / 4` gives the same gate, the loosest one
+that can still fire; and a search that wants "no gate" must ask for `0`
+explicitly, because the top of the range no longer means it.
 
-| heuristic | inert at or below | shipped effort default |
-|---|---|---|
-| fj | 0.003125 | 0.0125 |
-| fpr | 0.025 | 0.0884 |
-| local_mip | 0.05 | 0.1821 |
-| scylla | 0.00625 | 0.0296 |
-
-Every gate is therefore live at its own default, and the clamp is doing
-its documented job rather than misbehaving. The boundary now **moves with
-the stall option**: the column is `stall / 81920`, so halving a stall
-value halves the effort below which that gate is inert. A search over
-both axes at once crosses this region, and inside it the run measures the
-budget rather than the gate.
-
-`stall_threshold(nnz, per_nnz, budget)` in `src/heuristic_common.h`
-applies one, clamped to the allowance, with the product taken through
-`saturating_mul` — both factors are user-supplied now, and a wrapped
-product would hand the gate a *small* threshold, silently reducing the
-heuristic to nothing at the top of the option's range. The runner-level
+`patience_threshold(nnz, per_base, budget)` in `src/heuristic_common.h`
+applies one, clamped to `budget / kPatienceCeilingDivisor`, with the
+product taken through `saturating_mul` — both factors are user-supplied,
+and a wrapped product would hand the gate a *small* threshold, silently
+reducing the heuristic to nothing at the top of the option's range. The runner-level
 gate is sized in `run_sequential` (multiplied by the worker count for the
 one option whose scope is per-worker, FJ's); the worker-level gate is
 `HeuristicBudget::worker_stale`, that value divided by the worker count.
@@ -897,7 +931,7 @@ by the worker count.
 
 ### These options do not mean the same thing at every worker count
 
-- **File**: `src/mode_dispatch.cpp` (`kChain`, `budget_is_per_worker`, `make_budget`, `heuristic_effort_budget`, `stall_threshold`)
+- **File**: `src/mode_dispatch.cpp` (`kChain`, `budget_is_per_worker`, `make_budget`, `heuristic_effort_budget`, `patience_threshold`)
 
 A tuned parameter vector is only valid at the worker count `N` it was
 tuned at. Two distinct things vary with `N`, and they must not be
@@ -911,12 +945,12 @@ conflated: what a heuristic is **allowed** to spend, and what it
 |---|---|---|
 | dispatch `total` | `sized x N` — **scales with N** | `sized` — invariant |
 | `per_worker` | `sized` — invariant | `sized / N` |
-| runner gate `stale` | `N x min(nnz x stall, sized)` | `min(nnz x stall, sized)` — invariant |
+| runner gate `stale` | `N x min(patience x nnz << 10, sized / 4)` | `min(patience x nnz << 10, sized / 4)` — invariant |
 | `worker_stale` | invariant | `stale / N` |
 | `attempt_cap` | `sized / 10` — invariant | `sized / (10 N)` |
 
-**The `stale` rows assume `stall > 0`.** At `stall = 0` the gate is
-disabled and `stall_threshold` returns an unbounded threshold before any
+**The `stale` rows assume `patience > 0`.** At `patience = 0` the gate is
+disabled and `patience_threshold` returns an unbounded threshold before any
 clamp, in **both** columns — so the runner gate is `SIZE_MAX` rather than
 `N x 0` or `0`, and `worker_stale` is `SIZE_MAX / N` everywhere. Read
 literally the table would say zero, i.e. a gate retiring every worker
@@ -943,7 +977,7 @@ defaults, seed 0, charged presolve effort from `[Heur]`:
 Scylla's budget is N-invariant exactly as the table above says, and its
 spend still scales nearly linearly with the pool — 8.0x, reproducible to
 the digit across repetitions at both counts. The cause is the granularity
-floor documented under `mip_heuristic_scylla_stall`: one attempt charges
+floor documented under `mip_heuristic_scylla_patience`: one attempt charges
 a whole PDLP solve (`iters x nnz`), and `attempt_cap` does not govern a
 solve once started, so `N` workers each charge whole solves however small
 the dispatch budget is. **"Budget is N-invariant" therefore does not
@@ -951,8 +985,8 @@ imply "spend is N-invariant", and Scylla is the counterexample** — tuning
 `mip_heuristic_scylla_effort` at `N=1` and transferring to 16 workers
 buys roughly 8–16x the spend the screen measured. FJ's 12x rather than
 8x is its 500k callback granularity on an instance this small (see the
-dead zone under `mip_heuristic_fj_effort`); FPR's 0.73x is the stall gate
-firing on aggregate effort while each worker's share shrinks.
+dead zone under `mip_heuristic_fj_effort`); FPR's 0.73x is the patience
+gate firing on aggregate effort while each worker's share shrinks.
 
 **The consequence is a shift in the balance *between* heuristics, not a
 uniform rescale.** FJ's share against LocalMIP goes from 1:34 to 1:3 on
@@ -964,14 +998,16 @@ reveals it. **Record the worker count alongside any tuned vector**;
 when a tree mixes two values, so reuse that rather than inventing a
 second channel.
 
-One quantity *is* transferable: the inert-region boundary
-`stall >= 81920 x effort` above is N-independent for all four, because
-the N factors cancel in FJ's case and are absent in the other three's.
+One quantity *is* transferable: the clamp boundary
+`patience >= effort / 4` is N-independent for all four, because the N
+factors cancel in FJ's case and are absent in the other three's. "This
+configuration's gate is at its ceiling" therefore means the same thing at
+every worker count, even though the effort it is measured against does
+not.
 
-**All four defaults are PROVISIONAL**, pending the per-heuristic
-calibration (#106). They were chosen to reproduce the pre-#111 gate at
-each heuristic's shipped default effort, not measured — and they are the
-reason the constants became options: a 64x sweep of the LocalMIP effort
+**All four defaults are measured** (#113, see "The defaults are measured"
+above), and they are the reason the constants became options in the first
+place: a 64x sweep of the LocalMIP effort
 option moved median presolve wall time by under 4%, because the gate, not
 the budget, is what stops the search, and a `constexpr` cannot be swept
 without a rebuild per point.
@@ -996,42 +1032,60 @@ Scylla PDLP iterations x nnz. Do not align them numerically; align the
 semantics (the same quantile of each heuristic's own inter-acceptance
 effort-gap distribution).
 
-### `mip_heuristic_fj_stall` — FeasibilityJump stall threshold
+### `mip_heuristic_fj_patience` — FeasibilityJump patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `0.71` (measured, #113; `727` before the unit change, #116)
-- **Meaning**: `nnz << 8` step units per worker without an improvement.
-  Scope is **per worker**, matching `mip_heuristic_fj_effort` — the only
-  one of the four with that scope, so the runner-level gate is this times
-  the worker count. This is the value FJ has always used: the one
-  heuristic that was already absolute, and the model the other three were
-  moved onto. It is exactly a quarter of FJ's default per-worker budget
-  (`nnz << 10`), so both gates are unchanged at the shipped defaults.
-- **Suggested range**: 64–1024, plus `0` for no gate.
+- **Meaning**: Step units per worker without an incumbent improvement, as
+  a multiple of `nnz << 10`. Scope is **per worker**, matching
+  `mip_heuristic_fj_effort` — the only one of the four with that scope, so
+  the runner-level gate is this times the worker count. The quarter-of-the
+  -ceiling shape is FJ's own: `nnz << 8` against a `nnz << 10` budget is
+  what it has always shipped, it was the one heuristic already using an
+  absolute threshold, and it is the model the other three were moved onto
+  and the clamp was taken from.
+- **Least trustworthy of the four.** The p50 knee behind its *effort*
+  rests on 8 completed dispatches out of 220 (115 were still improving at
+  the 30 s cap), and its measured p95 wait is 4,446 — 1,566x its own
+  ceiling — so this value is entirely the clamp. Read it as "FJ improves
+  too rarely for a patience to express", not as a tuned number.
+- **Suggested range**: 0.06–1.0, plus `0` for no gate. Values above
+  `effort / 4` are clamped down to it.
 
 ---
 
-### `mip_heuristic_fpr_stall` — FPR stall threshold
+### `mip_heuristic_fpr_patience` — FPR patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `1.918` (measured, #113; `1964` before the unit change, #116)
-- **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
-  without a solution. FPR had no worker-level gate at all before #111
-  (`FprWorker::finished()` returned false unconditionally); it now has
-  one at this value divided by the worker count, and a retired FPR worker
-  stays retired rather than being rebuilt. 2048 is the power of two
-  nearest the pre-#111 gate at the default effort 0.0884 (1810 x nnz).
-- **Suggested range**: 512–8192, plus `0` for no gate.
+- **Meaning**: Coefficient accesses without an incumbent improvement, as a
+  multiple of `nnz << 10`, **whole dispatch**. FPR had no worker-level
+  gate at all before #111 (`FprWorker::finished()` returned false
+  unconditionally); it now has one at this value divided by the worker
+  count, and a retired FPR worker stays retired rather than being rebuilt.
+- **The heuristic the #116 signal change matters most for**: ~3.3 M pool
+  acceptances against 590 incumbent improvements over the probe's 233
+  instances. `egout` is the instance it shows up on in this repo's own
+  suite — 19.98x charged-effort growth over a 20x budget sweep both before
+  and after #111, bounded only once the gate stopped counting
+  acceptances (`tests/test_patience_gate.cpp`).
+- **Suggested range**: 0.5–8, plus `0` for no gate. Values above
+  `effort / 4` are clamped down to it.
 
 ---
 
-### `mip_heuristic_local_mip_stall` — LocalMIP stall threshold
+### `mip_heuristic_local_mip_patience` — LocalMIP patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `7.308` (measured, #113; `7484` before the unit change, #116)
-- **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
-  without an improvement. 4096 is the power of two nearest the pre-#111
-  gate at the default effort 0.1821 (3729 x nnz).
+- **Meaning**: Coefficient accesses without an incumbent improvement, as a
+  multiple of `nnz << 10`, **whole dispatch**. The only one of the four
+  whose *measured* p95 (8.50) is within reach of its ceiling fraction
+  (7.31), so it is the only one where the clamp is barely doing the work —
+  and it is also the heuristic whose improvements most reliably close gap.
+  Raising `kPatienceCeilingDivisor`'s quarter to a half would let that
+  measurement stand and leave the other three clamped; that is the one
+  knob here worth an ablation arm.
 - **Residual**: LocalMIP is the least tightly bounded of the four, and
   unevenly so. With both halves of #111 in place, `p0548` at `threads=1`
   and effort 1.00 reaches the identical fifteen incumbents on 27.8M
@@ -1046,9 +1100,11 @@ effort-gap distribution).
   residual is pool-fill and diversity accepts: `kPoolCapacity` offers are
   admitted unconditionally
   while the pool fills, and structurally diverse near-best solutions
-  afterwards, both of which legitimately reset the gate. Tightening it
-  further would mean redefining improvement as "accepted **and** beat the
-  pool's best", which #111 rules out. **#106 owns this.**
+  afterwards, both of which used to reset the gate. **#116 closed exactly
+  that**: the gate now resets only on an offer that moved the incumbent,
+  so those acceptances no longer clear staleness. The numbers above were
+  measured before that change and are kept as the record of what the
+  acceptance-driven gate did; re-measure them rather than quoting them.
 - **Cost**: not free. At effort 1.00, `threads=1`, seed 0, LocalMIP
   alone, the final presolve-phase incumbent is unchanged on `p0548`
   (28271, and the same fifteen incumbents on the way) and `flugpl`
@@ -1060,19 +1116,20 @@ effort-gap distribution).
   improving its own solution without beating the pool's worst-of-ten now
   retires and is rebuilt from a pool restart, so it is redirected rather
   than killed. Whether that trade wins is a #106 question.
-- **Suggested range**: 1024–16384, plus `0` for no gate.
+- **Suggested range**: 1–16, plus `0` for no gate. Values above
+  `effort / 4` are clamped down to it.
 
 ---
 
-### `mip_heuristic_scylla_stall` — Scylla stall threshold
+### `mip_heuristic_scylla_patience` — Scylla patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `0.284` (measured, #113; `291` before the unit change, #116)
-- **Meaning**: PDLP-iteration x nnz units per nonzero, **whole
-  dispatch**, without a solution. Small in absolute terms because one
-  PDLP solve charges `iters x nnz`, so this is a handful of unproductive
-  pump rounds rather than hundreds of matrix sweeps. 512 is the power of
-  two nearest the pre-#111 gate at the default effort 0.0296 (606 x nnz).
+- **Meaning**: PDLP-iteration x nnz units without an incumbent
+  improvement, as a multiple of `nnz << 10`, **whole dispatch**. Small in
+  absolute terms because one PDLP solve charges `iters x nnz`, so this is
+  a handful of unproductive pump rounds rather than hundreds of matrix
+  sweeps.
 - **Granularity floor**: Scylla cannot honour a threshold below the cost
   of one attempt, and one attempt charges a whole PDLP solve
   (`iters x nnz`), which exceeds `512 x nnz` by 2–7x on the bundled
@@ -1082,11 +1139,11 @@ effort-gap distribution).
   `attempt_cap` is already 45,192 — 15x below the 678k ceiling — and each
   attempt still charges ~1.35M, because `run_cap` does not govern a PDLP
   solve once it has started. Fixing this means bounding the solve itself
-  (a PDLP iteration cap derived from the remaining stall room), not
+  (a PDLP iteration cap derived from the remaining patience room), not
   bounding the attempt. **Flagged for #106.**
-- **Suggested range**: 128–4096, plus `0` for no gate — though on Scylla
+- **Suggested range**: 0.12–2, plus `0` for no gate — though on Scylla
   `0` and any value below one PDLP solve are observationally the same,
-  for the reason above.
+  for the reason above. Values above `effort / 4` are clamped down to it.
 
 ---
 

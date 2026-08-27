@@ -57,9 +57,9 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // round to 0.
     // The model's constraint-matrix nonzero count, taken from the same
     // buffer `make_problem` reads (`ProblemView::nnz`).  It is on this
-    // line because it is the denominator every stall threshold is
-    // expressed in — `mip_heuristic_<name>_stall` counts effort units per
-    // nonzero — and because **no other line of a presolve-only log
+    // line because it is the denominator every effort and patience option
+    // is expressed in — both count multiples of `nnz << 10` — and because
+    // **no other line of a presolve-only log
     // carries it**.  HiGHS prints `MIP <name> has <r> rows; <c> cols;
     // <n> nonzeros;` on entry to branch and bound, which is exactly what
     // `mip_heuristic_presolve_only` exits before, and the two size figures

@@ -47,7 +47,7 @@ Reference PDFs are in `docs/`.
 
 ## Execution Modes
 
-The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla, each with its own effort budget (`mip_heuristic_fj_effort`, `mip_heuristic_fpr_effort`, `mip_heuristic_local_mip_effort`, `mip_heuristic_scylla_effort`) so one can be tuned without moving the others. Each heuristic parallelises the same way: continuous workers that self-terminate, with no epoch barrier and no bit-identical guarantee across runs.
+The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla, each with its own effort budget (`mip_heuristic_fj_effort`, `mip_heuristic_fpr_effort`, `mip_heuristic_local_mip_effort`, `mip_heuristic_scylla_effort`) and its own patience (`mip_heuristic_<name>_patience`, the improvement-free effort it tolerates before giving up) so one can be tuned without moving the others. Both are multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so `effort = 1.0` is one vanilla FJ budget and `patience < effort` reads on its face. Each heuristic parallelises the same way: continuous workers that self-terminate, with no epoch barrier and no bit-identical guarantee across runs.
 
 For a reproducible run, set `threads=1` together with a fixed `random_seed`. That is the project's reproducibility contract — a single worker per heuristic, deterministic within one binary. It is not a separate mode and needs no extra option. It is also *not* the benchmark configuration: one worker per heuristic removes the contention Scylla is built around. [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) has the full contract, including what is deliberately not reproducible and why.
 
@@ -158,7 +158,7 @@ python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600
     --configs off fj fpr local_mip scylla all
 ```
 
-`run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped. To move a heuristic's effort or stall option off its default, pass `--extra-options mip_heuristic_fpr_effort=0.30`; a config name is exactly a `mip_heuristic_suite` value and carries no budget of its own.
+`run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped. To move a heuristic's effort or patience option off its default, pass `--extra-options mip_heuristic_fpr_effort=12.0`; a config name is exactly a `mip_heuristic_suite` value and carries no budget of its own.
 
 `off` is the baseline here, not `vanilla`. On the patched binary the two are the same run — `vanilla` *is* `mip_heuristic_suite=off` unless `--vanilla-binary` points at a separately built unpatched binary — so asking for both without that flag runs every instance twice for one data point, and the harness says so. Add `--vanilla-binary /path/to/unpatched/highs` (plus `vanilla` back in the config list) for a headline baseline; it is the stronger claim, and the only thing that makes the two configs differ.
 

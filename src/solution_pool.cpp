@@ -53,10 +53,30 @@ int SolutionPool::num_integers() const {
 // through helpers.  Unlike the algorithm cores this is not a hot path — it runs once per
 // accepted solution — so the argument here is lock scope, not throughput.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int source) {
-    bool accepted = false;
+SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<double>& sol,
+                                              int source) {
+    AddResult result;
     {
         std::scoped_lock lock(mtx_);
+
+        // The pre-insertion best, decided here rather than by the caller
+        // because this is the one point where "the best before this offer"
+        // is race-free: two workers offering concurrently would otherwise
+        // both read the same "before" outside the lock and both call
+        // themselves an improvement (#116).  An empty pool means the solve
+        // has no feasible solution at all — the sink seeds the pool from
+        // the incumbent at construction — so any offer improves on it.
+        //
+        // The margin mirrors `improving_offers` in
+        // `bench/analyze_presolve_probe.py`, which is where the shipped
+        // patience defaults were measured; see `kImprovementObjMargin`.
+        if (entries_.empty()) {
+            result.improved_best = true;
+        } else {
+            const double best = entries_.front().objective;
+            const double margin = kImprovementObjMargin * std::max(1.0, std::abs(best));
+            result.improved_best = minimize_ ? obj < best - margin : obj > best + margin;
+        }
 
         // Find insertion point (entries_ kept sorted, best first)
         // Heterogeneous (const Entry&, double) on purpose.  That is fine for
@@ -79,7 +99,7 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
                 // NOLINTNEXTLINE(modernize-use-ranges)
                 pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
                 entries_.insert(pos, {obj, sol, source});
-                accepted = true;
+                result.accepted = true;
             } else if (!integer_mask_.empty() && num_integers_ > 0 && !entries_.empty()) {
                 // Diversity-aware path: pool is full and obj doesn't beat worst.
                 // Accept if (a) integer mask is set, (b) obj is within tolerance of
@@ -112,21 +132,27 @@ bool SolutionPool::try_add(double obj, const std::vector<double>& sol, int sourc
                         // NOLINTNEXTLINE(modernize-use-ranges)
                         pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
                         entries_.insert(pos, {obj, sol, source});
-                        accepted = true;
+                        result.accepted = true;
                     }
                 }
             }
         } else {
             entries_.insert(pos, {obj, sol, source});
-            accepted = true;
+            result.accepted = true;
         }
     }
     // Invoke callback outside the pool lock to avoid lock inversion: the
     // callback holds its own mutex to serialize concurrent trySolution calls.
-    if (accepted && on_accept_) {
+    // `improved_best` implies `accepted` in every branch above — an offer
+    // that beats the best beats the worst too, so it takes the standard
+    // replacement path — but tie them together rather than leaving that to
+    // a reader of the admission policy: a staleness gate must never reset
+    // on a solution the pool did not keep.
+    result.improved_best = result.improved_best && result.accepted;
+    if (result.accepted && on_accept_) {
         on_accept_(sol, source);
     }
-    return accepted;
+    return result;
 }
 
 SolutionPool::Snapshot SolutionPool::snapshot() {
@@ -272,5 +298,9 @@ void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {
     // already been attributed), so on flush HiGHS will recognize it as a
     // duplicate and drop it before logging.  Tag it with the generic
     // kSolutionSourceHeuristic so nothing downstream misattributes it.
-    pool.try_add(obj, mipdata->incumbent, kSolutionSourceHeuristic);
+    // Discarded on purpose: this is the pool's initial state, not an
+    // offer from a heuristic.  There is no dispatch yet and so no
+    // staleness counter for the verdict to feed, and the seeded solution
+    // must not be counted as production by anything.
+    static_cast<void>(pool.try_add(obj, mipdata->incumbent, kSolutionSourceHeuristic));
 }

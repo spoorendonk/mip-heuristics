@@ -34,28 +34,61 @@ public:
     IncumbentSink(const IncumbentSink&) = delete;
     IncumbentSink& operator=(const IncumbentSink&) = delete;
 
-    // Offer a candidate solution.  Returns true if the pool accepted it,
-    // in which case HiGHS has already been told, from inside this call.
-    // Safe to call concurrently from any worker.
+    // What one offer did, in the two senses that matter (#116).
     //
-    // `[[nodiscard]]` since issue #111.  This return value is the
-    // project's one definition of "the heuristic produced something" —
-    // `accepted()` counts it, and the `found` field of the `[Heur]` line
-    // is that counter moving.  Every presolve worker used to drop it and
-    // substitute a worker-local notion ("I beat my own best"), which
-    // resets to nothing on rebuild, so the staleness counters the stall
-    // gates read were cleared by solutions the pool had refused: on
-    // `fpr/flugpl` at one worker, 2,785,359 effort against a 69,632
-    // ceiling with exactly one accepted incumbent, i.e. 39 ceilings'
-    // worth of free resets.  A discarded verdict is now a compile error.
+    // `accepted` is the pool's admission verdict, unchanged since #111.
+    // `improved_incumbent` is whether the offer moved the best objective
+    // the solve knows — decided by `SolutionPool` against the best it held
+    // before the insertion, which is the same thing while a presolve
+    // dispatch runs: the sink seeds the pool from the incumbent and every
+    // solution that reaches HiGHS goes through the pool first, so nothing
+    // can lower the incumbent behind the pool's back.  Deriving it there
+    // rather than from a solver field is also what keeps it off a worker
+    // thread, where reading `mipdata` races `addIncumbent` (#98/#99).
+    struct OfferResult {
+        bool accepted = false;
+        bool improved_incumbent = false;
+    };
+
+    // Offer a candidate solution.  When the pool accepts it, HiGHS has
+    // already been told, from inside this call.  Safe to call concurrently
+    // from any worker.
+    //
+    // Two verdicts, because there are two questions and #111 answered the
+    // wrong one with the right mechanism.  Every presolve worker used to
+    // drop the pool's answer and substitute a worker-local notion ("I beat
+    // my own best"), which resets to nothing on rebuild, so the staleness
+    // counters the patience gates read were cleared by solutions the pool
+    // had refused: on `fpr/flugpl` at one worker, 2,785,359 effort against
+    // a 69,632 ceiling with exactly one accepted incumbent, i.e. 39
+    // ceilings' worth of free resets.  #111 pointed the gates at
+    // `accepted`, which fixed the refusals but left the pool's *admission
+    // policy* driving them — it keeps a top-K, so a heuristic beating its
+    // own worst entry resets staleness forever.  #113's probe put a number
+    // on the difference: 233 instances, presolve-only, 30 s, 16 workers,
+    // FPR earns ~3.3 M acceptances against 590 incumbent improvements,
+    // Scylla 367,801 against 374.  Five orders of magnitude, so a patience
+    // calibrated on improvements cannot be spent against a gate that
+    // resets on acceptances.
+    //
+    // So `OfferResult::improved_incumbent` is what every staleness gate
+    // reads (#116), and `accepted` is what `accepted()`, `[Heur] found`
+    // and `[HeurSol] accepted` keep reporting — production, in the sense
+    // of "a feasible solution worth keeping", is still the pool's call and
+    // external tooling reads it as that.
+    //
+    // `[[nodiscard]]` since #111, and returning a struct rather than a
+    // bool is deliberate: it makes every gate site name which fact it
+    // reads instead of inheriting whichever one `offer` happened to mean.
     // The two deliberate discards are spelled `static_cast<void>` with a
     // reason at the call site.
     //
-    // The bool is computed inside `SolutionPool`'s own lock and returned
-    // by value, so reading it adds no shared state (#98/#99).
+    // Both flags are computed inside `SolutionPool`'s own lock — which is
+    // where the pre-offer best is race-free — and returned by value, so
+    // reading them adds no shared state (#98/#99).
     //
     // `effort_at` is the offering worker's own charged effort at the moment
-    // of the offer — the counter that worker's *own* stall gate reads, so a
+    // of the offer — the counter that worker's *own* patience gate reads, so a
     // difference between two `effort_at` values is directly comparable with
     // `HeuristicBudget::worker_stale` (#106).  Every worker keeps such a
     // counter already; none of them is recomputed or redefined for this,
@@ -69,8 +102,8 @@ public:
     // monotone across rebuilds; see `WorkerTrace` in worker_base.h.
     //
     // Emits the `[HeurSol]` trace line (see incumbent_sink.cpp).
-    [[nodiscard]] bool offer(double objective, const std::vector<double>& solution,
-                             const WorkerTrace& trace, size_t effort_at);
+    [[nodiscard]] OfferResult offer(double objective, const std::vector<double>& solution,
+                                    const WorkerTrace& trace, size_t effort_at);
 
     // Number of offers the pool has accepted since construction.  The
     // `found` field of the `[Heur]` instrumentation line (issue #95) is

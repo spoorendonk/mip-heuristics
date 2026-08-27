@@ -27,7 +27,7 @@
 //   * `make_budget` floored `attempt_cap` at 1, so a zero budget licensed
 //     one attempt.  For Scylla one attempt is a whole PDLP solve, which
 //     `attempt_cap` does not govern once started.
-//   * `stall_threshold` special-cases a zero budget by returning the
+//   * `patience_threshold` special-cases a zero budget by returning the
 //     *unclamped* threshold, so the one ceiling that could still have
 //     bounded such a run was the one that did not apply.
 //

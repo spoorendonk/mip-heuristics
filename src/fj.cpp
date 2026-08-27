@@ -69,7 +69,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
                     state.trace.effort_base = state.worker->traced_effort();
                 }
                 // `budget.worker_stale` is this worker's share of the
-                // dispatch's absolute stall ceiling (issue #111) — the
+                // dispatch's absolute patience ceiling (issue #111) — the
                 // `nnz << 8` FJ used to compute from its own copy of the
                 // matrix, now sized once alongside every other
                 // heuristic's.

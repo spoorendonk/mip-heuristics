@@ -57,7 +57,7 @@ class HeuristicSample:
     effort_per_ms: float
     found: bool
     # Constraint-matrix nonzeros of the post-presolve MIP — the denominator
-    # `mip_heuristic_<name>_stall` is expressed in.  None for a log written
+    # `mip_heuristic_<name>_patience` is expressed in.  None for a log written
     # before #106 added the field.
     #
     # It is on this line, and not read from HiGHS's own model header,
@@ -78,7 +78,7 @@ class HeurSolSample:
     Emitted by `IncumbentSink::offer` in `src/incumbent_sink.cpp`, once per
     solution any heuristic worker offers the shared pool — accepted or not.
     `[Heur]` is one line per *dispatch* and therefore cannot show what
-    happens inside one; this is the line the stall-threshold calibration
+    happens inside one; this is the line the patience calibration
     (#106 / #107) reads.
 
     `effort_at` is the offering worker's own charged effort at the moment of
@@ -112,7 +112,7 @@ class HeurSolSample:
 
 
 # Whether a per-worker `effort_at` gap must be multiplied by the worker
-# count to be comparable with the `mip_heuristic_<name>_stall` option value.
+# count to be comparable with the `mip_heuristic_<name>_patience` option value.
 #
 # The option is one number, but the scope it is armed at differs per
 # heuristic and always has (`src/mode_dispatch.cpp`, `make_budget`):
@@ -129,11 +129,11 @@ class HeurSolSample:
 #               per-worker gap is again in the option's unit.
 #
 # Getting this wrong is not cosmetic: at the probe's 16 workers, reading a
-# p90 straight off an unscaled fpr/local_mip gap ships a stall default 16x
+# p90 straight off an unscaled fpr/local_mip gap ships a patience default 16x
 # tighter than intended — the direction this codebase repeatedly flags as
 # the one that costs solutions.
 #
-# `fpr_lp` is deliberately absent: it has no stall option (it keeps the
+# `fpr_lp` is deliberately absent: it has no patience option (it keeps the
 # pre-#111 `worker_budget >> 2` and its own attempt counters), so there is
 # no value for a quantile of its gaps to be offered as, and
 # `normalized_gaps` refuses rather than inventing a scope.
@@ -155,7 +155,7 @@ _GAP_SCALES_WITH_WORKERS = {
 # measured `gt2` dispatch where *every* offer was accepted, `total -
 # productive` still came out at 90% of the dispatch, and on `lseu` at 86%.
 # A calibration reading that would conclude Scylla wastes nearly everything
-# and set a very tight `mip_heuristic_scylla_stall`.  Scaling by N would not
+# and set a very tight `mip_heuristic_scylla_patience`.  Scaling by N would not
 # fix it either — only the PDLP part of the counter is amortised, the FPR
 # rounding part is charged in full — so the number is withheld with its
 # reason instead.  `productive_effort` and the gaps stay valid for Scylla:
@@ -178,9 +178,9 @@ class DispatchTrace:
     dispatch — do not re-derive that binding from log order; see
     `HeurSolSample.heur_index`.
 
-    This is the unit #107 calibrates a stall threshold on: a stall threshold
-    answers "how much improvement-free effort is enough before this is going
-    nowhere?", and the answer is a high quantile (p90-p95) of
+    This is the unit #107 calibrates patience on: patience answers "how much
+    improvement-free effort is enough before this is going nowhere?", and
+    the answer is a high quantile (p90-p95) of
     `normalized_gaps()`, which is already in the option's own unit.
     """
 
@@ -259,12 +259,12 @@ class DispatchTrace:
         """Effort between consecutive accepted offers, per worker.
 
         Raw, in the offering worker's own counter — see `normalized_gaps`
-        for the form that is comparable with a stall option.  Gaps are taken
+        for the form that is comparable with a patience option.  Gaps are taken
         *within* a worker, since `effort_at` is that worker's own counter and
         the sequences of different workers interleave in the log.  With
         `include_first` (the default) each worker's first acceptance also
         contributes the effort it spent getting there, which is a genuine
-        improvement-free interval and the one a stall gate would have cut
+        improvement-free interval and the one a patience gate would have cut
         first.
         """
         per_worker: dict[int, list[int]] = {}
@@ -282,20 +282,20 @@ class DispatchTrace:
         """Multiplier putting an `acceptance_gaps` value in the option's scope.
 
         `1` or the worker count; see `_GAP_SCALES_WITH_WORKERS`.  Raises when
-        the heuristic has no stall option, or when it needs a worker count
+        the heuristic has no patience option, or when it needs a worker count
         the log did not carry.
         """
         scales = _GAP_SCALES_WITH_WORKERS.get(self.name)
         if scales is None:
             raise ValueError(
-                f"{self.name} has no mip_heuristic_*_stall option, so its gaps have "
+                f"{self.name} has no mip_heuristic_*_patience option, so its gaps have "
                 "no option scope to be expressed in"
             )
         if not scales:
             return 1
         if not self.workers:
             raise ValueError(
-                f"{self.name}'s stall option is whole-dispatch scoped, so a per-worker "
+                f"{self.name}'s patience option is whole-dispatch scoped, so a per-worker "
                 "gap must be scaled by the worker count, and the log carried no "
                 "'Thread count N (of M threads)' line to read it from"
             )
@@ -304,7 +304,7 @@ class DispatchTrace:
     def normalized_gaps(
         self, nnz: int | None = None, *, include_first: bool = True
     ) -> list[float]:
-        """`acceptance_gaps`, in the unit `mip_heuristic_<name>_stall` uses.
+        """`acceptance_gaps`, in the unit `mip_heuristic_<name>_patience` uses.
 
         Effort units per constraint-matrix nonzero, at the option's own
         scope, so a quantile of this list is directly a candidate value for
@@ -419,7 +419,7 @@ class SolveResult:
         `MIP <name> has <r> rows; <c> cols; <n> nonzeros;` header
         `_MODEL_HEADER_RE` reads — so on exactly the logs that carry a
         trace, `num_nonzeros` is None.  The block would be the wrong number
-        anyway (it is the *original* model, and the stall options are
+        anyway (it is the *original* model, and the patience options are
         denominated in the post-presolve MIP matrix), which is why the field
         is emitted from C++ rather than recovered by a better regex.  The
         header stays as the fallback for a log from a pre-#106 binary.
@@ -444,7 +444,7 @@ class SolveResult:
                         "(log written by a binary predating issue #106) and the log has "
                         "no 'MIP <name> has <r> rows; <c> cols; <n> nonzeros;' header "
                         "(log_dev_level=3 prints a Rows/Cols/Nonzeros block instead, and "
-                        "that block is the pre-presolve model, not the matrix the stall "
+                        "that block is the pre-presolve model, not the matrix the patience "
                         "options are denominated in)"
                     )
                 trace = DispatchTrace(

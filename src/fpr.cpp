@@ -61,13 +61,13 @@ using VarOrderTable = std::vector<std::vector<HighsInt>>;
 // grounds that the runner's stale gate was the backstop.  Issue #111
 // removed that reasoning — under an independently tuned per-heuristic
 // budget (#110) nothing else bounds one worker — so the worker now owns
-// an absolute stall gate of its own (`base_.stale_budget`, sized from
-// `mip_heuristic_fpr_stall`).  It has no rebuild path: a retired FPR worker stays
+// an absolute patience gate of its own (`base_.stale_budget`, sized from
+// `mip_heuristic_fpr_patience`).  It has no rebuild path: a retired FPR worker stays
 // retired and `run_attempt` reports zero effort, which is how the
 // opportunistic runner retires the slot.
 //
-// **Pause/resume is stall-neutral.**  The gate counts effort since this
-// worker's last accepted solution, never attempts and never calls, so a
+// **Pause/resume is patience-neutral.**  The gate counts effort since
+// this worker's last incumbent improvement, never attempts and never calls, so a
 // `kBudgetGate` pause neither advances it by itself nor resets it: an
 // attempt spanning K calls is charged exactly the sum of what those K
 // calls spent, which is what one uninterrupted call of the same total
@@ -341,7 +341,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     size_t prev_loop_effort = 0;
 
     // Issue #111: this call may not outrun what is left of the worker's
-    // stall allowance.  Without the clamp the *slice* bounds the call,
+    // patience allowance.  Without the clamp the *slice* bounds the call,
     // and the slice is `HeuristicBudget::attempt_cap` = `total / (10N)`,
     // which grows with the effort option — so a stalled worker would
     // still overshoot its absolute ceiling by a budget-proportional
@@ -349,10 +349,10 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     // the DFS pause at the ceiling rather than past it, since
     // `fpr_attempt_step` is handed `budget_remaining` derived from
     // `call_cap`.
-    const size_t stall_room = base_.stale_budget > base_.effort_since_improvement
-                                  ? base_.stale_budget - base_.effort_since_improvement
-                                  : 0;
-    const size_t call_cap = std::min(attempt_budget, std::max<size_t>(stall_room, 1));
+    const size_t patience_room = base_.stale_budget > base_.effort_since_improvement
+                                     ? base_.stale_budget - base_.effort_since_improvement
+                                     : 0;
+    const size_t call_cap = std::min(attempt_budget, std::max<size_t>(patience_room, 1));
 
     while (attempt.effort < call_cap) {
         // `past_deadline()`, not `terminated()` (issue #114).  This poll
@@ -457,7 +457,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 #endif
                 // Attempt paused at the per-call slice boundary — return so
                 // peers do their next attempt's work and we resume here
-                // next call.  Charge what the pause spent: the stall
+                // next call.  Charge what the pause spent: the patience
                 // counter is in effort units, so slicing an attempt
                 // across calls costs it exactly what running it in one
                 // call would (see the class comment).
@@ -472,17 +472,21 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         HeuristicResult result = fpr_attempt_finish(attempt_state_, mipsolver_, cfg, rng_);
         attempt.effort += attempt_state_.effort_consumed - before_finish;
 
-        // Pool acceptance, not "this attempt reached a feasible point"
-        // (#111): FPR reaches the same feasible point over and over on
-        // some models, and each rediscovery used to clear the staleness
-        // counter the gate reads.  `offer` is still called for every
-        // feasible result, so nothing that reached HiGHS before stops
-        // reaching it — only the verdict is now read.
+        // Incumbent improvement, not "this attempt reached a feasible
+        // point" (#111) and not mere pool acceptance (#116): FPR reaches
+        // the same neighbourhood over and over on some models, and it is
+        // the heuristic the two signals differ most for — ~3.3 M
+        // acceptances against 590 incumbent improvements over #113's 233
+        // instances, five orders of magnitude.  `offer` is still called
+        // for every feasible result, so nothing that reached HiGHS before
+        // stops reaching it — only the verdict read has changed.
         // `effort_at`: the worker's cumulative charge including this
         // attempt's work so far.  `charge(attempt)` runs at both exits from
         // this function, so `base_.total_effort` does not yet contain it.
-        if (result.found_feasible && sink_.offer(result.objective, result.solution, trace_,
-                                                 trace_.at(base_.total_effort + attempt.effort))) {
+        if (result.found_feasible && sink_
+                                         .offer(result.objective, result.solution, trace_,
+                                                trace_.at(base_.total_effort + attempt.effort))
+                                         .improved_incumbent) {
             attempt.found_improvement = true;
         }
 
@@ -515,12 +519,12 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     for (size_t w = 0; w < exec.num_workers; ++w) {
         uint32_t seed = exec.worker_seed(static_cast<int>(w));
         // `budget.total >> 2` is the *attempt-wide* `cfg.max_effort` hint,
-        // not a stall threshold: it sizes Phase 3's repair/WalkSAT
+        // not a patience threshold: it sizes Phase 3's repair/WalkSAT
         // sub-budgets and used to be spelled `budget.stale` only because
         // the two happened to be the same number.  Issue #111 made
         // `budget.stale` absolute, so the hint is written out here rather
         // than silently following it.  `budget.worker_stale` is this
-        // worker's share of the dispatch's absolute stall ceiling.
+        // worker's share of the dispatch's absolute patience ceiling.
         workers.push_back(std::make_unique<FprWorker>(
             exec, *problem.csc, sink, var_orders, problem.binary.data(), static_cast<int>(w), seed,
             budget.total >> 2, budget.worker_stale));
@@ -541,7 +545,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
             // no `attempt_with_rebuild`: FPR's diversity already comes
             // from the per-attempt rotation through `kInitialFprConfigs`,
             // so a rebuilt worker would resume the same rotation with a
-            // fresh stall allowance and the gate would bound nothing.
+            // fresh patience allowance and the gate would bound nothing.
             return worker->run_attempt(run_cap);
         });
 }

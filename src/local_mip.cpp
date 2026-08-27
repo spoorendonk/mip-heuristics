@@ -208,8 +208,8 @@ std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMat
         // running — which is before the `LocalMipWorker` and its
         // `WorkerBudgetState` exist, and `MakeState` yields no
         // `AttemptResult` for `note_staleness` either.  So there is no
-        // staleness counter for the pool's answer to feed, at either
-        // level.
+        // staleness counter for either half of the verdict to feed, at
+        // either level.
         // `effort_at` is the construction sweep this call has just paid.
         // The `LocalMipWorker` the caller builds for this slot takes the
         // same number as its `WorkerTrace::effort_base`, so the slot's

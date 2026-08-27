@@ -16,6 +16,19 @@ inline constexpr double kDiversityObjTolerance = 0.10;
 // Minimum Hamming distance (as fraction of integer vars) to qualify as diverse.
 inline constexpr double kDiversityMinHammingFrac = 0.05;
 
+// Relative margin an offer must clear to count as having moved the pool's
+// best objective, with an absolute floor of the same size (issue #116).
+//
+// Deliberately not a re-use of `kDiversityObjTolerance`: that one is an
+// *admission* band — how far below best a structurally different solution
+// may sit and still be worth keeping — so reading it as an improvement
+// test would call a 9%-worse solution an improvement.  This is the margin
+// `bench/analyze_presolve_probe.py`'s `improving_offers` reconstructs an
+// improvement trajectory with, copied on purpose: the shipped patience
+// defaults are p95 inter-improvement gaps measured under that definition,
+// and a gate resetting on a different one is not the gate they calibrate.
+inline constexpr double kImprovementObjMargin = 1e-9;
+
 // Thread-safe solution pool. Keeps top-K solutions sorted by objective.
 // Supports restart strategies: guided crossover, neighborhood crossover,
 // and biased copy.  When an integer mask is set, insertion is
@@ -53,15 +66,45 @@ public:
     // workers may trigger it concurrently).
     void set_on_accept(std::function<void(const std::vector<double>&, int)> callback);
 
-    // Try to add a solution. Returns true if added. Invokes the on_accept
-    // callback (if set) after releasing the pool lock.
+    // What one offer did to the pool.  Two facts, because they are two
+    // questions with different answers and #116 is about not confusing
+    // them: `accepted` is the admission policy's verdict — is this worth
+    // keeping? — and `improved_best` is whether the offer moved the best
+    // objective the pool holds.
+    //
+    // `accepted && !improved_best` is the ordinary case, not an edge one:
+    // the pool admits its first `capacity_` offers unconditionally while
+    // it fills, and structurally diverse near-best solutions afterwards.
+    // Measured over 233 instances at 16 workers, FPR earns ~3.3 M
+    // acceptances against 590 incumbent improvements.  So a staleness gate
+    // reading `accepted` is reading the admission policy rather than the
+    // heuristic's productivity, and cannot be calibrated (issue #116);
+    // gates read `improved_best`, while `[Heur] found` and
+    // `[HeurSol] accepted` keep reporting `accepted`.
+    //
+    // `improved_best` implies `accepted`: an offer that beats the best
+    // beats the worst too, so it takes the standard replacement path.
+    struct AddResult {
+        bool accepted = false;
+        bool improved_best = false;
+    };
+
+    // Try to add a solution.  Invokes the on_accept callback (if set)
+    // after releasing the pool lock.
     // `source` is one of the kSolutionSource* constants and is stored on
     // the inserted entry for later provenance-aware flushing.
     // Insertion policy (when pool is full):
     //   1. If obj improves on worst: replace worst (standard).
     //   2. Else if obj is within kDiversityObjTolerance of best and Hamming
     //      diversity exceeds kDiversityMinHammingFrac: replace most similar.
-    bool try_add(double obj, const std::vector<double>& sol, int source);
+    //
+    // `improved_best` is decided against the best entry as it stood *before*
+    // this insertion, read under the same hold of the pool lock, which is
+    // the only place that comparison is race-free: a worker cannot ask the
+    // solver for the pre-offer incumbent without racing `addIncumbent`
+    // (see `ProblemView::incumbent`, #98), and two workers offering
+    // concurrently would otherwise both read the same "before".
+    [[nodiscard]] AddResult try_add(double obj, const std::vector<double>& sol, int source);
 
     // Atomically snapshot feasibility and current best objective.
     Snapshot snapshot();

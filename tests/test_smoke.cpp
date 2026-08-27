@@ -78,7 +78,7 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         // Settable across the documented range.  `1.0` is the top of what
         // ships and tunes; the ceiling is `1e6`, which exists so #113's
         // calibration probe can hand a heuristic a budget that cannot bind
-        // — with the stall gate off as well, the wall clock is then the
+        // — with the patience gate off as well, the wall clock is then the
         // single stopping rule and the trace measures the heuristic rather
         // than the setting being derived from it.
         REQUIRE(highs.setOptionValue(name, 0.0) == HighsStatus::kOk);
@@ -93,22 +93,25 @@ TEST_CASE("Options: effort split defaults", "[options]") {
     }
 }
 
-TEST_CASE("Options: stall threshold defaults", "[options][stall]") {
-    // The four stall thresholds were `constexpr` values in the heuristics'
-    // own headers until #106 made them options, because the stall gate —
-    // not the effort budget — is what actually limits a presolve dispatch,
-    // and a constant cannot be swept without a rebuild per point.
+TEST_CASE("Options: patience defaults", "[options][patience]") {
+    // The four patience values were `constexpr` values in the heuristics'
+    // own headers until #106 made them options, because the patience gate
+    // — not the effort budget — is what actually limits a presolve
+    // dispatch, and a constant cannot be swept without a rebuild per point.
+    // They were spelled `mip_heuristic_<name>_stall` until #116, which
+    // renamed them with **no alias**: the parameter is a floor on spend,
+    // not a description of a state the search is in, and this project does
+    // not carry option aliases.
     //
     // Pinned here for the same reason the effort defaults above are: they
     // are registered in third_party/highs_patch/apply_patch.cmake, which
-    // nothing else compiles or checks.  Units are effort units per matrix
-    // nonzero and are **not** comparable across heuristics (FJ counts step
-    // units, FPR and LocalMIP coefficient accesses, Scylla PDLP iters x
-    // nnz), so read these as four unrelated numbers that happen to share a
-    // suffix.
+    // nothing else compiles or checks.  They are **not** comparable across
+    // heuristics (FJ counts step units, FPR and LocalMIP coefficient
+    // accesses, Scylla PDLP iters x nnz), so read these as four unrelated
+    // numbers that happen to share a suffix.
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    struct StallDefault {
+    struct PatienceDefault {
         const char* name;
         double value;
         double effort;
@@ -116,27 +119,51 @@ TEST_CASE("Options: stall threshold defaults", "[options][stall]") {
     // Same unit as the effort option beside it since #116 -- a multiple of
     // `nnz << 10` -- so the pair is directly comparable and every one of
     // these is a quarter of its own ceiling, which is what the clamp in the
-    // #113 derivation produced.
-    const auto stalls = std::to_array<StallDefault>({
-        {"mip_heuristic_fj_stall", 0.71, 2.84},
-        {"mip_heuristic_fpr_stall", 1.918, 7.672},
-        {"mip_heuristic_local_mip_stall", 7.308, 29.232},
-        {"mip_heuristic_scylla_stall", 0.284, 1.136},
+    // #113 derivation produced and what `patience_threshold` now enforces
+    // for any value.
+    const auto patiences = std::to_array<PatienceDefault>({
+        {"mip_heuristic_fj_patience", 0.71, 2.84},
+        {"mip_heuristic_fpr_patience", 1.918, 7.672},
+        {"mip_heuristic_local_mip_patience", 7.308, 29.232},
+        {"mip_heuristic_scylla_patience", 0.284, 1.136},
     });
-    for (const auto& [name, expected, effort] : stalls) {
+    for (const auto& [name, expected, effort] : patiences) {
         double value = -1.0;
         REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
         REQUIRE(value == expected);
-        // Below its own ceiling, or the gate can never fire.
+        // Below its own ceiling, or the gate can never fire.  Exactly a
+        // quarter of it, in fact, which is where `kPatienceCeilingDivisor`
+        // would clamp anything larger.
         REQUIRE(value < effort);
-        // 0 is legal and means "no staleness gate at all" — load-bearing
-        // for the stall-axis search, which needs a point where the gate
+        REQUIRE(value == effort / 4.0);
+        // 0 is legal and means "no patience gate at all" — load-bearing
+        // for the patience-axis search, which needs a point where the gate
         // provably never fires.  If the registered lower bound ever moved
         // above zero that semantic would become inexpressible from the
         // option, silently.
         REQUIRE(highs.setOptionValue(name, 0.0) == HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, 1e6) == HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, expected) == HighsStatus::kOk);
+    }
+}
+
+TEST_CASE("Options: the retired stall spelling is gone, with no alias", "[options][patience]") {
+    // #116 renamed `mip_heuristic_<name>_stall` to `_patience` and this
+    // project does not carry option aliases — `apply_patch.cmake` refuses
+    // any HiGHS tree whose patch-version marker is not the current one and
+    // never upgrades an older option layout in place, so a build that
+    // still answered to the old name would mean the patch had been applied
+    // twice or the rename was incomplete.  HiGHS's own `getOptionValue`
+    // reports an unknown name only through its return status, and every
+    // instance we build sets `output_flag=false`, so nothing would say so.
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    for (const char* name : {"mip_heuristic_fj_stall", "mip_heuristic_fpr_stall",
+                             "mip_heuristic_local_mip_stall", "mip_heuristic_scylla_stall"}) {
+        double value = -1.0;
+        INFO(name);
+        REQUIRE(highs.getOptionValue(name, value) != HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, 1.0) != HighsStatus::kOk);
     }
 }
 

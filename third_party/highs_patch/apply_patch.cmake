@@ -79,7 +79,8 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # two; what the marker has to distinguish is trees, not commits.
 #
 # Version 9 is #106's calibration surface: the four
-# `mip_heuristic_<name>_stall` option records, the
+# `mip_heuristic_<name>_patience` option records (registered as
+# `_stall` at the time; renamed by #116), the
 # `mip_heuristic_presolve_only` record, and the presolve-only early exit
 # inserted into HighsMipSolver.cpp beside the run_presolve call site.
 #
@@ -87,15 +88,24 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # `kEffortMax` (#113).  The bound is what a *record* carries, so it is
 # inserted text and needs the bump even though nothing else moved.
 #
-# Version 11 replaces all eight effort and stall defaults with the values
-# #113's calibration probe measured.  They are record defaults, so they are
-# inserted text.  See `bench/ablation_effort/` for the derivation and
-# `docs/PARAMETERS.md` for the rule; the short version is that effort is the
-# median budget that reached a dispatch's last incumbent improvement, and
-# the stall threshold is the measured wait for the next one, clamped to a
-# quarter of the ceiling so a barren dispatch cannot spend the whole budget
-# finding nothing.
-set(PATCH_VERSION "13")
+# Version 11 replaces all eight effort and patience defaults with the
+# values #113's calibration probe measured.  They are record defaults, so
+# they are inserted text.  See `bench/ablation_effort/` for the derivation
+# and `docs/PARAMETERS.md` for the rule; the short version is that effort
+# is the median budget that reached a dispatch's last incumbent
+# improvement, and patience is the measured wait for the next one, clamped
+# to a quarter of the ceiling so a barren dispatch cannot spend the whole
+# budget finding nothing.
+#
+# Version 14 renames the four `mip_heuristic_<name>_stall` records to
+# `mip_heuristic_<name>_patience` (#116).  A record identifier is inserted
+# text, and there is no alias: a tree registering the old name is rejected
+# rather than upgraded, which is the whole contract above.  The name change
+# is not cosmetic — the parameter is a floor on spend, not a description of
+# a state the search is in — and it lands with the gate's signal moving
+# from pool acceptance to incumbent improvement, which is what makes the
+# measured values mean anything.
+set(PATCH_VERSION "14")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -243,7 +253,7 @@ endif()
 #   anchor is a choice, not a constraint: the deviation is smallest at
 #   the low worker counts the test suite actually runs at (1–2 on CI,
 #   `(hardware_concurrency()+1)/2` locally), and erring high is the cheap
-#   direction once stall thresholds are absolute (#111) — an over-large
+#   direction once patience is absolute (#111) — an over-large
 #   budget is truncated by a gate that fires, an under-large one is a
 #   hard cap nothing recovers.  Treat all four as the starting point of
 #   #106's calibration, not the result of one.
@@ -275,28 +285,31 @@ endif()
 # constructor default, and every setOptionValue for it fails with no
 # diagnostic anywhere.
 #
-# ── The stall-threshold options, and the presolve-only switch (#106) ──
+# ── The patience options, and the presolve-only switch (#106) ──
 #
-# The four `mip_heuristic_<name>_stall` options were `constexpr` values in
-# each heuristic's own header until #106.  They are the parameter that
-# actually limits a presolve dispatch — a 64x sweep of the LocalMIP effort
-# option moved median presolve wall time by under 4%, because the stall
-# gate, not the budget, is what stops the search — and a constant cannot
-# be swept without a rebuild per point, so the calibration could not reach
-# it at all.
+# The four `mip_heuristic_<name>_patience` options were `constexpr` values
+# in each heuristic's own header until #106, and were spelled `_stall`
+# until #116.  They are the parameter that actually limits a presolve
+# dispatch — a 64x sweep of the LocalMIP effort option moved median
+# presolve wall time by under 4%, because the patience gate, not the
+# budget, is what stops the search — and a constant cannot be swept
+# without a rebuild per point, so the calibration could not reach it at
+# all.
 #
-# Units are effort units per constraint-matrix nonzero, and they are **not
+# Each is a multiple of `nnz << 10`, the same unit as the effort option
+# beside it (#116), so the pair reads as a floor and a ceiling on one
+# axis and `patience < effort` needs no arithmetic.  They are **not
 # comparable across heuristics**: FJ counts step units, FPR and LocalMIP
 # coefficient accesses, Scylla PDLP iterations x nnz.  Scope follows each
 # heuristic's effort option — FJ's is per worker, the other three size a
 # whole dispatch (see `kChain` in src/mode_dispatch.cpp).  The defaults
-# reproduce the pre-#111 gate at each heuristic's shipped default effort,
-# rounded to the neighbouring power of two, and are provisional.
+# are #113's measured p95 wait for the next incumbent improvement, clamped
+# to a quarter of the ceiling, which is where all four of them land.
 #
-# **0 means no staleness gate at all**, not "give up immediately" — see
-# `stall_threshold` in src/heuristic_common.h.  That is why the range is
-# `[0, kHighsIInf]` and why the zero end is load-bearing: a search of the
-# stall axis needs a point where the gate provably never fires.
+# **0 means no patience gate at all**, not "give up immediately" — see
+# `patience_threshold` in src/heuristic_common.h.  That is why the zero
+# end of the range is load-bearing: a search of the patience axis needs a
+# point where the gate provably never fires.
 #
 # `mip_heuristic_presolve_only` exits the solve after the presolve
 # heuristic chain, before the root LP, keeping whatever incumbent the
@@ -342,10 +355,10 @@ set(_patch_options
     "mip_heuristic_fpr_effort:double:7.672:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
     "mip_heuristic_local_mip_effort:double:29.232:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
     "mip_heuristic_scylla_effort:double:1.136:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
-    "mip_heuristic_fj_stall:double:0.71:${kEffortMax}:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
-    "mip_heuristic_fpr_stall:double:1.918:${kEffortMax}:Staleness threshold for the FPR presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
-    "mip_heuristic_local_mip_stall:double:7.308:${kEffortMax}:Staleness threshold for the LocalMIP presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
-    "mip_heuristic_scylla_stall:double:0.284:${kEffortMax}:Staleness threshold for the Scylla presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
+    "mip_heuristic_fj_patience:double:0.71:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_fpr_patience:double:1.918:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_local_mip_patience:double:7.308:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_scylla_patience:double:0.284:${kEffortMax}:Patience for the Scylla presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
 
 # The upstream record block all four record insertions anchor on, spelled

@@ -9,10 +9,11 @@ struct ProblemView;
 
 namespace scylla {
 
-// Stall threshold: `mip_heuristic_scylla_stall`, in effort units (PDLP
-// iterations x nnz) per constraint-matrix nonzero (issue #111, made an
-// option by #106).  Scylla's counter is in a different unit from FPR's
-// and LocalMIP's, so the values are not comparable across heuristics.
+// Patience: `mip_heuristic_scylla_patience`, a multiple of `nnz << 10` —
+// the same unit as this heuristic's effort option (issue #111, made an
+// option by #106, put on the effort unit by #116).  Scylla's counter is
+// in PDLP iterations x nnz, a different unit from FPR's and LocalMIP's,
+// so the values are not comparable across heuristics.
 //
 // Scope: **whole dispatch**, matching `mip_heuristic_scylla_effort` —
 // with one documented deviation: Scylla hands its workers the

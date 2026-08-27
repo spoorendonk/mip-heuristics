@@ -3,8 +3,8 @@
 presolve-only probe results tree.
 
 Issue #113.  The probe runs the full PLATO list once at a deliberately
-generous configuration — all four presolve heuristics, effort 1.0, stall
-gates disabled, `mip_heuristic_presolve_only` — and this script turns that
+generous configuration — all four presolve heuristics, an effort that cannot
+bind, patience gates disabled, `mip_heuristic_presolve_only` — and this script turns that
 tree into the three things the tuning stage cannot proceed without:
 
 1. **The informative set.**  Instances the presolve *chain* produced at least
@@ -22,8 +22,8 @@ tree into the three things the tuning stage cannot proceed without:
 3. **The effort trajectories.**  Per heuristic: productive effort (charged
    effort at the last accepted solution), stale effort (the rest), and the
    inter-acceptance effort-gap distribution normalised by `nnz`, with its
-   quantiles.  The stall thresholds are per-nonzero integers, so a high
-   quantile of that distribution is directly the value to set.
+   quantiles.  A patience is in the same unit those gaps normalise to, so a
+   high quantile of that distribution is directly the value to set.
 
 **The filter is a union over configurations, never one config's outcome.**
 Which instances yield a solution depends on which configuration ran (at
@@ -126,7 +126,7 @@ CHAIN_SOURCES = frozenset("AMGJ")
 # counts for the informative set and never enters the gap distribution.
 OFF_SLOT_WORKER = -1
 
-# Whether a heuristic's stall option is divided by the worker count on its way
+# Whether a heuristic's patience option is divided by the worker count on its way
 # to the per-worker gate that the measured gaps are a distribution of.
 #
 #   fj        the option's scope is per worker; the runner multiplies it by N
@@ -139,7 +139,7 @@ OFF_SLOT_WORKER = -1
 #
 # This is the mapping from a measured per-worker gap to an option value; it
 # mirrors `run_sequential` / `make_budget`, so it has to move if they do.
-STALL_SCALES_WITH_WORKERS: dict[str, bool] = {
+PATIENCE_SCALES_WITH_WORKERS: dict[str, bool] = {
     "fj": False,
     "fpr": True,
     "local_mip": True,
@@ -149,7 +149,7 @@ STALL_SCALES_WITH_WORKERS: dict[str, bool] = {
 # Whether a heuristic's effort option sizes one worker's allowance rather
 # than a whole dispatch.  FJ is the only one, flagged `budget_is_per_worker`
 # in `kChain`; the other three are divided by N in `make_budget`.  It is
-# here for the same reason `STALL_SCALES_WITH_WORKERS` is: a measured
+# here for the same reason `PATIENCE_SCALES_WITH_WORKERS` is: a measured
 # dispatch total is only comparable to an option value through this.
 BUDGET_IS_PER_WORKER: dict[str, bool] = {
     "fj": True,
@@ -159,7 +159,7 @@ BUDGET_IS_PER_WORKER: dict[str, bool] = {
 }
 
 # `heuristic_effort_budget`'s base, from `src/heuristic_common.h`: since
-# #116 both the effort option and the stall threshold are multiples of
+# #116 both the effort option and the patience are multiples of
 # `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so
 # the two are directly comparable and neither needs a conversion constant.
 EFFORT_BASE_SHIFT = 10
@@ -197,14 +197,14 @@ KNEE_QUANTILE = 0.5
 PATIENCE_CEILING_FRACTION = 0.25
 
 # Quantiles of the inter-acceptance gap distribution.  p90-p95 is the natural
-# stall-threshold setting and the tail beyond it is the sharpness, so both are
+# patience setting and the tail beyond it is the sharpness, so both are
 # in the default set.
 DEFAULT_QUANTILES: tuple[float, ...] = (0.5, 0.75, 0.9, 0.95, 0.99)
 
-# The quantile the suggested stall threshold is read off, independently of
+# The quantile the suggested patience is read off, independently of
 # `--quantiles`, so the suggestion never disappears because someone asked for
 # a different table.
-STALL_QUANTILE = 0.95
+PATIENCE_QUANTILE = 0.95
 
 # How many lines of a log are scanned for the patch marker.  It is line 3 of
 # every patched run; a dev-log run is gigabytes, so this is a bounded prefix
@@ -215,9 +215,9 @@ MARKER_PREFIX_LINES = 200
 _TRUE_VALUES = frozenset({"true", "on", "1", "yes"})
 
 
-def stall_option(name: str) -> str:
+def patience_option(name: str) -> str:
     """The HiGHS option whose value one heuristic's gap quantile sets."""
-    return f"mip_heuristic_{name}_stall"
+    return f"mip_heuristic_{name}_patience"
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +602,7 @@ def _heur_nnz(sample: object, result: SolveResult) -> int | None:
 
     Prefers the field on the line itself, which is the only source that is
     both present at `log_dev_level=3` and the *post-presolve* matrix the
-    stall options are expressed against; the one-line model header is absent
+    patience options are expressed against; the one-line model header is absent
     at that level and the block form reports the original matrix.
     """
     own = getattr(sample, "nnz", None)
@@ -699,7 +699,7 @@ def dispatch_views(
     is what a `--dev-log` log looks like until the `[Heur]` line carries
     `nnz` (the one-line model header is absent at that level, and the block
     form reports the *original* matrix rather than the post-presolve one the
-    stall options are expressed against).
+    patience options are expressed against).
     """
     diagnostics: list[str] = []
     where = f"{instance} [{config}/seed{seed}]"
@@ -1508,14 +1508,14 @@ class HeuristicTrajectory:
     def events_p95(self) -> float | None:
         """The events-only p95 — a lower bound on the threshold."""
         gaps = self.gaps_per_nnz
-        return quantile(gaps, STALL_QUANTILE) if gaps else None
+        return quantile(gaps, PATIENCE_QUANTILE) if gaps else None
 
     def censored_p95(self) -> float | None:
         """The censoring-aware p95, or None when it is not identifiable."""
-        return km_quantile(self.weighted(), STALL_QUANTILE)
+        return km_quantile(self.weighted(), PATIENCE_QUANTILE)
 
-    def stall_range(self, workers: int | None) -> tuple[float | None, float | None]:
-        """The `mip_heuristic_<name>_stall` range #107 should search.
+    def patience_range(self, workers: int | None) -> tuple[float | None, float | None]:
+        """The `mip_heuristic_<name>_patience` range #107 should search.
 
         Lower bound from the events-only p95, upper from the censoring-aware
         one; `None` upper means the censoring never reaches 5 %, i.e. no
@@ -1527,7 +1527,7 @@ class HeuristicTrajectory:
         multiple of `nnz << 10` since #116, so the base divides out here and
         the result is directly comparable with that heuristic's effort.
         """
-        scale = workers if (STALL_SCALES_WITH_WORKERS[self.name] and workers) else 1
+        scale = workers if (PATIENCE_SCALES_WITH_WORKERS[self.name] and workers) else 1
         base = float(1 << EFFORT_BASE_SHIFT)
         low = self.events_p95()
         high = self.censored_p95()
@@ -1745,13 +1745,13 @@ def derived_defaults(
     that a value can never be read without the worker count and the tree it
     came from.  Both are load-bearing: an effort value is only valid at the
     worker count it was measured at (FJ's option is per worker and the other
-    three are divided by N), and a stall value is in that heuristic's own
+    three are divided by N), and a patience is in that heuristic's own
     effort unit, which is not comparable across heuristics.
 
-    `stall` is the *lower* end of the reported range — the events-only p95,
+    `patience` is the *lower* end of the reported range — the events-only p95,
     i.e. the largest improvement-free interval that actually ended in an
     acceptance on 95 % of them.  The censoring-aware upper end is carried
-    alongside as `stall_max` rather than chosen: it is frequently unbounded,
+    alongside as `patience_max` rather than chosen: it is frequently unbounded,
     which is a statement about the data, not a default anyone can ship.
     """
     out: dict = {
@@ -1762,13 +1762,13 @@ def derived_defaults(
             "runs_traced": traced_runs,
             "workers_observed": workers,
             "knee_quantile": KNEE_QUANTILE,
-            "stall_quantile": STALL_QUANTILE,
+            "patience_quantile": PATIENCE_QUANTILE,
         },
         "heuristics": {},
     }
     for name in PRESOLVE_HEURISTICS:
         knee, trajectory = knees[name], trajectories[name]
-        low, high = trajectory.stall_range(workers)
+        low, high = trajectory.patience_range(workers)
         effort = knee.quantile(KNEE_QUANTILE)
         # The threshold that ships: the measured wait, or a fraction of the
         # ceiling when the measurement exceeds it.  A threshold at or above
@@ -1796,11 +1796,11 @@ def derived_defaults(
             "effort_scope": (
                 "per_worker" if BUDGET_IS_PER_WORKER[name] else "per_dispatch"
             ),
-            "stall": None if patience is None else round(patience, 6),
-            "stall_measured": None if low is None else round(low, 6),
-            "stall_clamp": None if clamp is None else round(clamp, 6),
-            "stall_max": None if high is None else round(high, 6),
-            "stall_scales_with_workers": STALL_SCALES_WITH_WORKERS[name],
+            "patience": None if patience is None else round(patience, 6),
+            "patience_measured": None if low is None else round(low, 6),
+            "patience_clamp": None if clamp is None else round(clamp, 6),
+            "patience_max": None if high is None else round(high, 6),
+            "patience_scales_with_workers": PATIENCE_SCALES_WITH_WORKERS[name],
             "dispatches_finished": len(knee.options),
             "dispatches_still_improving": knee.still_improving,
             "dispatches_barren": knee.barren,
@@ -1919,7 +1919,7 @@ def worker_counts(views: list[DispatchView]) -> list[int]:
     """The distinct observed worker counts of the traced dispatches, sorted.
 
     More than one means the tree mixes machines, which the report says
-    outright: a stall suggestion is only valid at the worker count it was
+    outright: a patience suggestion is only valid at the worker count it was
     measured at, so a mixed tree's single summary number is a fiction.
     """
     return sorted({v.workers for v in views if v.workers is not None})
@@ -1982,14 +1982,14 @@ def trajectory_rows(
     across heuristics** — each counter counts what its own heuristic knows
     how to count.  Gap columns are per matrix nonzero per worker series, and
     are the events-only view; `cens` counts the right-censored intervals that
-    the `stall` range's upper end accounts for and these columns do not.
+    the `patience` range's upper end accounts for and these columns do not.
     """
     head = (
         f"{'heur':<10}{'disp':>6}{'improve':>8}{'productive':>12}{'stale':>12}"
         f"{'stale%':>8}{'gaps':>6}"
     )
     head += "".join(f"{_q_label(p):>10}" for p in quantiles)
-    head += f"{'cens':>6}{'stall_lo':>10}{'stall_hi':>10}"
+    head += f"{'cens':>6}{'patience_lo':>10}{'patience_hi':>10}"
     rows = [head]
     for name in PRESOLVE_HEURISTICS:
         t = trajectories[name]
@@ -2003,7 +2003,7 @@ def trajectory_rows(
         gaps = t.gaps_per_nnz
         for p in quantiles:
             row += _cell(quantile(gaps, p) if gaps else float("nan"), 10)
-        low, high = t.stall_range(workers)
+        low, high = t.patience_range(workers)
         row += f"{len(t.censored_per_nnz):>6}"
         row += f"{'-' if low is None else low:>10}"
         # `unbnd` is an answer — "the censoring never reaches 5 %" — and must
@@ -2017,24 +2017,24 @@ def trajectory_rows(
     return rows
 
 
-def stall_suggestions(
+def patience_suggestions(
     trajectories: dict[str, HeuristicTrajectory], workers: int | None
 ) -> list[str]:
-    """The proposed stall option ranges, spelled as options."""
+    """The proposed patience option ranges, spelled as options."""
     lines = []
     for name in PRESOLVE_HEURISTICS:
         t = trajectories[name]
-        low, high = t.stall_range(workers)
+        low, high = t.patience_range(workers)
         if not t.observations:
-            lines.append(f"  {stall_option(name):<32} (nothing traced)")
+            lines.append(f"  {patience_option(name):<32} (nothing traced)")
             continue
-        scaled = STALL_SCALES_WITH_WORKERS[name] and workers
+        scaled = PATIENCE_SCALES_WITH_WORKERS[name] and workers
         scope = f"x {workers} workers" if scaled else "per-worker scope"
         top = (
             "unbounded (censoring never reaches 5%)" if high is None else f"{high:.4g}"
         )
         lines.append(
-            f"  {stall_option(name):<32} {'-' if low is None else f'{low:.4g}'} .. {top}"
+            f"  {patience_option(name):<32} {'-' if low is None else f'{low:.4g}'} .. {top}"
             f"  ({scope})"
         )
     return lines
@@ -2325,8 +2325,8 @@ def render_report(
         ),
         "  effort columns are raw charged units and are NOT comparable across",
         "  heuristics; gap columns are per matrix nonzero per worker series.",
-        "  stall_lo is the events-only p95 -- a lower bound, since a dispatch",
-        "  that stopped producing contributes no completed gap.  stall_hi adds",
+        "  patience_lo is the events-only p95 -- a lower bound, since a dispatch",
+        "  that stopped producing contributes no completed gap.  patience_hi adds",
         "  those censored intervals back with Kaplan-Meier, per-instance",
         "  equally weighted; 'unbnd' means no constant bounds this heuristic.",
     ]
@@ -2336,7 +2336,7 @@ def render_report(
             "  NOTE: the traced dispatches ran at "
             + ", ".join(str(c) for c in counts)
             + " workers, so this tree mixes machines and the single summary "
-            "worker count above is a fiction; the stall ranges below are only "
+            "worker count above is a fiction; the patience ranges below are only "
             "valid at one worker count."
         )
     off_slot = sum(t.off_slot_accepts for t in trajectories.values())
@@ -2374,8 +2374,8 @@ def render_report(
         )
     lines += [
         "",
-        (f"Proposed stall ranges for #107 (per nnz, at {worker_note} worker(s)):"),
-        *stall_suggestions(trajectories, workers),
+        (f"Proposed patience ranges for #107 (at {worker_note} worker(s)):"),
+        *patience_suggestions(trajectories, workers),
         "",
         (
             f"Proposed effort vector for #107 (p{KNEE_QUANTILE:.0%} yield knee, "
@@ -2493,7 +2493,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--defaults-output",
         metavar="FILE",
         help=(
-            "write the derived per-heuristic effort and stall values here as "
+            "write the derived per-heuristic effort and patience values here as "
             "JSON, with the worker count and tree they are only valid for"
         ),
     )

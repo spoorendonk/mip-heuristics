@@ -160,10 +160,10 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         // here is denominated in effort units, and the runner checks the
         // clock only between attempts — where one attempt is
         // `attempt_cap` = `total / (10N)`, which scales with
-        // `mip_heuristic_fj_effort`.  At the shipped 0.0125 that is
-        // `nnz * 102` and the between-attempts check is tight; at 1.0 it is
-        // `nnz * 8192` and FJ was measured 1.4-2.0x past the limit, twice
-        // to an external SIGKILL.
+        // `mip_heuristic_fj_effort`.  At the pre-#113 default of one vanilla
+        // FJ budget per worker that is `nnz * 102` and the between-attempts
+        // check is tight; at 80 of them it is `nnz * 8192` and FJ was
+        // measured 1.4-2.0x past the limit, twice to an external SIGKILL.
         //
         // This costs one clock read per `CALLBACK_EFFORT` (500000) effort
         // units, which is upstream FJ's own callback cadence — not a
@@ -201,16 +201,20 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     AttemptResult result{};
     result.effort = attempt_effort_consumed;
 
-    // An attempt counts as productive when the pool takes what it found,
-    // not when upstream FJ hands back any solution at all (#111) — FJ's
-    // own `effortSinceLastImprovement` already tracks the latter, inside
-    // the solver, and that is the counter its callback gate reads.  This
-    // one is the dispatch's.
+    // An attempt counts as productive when it moved the incumbent, not
+    // when upstream FJ hands back any solution at all, and not when the
+    // pool merely kept one (#116) — FJ's own `effortSinceLastImprovement`
+    // tracks the first, inside the solver, and that is the counter its
+    // callback gate reads.  This one is the dispatch's.
     // `effort_at`: this worker's cumulative charge *including* the attempt
     // that just produced the solution — `base_` is charged below, after the
     // offer, so it does not yet contain it.
-    if (found_solution && sink_.offer(best_obj, best_sol, trace_,
-                                      trace_.at(base_.total_effort + attempt_effort_consumed))) {
+    const bool improved =
+        found_solution && sink_
+                              .offer(best_obj, best_sol, trace_,
+                                     trace_.at(base_.total_effort + attempt_effort_consumed))
+                              .improved_incumbent;
+    if (improved) {
         result.found_improvement = true;
         base_.charge_improvement(attempt_effort_consumed);
     } else {

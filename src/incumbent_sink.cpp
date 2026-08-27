@@ -91,14 +91,18 @@ void IncumbentSink::begin_dispatch(int source) {
     dispatch_start_s_ = mipsolver_.timer_.read();
 }
 
-bool IncumbentSink::offer(double objective, const std::vector<double>& solution,
-                          const WorkerTrace& trace, size_t effort_at) {
-    const bool accepted = pool_.try_add(objective, solution, source_);
-    if (accepted) {
+IncumbentSink::OfferResult IncumbentSink::offer(double objective,
+                                                const std::vector<double>& solution,
+                                                const WorkerTrace& trace, size_t effort_at) {
+    const SolutionPool::AddResult added = pool_.try_add(objective, solution, source_);
+    // `accepted_` and the trace line both stay on the admission verdict:
+    // they feed `[Heur] found` and `[HeurSol] accepted`, whose meaning
+    // external tooling depends on.  Only the gates read the other flag.
+    if (added.accepted) {
         accepted_.fetch_add(1, std::memory_order_relaxed);
     }
-    trace_offer(trace, effort_at, objective, accepted);
-    return accepted;
+    trace_offer(trace, effort_at, objective, added.accepted);
+    return OfferResult{.accepted = added.accepted, .improved_incumbent = added.improved_best};
 }
 
 void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, double objective,

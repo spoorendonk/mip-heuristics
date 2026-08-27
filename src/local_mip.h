@@ -10,9 +10,10 @@ struct ProblemView;
 
 namespace local_mip {
 
-// Stall threshold: `mip_heuristic_local_mip_stall`, in effort units
-// (coefficient accesses) per constraint-matrix nonzero (issue #111, made
-// an option by #106).
+// Patience: `mip_heuristic_local_mip_patience`, a multiple of
+// `nnz << 10` — the same unit as this heuristic's effort option (issue
+// #111, made an option by #106, put on the effort unit by #116).
+// LocalMIP's counter is in coefficient accesses.
 //
 // Scope: **whole dispatch**, matching `mip_heuristic_local_mip_effort`.
 // Each worker's share is this divided by the worker count

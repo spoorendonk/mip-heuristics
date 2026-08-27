@@ -59,7 +59,7 @@ private:
     const uint32_t seed_;
 
     // Effort / staleness / finished bookkeeping.  Both budgets come from
-    // the caller: FJ's stall threshold has always been an absolute
+    // the caller: FJ's patience has always been an absolute
     // `nnz << 8` rather than a fraction of the allowance, and since issue
     // #111 the other three heuristics derive theirs the same way, so it
     // is sized once in `mode_dispatch` (`HeuristicBudget::worker_stale`)

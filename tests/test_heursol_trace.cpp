@@ -18,7 +18,7 @@
 //             obj=<O> accepted=<0|1>
 //
 // `[Heur]` is one line per dispatch carrying aggregate effort, which
-// cannot show what happens *inside* one — and the stall thresholds #107
+// cannot show what happens *inside* one — and the patience values #107
 // calibrates are exactly an intra-dispatch quantity ("how much
 // improvement-free effort is enough before this is going nowhere?").  This
 // line is emitted from `IncumbentSink::offer`, the project's single

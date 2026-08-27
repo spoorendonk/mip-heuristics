@@ -218,30 +218,36 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 // finding improvements.  R3-7 round-3 review.
                 feasible_random_walks_done_ = 0;
 
-                // Two different notions of "improved" meet here, and
-                // issue #111 is about keeping them apart.  Everything
-                // above is the *local search's* bookkeeping and stays on
-                // the worker-local flag: beating this worker's own best
-                // is what makes a step productive to the search, and
-                // `best_objective_` restarts at infinity on every
-                // rebuild by design.  Everything below is the *stall
-                // gate's*, and it reads the project's definition instead
-                // — whether the shared pool took the solution.  Feeding
-                // the local flag to the gate is what let a rebuilt worker
-                // clear the dispatch's staleness counter by rediscovering
-                // a solution the pool already held.
+                // Three different notions of "improved" meet here, and
+                // issues #111 and #116 are about keeping them apart.
+                // Everything above is the *local search's* bookkeeping and
+                // stays on the worker-local flag: beating this worker's
+                // own best is what makes a step productive to the search,
+                // and `best_objective_` restarts at infinity on every
+                // rebuild by design.  Everything below is the *patience
+                // gate's*, and it reads whether the offer moved the
+                // incumbent.  Feeding the local flag to the gate let a
+                // rebuilt worker clear the dispatch's staleness counter by
+                // rediscovering a solution the pool already held; feeding
+                // it the pool's admission verdict instead (#111) left a
+                // top-K policy driving the gate, which is another way of
+                // never running out of patience — LocalMIP earned ~3.3 M
+                // acceptances against 24,598 incumbent improvements over
+                // #113's 233 instances.
                 // `effort_at`: `ctx_.effort` is this worker's cumulative
                 // coefficient-access counter — the same quantity
                 // `base_.total_effort` accumulates at the end of each
                 // attempt, read here mid-attempt.
-                if (sink_.offer(obj, ctx_.solution, trace_, trace_.at(ctx_.effort))) {
+                if (sink_.offer(obj, ctx_.solution, trace_, trace_.at(ctx_.effort))
+                        .improved_incumbent) {
                     attempt.found_improvement = true;
                     base_.reset_staleness();
                     // Part of the staleness accounting, not the search's:
                     // the tail of `run_attempt` charges
                     // `ctx_.effort - effort_at_last_improvement` to
-                    // `effort_since_improvement`, so advancing this on a
-                    // refused offer would silently forgive that effort.
+                    // `effort_since_improvement`, so advancing this on an
+                    // offer that moved nothing would silently forgive that
+                    // effort.
                     effort_at_last_improvement = ctx_.effort;
                 }
             }

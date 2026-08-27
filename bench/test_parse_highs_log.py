@@ -354,7 +354,7 @@ def _threads(n=1):
 # instead of the one-line `MIP <name> has ... nonzeros;` header that
 # `_MODEL_HEADER_RE` reads.  So `num_nonzeros` is None here by construction,
 # `Nonzeros : 309` is the pre-presolve model, and `[Heur] nnz=242` — the
-# post-presolve MIP matrix the stall options are denominated in — is the
+# post-presolve MIP matrix the patience options are denominated in — is the
 # only correct source in the file.
 _REAL_DEV_LOG = """Running HiGHS 1.15.1 (git hash: n/a)
 mip-heuristics patch active
@@ -393,7 +393,7 @@ def test_normalized_gaps_work_on_a_real_dev_log():
     a trace at all."""
     traces = {t.name: t for t in parse_log(_REAL_DEV_LOG).dispatch_traces()}
     assert traces["fj"].nnz == 242  # not 309, which is the pre-presolve model
-    # fj's stall option is per-worker scoped, so the gaps need no scaling.
+    # fj's patience option is per-worker scoped, so the gaps need no scaling.
     assert traces["fj"].gap_scale == 1
     assert traces["fj"].normalized_gaps() == [500012 / 242, 500012 / 242]
     # fpr's is whole-dispatch scoped, so they are scaled by the 16 workers.
@@ -603,8 +603,9 @@ def test_acceptance_gaps_are_taken_within_a_worker():
 
 
 def test_gap_scale_follows_the_option_scope_not_the_counter():
-    """`fj_stall` and `scylla_stall` arm a worker gate at their face value;
-    `fpr_stall` and `local_mip_stall` are whole-dispatch and are divided by
+    """`fj_patience` and `scylla_patience` arm a worker gate at their face
+    value; `fpr_patience` and `local_mip_patience` are whole-dispatch and are
+    divided by
     the worker count into `worker_stale`.  Reading a p90 off an unscaled
     fpr gap at the probe's 16 workers would ship a default 16x too tight."""
     body = _threads(16)
@@ -620,14 +621,14 @@ def test_gap_scale_follows_the_option_scope_not_the_counter():
 
 
 def test_gap_scale_refuses_fpr_lp():
-    """The dive heuristic has no stall option, so its gaps have no scope."""
+    """The dive heuristic has no patience option, so its gaps have no scope."""
     log = (
         _threads(4)
         + _heursol("fpr_lp", 5, 0, 10, 1.0, 1.0, 1)
         + _heur("fpr_lp", 20, phase="dive")
     )
     (trace,) = parse_log(log).dispatch_traces()
-    with pytest.raises(ValueError, match=r"no mip_heuristic_.*_stall option"):
+    with pytest.raises(ValueError, match=r"no mip_heuristic_.*_patience option"):
         trace.normalized_gaps()
 
 
@@ -646,7 +647,7 @@ def test_gap_scale_refuses_a_dispatch_scoped_option_without_a_worker_count():
 
 def test_nnz_prefers_the_heur_field_over_the_model_header():
     """The header is the pre-presolve model; the field is the matrix the
-    heuristics search and the stall options are denominated in."""
+    heuristics search and the patience options are denominated in."""
     log = (
         "MIP lseu has 28 rows; 89 cols; 309 nonzeros; 89 integer variables (89 binary)\n"
         + _threads(1)

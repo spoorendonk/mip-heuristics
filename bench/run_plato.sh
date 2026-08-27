@@ -26,7 +26,7 @@
 #   PLATO_TIME_LIMIT seconds per solve    (default 600, the PLATO limit)
 #   PLATO_BINARY / PLATO_VANILLA_BINARY   the two binaries
 #   PLATO_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
-#                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_stall=0"
+#                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_patience=0"
 #   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
 #   PLATO_THREADS    pin the solver thread count (default: unset — see below)
 #   PLATO_COUNT      run at most N *pending* instances, then stop.  The

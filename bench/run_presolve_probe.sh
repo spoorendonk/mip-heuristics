@@ -24,7 +24,7 @@
 #   * effort `$PROBE_EFFORT` (1e4, the option's ceiling since #113) — the
 #     budget is then `8.2e8` effort units per matrix nonzero, which no run
 #     inside the cap can reach;
-#   * every stall gate at 0, which means *no gate*;
+#   * every patience gate at 0, which means *no gate*;
 #   * `mip_heuristic_presolve_only`, so the run exits before the root LP;
 #   * a 30 s cap, enforced by the harness as a wall-clock kill as well as by
 #     `time_limit`, since HiGHS checks its clock between work units and an
@@ -46,7 +46,7 @@
 #   * the tuning set, stratified out of the informative set;
 #   * per-heuristic productive vs stale effort, and the inter-acceptance
 #     effort-gap quantiles that are literally the unit
-#     `mip_heuristic_<name>_stall` is denominated in;
+#     `mip_heuristic_<name>_patience` is denominated in;
 #   * effort at last acceptance — the yield knee — which is a *measured*
 #     initial effort vector rather than the inherited one;
 #   * charged effort per millisecond, which converts an effort vector into
@@ -106,7 +106,7 @@ PROBE_TIME_LIMIT="${PROBE_TIME_LIMIT:-30}"
 # configurations: it asks whether a heuristic can *ever* produce here, and
 # the union over four heuristics already carries most of the diversity a
 # second seed would add.  Coarse is the right register for it, and the
-# stall/effort quantiles it feeds are pooled over hundreds of dispatches.
+# patience/effort quantiles it feeds are pooled over hundreds of dispatches.
 PROBE_SEEDS="${PROBE_SEEDS:-0}"
 # The controls answer a question about the experiment, so one seed each.
 PROBE_CONTROL_SEEDS="${PROBE_CONTROL_SEEDS:-0}"
@@ -128,7 +128,7 @@ probe_options() {
 	for heur in fj fpr local_mip scylla; do
 		printf 'mip_heuristic_%s_effort=%s ' "$heur" "$effort"
 		# 0 is *no gate*, not "give up immediately".
-		printf 'mip_heuristic_%s_stall=0 ' "$heur"
+		printf 'mip_heuristic_%s_patience=0 ' "$heur"
 	done
 	printf 'mip_heuristic_presolve_only=true'
 }

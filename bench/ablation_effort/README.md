@@ -101,11 +101,17 @@ and one where only HiGHS's own trivial heuristics did.
 before three changes that were found *by* taking it, and it should be
 re-measured once they land — roughly 9 h, one overnight window, chunked.
 
-* **#116** — the staleness gate resets on pool acceptance, so the patience
-  values here cannot transfer: they were calibrated on incumbent improvements
-  and the gate counts something five orders of magnitude more frequent. Until
-  that lands, the trajectory is derived offline from `obj` rather than
-  measured in the solver.
+* **#116 — landed.** The staleness gate used to reset on pool acceptance, so
+  the patience values here did not transfer: they were calibrated on incumbent
+  improvements and the gate counted something five orders of magnitude more
+  frequent. Both gate levels now reset on an incumbent improvement, the option
+  is called `mip_heuristic_<name>_patience`, and it is clamped strictly below
+  the ceiling. The trajectory behind *these* numbers is still the offline
+  reconstruction from `obj`; the point of re-running is to have the solver
+  measure the same signal it now gates on. Note the renaming also moved
+  `analyze_presolve_probe.py`'s emitted keys — `stall*` became `patience*` —
+  so `defaults.json` below, written before that, carries the old spellings;
+  it is a record of a past run and is left as it was written.
 * **#117** — FPR and Scylla overran their time limit and were killed on 23 of
   932 runs, all large instances, so both estimates are biased toward instances
   the heuristic returned from.
@@ -135,8 +141,10 @@ the log, which is the point of the exercise. Do it once, afterwards.
   so both estimates are biased toward instances the heuristic returned from.
 * **Patience is the clamp on three of four.** Only LocalMIP's measured wait
   (8700) is near its ceiling fraction (7484); for the others the measurement
-  says "wait longer than your entire budget". Raising the clamp to 0.5 is the
-  one knob here worth an ablation arm.
+  says "wait longer than your entire budget". Since #116 the clamp is enforced
+  in `patience_threshold` rather than applied only in this derivation, so a
+  value above the ceiling fraction is no longer silently inert. Raising the
+  clamp to 0.5 is the one knob here worth an ablation arm.
 * **The two-budget confound was not measured.** #113 asks for a control at a
   bindable budget to show how much the trajectory depends on the budget it was
   taken at. Deferred to the configuration ablation, which re-measures both

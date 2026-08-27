@@ -283,9 +283,10 @@ with each generated file recording its own `Regenerate with:` line.
 
 `bench/run_presolve_probe.sh` is `run_plato.sh` with the probe environment, so
 it chunks and resumes the same way — `next <hours>` overnight, `status` to check
-in. The launcher *is* the configuration: every heuristic at effort 1.0 with its
-stall gate at 0 (which means no gate), `mip_heuristic_presolve_only`, and a 60 s
-per-run cap the harness enforces as a wall-clock kill.
+in. The launcher *is* the configuration: every heuristic at an effort that
+cannot bind with its patience gate at 0 (which means no gate),
+`mip_heuristic_presolve_only`, and a 60 s per-run cap the harness enforces as a
+wall-clock kill.
 
 ```bash
 bench/run_presolve_probe.sh filter next 8      # the instance screen

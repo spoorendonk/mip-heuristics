@@ -94,7 +94,7 @@ def _model_oneline(nnz: int) -> str:
 
 
 # What `log_dev_level=3` prints instead: a block whose `Nonzeros` is the
-# *original* matrix, not the post-presolve one the stall options are
+# *original* matrix, not the post-presolve one the patience options are
 # expressed against.  `parse_highs_log` matches neither, so `num_nonzeros`
 # comes out None.
 _MODEL_BLOCK = [
@@ -223,7 +223,7 @@ def probe_log(
 PROBE_OPTS = (
     "mip_heuristic_suite = all\n"
     "mip_heuristic_fj_effort = 1.0\n"
-    "mip_heuristic_fj_stall = 0\n"
+    "mip_heuristic_fj_patience = 0\n"
     "mip_heuristic_presolve_only = true\n"
     "random_seed = 0\n"
 )
@@ -862,7 +862,7 @@ def test_a_clean_barren_run_outranks_a_killed_one():
 
 
 # ---------------------------------------------------------------------------
-# Trajectories and the stall estimate
+# Trajectories and the patience estimate
 # ---------------------------------------------------------------------------
 
 
@@ -894,7 +894,7 @@ def test_km_quantile_is_none_when_the_censoring_hides_the_tail():
     assert km_quantile(observations, 0.95) is None
 
 
-def test_barren_dispatches_raise_the_stall_estimate():
+def test_barren_dispatches_raise_the_patience_estimate():
     """The bias the censored view exists to remove.
 
     An events-only p95 is computed conditional on the heuristic producing
@@ -969,7 +969,7 @@ def test_each_instance_carries_equal_weight():
     assert math.isclose(weights["hard"], 1.0)
 
 
-def test_stall_range_scales_only_for_dispatch_scoped_options():
+def test_patience_range_scales_only_for_dispatch_scoped_options():
     """`fpr`/`local_mip` are divided by N on the way to the per-worker gate.
 
     The measured gaps are raw effort per nonzero and the option is a multiple
@@ -985,8 +985,8 @@ def test_stall_range_scales_only_for_dispatch_scoped_options():
         ("scylla", 10 / base),
     ):
         t = HeuristicTrajectory(name=name, observations=list(gaps))
-        assert t.stall_range(4)[0] == expected
-    assert HeuristicTrajectory(name="fj").stall_range(4) == (None, None)
+        assert t.patience_range(4)[0] == expected
+    assert HeuristicTrajectory(name="fj").patience_range(4) == (None, None)
 
 
 def test_summarise_normalises_by_nonzeros():
@@ -1122,8 +1122,8 @@ def test_end_to_end_splits_the_set_and_reports_trajectories(tmp_path):
     assert "Informative set: 2 of 6" in res.stdout
     # The two signals disagreeing is reported, not silently resolved.
     assert "found=1 and the display disagree" in res.stdout
-    assert "stall_lo" in res.stdout and "stall_hi" in res.stdout
-    assert "mip_heuristic_fpr_stall" in res.stdout
+    assert "patience_lo" in res.stdout and "patience_hi" in res.stdout
+    assert "mip_heuristic_fpr_patience" in res.stdout
 
 
 def test_outputs_are_byte_identical_across_runs(tmp_path):
@@ -1307,7 +1307,7 @@ def _opts(effort: float) -> str:
     return (
         "mip_heuristic_suite = fpr\n"
         f"mip_heuristic_fpr_effort = {effort}\n"
-        "mip_heuristic_fpr_stall = 0\n"
+        "mip_heuristic_fpr_patience = 0\n"
         "mip_heuristic_presolve_only = true\n"
         "random_seed = 0\n"
     )
@@ -1383,7 +1383,7 @@ def test_fj_budget_is_read_per_worker(tmp_path):
     opts = (
         "mip_heuristic_suite = fj\n"
         "mip_heuristic_fj_effort = 20.0\n"  # 20 base budgets, per worker
-        "mip_heuristic_fj_stall = 0\n"
+        "mip_heuristic_fj_patience = 0\n"
         "mip_heuristic_presolve_only = true\n"
         "random_seed = 0\n"
     )
@@ -1475,7 +1475,7 @@ def test_the_cli_writes_the_artifacts_the_campaign_consumes(tmp_path):
     assert set(data["heuristics"]) == set(PRESOLVE_HEURISTICS)
     fpr = data["heuristics"]["fpr"]
     # The four numbers #107 is handed, and the scope they are only valid in.
-    for key in ("effort", "stall", "effort_shipped", "median_gap_to_best_known"):
+    for key in ("effort", "patience", "effort_shipped", "median_gap_to_best_known"):
         assert key in fpr, key
     assert data["provenance"]["workers_observed"] is not None
 
@@ -1483,7 +1483,7 @@ def test_the_cli_writes_the_artifacts_the_campaign_consumes(tmp_path):
     for section in (
         "Informative set:",
         "Solution quality against best known",
-        "Proposed stall ranges",
+        "Proposed patience ranges",
         "Proposed effort vector",
     ):
         assert section in text, section

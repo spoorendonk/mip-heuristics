@@ -1081,7 +1081,7 @@ def test_run_plato_status_reads_a_tree_without_running_anything():
 #
 # The probe is `run_plato.sh` with an environment, so what has to be pinned is
 # the environment: every heuristic at the top of its effort range with its
-# stall gate off, the presolve-only exit, and the union-over-singles config
+# patience gate off, the presolve-only exit, and the union-over-singles config
 # set the informative filter is taken on.  Getting any of those wrong is not
 # visible in the tree it writes — a probe run at the shipped defaults, or with
 # the gates live, produces perfectly well-formed logs that answer a different
@@ -1150,7 +1150,7 @@ def test_the_experiment_leaves_the_clock_as_the_only_stopping_rule(tmp_path):
             # has 84 dispatches that would have been budget-bound.
             assert float(options[f"mip_heuristic_{heur}_effort"]) == 1e6
             # 0 is *no gate*, not "give up immediately".
-            assert options[f"mip_heuristic_{heur}_stall"] == "0"
+            assert options[f"mip_heuristic_{heur}_patience"] == "0"
         assert options["mip_heuristic_presolve_only"] == "true"
         assert float(run["time_limit"]) == 30
         # Every pass is a trace: the yield curve, the gap quantiles and the

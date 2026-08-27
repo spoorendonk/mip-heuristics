@@ -1,6 +1,6 @@
 ###############################################################################
 # irace scenario for issue #107: joint search over heuristic mix, effort and
-# stall thresholds, screened presolve-only.
+# patience, screened presolve-only.
 #
 # Run it from this directory:
 #
@@ -18,7 +18,7 @@
 # the output says so.
 #
 #     ../run_target.py --instance mad --seed 1 --require-trace \
-#         --fj-effort 0.0125 --fj-stall 256 --binary ../../build/bin/highs
+#         --fj-effort 2.84 --fj-patience 0.71 --binary ../../build/bin/highs
 #
 # The instance has to be one with a published reference objective — a
 # tuning-set instance, not a HiGHS `check/instances` model.  An earlier version

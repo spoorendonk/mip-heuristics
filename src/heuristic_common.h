@@ -139,8 +139,9 @@ inline uint32_t heuristic_base_seed(HighsInt random_seed) {
 // existed only so FJ's default came out at `nnz << 10` anyway, and the
 // 0.05 was upstream's own `mip_heuristic_effort` default used as an
 // anchor.  Two historical constants multiplied to 81,920, which is what a
-// reader had to know to compare an effort option against a stall
-// threshold.  Now they are the same unit and `stall < effort` is legible.
+// reader had to know to compare an effort option against a patience
+// threshold.  Now they are the same unit and `patience < effort` is
+// legible.
 inline constexpr int kBudgetBaseShift = 10;
 
 // Effort budget: `effort` multiples of the base above.
@@ -153,7 +154,7 @@ inline constexpr int kBudgetBaseShift = 10;
 //    `vanilla_effort_budget` below.
 //
 // The product saturates rather than converting out of range.  The option's
-// upper bound is `1e4` since #113 — a budget that cannot bind, so that a
+// upper bound is `1e6` since #113 — a budget that cannot bind, so that a
 // calibration probe measures the heuristic and not the setting derived from
 // it — and `double -> size_t` is undefined when the value does not fit, so
 // the guard is the same one `saturating_mul` exists for one level down.
@@ -187,9 +188,9 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
 // `a * b`, saturating at SIZE_MAX instead of wrapping.
 //
 // Every factor these budgets are built from is now user-supplied: the
-// stall multipliers are options with an upper bound of `kHighsIInf`
-// (#106), and `nnz` is whatever model was loaded, so `nnz * per_nnz`
-// overflows on a large instance at the top of the option's range.  A
+// patience multipliers are options with the same wide upper bound as the
+// effort ones (#106), and `nnz` is whatever model was loaded, so the
+// product overflows on a large instance at the top of the range.  A
 // wrapped product is the worst possible failure here — it produces a
 // *small* threshold, so the gate fires almost immediately and the
 // heuristic silently does nothing, which reads as "this parameter value
@@ -203,47 +204,69 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
     return a > SIZE_MAX / b ? SIZE_MAX : a * b;
 }
 
-// Absolute, instance-scaled stall threshold (issue #111).
+// The largest fraction of a heuristic's own ceiling its patience may be
+// (issue #116).
 //
-// A stall threshold answers "how much improvement-free search is enough
-// before this is going nowhere?".  Three of the four presolve heuristics
-// used to answer it with a fraction of their own effort budget
-// (`total >> 2`), which cannot bound over-budgeting: doubling the budget
-// doubled the tolerance, so the gate never fired relatively sooner and
-// charged effort tracked the option one-for-one across a 20x sweep.  It
-// restated the budget instead of measuring the search.
+// A patience at or above the ceiling fires exactly at exhaustion, which
+// is indistinguishable from having no gate at all — and silently so,
+// since nothing reports which of the two bounded the dispatch.  That is
+// not hypothetical: the p95 inter-improvement gap #113 measured exceeds
+// the ceiling on three of the four heuristics, FJ's by a factor of 4,400,
+// so an honest value read off improvement counts would leave FJ running
+// to its budget on every instance while looking like a tuned parameter.
+//
+// A quarter is the shape FeasibilityJump has always shipped (`nnz << 8`
+// against a `nnz << 10` budget), and where all four shipped defaults
+// already sit — 21-28% of their ceilings before this clamp existed, and
+// exactly 25% since #113's vector — so applying it moves no default and
+// bounds every future one.
+inline constexpr size_t kPatienceCeilingDivisor = 4;
+
+// Absolute, instance-scaled patience: the improvement-free effort a
+// heuristic tolerates before giving up (issues #111, #116).
+//
+// It answers "how much improvement-free search is enough before this is
+// going nowhere?".  Three of the four presolve heuristics used to answer
+// it with a fraction of their own effort budget (`total >> 2`), which
+// cannot bound over-budgeting: doubling the budget doubled the tolerance,
+// so the gate never fired relatively sooner and charged effort tracked
+// the option one-for-one across a 20x sweep.  It restated the budget
+// instead of measuring the search.
 //
 // FeasibilityJump was the exception and is the model: `nnz << 8` step
 // units, an absolute quantity that scales with the *instance* and not
-// with the allowance.  `per_nnz` is that multiplier — effort units per
-// constraint-matrix nonzero, i.e. roughly "this many full sweeps of the
-// matrix without an improvement".  Each heuristic names its own, since
-// their effort counters are in different units (FJ step units;
-// FPR/LocalMIP coefficient accesses; Scylla PDLP iters x nnz).  Each
-// heuristic names its own, as a `mip_heuristic_<name>_stall` option
-// since #106 — the four are read in `kChain` (mode_dispatch.cpp) and are
-// **not** comparable across heuristics.
+// with the allowance.  `per_base` is that multiplier, in the same unit as
+// the heuristic's effort option since #116 — multiples of
+// `nnz << kBudgetBaseShift` — which is what makes `patience < effort`
+// legible without a conversion.  Each heuristic names its own, as a
+// `mip_heuristic_<name>_patience` option since #106; the four are read in
+// `kChain` (mode_dispatch.cpp) and are **not** comparable across
+// heuristics, because only each heuristic knows what its own effort
+// counter counts (FJ step units; FPR/LocalMIP coefficient accesses;
+// Scylla PDLP iters x nnz).
 //
-// Clamped to `budget` because a threshold above the allowance can never
-// fire, and a heuristic that cannot reach its own gate should report the
-// budget as its ceiling rather than a number it will never approach.
-// `budget == 0` means "no ceiling known"; the floor of 1 keeps a
-// degenerate `nnz == 0` model from producing a threshold that trips
-// before any work happens.
+// Clamped to `budget / kPatienceCeilingDivisor` rather than to `budget`,
+// so a gate that exists can always fire strictly before exhaustion; see
+// that constant.  `budget == 0` means "no ceiling known"; the floor of 1
+// keeps a degenerate `nnz == 0` model — or a ceiling smaller than the
+// divisor — from producing a threshold that trips before any work
+// happens.
 //
-// `per_nnz == 0` means **no staleness gate at all** (issue #106), not
-// "give up immediately".  Since #106 the multiplier is an option
-// (`mip_heuristic_<name>_stall`), and a search of the stall axis needs a
-// point where the gate provably never fires — otherwise "how much does
-// this gate cost?" has no zero to measure against.  The unbounded value
-// is returned *before* the clamp: clamping to `budget` would make the
-// gate fire exactly at budget exhaustion, which looks the same on most
-// runs but is not the same thing, and is not what a probe asking "run
-// with the gate disabled" can rely on.
-[[nodiscard]] inline size_t stall_threshold(size_t nnz, double per_base, size_t budget) {
+// `per_base == 0` means **no patience gate at all** (issue #106), not
+// "give up immediately".  Since #106 the multiplier is an option, and a
+// search of the patience axis needs a point where the gate provably never
+// fires — otherwise "how much does this gate cost?" has no zero to
+// measure against.  The unbounded value is returned *before* the clamp,
+// which is what keeps "no gate" distinguishable from a value the clamp
+// merely pushed down onto the ceiling.
+[[nodiscard]] inline size_t patience_threshold(size_t nnz, double per_base, size_t budget) {
     if (per_base <= 0.0) {
         return SIZE_MAX;
     }
     const size_t threshold = std::max<size_t>(heuristic_effort_budget(nnz, per_base), 1);
-    return budget == 0 ? threshold : std::min(threshold, budget);
+    if (budget == 0) {
+        return threshold;
+    }
+    const size_t ceiling = std::max<size_t>(budget / kPatienceCeilingDivisor, 1);
+    return std::min(threshold, ceiling);
 }

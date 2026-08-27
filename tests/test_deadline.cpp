@@ -201,14 +201,14 @@ std::vector<std::string> presolve_heur_lines(Configure&& configure) {
 }
 
 // One heuristic, alone, with its effort option at the maximum and its
-// stall gate disabled (`0` means no gate at all, not "give up
+// patience gate disabled (`0` means no gate at all, not "give up
 // immediately"), so the budget is the only thing competing with the
 // deadline.
 std::string alone_at_limit(const std::string& heuristic) {
     const auto lines = presolve_heur_lines([&](Highs& h) {
         require_option(h, "mip_heuristic_suite", heuristic);
         require_option(h, "mip_heuristic_" + heuristic + "_effort", 1.0);
-        require_option(h, "mip_heuristic_" + heuristic + "_stall", 0);
+        require_option(h, "mip_heuristic_" + heuristic + "_patience", 0);
     });
     REQUIRE(lines.size() == 1);
     require_expected_nnz(lines.front());

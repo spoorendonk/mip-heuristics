@@ -64,8 +64,8 @@ _HEADER = (
 def params(**kwargs) -> Parameters:
     """A parameter vector, defaulting to all-zero (i.e. `off`)."""
     efforts = {h: float(kwargs.get(f"{h}_effort", 0.0)) for h in HEURISTICS}
-    stalls = {h: int(kwargs.get(f"{h}_stall", 0)) for h in HEURISTICS}
-    return Parameters(efforts=efforts, stalls=stalls)
+    patiences = {h: float(kwargs.get(f"{h}_patience", 0.0)) for h in HEURISTICS}
+    return Parameters(efforts=efforts, patiences=patiences)
 
 
 def heur_line(name: str, wall_ms: float, phase: str = "presolve") -> str:
@@ -170,13 +170,26 @@ def test_tiny_positive_effort_still_counts_as_on():
 
 
 def test_effort_out_of_range_rejected():
-    with pytest.raises(ValueError, match=r"fpr effort 1.5 outside"):
-        params(fpr_effort=1.5)
+    """The bound is the options' own registered ceiling.  HiGHS reports an
+    out-of-range write only through a return status, which `output_flag=false`
+    swallows, so a vector rejected here would otherwise have been silently
+    scored as the defaults."""
+    with pytest.raises(ValueError, match=r"fpr effort 2000000.0 outside"):
+        params(fpr_effort=2e6)
 
 
-def test_negative_stall_rejected():
-    with pytest.raises(ValueError, match="not a non-negative integer"):
-        params(fj_stall=-1)
+def test_negative_patience_rejected():
+    with pytest.raises(ValueError, match=r"fj patience -1.0 outside"):
+        params(fj_patience=-1.0)
+
+
+def test_patience_is_a_double_not_an_integer():
+    """It was an integer in the retired per-nonzero unit.  On the effort unit
+    every shipped default is below 1.0, so truncating to `int` would write
+    `0` — which is *no gate at all*, silently the opposite of what was asked
+    for."""
+    options = solver_options(params(fj_effort=2.84, fj_patience=0.71), seed=1)
+    assert options["mip_heuristic_fj_patience"] == "0.71"
 
 
 def test_incomplete_vector_rejected():
@@ -184,7 +197,8 @@ def test_incomplete_vector_rejected():
     taken before the parameter existed."""
     with pytest.raises(ValueError, match="missing effort for 'scylla'"):
         Parameters(
-            efforts={h: 0.1 for h in HEURISTICS[:-1]}, stalls={h: 1 for h in HEURISTICS}
+            efforts={h: 0.1 for h in HEURISTICS[:-1]},
+            patiences={h: 1.0 for h in HEURISTICS},
         )
 
 
@@ -204,12 +218,12 @@ def test_options_request_the_trace_level():
 
 
 def test_options_write_all_eight_even_when_disabled():
-    options = solver_options(params(fj_effort=0.1, fpr_stall=2048), seed=3)
+    options = solver_options(params(fj_effort=0.1, fpr_patience=2.0), seed=3)
     for h in HEURISTICS:
         assert f"mip_heuristic_{h}_effort" in options
-        assert f"mip_heuristic_{h}_stall" in options
+        assert f"mip_heuristic_{h}_patience" in options
     assert options["mip_heuristic_fpr_effort"] == "0"
-    assert options["mip_heuristic_fpr_stall"] == "2048"
+    assert options["mip_heuristic_fpr_patience"] == "2"
     assert options["mip_heuristic_suite"] == "fj"
 
 
@@ -644,12 +658,12 @@ def test_killed_run_does_not_warn_about_the_worker_count(capsys):
 
 
 def test_tag_is_deterministic_and_parameter_sensitive():
-    a = run_tag(params(fj_effort=0.1, fj_stall=256), "egout", 3)
-    assert a == run_tag(params(fj_effort=0.1, fj_stall=256), "egout", 3)
-    assert a != run_tag(params(fj_effort=0.1, fj_stall=512), "egout", 3)
-    assert a != run_tag(params(fj_effort=0.2, fj_stall=256), "egout", 3)
-    assert a != run_tag(params(fj_effort=0.1, fj_stall=256), "egout", 4)
-    assert a != run_tag(params(fj_effort=0.1, fj_stall=256), "flugpl", 3)
+    a = run_tag(params(fj_effort=0.1, fj_patience=0.25), "egout", 3)
+    assert a == run_tag(params(fj_effort=0.1, fj_patience=0.25), "egout", 3)
+    assert a != run_tag(params(fj_effort=0.1, fj_patience=0.5), "egout", 3)
+    assert a != run_tag(params(fj_effort=0.2, fj_patience=0.25), "egout", 3)
+    assert a != run_tag(params(fj_effort=0.1, fj_patience=0.25), "egout", 4)
+    assert a != run_tag(params(fj_effort=0.1, fj_patience=0.25), "flugpl", 3)
 
 
 def test_tag_separates_runs_that_are_not_the_same_measurement():
@@ -657,7 +671,7 @@ def test_tag_separates_runs_that_are_not_the_same_measurement():
     two scorings of one run at different lambdas are different numbers — but the
     `.json` records the number, so a shared tag silently overwrites the first.
     #107 sweeps lambda by construction, so that collision is the common case."""
-    base = params(fj_effort=0.1, fj_stall=256)
+    base = params(fj_effort=0.1, fj_patience=0.25)
     tag = run_tag(base, "mad", 3)
     assert tag != run_tag(base, "mad", 3, time_limit=30.0)
     assert tag != run_tag(base, "mad", 3, threads=1)
@@ -786,7 +800,7 @@ def test_parameter_file_covers_all_eight_dimensions_plus_inclusion():
     assert names == (
         set(HEURISTICS)
         | {f"{h}_effort" for h in HEURISTICS}
-        | {f"{h}_stall" for h in HEURISTICS}
+        | {f"{h}_patience" for h in HEURISTICS}
     )
 
 
@@ -800,7 +814,7 @@ def test_every_irace_switch_is_a_runner_switch():
         assert getattr(args, dest) is not None, f"{name} -> {switch} did not bind"
 
 
-def test_effort_and_stall_are_conditional_on_inclusion():
+def test_effort_and_patience_are_conditional_on_inclusion():
     """A parameter with no effect is one irace's model should not have to
     learn."""
     for name, _switch, _type, _domain, cond in parsed_parameter_file():
@@ -811,25 +825,35 @@ def test_effort_and_stall_are_conditional_on_inclusion():
             assert cond.strip() == f'| {heuristic} == "1"'
 
 
-def test_stall_range_reaches_the_inert_region():
-    """The gate is clamped to the budget, so `stall >= 81920 * effort` is
-    inert; the top of the range has to reach that at effort 1.0."""
-    for name, _switch, _type, domain, _cond in parsed_parameter_file():
-        if name.endswith("_stall"):
+def test_patience_range_reaches_the_clamp():
+    """`patience_threshold` clamps to a quarter of the budget, so any
+    `patience >= effort / 4` gives the same (loosest firing) gate; the top of
+    the range has to reach that at the top of the effort range."""
+    domains = dict(
+        (name, domain) for name, _s, _t, domain, _c in parsed_parameter_file()
+    )
+    effort_high = max(
+        float(d.split(",")[1]) for n, d in domains.items() if n.endswith("_effort")
+    )
+    for name, domain in domains.items():
+        if name.endswith("_patience"):
             low, high = (float(v) for v in domain.split(","))
-            assert low >= 1  # log sampling needs a positive lower bound
-            assert high >= 81920
+            assert low > 0  # log sampling needs a positive lower bound
+            assert high >= effort_high / 4
 
 
 def test_effort_range_clears_fjs_granularity_floor():
-    """FJ's charged effort moves in steps of CALLBACK_EFFORT = 500000, so its
-    option is a no-op whenever `nnz * value < 6.1`."""
+    """FJ's charged effort moves in steps of CALLBACK_EFFORT = 500000, and the
+    budget is `(nnz << 10) * value`, so its option is a no-op whenever
+    `nnz * value < 488`.  Both bounds are in the `nnz << 10` unit (#116);
+    `1.0` is one vanilla FJ budget and the top of the range is 80 of them,
+    which is the same span this file has always searched."""
     for name, _switch, type_, domain, _cond in parsed_parameter_file():
         if name.endswith("_effort"):
             low, high = (float(v) for v in domain.split(","))
             assert type_ == "r,log"
-            assert low >= 0.001
-            assert high == 1.0
+            assert low >= 0.08
+            assert high == 80.0
 
 
 def test_scenario_points_at_the_tracked_files():
@@ -879,7 +903,7 @@ def _run_target_runner(argv: list[str], **env):
 
 def test_target_runner_translates_iraces_positional_call():
     proc = _run_target_runner(
-        ["7", "3", "1234", "egout", "--fj-effort", "0.5", "--fj-stall", "256"]
+        ["7", "3", "1234", "egout", "--fj-effort", "0.5", "--fj-patience", "0.25"]
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout.split()
@@ -887,7 +911,7 @@ def test_target_runner_translates_iraces_positional_call():
     assert out[out.index("--seed") + 1] == "1234"
     assert out[out.index("--tag") + 1] == "c7-i3-s1234"
     assert out[out.index("--fj-effort") + 1] == "0.5"
-    assert out[out.index("--fj-stall") + 1] == "256"
+    assert out[out.index("--fj-patience") + 1] == "0.25"
 
 
 def test_target_runner_refuses_a_capping_bound():
@@ -978,7 +1002,7 @@ def _cli(campaign, *extra: str) -> list[str]:
 
 
 def test_end_to_end_prints_one_number(campaign, capsys):
-    code = main(_cli(campaign, "--fj-effort", "0.0125", "--fj-stall", "256"))
+    code = main(_cli(campaign, "--fj-effort", "2.84", "--fj-patience", "0.71"))
     assert code == 0
     out = capsys.readouterr().out.strip()
     assert len(out.splitlines()) == 1
@@ -987,12 +1011,12 @@ def test_end_to_end_prints_one_number(campaign, capsys):
 
 
 def test_end_to_end_keeps_opts_log_and_record(campaign):
-    assert main(_cli(campaign, "--fpr-effort", "0.5", "--fpr-stall", "2048")) == 0
+    assert main(_cli(campaign, "--fpr-effort", "0.5", "--fpr-patience", "0.125")) == 0
     run_dir = campaign / "runs" / "toy"
-    tag = run_tag(params(fpr_effort=0.5, fpr_stall=2048), "toy", 5)
+    tag = run_tag(params(fpr_effort=0.5, fpr_patience=0.125), "toy", 5)
     opts = (run_dir / f"{tag}.opts").read_text()
     assert "mip_heuristic_suite = fpr\n" in opts
-    assert "mip_heuristic_fpr_stall = 2048\n" in opts
+    assert "mip_heuristic_fpr_patience = 0.125\n" in opts
     assert "mip_heuristic_presolve_only = true\n" in opts
     assert "random_seed = 5\n" in opts
     # Compressed, because `log_dev_level=3` runs to millions of lines and a
@@ -1002,7 +1026,7 @@ def test_end_to_end_keeps_opts_log_and_record(campaign):
     record = json.loads((run_dir / f"{tag}.json").read_text())
     assert record["suite"] == "fpr"
     assert record["efforts"]["fpr"] == 0.5
-    assert record["stalls"]["fpr"] == 2048
+    assert record["patiences"]["fpr"] == 0.125
     assert record["thread_count"] == 16
     assert record["heuristics_traced"] == ["fj", "fpr"]
 
@@ -1046,7 +1070,7 @@ def test_end_to_end_passes_the_time_limit_on_the_command_line(campaign):
 
 
 def test_end_to_end_is_rerunnable_into_the_same_files(campaign, capsys):
-    first = _cli(campaign, "--fj-effort", "0.1", "--fj-stall", "256")
+    first = _cli(campaign, "--fj-effort", "0.1", "--fj-patience", "0.025")
     assert main(first) == 0
     a = capsys.readouterr().out
     before = sorted(os.listdir(campaign / "runs" / "toy"))

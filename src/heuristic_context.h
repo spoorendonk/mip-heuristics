@@ -148,12 +148,13 @@ struct HeuristicBudget {
     // Runner-level staleness ceiling: the dispatch stops once
     // `ContinuousLoopState::effort_since_improvement` — summed over every
     // worker — crosses this.  Absolute and instance-scaled since issue
-    // #111 (`stall_threshold(nnz, <this heuristic's per-nonzero stall
-    // value>, total)`, sized by the caller from
-    // `mip_heuristic_<name>_stall`), not the `total / 4` it used to be.  A quarter of the
-    // budget is not a stall criterion: it says "I have spent a quarter of
-    // what I was given", which is true at every budget and therefore
-    // bounds nothing.
+    // #111 (`patience_threshold(nnz, <this heuristic's patience option>,
+    // total)`, sized by the caller from `mip_heuristic_<name>_patience`),
+    // not the `total / 4` it used to be.  A quarter of the budget is not a
+    // patience criterion: it says "I have spent a quarter of what I was
+    // given", which is true at every budget and therefore bounds nothing.
+    // A quarter of the budget is what the *clamp* is (#116), which is a
+    // different job — see `kPatienceCeilingDivisor`.
     size_t stale = 0;
 
     // Per-worker share of the same ceiling.  The runner's counter
@@ -275,7 +276,7 @@ inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
 // `stale` is passed in rather than derived here (issue #111): it is the
 // one quantity in this struct that must *not* be a function of `total`,
 // and every caller knows the model's `nnz` and its heuristic's
-// per-nonzero stall value.  See `stall_threshold` in heuristic_common.h.
+// patience value.  See `patience_threshold` in heuristic_common.h.
 inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stale) {
     // A zero total is "this heuristic is excluded" (issue #106), so every
     // derived ceiling is zero too and `disabled()` holds.  Spelling it out
@@ -283,7 +284,7 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
     // at 1, so a zero budget used to license one attempt — the whole of
     // Scylla's, which charges a full PDLP solve and does not stop for
     // `attempt_cap` once started — and `stale` arrives here *unclamped*,
-    // because `stall_threshold` special-cases a zero budget by skipping
+    // because `patience_threshold` special-cases a zero budget by skipping
     // the clamp.  Both are ceilings that only make sense above a budget
     // that exists.
     if (total == 0) {

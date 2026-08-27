@@ -84,7 +84,7 @@ SolveOutcome solve_outcome(const char* inst, Configure&& configure) {
 // The one instance these cases run on.  flugpl is small enough to solve
 // to optimality in the default path in well under a second, and its
 // presolve chain reliably produces an incumbent at `threads=1, seed=0`
-// (the stall-gate suite measures FPR earning pool acceptances on it).
+// (the patience-gate suite measures FPR earning pool acceptances on it).
 constexpr const char* kInstance = "flugpl.mps";
 constexpr double kFlugplOptimum = 1201500.0;
 

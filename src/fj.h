@@ -8,11 +8,11 @@ struct ProblemView;
 
 namespace fj {
 
-// Stall threshold: `mip_heuristic_fj_stall`, in effort units per
-// constraint-matrix nonzero (issue #111, made an option by #106).  FJ's
-// counter is in step units, so its value is not comparable with the
-// other three heuristics' — do not read equal numbers as equal
-// tolerances.
+// Patience: `mip_heuristic_fj_patience`, a multiple of `nnz << 10` — the
+// same unit as this heuristic's effort option (issue #111, made an option
+// by #106, put on the effort unit by #116).  FJ's counter is in step
+// units, so its value is not comparable with the other three heuristics'
+// — do not read equal numbers as equal tolerances.
 //
 // Scope: **per worker**, matching `mip_heuristic_fj_effort`, which sizes
 // one worker's allowance rather than a whole dispatch
