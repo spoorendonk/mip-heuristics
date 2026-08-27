@@ -1047,7 +1047,7 @@ What each heuristic's coarsest unit is, after #117:
 | LocalMIP | `kTermCheckInterval` = 1000 local-search steps | constant |
 | FPR | 16 DFS nodes (`kDeadlinePollNodes`), or one RepairSearch node | one propagation fixpoint |
 | Scylla | one pump round: one PDLP solve, then one FPR rounding (which polls as above) | one PDLP solve |
-| all four | one dispatch *setup* — see below | one `compute_var_order`, one shared-LP build |
+| FPR, Scylla | one dispatch *setup* — see below | one `compute_var_order`, one shared-LP build |
 
 **The residual floors, none of which a constant can cross:**
 
@@ -1062,7 +1062,16 @@ What each heuristic's coarsest unit is, after #117:
   checked *between* orders, so one order is the floor. It is also the
   largest floor in practice: on `rail02` (542k nonzeros, 16 workers,
   presolve-only) FPR's setup measured 34.5 s, and the tail of a single
-  order left 2.2 s of overrun on a 20 s limit.
+  order left 2.2 s of overrun on a 20 s limit. **It scales with the
+  model, and 2.2 s is not the worst case**: the same configuration on
+  `bab6` (986k nonzeros, default worker count, a 32-thread host — so not
+  directly comparable with the rows above) leaves an FPR dispatch running
+  ~9 s past a 20 s limit on the single order that crossed it. Scylla's
+  unit there is ~11 s and is `ContestedPdlp`'s LP build plus at most one
+  order: it measured the same 11.2 s at two different limits, i.e. it
+  does not shrink when more of the limit is left, and it cannot be split
+  further from outside the dispatch. Budget the residual as a fraction of
+  the model, not as a constant.
 - **One PDLP solve.** `ContestedPdlp` hands cuPDLP-C the time left on the
   deadline, read *inside* its mutex — a value read before the wait is
   stale by the length of the peer solve the caller blocked behind — and
@@ -1078,7 +1087,7 @@ once the deadline has passed, so a heuristic that legitimately spends the
 whole limit still leaves its successors nothing.
 
 Measured effect of #117, at an effort that cannot bind
-(`mip_heuristic_<name>_effort=1e6`) with the stall gate off, presolve-only
+(`mip_heuristic_<name>_effort=1e6`) with the patience gate off, presolve-only
 at 16 workers:
 
 | run | limit | dispatch ended (before) | (after) |
@@ -1090,6 +1099,17 @@ at 16 workers:
 The before column is setup, in all three: those dispatches reported
 `effort=0` and — for Scylla — `fresh=0 stale=0`, i.e. not one pump round
 had run when the limit passed.
+
+Independently re-measured on a different host (32 threads, HiGHS's own
+default worker count, so the numbers are not the same experiment as the
+table above), as `end_s` over the limit: `rail02` 1.03x (fpr) and 1.05x
+(scylla), `tbfp-network` 1.30x / 1.09x, `rail01` 1.00x, `roi2alpha3n4`
+1.04x / 1.04x, and — the worst of the named instances — `bab6` 1.45x
+(fpr) and 1.24-1.73x (scylla), both setup-bound with `effort=0`. Scylla's
+spread on `bab6` is the residual floor showing through: the setup unit is
+a fixed ~11 s, so the overrun is whatever part of it the limit did not
+already cover, and how much that is depends on when HiGHS's own presolve
+handed the chain over. Nothing was killed.
 
 The units differ per heuristic and the values are **not** comparable
 across them: FJ counts step units, FPR and LocalMIP coefficient accesses,

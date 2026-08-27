@@ -346,8 +346,16 @@ namespace {
 // carries `time_limit`, with an effort budget that cannot bind.
 //
 // The mode is `kRepairSearch`, which is what the shipped rotation gives
-// worker 6 (`kInitialFprConfigs`), so this covers Phase 3's node loop as
-// well as the Phase 2 DFS — the two loops #117 put a clock in.
+// worker 6 (`kInitialFprConfigs`), so the *unbounded* arm runs Phase 3 as
+// well as the Phase 2 DFS and the two arms are a like-for-like config.
+//
+// What this discriminates is the Phase 2 DFS poll, and only that.  Phase 3
+// is entry-gated on `!deadline.expired()`, so `repair_search` cannot be
+// entered with a deadline that has already passed: its per-node poll gets
+// no coverage here or anywhere else, and reaching it would need a deadline
+// that expires *during* the repair — a timing-dependent thing to arrange.
+// Phase 3's entry gate is covered only when the DFS reaches a leaf inside
+// `kDeadlinePollNodes` nodes, which is instance-dependent and not asserted.
 size_t one_attempt_effort(const char* instance, double time_limit) {
     // `HighsMipSolverData::init` reads `parallel::num_threads()`; see the
     // note at the other `build_bare_mipsolver` call site.
