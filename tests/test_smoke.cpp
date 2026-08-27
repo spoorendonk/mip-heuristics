@@ -66,10 +66,10 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         double value;
     };
     const auto presolve_efforts = std::to_array<EffortDefault>({
-        {"mip_heuristic_fj_effort", 0.0125},
-        {"mip_heuristic_fpr_effort", 0.0884},
-        {"mip_heuristic_local_mip_effort", 0.1821},
-        {"mip_heuristic_scylla_effort", 0.0296},
+        {"mip_heuristic_fj_effort", 0.0355},
+        {"mip_heuristic_fpr_effort", 0.0959},
+        {"mip_heuristic_local_mip_effort", 0.3654},
+        {"mip_heuristic_scylla_effort", 0.0142},
     });
     for (const auto& [name, expected] : presolve_efforts) {
         double value = -1.0;
@@ -113,10 +113,10 @@ TEST_CASE("Options: stall threshold defaults", "[options][stall]") {
         HighsInt value;
     };
     const auto stalls = std::to_array<StallDefault>({
-        {"mip_heuristic_fj_stall", 256},
-        {"mip_heuristic_fpr_stall", 2048},
-        {"mip_heuristic_local_mip_stall", 4096},
-        {"mip_heuristic_scylla_stall", 512},
+        {"mip_heuristic_fj_stall", 727},
+        {"mip_heuristic_fpr_stall", 1964},
+        {"mip_heuristic_local_mip_stall", 7484},
+        {"mip_heuristic_scylla_stall", 291},
     });
     for (const auto& [name, expected] : stalls) {
         HighsInt value = -1;

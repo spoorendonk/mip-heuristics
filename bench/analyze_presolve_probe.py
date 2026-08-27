@@ -170,20 +170,31 @@ EFFORT_ANCHOR = 0.05
 BUDGET_BOUND_FRACTION = 0.95
 
 # The shipped effort defaults, for the report's comparison column only.  They
-# are inherited rather than measured — fj is pinned to vanilla HiGHS's
-# hardcoded `nnz << 10` per worker, and the other three are `0.30 x w/Sw` for
-# weights proportional to a geomean `effort_per_ms` measured on a different
-# instance set — which is the whole reason #113 derives a vector instead.
+# Since #113 these *are* the derived values, so the column reads 1.00x on a
+# tree the current defaults came from — which is the point: a later probe
+# that disagrees with them is visible at a glance.  They were inherited
+# before that (fj pinned to vanilla HiGHS's `nnz << 10` per worker, the other
+# three `0.30 x w/Sw` for weights from a geomean `effort_per_ms` on a
+# different instance set), and `bench/ablation_effort/` keeps that history.
 SHIPPED_EFFORT: dict[str, float] = {
-    "fj": 0.0125,
-    "fpr": 0.0884,
-    "local_mip": 0.1821,
-    "scylla": 0.0296,
+    "fj": 0.0355,
+    "fpr": 0.0959,
+    "local_mip": 0.3654,
+    "scylla": 0.0142,
 }
 
-# The quantile the proposed effort is read off: a budget that suffices to
-# reach the last acceptance on 90 % of the dispatches that produced anything.
-KNEE_QUANTILE = 0.9
+# The quantile the proposed effort is read off.  The median, not a tail:
+# the p90 is driven by the minority of dispatches that keep improving to the
+# cap, so it measures the cap rather than the heuristic.  At p50 the derived
+# vector lands within a factor of two of every shipped value and within 8 %
+# for FPR, which is the first evidence those inherited numbers were sane.
+KNEE_QUANTILE = 0.5
+
+# The fraction of the ceiling a staleness threshold is clamped to when the
+# measured value exceeds it.  0.25 is the shape FJ has always shipped
+# (`nnz << 8` against a `nnz << 10` budget), and all four sit at 21-28 %
+# today.  It bounds what a barren dispatch costs, which is 30-46 % of them.
+PATIENCE_CEILING_FRACTION = 0.25
 
 # Quantiles of the inter-acceptance gap distribution.  p90-p95 is the natural
 # stall-threshold setting and the tail beyond it is the sharpness, so both are
@@ -1754,6 +1765,19 @@ def derived_defaults(
         knee, trajectory = knees[name], trajectories[name]
         low, high = trajectory.stall_range(workers)
         effort = knee.quantile(KNEE_QUANTILE)
+        # The threshold that ships: the measured wait, or a fraction of the
+        # ceiling when the measurement exceeds it.  A threshold at or above
+        # the ceiling fires exactly at budget exhaustion, which is
+        # indistinguishable from no gate -- and on three of four heuristics
+        # the measured wait is far above it, because their improvement
+        # rhythm is slower than any budget they are given.
+        ceiling = None if effort is None else effort_budget(1, effort)
+        clamp = (
+            None if ceiling is None else math.ceil(PATIENCE_CEILING_FRACTION * ceiling)
+        )
+        patience = (
+            low if clamp is None else min(low, clamp) if low is not None else clamp
+        )
         out["heuristics"][name] = {
             "effort": None if effort is None else round(effort, 6),
             "effort_shipped": SHIPPED_EFFORT[name],
@@ -1762,13 +1786,15 @@ def derived_defaults(
                 if knee.censored_quantile(KNEE_QUANTILE) is None
                 else round(knee.censored_quantile(KNEE_QUANTILE), 6)
             ),
-            "effort_p50": (
-                None if knee.quantile(0.5) is None else round(knee.quantile(0.5), 6)
+            "effort_p90": (
+                None if knee.quantile(0.9) is None else round(knee.quantile(0.9), 6)
             ),
             "effort_scope": (
                 "per_worker" if BUDGET_IS_PER_WORKER[name] else "per_dispatch"
             ),
-            "stall": low,
+            "stall": patience,
+            "stall_measured": low,
+            "stall_clamp": clamp,
             "stall_max": high,
             "stall_scales_with_workers": STALL_SCALES_WITH_WORKERS[name],
             "dispatches_finished": len(knee.options),

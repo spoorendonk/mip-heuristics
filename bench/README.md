@@ -27,7 +27,7 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | `analyze_results.py` | the headline tables — SGM, primal integral, wins, oracle rows, instance filters |
 | `analyze_presolve_probe.py` | the calibration probe: informative set, hard tier, effort trajectories, gap to best known, and the derived parameter vector |
 | `make_tuning_set.py` | a stratified tuning subset, sampled from a results tree on time-to-first-feasible |
-| `derive_from_probe.sh` | **probe tree → every artifact, one command** (see below) |
+| `derive_from_probe.sh` | **probe tree → every artifact, one command** (see below), written into `ablation_effort/` |
 | `check_vanilla_equivalence.py` | proves `suite=off` matches a separately built unpatched binary |
 | `make_archive.py` | the release archive, with derived provenance |
 | `check_docs_refs.py` | fails the suite if `docs/PARAMETERS.md` names a constant that no longer exists |
@@ -53,6 +53,12 @@ then produces, all from those logs:
 Every artifact carries the command that regenerates it and a digest of its
 inputs, and none carries a timestamp: same trees plus same seed reproduce them
 byte for byte.
+
+They land in **`bench/ablation_effort/`**, which is tracked — `bench/results*`
+is not, and the numbers behind a shipped default should not live only on the
+machine that ran the probe. That directory's README carries the findings: what
+the shipped effort and patience defaults are, how they were derived, and the
+caveats that travel with them.
 
 ## Things that will bite you
 

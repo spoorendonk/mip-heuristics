@@ -11,7 +11,7 @@
 #   config           vanilla
 #   config_seeds     0
 #   reference_list   /home/simon/code/my/mip-heuristics/bench/instances_plato.txt (233 instances)
-#   informative_set  bench/results/probe/informative.txt (183 names, sha256:3731395839e2)
+#   informative_set  bench/ablation_effort/informative.txt (183 names, sha256:0d9bb48ef51c)
 #   candidate_pool   183 stratifiable instance(s) after intersecting it with the tree
 #   pool_rule        instances a presolve-only probe produced an accepted solution
 #                    on in ANY configuration (issue #113).  The rest are not
@@ -33,7 +33,7 @@
 #   TOTAL          183  100.0%      90   100.0%    90.0
 #
 # Regenerate with:
-#   bench/make_tuning_set.py bench/results/plato/vanilla --config vanilla --instances /home/simon/code/my/mip-heuristics/bench/instances_plato.txt --informative-instances bench/results/probe/informative.txt --size 90 --seed 0
+#   bench/make_tuning_set.py bench/results/plato/vanilla --config vanilla --instances /home/simon/code/my/mip-heuristics/bench/instances_plato.txt --informative-instances bench/ablation_effort/informative.txt --size 90 --seed 0
 
 # <1s (44 of 92)
 CMS750_4                 # 0.20s

@@ -57,7 +57,11 @@ set -euo pipefail
 
 PROBE="${1:-bench/results/probe/preprobe}"
 VANILLA="${2:-bench/results/plato/vanilla}"
-OUT="$(dirname "$PROBE")"
+# Tracked, not beside the tree: `bench/results*` is gitignored, so artifacts
+# written there vanish from the repository and the numbers behind a shipped
+# default would live only on the machine that ran the probe.
+OUT="${OUT:-bench/ablation_effort}"
+mkdir -p "$OUT"
 # 90 of 75-100: the size #113 asks for, which buys back the selection noise a
 # wide search over a 25-instance subset would have carried.
 SIZE="${TUNING_SIZE:-90}"

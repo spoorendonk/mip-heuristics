@@ -663,7 +663,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_fj_effort` — FeasibilityJump budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0125`
+- **Default**: `0.0355` (measured, #113; was `0.0125`)
 - **Meaning**: Sizes one *worker's* allowance rather than the whole
   dispatch — the only entry that does, flagged `per_worker` in `kChain`.
   At the default it is exactly `nnz << 10` steps per worker, which is
@@ -694,7 +694,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_fpr_effort` — FPR budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0884`
+- **Default**: `0.0959` (measured, #113; was `0.0884`)
 - **Meaning**: Whole-dispatch budget for the presolve FPR chain, divided
   across the workers by `make_budget`. The default is `0.30 x 2.99/10.15`
   — FPR's 29.5% share of the retired shared envelope at its 0.30 default.
@@ -706,7 +706,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_local_mip_effort` — LocalMIP budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.1821`
+- **Default**: `0.3654` (measured, #113; was `0.1821`)
 - **Meaning**: Whole-dispatch budget for LocalMIP. The default is
   `0.30 x 6.16/10.15`, its 60.7% share of the retired envelope — the
   largest of the three because the retired weights were proportional to
@@ -720,7 +720,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_scylla_effort` — Scylla budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0296`
+- **Default**: `0.0142` (measured, #113; was `0.0296`)
 - **Meaning**: Whole-dispatch budget for Scylla. The default is
   `0.30 x 1.00/10.15`, its 9.9% share of the retired envelope. Scylla's
   effort is measured in PDLP iters x nnz, a different unit from the other
@@ -969,7 +969,7 @@ effort-gap distribution).
 ### `mip_heuristic_fj_stall` — FeasibilityJump stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `256`
+- **Default**: `727` (measured, #113; was `256`)
 - **Meaning**: `nnz << 8` step units per worker without an improvement.
   Scope is **per worker**, matching `mip_heuristic_fj_effort` — the only
   one of the four with that scope, so the runner-level gate is this times
@@ -984,7 +984,7 @@ effort-gap distribution).
 ### `mip_heuristic_fpr_stall` — FPR stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `2048`
+- **Default**: `1964` (measured, #113; was `2048`)
 - **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
   without a solution. FPR had no worker-level gate at all before #111
   (`FprWorker::finished()` returned false unconditionally); it now has
@@ -998,7 +998,7 @@ effort-gap distribution).
 ### `mip_heuristic_local_mip_stall` — LocalMIP stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `4096`
+- **Default**: `7484` (measured, #113; was `4096`)
 - **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
   without an improvement. 4096 is the power of two nearest the pre-#111
   gate at the default effort 0.1821 (3729 x nnz).
@@ -1037,7 +1037,7 @@ effort-gap distribution).
 ### `mip_heuristic_scylla_stall` — Scylla stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `512`
+- **Default**: `291` (measured, #113; was `512`)
 - **Meaning**: PDLP-iteration x nnz units per nonzero, **whole
   dispatch**, without a solution. Small in absolute terms because one
   PDLP solve charges `iters x nnz`, so this is a handful of unproductive

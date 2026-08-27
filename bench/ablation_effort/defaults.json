@@ -1,0 +1,86 @@
+{
+  "heuristics": {
+    "fj": {
+      "dispatches_barren": 97,
+      "dispatches_finished": 8,
+      "dispatches_still_improving": 115,
+      "effort": 0.035501,
+      "effort_max": null,
+      "effort_p90": 0.346853,
+      "effort_scope": "per_worker",
+      "effort_shipped": 0.0125,
+      "median_gap_to_best_known": 0.999995,
+      "stale_fraction": 0.9009,
+      "stall": 727,
+      "stall_clamp": 727,
+      "stall_max": 49763453,
+      "stall_measured": 4553263,
+      "stall_scales_with_workers": false
+    },
+    "fpr": {
+      "dispatches_barren": 91,
+      "dispatches_finished": 116,
+      "dispatches_still_improving": 0,
+      "effort": 0.095904,
+      "effort_max": 5.118068,
+      "effort_p90": 14.85992,
+      "effort_scope": "per_dispatch",
+      "effort_shipped": 0.0884,
+      "median_gap_to_best_known": 0.665124,
+      "stale_fraction": 0.9823,
+      "stall": 1964,
+      "stall_clamp": 1964,
+      "stall_max": null,
+      "stall_measured": 8326869,
+      "stall_scales_with_workers": true
+    },
+    "local_mip": {
+      "dispatches_barren": 66,
+      "dispatches_finished": 153,
+      "dispatches_still_improving": 1,
+      "effort": 0.365402,
+      "effort_max": 1.366325,
+      "effort_p90": 17.059516,
+      "effort_scope": "per_dispatch",
+      "effort_shipped": 0.1821,
+      "median_gap_to_best_known": 0.436795,
+      "stale_fraction": 0.941,
+      "stall": 7484,
+      "stall_clamp": 7484,
+      "stall_max": null,
+      "stall_measured": 8700,
+      "stall_scales_with_workers": true
+    },
+    "scylla": {
+      "dispatches_barren": 96,
+      "dispatches_finished": 112,
+      "dispatches_still_improving": 2,
+      "effort": 0.014216,
+      "effort_max": 1.442187,
+      "effort_p90": 1.58165,
+      "effort_scope": "per_dispatch",
+      "effort_shipped": 0.0296,
+      "median_gap_to_best_known": 0.97631,
+      "stale_fraction": 0.9905,
+      "stall": 291,
+      "stall_clamp": 291,
+      "stall_max": null,
+      "stall_measured": 64831,
+      "stall_scales_with_workers": false
+    }
+  },
+  "provenance": {
+    "configs": [
+      "fj",
+      "fpr",
+      "local_mip",
+      "scylla"
+    ],
+    "instances_analysed": 233,
+    "knee_quantile": 0.5,
+    "runs_traced": 857,
+    "stall_quantile": 0.95,
+    "workers_observed": 16
+  },
+  "source_tree": "bench/results/probe/preprobe"
+}

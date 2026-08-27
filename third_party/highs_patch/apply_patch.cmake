@@ -86,7 +86,16 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 10 widens the four effort records' upper bound from 1.0 to
 # `kEffortMax` (#113).  The bound is what a *record* carries, so it is
 # inserted text and needs the bump even though nothing else moved.
-set(PATCH_VERSION "10")
+#
+# Version 11 replaces all eight effort and stall defaults with the values
+# #113's calibration probe measured.  They are record defaults, so they are
+# inserted text.  See `bench/ablation_effort/` for the derivation and
+# `docs/PARAMETERS.md` for the rule; the short version is that effort is the
+# median budget that reached a dispatch's last incumbent improvement, and
+# the stall threshold is the measured wait for the next one, clamped to a
+# quarter of the ceiling so a barren dispatch cannot spend the whole budget
+# finding nothing.
+set(PATCH_VERSION "11")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -321,14 +330,14 @@ set(kEffortMax "1e4")
 # (bool); it sits *before* the description because the description is the
 # one field allowed to contain anything, so it has to be last.
 set(_patch_options
-    "mip_heuristic_fj_effort:double:0.0125:${kEffortMax}:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
-    "mip_heuristic_fpr_effort:double:0.0884:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
-    "mip_heuristic_local_mip_effort:double:0.1821:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
-    "mip_heuristic_scylla_effort:double:0.0296:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
-    "mip_heuristic_fj_stall:int:256:kHighsIInf:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_fpr_stall:int:2048:kHighsIInf:Staleness threshold for the FPR presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_local_mip_stall:int:4096:kHighsIInf:Staleness threshold for the LocalMIP presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_scylla_stall:int:512:kHighsIInf:Staleness threshold for the Scylla presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_fj_effort:double:0.0355:${kEffortMax}:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
+    "mip_heuristic_fpr_effort:double:0.0959:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
+    "mip_heuristic_local_mip_effort:double:0.3654:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
+    "mip_heuristic_scylla_effort:double:0.0142:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
+    "mip_heuristic_fj_stall:int:727:kHighsIInf:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_fpr_stall:int:1964:kHighsIInf:Staleness threshold for the FPR presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_local_mip_stall:int:7484:kHighsIInf:Staleness threshold for the LocalMIP presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_scylla_stall:int:291:kHighsIInf:Staleness threshold for the Scylla presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
     "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
 
 # The upstream record block all four record insertions anchor on, spelled
