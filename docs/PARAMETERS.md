@@ -663,7 +663,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_fj_effort` — FeasibilityJump budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0355` (measured, #113; was `0.0125`)
+- **Default**: `2.84` (measured, #113; `0.0355` before the unit change, #116)
 - **Meaning**: Sizes one *worker's* allowance rather than the whole
   dispatch — the only entry that does, flagged `per_worker` in `kChain`.
   At the default it is exactly `nnz << 10` steps per worker, which is
@@ -687,18 +687,18 @@ itself is driven by a tracked target runner rather than by config names.
   early on models where FJ converges.
 - **Suggested range**: 0.003–0.10 (a quarter to eight times vanilla's
   per-thread depth), subject to the dead zone above. The record's ceiling
-  is `1e4`; see "A budget that cannot bind" below.
+  is `1e6`; see "A budget that cannot bind" below.
 
 ---
 
 ### `mip_heuristic_fpr_effort` — FPR budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0959` (measured, #113; was `0.0884`)
+- **Default**: `7.672` (measured, #113; `0.0959` before the unit change, #116)
 - **Meaning**: Whole-dispatch budget for the presolve FPR chain, divided
   across the workers by `make_budget`. The default is `0.30 x 2.99/10.15`
   — FPR's 29.5% share of the retired shared envelope at its 0.30 default.
-- **Suggested range**: 0.01–1.0. The record's ceiling is `1e4`; see
+- **Suggested range**: 0.01–1.0. The record's ceiling is `1e6`; see
   "A budget that cannot bind" below.
 
 ---
@@ -706,13 +706,13 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_local_mip_effort` — LocalMIP budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.3654` (measured, #113; was `0.1821`)
+- **Default**: `29.232` (measured, #113; `0.3654` before the unit change, #116)
 - **Meaning**: Whole-dispatch budget for LocalMIP. The default is
   `0.30 x 6.16/10.15`, its 60.7% share of the retired envelope — the
   largest of the three because the retired weights were proportional to
   `effort_per_ms` and LocalMIP has the highest coefficient-access rate.
   Its effort counter includes the cold-start construction sweep.
-- **Suggested range**: 0.01–1.0. The record's ceiling is `1e4`; see
+- **Suggested range**: 0.01–1.0. The record's ceiling is `1e6`; see
   "A budget that cannot bind" below.
 
 ---
@@ -720,13 +720,13 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_scylla_effort` — Scylla budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0142` (measured, #113; was `0.0296`)
+- **Default**: `1.136` (measured, #113; `0.0142` before the unit change, #116)
 - **Meaning**: Whole-dispatch budget for Scylla. The default is
   `0.30 x 1.00/10.15`, its 9.9% share of the retired envelope. Scylla's
   effort is measured in PDLP iters x nnz, a different unit from the other
   heuristics' coefficient accesses, and it saturates: PDLP stalls and
   stale rounds usually bound a Scylla dispatch before the budget does.
-- **Suggested range**: 0.01–1.0. The record's ceiling is `1e4`; see
+- **Suggested range**: 0.01–1.0. The record's ceiling is `1e6`; see
   "A budget that cannot bind" below.
 
 ---
@@ -770,9 +770,39 @@ per worker while the other three are per dispatch, so changing the count
 
 ---
 
+### One unit for both parameters
+
+Since #116 the effort option and the stall threshold are **multiples of the
+same base**, `nnz << 10` — vanilla HiGHS's hardcoded single-thread
+FeasibilityJump limit, the one figure in this arithmetic upstream itself
+picked:
+
+```
+ceiling = effort x (nnz << 10)      the most this heuristic may spend
+floor   = stall  x (nnz << 10)      what it spends before giving up unimproved
+```
+
+So `effort = 1.0` is exactly one vanilla FJ budget, and `stall < effort` is
+legible without a conversion. Before that the effort option multiplied
+`nnz << 12` scaled by `value / 0.05` while the threshold was already absolute
+per nonzero, so comparing the pair meant knowing that `(1 << 12) / 0.05` is
+81,920. Both constants were historical — the 4096 existed only so FJ's
+default came out at `nnz << 10` anyway, and the 0.05 was upstream's own
+`mip_heuristic_effort` default used as an anchor.
+
+Two consequences worth knowing. `mip_heuristic_effort` — upstream's *own* B&B
+knob, which `fpr_lp` caps itself against — is on the old scale and goes
+through `vanilla_effort_budget`, which restores the anchor so its meaning is
+unchanged. And every shipped stall default is now visibly `0.25 x` its effort,
+because the clamp bound all four: the measured waits contributed nothing to
+them, which is a statement about how slowly these heuristics improve rather
+than about the calibration.
+
+---
+
 ### A budget that cannot bind
 
-All four effort records are bounded at **`1e4`**, not at `1.0`. Nothing
+All four effort records are bounded at **`1e6`**, not at `1.0`. Nothing
 ships or tunes above `1.0` — the suggested ranges above are the real
 operating range — but one measurement needs a value outside it.
 
@@ -787,10 +817,10 @@ trace stops where the budget stops, and each heuristic's budget binds at a
 different model size (at effort `1.0`, FJ exhausts its budget after 7.8 s
 on a 41k-nonzero model while Scylla is already clock-bound there).
 
-At `1e4` the budget is `8.2e8` effort units per matrix nonzero — `2e5`
-times the vanilla anchor, unreachable inside any per-run cap the campaign
-uses, and far enough below `size_t` overflow on the largest MIPLIB model
-that `heuristic_effort_budget` never has to saturate (it does anyway; a
+At `1e6` the budget is `1.0e9` effort units per matrix nonzero —
+unreachable inside any per-run cap the campaign uses, and far enough below
+`size_t` overflow on the largest MIPLIB model that
+`heuristic_effort_budget` never has to saturate (it does anyway; a
 `double -> size_t` conversion out of range is undefined, and the same
 reasoning that gives `saturating_mul` its guard applies one level up).
 "Cannot bind" is checked rather than assumed:
@@ -969,7 +999,7 @@ effort-gap distribution).
 ### `mip_heuristic_fj_stall` — FeasibilityJump stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `727` (measured, #113; was `256`)
+- **Default**: `0.71` (measured, #113; `727` before the unit change, #116)
 - **Meaning**: `nnz << 8` step units per worker without an improvement.
   Scope is **per worker**, matching `mip_heuristic_fj_effort` — the only
   one of the four with that scope, so the runner-level gate is this times
@@ -984,7 +1014,7 @@ effort-gap distribution).
 ### `mip_heuristic_fpr_stall` — FPR stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `1964` (measured, #113; was `2048`)
+- **Default**: `1.918` (measured, #113; `1964` before the unit change, #116)
 - **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
   without a solution. FPR had no worker-level gate at all before #111
   (`FprWorker::finished()` returned false unconditionally); it now has
@@ -998,7 +1028,7 @@ effort-gap distribution).
 ### `mip_heuristic_local_mip_stall` — LocalMIP stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `7484` (measured, #113; was `4096`)
+- **Default**: `7.308` (measured, #113; `7484` before the unit change, #116)
 - **Meaning**: Coefficient accesses per nonzero, **whole dispatch**,
   without an improvement. 4096 is the power of two nearest the pre-#111
   gate at the default effort 0.1821 (3729 x nnz).
@@ -1037,7 +1067,7 @@ effort-gap distribution).
 ### `mip_heuristic_scylla_stall` — Scylla stall threshold
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `291` (measured, #113; was `512`)
+- **Default**: `0.284` (measured, #113; `291` before the unit change, #116)
 - **Meaning**: PDLP-iteration x nnz units per nonzero, **whole
   dispatch**, without a solution. Small in absolute terms because one
   PDLP solve charges `iters x nnz`, so this is a handful of unproductive
@@ -1149,7 +1179,7 @@ The custom patch-added options are exactly five:
   `mip_heuristic_fpr_effort` (`0.0884`),
   `mip_heuristic_local_mip_effort` (`0.1821`),
   `mip_heuristic_scylla_effort` (`0.0296`) — one effort budget multiplier
-  per presolve heuristic, each a double in `[0.0, 1e4]`. See
+  per presolve heuristic, each a double in `[0.0, 1e6]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the other three are per dispatch.
 - `mip_heuristic_suite` — which heuristics run (default `"all"`).

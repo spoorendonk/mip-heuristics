@@ -78,8 +78,10 @@ struct HeuristicConfig {
     // `per_worker`, which in this translation unit already means
     // `HeuristicBudget::per_worker` — a size_t budget, not a flag.
     bool budget_is_per_worker;
-    // This entry's stall-threshold option, in effort units per
-    // constraint-matrix nonzero (issue #111; an option since #106).
+    // This entry's stall-threshold option, as a multiple of `nnz << 10` --
+    // the same unit as `effort` above, so the two are directly comparable
+    // and `stall < effort` is legible without a conversion (#116; an
+    // option since #106, absolute since #111).
     // Absolute and instance-scaled: a heuristic that stops finding things
     // exits on this rather than on a fraction of an allowance that
     // someone tuned in isolation.  It was a `constexpr` in each
@@ -88,7 +90,7 @@ struct HeuristicConfig {
     // header still carries what that heuristic's effort counter counts,
     // which is why the four values are not comparable with each other.
     // **0 means no gate at all** — see `stall_threshold`.
-    HighsInt HighsOptionsStruct::* stall;
+    double HighsOptionsStruct::* stall;
     size_t (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
 };
 
@@ -204,17 +206,20 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         // `stall_option == 0`, which is not a gate at all: the threshold
         // is unbounded and no clamp applies.  See `stall_threshold`.
         //
-        // The option is registered over `[0, kHighsIInf]`, so the cast is
-        // widening and cannot lose a value; `saturating_mul` covers the
-        // top of that range against a large `nnz` and a large pool, where
-        // a wrapped product would hand the gate a tiny threshold and stop
-        // the heuristic almost immediately.  Zero survives both, which is
-        // what makes "no gate" expressible from the option.
-        const auto stall_option = static_cast<size_t>(options.*h.stall);
-        const size_t stall_per_nnz =
-            h.budget_is_per_worker ? saturating_mul(stall_option, exec.num_workers) : stall_option;
+        // FJ's option is per worker, like its effort option, so the
+        // runner-level gate is it times the pool size; the other three are
+        // dispatch-scoped and `make_budget` divides them back down.  The
+        // product is taken in `double` and `heuristic_effort_budget`
+        // saturates on the way to `size_t`, so the top of the option range
+        // against a large `nnz` cannot wrap into a tiny threshold that
+        // stops the heuristic almost immediately.  Zero survives it, which
+        // is what makes "no gate" expressible from the option.
+        const double stall_option = options.*h.stall;
+        const double stall_per_base = h.budget_is_per_worker
+                                          ? stall_option * static_cast<double>(exec.num_workers)
+                                          : stall_option;
         const HeuristicBudget slice = make_budget(
-            total, exec.num_workers, stall_threshold(problem.nnz, stall_per_nnz, total));
+            total, exec.num_workers, stall_threshold(problem.nnz, stall_per_base, total));
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> size_t { return h.run(problem, slice, exec, sink); });
     }

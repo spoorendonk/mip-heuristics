@@ -436,7 +436,7 @@ void run(HighsMipSolver& mipsolver) {
     // charge-back still depletes the real counters the gate reads).
     // Size each call to the remaining headroom of that envelope, converted
     // at nnz effort-units per LP iteration (a simplex iteration touches
-    // O(nnz) coefficients), and cap it at heuristic_effort_budget(nnz,
+    // O(nnz) coefficients), and cap it at vanilla_effort_budget(nnz,
     // mip_heuristic_effort) — exactly nnz<<12 at the vanilla default 0.05
     // — so one call cannot drain a large late-search envelope in one go.
     // The charge-back below depletes the same envelope RENS/RINS draw
@@ -452,7 +452,7 @@ void run(HighsMipSolver& mipsolver) {
     }
     const double headroom_units = headroom_iters * static_cast<double>(nnz);
     const auto cap_units =
-        static_cast<double>(heuristic_effort_budget(nnz, mipdata->heuristic_effort));
+        static_cast<double>(vanilla_effort_budget(nnz, mipdata->heuristic_effort));
     const auto max_effort = static_cast<size_t>(std::min(headroom_units, cap_units));
 
     // Below ~256 LP-iteration equivalents the CSC build / var-order /

@@ -4,9 +4,10 @@ Presolve probe: bench/results/probe/preprobe
   analysed       233 instances
   probe check    932/932 presolve-only, 932/932 patched
   trace source   parse_highs_log
-  budget check   857/857 traced dispatch(es) clock-bound, 0 unrecorded
+  budget check   773/857 traced dispatch(es) clock-bound, 0 unrecorded
   signals        heursol=520, heur=343, source=69
   NOTE: on 10 instance(s) (15 run(s)) the pool accepted a chain solution that never became the incumbent, so [Heur] found=1 and the display disagree.  The verdict follows the display; see produced-not-improved.
+  WARNING: 84 of 857 traced dispatch(es) reached 95% of their effort budget, so the budget and not the clock stopped them and their yield curves are truncated: fpr on markshare_4_0 (5090%), local_mip on markshare_4_0 (3328%), local_mip on gen-ip054 (2484%), fpr on markshare2 (1665%), local_mip on neos5 (1445%), local_mip on markshare2 (1371%), fpr on gen-ip054 (1254%), fpr on neos-3046615-murg (1179%), local_mip on gen-ip002 (1040%), local_mip on pk1 (1000%), local_mip on mas76 (986%), local_mip on neos-3046615-murg (974%), local_mip on mas74 (972%), local_mip on neos-3754480-nidda (867%), fpr on enlight_hard (848%), fpr on pk1 (820%), fpr on gen-ip002 (717%), local_mip on enlight_hard (641%), local_mip on sp150x300d (618%), fpr on sp150x300d (616%)
 
 Informative set: 183 of 233 (78.5%)
 
@@ -76,10 +77,10 @@ Effort trajectories (857 run(s) traced, 6 dispatch(es) skipped, 16 worker(s))
   NOTE: 34 improving offer(s) came from worker -1 (off any slot, e.g. LocalMIP's cold-start publish); they count for the informative set and are excluded from the gap distribution.
 
   heur        disp improve  productive       stale  stale%  gaps       p50       p75       p90       p95       p99  cens  stall_lo  stall_hi
-  fj           220     297     2.1e+12    1.91e+13    90.1   297  122634.6  773263.9 3266536.9 4553262.915743518.9  3520   4553263  49763453
-  fpr          207     590    2.15e+11    1.19e+13    98.2   590     430.3   10498.7  128992.1  520429.3 2082951.4  3312   8326869     unbnd
-  local_mip    220   24598    7.66e+11    1.22e+13    94.1 24598       1.0       1.2       2.4     543.7   53140.8  3520      8700     unbnd
-  scylla       210     374    3.46e+10    3.59e+12    99.0   374     650.6    4462.0   24561.6   64830.5  380063.0  3360     64831     unbnd
+  fj           220     297     2.1e+12    1.91e+13    90.1   297  122634.6  773263.9 3266536.9 4553262.915743518.9  35204446.54578754532848597.12188770325
+  fpr          207     590    2.15e+11    1.19e+13    98.2   590     430.3   10498.7  128992.1  520429.3 2082951.4  33128131.707042859877     unbnd
+  local_mip    220   24598    7.66e+11    1.22e+13    94.1 24598       1.0       1.2       2.4     543.7   53140.8  35208.495372637475729     unbnd
+  scylla       210     374    3.46e+10    3.59e+12    99.0   374     650.6    4462.0   24561.6   64830.5  380063.0  336063.311041182322384     unbnd
 
 Solution quality against best known (184 instance(s) with a usable reference):
   heur        scored  median gap  mean gap  exact  best-of
@@ -90,16 +91,16 @@ Solution quality against best known (184 instance(s) with a usable reference):
   21 instance(s) have |reference| <= 1, where the capped gap saturates and the objective ranks on cost alone
 
 Proposed stall ranges for #107 (per nnz, at 16 worker(s)):
-  mip_heuristic_fj_stall           4553263 .. 49763453  (per-worker scope)
-  mip_heuristic_fpr_stall          8326869 .. unbounded (censoring never reaches 5%)  (x 16 workers)
-  mip_heuristic_local_mip_stall    8700 .. unbounded (censoring never reaches 5%)  (x 16 workers)
-  mip_heuristic_scylla_stall       64831 .. unbounded (censoring never reaches 5%)  (per-worker scope)
+  mip_heuristic_fj_stall           4447 .. 4.86e+04  (per-worker scope)
+  mip_heuristic_fpr_stall          8132 .. unbounded (censoring never reaches 5%)  (x 16 workers)
+  mip_heuristic_local_mip_stall    8.495 .. unbounded (censoring never reaches 5%)  (x 16 workers)
+  mip_heuristic_scylla_stall       63.31 .. unbounded (censoring never reaches 5%)  (per-worker scope)
 
 Proposed effort vector for #107 (p50% yield knee, at 16 worker(s)):
-  mip_heuristic_fj_effort              0.0355 .. unbnd      (shipped 0.0125; p50 0.0355; 8 finished, 115 still improving, 97 barren)
-  mip_heuristic_fpr_effort             0.0959 .. 5.1181     (shipped 0.0884; p50 0.0959; 116 finished, 0 still improving, 91 barren)
-  mip_heuristic_local_mip_effort       0.3654 .. 1.3663     (shipped 0.1821; p50 0.3654; 153 finished, 1 still improving, 66 barren)
-  mip_heuristic_scylla_effort          0.0142 .. 1.4422     (shipped 0.0296; p50 0.0142; 112 finished, 2 still improving, 96 barren)
+  mip_heuristic_fj_effort              2.8401 .. unbnd      (shipped 2.8400; p50 2.8401; 8 finished, 115 still improving, 97 barren)
+  mip_heuristic_fpr_effort             7.6724 .. 409.4455   (shipped 7.6720; p50 7.6724; 116 finished, 0 still improving, 91 barren)
+  mip_heuristic_local_mip_effort      29.2322 .. 109.3060   (shipped 29.2320; p50 29.2322; 153 finished, 1 still improving, 66 barren)
+  mip_heuristic_scylla_effort          1.1373 .. 115.3750   (shipped 1.1360; p50 1.1373; 112 finished, 2 still improving, 96 barren)
   low: the budget that reaches the last improvement on 50% of the dispatches that *finished* improving.  high: the same quantile with the rest carried as right-censored -- a dispatch still improving when the cap fired, and a barren one, both have a knee larger than what they were seen to spend.
 
 Trajectory diagnostics:

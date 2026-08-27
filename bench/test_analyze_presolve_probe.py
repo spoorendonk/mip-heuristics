@@ -970,9 +970,20 @@ def test_each_instance_carries_equal_weight():
 
 
 def test_stall_range_scales_only_for_dispatch_scoped_options():
-    """`fpr`/`local_mip` are divided by N on the way to the per-worker gate."""
+    """`fpr`/`local_mip` are divided by N on the way to the per-worker gate.
+
+    The measured gaps are raw effort per nonzero and the option is a multiple
+    of `nnz << 10` since #116, so the base divides out of every expectation
+    here -- 40 effort units per nonzero is `40 / 1024` of a base budget.
+    """
+    base = float(1 << 10)
     gaps = [Observation(10.0, "i", True) for _ in range(20)]
-    for name, expected in (("fpr", 40), ("local_mip", 40), ("fj", 10), ("scylla", 10)):
+    for name, expected in (
+        ("fpr", 40 / base),
+        ("local_mip", 40 / base),
+        ("fj", 10 / base),
+        ("scylla", 10 / base),
+    ):
         t = HeuristicTrajectory(name=name, observations=list(gaps))
         assert t.stall_range(4)[0] == expected
     assert HeuristicTrajectory(name="fj").stall_range(4) == (None, None)
@@ -1361,7 +1372,7 @@ def test_fj_budget_is_read_per_worker(tmp_path):
     # FJ's option sizes one *worker's* allowance, so a dispatch's budget is
     # the option times the worker count.  Read as a dispatch budget, this run
     # would be 8x over and reported as budget-bound.
-    charged = 4 * (4096 << 12) * 8  # 8 workers x 4x the anchor budget
+    charged = 4 * (4096 << 12) * 8  # comfortably inside the budget below
     log = probe_log(
         threads=8,
         nnz=4096,
@@ -1371,7 +1382,7 @@ def test_fj_budget_is_read_per_worker(tmp_path):
     )
     opts = (
         "mip_heuristic_suite = fj\n"
-        "mip_heuristic_fj_effort = 0.25\n"  # 5x the anchor, per worker
+        "mip_heuristic_fj_effort = 20.0\n"  # 20 base budgets, per worker
         "mip_heuristic_fj_stall = 0\n"
         "mip_heuristic_presolve_only = true\n"
         "random_seed = 0\n"

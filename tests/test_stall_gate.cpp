@@ -103,13 +103,13 @@ size_t presolve_effort(const std::vector<std::string>& lines, const std::string&
 // threshold is an option rather than a constant, which is what lets the
 // gate be switched off from a test instead of from a rebuild.
 size_t effort_at(const char* inst, const char* heur, const char* option, double effort, int threads,
-                 HighsInt stall = -1) {
+                 double stall = -1.0) {
     const auto lines = solve_capturing_log(inst, [&](Highs& h) {
         require_option(h, "log_dev_level", 3);
         require_option(h, "threads", threads);
         require_option(h, "random_seed", 0);
         require_option(h, option, effort);
-        if (stall >= 0) {
+        if (stall >= 0.0) {
             require_option(h, std::string("mip_heuristic_") + heur + "_stall", stall);
         }
         set_suite(h, heur);
@@ -127,8 +127,10 @@ size_t effort_at(const char* inst, const char* heur, const char* option, double 
 // has to separate "bounded by an absolute threshold" from "bounded by
 // the budget".
 constexpr double kMaxGrowth = 4.0;
-constexpr double kLowEffort = 0.05;
-constexpr double kHighEffort = 1.00;
+// Both options are multiples of `nnz << 10` since #116, so the sweep that
+// used to run 0.05 -> 1.00 now runs 4 -> 80.  Same 20x width, same budgets.
+constexpr double kLowEffort = 4.0;
+constexpr double kHighEffort = 80.0;
 
 void check_gate_binds(const char* inst, const char* heur, const char* option, int threads = 1) {
     // Held across both solves so they share one pinned worker count.
@@ -248,28 +250,31 @@ TEST_CASE("stall gate: mip_heuristic_fpr_stall=0 restores budget-tracking", "[st
 
 TEST_CASE("stall gate: the threshold does not move with the budget", "[stall][unit]") {
     constexpr size_t kNnz = 1000;
+    // A quarter of the base, i.e. the same 256 effort units per nonzero the
+    // threshold has always been -- `0.25 * (1 << 10)`.
+    constexpr double kPerBase = 0.25;
     constexpr size_t kPerNnz = 256;
 
     // The defining property, and the one `total >> 2` did not have: the
     // same instance yields the same threshold no matter how large an
     // allowance the heuristic was handed.
-    const size_t small = stall_threshold(kNnz, kPerNnz, 100'000'000);
-    const size_t large = stall_threshold(kNnz, kPerNnz, 100'000'000'000);
+    const size_t small = stall_threshold(kNnz, kPerBase, 100'000'000);
+    const size_t large = stall_threshold(kNnz, kPerBase, 100'000'000'000);
     REQUIRE(small == kNnz * kPerNnz);
     REQUIRE(large == small);
 
     // It does scale with the instance — that is what makes it usable as a
     // single constant across MIPLIB.
-    REQUIRE(stall_threshold(2 * kNnz, kPerNnz, 100'000'000) == 2 * small);
+    REQUIRE(stall_threshold(2 * kNnz, kPerBase, 100'000'000) == 2 * small);
 
     // A threshold above the allowance can never fire, so it reports the
     // allowance instead.
-    REQUIRE(stall_threshold(kNnz, kPerNnz, 1000) == 1000);
+    REQUIRE(stall_threshold(kNnz, kPerBase, 1000) == 1000);
 
     // Degenerate inputs: never zero, or the gate would trip before any
     // work happened.
-    REQUIRE(stall_threshold(0, kPerNnz, 1000) == 1);
-    REQUIRE(stall_threshold(kNnz, kPerNnz, 0) == kNnz * kPerNnz);
+    REQUIRE(stall_threshold(0, kPerBase, 1000) == 1);
+    REQUIRE(stall_threshold(kNnz, kPerBase, 0) == kNnz * kPerNnz);
 }
 
 TEST_CASE("stall gate: a zero multiplier disables the gate outright", "[stall][unit]") {
@@ -283,9 +288,9 @@ TEST_CASE("stall gate: a zero multiplier disables the gate outright", "[stall][u
     // Unbounded, and unbounded *before* the clamp.  Clamping to the budget
     // would make the gate fire exactly at budget exhaustion, which looks
     // the same on most runs and is not the same thing.
-    REQUIRE(stall_threshold(kNnz, 0, 1000) == SIZE_MAX);
-    REQUIRE(stall_threshold(kNnz, 0, 0) == SIZE_MAX);
-    REQUIRE(stall_threshold(0, 0, 1000) == SIZE_MAX);
+    REQUIRE(stall_threshold(kNnz, 0.0, 1000) == SIZE_MAX);
+    REQUIRE(stall_threshold(kNnz, 0.0, 0) == SIZE_MAX);
+    REQUIRE(stall_threshold(0, 0.0, 1000) == SIZE_MAX);
 
     // And a worker handed that threshold never retires on staleness.
     WorkerBudgetState worker;

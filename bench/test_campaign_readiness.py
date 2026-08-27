@@ -1143,9 +1143,12 @@ def test_the_experiment_leaves_the_clock_as_the_only_stopping_rule(tmp_path):
     for run in recorded:
         options = run["options"]
         for heur in CHAIN:
-            # The option's ceiling: a budget of 8.2e8 units per nonzero,
-            # which no run inside the cap can reach.
-            assert float(options[f"mip_heuristic_{heur}_effort"]) == 1e4
+            # The option's ceiling: a budget of 1.0e9 units per nonzero,
+            # which no run inside the cap can reach.  It was 1e4 until #116
+            # put both options on the `nnz << 10` base, which cut the largest
+            # expressible budget 80x -- enough that the #113 tree, re-read,
+            # has 84 dispatches that would have been budget-bound.
+            assert float(options[f"mip_heuristic_{heur}_effort"]) == 1e6
             # 0 is *no gate*, not "give up immediately".
             assert options[f"mip_heuristic_{heur}_stall"] == "0"
         assert options["mip_heuristic_presolve_only"] == "true"
@@ -1184,7 +1187,7 @@ def test_the_budget_control_moves_the_budget_and_nothing_else(tmp_path):
 
     assert without_effort(free[0]["options"]) == without_effort(bounded[0]["options"])
     for heur in CHAIN:
-        assert float(free[0]["options"][f"mip_heuristic_{heur}_effort"]) == 1e4
+        assert float(free[0]["options"][f"mip_heuristic_{heur}_effort"]) == 1e6
         assert float(bounded[0]["options"][f"mip_heuristic_{heur}_effort"]) == 1.0
     # Separate trees, so neither pass resumes into the other's runs.
     assert (

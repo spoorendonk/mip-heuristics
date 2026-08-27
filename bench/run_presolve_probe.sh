@@ -112,8 +112,11 @@ PROBE_SEEDS="${PROBE_SEEDS:-0}"
 PROBE_CONTROL_SEEDS="${PROBE_CONTROL_SEEDS:-0}"
 # The option's ceiling.  Not "infinity": the analysis checks that no run was
 # budget-bound rather than assuming it, and a finite ceiling keeps the
-# `nnz << 12` product far from overflowing a size_t on the largest model.
-PROBE_EFFORT="${PROBE_EFFORT:-1e4}"
+# `nnz << 10` product far from overflowing a size_t on the largest model.
+# It was `1e4` before #116 put both options on the `nnz << 10` base; the
+# same string then meant an 80x smaller budget, which the #113 tree shows
+# is not enough (84 of 857 dispatches would have been budget-bound).
+PROBE_EFFORT="${PROBE_EFFORT:-1e6}"
 # The bounded-budget control's effort: the top of the range everything else
 # ships and tunes at.
 PROBE_BUDGET_EFFORT="${PROBE_BUDGET_EFFORT:-1.0}"

@@ -95,6 +95,33 @@ shipped mix is #107's question; the evidence is here.
 listed in `hard_tier.txt` with the reason: 49 where no arm produced anything,
 and one where only HiGHS's own trivial heuristics did.
 
+## Re-run this when the code catches up
+
+**This tree is a valid measurement and a provisional one.** It was taken
+before three changes that were found *by* taking it, and it should be
+re-measured once they land — roughly 9 h, one overnight window, chunked.
+
+* **#116** — the staleness gate resets on pool acceptance, so the patience
+  values here cannot transfer: they were calibrated on incumbent improvements
+  and the gate counts something five orders of magnitude more frequent. Until
+  that lands, the trajectory is derived offline from `obj` rather than
+  measured in the solver.
+* **#117** — FPR and Scylla overran their time limit and were killed on 23 of
+  932 runs, all large instances, so both estimates are biased toward instances
+  the heuristic returned from.
+* **The unit change (#116)** landed after this tree was written. Its `.opts`
+  record `effort = 1e4` meaning `8.2e8` effort units per nonzero; the same
+  string now means `1.0e7`, 80x less. So **re-reading this tree with a current
+  binary reports 84 of 857 dispatches as budget-bound** — a counterfactual
+  about a budget those runs never had. Under the semantics it actually ran
+  with, the check was **857/857 clock-bound, 0 budget-bound**, and that is the
+  number this derivation rests on. The option ceiling was raised to `1e6` so a
+  future probe keeps the headroom the old unit gave it.
+
+Re-running before those land buys clean provenance and 23 runs; re-running
+after buys a trajectory measured by the solver rather than reconstructed from
+the log, which is the point of the exercise. Do it once, afterwards.
+
 ## Caveats that travel with these numbers
 
 * **Valid at 16 workers only.** FJ's budget is per worker and the other three

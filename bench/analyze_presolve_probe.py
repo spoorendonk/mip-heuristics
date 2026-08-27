@@ -158,11 +158,11 @@ BUDGET_IS_PER_WORKER: dict[str, bool] = {
     "scylla": False,
 }
 
-# `heuristic_effort_budget`'s anchor and base shift, from
-# `src/heuristic_common.h`: the budget is `nnz << 12` effort units at effort
-# 0.05, scaling linearly.
-EFFORT_BASE_SHIFT = 12
-EFFORT_ANCHOR = 0.05
+# `heuristic_effort_budget`'s base, from `src/heuristic_common.h`: since
+# #116 both the effort option and the stall threshold are multiples of
+# `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so
+# the two are directly comparable and neither needs a conversion constant.
+EFFORT_BASE_SHIFT = 10
 
 # What counts as having reached the budget.  Not equality: concurrent
 # workers overshoot `budget.total` by up to `n * attempt_cap`, and a
@@ -177,10 +177,10 @@ BUDGET_BOUND_FRACTION = 0.95
 # three `0.30 x w/Sw` for weights from a geomean `effort_per_ms` on a
 # different instance set), and `bench/ablation_effort/` keeps that history.
 SHIPPED_EFFORT: dict[str, float] = {
-    "fj": 0.0355,
-    "fpr": 0.0959,
-    "local_mip": 0.3654,
-    "scylla": 0.0142,
+    "fj": 2.84,
+    "fpr": 7.672,
+    "local_mip": 29.232,
+    "scylla": 1.136,
 }
 
 # The quantile the proposed effort is read off.  The median, not a tail:
@@ -919,7 +919,7 @@ def effort_budget(nnz: int, effort: float) -> int:
     """
     if effort <= 0.0:
         return 0
-    return int(float(nnz << EFFORT_BASE_SHIFT) * (effort / EFFORT_ANCHOR))
+    return int(float(nnz << EFFORT_BASE_SHIFT) * effort)
 
 
 @dataclass
@@ -1514,7 +1514,7 @@ class HeuristicTrajectory:
         """The censoring-aware p95, or None when it is not identifiable."""
         return km_quantile(self.weighted(), STALL_QUANTILE)
 
-    def stall_range(self, workers: int | None) -> tuple[int | None, int | None]:
+    def stall_range(self, workers: int | None) -> tuple[float | None, float | None]:
         """The `mip_heuristic_<name>_stall` range #107 should search.
 
         Lower bound from the events-only p95, upper from the censoring-aware
@@ -1522,13 +1522,18 @@ class HeuristicTrajectory:
         constant bounds this heuristic on this data.  Both are scaled by the
         worker count for the two options divided by N on the way to the
         per-worker gate, so both are valid only at the measured worker count.
+
+        The measured gaps are raw effort per nonzero; the option is a
+        multiple of `nnz << 10` since #116, so the base divides out here and
+        the result is directly comparable with that heuristic's effort.
         """
         scale = workers if (STALL_SCALES_WITH_WORKERS[self.name] and workers) else 1
+        base = float(1 << EFFORT_BASE_SHIFT)
         low = self.events_p95()
         high = self.censored_p95()
         return (
-            None if low is None else math.ceil(low * scale),
-            None if high is None else math.ceil(high * scale),
+            None if low is None else low * scale / base,
+            None if high is None else high * scale / base,
         )
 
 
@@ -1631,7 +1636,7 @@ def effort_option_for(
     for the headroom check.
     """
     scale = workers if (per_worker and workers and workers > 0) else 1
-    return (charged / scale) * EFFORT_ANCHOR / float(nnz << EFFORT_BASE_SHIFT)
+    return (charged / scale) / float(nnz << EFFORT_BASE_SHIFT)
 
 
 def still_improving_at_the_end(view: DispatchView) -> bool:
@@ -1771,10 +1776,9 @@ def derived_defaults(
         # indistinguishable from no gate -- and on three of four heuristics
         # the measured wait is far above it, because their improvement
         # rhythm is slower than any budget they are given.
-        ceiling = None if effort is None else effort_budget(1, effort)
-        clamp = (
-            None if ceiling is None else math.ceil(PATIENCE_CEILING_FRACTION * ceiling)
-        )
+        # Same unit as the effort option since #116, so the ceiling *is* the
+        # effort value and the clamp is a plain fraction of it.
+        clamp = None if effort is None else PATIENCE_CEILING_FRACTION * effort
         patience = (
             low if clamp is None else min(low, clamp) if low is not None else clamp
         )
@@ -1792,10 +1796,10 @@ def derived_defaults(
             "effort_scope": (
                 "per_worker" if BUDGET_IS_PER_WORKER[name] else "per_dispatch"
             ),
-            "stall": patience,
-            "stall_measured": low,
-            "stall_clamp": clamp,
-            "stall_max": high,
+            "stall": None if patience is None else round(patience, 6),
+            "stall_measured": None if low is None else round(low, 6),
+            "stall_clamp": None if clamp is None else round(clamp, 6),
+            "stall_max": None if high is None else round(high, 6),
             "stall_scales_with_workers": STALL_SCALES_WITH_WORKERS[name],
             "dispatches_finished": len(knee.options),
             "dispatches_still_improving": knee.still_improving,
@@ -2026,9 +2030,11 @@ def stall_suggestions(
             continue
         scaled = STALL_SCALES_WITH_WORKERS[name] and workers
         scope = f"x {workers} workers" if scaled else "per-worker scope"
-        top = "unbounded (censoring never reaches 5%)" if high is None else str(high)
+        top = (
+            "unbounded (censoring never reaches 5%)" if high is None else f"{high:.4g}"
+        )
         lines.append(
-            f"  {stall_option(name):<32} {'-' if low is None else low} .. {top}"
+            f"  {stall_option(name):<32} {'-' if low is None else f'{low:.4g}'} .. {top}"
             f"  ({scope})"
         )
     return lines

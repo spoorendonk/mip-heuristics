@@ -66,28 +66,28 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         double value;
     };
     const auto presolve_efforts = std::to_array<EffortDefault>({
-        {"mip_heuristic_fj_effort", 0.0355},
-        {"mip_heuristic_fpr_effort", 0.0959},
-        {"mip_heuristic_local_mip_effort", 0.3654},
-        {"mip_heuristic_scylla_effort", 0.0142},
+        {"mip_heuristic_fj_effort", 2.84},
+        {"mip_heuristic_fpr_effort", 7.672},
+        {"mip_heuristic_local_mip_effort", 29.232},
+        {"mip_heuristic_scylla_effort", 1.136},
     });
     for (const auto& [name, expected] : presolve_efforts) {
         double value = -1.0;
         REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
         REQUIRE(value == expected);
         // Settable across the documented range.  `1.0` is the top of what
-        // ships and tunes; the ceiling is `1e4`, which exists so #113's
+        // ships and tunes; the ceiling is `1e6`, which exists so #113's
         // calibration probe can hand a heuristic a budget that cannot bind
         // — with the stall gate off as well, the wall clock is then the
         // single stopping rule and the trace measures the heuristic rather
         // than the setting being derived from it.
         REQUIRE(highs.setOptionValue(name, 0.0) == HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, 1.0) == HighsStatus::kOk);
-        REQUIRE(highs.setOptionValue(name, 1e4) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, 1e6) == HighsStatus::kOk);
         // Still bounded: an out-of-range write is rejected, not clamped,
         // and a rejected write is silent on every Highs instance we build
         // (they all set output_flag=false).
-        REQUIRE(highs.setOptionValue(name, 1e4 * 10) != HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, 1e6 * 10) != HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, -1.0) != HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, expected) == HighsStatus::kOk);
     }
@@ -110,25 +110,33 @@ TEST_CASE("Options: stall threshold defaults", "[options][stall]") {
     highs.setOptionValue("output_flag", false);
     struct StallDefault {
         const char* name;
-        HighsInt value;
+        double value;
+        double effort;
     };
+    // Same unit as the effort option beside it since #116 -- a multiple of
+    // `nnz << 10` -- so the pair is directly comparable and every one of
+    // these is a quarter of its own ceiling, which is what the clamp in the
+    // #113 derivation produced.
     const auto stalls = std::to_array<StallDefault>({
-        {"mip_heuristic_fj_stall", 727},
-        {"mip_heuristic_fpr_stall", 1964},
-        {"mip_heuristic_local_mip_stall", 7484},
-        {"mip_heuristic_scylla_stall", 291},
+        {"mip_heuristic_fj_stall", 0.71, 2.84},
+        {"mip_heuristic_fpr_stall", 1.918, 7.672},
+        {"mip_heuristic_local_mip_stall", 7.308, 29.232},
+        {"mip_heuristic_scylla_stall", 0.284, 1.136},
     });
-    for (const auto& [name, expected] : stalls) {
-        HighsInt value = -1;
+    for (const auto& [name, expected, effort] : stalls) {
+        double value = -1.0;
         REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
         REQUIRE(value == expected);
+        // Below its own ceiling, or the gate can never fire.
+        REQUIRE(value < effort);
         // 0 is legal and means "no staleness gate at all" — load-bearing
         // for the stall-axis search, which needs a point where the gate
         // provably never fires.  If the registered lower bound ever moved
         // above zero that semantic would become inexpressible from the
         // option, silently.
-        REQUIRE(highs.setOptionValue(name, HighsInt{0}) == HighsStatus::kOk);
-        REQUIRE(highs.setOptionValue(name, kHighsIInf) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, 0.0) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, 1e6) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, expected) == HighsStatus::kOk);
     }
 }
 

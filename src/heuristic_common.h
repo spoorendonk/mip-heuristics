@@ -129,30 +129,55 @@ inline uint32_t heuristic_base_seed(HighsInt random_seed) {
     return static_cast<uint32_t>(random_seed) + kBaseSeedOffset;
 }
 
-// Effort budget scaled by an effort fraction.  `nnz << 12` is the
-// reference base budget at the anchor effort 0.05 (upstream's
-// mip_heuristic_effort default); the formula scales linearly in `effort`.
+// The one base both budget parameters are multipliers of: `nnz << 10`,
+// vanilla HiGHS's hardcoded single-thread FeasibilityJump limit
+// (`HighsFeasibilityJump.cpp`).  Chosen because it is the only figure in
+// this arithmetic that upstream itself picked, which makes `effort = 1.0`
+// mean "one vanilla FJ budget" rather than a number that needs decoding.
+//
+// It replaces `nnz << 12` scaled by `effort / 0.05` (#116): the 4096
+// existed only so FJ's default came out at `nnz << 10` anyway, and the
+// 0.05 was upstream's own `mip_heuristic_effort` default used as an
+// anchor.  Two historical constants multiplied to 81,920, which is what a
+// reader had to know to compare an effort option against a stall
+// threshold.  Now they are the same unit and `stall < effort` is legible.
+inline constexpr int kBudgetBaseShift = 10;
+
+// Effort budget: `effort` multiples of the base above.
 // Two kinds of call site, on two separate budgets:
 //  - the presolve chain (`run_sequential` in mode_dispatch.cpp) passes each
 //    heuristic's own `mip_heuristic_<name>_effort`, which sizes a whole
 //    dispatch — except FJ's, which sizes one worker's allowance (#110);
-//  - fpr_lp::run passes `mip_heuristic_effort` (vanilla default 0.05 →
-//    exactly the base budget) as its per-call cap on the shared RENS/RINS
-//    LP-iteration headroom.
+//  - fpr_lp::run caps itself against upstream's own `mip_heuristic_effort`,
+//    which is on a different scale entirely and goes through
+//    `vanilla_effort_budget` below.
 //
 // The product saturates rather than converting out of range.  The option's
 // upper bound is `1e4` since #113 — a budget that cannot bind, so that a
 // calibration probe measures the heuristic and not the setting derived from
 // it — and `double -> size_t` is undefined when the value does not fit, so
 // the guard is the same one `saturating_mul` exists for one level down.
+inline size_t heuristic_effort_budget(size_t nnz, double effort);
+
+// Upstream's `mip_heuristic_effort` converted to the same budget it always
+// produced.  It is *not* one of our four options: it is HiGHS's own B&B
+// heuristic knob, whose default is 0.05, and `fpr_lp` caps its per-call
+// slice against it.  When our options were multipliers of `nnz << 12`
+// anchored at 0.05, that default landed exactly on the base budget; now
+// that they are multiples of `nnz << 10`, the same value has to be scaled
+// by `(1 << 2) / 0.05` to keep meaning what it meant.  Spelled once, here,
+// rather than left as an 80 at the call site (#116).
+inline size_t vanilla_effort_budget(size_t nnz, double mip_heuristic_effort) {
+    constexpr double kVanillaAnchor = 0.05;
+    constexpr double kBaseRatio = 4.0;  // (1 << 12) / (1 << 10)
+    return heuristic_effort_budget(nnz, mip_heuristic_effort * kBaseRatio / kVanillaAnchor);
+}
+
 inline size_t heuristic_effort_budget(size_t nnz, double effort) {
     if (effort <= 0.0) {
         return 0;
     }
-    constexpr int kBaseShift = 12;
-    constexpr double kEffortAnchor = 0.05;
-    double scale = effort / kEffortAnchor;
-    double budget = static_cast<double>(nnz << kBaseShift) * scale;
+    double budget = static_cast<double>(nnz << kBudgetBaseShift) * effort;
     if (!(budget < static_cast<double>(SIZE_MAX))) {
         return SIZE_MAX;
     }
@@ -215,10 +240,10 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
 // gate fire exactly at budget exhaustion, which looks the same on most
 // runs but is not the same thing, and is not what a probe asking "run
 // with the gate disabled" can rely on.
-[[nodiscard]] constexpr size_t stall_threshold(size_t nnz, size_t per_nnz, size_t budget) {
-    if (per_nnz == 0) {
+[[nodiscard]] inline size_t stall_threshold(size_t nnz, double per_base, size_t budget) {
+    if (per_base <= 0.0) {
         return SIZE_MAX;
     }
-    const size_t threshold = std::max<size_t>(saturating_mul(nnz, per_nnz), 1);
+    const size_t threshold = std::max<size_t>(heuristic_effort_budget(nnz, per_base), 1);
     return budget == 0 ? threshold : std::min(threshold, budget);
 }

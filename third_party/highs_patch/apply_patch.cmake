@@ -95,7 +95,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # the stall threshold is the measured wait for the next one, clamped to a
 # quarter of the ceiling so a barren dispatch cannot spend the whole budget
 # finding nothing.
-set(PATCH_VERSION "11")
+set(PATCH_VERSION "13")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -316,11 +316,19 @@ endif()
 # calibration probe needs one configuration the bound cannot express: a
 # budget so large that it never binds, so the only thing that stops a
 # heuristic is the wall clock and the trace measures the heuristic rather
-# than the setting being derived from it.  `1e4` is `2e5` times the
-# vanilla anchor — unreachable inside any per-run cap the campaign uses,
-# and two orders of magnitude below where `nnz << 12` times it would
-# trouble a `size_t` on the largest MIPLIB model.
-set(kEffortMax "1e4")
+# than the setting being derived from it.
+#
+# `1e6` is a million times the base, i.e. `1.0e9` effort units per matrix
+# nonzero — beyond anything a per-run cap has been observed to reach, and
+# far enough below where `nnz << 10` times it would trouble a `size_t` on
+# the largest MIPLIB model.  It was `1e4` while the options multiplied
+# `nnz << 12` anchored at 0.05; #116 moved them onto `nnz << 10`, which cut
+# the largest expressible budget by exactly 80x, and the #113 probe tree
+# shows that is not enough headroom — re-read with the new unit, 84 of its
+# 857 dispatches would have been budget-bound, one of them charging 50x.
+# The bound has to be raised with the unit or the probe silently starts
+# measuring its own budget again.
+set(kEffortMax "1e6")
 
 # No `;` and no `:` in a list entry: set() builds a cmake list and would
 # split on the first, and the field split below uses the second.
@@ -330,14 +338,14 @@ set(kEffortMax "1e4")
 # (bool); it sits *before* the description because the description is the
 # one field allowed to contain anything, so it has to be last.
 set(_patch_options
-    "mip_heuristic_fj_effort:double:0.0355:${kEffortMax}:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
-    "mip_heuristic_fpr_effort:double:0.0959:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
-    "mip_heuristic_local_mip_effort:double:0.3654:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
-    "mip_heuristic_scylla_effort:double:0.0142:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
-    "mip_heuristic_fj_stall:int:727:kHighsIInf:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_fpr_stall:int:1964:kHighsIInf:Staleness threshold for the FPR presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_local_mip_stall:int:7484:kHighsIInf:Staleness threshold for the LocalMIP presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
-    "mip_heuristic_scylla_stall:int:291:kHighsIInf:Staleness threshold for the Scylla presolve heuristic, in effort units per matrix nonzero (0 disables the gate)"
+    "mip_heuristic_fj_effort:double:2.84:${kEffortMax}:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
+    "mip_heuristic_fpr_effort:double:7.672:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
+    "mip_heuristic_local_mip_effort:double:29.232:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
+    "mip_heuristic_scylla_effort:double:1.136:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
+    "mip_heuristic_fj_stall:double:0.71:${kEffortMax}:Per-worker staleness threshold for the FeasibilityJump presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
+    "mip_heuristic_fpr_stall:double:1.918:${kEffortMax}:Staleness threshold for the FPR presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
+    "mip_heuristic_local_mip_stall:double:7.308:${kEffortMax}:Staleness threshold for the LocalMIP presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
+    "mip_heuristic_scylla_stall:double:0.284:${kEffortMax}:Staleness threshold for the Scylla presolve heuristic, as a multiple of nnz<<10, the same unit as this heuristic's effort option (0 disables the gate)"
     "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
 
 # The upstream record block all four record insertions anchor on, spelled
