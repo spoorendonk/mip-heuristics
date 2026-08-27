@@ -70,7 +70,8 @@ public:
     // questions with different answers and #116 is about not confusing
     // them: `accepted` is the admission policy's verdict — is this worth
     // keeping? — and `improved_best` is whether the offer moved the best
-    // objective the pool holds.
+    // objective the solve knows, which the pool tracks as a monotone
+    // watermark rather than as its own front entry (see `try_add`).
     //
     // `accepted && !improved_best` is the ordinary case, not an edge one:
     // the pool admits its first `capacity_` offers unconditionally while
@@ -98,12 +99,15 @@ public:
     //   2. Else if obj is within kDiversityObjTolerance of best and Hamming
     //      diversity exceeds kDiversityMinHammingFrac: replace most similar.
     //
-    // `improved_best` is decided against the best entry as it stood *before*
-    // this insertion, read under the same hold of the pool lock, which is
-    // the only place that comparison is race-free: a worker cannot ask the
-    // solver for the pre-offer incumbent without racing `addIncumbent`
-    // (see `ProblemView::incumbent`, #98), and two workers offering
-    // concurrently would otherwise both read the same "before".
+    // `improved_best` is decided against `best_seen_`, the best objective
+    // this pool has ever accepted, read under the same hold of the pool
+    // lock — the only place that comparison is race-free: a worker cannot
+    // ask the solver for the pre-offer incumbent without racing
+    // `addIncumbent` (see `ProblemView::incumbent`, #98), and two workers
+    // offering concurrently would otherwise both read the same "before".
+    // Deliberately not `entries_.front()`: rule 2 above can evict the
+    // front entry, so the pool's best objective goes backwards where the
+    // solve's never does.
     [[nodiscard]] AddResult try_add(double obj, const std::vector<double>& sol, int source);
 
     // Atomically snapshot feasibility and current best objective.
@@ -163,6 +167,11 @@ private:
     bool minimize_;
     std::vector<bool> integer_mask_;  // true for integer variables
     int num_integers_ = 0;            // cached count of integer vars
+    // Best objective ever accepted, and whether anything has been.  The
+    // predicate `improved_best` is decided against, under mtx_; monotone
+    // by construction, unlike `entries_.front()` — see `try_add`.
+    double best_seen_ = 0.0;
+    bool has_best_seen_ = false;
     // Invoked outside pool lock after a successful insertion. Set once before
     // workers start; reads from worker threads are unsynchronized but safe
     // because the happens-before from thread creation covers the write.

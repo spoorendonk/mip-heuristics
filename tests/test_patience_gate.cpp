@@ -58,7 +58,7 @@
 //   fpr / flugpl        19.98x        19.98x           1.03x       1.80x
 //   fpr / p0548         20.00x         0.89x           0.89x       2.26x
 //   fpr / gt2           20.00x        20.00x         1.5-4.4x       1.18x
-//   fpr / egout         19.98x        19.98x          19.98x       2.45x
+//   fpr / egout         19.98x        19.98x          19.98x       1.82x
 //   fj / p0548          15.67x         2.00x           2.00x       1.50x
 //   scylla / flugpl     17.60x         1.00x           1.00x       1.00x
 //
@@ -75,7 +75,10 @@
 // egout is the row #111 recorded as a known miss and #116 exists to
 // close: FPR earns 40+ acceptances there against four incumbent
 // improvements, so an acceptance-driven gate never fired.  19.98x ->
-// 2.45x, and it is asserted on below.
+// 1.82x, and it is asserted on below.  The last column is measured with
+// `improved_best` taken against a monotone watermark; against the pool's
+// front entry it is 2.45x, because the diversity path evicts that entry
+// on egout and the degraded value is then beatable for free.
 // ===================================================================
 
 namespace {
@@ -644,4 +647,44 @@ TEST_CASE("patience gate: an accepted non-improvement resets neither gate level"
     REQUIRE(worker.effort_since_improvement == 0);
     REQUIRE(fresh_loop.effort_since_improvement.load() == 0);
     REQUIRE_FALSE(fresh_loop.stopped());
+}
+
+TEST_CASE("patience gate: evicting the pool's best does not manufacture an improvement",
+          "[patience][unit]") {
+    // `improved_best` must mean "moved the best objective the solve knows",
+    // and the solve's best objective never goes backwards: `addIncumbent`
+    // keeps whatever was submitted.  The *pool's* front entry does go
+    // backwards — the diversity path replaces the entry most similar to the
+    // offer, and that entry can be the best one — so a "best before this
+    // offer" read off `entries_.front()` degrades, and the next offer to
+    // clear the degraded value looks like an improvement while HiGHS still
+    // holds something better.  That is a free staleness reset, which is the
+    // exact defect #116 exists to remove.
+    constexpr int kNumIntVars = 20;
+    SolutionPool pool(/*capacity=*/2, /*minimize=*/true);
+    pool.set_integer_mask(std::vector<bool>(kNumIntVars, true));
+
+    std::vector<double> best(kNumIntVars, 0.0);
+    std::vector<double> other(kNumIntVars, 1.0);
+    // Hamming 1 from `best` (5% of 20, exactly `kDiversityMinHammingFrac`)
+    // and 19 from `other`, so `best` is the most similar entry and the one
+    // the diversity path erases.
+    std::vector<double> diverse(kNumIntVars, 0.0);
+    diverse[0] = 1.0;
+
+    REQUIRE(pool.try_add(100.0, best, kSolutionSourceFPR).improved_best);
+    REQUIRE(pool.try_add(101.0, other, kSolutionSourceFPR).accepted);
+    REQUIRE(pool.snapshot().best_objective == 100.0);
+
+    // Dominated (ties the worst) but within `kDiversityObjTolerance` of the
+    // best and diverse enough, so it is admitted on the diversity path.
+    const auto evicting = pool.try_add(101.0, diverse, kSolutionSourceFPR);
+    REQUIRE(evicting.accepted);
+    REQUIRE_FALSE(evicting.improved_best);
+
+    // HiGHS was told about the 100.0 solution when the pool accepted it, so
+    // that is still the incumbent whatever the pool now holds.  An offer of
+    // 100.5 is therefore not an improvement, and must not reset a gate.
+    const auto not_an_improvement = pool.try_add(100.5, best, kSolutionSourceFPR);
+    REQUIRE_FALSE(not_an_improvement.improved_best);
 }

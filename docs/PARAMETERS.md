@@ -774,8 +774,6 @@ per worker while the other three are per dispatch, so changing the count
 
 ---
 
-### One unit for both parameters
-
 ### One axis, a floor and a ceiling
 
 The two options bound the *same* quantity — the effort one heuristic spends
@@ -889,7 +887,9 @@ magnitude on FPR — so a patience calibrated on improvements (the only
 thing it can honestly be calibrated on) cannot be spent against a gate
 that resets on acceptances. Both gates now read
 `IncumbentSink::OfferResult::improved_incumbent`, decided inside
-`SolutionPool`'s own lock against the best it held before the offer, while
+`SolutionPool`'s own lock against the best objective the pool has ever
+accepted — a monotone watermark, not its front entry, which the diversity
+path can evict — while
 `accepted()`, `[Heur] found` and `[HeurSol] accepted` keep reporting the
 acceptance for the tooling that consumes them. `offer` is `[[nodiscard]]`
 and returns both facts, so neither can be dropped or silently substituted

@@ -59,23 +59,34 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
     {
         std::scoped_lock lock(mtx_);
 
-        // The pre-insertion best, decided here rather than by the caller
-        // because this is the one point where "the best before this offer"
-        // is race-free: two workers offering concurrently would otherwise
-        // both read the same "before" outside the lock and both call
-        // themselves an improvement (#116).  An empty pool means the solve
-        // has no feasible solution at all — the sink seeds the pool from
-        // the incumbent at construction — so any offer improves on it.
+        // The best objective offered so far, decided here rather than by
+        // the caller because this is the one point where "the best before
+        // this offer" is race-free: two workers offering concurrently would
+        // otherwise both read the same "before" outside the lock and both
+        // call themselves an improvement (#116).  No watermark yet means
+        // the solve has no feasible solution at all — the sink seeds the
+        // pool from the incumbent at construction — so any offer improves
+        // on it.
         //
-        // The margin mirrors `improving_offers` in
-        // `bench/analyze_presolve_probe.py`, which is where the shipped
-        // patience defaults were measured; see `kImprovementObjMargin`.
-        if (entries_.empty()) {
+        // A *watermark* and not `entries_.front()`, which is not the same
+        // thing: the diversity path below replaces the entry most similar
+        // to the offer, and that can be the front one, so the pool's best
+        // objective goes backwards while the solve's does not (HiGHS keeps
+        // whatever `addIncumbent` was given).  Reading the front entry
+        // would then call the next offer to clear the degraded value an
+        // improvement, handing a patience gate a free reset for a solution
+        // the incumbent already dominates — which is the very thing #116
+        // exists to stop.  A monotone watermark is also exactly what
+        // `improving_offers` in `bench/analyze_presolve_probe.py` tracks,
+        // and that is where the shipped patience defaults were measured.
+        //
+        // The margin mirrors that same function; see `kImprovementObjMargin`.
+        if (!has_best_seen_) {
             result.improved_best = true;
         } else {
-            const double best = entries_.front().objective;
-            const double margin = kImprovementObjMargin * std::max(1.0, std::abs(best));
-            result.improved_best = minimize_ ? obj < best - margin : obj > best + margin;
+            const double margin = kImprovementObjMargin * std::max(1.0, std::abs(best_seen_));
+            result.improved_best =
+                minimize_ ? obj < best_seen_ - margin : obj > best_seen_ + margin;
         }
 
         // Find insertion point (entries_ kept sorted, best first)
@@ -139,6 +150,15 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
         } else {
             entries_.insert(pos, {obj, sol, source});
             result.accepted = true;
+        }
+
+        // Advance the watermark only on an offer the pool kept, so a
+        // refused solution cannot raise the bar the next one is judged
+        // against.  It never moves backwards, which is what makes it
+        // track the solve's incumbent rather than the pool's contents.
+        if (result.accepted && result.improved_best) {
+            best_seen_ = obj;
+            has_best_seen_ = true;
         }
     }
     // Invoke callback outside the pool lock to avoid lock inversion: the
