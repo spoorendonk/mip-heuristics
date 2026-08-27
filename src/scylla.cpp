@@ -37,14 +37,23 @@ namespace {
 // independent of the worker seed, so a worker rebuilt with a fresh seed
 // computed the same order it now looks up.  It also drops N redundant
 // computations of the same `kNumFprConfigs` orders at construction.
-std::vector<std::vector<HighsInt>> precompute_config_var_orders(HighsMipSolver& mipsolver) {
-    std::vector<std::vector<HighsInt>> orders(kNumFprConfigs);
+//
+// Returns false when the wall-clock deadline passed part-way through,
+// leaving `orders` incomplete and the dispatch with nothing to do — the
+// same contract, and the same reasoning, as `fpr::precompute_var_orders`
+// (issue #117).
+bool precompute_config_var_orders(HighsMipSolver& mipsolver, const Deadline& deadline,
+                                  std::vector<std::vector<HighsInt>>& orders) {
+    orders.assign(kNumFprConfigs, {});
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprConfigs; ++i) {
+        if (deadline.expired()) {
+            return false;
+        }
         Rng rng(base + static_cast<uint32_t>(i));
         orders[i] = compute_var_order(mipsolver, kFprConfigs[i].strat.var_strategy, rng, nullptr);
     }
-    return orders;
+    return true;
 }
 
 // Emit the PDLP/FPR overlap metrics that issue #76 asks for as the
@@ -101,7 +110,17 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
 
     // Sequential: `compute_var_order` reaches `cliquePartition` and the live
     // root domain, neither of which is safe from a worker thread (#99).
-    const std::vector<std::vector<HighsInt>> var_orders = precompute_config_var_orders(mipsolver);
+    //
+    // Deadline-gated for the reason `fpr::run`'s is (issue #117): a Scylla
+    // dispatch's setup is unbounded and effort-independent — building the
+    // shared LP copy plus these five orders measured 20.7 s on `rail02`,
+    // during which nothing in the dispatch was watching the clock.  The
+    // pump loop below is where the deadline was already polled, and it
+    // never got to run.
+    std::vector<std::vector<HighsInt>> var_orders;
+    if (!precompute_config_var_orders(mipsolver, exec.deadline(), var_orders)) {
+        return 0;
+    }
 
     // Pre-construct workers outside the parallel region so MakeState
     // can hand them back by index without racing on std::make_unique.

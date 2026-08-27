@@ -20,6 +20,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -32,7 +33,10 @@ namespace {
 // `row_dual` so `publish_snapshot_locked` actually publishes.
 class FakePdlp : public ContestedPdlp {
 public:
-    FakePdlp() : ContestedPdlp(ContestedPdlp::ForTesting{}) {}
+    // `deadline` defaults to one that never expires, which is what every
+    // case but the two deadline ones wants (issue #117).
+    explicit FakePdlp(Deadline deadline = {})
+        : ContestedPdlp(ContestedPdlp::ForTesting{}, deadline) {}
 
     // Sleep inserted at the start of the fake solve to widen the
     // critical-section window so other threads are guaranteed to hit
@@ -41,6 +45,11 @@ public:
     std::atomic<int> solve_sleep_ms{0};
     // Counts completed fake solves for post-hoc assertions.
     std::atomic<int> solve_count{0};
+    // Every time limit `solve_locked` was handed, in call order.  The
+    // mutex serialises the fake solves, so ordinary push_back under a
+    // mutex of our own is enough and the order is the solve order.
+    std::mutex limits_mtx;
+    std::vector<double> time_limits;
 
     using ContestedPdlp::acquire_for_test;
     using ContestedPdlp::publish_snapshot_for_test;
@@ -50,7 +59,11 @@ protected:
                              const std::vector<double>& /*warm_start_col_value*/,
                              const std::vector<double>& /*warm_start_row_dual*/,
                              bool /*warm_start_valid*/, double /*epsilon*/,
-                             double /*time_limit*/) override {
+                             double time_limit) override {
+        {
+            std::scoped_lock lock(limits_mtx);
+            time_limits.push_back(time_limit);
+        }
         int sleep_ms = solve_sleep_ms.load(std::memory_order_relaxed);
         if (sleep_ms > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
@@ -76,7 +89,7 @@ TEST_CASE("ContestedPdlp: try_solve_or_snapshot returns fresh when uncontended",
     std::vector<double> cost;
     std::vector<double> ws_col;
     std::vector<double> ws_row;
-    auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4);
     REQUIRE(res.fresh);
     REQUIRE(res.solve.status == HighsStatus::kOk);
     REQUIRE(pdlp.peak_in_flight() == 1);
@@ -104,13 +117,13 @@ TEST_CASE("ContestedPdlp: snapshot generation increases monotonically across sol
     std::vector<double> ws_col;
     std::vector<double> ws_row;
 
-    auto r1 = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    auto r1 = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4);
     REQUIRE(r1.fresh);
     auto s1 = pdlp.latest_snapshot();
     REQUIRE(s1 != nullptr);
     REQUIRE(s1->generation == 1);
 
-    auto r2 = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    auto r2 = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4);
     REQUIRE(r2.fresh);
     auto s2 = pdlp.latest_snapshot();
     REQUIRE(s2 != nullptr);
@@ -120,7 +133,7 @@ TEST_CASE("ContestedPdlp: snapshot generation increases monotonically across sol
     // The blocking `solve()` path must publish too and use the same
     // counter (no separate channel for fresh-via-solve vs
     // fresh-via-try).
-    (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4);
     auto s3 = pdlp.latest_snapshot();
     REQUIRE(s3 != nullptr);
     REQUIRE(s3->generation == 3);
@@ -151,7 +164,7 @@ TEST_CASE("ContestedPdlp: stale readers see last snapshot while peer holds mutex
     std::vector<double> cost;
     std::vector<double> ws_col;
     std::vector<double> ws_row;
-    auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4);
     REQUIRE_FALSE(res.fresh);
     REQUIRE(res.stale_snapshot != nullptr);
     REQUIRE(res.stale_snapshot->col_value.size() == 3);
@@ -169,7 +182,7 @@ TEST_CASE("ContestedPdlp: cold try returns null snapshot before any solve",
     std::vector<double> cost;
     std::vector<double> ws_col;
     std::vector<double> ws_row;
-    auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+    auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4);
     REQUIRE_FALSE(res.fresh);
     REQUIRE(res.stale_snapshot == nullptr);
 }
@@ -194,7 +207,7 @@ TEST_CASE("ContestedPdlp: concurrent workers preserve one-solve-in-flight invari
             std::vector<double> ws_col;
             std::vector<double> ws_row;
             for (int i = 0; i < kIters; ++i) {
-                auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+                auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4);
                 if (res.fresh) {
                     total_fresh.fetch_add(1);
                 } else {
@@ -239,7 +252,7 @@ TEST_CASE("ContestedPdlp: blocking solve() always serialises but never dead-lock
             std::vector<double> ws_col;
             std::vector<double> ws_row;
             for (int i = 0; i < kIters; ++i) {
-                (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4, 1.0);
+                (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4);
             }
         });
     }
@@ -280,7 +293,7 @@ TEST_CASE("ContestedPdlp: stale workers can round while one worker solves",
         std::vector<double> cost;
         std::vector<double> ws_col;
         std::vector<double> ws_row;
-        (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4, 1.0);
+        (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4);
         solver_done.store(true);
     });
 
@@ -296,7 +309,7 @@ TEST_CASE("ContestedPdlp: stale workers can round while one worker solves",
         std::vector<double> cost;
         std::vector<double> ws_col;
         std::vector<double> ws_row;
-        auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4, 1.0);
+        auto res = pdlp.try_solve_or_snapshot(cost, ws_col, ws_row, false, 1e-4);
         if (!res.fresh && res.stale_snapshot) {
             stale_hits.fetch_add(1);
         }
@@ -333,4 +346,78 @@ TEST_CASE("ContestedPdlp: every PDLP option name we write exists in HiGHS",
     // ContestedPdlp constructor before wiring them back up.
     REQUIRE(highs.setOptionValue("pdlp_scaling", true) != HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("pdlp_e_restart_method", HighsInt{2}) != HighsStatus::kOk);
+}
+
+// ===================================================================
+// The wrapper owns the deadline, and reads it inside the lock (#117)
+// ===================================================================
+
+TEST_CASE("ContestedPdlp: a solve entered past the deadline does not run",
+          "[contested_pdlp][deadline]") {
+    // A `HighsTimer` of the test's own, standing in for the MIP solver's:
+    // `Deadline` is two words and cares only that the clock is running.
+    HighsTimer timer;
+    timer.start();
+    FakePdlp pdlp{make_deadline(timer, 1e-6)};
+    std::vector<double> cost;
+    std::vector<double> ws_col;
+    std::vector<double> ws_row;
+
+    auto res = pdlp.solve(cost, ws_col, ws_row, false, 1e-4);
+
+    // No solve at all, and the empty result keeps `SolveResult`'s `kError`
+    // default — which is what `ScyllaWorker::absorb_fresh_solve` reads as
+    // "this chain is done".  Handing the sub-solver a zero or negative
+    // limit instead would be worse than useless: HiGHS reads
+    // `time_limit == 0` as *no limit*.
+    CHECK(pdlp.solve_count.load() == 0);
+    CHECK(res.status == HighsStatus::kError);
+    CHECK(res.col_value.empty());
+    // Nothing was published either, so a peer on the stale path still sees
+    // whatever the last real solve left.
+    CHECK(pdlp.snapshot_generation() == 0);
+}
+
+TEST_CASE("ContestedPdlp: a solve that waited for the mutex gets the time that is left",
+          "[contested_pdlp][deadline]") {
+    // The bug this pins: `ScyllaWorker` used to compute `time_limit -
+    // timer.read()` at the top of its pump iteration and pass it here.
+    // Every `kMaxStaleRounds` rounds it takes the *blocking* path, where
+    // that value then sits queued behind a peer's entire PDLP solve — so
+    // the solve that had waited longest was the one running on the most
+    // stale limit, and could overrun the deadline by the length of the
+    // wait.  The limit is now read inside the critical section, so it is
+    // the time left when the solve actually starts.
+    constexpr double kLimit = 0.5;
+    constexpr auto kHold = std::chrono::milliseconds(250);
+
+    HighsTimer timer;
+    timer.start();
+    FakePdlp pdlp{make_deadline(timer, kLimit)};
+    std::vector<double> cost;
+    std::vector<double> ws_col;
+    std::vector<double> ws_row;
+
+    std::thread waiter;
+    {
+        // Deterministic contention: hold the lock ourselves rather than
+        // racing a peer solve, the same fixture the stale-snapshot cases
+        // above use.
+        auto guard = pdlp.acquire_for_test();
+        waiter = std::thread([&] { (void)pdlp.solve(cost, ws_col, ws_row, false, 1e-4); });
+        std::this_thread::sleep_for(kHold);
+    }
+    waiter.join();
+
+    REQUIRE(pdlp.solve_count.load() == 1);
+    std::scoped_lock lock(pdlp.limits_mtx);
+    REQUIRE(pdlp.time_limits.size() == 1);
+    INFO("time limit handed to the solve: " << pdlp.time_limits.front());
+    // The wait was 250 ms of a 500 ms deadline, so a limit read after it
+    // cannot be more than half the deadline; a limit read *before* it
+    // would be the whole thing.  The bound is loose on the side that
+    // machine load moves — a slower runner spends more of the deadline
+    // waiting, not less.
+    CHECK(pdlp.time_limits.front() < kLimit / 2.0);
+    CHECK(pdlp.time_limits.front() > 0.0);
 }

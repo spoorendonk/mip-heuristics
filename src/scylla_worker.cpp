@@ -172,18 +172,16 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     auto* mipdata = mipsolver_.mipdata_.get();
     const auto& integrality = model->integrality_;
     const auto& orig_cost = model->col_cost_;
-    const double time_limit = exec_.time_limit;
 
     AttemptResult attempt{};
 
     while (attempt.effort < attempt_budget && !base_.exhausted()) {
-        // Wall-clock `time_limit` is enforced by the outer loop between
-        // attempts and by the `remaining <= 0` guard below, which is
-        // `ExecutionContext::past_deadline()` inlined so that the same
-        // clock read also yields PDLP's input time_limit.  Calling the
-        // predicate here as well — as FJ, FPR and LocalMIP do, having no
-        // scalar to reuse (issue #114) — would just double the
-        // clock_gettime cost per iteration for no extra precision.
+        // The wall-clock deadline is enforced by the outer loop between
+        // attempts and by the `past_deadline()` guard below (issue #114).
+        // The PDLP solve's own limit is no longer derived from that read:
+        // it is taken inside `ContestedPdlp`'s lock, because a value
+        // computed here is stale by the length of the peer solve this
+        // worker may then block behind (issue #117).
         if (improvement_gen_ != nullptr) {
             uint64_t gen = improvement_gen_->load(std::memory_order_relaxed);
             if (gen != last_seen_gen_) {
@@ -203,8 +201,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // end of this loop where cycle_history_, alpha_K_, and
         // modified_cost_ are also only updated when `fresh`.
 
-        double remaining = time_limit - mipsolver_.timer_.read();
-        if (remaining <= 0.0) {
+        if (exec_.past_deadline()) {
             base_.finished = true;
             break;
         }
@@ -231,9 +228,8 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             // for its *own* modified_cost_, preventing a pathological
             // "live on a stale snapshot that never matches my objective"
             // regime.
-            auto solve_res =
-                pdlp_.solve(modified_cost_, warm_start_col_value_, warm_start_row_dual_,
-                            warm_start_valid_, epsilon_, remaining);
+            auto solve_res = pdlp_.solve(modified_cost_, warm_start_col_value_,
+                                         warm_start_row_dual_, warm_start_valid_, epsilon_);
             if (absorb_fresh_solve(solve_res, iters_this_round, x_bar_ptr)) {
                 break;
             }
@@ -248,9 +244,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                 last_seen_snapshot_gen_ = stale_snapshot_->generation;
             }
         } else {
-            auto try_res = pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
-                                                       warm_start_row_dual_, warm_start_valid_,
-                                                       epsilon_, remaining);
+            auto try_res =
+                pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
+                                            warm_start_row_dual_, warm_start_valid_, epsilon_);
             if (try_res.fresh) {
                 if (absorb_fresh_solve(try_res.solve, iters_this_round, x_bar_ptr)) {
                     break;

@@ -18,6 +18,17 @@
 
 namespace {
 
+// DFS nodes between two polls of the wall-clock deadline (issue #117).
+//
+// A node is a `fix` plus — in every propagating mode — a full propagation
+// fixpoint, so it already costs orders of magnitude more than the
+// `clock_gettime` behind `Deadline::expired()`; the cadence exists to keep
+// the poll off the hottest instruction path, not because the clock read is
+// expensive relative to the work it guards.  Sixteen bounds the overshoot
+// at sixteen nodes, and one node is the residual floor either way — see
+// `docs/PARAMETERS.md`, "What bounds the deadline's tightness".
+constexpr HighsInt kDeadlinePollNodes = 16;
+
 // Bundle the per-call references that begin/step/finish all need to
 // rehydrate the lambdas (`is_int`, `finite_clamp`, `choose_fix_value`,
 // `is_violated`).  The lambdas themselves cannot live in
@@ -460,8 +471,33 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
     const size_t effort_target_delta = effort_remaining;
     const bool use_hint = (state.attempt_idx == 0 && cfg.hint != nullptr);
 
+    // The wall clock, alongside the effort gate above (issue #117).
+    // `effort_remaining` is the caller's slice, and every caller sizes it
+    // from its effort option — `HeuristicBudget::attempt_cap` for
+    // `FprWorker`, the remainder of a pump attempt for `ScyllaWorker`, the
+    // whole attempt budget for `fpr_lp` — so a large option makes this one
+    // loop the coarsest indivisible unit in the solve, and the deadline
+    // only as tight as it is long.  Measured at 1.9x a 30 s limit on
+    // `rail02` before this poll existed.
+    const Deadline deadline = deadline_of(mipsolver);
+    HighsInt nodes_since_poll = 0;
+
     while (!dfs_stack.empty() && state.nodes_visited < state.node_limit && !state.found_complete &&
            (E.effort() - effort_at_call_start) < effort_target_delta) {
+        if (++nodes_since_poll >= kDeadlinePollNodes) {
+            nodes_since_poll = 0;
+            if (deadline.expired()) {
+                // Leave the attempt alive: the stack is non-empty (the
+                // loop condition just held), so the verdict test below
+                // reports `kBudgetGate` and the DFS resumes on the next
+                // call — which, for every caller, does not come, because
+                // its own deadline poll fires first.  Nothing here decides
+                // that; a paused attempt is simply what "stop now" means
+                // mid-DFS, and it is what the one-shot wrapper turns into
+                // a `failed` verdict.
+                break;
+            }
+        }
         auto node = dfs_stack.back();
         dfs_stack.pop_back();
         ++state.nodes_visited;
@@ -599,15 +635,27 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
     }
 
     // Phase 3: RepairSearch (Fig. 5) or WalkSAT.
-    if (!feasible && cfg.mode == FrameworkMode::kRepairSearch) {
+    //
+    // The deadline gates entry to both (issue #117).  `step`'s own poll
+    // does not cover this: a DFS that reached a leaf *at* the deadline
+    // returns `kVerdictReady`, so finish runs, and the shortcut above
+    // catches only the attempts that failed.  RepairSearch is the
+    // expensive half — `repair_iterations` nodes, each two propagation
+    // fixpoints — and takes the deadline itself so it stops between
+    // nodes rather than only before the first.  WalkSAT does not: its
+    // `walksat_iterations` steps are O(row degree) each, which is
+    // milliseconds even on the largest instance in the PLATO list, so
+    // the entry gate is the whole bound it needs.
+    const Deadline deadline = deadline_of(mipsolver);
+    if (!feasible && !deadline.expired() && cfg.mode == FrameworkMode::kRepairSearch) {
         size_t rs_effort = 0;
         feasible = repair_search(
             E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(), c.row_lo.data(),
             c.row_hi.data(), cfg.repair_iterations, cfg.repair_noise, cfg.repair_track_best,
             cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0, rng, rs_effort,
-            scratch);
+            scratch, deadline);
         total_prop_work += rs_effort;
-    } else if (!feasible && mode_repairs(cfg.mode)) {
+    } else if (!feasible && !deadline.expired() && mode_repairs(cfg.mode)) {
         size_t walk_effort = 0;
         feasible =
             walksat_repair(E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(),

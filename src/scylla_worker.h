@@ -129,10 +129,11 @@ private:
 
     HighsMipSolver& mipsolver_;
     // The dispatch's deadline, one source of truth with the other three
-    // heuristics (issue #114).  Read for `time_limit` rather than
-    // `past_deadline()`: the pump loop needs the *scalar* remaining time to
-    // hand PDLP, and computing it is the same clock read the predicate
-    // would make.
+    // heuristics (issue #114).  Polled through `past_deadline()` like
+    // theirs: the pump loop used to want the *scalar* remaining time to
+    // hand PDLP, and no longer does — `ContestedPdlp` reads that itself,
+    // inside the lock, because a value computed out here is stale by the
+    // length of any peer solve this worker blocks behind (issue #117).
     const ExecutionContext& exec_;
     ContestedPdlp& pdlp_;
     const CscMatrix& csc_;

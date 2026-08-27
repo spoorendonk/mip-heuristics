@@ -1026,6 +1026,71 @@ read the reported effort rather than assuming the option was spent. They are reg
 `third_party/highs_patch/apply_patch.cmake` and pinned by
 `tests/test_smoke.cpp`, which nothing else checks.
 
+### What bounds the deadline's tightness
+
+- **File**: `src/deadline.h` (`Deadline`), `src/heuristic_context.h`
+  (`ExecutionContext::past_deadline`, `deadline_of`), `src/fpr_core.cpp`
+  (`kDeadlinePollNodes`)
+
+The deadline is polled, never interrupted, so **it is only as tight as the
+coarsest indivisible unit of work between two polls** — and until #117
+nothing bounded that unit. #114 put a poll in each heuristic's own loop,
+which is a bound only if one iteration of that loop is short; at the top
+of the effort range it is not, because every per-attempt cap is derived
+from the effort option (`HeuristicBudget::attempt_cap = total / (10N)`).
+
+What each heuristic's coarsest unit is, after #117:
+
+| heuristic | unit the deadline is polled between | bounded by |
+|---|---|---|
+| FJ | one upstream callback, `CALLBACK_EFFORT` = 500000 effort units | constant |
+| LocalMIP | `kTermCheckInterval` = 1000 local-search steps | constant |
+| FPR | 16 DFS nodes (`kDeadlinePollNodes`), or one RepairSearch node | one propagation fixpoint |
+| Scylla | one pump round: one PDLP solve, then one FPR rounding (which polls as above) | one PDLP solve |
+| all four | one dispatch *setup* — see below | one `compute_var_order`, one shared-LP build |
+
+**The residual floors, none of which a constant can cross:**
+
+- **One propagation fixpoint.** A DFS node is a `fix` plus an AC-3
+  fixpoint over the whole model; `PropEngine::propagate` has no abort
+  channel (its `bool` return means *infeasible*), so a poll inside it
+  would be a different change.
+- **One `compute_var_order`.** Both FPR and Scylla precompute variable
+  orders on the dispatching thread before any worker exists — eight
+  orders for FPR, five for Scylla, several of them a
+  `HighsCliqueTable::cliquePartition` over the whole model. This is
+  checked *between* orders, so one order is the floor. It is also the
+  largest floor in practice: on `rail02` (542k nonzeros, 16 workers,
+  presolve-only) FPR's setup measured 34.5 s, and the tail of a single
+  order left 2.2 s of overrun on a 20 s limit.
+- **One PDLP solve.** `ContestedPdlp` hands cuPDLP-C the time left on the
+  deadline, read *inside* its mutex — a value read before the wait is
+  stale by the length of the peer solve the caller blocked behind — and
+  cuPDLP-C checks its own clock every iteration. What the limit does not
+  cover is the wrapped `Highs::run`'s own per-call LP setup, and the
+  granularity is one PDLP iteration.
+- **FJ's per-worker solver construction**, unchanged from #114: the
+  `createRowwise` / `addVar` / `addConstraint` / `init` sequence runs
+  before the first callback can fire.
+
+None of this un-truncates the chain: `run_sequential` skips a heuristic
+once the deadline has passed, so a heuristic that legitimately spends the
+whole limit still leaves its successors nothing.
+
+Measured effect of #117, at an effort that cannot bind
+(`mip_heuristic_<name>_effort=1e6`) with the stall gate off, presolve-only
+at 16 workers:
+
+| run | limit | dispatch ended (before) | (after) |
+|---|---|---|---|
+| fpr / `rail02` | 20 s | 38.1 s (1.91x) | 22.3 s (1.11x) |
+| fpr / `tbfp-network` | 10 s | 16.4 s (1.64x) | 12.1 s (1.21x) |
+| scylla / `rail02` | 20 s | 28.7 s (1.44x) | 20.9 s (1.05x) |
+
+The before column is setup, in all three: those dispatches reported
+`effort=0` and — for Scylla — `fresh=0 stale=0`, i.e. not one pump round
+had run when the limit passed.
+
 The units differ per heuristic and the values are **not** comparable
 across them: FJ counts step units, FPR and LocalMIP coefficient accesses,
 Scylla PDLP iterations x nnz. Do not align them numerically; align the

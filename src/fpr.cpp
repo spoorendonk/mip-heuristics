@@ -200,14 +200,30 @@ constexpr int kNumInitialFprConfigs = static_cast<int>(std::size(kInitialFprConf
 // called from a sequential context: clique-based var_strategies invoke
 // HighsCliqueTable::cliquePartition which mutates internal state and is
 // not thread-safe.
-VarOrderTable precompute_var_orders(HighsMipSolver& mipsolver) {
-    VarOrderTable orders(kNumFprStrategies);
+//
+// Returns false when the solve's wall-clock deadline passed part-way
+// through, leaving `orders` incomplete (issue #117).  This setup is the
+// single largest deadline-unaware unit in an FPR dispatch and it is not
+// small: eight `compute_var_order` calls, several of them a
+// `cliquePartition` over the whole model, measured at 34.5 s on `rail02`
+// — while the dispatch's own budget, and therefore every gate derived
+// from it, has no bearing on it whatsoever.  A caller that gets `false`
+// must not use the table; `fpr::run` returns instead, which is also why
+// the deadline is checked *between* strategies rather than inside the
+// loop body: one `compute_var_order` is indivisible here, and it is the
+// residual floor.
+bool precompute_var_orders(HighsMipSolver& mipsolver, const Deadline& deadline,
+                           VarOrderTable& orders) {
+    orders.assign(kNumFprStrategies, {});
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumFprStrategies; ++i) {
+        if (deadline.expired()) {
+            return false;
+        }
         Rng rng(base + static_cast<uint32_t>(i));
         orders[i] = compute_var_order(mipsolver, kFprStrategies[i].var_strategy, rng, nullptr);
     }
-    return orders;
+    return true;
 }
 
 }  // namespace
@@ -511,8 +527,14 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
 
     HighsMipSolver& mipsolver = exec.mipsolver;
 
-    // Precompute var_orders sequentially before any parallel region.
-    VarOrderTable var_orders = precompute_var_orders(mipsolver);
+    // Precompute var_orders sequentially before any parallel region.  A
+    // deadline that passes inside it retires the whole dispatch: the table
+    // is incomplete, no worker exists yet, and the runner's first act
+    // would be to stop anyway (issue #117).
+    VarOrderTable var_orders;
+    if (!precompute_var_orders(mipsolver, exec.deadline(), var_orders)) {
+        return 0;
+    }
 
     std::vector<std::unique_ptr<FprWorker>> workers;
     workers.reserve(exec.num_workers);

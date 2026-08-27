@@ -1,5 +1,6 @@
 #include "contested_pdlp.h"
 
+#include "heuristic_context.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "pump_common.h"
@@ -36,8 +37,8 @@ void set_option_or_die(Highs& highs, const char* name, T value) {
         // Every call site passes a compile-time-constant option name, and
         // the two runtime-valued writes are provably in domain (epsilon is
         // floored at `pump::kEpsilonFloor`=1e-8 against a 1e-10 minimum;
-        // `time_limit` is guarded `> 0` by the caller), so this cannot
-        // fire on legitimate solve data.
+        // `time_limit` is guarded `> 0` in `run_locked_with_accounting`),
+        // so this cannot fire on legitimate solve data.
         assert(false && "ContestedPdlp: unknown or invalid HiGHS option");
         std::abort();
     }
@@ -45,7 +46,8 @@ void set_option_or_die(Highs& highs, const char* name, T value) {
 
 }  // namespace
 
-ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap) {
+ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
+    : deadline_(deadline_of(mipsolver)) {
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();
     ncol_ = model->num_col_;
@@ -83,7 +85,7 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap) 
     initialized_ = true;
 }
 
-ContestedPdlp::ContestedPdlp(ForTesting /*unused*/) {
+ContestedPdlp::ContestedPdlp(ForTesting /*unused*/, Deadline deadline) : deadline_(deadline) {
     // Minimal init for unit tests: the subclass overrides `solve_locked`
     // so we never touch `highs_`.  ncol/nrow/nnz stay 0 by default;
     // tests that care can set them via their own friends, but most just
@@ -99,6 +101,26 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
 
     highs_.changeColsCost(0, ncol_ - 1, modified_cost.data());
     set_option_or_die(highs_, "pdlp_optimality_tolerance", epsilon);
+    // The one place the wrapped instance's time limit is written, and the
+    // caller's guarantee is that `time_limit > 0` (see
+    // `run_locked_with_accounting`) — HiGHS reads `time_limit == 0` as *no
+    // limit*, so a zero here would be the opposite of what it looks like.
+    //
+    // What cuPDLP-C does with it, as of HiGHS v1.15.1: `getCupdlpParams`
+    // (`highs/pdlp/CupdlpWrapper.cpp`, lines 700-707) computes a
+    // remaining-time adjustment and then assigns the *unadjusted*
+    // `options.time_limit` to `floatParam[D_TIME_LIM]` — the adjustment is
+    // dead code.  That upstream bug is load-bearing here in our favour:
+    // the adjustment subtracts `timer.read()` of the wrapped `Highs`
+    // instance, which accumulates across every `run()` we make on it, so
+    // the "fixed" version would hand a late solve a limit of 0 — which
+    // cuPDLP-C reads as "already over" rather than "no limit", stalling
+    // the pump. The solver's own loop then honours the limit properly:
+    // `PDHG_Solve` recomputes `dSolvingTime` every iteration and its
+    // termination check includes `dSolvingTime > dTimeLim` directly, so
+    // one PDLP iteration is the granularity, not one check interval.
+    // If a HiGHS bump fixes line 707, re-derive this: the per-solve
+    // meaning of the limit changes silently.
     set_option_or_die(highs_, "time_limit", time_limit);
 
     if (warm_start_valid && std::cmp_equal(warm_start_col_value.size(), ncol_) &&
@@ -126,8 +148,20 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
 
 ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
-    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
-    double time_limit) {
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon) {
+    // The solve's time limit, read here rather than by the caller (#117).
+    // `solve()` blocks on `mu_` for as long as a peer's whole solve takes,
+    // and a limit computed before that wait is stale by exactly it — the
+    // blocking path is the one Scylla forces every `kMaxStaleRounds`, so
+    // this was a doubling of the overrun on precisely the workers that had
+    // waited longest.  A caller that arrived after the deadline gets no
+    // solve: an empty `SolveResult` keeps its `kError` default, which
+    // `ScyllaWorker::absorb_fresh_solve` turns into a retired chain.
+    const double time_limit = deadline_.remaining();
+    if (time_limit <= 0.0) {
+        return {};
+    }
+
     // One-solve-in-flight invariant: this counter should see at most
     // one concurrent writer.  `mu_` enforces the invariant; we track
     // the counter as a debug assertion (and a peak the tests read).
@@ -226,8 +260,7 @@ void ContestedPdlp::publish_snapshot_for_test(Snapshot snap) {
 ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double>& modified_cost,
                                                 const std::vector<double>& warm_start_col_value,
                                                 const std::vector<double>& warm_start_row_dual,
-                                                bool warm_start_valid, double epsilon,
-                                                double time_limit) {
+                                                bool warm_start_valid, double epsilon) {
     SolveResult result;
     if (!initialized_) {
         return result;
@@ -237,13 +270,12 @@ ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double>& modif
 
     std::scoped_lock lock(mu_);
     return run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                      warm_start_valid, epsilon, time_limit);
+                                      warm_start_valid, epsilon);
 }
 
 ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
     const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
-    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
-    double time_limit) {
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon) {
     TrySolveResult out;
     if (!initialized_) {
         out.stale_snapshot = latest_snapshot();
@@ -263,7 +295,7 @@ ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
     }
 
     out.solve = run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                           warm_start_valid, epsilon, time_limit);
+                                           warm_start_valid, epsilon);
     out.fresh = true;
     return out;
 }

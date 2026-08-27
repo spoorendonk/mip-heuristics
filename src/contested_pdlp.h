@@ -1,5 +1,6 @@
 #pragma once
 
+#include "deadline.h"
 #include "Highs.h"
 #include "lp_data/HighsStatus.h"
 #include "util/HighsInt.h"
@@ -101,8 +102,15 @@ public:
     //
     // `warm_start_col_value` / `warm_start_row_dual` may be empty (cold
     // start) but must otherwise have length == ncol/nrow respectively.
-    // `epsilon` is passed as `pdlp_optimality_tolerance`.  `time_limit`
-    // is a wall-clock cap for this single solve (seconds).
+    // `epsilon` is passed as `pdlp_optimality_tolerance`.
+    //
+    // This solve's wall-clock cap is *not* a parameter (issue #117): it is
+    // the time left on the solve's own deadline, read inside the critical
+    // section.  A caller cannot compute it — it computes a value, then
+    // blocks here for the length of a peer's whole solve, and what it
+    // computed is stale by exactly that wait.  A worker that reached this
+    // call after the deadline gets an empty `SolveResult` and no solve at
+    // all, which is what retires it in `absorb_fresh_solve`.
     //
     // On success, publishes the result as the latest Snapshot so that
     // other workers hitting `try_solve_or_snapshot` can round against
@@ -110,7 +118,7 @@ public:
     SolveResult solve(const std::vector<double>& modified_cost,
                       const std::vector<double>& warm_start_col_value,
                       const std::vector<double>& warm_start_row_dual, bool warm_start_valid,
-                      double epsilon, double time_limit);
+                      double epsilon);
 
     // Non-blocking variant: `try_lock` the PDLP mutex.
     //
@@ -126,7 +134,7 @@ public:
     TrySolveResult try_solve_or_snapshot(const std::vector<double>& modified_cost,
                                          const std::vector<double>& warm_start_col_value,
                                          const std::vector<double>& warm_start_row_dual,
-                                         bool warm_start_valid, double epsilon, double time_limit);
+                                         bool warm_start_valid, double epsilon);
 
     // Latest completed Snapshot (shared ownership) or null if no solve
     // has completed yet.  Read via `std::atomic<std::shared_ptr<>>`
@@ -153,7 +161,8 @@ protected:
     // solve (sleep + fake output) to exercise the lock/snapshot
     // plumbing without dragging a full Highs instance in.  Caller
     // (either `solve()` or `try_solve_or_snapshot()`) already holds
-    // `mu_` when this runs.
+    // `mu_` when this runs, and `time_limit` is the time left on the
+    // deadline as of *inside* the lock, not as of the call (#117).
     virtual SolveResult solve_locked(const std::vector<double>& modified_cost,
                                      const std::vector<double>& warm_start_col_value,
                                      const std::vector<double>& warm_start_row_dual,
@@ -161,9 +170,12 @@ protected:
 
     // Constructor for the test double: does not build the Highs LP.
     // `initialized()` is forced to true so tests can drive the lock /
-    // snapshot paths with an overridden `solve_locked`.
+    // snapshot paths with an overridden `solve_locked`.  `deadline`
+    // defaults to one that never expires, which is what a test driving the
+    // lock/snapshot plumbing wants; a test of the deadline itself passes
+    // its own `HighsTimer` (issue #117).
     struct ForTesting {};
-    explicit ContestedPdlp(ForTesting /*unused*/);
+    explicit ContestedPdlp(ForTesting /*unused*/, Deadline deadline = {});
 
     // Test hook: enter the locked critical section (returns a unique_lock)
     // without running a solve.  Lets tests deterministically simulate
@@ -180,13 +192,14 @@ protected:
     void publish_snapshot_for_test(Snapshot snap);
 
 private:
-    // Wraps `solve_locked` with the in-flight-count tripwire and the
-    // snapshot publication.  `mu_` must be held on entry.
+    // Wraps `solve_locked` with the in-flight-count tripwire, the
+    // deadline's remaining time and the snapshot publication.  `mu_` must
+    // be held on entry — which is what makes this, and not either public
+    // entry point, the place the remaining time is read (#117).
     SolveResult run_locked_with_accounting(const std::vector<double>& modified_cost,
                                            const std::vector<double>& warm_start_col_value,
                                            const std::vector<double>& warm_start_row_dual,
-                                           bool warm_start_valid, double epsilon,
-                                           double time_limit);
+                                           bool warm_start_valid, double epsilon);
 
     // Publish the result of a just-completed solve as the latest
     // Snapshot.  Only called while `mu_` is held, so publications are
@@ -196,6 +209,10 @@ private:
 
     std::mutex mu_;
     Highs highs_;
+    // The solve's wall-clock deadline, taken from the MIP solver at
+    // construction.  Every solve's time limit is derived from it inside
+    // the lock; nothing outside this class passes one in (#117).
+    Deadline deadline_;
     bool initialized_ = false;
     size_t nnz_lp_ = 0;
     HighsInt ncol_ = 0;

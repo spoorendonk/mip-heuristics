@@ -151,7 +151,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
                    const double* col_lb, const double* col_ub, const double* row_lo,
                    const double* row_hi, HighsInt repair_iterations, double repair_noise,
                    bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
-                   FprScratch& scratch) {
+                   FprScratch& scratch, const Deadline& deadline) {
     const HighsInt ncol = E.ncol();
     const HighsInt nrow = E.nrow();
     const double feastol = E.feastol();
@@ -343,7 +343,13 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
     auto effort_spent = [&]() -> size_t {
         return total_effort + (E.effort() - e_effort_baseline) + (R.effort() - r_effort_baseline);
     };
-    while (!Q.empty() && nodes_visited < repair_iterations && effort_spent() < max_effort) {
+    // The wall clock joins the node and effort gates (issue #117).  Polled
+    // on every node rather than on a cadence: `repair_iterations` is 50, so
+    // fifty clock reads is the whole cost, while one node is two
+    // propagation fixpoints — the reason this loop can outlive a time limit
+    // at all.
+    while (!Q.empty() && nodes_visited < repair_iterations && effort_spent() < max_effort &&
+           !deadline.expired()) {
         RepairSearchNode node = Q.back();
         Q.pop_back();
         ++nodes_visited;

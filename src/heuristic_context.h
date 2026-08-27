@@ -1,5 +1,6 @@
 #pragma once
 
+#include "deadline.h"
 #include "heuristic_common.h"
 #include "lp_data/HighsLp.h"
 #include "mip/HighsMipSolver.h"
@@ -229,7 +230,15 @@ struct ExecutionContext {
     // `HighsTimer` bottoms out in `high_resolution_clock` and is therefore
     // not monotonic (see `effort_ledger.h`); that risk is pre-existing and
     // is the price of one shared origin.
-    [[nodiscard]] bool past_deadline() const { return mipsolver.timer_.read() >= time_limit; }
+    [[nodiscard]] bool past_deadline() const { return deadline().expired(); }
+
+    // The same deadline as a standalone pollable value, for the layers
+    // below a heuristic's runner: `fpr_core`'s DFS and the repair search
+    // under it are shared by three callers and have no `ExecutionContext`
+    // (issue #117).  One definition rather than two — a sub-algorithm
+    // that stopped against a different clock or a different limit than
+    // its runner would be the drift this method exists to prevent.
+    [[nodiscard]] Deadline deadline() const { return make_deadline(mipsolver.timer_, time_limit); }
 
     // The full "should we stop?" predicate.  Three hand-rolled copies of
     // it existed before this struct.
@@ -268,6 +277,16 @@ inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
                             static_cast<size_t>(std::max(1, highs::parallel::num_threads())),
                             heuristic_base_seed(mipsolver.options_mip_->random_seed),
                             mipsolver.options_mip_->time_limit};
+}
+
+// The dispatch's deadline, for a callee that was handed the solver but not
+// the `ExecutionContext` built from it — `fpr_core`'s attempt lifecycle, on
+// behalf of all three of its callers (issue #117).  Reads the same option
+// `make_exec` copies into `ExecutionContext::time_limit`, so deriving it
+// here rather than threading the context through cannot drift: there is one
+// option and one clock.
+inline Deadline deadline_of(const HighsMipSolver& mipsolver) {
+    return make_deadline(mipsolver.timer_, mipsolver.options_mip_->time_limit);
 }
 
 // Split a heuristic's slice of the effort envelope into the per-worker,

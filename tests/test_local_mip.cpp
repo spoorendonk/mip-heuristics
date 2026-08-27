@@ -369,54 +369,6 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     REQUIRE(counters.pool >= 1);
 }
 
-namespace {
-
-// Stand up a real `HighsMipSolver` (with `mipdata_`) on `instance`
-// without going through `Highs::run`'s heuristics, so a test can call a
-// heuristic's `run` — or `make_problem` — itself.  Mirrors the minimal
-// init sequence from `HighsMipSolver::run` (init → runMipPresolve →
-// runSetup); the heuristics and B&B that follow are skipped.
-//
-// Callers must have started the HiGHS task scheduler first (see the
-// `initialize_scheduler()` note at each call site).
-std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback& cb,
-                                                     const char* instance = "flugpl.mps") {
-    // Disable HiGHS presolve so `runMipPresolve` is a near-no-op
-    // that leaves `mipsolver.model_` pointing at the original LP.
-    // The heuristics' `run` only needs the LP shape and
-    // the `mipdata_` row-major buffers (`ARstart_/ARindex_/ARvalue_`)
-    // that `runSetup` populates; the heavier LP-relaxation
-    // machinery that comes later in `Highs::run` is not needed and
-    // skipping presolve keeps this minimal.
-    highs.setOptionValue("presolve", "off");
-    REQUIRE(highs.readModel(kInstancesDir + "/" + instance) == HighsStatus::kOk);
-    auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
-                                                      highs.getSolution());
-    mipsolver->timer_.start();
-    // `HighsMipSolver::run` initialises this before anything can find a
-    // solution; constructing the solver directly leaves it holding
-    // garbage, and `addIncumbent` -> `saveReportMipSolution` writes to
-    // it unconditionally when non-null.
-    mipsolver->improving_solution_file_ = nullptr;
-    mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
-    mipsolver->mipdata_->init();
-    mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
-    mipsolver->mipdata_->runSetup();
-    // `HighsMipSolver::run` creates the master worker right after
-    // runSetup and before it dispatches the presolve heuristics.  Do
-    // the same: `addIncumbent` — reached through the sink's accept
-    // callback as soon as a heuristic finds something — reads
-    // `mipdata_->workers[0]`, so a harness that skips this crashes on
-    // the first solution rather than on any assertion.
-    mipsolver->mipdata_->workers.emplace_back(
-        *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
-        &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
-        &mipsolver->mipdata_->getPseudoCost());
-    return mipsolver;
-}
-
-}  // namespace
-
 // ── Effort-accounting contract: run return value matches delta (#79) ──
 //
 // `local_mip::run` returns the effort it consumed; the dispatcher

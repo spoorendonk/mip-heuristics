@@ -1,8 +1,15 @@
+#include "fpr_core.h"
+#include "fpr_strategies.h"
+#include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "Highs.h"
+#include "parallel/HighsParallel.h"
+#include "rng.h"
 #include "test_common.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -200,20 +207,29 @@ std::vector<std::string> presolve_heur_lines(Configure&& configure) {
     return out;
 }
 
-// One heuristic, alone, with its effort option at the maximum and its
-// patience gate disabled (`0` means no gate at all, not "give up
-// immediately"), so the budget is the only thing competing with the
-// deadline.
-std::string alone_at_limit(const std::string& heuristic) {
+// One heuristic, alone, at `effort` with its patience gate disabled (`0`
+// means no gate at all, not "give up immediately"), so the budget is the
+// only thing competing with the deadline.  The default is one whole
+// vanilla FJ budget, which on this instance is already more than the limit
+// allows; `kUnbindableEffort` is the setting at which the budget stops
+// competing at all.
+std::string alone_at_limit(const std::string& heuristic, double effort = 1.0) {
     const auto lines = presolve_heur_lines([&](Highs& h) {
         require_option(h, "mip_heuristic_suite", heuristic);
-        require_option(h, "mip_heuristic_" + heuristic + "_effort", 1.0);
+        require_option(h, "mip_heuristic_" + heuristic + "_effort", effort);
         require_option(h, "mip_heuristic_" + heuristic + "_patience", 0);
     });
     REQUIRE(lines.size() == 1);
     require_expected_nnz(lines.front());
     return lines.front();
 }
+
+// The `mip_heuristic_<name>_effort` ceiling (#116).  At this setting the
+// budget cannot bind on any model — that headroom exists for #113's
+// calibration probe, and it is also what makes `attempt_cap`, and
+// therefore every unit the deadline is polled between, as large as it can
+// get (issue #117).
+constexpr double kUnbindableEffort = 1e6;
 
 // The property, for one heuristic that charges effort in units an attempt
 // cap can be compared against.
@@ -289,4 +305,126 @@ TEST_CASE("deadline: no presolve heuristic outlives the limit", "[deadline]") {
             CHECK(end_s_of(line) <= kLimit + kSlack);
         }
     }
+}
+
+// ===================================================================
+// ...and it binds the work units *below* a heuristic's runner (#117)
+//
+// #114 put a deadline poll in each heuristic's own loop, which bounds the
+// overrun at one of that loop's iterations.  It does not bound the
+// iteration.  FPR's is a whole DFS attempt, sized from the effort option
+// (`HeuristicBudget::attempt_cap`), and Scylla's is a whole pump round,
+// which contains a PDLP solve and an FPR rounding sized the same way; and
+// before either loop starts, both heuristics run a sequential setup that
+// nothing was watching the clock during at all.  Measured on `rail02`
+// (542k nonzeros, 16 workers, presolve-only, budget deliberately
+// unreachable): a 20 s limit produced a 38.1 s FPR dispatch and a 28.7 s
+// Scylla one, both of which had spent every second of the overrun inside
+// setup — 34.5 s of `compute_var_order` calls for FPR, 20.7 s of shared-LP
+// construction plus var orders for Scylla — and the probe behind #113 had
+// 23 such runs SIGKILLed at 5.5x their limit.
+//
+// **The cases below do not reproduce that.**  On the bundled instances a
+// whole FPR attempt and a whole Scylla pump round are milliseconds and the
+// setup is smaller still, so an end-to-end run here already ends within
+// its limit on the *unfixed* build — measured 0.10-0.19 s against a 0.1 s
+// limit for both heuristics at the maximum effort option.  A wall-clock
+// assertion on this hardware would therefore pass either way, which is
+// exactly the vacuous bound the note above `kPdlpSlack` refuses.
+//
+// So the sub-attempt gate is pinned where it is decidable: one FPR attempt
+// against a clock that has already passed, compared with the same attempt
+// against a clock that has not.  Same instance, same seed, same config,
+// same unbindable effort budget — the deadline is the only difference, and
+// a build without the poll inside the DFS cannot tell them apart.  The
+// PDLP half of the same statement lives in `test_contested_pdlp.cpp`,
+// where the sub-solver's limit is observable.
+
+namespace {
+
+// Effort charged by one one-shot FPR attempt on `instance` when the solve
+// carries `time_limit`, with an effort budget that cannot bind.
+//
+// The mode is `kRepairSearch`, which is what the shipped rotation gives
+// worker 6 (`kInitialFprConfigs`), so this covers Phase 3's node loop as
+// well as the Phase 2 DFS — the two loops #117 put a clock in.
+size_t one_attempt_effort(const char* instance, double time_limit) {
+    // `HighsMipSolverData::init` reads `parallel::num_threads()`; see the
+    // note at the other `build_bare_mipsolver` call site.
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, instance, time_limit);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+
+    FprConfig cfg{};
+    // "Cannot bind": the effort gates in `fpr_attempt_step` and
+    // `fpr_attempt_finish` are subtractions against this, so it stands in
+    // for the `mip_heuristic_fpr_effort=1e6` an unreachable budget is
+    // spelled as end-to-end.  Half of SIZE_MAX rather than all of it so
+    // the `max_effort - already_used` arithmetic has room on both sides.
+    cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
+    cfg.csc = &csc;
+    cfg.mode = FrameworkMode::kRepairSearch;
+    cfg.strategy = &kStratLocks;
+    cfg.binary_mask = problem.binary.data();
+
+    Rng rng(0);
+    return fpr_attempt(*mipsolver, cfg, rng, 0, nullptr).effort;
+}
+
+}  // namespace
+
+TEST_CASE("deadline: one FPR attempt stops on the clock, not on its effort budget", "[deadline]") {
+    // `p0548` is a bundled MIP whose DFS runs long enough for the two
+    // measurements to separate by orders of magnitude; `kInstance` above
+    // is not reused because these cases measure a single attempt rather
+    // than a dispatch, and want the attempt to be as long as possible.
+    constexpr const char* kAttemptInstance = "p0548.mps";
+
+    // The clock has passed before the attempt begins: the limit is applied
+    // after the model is read and `HighsMipSolver`'s own clock starts at
+    // zero from there, so a microsecond limit is expired after the first
+    // microsecond of `runSetup` — by construction, not by a race.
+    const size_t stopped = one_attempt_effort(kAttemptInstance, 1e-6);
+    // No limit at all, which is HiGHS's own default.
+    const size_t unbounded = one_attempt_effort(kAttemptInstance, kHighsInf);
+
+    INFO("effort with an expired deadline: " << stopped << ", without one: " << unbounded);
+    // The attempt that was allowed to run is the control: if it did not do
+    // real work, the comparison below proves nothing.
+    REQUIRE(unbounded > 0);
+    CHECK(stopped * 10 < unbounded);
+}
+
+// The end-to-end statement at the extreme setting, and an honest note
+// about what it can and cannot catch here.
+//
+// At `effort=1e6` the budget cannot bind, so `attempt_cap` — the size of
+// the unit the runner polls the deadline between — is as large as the
+// option surface allows.  On `rail02` that is the configuration that
+// produced a 38.1 s dispatch under a 20 s limit.  On `gesa2` it produces
+// nothing of the kind on *either* build: one attempt and one pump round
+// are milliseconds here, so the unfixed binary was measured ending at
+// 0.102 s (FPR) and 0.185 s (Scylla) against the same 0.1 s limit.
+//
+// This case is therefore a guard rather than a discriminator — it fails if
+// a future change lets the effort option buy time again — and the
+// discriminating measurement is the attempt-level case below it.
+TEST_CASE("deadline: an unbindable budget does not loosen the deadline", "[deadline]") {
+    const std::string fpr_line = alone_at_limit("fpr", kUnbindableEffort);
+    INFO(fpr_line);
+    require_expected_nnz(fpr_line);
+    CHECK(end_s_of(fpr_line) <= kLimit + kSlack);
+
+    // Scylla on effort, for the reason the note above `kAttemptCapUnits`
+    // gives: its floor is one whole PDLP solve, whose wall time varies
+    // 127-700 ms with machine load while its charge does not.
+    const std::string scylla_line = alone_at_limit("scylla", kUnbindableEffort);
+    INFO(scylla_line);
+    require_expected_nnz(scylla_line);
+    CHECK(effort_of(scylla_line) < kBudgetUnits / 4);
 }

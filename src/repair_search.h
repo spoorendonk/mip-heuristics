@@ -1,5 +1,6 @@
 #pragma once
 
+#include "deadline.h"
 #include "rng.h"
 #include "util/HighsInt.h"
 
@@ -17,9 +18,15 @@ struct FprScratch;
 // stack, best-state snapshots, nested walksat_select_move scratch).  All
 // are cleared/resized at entry so prior contents are discarded — capacity
 // persists across calls.
+// `deadline` stops the node loop on the solve's wall clock, alongside
+// `repair_iterations` and `max_effort` (issue #117): one node is two
+// propagation fixpoints, so on a large model the effort gate alone lets
+// this run for seconds past a time limit.  A default-constructed
+// `Deadline` never expires, which is what a caller with no time limit
+// gets from `make_deadline`.
 // Returns true if a feasible solution was found (solution modified in-place).
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
                    const double* row_hi, HighsInt repair_iterations, double repair_noise,
                    bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
-                   FprScratch& scratch);
+                   FprScratch& scratch, const Deadline& deadline);
