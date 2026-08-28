@@ -238,8 +238,8 @@ void retire_trace(const std::unique_ptr<LocalMipWorker>& worker, WorkerTrace& tr
 
 }  // namespace
 
-size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
-           IncumbentSink& sink) {
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, IncumbentSink& sink) {
     // Issue #75: the old `mipdata->incumbent.empty()` early-return is
     // gone.  Cold-start is now handled by `resolve_worker_start` which
     // runs the paper's construction phase when neither pool nor
@@ -247,7 +247,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     // warm-start-with-pool path; this function stays neutral on that
     // (pool-first lookup in `resolve_worker_start` already covers it).
     if (problem.degenerate() || budget.disabled()) {
-        return 0;
+        return {};
     }
 
     HighsMipSolver& mipsolver = exec.mipsolver;
@@ -400,8 +400,11 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
         });
 
     // The caller books this through `EffortLedger` (issue #79), which is
-    // the single point of effort accounting.
-    return total_effort + construction_effort.load(std::memory_order_relaxed);
+    // the single point of effort accounting.  No `abandoned_setup`: what
+    // LocalMIP does before the runner — the cold-start prime — is charged
+    // work rather than an unwatched sequential setup, and it carries no
+    // deadline bail to report (issue #119).
+    return {.effort = total_effort + construction_effort.load(std::memory_order_relaxed)};
 }
 
 }  // namespace local_mip

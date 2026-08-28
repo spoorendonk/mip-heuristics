@@ -778,6 +778,35 @@ The rule, so a number in this file can always be traced to a measurement:
   gate that reset on pool acceptances would be a number in one unit
   charged in another.
 
+**A dispatch that abandoned setup is not a barren one** (#119). #117 made
+the sequential setup abandon its work when the wall-clock deadline has
+already passed — `fpr::precompute_var_orders` and
+`scylla::precompute_config_var_orders` check the clock between variable
+orders, and the entry point returns without searching. Such a dispatch
+never ran, so it says nothing about how long this heuristic goes without
+improving; its spend is a cost of setup. It used to book an `effort=0
+found=0` line byte-identical to a barren dispatch's, which put it straight
+into the barren rate both statements above rest on — and a setup bail is
+only possible on the large, hard instances, so the mis-binning landed
+exactly where the estimate is most sensitive. The `[Heur]` line now
+carries `abandoned_setup=<0|1>`, and `bench/analyze_presolve_probe.py`
+drops such a dispatch from the views entirely, reporting it as a
+diagnostic rather than carrying it as a right-censored interval. The
+classification reads the field: inferring the bail from zero effort plus
+an expired deadline would mislabel a dispatch that was entered with a
+millisecond left, constructed its workers and searched nothing.
+
+A log written before #119 carries no such field, which the parser reads as
+`None` — unobservable, not known-absent — and which every consumer that
+only asks "did this dispatch search" treats as `False`. So a pre-#119 tree
+classifies exactly as it did before, and that is checked rather than
+assumed: re-deriving all four artifacts from the #113 tree (932 logs, 857
+carrying `[Heur]`, none carrying the field) reproduces `defaults.json`,
+`informative.txt`, `hard_tier.txt` and `report.txt` byte for byte. The
+numbers below therefore stand as measured — and stand as the *reason* the
+probe re-run waits for this, since its tree will be the first that can
+tell the two apart.
+
 Measured over the 233-instance PLATO list, presolve-only, 30 s, 16 workers,
 the p50 knee lands within a factor of two of every shipped value and within
 8 % for FPR — so the inherited numbers were roughly right, and now there is

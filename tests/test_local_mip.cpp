@@ -397,8 +397,8 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
     // `initialize_scheduler()` calls are no-ops.
     highs::parallel::initialize_scheduler();
 
-    using RunFn =
-        size_t (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
+    using RunFn = DispatchOutcome (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
+                                      IncumbentSink&);
     auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
@@ -426,7 +426,7 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
         // than picking one of the four per-heuristic constants — it runs
         // all four `run` functions through the same `RunFn`.
         const size_t returned =
-            run_fn(problem, make_budget(budget, exec.num_workers, budget >> 2), exec, sink);
+            run_fn(problem, make_budget(budget, exec.num_workers, budget >> 2), exec, sink).effort;
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 

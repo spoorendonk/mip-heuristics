@@ -3,6 +3,7 @@
 #include <cstddef>
 
 class IncumbentSink;
+struct DispatchOutcome;
 struct ExecutionContext;
 struct HeuristicBudget;
 struct ProblemView;
@@ -47,7 +48,7 @@ namespace scylla {
 // reproducible under a fixed `random_seed`.
 //
 // Implements the uniform runner contract; see heuristic_context.h.
-size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
-           IncumbentSink& sink);
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, IncumbentSink& sink);
 
 }  // namespace scylla

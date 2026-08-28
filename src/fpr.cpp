@@ -519,10 +519,10 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 // Parallel FPR
 // ---------------------------------------------------------------------------
 
-size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
-           IncumbentSink& sink) {
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, IncumbentSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
-        return 0;
+        return {};
     }
 
     HighsMipSolver& mipsolver = exec.mipsolver;
@@ -531,9 +531,14 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     // deadline that passes inside it retires the whole dispatch: the table
     // is incomplete, no worker exists yet, and the runner's first act
     // would be to stop anyway (issue #117).
+    //
+    // Reported as an abandoned setup rather than as a plain zero (issue
+    // #119): this dispatch did not search and produce nothing, it never
+    // searched, and the two are the same `effort=0 found=0` line to every
+    // consumer that cannot tell them apart.
     VarOrderTable var_orders;
     if (!precompute_var_orders(mipsolver, exec.deadline(), var_orders)) {
-        return 0;
+        return DispatchOutcome::abandoned();
     }
 
     std::vector<std::unique_ptr<FprWorker>> workers;
@@ -556,20 +561,20 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
         int worker_idx;
     };
 
-    return run_opportunistic_loop(
-        exec, budget,
-        [](int worker_idx, Rng& /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
-        [&](FprOppState& state, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
-            auto& worker = workers[state.worker_idx];
-            // A retired worker reports zero effort, which retires its
-            // slot in `run_opportunistic_loop` (issue #111 gave FPR the
-            // worker-level gate it had been doing without).  Deliberately
-            // no `attempt_with_rebuild`: FPR's diversity already comes
-            // from the per-attempt rotation through `kInitialFprConfigs`,
-            // so a rebuilt worker would resume the same rotation with a
-            // fresh patience allowance and the gate would bound nothing.
-            return worker->run_attempt(run_cap);
-        });
+    return {.effort = run_opportunistic_loop(
+                exec, budget,
+                [](int worker_idx, Rng& /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
+                [&](FprOppState& state, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
+                    auto& worker = workers[state.worker_idx];
+                    // A retired worker reports zero effort, which retires its
+                    // slot in `run_opportunistic_loop` (issue #111 gave FPR the
+                    // worker-level gate it had been doing without).  Deliberately
+                    // no `attempt_with_rebuild`: FPR's diversity already comes
+                    // from the per-attempt rotation through `kInitialFprConfigs`,
+                    // so a rebuilt worker would resume the same rotation with a
+                    // fresh patience allowance and the gate would bound nothing.
+                    return worker->run_attempt(run_cap);
+                })};
 }
 
 }  // namespace fpr

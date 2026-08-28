@@ -69,6 +69,26 @@ class HeuristicSample:
     # <n> nonzeros` the post-presolve LP).  See `SolveResult.num_nonzeros`,
     # which stays and is the fallback on full-solve logs.
     nnz: int | None = None
+    # Whether this dispatch abandoned its sequential setup on the
+    # wall-clock deadline and never searched (#119), rather than searching
+    # and producing nothing.  The two used to be the same `effort=0
+    # found=0` line, and a consumer that binned the first as "barren" —
+    # which the #113 calibration does — attributed to the heuristic a cost
+    # belonging to its setup, on exactly the large, hard instances where a
+    # bail is possible at all.
+    #
+    # `None` for a log written before #119 added the field.  That is a
+    # third state and not a synonym for `False`: on such a log the
+    # distinction is *unobservable* rather than known-absent.  A consumer
+    # that only needs "did this dispatch search" may treat `None` as
+    # `False` — which is what makes a pre-#119 tree classify exactly as it
+    # did before — while one reporting on setup bails should say the log
+    # cannot answer.
+    #
+    # Three log shapes stay distinguishable, which is the point: no
+    # `[Heur]` line at all is a killed run (`SolveResult.killed`), `True`
+    # is a bail, and `False`/`None` is a dispatch that ran.
+    abandoned_setup: bool | None = None
 
 
 @dataclass
@@ -623,10 +643,13 @@ def _tagged_fields(line: str, tag: str) -> dict[str, str] | None:
 # Per-heuristic instrumentation at log_dev_level=3, emitted next to the
 # legacy `[Sequential]` line by `EffortLedger::book`:
 #   [Heur] name=fj phase=presolve start_s=0.412 end_s=1.077 effort=8388608 \
-#          wall_ms=665.2 effort_per_ms=12610.1 found=1 nnz=2831
+#          wall_ms=665.2 effort_per_ms=12610.1 found=1 nnz=2831 abandoned_setup=0
 # `wall_ms` may be negative: the solver clock is not monotonic, so a
 # negative sample is surfaced rather than silently skipped.  `nnz` is
-# optional, being absent from logs written before #106 added it.
+# optional, being absent from logs written before #106 added it, and
+# `abandoned_setup` likewise for logs written before #119.  Neither is in
+# `_HEUR_KEYS`: a required key drops the whole line, which would discard
+# every archived log rather than read the fields it does carry.
 _HEUR_TAG = "[Heur]"
 _HEUR_KEYS = (
     "name",
@@ -647,6 +670,7 @@ def _parse_heur(line: str) -> HeuristicSample | None:
         return None
     try:
         nnz = fields.get("nnz")
+        abandoned = fields.get("abandoned_setup")
         return HeuristicSample(
             name=fields["name"],
             phase=fields["phase"],
@@ -657,6 +681,10 @@ def _parse_heur(line: str) -> HeuristicSample | None:
             effort_per_ms=float(fields["effort_per_ms"]),
             found=fields["found"] != "0",
             nnz=None if nnz is None else int(nnz),
+            # `!= "0"` matches how `found` is read, so a malformed value
+            # errs towards "something happened" rather than silently
+            # reading as the default.
+            abandoned_setup=None if abandoned is None else abandoned != "0",
         )
     except ValueError:
         return None

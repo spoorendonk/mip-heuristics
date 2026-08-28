@@ -333,13 +333,22 @@ def _heursol(name, dispatch, worker, effort_at, wall_ms, obj, accepted):
     )
 
 
-def _heur(name, effort, found=1, phase="presolve", nnz=100):
+def _heur(name, effort, found=1, phase="presolve", nnz=100, abandoned=None):
+    """One `[Heur]` line.
+
+    `abandoned=None` omits the field, which is the *legacy* form: every log
+    written before #119 — including the whole #113 probe tree — looks like
+    this.  That is the default on purpose, so the cases that are not about
+    the field keep exercising the shape most archived logs have.
+    """
     line = (
         f"[Heur] name={name} phase={phase} start_s=0.100 end_s=0.200 "
         f"effort={effort} wall_ms=100.0 effort_per_ms=1.0 found={found}"
     )
     if nnz is not None:
         line += f" nnz={nnz}"
+    if abandoned is not None:
+        line += f" abandoned_setup={abandoned}"
     return line + "\n"
 
 
@@ -423,6 +432,35 @@ def test_heur_line_without_nnz_still_parses():
     (sample,) = parse_log(_heur("fj", 400, nnz=None)).heuristic_samples
     assert sample.effort == 400
     assert sample.nnz is None
+
+
+def test_heur_line_carries_abandoned_setup():
+    """The #119 field, in both of its values.
+
+    The pair is the whole point: same `effort`, same `found`, different
+    field.  Before #119 these two lines were byte-identical, and the #113
+    calibration binned both as barren.
+    """
+    (bailed,) = parse_log(_heur("fpr", 0, found=0, abandoned=1)).heuristic_samples
+    (ran,) = parse_log(_heur("fpr", 0, found=0, abandoned=0)).heuristic_samples
+    assert bailed.abandoned_setup is True
+    assert ran.abandoned_setup is False
+    assert (bailed.effort, bailed.found) == (ran.effort, ran.found)
+
+
+def test_heur_line_without_abandoned_setup_parses_as_unknown():
+    """Logs written before #119 carry no `abandoned_setup=`.
+
+    They must not be dropped, and the missing field must read as `None`
+    rather than `False`: on such a log the distinction is unobservable, not
+    known-absent.  Consumers that only ask "did this dispatch search" get
+    the pre-#119 answer from `None` being falsy, which is what makes an
+    archived tree classify exactly as it did before.
+    """
+    (sample,) = parse_log(_heur("fj", 400)).heuristic_samples
+    assert sample.effort == 400
+    assert sample.abandoned_setup is None
+    assert not sample.abandoned_setup
 
 
 def test_heur_line_missing_a_required_key_is_dropped():

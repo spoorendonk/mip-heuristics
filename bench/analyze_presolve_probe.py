@@ -627,6 +627,23 @@ def _barren_dispatches(
     predating the trace — the dispatch is simply unobservable, and saying so
     is the useful diagnostic.
 
+    **A dispatch that abandoned its setup is not barren** (#119).  #117 made
+    the sequential setup give up when the wall-clock deadline had already
+    passed, and such a dispatch never searched — so it is a cost of setup,
+    not evidence about how long this heuristic goes without improving.  It
+    used to be indistinguishable from a barren one (both `effort=0
+    found=0`) and was silently counted as barren, which biased the barren
+    rate upward on precisely the large, hard instances where a bail can
+    happen.  It is now dropped and reported.
+
+    The check reads the `[Heur]` field rather than inferring the bail from
+    zero effort: a dispatch entered with a millisecond left constructs its
+    workers and returns zero without ever bailing in setup, so the
+    inference would mislabel it.  On a log written before #119 the field is
+    `None`, which is falsy — every such dispatch takes the same path it
+    took before, which is what keeps an existing tree classifying
+    identically.
+
     The returned dispatch id is `-1 - index`: negative, so it cannot collide
     with the process-global counter, and distinct per `[Heur]` line.  It is
     an identity, never an index into anything.
@@ -637,6 +654,12 @@ def _barren_dispatches(
         if index in claimed:
             continue
         if sample.phase != "presolve" or sample.name not in PRESOLVE_HEURISTICS:
+            continue
+        if getattr(sample, "abandoned_setup", None):
+            diagnostics.append(
+                f"{sample.name} abandoned its setup on the deadline and never "
+                "searched ([Heur] abandoned_setup=1); not a barren dispatch"
+            )
             continue
         if sample.found:
             diagnostics.append(

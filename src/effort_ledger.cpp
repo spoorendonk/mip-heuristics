@@ -11,12 +11,12 @@ double EffortLedger::now_s() const {
 }
 
 void EffortLedger::charge_presolve(const char* name, size_t effort, bool found, double t0_s,
-                                   double t1_s) {
-    book(name, "presolve", effort, found, t0_s, t1_s);
+                                   double t1_s, bool abandoned_setup) {
+    book(name, "presolve", effort, found, t0_s, t1_s, abandoned_setup);
 }
 
 void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
-                               size_t nnz, double t0_s, double t1_s) {
+                               size_t nnz, double t0_s, double t1_s, bool abandoned_setup) {
     assert(nnz > 0);
     auto* mipdata = mipsolver_.mipdata_.get();
     // Reference-LP iterations directly, worker effort converted at nnz
@@ -29,12 +29,12 @@ void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int6
     const int64_t charged = setup_lp_iters + static_cast<int64_t>(nnz == 0 ? 0 : effort / nnz);
     mipdata->heuristic_lp_iterations += charged;
     mipdata->total_lp_iterations += charged;
-    book(name, "dive", effort, found, t0_s, t1_s);
+    book(name, "dive", effort, found, t0_s, t1_s, abandoned_setup);
 }
 
 // NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
 void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
-                        double t1_s) {
+                        double t1_s, bool abandoned_setup) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;
 
     // Two lines per observation, deliberately:
@@ -76,11 +76,27 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Sequential] heur=%s effort=%zu wall_ms=%.1f effort_per_ms=%.3f\n", name, effort,
                 wall_ms, effort_per_ms);
-    // `nnz` is appended rather than inserted: `[Heur]` was a positional
-    // pattern for two issues, and anything still matching a prefix of it
-    // keeps working.
+    // `nnz` and `abandoned_setup` are appended rather than inserted:
+    // `[Heur]` was a positional pattern for two issues, and anything still
+    // matching a prefix of it keeps working.
+    //
+    // `abandoned_setup` (issue #119) is the field that separates the two
+    // dispatches this line could not tell apart.  `effort=0 found=0` was
+    // emitted both by a heuristic that searched and produced nothing and
+    // by one that never searched at all, because #117 made its sequential
+    // setup abandon on an already-passed deadline.  The #113 calibration
+    // bins the second as barren, and a setup bail happens precisely on the
+    // large, hard instances whose barren rate that estimate is most
+    // sensitive to.
+    //
+    // Emitted unconditionally, as `0` or `1`, so that an *absent* field
+    // means exactly one thing: a log written before this issue.  Three
+    // shapes therefore stay distinguishable — no `[Heur]` line at all is a
+    // killed run, `abandoned_setup=1` is a bail, and the field absent or
+    // `0` is a dispatch that ran.
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Heur] name=%s phase=%s start_s=%.3f end_s=%.3f effort=%zu wall_ms=%.1f "
-                "effort_per_ms=%.3f found=%d nnz=%zu\n",
-                name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0, nnz);
+                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d\n",
+                name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0, nnz,
+                abandoned_setup ? 1 : 0);
 }

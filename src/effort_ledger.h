@@ -63,7 +63,16 @@ public:
     // The `nnz` reported on the `[Heur]` line is read from the solver
     // rather than passed in, so no call site had to grow an argument for
     // it; see `book`.
-    void charge_presolve(const char* name, size_t effort, bool found, double t0_s, double t1_s);
+    //
+    // `abandoned_setup` is `DispatchOutcome::abandoned_setup`: this
+    // dispatch never searched, because its sequential setup found the
+    // wall-clock deadline already passed (issue #119).  It is a separate
+    // argument rather than something derived from `effort == 0` here
+    // precisely because that inference is the bug — a dispatch entered
+    // with a millisecond left constructs its workers and exits at zero
+    // effort without ever bailing in setup.
+    void charge_presolve(const char* name, size_t effort, bool found, double t0_s, double t1_s,
+                         bool abandoned_setup);
 
     // A B&B-dive heuristic (fpr_lp) did the same, and additionally owes
     // the shared heuristic LP-iteration envelope: its `setup_lp_iters`
@@ -71,15 +80,22 @@ public:
     // per LP iteration are charged to `heuristic_lp_iterations` and
     // `total_lp_iterations`, mirroring how RENS/RINS flush their sub-MIP
     // LP iterations.  `nnz` must be non-zero.
+    //
+    // `abandoned_setup` means the same thing as above and reaches the same
+    // field of the same line — one line format, one parser path, on both
+    // sides of the patch boundary.  It carries a default *only* because
+    // the dive-time setup gate that will pass `true` is landing separately
+    // (issue #118); that is scaffolding for one rebase, not a statement
+    // that the answer is optional.
     void charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
-                     size_t nnz, double t0_s, double t1_s);
+                     size_t nnz, double t0_s, double t1_s, bool abandoned_setup = false);
 
 private:
     // Deliberately not `const`: it holds `HighsMipSolver&`, so it leaves
     // the ledger object untouched while mutating solver state.  The
     // suppression lives at the definition.
     void book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
-              double t1_s);
+              double t1_s, bool abandoned_setup);
 
     HighsMipSolver& mipsolver_;
 };

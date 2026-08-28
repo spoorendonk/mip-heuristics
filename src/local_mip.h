@@ -4,6 +4,7 @@
 #include <cstdint>
 
 class IncumbentSink;
+struct DispatchOutcome;
 struct ExecutionContext;
 struct HeuristicBudget;
 struct ProblemView;
@@ -87,6 +88,6 @@ WarmStartCounters warm_start_counters();
 //
 // The effort returned covers the cold-start construction sweep as well
 // as the search itself.
-size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
-           IncumbentSink& sink);
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, IncumbentSink& sink);
 }  // namespace local_mip

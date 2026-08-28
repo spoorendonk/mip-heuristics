@@ -78,6 +78,16 @@ caveats that travel with them.
 * **`[Heur]` is written when a dispatch *ends*.** A killed run therefore has
   incumbent rows and no ledger, which is why probe membership follows the
   incumbent and never the trace.
+* **Zero effort has two causes, and the line says which.** A dispatch whose
+  sequential setup found the deadline already passed never searched (#117),
+  and used to book an `effort=0 found=0` line indistinguishable from one that
+  searched and produced nothing. `abandoned_setup=<0|1>` (#119) separates
+  them, so the three shapes a consumer must tell apart stay apart: no
+  `[Heur]` line is a killed run, `abandoned_setup=1` is a bail, and the field
+  absent or `0` is a dispatch that ran. Absent means a log written before
+  #119 — `HeuristicSample.abandoned_setup` is `None` there, and
+  `analyze_presolve_probe.py` treats that as "ran", which is what makes an
+  archived tree classify exactly as it did before.
 * **A config name carries no budget.** Every heuristic runs at its shipped
   default; moving one for a run goes through `--extra-options`.
 

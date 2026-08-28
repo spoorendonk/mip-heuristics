@@ -153,12 +153,23 @@ def heur_line(
     found: int = 1,
     phase: str = "presolve",
     wall: float = 100.0,
+    abandoned: int | None = None,
 ) -> str:
+    """One `[Heur]` line.
+
+    `abandoned=None` omits the field, which is the *legacy* form — the shape
+    of every log written before #119, and of the entire #113 probe tree this
+    module was written against.  Defaulting to it keeps every case that is
+    not about setup bails exercising the shape the archived trees have.
+    """
     rate = effort / wall if wall else 0.0
-    return (
+    line = (
         f"[Heur] name={name} phase={phase} start_s=0.100 end_s=0.200 "
         f"effort={effort} wall_ms={wall} effort_per_ms={rate:.1f} found={found}"
     )
+    if abandoned is not None:
+        line += f" abandoned_setup={abandoned}"
+    return line
 
 
 def heursol_line(
@@ -614,6 +625,57 @@ def test_a_barren_dispatch_beside_a_productive_one_is_not_double_counted():
     assert notes == []
     assert {v.name: v.accepts for v in views} == {"fpr": 1, "scylla": 0}
     assert {v.name: v.stale for v in views} == {"fpr": 900, "scylla": 500}
+
+
+def test_an_abandoned_setup_is_not_a_barren_dispatch():
+    """#119: the dispatch never searched, so it is not evidence of patience.
+
+    Same `effort=0 found=0` as a barren dispatch, and before the field
+    existed it *was* a barren dispatch as far as this module could tell.  It
+    is now dropped from the views and reported, so its spend never enters
+    the censored quantile as a right-censored interval — a heuristic that
+    was denied the chance to improve has not demonstrated that it stopped
+    improving.
+    """
+    text = probe_log(
+        heur=(heur_line("fpr", 0, found=0, abandoned=1),),
+    )
+    views, notes = dispatch_views("i", "all", 0, *_run_parts(text))
+    assert views == []
+    assert any("abandoned its setup" in n for n in notes)
+
+
+def test_a_barren_dispatch_beside_an_abandoned_one_is_kept():
+    """The discrimination, not just the exclusion.
+
+    Both lines carry `effort=0 found=0`; only the field separates them.  The
+    barren one must still be recovered as a censored interval, which is what
+    keeps this a narrowing of the barren set rather than a removal of it.
+    """
+    text = probe_log(
+        heur=(
+            heur_line("fpr", 700, found=0, abandoned=0),
+            heur_line("scylla", 0, found=0, abandoned=1),
+        ),
+    )
+    views, notes = dispatch_views("i", "all", 0, *_run_parts(text))
+    assert [v.name for v in views] == ["fpr"]
+    assert views[0].stale == 700
+    assert len(notes) == 1
+    assert "scylla abandoned its setup" in notes[0]
+
+
+def test_a_legacy_barren_dispatch_is_unchanged_without_the_field():
+    """The compatibility half, and the reason the #113 tree still classifies
+    the same: a pre-#119 line carries no `abandoned_setup=`, the parser reads
+    `None`, and `None` is falsy — so the dispatch takes exactly the path it
+    took before.
+    """
+    text = probe_log(heur=(heur_line("fpr", 500, found=0),))
+    views, notes = dispatch_views("i", "all", 0, *_run_parts(text))
+    assert notes == []
+    assert [v.name for v in views] == ["fpr"]
+    assert views[0].stale == 500
 
 
 def test_a_truncated_chain_keeps_its_gaps_without_a_total():

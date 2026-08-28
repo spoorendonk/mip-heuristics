@@ -92,7 +92,8 @@ struct HeuristicConfig {
     // each other.
     // **0 means no gate at all** — see `patience_threshold`.
     double HighsOptionsStruct::* patience;
-    size_t (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&, IncumbentSink&);
+    DispatchOutcome (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
+                           IncumbentSink&);
 };
 
 constexpr auto kChain = std::to_array<HeuristicConfig>({
@@ -178,9 +179,16 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         // thread, with the parallel region joined at both points.
         const size_t accepted_before = sink.accepted();
         const double t0_s = ledger.now_s();
-        const size_t effort = call();
-        ledger.charge_presolve(name, effort, sink.accepted() > accepted_before, t0_s,
-                               ledger.now_s());
+        // `abandoned_setup` comes back from the heuristic rather than
+        // being inferred here (issue #119).  Inferring it from
+        // `outcome.effort == 0 && exec.past_deadline()` would be the same
+        // mistake the log made, moved in-process: a dispatch entered with
+        // a millisecond left constructs its workers, searches nothing and
+        // returns zero without ever bailing in setup, and would be
+        // mislabelled.  Only the bail site knows.
+        const DispatchOutcome outcome = call();
+        ledger.charge_presolve(name, outcome.effort, sink.accepted() > accepted_before, t0_s,
+                               ledger.now_s(), outcome.abandoned_setup);
     };
 
     // Each heuristic's inner loops also poll the deadline, but their own
@@ -224,7 +232,8 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
         const HeuristicBudget slice = make_budget(
             total, exec.num_workers, patience_threshold(problem.nnz, patience_per_base, total));
         sink.set_source(h.source_tag);
-        run_and_charge(h.name, [&]() -> size_t { return h.run(problem, slice, exec, sink); });
+        run_and_charge(h.name,
+                       [&]() -> DispatchOutcome { return h.run(problem, slice, exec, sink); });
     }
 
     return false;

@@ -93,17 +93,21 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
 
 }  // namespace
 
-size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionContext& exec,
-           IncumbentSink& sink) {
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, IncumbentSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
-        return 0;
+        return {};
     }
 
     HighsMipSolver& mipsolver = exec.mipsolver;
     const HighsInt pdlp_iter_cap = compute_pdlp_iter_cap(budget.total, problem.nnz);
     ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
+    // A plain zero, not an abandoned setup: the shared LP copy failed to
+    // build, which is a Scylla-specific declination and not the clock
+    // cutting a dispatch short.  Only the deadline bail below reports one
+    // (issue #119).
     if (!pdlp.initialized()) {
-        return 0;
+        return {};
     }
 
     std::atomic<uint64_t> improvement_gen{0};
@@ -117,9 +121,14 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     // during which nothing in the dispatch was watching the clock.  The
     // pump loop below is where the deadline was already polled, and it
     // never got to run.
+    //
+    // Reported as an abandoned setup rather than a plain zero (issue
+    // #119), for the reason `fpr::run`'s is: nothing downstream can
+    // otherwise distinguish this from a dispatch that pumped and found
+    // nothing.
     std::vector<std::vector<HighsInt>> var_orders;
     if (!precompute_config_var_orders(mipsolver, exec.deadline(), var_orders)) {
-        return 0;
+        return DispatchOutcome::abandoned();
     }
 
     // Pre-construct workers outside the parallel region so MakeState
@@ -192,7 +201,7 @@ size_t run(const ProblemView& problem, const HeuristicBudget& budget, ExecutionC
     log_overlap_ratio(mipsolver.options_mip_->log_options, workers,
                       retired_fresh.load(std::memory_order_relaxed),
                       retired_stale.load(std::memory_order_relaxed));
-    return total_effort;
+    return {.effort = total_effort};
 }
 
 }  // namespace scylla

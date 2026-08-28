@@ -42,12 +42,12 @@
 
 // The uniform runner contract every presolve heuristic implements:
 //
-//     size_t <ns>::run(const ProblemView &problem, const HeuristicBudget &budget,
-//                      ExecutionContext &exec, IncumbentSink &sink);
+//     DispatchOutcome <ns>::run(const ProblemView &problem, const HeuristicBudget &budget,
+//                               ExecutionContext &exec, IncumbentSink &sink);
 //
 // `mode_dispatch::run_sequential` owns all four arguments — including the
 // source tag the sink attributes this heuristic's solutions with — and books
-// the returned effort through `EffortLedger`, the single point of effort
+// the returned outcome through `EffortLedger`, the single point of effort
 // accounting.  No heuristic self-books.  The per-heuristic headers describe
 // only what their own runner does differently.
 //
@@ -56,6 +56,57 @@
 // shared by every worker of every heuristic in the chain, so caching
 // mutable per-dispatch state on it would be an unsynchronised shared
 // write.  Both of its methods are `const`.
+
+// What one dispatch of a heuristic did, as its runner reports it (issue
+// #119).  Used to be a bare `size_t` effort count.
+//
+// The second field exists because zero effort has two causes that a log
+// cannot tell apart.  A heuristic that searched and produced nothing and
+// one that never searched at all — because #117 made the *sequential*
+// setup abandon its work on an already-passed deadline — both booked
+// `effort=0 found=0`, and the #113 calibration bins the second as
+// "barren", which is the population its patience estimate rests on.  A
+// setup bail is not a barren dispatch: it is a cost of setup, and it
+// happens precisely on the large, hard instances the calibration is most
+// sensitive to.
+//
+// Why the *return type* rather than a narrower channel.  The flag has to
+// travel from a bail site deep inside one heuristic to `run_sequential`,
+// which is the only caller and the only booker.  The two alternatives were
+// a mutable field on `ExecutionContext` — narrower in signatures, but that
+// object is shared by every worker of every heuristic in the chain and is
+// documented immutable for exactly that reason, and it would need a reset
+// per heuristic that nothing forces anyone to write — and a flag on
+// `IncumbentSink`, which is the per-heuristic mutable channel
+// `run_and_charge` already reads across the call but has nothing to do
+// with solution submission.  Both smuggle per-dispatch state into an
+// object that outlives the dispatch; a return value cannot leak into the
+// next heuristic because there is no state to forget to clear.
+//
+// Deliberately not `[[nodiscard]]`: a caller that wants only the effort is
+// legitimate (the tests do this), and `run_sequential` is the one caller
+// the flag is for.
+struct DispatchOutcome {
+    // Effort charged, in this heuristic's own unit.  `run_sequential`
+    // books exactly this into `heuristic_effort_used`.
+    size_t effort = 0;
+
+    // This dispatch abandoned its sequential setup on the wall-clock
+    // deadline and never searched (issue #117's bail, made visible).  It
+    // implies `effort == 0`, but the converse is what this field exists to
+    // deny.
+    //
+    // Scope: *only* the deadline bails in `fpr::precompute_var_orders` and
+    // `scylla::precompute_config_var_orders` set it, plus the dive-time
+    // equivalent.  A heuristic declining for another reason — a degenerate
+    // model, a zero budget, a `ContestedPdlp` that failed to initialise —
+    // reports a plain zero, because none of those is a dispatch the clock
+    // cut short.
+    bool abandoned_setup = false;
+
+    // The bail, spelled once so the two sites cannot disagree.
+    static DispatchOutcome abandoned() { return {.effort = 0, .abandoned_setup = true}; }
+};
 
 // Read-only view of the model a heuristic searches.  Every member but the
 // incumbent snapshot is a non-owning pointer or a derived size; the pointees
