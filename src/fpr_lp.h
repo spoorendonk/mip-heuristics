@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 class HighsMipSolver;
 namespace fpr_lp {
 // Run LP-dependent FPR configs (paper Classes 2-3) using the root LP solution.
@@ -36,4 +37,30 @@ struct DispatchCounts {
 };
 DispatchCounts dispatch_counts();
 void reset_dispatch_counts();
+
+// Test hook: the outcome of one dispatch *setup* — the sequential work
+// `run` does before any worker exists — without running the dispatch
+// (issue #118).
+//
+// The setup is where a dive-time overrun comes from: ten
+// `compute_var_order` calls and two reference LP solves, none of which any
+// budget option touches, and until #118 none of which looked at the clock.
+// It polls the solve's wall-clock deadline now, and this reports what the
+// poll decided.  The three fields are the whole observable contract; the
+// setup itself stays private to `fpr_lp.cpp`.
+struct SetupProbe {
+    // A complete setup came back and the dispatch would have run.
+    bool built = false;
+    // The wall-clock deadline stopped the setup.  False for the
+    // model-shape / LP-status skips, which consume nothing — telling the
+    // two apart is the point of this hook.
+    bool deadline_bail = false;
+    // Reference-LP iterations consumed before returning, which `run`
+    // charges to the shared RENS/RINS envelope on either path.
+    int64_t lp_iterations = 0;
+};
+
+// `max_effort` is the per-call effort budget `run` would have derived; it
+// is recorded in the setup and does not steer any of the decisions above.
+SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort);
 }  // namespace fpr_lp

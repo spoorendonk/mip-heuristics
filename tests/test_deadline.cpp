@@ -1,4 +1,5 @@
 #include "fpr_core.h"
+#include "fpr_lp.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
@@ -435,4 +436,102 @@ TEST_CASE("deadline: an unbindable budget does not loosen the deadline", "[deadl
     INFO(scylla_line);
     require_expected_nnz(scylla_line);
     CHECK(effort_of(scylla_line) < kBudgetUnits / 4);
+}
+
+// ===================================================================
+// ...and it binds the *dive-time* setup too (#118)
+//
+// `fpr_lp`'s dispatch setup has the shape #117 fixed in the two presolve
+// heuristics — ten `compute_var_order` calls plus two reference LP solves,
+// all sequential on the dispatching thread before a worker exists, none of
+// it sized by any option — and #117 left it ungated, its whole evidence
+// base being presolve-only runs.
+//
+// It also had a way of hiding the problem that the presolve path does not:
+// the reference solves return an empty vector once the clock has passed,
+// which the `ac_ptr`/`zv_ptr` fallbacks read as "LP failed, use the
+// full-obj solution", and the setup went on to build all ten orders.  So
+// the bounded half of the setup masked the unbounded half.
+//
+// And it differs in the half that is not a copy of #117 at all: `fpr_lp`
+// draws from upstream's dive-time LP-iteration envelope and charges its
+// work back, so a setup abandoned *after* a reference solve still owes
+// that envelope.  `SetupResult` carries the count out of the bail for
+// `run` to charge; the presolve fix could report zero and be done.
+//
+// **What is decidable here is the entry gate**, for the reason the #117
+// note above gives: on the bundled instances the whole setup is
+// microseconds, so a wall-clock assertion around it would pass on the
+// unfixed build too.  A deadline that has *already* passed is not a timing
+// fact, though — the limit is applied after the model is read, so it is
+// expired by construction — and the two cases below separate "declined the
+// clock" from "skipped for want of an optimal LP", which is the
+// distinction the bail exists to make and the one `run` books on.
+//
+// Not covered, and deliberately: the per-arm poll and the polls around the
+// reference solves. Reaching those needs a setup that gets past the
+// LP-status check, i.e. a scaled-optimal LP relaxation, which a bare
+// `HighsMipSolver` does not have — `HighsLpRelaxation::resolveLp` on one
+// segfaults inside the simplex on solver state that only
+// `HighsMipSolver::run` installs. Their coverage is the same gap #117
+// documents for its own setup bail-outs, on the same instances, for the
+// same reason.
+
+namespace {
+
+// The dive-time setup's verdict on `instance` under a solve carrying
+// `time_limit`, without running the dispatch it would have set up.
+fpr_lp::SetupProbe dive_setup_at(const char* instance, double time_limit) {
+    // `HighsMipSolverData::init` reads `parallel::num_threads()`; see the
+    // note at the other `build_bare_mipsolver` call site.
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, instance, time_limit);
+    // The per-call budget `run` would have derived from the LP-iteration
+    // envelope.  It is recorded in the setup and steers none of what is
+    // asserted below — any in-range value does; this is the shape of the
+    // real one.
+    const size_t max_effort = mipsolver->mipdata_->ARindex_.size() << 12;
+    return fpr_lp::probe_setup(*mipsolver, max_effort);
+}
+
+// The instance the attempt-level case above uses, for the same reason: a
+// bundled MIP with enough structure that the setup would do real work.
+constexpr const char* kDiveInstance = "p0548.mps";
+
+}  // namespace
+
+TEST_CASE("deadline: the fpr_lp dive setup declines an expired clock", "[deadline]") {
+    // The limit is applied after the model is read and `HighsMipSolver`'s
+    // own clock starts at zero from there, so a microsecond limit has
+    // passed before the setup is entered — by construction, not by a race.
+    const auto expired = dive_setup_at(kDiveInstance, 1e-6);
+    INFO("expired limit: built=" << expired.built << " bail=" << expired.deadline_bail
+                                 << " lp_iterations=" << expired.lp_iterations);
+    CHECK(expired.deadline_bail);
+    CHECK(!expired.built);
+    // The accounting half of the fix. This bail is ahead of both reference
+    // LP solves — that ordering is what the entry check buys — so there is
+    // nothing for `run` to charge the shared RENS/RINS envelope. A bail
+    // after one carries its iterations out in `SetupResult` instead, and
+    // `run` charges them on a path disjoint from the normal one, so
+    // neither path can charge the other's work.
+    CHECK(expired.lp_iterations == 0);
+}
+
+// A deadline bail is not a skip. An empty model or an unsolved LP
+// relaxation consumes nothing and is not a clock event, so `run` books it
+// differently — silently, where a bail leaves a `[Heur]` line. This case
+// is also what keeps the one above honest: a `deadline_bail` hard-wired to
+// `true` would pass it and fail this.
+TEST_CASE("deadline: an fpr_lp setup skipped for want of an LP is not a deadline bail",
+          "[deadline]") {
+    const auto skipped = dive_setup_at(kDiveInstance, kHighsInf);
+    INFO("no limit, no root LP: built=" << skipped.built << " bail=" << skipped.deadline_bail
+                                        << " lp_iterations=" << skipped.lp_iterations);
+    CHECK(!skipped.built);
+    CHECK(!skipped.deadline_bail);
+    CHECK(skipped.lp_iterations == 0);
 }

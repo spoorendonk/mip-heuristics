@@ -1080,7 +1080,7 @@ read the reported effort rather than assuming the option was spent. They are reg
 
 - **File**: `src/deadline.h` (`Deadline`), `src/heuristic_context.h`
   (`ExecutionContext::past_deadline`, `deadline_of`), `src/fpr_core.cpp`
-  (`kDeadlinePollNodes`)
+  (`kDeadlinePollNodes`), `src/fpr_lp.cpp` (`build_setup`)
 
 The deadline is polled, never interrupted, so **it is only as tight as the
 coarsest indivisible unit of work between two polls** — and until #117
@@ -1089,7 +1089,7 @@ which is a bound only if one iteration of that loop is short; at the top
 of the effort range it is not, because every per-attempt cap is derived
 from the effort option (`HeuristicBudget::attempt_cap = total / (10N)`).
 
-What each heuristic's coarsest unit is, after #117:
+What each heuristic's coarsest unit is, after #117 and #118:
 
 | heuristic | unit the deadline is polled between | bounded by |
 |---|---|---|
@@ -1098,6 +1098,27 @@ What each heuristic's coarsest unit is, after #117:
 | FPR | 16 DFS nodes (`kDeadlinePollNodes`), or one RepairSearch node | one propagation fixpoint |
 | Scylla | one pump round: one PDLP solve, then one FPR rounding (which polls as above) | one PDLP solve |
 | FPR, Scylla | one dispatch *setup* — see below | one `compute_var_order`, one shared-LP build |
+| fpr_lp | one dispatch *setup*: one of ten arms' `compute_var_order`, or one reference LP solve | one `compute_var_order`, one reference LP solve |
+
+The dive-time row is #118's, and it is the same defect as the presolve
+setup with one thing on top: `fpr_lp` charges its work back to the shared
+RENS/RINS LP-iteration envelope, so an abandoned setup that already paid
+for a reference LP solve still owes that envelope. `build_setup` returns
+what it spent (`SetupResult::lp_iterations`) alongside whether the clock
+is what stopped it, and `fpr_lp::run` charges it through `charge_dive` on
+a path disjoint from the normal one — a bail books once, a completed
+setup books once, and nothing is cached across dives, so the next dive
+re-pays only for what it redoes. The bail is visible in the trace as an
+`effort=0` `[Heur] name=fpr_lp phase=dive` line; the model-shape and
+LP-status skips consume nothing and stay silent.
+
+There is **no dive-time measurement** behind that row. Every number in
+this section comes from presolve-only runs, which never reach `fpr_lp`;
+the row is the same structure gated the same way, not an observed
+overrun. The bundled test instances cannot supply one either — their
+whole setup is microseconds — so what `tests/test_deadline.cpp` pins is
+the entry gate and the bail-versus-skip distinction, and the per-arm poll
+carries the same coverage gap #117's setup bail-outs do.
 
 **The residual floors, none of which a constant can cross:**
 
@@ -1105,9 +1126,10 @@ What each heuristic's coarsest unit is, after #117:
   fixpoint over the whole model; `PropEngine::propagate` has no abort
   channel (its `bool` return means *infeasible*), so a poll inside it
   would be a different change.
-- **One `compute_var_order`.** Both FPR and Scylla precompute variable
-  orders on the dispatching thread before any worker exists — eight
-  orders for FPR, five for Scylla, several of them a
+- **One `compute_var_order`.** All three of FPR, Scylla and `fpr_lp`
+  precompute variable orders on the dispatching thread before any worker
+  exists — eight orders for FPR, five for Scylla and ten for `fpr_lp`
+  (one per LP arm), several of them a
   `HighsCliqueTable::cliquePartition` over the whole model. This is
   checked *between* orders, so one order is the floor. It is also the
   largest floor in practice: on `rail02` (542k nonzeros, 16 workers,
@@ -1128,6 +1150,17 @@ What each heuristic's coarsest unit is, after #117:
   cuPDLP-C checks its own clock every iteration. What the limit does not
   cover is the wrapped `Highs::run`'s own per-call LP setup, and the
   granularity is one PDLP iteration.
+- **One reference LP solve**, `fpr_lp` only (#118). Its setup solves an
+  analytic-center LP and a zero-objective vertex LP before the arms, and
+  each is handed `min(30 s, Deadline::remaining())` — so unlike the
+  variable orders beside them these were *already* bounded by the
+  deadline, and remain the floor only at their own granularity, which is
+  HiGHS's own clock check inside simplex/IPM. What was missing is that an
+  expiry there was invisible: both return an empty vector, the setup read
+  that as "LP failed, fall back to the full-obj solution" and built all
+  ten orders anyway. The polls around the solves are what separate an
+  expiry from a failure, and they are why the bounded half of that setup
+  no longer hides the unbounded half.
 - **FJ's per-worker solver construction**, unchanged from #114: the
   `createRowwise` / `addVar` / `addConstraint` / `init` sequence runs
   before the first callback can fire.

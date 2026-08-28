@@ -123,31 +123,88 @@ struct LpFprSetup {
     // an accepted solution may be propagating the live root domain.
     std::vector<uint8_t> binary;
 
-    // LP iterations spent solving the reference LPs (analytic center +
-    // zero-obj vertex).  Charged against the shared B&B heuristic budget
-    // by run() whether or not the workers subsequently run.
-    int64_t setup_lp_iterations = 0;
-
     size_t budget = 0;
 };
 
-// Build the shared LP-FPR setup.  Returns nullopt when the model is
-// empty or the LP relaxation is not at an optimal scaled state (the
-// caller should skip LP-FPR entirely in that case).  All nullopt exits
-// happen before the reference-LP solves, so a nullopt return never
-// leaves unaccounted LP work behind.
-std::optional<LpFprSetup> build_setup(HighsMipSolver& mipsolver, size_t max_effort) {
+// What `build_setup` produced, and what it spent getting there (issue
+// #118).
+//
+// The setup used to be a bare `std::optional<LpFprSetup>` carrying its own
+// `setup_lp_iterations`, and the invariant that made that safe was written
+// above it: *every* nullopt exit happened before the reference-LP solves,
+// so a nullopt could never leave unaccounted LP work behind.  A wall-clock
+// bail breaks that invariant deliberately — it can happen after a
+// reference solve — and an empty optional cannot carry a counter out.  So
+// the counter lives here, outside the optional, where the caller reads it
+// on every path.
+struct SetupResult {
+    // Engaged only for a complete setup.  Empty means the dispatch does
+    // not run, for one of the three reasons below.
+    std::optional<LpFprSetup> setup;
+
+    // LP iterations the reference solves (analytic center + zero-obj
+    // vertex) consumed, complete setup or not.  `run()` charges these to
+    // the shared RENS/RINS envelope exactly once, on whichever of its two
+    // mutually exclusive booking paths it takes.  Nothing is cached across
+    // dives, so a bail costs the envelope exactly what it spent and the
+    // next dive re-pays only for the work it redoes.
+    int64_t lp_iterations = 0;
+
+    // True when the solve's wall-clock deadline is what stopped the setup,
+    // as opposed to the model-shape and LP-status skips, which are not a
+    // deadline event and consume nothing.  The caller books the two
+    // differently, and keeping them apart is also what makes the bail
+    // observable — through `probe_setup` in a test, and through the
+    // `[Heur]` line for a benchmark run.
+    bool deadline_bail = false;
+};
+
+// Build the shared LP-FPR setup.
+//
+// Three ways to come back without one, and the caller must tell them
+// apart: the model is empty, the LP relaxation is not at an optimal scaled
+// state (skip LP-FPR entirely, nothing consumed), or `deadline` passed
+// part-way through (`deadline_bail`, with whatever the reference solves
+// had already spent in `lp_iterations`).
+//
+// The deadline is polled between this setup's indivisible units — around
+// each reference LP solve and before each arm's `compute_var_order` — for
+// the reason `fpr::precompute_var_orders` is (issue #117): this whole
+// function runs sequentially on the dispatching thread before a worker
+// exists, so no gate the dispatch derives from its budget has any bearing
+// on it, and one `compute_var_order` is a `cliquePartition` over the whole
+// model.  Ten of them here, against eight for presolve FPR.
+//
+// It was not merely unpolled before: an expiry was actively *masked*.  The
+// reference solves return an empty vector when the clock has passed, the
+// `ac_ptr`/`zv_ptr` fallbacks read that as "LP failed, use the full-obj
+// solution", and the setup went on to build all ten orders — so the one
+// bounded part of this function hid the unbounded part.  Polling the clock
+// rather than testing the vector is what separates the two cases.
+SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Deadline& deadline) {
+    SetupResult out;
+
+    // Deliberately the first thing, ahead of the model-shape and LP-status
+    // skips: a clock that has already passed is the answer whatever those
+    // would say, and this ordering is the only seam at which a bail is
+    // distinguishable from a skip on a model small enough to test
+    // (`probe_setup`).  Do not sink it below them.
+    if (deadline.expired()) {
+        out.deadline_bail = true;
+        return out;
+    }
+
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
     const HighsInt nrow = model->num_row_;
     if (ncol == 0 || nrow == 0) {
-        return std::nullopt;
+        return out;
     }
 
     auto lp_status = mipdata->getLp().getStatus();
     if (!HighsLpRelaxation::scaledOptimal(lp_status)) {
-        return std::nullopt;
+        return out;
     }
 
     LpFprSetup s;
@@ -164,13 +221,22 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver& mipsolver, size_t max_effo
     const auto& lp_sol = mipdata->getLp().getLpSolver().getSolution().col_value;
     const double* lp_ptr = lp_sol.data();
 
-    // Zero-obj analytic center (for Class 2 zerocore strategies).
+    // Zero-obj analytic center (for Class 2 zerocore strategies).  Each
+    // solve is itself bounded — it gets what is left of the deadline,
+    // capped at 30 s — so the poll after it is not what stops the solve;
+    // it is what stops the *setup* from carrying on with a reference the
+    // clock denied it.
     s.analytic_center =
-        compute_analytic_center(mipsolver, /*use_objective=*/false, s.setup_lp_iterations);
+        compute_analytic_center(mipsolver, /*use_objective=*/false, deadline, out.lp_iterations);
     const double* ac_ptr = s.analytic_center.empty() ? lp_ptr : s.analytic_center.data();
 
+    if (deadline.expired()) {
+        out.deadline_bail = true;
+        return out;
+    }
+
     // Zero-obj LP vertex (for Class 3a zerolp strategies).
-    s.zero_vertex = compute_zero_obj_vertex(mipsolver, s.setup_lp_iterations);
+    s.zero_vertex = compute_zero_obj_vertex(mipsolver, deadline, out.lp_iterations);
     const double* zv_ptr = s.zero_vertex.empty() ? lp_ptr : s.zero_vertex.data();
 
     s.arms.reserve(kNumLpArms);
@@ -190,6 +256,15 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver& mipsolver, size_t max_effo
     s.var_orders.resize(kNumLpArms);
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumLpArms; ++i) {
+        // Checked *between* orders, not inside one: `compute_var_order` is
+        // indivisible from here and is this path's residual floor, exactly
+        // as it is for the two presolve heuristics (#117).  A partial table
+        // is of no use to anyone — the workers index it by arm — so the
+        // whole dispatch is declined.
+        if (deadline.expired()) {
+            out.deadline_bail = true;
+            return out;
+        }
         // +200 offset spaces these seeds away from the presolve-FPR
         // var-order seeds (also derived from the same base) so the two
         // heuristics' RNG streams don't collide on small seed values.
@@ -198,7 +273,8 @@ std::optional<LpFprSetup> build_setup(HighsMipSolver& mipsolver, size_t max_effo
                                             s.arms[i].lp_ref);
     }
 
-    return s;
+    out.setup = std::move(s);
+    return out;
 }
 
 }  // namespace
@@ -473,17 +549,33 @@ void run(HighsMipSolver& mipsolver) {
     EffortLedger ledger(mipsolver);
     const double t0_s = ledger.now_s();
 
-    auto setup_opt = build_setup(mipsolver, max_effort);
-    if (!setup_opt) {
+    auto built = build_setup(mipsolver, max_effort, deadline_of(mipsolver));
+    if (!built.setup) {
+        // A deadline bail is a dispatch that happened and stopped: it may
+        // have paid for a reference LP solve before the clock passed, and
+        // that work owes the shared envelope whether or not a worker ever
+        // ran — the whole reason this path is not #117's, which could
+        // report zero and be done.  It books through the same
+        // `charge_dive` the normal path uses, so the two are one
+        // accounting rule, and it books even at zero iterations so the
+        // declined dispatch leaves a `[Heur]` line rather than no trace at
+        // all.
+        //
+        // The model-shape and LP-status skips book nothing, exactly as
+        // before: no work was consumed and no dispatch was declined for a
+        // reason a reader of the trace would want to see.
+        if (built.deadline_bail) {
+            ledger.charge_dive("fpr_lp", 0, false, built.lp_iterations, nnz, t0_s, ledger.now_s());
+        }
         return;
     }
-    auto& setup = *setup_opt;
+    auto& setup = *built.setup;
 
     // The reference-LP solves are part of fpr_lp's spend: subtract them
     // from the worker budget so setup + workers together stay within
     // max_effort.  If setup ate (nearly) everything, skip the workers but
     // still charge the setup below.
-    const auto setup_units = static_cast<size_t>(setup.setup_lp_iterations) * nnz;
+    const auto setup_units = static_cast<size_t>(built.lp_iterations) * nnz;
     const size_t worker_budget = setup_units < setup.budget ? setup.budget - setup_units : 0;
 
     size_t worker_effort = 0;
@@ -522,8 +614,13 @@ void run(HighsMipSolver& mipsolver) {
     // envelope.  fpr_lp is the only caller of `charge_dive`; that envelope
     // depletion is what makes it compete for the vanilla heuristic budget
     // rather than draw unaccounted work.
-    ledger.charge_dive("fpr_lp", worker_effort, found, setup.setup_lp_iterations, nnz, t0_s,
+    ledger.charge_dive("fpr_lp", worker_effort, found, built.lp_iterations, nnz, t0_s,
                        ledger.now_s());
+}
+
+SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort) {
+    const SetupResult result = build_setup(mipsolver, max_effort, deadline_of(mipsolver));
+    return {result.setup.has_value(), result.deadline_bail, result.lp_iterations};
 }
 
 DispatchCounts dispatch_counts() {
