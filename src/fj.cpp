@@ -30,9 +30,17 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         WorkerTrace trace;
     };
 
-    // No setup to abandon: FJ builds its workers inside the runner's
-    // MakeState, under the same deadline poll the search itself runs
-    // against, so this dispatch can only ever report a plain effort count.
+    // No setup to abandon, so this dispatch can only ever report a plain
+    // effort count.  MakeState below builds no worker at all — it returns
+    // a null slot plus three scalars — and the `FjWorker` is constructed
+    // lazily in the RunAttempt callback, which `run_opportunistic_loop`
+    // reaches only *after* `should_stop`, whose first act is the deadline
+    // poll.  So an already-expired dispatch never constructs one: FJ has
+    // nothing ahead of that gate to give up on, where FPR and Scylla
+    // precompute variable orders ahead of it and therefore can (#117).
+    // This does not touch the narrower standing caveat that once
+    // construction has begun nothing bounds it — the deadline is polled
+    // between attempts, not inside `FjWorker`'s constructor.
     return {.effort = run_opportunistic_loop(
                 exec, budget,
                 [random_seed_opp](int worker_idx, Rng& /*rng*/) -> FjState {
