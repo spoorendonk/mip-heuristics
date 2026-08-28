@@ -277,8 +277,6 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
     return out;
 }
 
-}  // namespace
-
 // ---------------------------------------------------------------------------
 // LpFprWorker: runs one LP-dependent FPR arm at a time
 // ---------------------------------------------------------------------------
@@ -421,8 +419,6 @@ private:
     // Number of stale attempts before a worker randomizes its arm.
     static constexpr int kStaleAttemptThreshold = 3;
 };
-
-namespace {
 
 // ---------------------------------------------------------------------------
 // Worker dispatch

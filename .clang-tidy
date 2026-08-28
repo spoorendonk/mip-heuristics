@@ -5,12 +5,14 @@
 # header).  It began as a shared house check set carried in a tooling
 # submodule.
 #
-# Every deviation from that shared set is marked NARROWED and carries the
-# measurement that justifies it.  Counts are unique first-party findings
-# (deduplicated by file/line/column/check across translation units) from
-# the full sweep in the commit that introduced the gate.  Nothing here is
+# Every deviation from that shared set is marked NARROWED or WIDENED and
+# carries the measurement that justifies it.  Counts are unique first-party
+# findings (deduplicated by file/line/column/check across translation units)
+# from the full sweep in the commit that made the change.  Nothing here is
 # turned off to avoid work: each is a check whose premise does not hold
-# for a solver built against a fetched upstream tree.
+# for a solver built against a fetched upstream tree.  Nothing is turned on
+# speculatively either — a family added at zero findings says so, and says
+# what it is armed against.
 #
 # `tests/.clang-tidy` narrows two further checks for the test tree only;
 # both stay enabled here so `src/` keeps their coverage.
@@ -18,6 +20,9 @@
 Checks: >
   -*,
   bugprone-*,
+  clang-analyzer-*,
+  concurrency-*,
+  misc-use-internal-linkage,
   modernize-*,
   performance-*,
   readability-*,
@@ -29,6 +34,37 @@ Checks: >
   -modernize-use-std-print,
   -performance-enum-size
 
+# WIDENED, in the order they appear in `Checks:` above.  Counts are unique
+# first-party findings over `src/` at the commit that added them, measured the
+# same way as the NARROWED counts below.  All three came in at a cost worth
+# recording: the gate went 13.04 s -> 13.22 s over `src/` for the two families
+# together, because wall time here is dominated by parsing the fetched HiGHS
+# headers, not by analysis.
+#
+# clang-analyzer-* (0 findings)
+#   Not a decision that was ever taken — the leading `-*` disables the
+#   analyzer, which clang-tidy otherwise runs by default, so it was switched
+#   off as a side effect of pinning the check list.  Zero findings today.
+#
+# concurrency-* (0 findings)
+#   The family worth having armed here even at zero findings: this codebase's
+#   central hazard is worker threads reading solver state (#98, #99), and
+#   `concurrency-mt-unsafe` is what catches a non-reentrant call reaching a
+#   worker later.  Verified non-inert against a file calling `std::system`
+#   rather than trusting the empty result.
+#
+# misc-use-internal-linkage (2 findings, both fixed rather than excluded)
+#   `FprWorker` and `LpFprWorker` were the only file-local classes outside an
+#   anonymous namespace.  The rest of `misc-*` stays off: 507
+#   non-private-member-variables-in-classes (the aggregates are deliberate),
+#   357 const-correctness and 144 include-cleaner.
+#
+# NOT widened, deliberately: portability-*.  `portability-avoid-pragma-once`
+#   fires 190 times against the `#pragma once` this project's standards
+#   mandate, so the family can never go on as a whole.  cppcoreguidelines-* is
+#   2244 findings, 1594 of them pro-bounds-avoid-unchecked-container-access,
+#   which is hostile to a solver's hot loops.
+#
 # NARROWED, in the order they appear in `Checks:` above.
 #
 # -readability-identifier-length (411 findings)

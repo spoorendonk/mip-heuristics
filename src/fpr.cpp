@@ -47,6 +47,8 @@ void reset_test_counters() {
 // HighsCliqueTable::cliquePartition which is not thread-safe).
 using VarOrderTable = std::vector<std::vector<HighsInt>>;
 
+namespace {
+
 // Worker driving the lifecycle introduced in issue #77: an attempt
 // is the unit of work, and an attempt's DFS may pause at the per-run
 // budget gate and resume next call with state intact.  When an attempt
@@ -155,8 +157,6 @@ private:
     // iteration on instances large enough to matter (review R2 CF-1).
     std::vector<double> initial_solution_buf_;
 };
-
-namespace {
 
 // Master strategy pool for all FPR parallel paths.  var_orders are
 // precomputed for each entry (see precompute_var_orders) so any strategy
