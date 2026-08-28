@@ -267,3 +267,49 @@ TEST_CASE("SolutionPool: single-entry restart is always copy", "[pool][edge]") {
         REQUIRE(out[2] == Catch::Approx(3.0));
     }
 }
+
+TEST_CASE("SolutionPool: the diversity path never evicts the best entry", "[pool]") {
+    // The diversity path only runs on an offer that does not beat the worst
+    // entry.  Letting such an offer replace the *best* entry — which the
+    // "most similar" rule did whenever the best was also the offer's nearest
+    // neighbour — spends the pool's most valuable solution on a dominated
+    // one.  HiGHS keeps its own incumbent, so nothing leaves the solve, but
+    // `copy_best` and the crossover's better parent degrade until the pool
+    // refills.
+    //
+    // The offer below is built to be maximally tempting to the old rule: it
+    // is nearest to the best entry and far from everything else.
+    constexpr int kNumIntVars = 20;
+    SolutionPool pool(/*capacity=*/3, /*minimize=*/true);
+    pool.set_integer_mask(std::vector<bool>(kNumIntVars, true));
+
+    std::vector<double> best(kNumIntVars, 0.0);
+    std::vector<double> mid(kNumIntVars, 1.0);
+    std::vector<double> worst(kNumIntVars, 1.0);
+    worst[0] = 0.0;
+
+    REQUIRE(pool.try_add(100.0, best, kSolutionSourceFPR).accepted);
+    REQUIRE(pool.try_add(101.0, mid, kSolutionSourceFPR).accepted);
+    REQUIRE(pool.try_add(102.0, worst, kSolutionSourceFPR).accepted);
+
+    // Hamming 2 from `best` (10% of 20, over the 5% bar) and 18 from the
+    // other two, so `best` is the nearest neighbour.  Objective ties the
+    // worst, so the standard replacement path is skipped, and it sits within
+    // `kDiversityObjTolerance` of best, so the diversity path admits it.
+    std::vector<double> challenger(kNumIntVars, 0.0);
+    challenger[0] = 1.0;
+    challenger[1] = 1.0;
+
+    REQUIRE(pool.try_add(102.0, challenger, kSolutionSourceFJ).accepted);
+
+    // The best entry is still there, unchanged, and still the best.
+    REQUIRE(pool.snapshot().best_objective == 100.0);
+    std::vector<double> retained;
+    REQUIRE(pool.copy_best(retained));
+    REQUIRE(retained == best);
+
+    // Something else made room, so the pool did not simply refuse the offer.
+    const auto entries = pool.sorted_entries();
+    REQUIRE(entries.size() == 3);
+    REQUIRE(entries.front().source == kSolutionSourceFPR);
+}

@@ -123,22 +123,40 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
                                             kDiversityObjTolerance * 1e-6);
 
                 if (gap <= threshold) {
-                    // Compute minimum Hamming distance to any pool entry and track
-                    // the index of the most similar entry.
+                    // Two different questions, so two different scans.
+                    //
+                    // *Diversity* is measured against every entry, the best
+                    // included: an offer that duplicates the best solution adds
+                    // nothing to a crossover pool however different it is from
+                    // the rest.
+                    //
+                    // *Eviction* skips index 0.  This path only runs on an offer
+                    // that does not even beat the worst entry, so letting it
+                    // replace the best — which it could, whenever the best was
+                    // also its nearest neighbour — discards the pool's most
+                    // valuable solution to make room for a dominated one.  HiGHS
+                    // keeps its own incumbent, so no solution left the solve, but
+                    // `copy_best` and the crossover's better parent then work
+                    // from something worse until the pool refills.  A diversity
+                    // rule has no reason to discard the best solution it holds.
                     int min_dist = std::numeric_limits<int>::max();
+                    int evict_dist = std::numeric_limits<int>::max();
                     int most_similar_idx = -1;
                     for (int idx = 0; std::cmp_less(idx, entries_.size()); ++idx) {
                         int dist = hamming_distance(sol, entries_[idx].solution);
-                        if (dist < min_dist) {
-                            min_dist = dist;
+                        min_dist = std::min(min_dist, dist);
+                        if (idx > 0 && dist < evict_dist) {
+                            evict_dist = dist;
                             most_similar_idx = idx;
                         }
                     }
 
                     double min_frac =
                         static_cast<double>(min_dist) / static_cast<double>(num_integers_);
-                    if (min_frac >= kDiversityMinHammingFrac) {
-                        // Replace the most similar entry.
+                    // `most_similar_idx < 0` means the best entry is the only
+                    // one there is, so nothing may be evicted.
+                    if (min_frac >= kDiversityMinHammingFrac && most_similar_idx > 0) {
+                        // Replace the most similar entry other than the best.
                         entries_.erase(entries_.begin() + most_similar_idx);
                         // NOLINTNEXTLINE(modernize-use-ranges)
                         pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);

@@ -663,26 +663,36 @@ TEST_CASE("patience gate: an accepted non-improvement resets neither gate level"
     REQUIRE_FALSE(fresh_loop.stopped());
 }
 
-TEST_CASE("patience gate: evicting the pool's best does not manufacture an improvement",
+TEST_CASE("patience gate: the diversity path keeps the best and manufactures no improvement",
           "[patience][unit]") {
     // `improved_best` must mean "moved the best objective the solve knows",
     // and the solve's best objective never goes backwards: `addIncumbent`
-    // keeps whatever was submitted.  The *pool's* front entry does go
-    // backwards — the diversity path replaces the entry most similar to the
-    // offer, and that entry can be the best one — so a "best before this
-    // offer" read off `entries_.front()` degrades, and the next offer to
-    // clear the degraded value looks like an improvement while HiGHS still
-    // holds something better.  That is a free staleness reset, which is the
-    // exact defect #116 exists to remove.
+    // keeps whatever was submitted.
+    //
+    // Two independent guards keep the pool's answer aligned with that, and
+    // this case exercises both on the offer that used to break them.  The
+    // diversity path admits solutions that do not beat the worst entry, and
+    // it used to evict whichever entry was most similar to the offer — the
+    // best one included.  That cost the pool its best solution *and*, because
+    // `improved_best` was read off `entries_.front()`, let the next offer to
+    // clear the degraded value look like an improvement while HiGHS still
+    // held something better: a free staleness reset, the defect #116 exists
+    // to remove.
+    //
+    // The eviction guard now makes the front entry monotone on its own, so
+    // the watermark behind `improved_best` is belt and braces here.  It stays
+    // because it is the definition the shipped patience defaults were
+    // measured under (`improving_offers` tracks a monotone best-so-far), and
+    // because it does not depend on the admission policy staying this shape.
     constexpr int kNumIntVars = 20;
     SolutionPool pool(/*capacity=*/2, /*minimize=*/true);
     pool.set_integer_mask(std::vector<bool>(kNumIntVars, true));
 
     std::vector<double> best(kNumIntVars, 0.0);
     std::vector<double> other(kNumIntVars, 1.0);
-    // Hamming 1 from `best` (5% of 20, exactly `kDiversityMinHammingFrac`)
-    // and 19 from `other`, so `best` is the most similar entry and the one
-    // the diversity path erases.
+    // Hamming 1 from `best` (5% of 20, exactly `kDiversityMinHammingFrac`,
+    // which the `>=` test admits) and 19 from `other`.  `best` is therefore
+    // the nearest neighbour, and is exactly what the old rule erased.
     std::vector<double> diverse(kNumIntVars, 0.0);
     diverse[0] = 1.0;
 
@@ -696,9 +706,16 @@ TEST_CASE("patience gate: evicting the pool's best does not manufacture an impro
     REQUIRE(evicting.accepted);
     REQUIRE_FALSE(evicting.improved_best);
 
-    // HiGHS was told about the 100.0 solution when the pool accepted it, so
-    // that is still the incumbent whatever the pool now holds.  An offer of
-    // 100.5 is therefore not an improvement, and must not reset a gate.
+    // The best entry survived: `other`, the most similar entry that is not
+    // the best, is what made room.  Diversity was still measured against
+    // `best` — that is what admitted the offer at all.
+    REQUIRE(pool.snapshot().best_objective == 100.0);
+    std::vector<double> retained;
+    REQUIRE(pool.copy_best(retained));
+    REQUIRE(retained == best);
+
+    // And the objective the solve knows has not moved, so an offer of 100.5
+    // is not an improvement and must not reset a gate.
     const auto not_an_improvement = pool.try_add(100.5, best, kSolutionSourceFPR);
     REQUIRE_FALSE(not_an_improvement.improved_best);
 }

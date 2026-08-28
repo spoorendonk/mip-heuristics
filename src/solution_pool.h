@@ -97,7 +97,12 @@ public:
     // Insertion policy (when pool is full):
     //   1. If obj improves on worst: replace worst (standard).
     //   2. Else if obj is within kDiversityObjTolerance of best and Hamming
-    //      diversity exceeds kDiversityMinHammingFrac: replace most similar.
+    //      diversity exceeds kDiversityMinHammingFrac: replace the most
+    //      similar entry *other than the best*, which is never evicted —
+    //      this path admits solutions that do not even beat the worst
+    //      entry, so it must not be able to spend the best one on one of
+    //      them.  Diversity itself is still measured against every entry,
+    //      the best included.
     //
     // `improved_best` is decided against `best_seen_`, the best objective
     // this pool has ever accepted, read under the same hold of the pool

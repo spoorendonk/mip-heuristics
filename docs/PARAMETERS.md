@@ -569,8 +569,9 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **Default**: `10`
 - **Meaning**: Maximum number of distinct solutions stored in the shared
   `SolutionPool`. When full, a new solution replaces the worst entry
-  (if better) or the most similar entry (if within
-  `kDiversityObjTolerance` of the best and sufficiently diverse).
+  (if better) or, if within `kDiversityObjTolerance` of the best and
+  sufficiently diverse, the most similar entry **other than the best**,
+  which is never evicted.
 - **Suggested range**: 5–50. Larger pools provide more restart
   diversity but increase lock contention and crossover cost.
 
@@ -585,6 +586,23 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   still be admitted (10%). A solution within 10% of the best objective
   may replace the most similar existing entry if its Hamming distance
   exceeds `kDiversityMinHammingFrac`.
+
+  The band exists because the pool is a restart and crossover reservoir,
+  not an incumbent store: HiGHS's own `addIncumbent` takes a solution
+  only when it strictly improves the upper bound, and every accepted
+  offer goes there too, so this tolerance never loosens what the solve
+  reports. What it buys is *diverse parents*. An improving-only pool is a
+  chain of near-identical vectors — successive improvements differ in a
+  handful of variables — so the crossover strategies in `get_restart`
+  have almost nothing to disagree on.
+
+  Admission is narrower than the 10% alone suggests, and conjunctive: the
+  pool must be full, the offer must fail to beat the worst entry, sit
+  within the band, and be at least `kDiversityMinHammingFrac` away from
+  *every* entry. It then replaces its own nearest neighbour — never the
+  best entry, which this path may not evict, since it only ever runs on
+  an offer the pool already considers dominated. Diversity is still
+  measured against the best; only eviction skips it.
 - **Suggested range**: 0.0–0.5.
 
 ---
@@ -888,8 +906,11 @@ thing it can honestly be calibrated on) cannot be spent against a gate
 that resets on acceptances. Both gates now read
 `IncumbentSink::OfferResult::improved_incumbent`, decided inside
 `SolutionPool`'s own lock against the best objective the pool has ever
-accepted — a monotone watermark, not its front entry, which the diversity
-path can evict — while
+accepted — a monotone watermark rather than its front entry, which is
+belt and braces now that the diversity path may no longer evict the best
+entry, and is kept because it is the definition
+`bench/analyze_presolve_probe.py` measured the shipped defaults under —
+while
 `accepted()`, `[Heur] found` and `[HeurSol] accepted` keep reporting the
 acceptance for the tooling that consumes them. `offer` is `[[nodiscard]]`
 and returns both facts, so neither can be dropped or silently substituted
