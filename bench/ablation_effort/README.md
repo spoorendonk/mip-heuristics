@@ -112,9 +112,21 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   `analyze_presolve_probe.py`'s emitted keys — `stall*` became `patience*` —
   so `defaults.json` below, written before that, carries the old spellings;
   it is a record of a past run and is left as it was written.
-* **#117** — FPR and Scylla overran their time limit and were killed on 23 of
-  932 runs, all large instances, so both estimates are biased toward instances
-  the heuristic returned from.
+* **#117 — landed.** FPR and Scylla overran their time limit and were killed
+  on 23 of 932 runs, all large instances, so both estimates here are biased
+  toward instances the heuristic returned from. The dominant cause turned out
+  to be unbounded *dispatch setup* rather than the per-attempt slice; both are
+  now deadline-gated.
+* **#118 — open.** The dive-time FPR setup has the same unbounded shape and is
+  still ungated. It does not run in a presolve-only probe, so it does not
+  perturb these numbers directly — but it is the same defect class and belongs
+  in the binary being measured.
+* **#119 — open, and this one does touch the estimates.** A dispatch that
+  abandons setup reports `effort=0 found=0`, byte-identical to one that ran and
+  found nothing, so it is currently binned as barren. The barren rate is what
+  the patience/cost side rests on, and setup bails happen precisely on the
+  large, hard instances — the same population #117 was biasing. Re-running
+  before this lands would carry that mis-binning into the new tree.
 * **The unit change (#116)** landed after this tree was written. Its `.opts`
   record `effort = 1e4` meaning `8.2e8` effort units per nonzero; the same
   string now means `1.0e7`, 80x less. So **re-reading this tree with a current
@@ -124,9 +136,17 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   number this derivation rests on. The option ceiling was raised to `1e6` so a
   future probe keeps the headroom the old unit gave it.
 
-Re-running before those land buys clean provenance and 23 runs; re-running
-after buys a trajectory measured by the solver rather than reconstructed from
-the log, which is the point of the exercise. Do it once, afterwards.
+**Wait for every open code issue above, then run it once.** This is a ~9 h
+overnight window on a bench machine, and each of these changes alters either
+what the binary does or how a dispatch is classified, so a run taken between
+them is superseded by the next merge. Re-running now would buy clean
+provenance and the 23 killed runs; waiting buys a trajectory the solver
+measured rather than one reconstructed offline, on a binary whose setup paths
+are bounded and whose barren dispatches are honestly labelled. The whole point
+of the exercise is the second thing.
+
+Precondition, concretely: #116 and #117 are landed; **#118 and #119 are not**.
+Do not start the probe until they are.
 
 ## Caveats that travel with these numbers
 
