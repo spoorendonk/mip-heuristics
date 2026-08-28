@@ -21,9 +21,10 @@
 # One question: **what does each heuristic do with 30 seconds of presolve,
 # alone, when nothing but the clock stops it?**
 #
-#   * effort `$PROBE_EFFORT` (1e4, the option's ceiling since #113) — the
-#     budget is then `8.2e8` effort units per matrix nonzero, which no run
-#     inside the cap can reach;
+#   * effort `$PROBE_EFFORT` (1e6, the option's ceiling — see the variable
+#     itself below for why it is that and not `1e4`) — the budget is then
+#     `1.0e9` effort units per matrix nonzero, which no run inside the cap
+#     can reach;
 #   * every patience gate at 0, which means *no gate*;
 #   * `mip_heuristic_presolve_only`, so the run exits before the root LP;
 #   * a 30 s cap, enforced by the harness as a wall-clock kill as well as by

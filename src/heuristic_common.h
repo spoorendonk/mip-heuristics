@@ -252,6 +252,21 @@ inline constexpr size_t kPatienceCeilingDivisor = 4;
 // divisor — from producing a threshold that trips before any work
 // happens.
 //
+// **"Strictly before exhaustion" is not unconditional**, because that
+// floor deliberately outranks it.  `stale()` is `> stale_budget` while
+// `exhausted()` is `>= total_budget`, so a threshold `S` fires at effort
+// `S + 1` and precedes exhaustion only while `S <= budget - 2`.  At
+// `budget <= 2` the floor pins `S` at 1 and the gate coincides with
+// exhaustion (`budget == 2`) or never fires at all (`budget == 1`) — from
+// `budget == 3` up it precedes exhaustion again.  That is the right
+// trade: a gate that fires with the budget is a far better failure than
+// one that trips before any work happens, which is what dropping the
+// floor would give.  It is also unreachable in practice — `budget` is
+// `effort x (nnz << 10)` (times the worker count for FJ), so two effort
+// units needs roughly a one-nonzero model at the bottom of the option's
+// range, and `budget == 0` is already excluded upstream by `make_budget`
+// as "this heuristic does not run".
+//
 // `per_base == 0` means **no patience gate at all** (issue #106), not
 // "give up immediately".  Since #106 the multiplier is an option, and a
 // search of the patience axis needs a point where the gate provably never

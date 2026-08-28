@@ -346,6 +346,20 @@ TEST_CASE("patience gate: patience is clamped strictly below the ceiling", "[pat
     // A ceiling smaller than the divisor still yields a threshold of at
     // least 1, for the same reason a zero-nnz model does: a gate that
     // trips before any work happens is worse than one that never trips.
+    //
+    // Which is also where "strictly below the ceiling" stops holding, and
+    // deliberately so.  `stale()` is `> stale_budget` while `exhausted()`
+    // is `>= total_budget`, so a threshold `S` fires at effort `S + 1` and
+    // precedes exhaustion only while `S <= budget - 2`.  The floor pins
+    // `S` at 1 here, so at `budget == 2` the gate coincides with
+    // exhaustion and at `budget == 1` it never fires; from `budget == 3`
+    // up it precedes exhaustion again.  The floor outranks strictness on
+    // purpose — the alternative failure is a gate that retires every
+    // worker before it does anything.  Unreachable in practice anyway:
+    // `budget` is `effort x (nnz << 10)` (times the worker count for FJ),
+    // so two effort units needs about a one-nonzero model at the bottom of
+    // the option's range, and `budget == 0` never arrives here because
+    // `make_budget` treats it as "this heuristic does not run".
     REQUIRE(patience_threshold(kNnz, 1.0, 2) == 1);
 }
 
