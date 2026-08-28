@@ -117,16 +117,21 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   toward instances the heuristic returned from. The dominant cause turned out
   to be unbounded *dispatch setup* rather than the per-attempt slice; both are
   now deadline-gated.
-* **#118 — open.** The dive-time FPR setup has the same unbounded shape and is
-  still ungated. It does not run in a presolve-only probe, so it does not
-  perturb these numbers directly — but it is the same defect class and belongs
-  in the binary being measured.
-* **#119 — open, and this one does touch the estimates.** A dispatch that
-  abandons setup reports `effort=0 found=0`, byte-identical to one that ran and
-  found nothing, so it is currently binned as barren. The barren rate is what
-  the patience/cost side rests on, and setup bails happen precisely on the
-  large, hard instances — the same population #117 was biasing. Re-running
-  before this lands would carry that mis-binning into the new tree.
+* **#118 — landed.** The dive-time FPR setup had the same unbounded shape and
+  was still ungated. It does not run in a presolve-only probe, so it never
+  perturbed these numbers directly — but it is the same defect class and
+  belongs in the binary being measured. `build_setup` now polls the deadline
+  between its arms and around its reference LP solves, and charges what a
+  bail already spent to the shared RENS/RINS envelope.
+* **#119 — landed, and this is the one that touched the estimates.** A
+  dispatch that abandons setup reported `effort=0 found=0`, byte-identical to
+  one that ran and found nothing, so it was binned as barren. The barren rate
+  is what the patience/cost side rests on, and setup bails happen precisely on
+  the large, hard instances — the same population #117 was biasing. The
+  `[Heur]` line now carries `abandoned_setup`, on the presolve and the dive
+  path alike, and `analyze_presolve_probe.py` reads it; **the numbers in this
+  file predate the field**, so their barren rate still contains whatever
+  bails those runs had.
 * **The unit change (#116)** landed after this tree was written. Its `.opts`
   record `effort = 1e4` meaning `8.2e8` effort units per nonzero; the same
   string now means `1.0e7`, 80x less. So **re-reading this tree with a current
@@ -136,17 +141,19 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   number this derivation rests on. The option ceiling was raised to `1e6` so a
   future probe keeps the headroom the old unit gave it.
 
-**Wait for every open code issue above, then run it once.** This is a ~9 h
-overnight window on a bench machine, and each of these changes alters either
-what the binary does or how a dispatch is classified, so a run taken between
-them is superseded by the next merge. Re-running now would buy clean
-provenance and the 23 killed runs; waiting buys a trajectory the solver
-measured rather than one reconstructed offline, on a binary whose setup paths
-are bounded and whose barren dispatches are honestly labelled. The whole point
-of the exercise is the second thing.
+**The precondition was: wait for every code issue above, then run it once.**
+This is a ~9 h overnight window on a bench machine, and each of those changes
+alters either what the binary does or how a dispatch is classified, so a run
+taken between them would have been superseded by the next merge. Running
+early would have bought clean provenance and the 23 killed runs; waiting buys
+a trajectory the solver measured rather than one reconstructed offline, on a
+binary whose setup paths are bounded and whose barren dispatches are honestly
+labelled. The whole point of the exercise is the second thing.
 
-Precondition, concretely: #116 and #117 are landed; **#118 and #119 are not**.
-Do not start the probe until they are.
+Precondition, concretely: **satisfied** — #116, #117, #119 and #118 are all
+landed. The re-run is unblocked. What it buys is exactly what the four
+entries above describe, and every number in this file stays provisional until
+it has been taken.
 
 ## Caveats that travel with these numbers
 

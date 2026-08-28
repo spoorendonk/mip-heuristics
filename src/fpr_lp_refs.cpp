@@ -62,8 +62,10 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
     // Once the deadline has passed there is nothing to hand a sub-solver, and
     // 0.0 is not a way to say so: HiGHS's LP presolve guards its own timeout
     // on `time_limit > 0` (`Highs.cpp`), so 0.0 removes that guard, while
-    // simplex (`HEkk.cpp`) and IPM (`ipx/control.cc`) test only `< kHighsInf`
-    // and so read 0.0 as *already expired*, aborting on their first check.
+    // simplex guards on `< kHighsInf` (`HEkk.cpp`) and IPM on `>= 0.0`
+    // (`ipx/control.cc`, where a *negative* limit is how "none" is spelled)
+    // — neither excludes 0.0, so both read it as a finite limit *already
+    // passed* and abort on their first check.
     // Neither is a limit anyone asked for, and LP presolve on a large model is
     // itself a real unbounded unit — so return before constructing `Highs`,
     // and ahead of the O(nnz) matrix copies below, which are equally wasted on

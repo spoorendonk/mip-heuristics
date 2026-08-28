@@ -18,9 +18,11 @@ struct Deadline;
 // sub-solver what is left of it (capped at 30 s), returning empty without
 // constructing a `Highs` at all once it has passed.  `Deadline::remaining()`
 // is 0.0 there, and 0.0 is not a limit that can be passed on: HiGHS's LP
-// presolve guards its own timeout on `time_limit > 0`, so 0.0 removes that
-// guard, while simplex and IPM test only `< kHighsInf` and so read 0.0 as
-// already expired.  Neither is what a caller means by it.
+// presolve guards its own timeout on `time_limit > 0` (`Highs.cpp`), so 0.0
+// removes that guard, while simplex guards on `< kHighsInf` (`HEkk.cpp`)
+// and IPM on `>= 0.0` (`ipx/control.cc`) — neither excludes 0.0, so both
+// read it as a finite limit already passed.  Neither is what a caller
+// means by it; see `deadline.h` for the full shape.
 //
 // An empty return therefore means "no reference available" — from an
 // expired clock or from a failed solve alike, and the caller cannot tell

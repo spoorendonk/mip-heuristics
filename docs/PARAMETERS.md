@@ -782,7 +782,10 @@ The rule, so a number in this file can always be traced to a measurement:
 the sequential setup abandon its work when the wall-clock deadline has
 already passed — `fpr::precompute_var_orders` and
 `scylla::precompute_config_var_orders` check the clock between variable
-orders, and the entry point returns without searching. Such a dispatch
+orders, and the entry point returns without searching. #118 added a third,
+`fpr_lp`'s `build_setup`, which reports through an explicit `charge_dive`
+argument rather than through `DispatchOutcome`: it books its own dispatch
+and so is not on the shared runner contract. Such a dispatch
 never ran, so it says nothing about how long this heuristic goes without
 improving; its spend is a cost of setup. It used to book an `effort=0
 found=0` line byte-identical to a barren dispatch's, which put it straight
@@ -1108,9 +1111,12 @@ what it spent (`SetupResult::lp_iterations`) alongside whether the clock
 is what stopped it, and `fpr_lp::run` charges it through `charge_dive` on
 a path disjoint from the normal one — a bail books once, a completed
 setup books once, and nothing is cached across dives, so the next dive
-re-pays only for what it redoes. The bail is visible in the trace as an
-`effort=0` `[Heur] name=fpr_lp phase=dive` line; the model-shape and
-LP-status skips consume nothing and stay silent.
+re-pays only for what it redoes. The bail books an
+`effort=0` `[Heur] name=fpr_lp phase=dive` line carrying
+**`abandoned_setup=1`** (#119) — the field, not the zero effort, is what
+`bench/parse_highs_log.py` and `analyze_presolve_probe.py` key on, because
+a dispatch that searched and found nothing reports the same zero. The
+model-shape and LP-status skips consume nothing and stay silent.
 
 There is **no dive-time measurement** behind that row. Every number in
 this section comes from presolve-only runs, which never reach `fpr_lp`;
