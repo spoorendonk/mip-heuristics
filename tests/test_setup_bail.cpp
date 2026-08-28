@@ -1,5 +1,6 @@
 #include "effort_ledger.h"
 #include "fpr.h"
+#include "fpr_lp.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "Highs.h"
@@ -185,10 +186,15 @@ TEST_CASE("setup-bail: a disabled heuristic is not an abandoned setup", "[setup-
 // thing there.  One line format, one parser path.
 namespace {
 
-// Every log line `emit` produced, captured off the Highs logging callback.
-// `log_dev_level=3` because the `[Heur]` line is `kVerbose`.
-template <typename Emit>
-std::vector<std::string> ledger_lines(Emit&& emit) {
+// Every log line `act` produced against a bare `HighsMipSolver` on
+// `instance` whose solve carries `time_limit`, captured off the Highs
+// logging callback.  `log_dev_level=3` because `[Heur]` is `kVerbose`.
+//
+// `ledger_lines` below is this with an `EffortLedger` built over the
+// solver; the dive-source case further down needs the solver itself,
+// because what it drives is `fpr_lp::run`.
+template <typename Act>
+std::vector<std::string> solver_lines(const char* instance, double time_limit, Act&& act) {
     struct LogCapture {
         std::mutex mtx;
         std::vector<std::string> lines;
@@ -215,12 +221,20 @@ std::vector<std::string> ledger_lines(Emit&& emit) {
 
     highs::parallel::initialize_scheduler();
     HighsCallback cb(&highs);
-    auto mipsolver = build_bare_mipsolver(highs, cb);
-    EffortLedger ledger(*mipsolver);
-    emit(ledger);
+    auto mipsolver = build_bare_mipsolver(highs, cb, instance, time_limit);
+    act(*mipsolver);
 
     std::scoped_lock lock(capture.mtx);
     return capture.lines;
+}
+
+// Every log line `emit` produced through an `EffortLedger`.
+template <typename Emit>
+std::vector<std::string> ledger_lines(Emit&& emit) {
+    return solver_lines("flugpl.mps", kHighsInf, [&](HighsMipSolver& mipsolver) {
+        EffortLedger ledger(mipsolver);
+        emit(ledger);
+    });
 }
 
 // The one `[Heur]` line in `lines`.
@@ -276,10 +290,72 @@ TEST_CASE("setup-bail: [Heur] carries abandoned_setup on both phases", "[setup-b
 
     SECTION("dive, ran") {
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
-            ledger.charge_dive("fpr_lp", 100, /*found=*/false, 0, 1, 0.0, 0.5);
+            ledger.charge_dive("fpr_lp", 100, /*found=*/false, 0, 1, 0.0, 0.5,
+                               /*abandoned_setup=*/false);
         }));
         INFO(line);
         CHECK(line.contains("abandoned_setup=0"));
+    }
+}
+
+// ── 1, for the dive path: `fpr_lp`'s bail site sets the flag ──
+//
+// Case 1 pins the presolve bail sites through `DispatchOutcome`, and case
+// 2 pins that the ledger emits the field when handed it.  Between them sits
+// the wiring, and for the dive path nothing above covers it: `fpr_lp` is
+// not on the `DispatchOutcome` contract — it books itself — so its
+// `deadline_bail` reaches `charge_dive` through a call site and nothing
+// else.  A `false` left there would pass every case above.
+//
+// This one therefore drives the real `fpr_lp::run` and reads the line it
+// actually emitted, rather than calling the ledger by hand.  It sits here
+// rather than beside case 1 because it needs the log capture defined above.
+//
+// It is not a race, for the reason `kExpired` gives: the limit is applied
+// after the model is read, so `build_setup`'s entry check finds it already
+// passed.  Everything ahead of that check on a bare solver is satisfied at
+// the defaults — `parallelLockActive()` is false, the default suite names
+// `fpr`, and an untouched `total_lp_iterations` still leaves the envelope's
+// 10000-iteration initial offset, which is well above the `nnz << 8` floor.
+//
+// The dive bail *is* reachable through a whole solve, unlike the presolve
+// ones the header comment discusses — `fpr_lp` is called from inside a
+// node, so the limit can pass between HiGHS's own checks and the dive.  It
+// was observed there and is not asserted there: at
+// `--time_limit 0.15 --options_file <log_dev_level=3, suite=fpr> bell5.mps`
+// this build emits
+//   [Heur] name=fpr_lp phase=dive start_s=0.150 end_s=0.150 effort=0
+//   wall_ms=0.0 effort_per_ms=0.000 found=0 nnz=242 abandoned_setup=1
+// and `bench/parse_highs_log.py` reads it back as `abandoned_setup=True`.
+// Which limit lands in that window is a property of the machine — 0.15 s
+// hits it on the development host while 0.1 s and 0.2 s do not — so it is
+// evidence, not a test.
+TEST_CASE("setup-bail: the fpr_lp dive bail reports abandoned_setup=1", "[setup-bail]") {
+    const std::string line = sole_heur_line(solver_lines(
+        "flugpl.mps", kExpired, [](HighsMipSolver& mipsolver) { fpr_lp::run(mipsolver); }));
+    INFO(line);
+    CHECK(line.contains("[Heur] name=fpr_lp "));
+    CHECK(line.contains("phase=dive"));
+    CHECK(line.contains("abandoned_setup=1"));
+    // The bail is ahead of both reference LP solves, so the dispatch spent
+    // nothing — `effort=0` here is the *reported* half of the accounting
+    // `test_deadline.cpp` pins at the source (#118).
+    CHECK(line.contains("effort=0 "));
+    CHECK(line.contains("found=0"));
+}
+
+// ...and the same entry point on a clock that has not passed emits no line
+// at all.  `build_setup`'s other two exits — an empty model, an LP
+// relaxation that is not scaled-optimal, which is what a bare solver has —
+// are skips, not bails: nothing was consumed and no dispatch was cut short,
+// so there is nothing to book.  This is what stops the case above from
+// passing on a build that reported every declined dive as abandoned.
+TEST_CASE("setup-bail: an fpr_lp dive that skips for want of an LP books nothing", "[setup-bail]") {
+    const auto lines = solver_lines("flugpl.mps", kHighsInf,
+                                    [](HighsMipSolver& mipsolver) { fpr_lp::run(mipsolver); });
+    for (const std::string& line : lines) {
+        INFO(line);
+        CHECK_FALSE(line.contains("[Heur] name="));
     }
 }
 

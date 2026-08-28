@@ -564,8 +564,17 @@ void run(HighsMipSolver& mipsolver) {
         // The model-shape and LP-status skips book nothing, exactly as
         // before: no work was consumed and no dispatch was declined for a
         // reason a reader of the trace would want to see.
+        //
+        // `abandoned_setup=true` is what keeps this line out of the #113
+        // probe's barren population (#119).  Without it a dive that never
+        // searched would be byte-identical to one that searched and found
+        // nothing — and this is the *dive* instance of exactly the
+        // population that issue exists to separate, so the flag has to
+        // reach the same field from here as it does from the presolve
+        // chain.
         if (built.deadline_bail) {
-            ledger.charge_dive("fpr_lp", 0, false, built.lp_iterations, nnz, t0_s, ledger.now_s());
+            ledger.charge_dive("fpr_lp", 0, false, built.lp_iterations, nnz, t0_s, ledger.now_s(),
+                               /*abandoned_setup=*/true);
         }
         return;
     }
@@ -614,8 +623,13 @@ void run(HighsMipSolver& mipsolver) {
     // envelope.  fpr_lp is the only caller of `charge_dive`; that envelope
     // depletion is what makes it compete for the vanilla heuristic budget
     // rather than draw unaccounted work.
+    // `abandoned_setup=false` stated rather than defaulted: reaching here
+    // means the setup completed, and a dispatch that then found nothing is
+    // barren in the sense the probe bins — which is the fact the bail path
+    // above denies about itself.  Both answers are spelled out at both
+    // sites (#119).
     ledger.charge_dive("fpr_lp", worker_effort, found, built.lp_iterations, nnz, t0_s,
-                       ledger.now_s());
+                       ledger.now_s(), /*abandoned_setup=*/false);
 }
 
 SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort) {

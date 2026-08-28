@@ -83,12 +83,17 @@ public:
     //
     // `abandoned_setup` means the same thing as above and reaches the same
     // field of the same line — one line format, one parser path, on both
-    // sides of the patch boundary.  It carries a default *only* because
-    // the dive-time setup gate that will pass `true` is landing separately
-    // (issue #118); that is scaffolding for one rebase, not a statement
-    // that the answer is optional.
+    // sides of the patch boundary.  It carried a default while the
+    // dive-time setup gate that passes `true` was landing separately, and
+    // that was scaffolding for one rebase rather than a statement that the
+    // answer is optional; #118 landed, so it is gone and both dive call
+    // sites spell their answer out.  **Do not give it one back.** A third
+    // dive caller would inherit `false` silently — the wrong answer for a
+    // bailing one, and an invisible wrong answer, which is the same reason
+    // `IncumbentSink::offer` is `[[nodiscard]]` rather than trusting a
+    // caller to remember.
     void charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
-                     size_t nnz, double t0_s, double t1_s, bool abandoned_setup = false);
+                     size_t nnz, double t0_s, double t1_s, bool abandoned_setup);
 
 private:
     // Deliberately not `const`: it holds `HighsMipSolver&`, so it leaves
