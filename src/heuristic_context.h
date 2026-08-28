@@ -83,10 +83,16 @@
 // object that outlives the dispatch; a return value cannot leak into the
 // next heuristic because there is no state to forget to clear.
 //
-// Deliberately not `[[nodiscard]]`: a caller that wants only the effort is
-// legitimate (the tests do this), and `run_sequential` is the one caller
-// the flag is for.
-struct DispatchOutcome {
+// `[[nodiscard]]`, for the reason `IncumbentSink::offer` is: a dropped
+// outcome loses both the effort — which `run_sequential` books into
+// `heuristic_effort_used` and nothing else can recover — and the bail flag
+// this issue exists to carry.  `-Werror=unused-result` on `mip_heuristics`
+// and `mip_heuristics_tests` is what makes the attribute a build failure
+// rather than a warning that scrolls past.  It costs a caller that wants
+// one field nothing: `run(...).effort` is a *use* of the return value, so
+// only a call whose whole result is thrown away trips it, and the single
+// such caller (a test driving warm-start counters) spells the discard.
+struct [[nodiscard]] DispatchOutcome {
     // Effort charged, in this heuristic's own unit.  `run_sequential`
     // books exactly this into `heuristic_effort_used`.
     size_t effort = 0;

@@ -541,7 +541,11 @@ TEST_CASE("ProblemView::incumbent is a dispatch snapshot, not the live vector (#
         IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
 
         local_mip::reset_warm_start_counters();
-        local_mip::run(problem, make_budget(200000, exec.num_workers, 200000 >> 2), exec, sink);
+        // The outcome is deliberately dropped: this case asserts on the
+        // warm-start counters the dispatch leaves behind, not on what it
+        // spent or whether it bailed.
+        static_cast<void>(local_mip::run(
+            problem, make_budget(200000, exec.num_workers, 200000 >> 2), exec, sink));
         auto counters = local_mip::warm_start_counters();
 
         // Reading the snapshot: the incumbent branch fires (at minimum on
