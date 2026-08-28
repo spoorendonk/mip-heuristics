@@ -12,7 +12,7 @@ The contribution is the open implementations and the comparable measurements, no
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)          # first build ~5 min (fetches HiGHS)
+cmake --build build -j$(nproc)          # first build fetches and compiles HiGHS
 ./build/bin/highs model.mps                        # mip_heuristic_suite defaults to `all`
 
 # The custom options are not CLI flags — HiGHS's command line takes only its

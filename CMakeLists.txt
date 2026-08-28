@@ -51,6 +51,34 @@ if(MIP_HEURISTICS_INSTALL_GIT_HOOKS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git
     endif()
 endif()
 
+# Compiler cache.  The pre-push gate is a *clean* rebuild (`rm -rf build`),
+# which is deliberate — HiGHS is patched in place and `apply_patch.cmake`
+# refuses a tree whose PATCH_VERSION marker does not match rather than
+# upgrading it, so a wiped tree is the one state guaranteed consistent with
+# `src/`.  That guarantee costs a full recompile of the fetched HiGHS tree
+# every time, and ccache gives it back without weakening it: the cache is
+# keyed on source content, so a differently-patched tree simply misses.
+#
+# Set before `include(cmake/FetchHiGHS.cmake)` on purpose.  The launcher is a
+# directory property that targets read at creation, so HiGHS's own targets --
+# which are the recompile worth caching -- only inherit it if it is in scope
+# before FetchContent adds their subdirectory.
+#
+# Both languages: HiGHS enables C for cuPDLP after we set these, and the
+# variables still seed the property when that happens.
+option(MIP_HEURISTICS_CCACHE
+       "Route compilation through ccache when it is installed" ON)
+if(MIP_HEURISTICS_CCACHE)
+    find_program(CCACHE_EXE ccache)
+    if(CCACHE_EXE)
+        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_EXE}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_EXE}")
+        message(STATUS "ccache: enabled (${CCACHE_EXE})")
+    else()
+        message(STATUS "ccache: not found, compiling without a cache")
+    endif()
+endif()
+
 include(cmake/FetchHiGHS.cmake)
 
 add_library(mip_heuristics OBJECT
@@ -111,6 +139,7 @@ include(FetchContent)
 FetchContent_Declare(Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
     GIT_TAG v3.7.1
+    GIT_SHALLOW ON
 )
 FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

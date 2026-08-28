@@ -72,6 +72,11 @@ file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch/apply_patch.cmak
 FetchContent_Declare(highs
     GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS.git
     GIT_TAG        v1.15.1
+    # Depth-1.  The full clone is ~197 MB of which ~178 MB is history we never
+    # read, and the pre-push gate re-clones on every clean rebuild.  Safe with
+    # a tag: the fetched ref is exactly the commit named above, and HiGHS's own
+    # version banner still resolves its githash from it.
+    GIT_SHALLOW    ON
     PATCH_COMMAND ${CMAKE_COMMAND}
         -DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch
         -DSOURCE_DIR=<SOURCE_DIR>

@@ -18,8 +18,15 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure -j$(nproc)
 ```
 
-The first build takes about five minutes: it fetches HiGHS v1.15.1 via
-FetchContent and applies the patches in `third_party/highs_patch/`.
+The first build fetches HiGHS v1.15.1 via FetchContent and applies the patches
+in `third_party/highs_patch/`; compiling that tree is most of the wall time and
+how much depends on your core count.
+
+**Install `ccache` if you have not** (`apt install ccache`). It is optional --
+CMake reports `ccache: not found, compiling without a cache` and carries on --
+but the `pre-push` gate is a *clean* rebuild by design, so without it every push
+recompiles HiGHS from scratch. With it, a clean rebuild goes from ~48 s to under
+a second on the same machine. Opt out with `-DMIP_HEURISTICS_CCACHE=OFF`.
 
 Useful narrower invocations:
 
