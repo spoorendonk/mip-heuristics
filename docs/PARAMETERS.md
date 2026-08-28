@@ -25,10 +25,15 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **File**: `src/fpr_core.h` (field of `FprConfig`)
 - **Default**: `50`
 - **Meaning**: Maximum number of DFS nodes expanded by `repair_search`
-  (paper Fig. 5). The paper quotes 200; we cap at 50 because
-  RepairSearch runs two full PropEngine fixpoints per node, which
-  dominates cost on tight instances (~760k coefficient accesses on
-  9k-nnz LPs). 200 nodes can burn ~1.4 s regardless of the effort cap.
+  (paper Fig. 5). The paper gives **no** node count for RepairSearch —
+  §5.1 says only that it runs "with very strict limits anyway". (The 200
+  quoted elsewhere in the paper is RepairWalk's step limit, documented
+  below as `walksat_iterations`; this entry previously described 50 as a
+  reduction of that number, which was a misattribution.) 50 is ours,
+  chosen because RepairSearch runs two full PropEngine fixpoints per
+  node, which dominates cost on tight instances (~760k coefficient
+  accesses on 9k-nnz LPs). 200 nodes can burn ~1.4 s regardless of the
+  effort cap.
 - **Suggested range**: 10–200. Raise on fast instances or when
   RepairSearch quality matters; lower on dense LPs where each node is
   expensive.
@@ -174,8 +179,11 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **File**: `src/local_mip_caches.h`
 - **Default**: `200000`
 - **Meaning**: Every `kRestartInterval` steps (measured in search
-  iterations) the worker considers resetting its solution and weights.
-  Higher values allow more exploration before resetting.
+  iterations) the worker restarts, alternating between re-initialising
+  from the best known solution and from a random assignment, and clearing
+  both tabu arrays. It does **not** reset the constraint weights — an
+  earlier version of this entry said it did. Higher values allow more
+  exploration before restarting.
 - **Suggested range**: 50000–500000.
 
 ---
@@ -204,9 +212,12 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 - **File**: `src/local_mip_caches.h`
 - **Default**: `100000`
-- **Meaning**: Interval (in steps) at which the PAWS-style weight
-  smoothing is evaluated. Controls how often the weighting scheme
-  adapts to constraint difficulty.
+- **Meaning**: Interval (in steps) at which the worker rebuilds its
+  incrementally-maintained search state from the current solution, as a
+  guard against accumulated floating-point drift. It has nothing to do
+  with weight smoothing — an earlier version of this entry described it
+  as the PAWS smoothing period; smoothing is driven by `kSmoothProb` and
+  is evaluated at every local optimum, not on this interval.
 - **Suggested range**: 10000–500000.
 
 ---
@@ -230,8 +241,14 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **Default**: `12`
 - **Meaning**: Number of violated constraints selected as the "best"
   (by weight) from a preliminary sample of `kBmsConstraints * 3`
-  candidates, following the paper's BMS (Best-move Selection) operator.
-  Determines the scope of the move search.
+  candidates. Determines the scope of the move search.
+- **Provenance**: BMS (Best from Multiple Selections) appears **nowhere
+  in the paper** — Algorithm 2 enumerates all violated constraints. It
+  does appear in the authors' published implementation
+  (<https://github.com/shaowei-cai-group/Local-MIP>), which samples
+  constraints and operations exactly this way. An earlier version of this
+  entry credited "the paper's BMS operator"; the sampling is
+  reference-faithful, not paper-faithful.
 - **Suggested range**: 4–32.
 
 ---

@@ -25,12 +25,17 @@ inline constexpr HighsInt kTabuBase = 3;
 inline constexpr HighsInt kTabuVar = 10;
 inline constexpr HighsInt kFeasibleRecheckPeriod = 100;
 // After `kFeasiblePlateau` steps without an improving feasible move,
-// trigger the paper-style random-walk diversification (perturb the
-// solution and keep searching) instead of immediately declaring the
-// worker finished.  `kFeasibleMaxRandomWalks` bounds how many such
-// perturbations we attempt before giving up — this matches Lin, Zou,
-// Cai §4.1's "random walk to escape plateau" recipe but puts a cap
-// on it so pathological cases still terminate.
+// trigger a random-walk diversification (perturb the solution and keep
+// searching) instead of immediately declaring the worker finished.
+// `kFeasibleMaxRandomWalks` bounds how many such perturbations we
+// attempt before giving up, so pathological cases still terminate.
+//
+// This is an engineering addition, NOT from the paper.  Lin, Zou, Cai
+// describe no random walk, plateau escape or perturbation anywhere;
+// §4.1 is the PAWS weighting scheme.  An earlier comment here cited
+// "§4.1's random walk to escape plateau recipe", which does not exist
+// — the sibling copy of this rationale in `local_mip_worker.cpp` was
+// corrected and this one was missed.  Keep both honest.
 inline constexpr HighsInt kFeasiblePlateau = 5000;
 inline constexpr HighsInt kFeasibleMaxRandomWalks = 20;
 inline constexpr double kEpsZero = 1e-15;

@@ -79,7 +79,20 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
         double new_viol = ctx.compute_violation(i, new_lhs);
         auto w = static_cast<double>(ctx.weight[i]);
 
-        // Def 6: constraint progress score
+        // Def 6: constraint progress score.
+        //
+        // DELIBERATE DEVIATION FROM THE PAPER, MATCHING THE AUTHORS' CODE:
+        // Def 6 awards +/- w(con_i)/2 for a constraint that stays violated
+        // but improves/worsens, reserving full weight for a satisfy/violate
+        // transition.  We award full weight in both cases, as the authors'
+        // own implementation does (github.com/shaowei-cai-group/Local-MIP,
+        // `explore_unsat.cpp`: `if (new_gap < pre_gap) score += con_weight;
+        // else score -= con_weight;`).  Consequence either way: "satisfy a
+        // constraint" and "reduce a violation" score identically, flattening
+        // the preference Def 6 states.  Do NOT "fix" this toward the paper
+        // without measuring — it would move us away from the reference
+        // implementation.  (The reference also scales equality rows by 2x,
+        // which we do not do; that part is a genuine gap.)
         bool was_viol = (old_viol > kViolTol);
         bool now_viol = (new_viol > kViolTol);
         if (was_viol && !now_viol) {
@@ -96,6 +109,16 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
 
         // Def 9: robustness bonus — only for transitions into strictly
         // satisfied (was violated or tight, now strictly interior).
+        //
+        // DELIBERATE DEVIATION FROM THE PAPER, MATCHING THE AUTHORS' CODE:
+        // Def 9 awards w(con_i) for *every* constraint that ends strictly
+        // satisfied.  Summed over all rows and cancelling the rows this
+        // column does not touch, the paper's per-column form is
+        // sum_i w_i * ([new strict] - [old strict]) — i.e. it also
+        // *penalises* losing strict satisfaction.  We implement only the
+        // positive term.  The authors' implementation is likewise
+        // transition-shaped (`if (!pre_sat && now_sat) score +=
+        // scaled_con_weight * 2`).  Same caution as Def 6 above.
         if (!now_viol) {
             bool old_strict =
                 !was_viol &&
@@ -197,6 +220,16 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
     auto& sampled = ctx.sampled;
 
     // --- Phase 1: BMS tight moves from violated constraints ---
+    //
+    // DELIBERATE DEVIATION FROM THE PAPER, MATCHING THE AUTHORS' CODE:
+    // Algorithm 2 enumerates *all* violated constraints.  BMS (Best from
+    // Multiple Selections) appears nowhere in the paper, but the authors'
+    // implementation samples exactly this way
+    // (github.com/shaowei-cai-group/Local-MIP, `explore_unsat.cpp`:
+    // `sample_idxs(..., m_bms_con, ...)` and `sample_op(m_bms_op, ...)`).
+    // The same applies to the analogous caps in the satisfied-constraint
+    // and boolean-flip phases below.  Reference-faithful, not
+    // paper-faithful; see docs/PARAMETERS.md `kBmsConstraints`.
     HighsInt num_to_sample = std::min(kBmsConstraints * 3, ctx.violated.size());
     HighsInt num_to_keep = std::min(kBmsConstraints, ctx.violated.size());
 

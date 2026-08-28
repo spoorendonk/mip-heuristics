@@ -195,11 +195,16 @@ struct FprConfig {
     // Noise parameter p: probability of random walk move (paper default: 0.75).
     // Greedy probability = 1 - repair_noise.
     double repair_noise = 0.75;
-    // DFS node limit for RepairSearch mode (paper Fig. 5).  The paper quotes
-    // 200; we cap at 50 because RepairSearch's two PropEngine fixpoints per
-    // node dominate cost on tight instances (each ~760k coef accesses on
-    // 9k-nnz LPs), so 200 nodes can burn ~1.4 s regardless of max_effort
-    // (see `bench/FPR_REPAIR_SEARCH_LOCKS.md` for the ticino profile).
+    // DFS node limit for RepairSearch mode (paper Fig. 5).  The paper gives
+    // NO node count for RepairSearch — Section 5.1 says only that it runs
+    // "with very strict limits anyway".  (The 200 quoted elsewhere in the
+    // paper is RepairWalk's step limit, which is `walksat_iterations`
+    // below; an earlier comment here mistakenly described 50 as a
+    // reduction of that value.)  50 is ours, chosen because RepairSearch
+    // runs two PropEngine fixpoints per node, which dominates cost on
+    // tight instances (each ~760k coef accesses on 9k-nnz LPs), so 200
+    // nodes can burn ~1.4 s regardless of max_effort (see
+    // `bench/FPR_REPAIR_SEARCH_LOCKS.md` for the ticino profile).
     HighsInt repair_iterations = 50;
 
     // Step limit for flat WalkSAT repair (kDfsrep / kDive / kDiveprop arms).
