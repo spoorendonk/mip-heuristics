@@ -24,12 +24,24 @@ PointerAlignment: Left
 SortIncludes: CaseInsensitive
 IncludeBlocks: Regroup
 IncludeCategories:
-  # Project headers
+  # Two groups, not three: the regexes below split on quote-vs-angle, and
+  # nothing finer.  Written out because the obvious reading of the pair is
+  # wrong in both halves.
+  #
+  # Quote-includes.  This project's own headers *and* HiGHS's, which are
+  # quote-included too (`"mip/HighsMipSolver.h"`, `"lp_data/HighsLp.h"`), so
+  # the two interleave alphabetically in one block rather than separating.
   - Regex: '".*"'
     Priority: 1
-  # Third-party headers
+  # Angle-includes beginning with a lowercase letter.  That is the whole
+  # standard library, not just third-party paths such as `<catch2/...>`, so
+  # this group holds both and sorts them together.
   - Regex: '<[a-z].*>'
     Priority: 2
-  # Standard library
+  # Angle-includes beginning with anything else.  Nothing under `src/` or
+  # `tests/` matches today, and nothing is expected to: HiGHS's capitalized
+  # headers are reached through quotes.  Kept as an explicit catch-all so
+  # such an include lands here by rule instead of at clang-format's implicit
+  # last-priority default.
   - Regex: '<.*>'
     Priority: 3
