@@ -1,5 +1,6 @@
 #include "fpr_lp_refs.h"
 
+#include "deadline.h"
 #include "Highs.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -57,6 +58,28 @@ void set_option_or_die(Highs& highs, const char* name, T value) {
 std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool use_ipm,
                                         bool run_crossover, bool use_objective,
                                         const Deadline& deadline, int64_t& lp_iterations) {
+    // Respect the outer MIP time limit: never exceed what remains, cap at 30s.
+    // Once the deadline has passed there is nothing to hand a sub-solver, and
+    // 0.0 is not a way to say so: HiGHS's LP presolve guards its own timeout
+    // on `time_limit > 0` (`Highs.cpp`), so 0.0 removes that guard, while
+    // simplex (`HEkk.cpp`) and IPM (`ipx/control.cc`) test only `< kHighsInf`
+    // and so read 0.0 as *already expired*, aborting on their first check.
+    // Neither is a limit anyone asked for, and LP presolve on a large model is
+    // itself a real unbounded unit — so return before constructing `Highs`,
+    // and ahead of the O(nnz) matrix copies below, which are equally wasted on
+    // a solve that cannot run.
+    // The scalar comes from the shared `Deadline` the caller threads in
+    // (issue #118); it used to be `time_limit - timer_.read()` inlined here,
+    // which is the same clock read and the same subtraction, but left this
+    // file with a second spelling of the deadline and no way for the caller
+    // to tell an expiry here from a failed solve.  `remaining()` is
+    // `kHighsInf` when the solve carries no limit, which the cap below
+    // collapses to 30 s exactly as before.
+    const double remaining = deadline.remaining();
+    if (remaining <= 0.0) {
+        return {};
+    }
+
     const auto* model = mipsolver.model_;
     const auto& mipdata = *mipsolver.mipdata_;
     const HighsInt ncol = model->num_col_;
@@ -83,23 +106,6 @@ std::vector<double> solve_lp_relaxation(const HighsMipSolver& mipsolver, bool us
         lp.col_cost_.assign(ncol, 0.0);
     }
 
-    // Respect the outer MIP time limit: never exceed what remains, cap at 30s.
-    // HiGHS treats `time_limit == 0.0` as "no limit" (the guard in Highs.cpp is
-    // `time_limit > 0 && time_limit < kHighsInf`), so when we have already
-    // blown past the outer deadline we must short-circuit before constructing
-    // `Highs`; otherwise we would accidentally disable the cap and let the
-    // analytic-center LP run unbounded.
-    // The scalar comes from the shared `Deadline` the caller threads in
-    // (issue #118); it used to be `time_limit - timer_.read()` inlined here,
-    // which is the same clock read and the same subtraction, but left this
-    // file with a second spelling of the deadline and no way for the caller
-    // to tell an expiry here from a failed solve.  `remaining()` is
-    // `kHighsInf` when the solve carries no limit, which the cap below
-    // collapses to 30 s exactly as before.
-    const double remaining = deadline.remaining();
-    if (remaining <= 0.0) {
-        return {};
-    }
     Highs highs;
     set_option_or_die(highs, "output_flag", false);
     set_option_or_die(highs, "time_limit", std::min(30.0, remaining));

@@ -33,9 +33,14 @@ struct Deadline {
     [[nodiscard]] bool expired() const { return timer != nullptr && timer->read() >= limit; }
 
     // Seconds left, `kHighsInf` when there is no limit, never negative.
-    // For sub-solvers that take a time limit rather than a predicate —
-    // HiGHS reads `time_limit == 0.0` as "no limit", so a caller handing
-    // this to one must reject a zero itself rather than passing it on.
+    // For sub-solvers that take a time limit rather than a predicate — and
+    // a caller handing this to one must reject a zero itself rather than
+    // pass it on, because HiGHS does not read `time_limit == 0.0` as any
+    // one thing: LP presolve guards its own timeout on `time_limit > 0`
+    // (`Highs.cpp`), so 0.0 removes that guard, while simplex
+    // (`HEkk.cpp`) and IPM (`ipx/control.cc`) test only `< kHighsInf` and
+    // so treat 0.0 as already expired, aborting on their first check.
+    // Neither is a limit anyone asked for.
     [[nodiscard]] double remaining() const {
         if (timer == nullptr) {
             return kHighsInf;

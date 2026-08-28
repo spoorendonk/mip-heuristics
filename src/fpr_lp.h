@@ -62,5 +62,17 @@ struct SetupProbe {
 
 // `max_effort` is the per-call effort budget `run` would have derived; it
 // is recorded in the setup and does not steer any of the decisions above.
+//
+// **Test-only, and — unlike `dispatch_counts` above, which is one atomic
+// load — this one does real work and charges nobody for it.**  It calls
+// the actual `build_setup`, so on a solver whose LP relaxation *is*
+// scaled-optimal it runs both reference LP solves and all ten
+// `compute_var_order` calls and then destroys the result: LP iterations
+// drawn and booked to nothing, which is precisely what `fpr_lp`'s
+// charge-back exists to prevent, and `compute_var_order` mutates
+// `HighsCliqueTable` state, so reaching it off the dispatching thread is a
+// data race (#99).  Neither bites at today's call sites — the tests probe
+// a bare solver, on one thread, whose LP relaxation stops the setup before
+// either — but do not call this from a solve, and never from a worker.
 SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort);
 }  // namespace fpr_lp

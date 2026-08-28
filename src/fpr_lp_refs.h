@@ -1,11 +1,14 @@
 #pragma once
 
-#include "deadline.h"
-
 #include <cstdint>
 #include <vector>
 
 class HighsMipSolver;
+// Both declarations below take it by const reference only, so the
+// definition — `deadline.h`, which pulls in two HiGHS headers — is the
+// calling translation unit's include, not this header's.  Same reason
+// `HighsMipSolver` above has never been included here.
+struct Deadline;
 
 // ---------------------------------------------------------------------------
 // LP reference solutions
@@ -13,9 +16,11 @@ class HighsMipSolver;
 //
 // Both solves take the solve's wall-clock `deadline` and hand the
 // sub-solver what is left of it (capped at 30 s), returning empty without
-// constructing a `Highs` at all once it has passed: `Deadline::remaining()`
-// is 0.0 there and HiGHS reads `time_limit == 0.0` as *no* limit, so
-// passing that on would uncap the very solve this bounds.
+// constructing a `Highs` at all once it has passed.  `Deadline::remaining()`
+// is 0.0 there, and 0.0 is not a limit that can be passed on: HiGHS's LP
+// presolve guards its own timeout on `time_limit > 0`, so 0.0 removes that
+// guard, while simplex and IPM test only `< kHighsInf` and so read 0.0 as
+// already expired.  Neither is what a caller means by it.
 //
 // An empty return therefore means "no reference available" — from an
 // expired clock or from a failed solve alike, and the caller cannot tell
