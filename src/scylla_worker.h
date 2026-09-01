@@ -60,20 +60,24 @@ inline constexpr int kMaxStaleRounds = kMaxStaleRoundsDefault;
 // receive a seed-driven pseudo-random choice so redundant workers do not
 // cluster on the same strategy — still deterministic per (seed, worker_idx).
 //
-// Every entry's value strategy is `ValStrategy::kLp` (issue #121): Algorithm
-// 1.1 line 12 of the paper is `x_hat = fix-and-propagate(x_bar)`, and
-// `ScyllaWorker::run_attempt` points `FprConfig::lp_ref` at the pump's PDLP
-// iterate `x_bar`, so every chain's rounding must use a value strategy that
-// reads it.  Chain diversity survives in variable strategy and framework
-// mode (unchanged from before #121) plus `val_lp_based`'s own randomized
-// rounding — not in refusing to look at the LP iterate, which is what the
-// pre-#121 entries did (badobj / loosedyn are objective-sign / lock based
-// and never read `lp_ref`).
+// Issue #121 collapsed value-strategy diversity across the four entries to
+// a single choice: every one is now `ValStrategy::kLp` (pre-#121 they were
+// badobj / loosedyn / loosedyn / loosedyn), because Algorithm 1.1 line 12
+// (`x_hat = fix-and-propagate(x_bar)`) requires every chain's rounding to
+// read the pump's PDLP iterate `x_bar`, which `ScyllaWorker::run_attempt`
+// points `FprConfig::lp_ref` at, and only an LP-consuming value strategy
+// reads `lp_ref`.  What remains diverse per chain: variable strategy
+// (`kTypecl` / `kLocks` / `kLocks` / `kLR` — three distinct choices, kept
+// from the pre-#121 assignment via the Scylla-specific `kStratLocksLp` /
+// `kStratLRLp` combinations in fpr_strategies.h, since Table 3 has no
+// kLocks-or-kLR-plus-kLp row), framework mode (kDfs / kDfs / kDive /
+// kDfsrep), and each chain's own RNG stream, which still randomizes
+// `val_lp_based`'s fractional rounding independently per chain.
 inline constexpr auto kFprConfigs = std::to_array<NamedConfig>({
     {kStratLp, FrameworkMode::kDfs},
-    {FprStrategyConfig{VarStrategy::kLocks, ValStrategy::kLp}, FrameworkMode::kDfs},
-    {FprStrategyConfig{VarStrategy::kLocks, ValStrategy::kLp}, FrameworkMode::kDive},
-    {FprStrategyConfig{VarStrategy::kLR, ValStrategy::kLp}, FrameworkMode::kDfsrep},
+    {kStratLocksLp, FrameworkMode::kDfs},
+    {kStratLocksLp, FrameworkMode::kDive},
+    {kStratLRLp, FrameworkMode::kDfsrep},
 });
 inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 

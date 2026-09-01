@@ -328,8 +328,12 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     // No pool restart is pulled here (issue #122): `fpr_attempt_begin` has
     // no seed input left to feed it — the propagation engine's own
     // reset() baseline is never read before Phase 2/2.5 overwrite it — so
-    // `sink_.get_restart` bought nothing but a pool-mutex acquisition and
-    // an `ncol`-sized copy on every call.
+    // `sink_.get_restart` bought nothing but a pool-mutex acquisition, an
+    // `ncol`-sized copy, and RNG draws from `rng_` on every call (a roll,
+    // two parent indices, and up to `ncol` crossover coin flips whenever
+    // the pool is non-empty — see `SolutionPool::get_restart`). Removing
+    // it moves this worker's RNG stream from the first attempt onward, on
+    // top of the shift from deleting the seeding block itself.
 
     // 32 attempts × 1 mutex op (`sink_.offer`, only on a feasible verdict) ×
     // N workers is a theoretical upper bound on pool-mutex acquisitions per

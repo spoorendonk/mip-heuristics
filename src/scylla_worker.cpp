@@ -147,7 +147,13 @@ bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsI
     } else {
         pdlp_stall_count_ = 0;
     }
-    if (result.col_value.empty()) {
+    // `value_valid`, not just non-empty: `ContestedPdlp::publish_snapshot_locked`
+    // and the stale-snapshot path below both gate on it, and `x_bar` now
+    // feeds value selection for every integer column (issue #121), not just
+    // `cont_fallback` — an unusable-but-non-empty primal used to be a
+    // cosmetic difference from `cont_fallback`'s perspective and no longer
+    // is. Symmetric with those two gates rather than a new rule.
+    if (result.col_value.empty() || !result.value_valid) {
         base_.finished = true;
         return true;
     }
@@ -417,6 +423,16 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // cliquePartition-vs-addIncumbent race issue #99 fixed. A deliberate
         // deviation from the paper's ideal (line 11's variable ranking is,
         // in principle, also a function of x_bar), not an oversight.
+        //
+        // `fpr_core` indexes `lp_ref[j]` up to `ncol_` with no bounds check
+        // of its own (issue #121 review): both `x_bar_ptr` sources above —
+        // `warm_start_col_value_` from a fresh PDLP solve and a peer's
+        // published `Snapshot::col_value` on the stale path — are built
+        // from the same LP as `ncol_`, so this should never fire, but a
+        // short vector here would otherwise read out of bounds silently in
+        // a Release build.
+        assert(x_bar.size() == static_cast<size_t>(ncol_) &&
+               "x_bar must be exactly ncol_ long — every fpr_core column read is unguarded");
         cfg.lp_ref = x_bar.data();
         cfg.precomputed_var_order = var_order_->data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_->size());
@@ -427,9 +443,15 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // parameter to feed one to (issue #122 removed it — the propagation
         // engine's own state is never read before Phase 2/2.5 overwrite it,
         // on every path). Before that removal, this call already avoided
-        // pulling one deliberately, since a restart would have overridden
-        // `cfg.lp_ref`'s reference point and silently re-severed line 12
-        // above whenever the pool was non-empty (issue #121).
+        // pulling one deliberately (issue #121), since a restart would have
+        // overridden `cfg.lp_ref`'s reference point and silently re-severed
+        // line 12 above whenever the pool was non-empty. Either way, the
+        // removed `sink_.get_restart(rng_, restart_buf_)` call also drew
+        // from `rng_` whenever the pool was non-empty (a roll, two parent
+        // indices, up to `ncol` crossover coin flips — see
+        // `SolutionPool::get_restart`), so this chain's RNG stream moves
+        // from the point of removal onward, independent of and in addition
+        // to the shift from #122's seeding-block deletion.
         HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0);
 
         base_.total_effort += rounded.effort;

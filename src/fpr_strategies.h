@@ -84,6 +84,22 @@ inline constexpr FprStrategyConfig kStratCore{VarStrategy::kTypecl, ValStrategy:
 inline constexpr FprStrategyConfig kStratLp{VarStrategy::kTypecl, ValStrategy::kLp};
 
 // ---------------------------------------------------------------------------
+// Scylla-specific combinations (issue #121) — NOT in Table 3.
+// ---------------------------------------------------------------------------
+//
+// Every LP-dependent row of Table 3 pairs its value rule with
+// VarStrategy::kTypecl; these two do not — they pair ValStrategy::kLp with
+// the variable strategies Scylla's `kFprConfigs` used pre-#121 (kLocks,
+// kLR), instead of adopting kTypecl for every chain. Rationale: once
+// Algorithm 1.1 line 12 pins the value axis to kLp for all four Scylla
+// chains, variable strategy is what is left to keep per-chain diversity
+// on, and reusing the pre-#121 assignment keeps that diversity rather than
+// collapsing every chain onto kStratLp too. A deliberate deviation from
+// the paper's table, not an omission — see `src/scylla_worker.h`.
+inline constexpr FprStrategyConfig kStratLocksLp{VarStrategy::kLocks, ValStrategy::kLp};
+inline constexpr FprStrategyConfig kStratLRLp{VarStrategy::kLR, ValStrategy::kLp};
+
+// ---------------------------------------------------------------------------
 // Named configuration (strategy + framework mode pair)
 // ---------------------------------------------------------------------------
 

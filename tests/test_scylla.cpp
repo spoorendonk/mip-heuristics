@@ -206,18 +206,10 @@ TEST_CASE("Scylla: two different x_bar inputs round to different x_hat (#121)",
         }
     }
 
-    // Non-empty solution pool: seeded here for defense-in-depth documented
-    // in the design, not because this call path can reach it. `fpr_attempt`
-    // takes no `IncumbentSink&` — the pool restart that used to feed
-    // `initial_solution` was removed from `ScyllaWorker::run_attempt`
-    // itself (issue #121), so no candidate in the pool can be seen by this
-    // call regardless of what is in it. Populating it here rules out (for
-    // a reader re-deriving the old code path) the theory the design flags
-    // as the risk this removal defends against — a pool restart silently
-    // overriding `cfg.lp_ref`'s starting point — which issue #122's own
-    // investigation found was never actually possible: the seeded value is
-    // provably unread on every path (overwritten by `fix()`/auto-fix for
-    // fixed columns, by the Phase 2.5 fill loop for the rest).
+    // Pool pre-seeded for narrative completeness, not as coverage: `fpr_attempt`
+    // takes no `IncumbentSink&`, so nothing here can reach this call — the
+    // restart fetch was removed from ScyllaWorker in #121, and the
+    // `initial_solution` parameter it fed was removed in #122.
     IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
     std::vector<double> adversarial(x_bar_lo.begin(), x_bar_lo.end());
     static_cast<void>(sink.offer(0.0, adversarial, WorkerTrace{0, 0}, 0));

@@ -125,9 +125,12 @@ public:
     //                  coin-flip only on disagreeing integers.
     //   [0.7, 1.0)  — biased copy toward better entries.
     //
-    // Post-crossover repair is handled naturally by the calling heuristic
-    // (FPR, LocalMIP, etc.) which treats the restart as an initial solution
-    // and runs its own feasibility restoration.
+    // Post-crossover repair is handled naturally by the calling heuristic,
+    // which treats the restart as an initial solution and runs its own
+    // feasibility restoration. LocalMIP (`src/local_mip.cpp`) is the only
+    // caller left: FPR, fpr_lp and Scylla all called this too until issue
+    // #122 found that the value they fed as an FPR fix-and-propagate seed
+    // was unread on every path and removed those three call sites.
     bool get_restart(Rng& rng, std::vector<double>& out);
 
     // Return sorted entries (best first). Caller should hold no lock.

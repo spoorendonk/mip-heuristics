@@ -295,8 +295,22 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
 }
 
 // ===================================================================
-// Issue #120: cfg.lp_ref reaches the strategy value-selection path
+// cfg.lp_ref is the sole reference-point mechanism into the strategy path
 // ===================================================================
+//
+// This is NOT a regression guard for issue #120 by itself: `lp_ref` was
+// already threaded into `choose_value` on the strategy branch before #120
+// — #120's defect was that `cfg.hint` was ignored once a strategy was set
+// (every production caller's case), not that `lp_ref` was. A version of
+// this test run against the pre-#120 code would still pass, because the
+// property it checks — a non-null `lp_ref` changes the strategy path's
+// output — already held there. What #120 actually changed is that
+// `hint`/`scores` and the legacy null-strategy branch that read them are
+// gone, leaving `lp_ref` as the *only* way any caller can steer
+// fix-and-propagate toward a reference point. This test characterizes
+// that surviving, single mechanism directly. The `static_assert`s below
+// are the part that genuinely regresses against pre-#120 semantics: they
+// fail to compile if `FprConfig` grows a `hint`/`scores` surface again.
 //
 // `choose_fix_value` has exactly one path once a strategy is set (every
 // production caller sets one): `choose_value`, which for an LP-based value
@@ -310,6 +324,25 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
 // way. Comparing PropEngine's per-column state after `step()` sidesteps
 // that: it is what the search actually decided, independent of whether
 // the attempt as a whole verdicts complete.
+
+// Member-detection idiom: `T` must be a template parameter for the
+// member-access check inside `requires` to be a genuine substitution
+// (SFINAE) context. A `requires` expression checking a fixed, non-dependent
+// type directly (e.g. `requires { std::declval<FprConfig>().hint; }` at
+// namespace scope) hard-errors on an absent member instead of evaluating
+// to `false` -- there is no template argument for substitution to fail on.
+template <typename T>
+concept HasHintMember = requires(const T& t) { t.hint; };
+template <typename T>
+concept HasScoresMember = requires(const T& t) { t.scores; };
+
+static_assert(!HasHintMember<FprConfig>,
+              "FprConfig::hint was deleted (issue #120) -- if it is back, cfg.lp_ref is no "
+              "longer the sole reference-point mechanism and the test below needs revisiting");
+static_assert(!HasScoresMember<FprConfig>,
+              "FprConfig::scores was deleted (issue #120) along with the legacy "
+              "null-strategy branch that read it");
+
 namespace {
 
 // Two per-column reference points at each column's own bounds — clamped to
@@ -340,8 +373,7 @@ LpRefPair make_bound_refs(const HighsLp& model) {
 
 }  // namespace
 
-TEST_CASE("FPR: a non-null lp_ref changes the strategy's produced assignment (#120)",
-          "[fpr][lp_ref]") {
+TEST_CASE("FPR: lp_ref is the strategy path's reference-point mechanism", "[fpr][lp_ref]") {
     highs::parallel::initialize_scheduler();
     Highs highs;
     highs.setOptionValue("output_flag", false);

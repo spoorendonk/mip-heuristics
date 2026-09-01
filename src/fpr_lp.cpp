@@ -305,6 +305,15 @@ public:
             }
         }
 
+        // No pool restart is pulled here (issue #122): `fpr_attempt` has no
+        // seed parameter left to feed one to. The removed
+        // `sink_.get_restart(rng_, initial_solution_buf_)` call bought a
+        // pool-mutex acquisition, an `ncol`-sized copy, and RNG draws from
+        // `rng_` on every call whenever the pool was non-empty (a roll, two
+        // parent indices, up to `ncol` crossover coin flips — see
+        // `SolutionPool::get_restart`), all for a seed value that was never
+        // read. Removing it moves this worker's RNG stream on top of the
+        // shift from deleting the seeding block itself.
         const LpArm& arm = setup_.arms[arm_idx_];
         const auto& var_order = setup_.var_orders[arm_idx_];
 
