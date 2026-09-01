@@ -176,8 +176,11 @@ std::vector<std::string> traced_solve(int dev_level) {
 // the dive needs `fpr_lp`, and the offer count came out 0, 0, 520, 0 over
 // four runs.  At `suite=fpr` it was 360-457 over six.
 //
-// `kTracedNames` below asserts the union actually covers all five, so the
-// coverage cannot silently lapse again if a default moves.
+// `kTracedNames` below is asserted against the union of the three, so the
+// coverage cannot silently lapse again if a default moves.  That assertion
+// is its own `TEST_CASE` since #146 — it is contention-sensitive where the
+// monotonicity check is not, and a starved heuristic should fail a test
+// named for coverage rather than one named for an invariant it kept.
 struct Fixture {
     const char* instance;
     const char* suite;
@@ -268,17 +271,22 @@ TEST_CASE("heursol: (name, dispatch) identifies one dispatch", "[heursol]") {
 }
 
 TEST_CASE("heursol: effort_at is monotone within a worker slot", "[heursol]") {
-    std::set<std::string> covered;
     size_t checked = 0;
 
     for (const Fixture& fixture : kFixtures) {
         INFO("fixture " << fixture.instance);
+        // No per-fixture non-emptiness `REQUIRE` here, deliberately: that is
+        // the coverage case's statement and it moved there wholesale with
+        // the split (#146).  A fixture starved of accepted offers — `gt2`
+        // at `suite=scylla` is the plausible one — would otherwise still
+        // fail *this* case, which is precisely the misattribution the split
+        // exists to end.  `checked > 0` below is what keeps the case from
+        // going vacuous, and it rests on `egout`, whose FPR earns dozens of
+        // acceptances and did so on 25 of 25 runs under CPU saturation.
         const auto parsed = offers(traced_fixture(fixture));
-        REQUIRE(!parsed.empty());
 
         std::map<std::tuple<std::string, unsigned long long, long long>, unsigned long long> last;
         for (const auto& offer : parsed) {
-            covered.insert(offer.name);
             const auto key = std::tuple{offer.name, offer.dispatch, offer.worker};
             const auto it = last.find(key);
             if (it != last.end()) {
@@ -290,10 +298,60 @@ TEST_CASE("heursol: effort_at is monotone within a worker slot", "[heursol]") {
         }
     }
 
-    // The assertions above are vacuous for a slot that offered once, and
-    // the whole case is vacuous for a heuristic that never appeared.  Both
-    // are checked, so a shifted default cannot quietly empty this test.
+    // The assertions above are vacuous for a slot that offered once, so a
+    // shifted default cannot quietly empty this case.  Whether the fixture
+    // set still reaches every heuristic is the *next* case's job — see the
+    // note there for why the two were split.
     CHECK(checked > 0);
+}
+
+// The other half of what the fixture set has to deliver, and a separate
+// case since issue #146.
+//
+// It was the last two lines of the monotonicity case, which meant a
+// heuristic that produced no accepted offer failed a test named for an
+// invariant it had not violated — and the invariant is the one thing that
+// case can state, since the carry that upholds it (`WorkerTrace::effort_base`
+// at every rebuild site) is deleted from a *different* file than the
+// fixtures are chosen in.  A starved heuristic should fail a test named for
+// coverage; that is the whole of the split.
+//
+// `[serial]`, and it is worth being exact about what that does and does
+// not buy, because the obvious reading of it is wrong.
+//
+// These fixtures set no `time_limit` and no `threads`; every gate they
+// reach is denominated in effort.  So CPU starvation does not shorten a
+// dispatch, and the tag is *not* protecting a wall-clock threshold the way
+// it is in `test_deadline.cpp`.  What the case depends on is which worker
+// wins a pool acceptance — a race among the workers of this very process,
+// which serialising ctest cannot remove.
+//
+// What it does buy is the *worker parallelism* the fixtures were chosen
+// under, and that is load-bearing rather than cosmetic.  Measured: pinning
+// `threads=1` here makes this case fail 10 times out of 10, because the
+// `gt2` fixture then produces no accepted Scylla offer at all — one worker
+// gets one entry of the `kFprConfigs` rotation and never reaches the
+// stale-snapshot path that exists only at N>1.  Heavy oversubscription is
+// a softer version of the same deprivation, so keeping the other 160-odd
+// tests off the cores is defending the condition the fixture needs.
+//
+// It follows that pinning `threads` is *not* the mechanism fix it looks
+// like: it does not stabilise coverage, it destroys it.  Nor is there an
+// observable in the log saying "this heuristic was given a fair chance and
+// declined it", so there is no assertion to move to.  And weakening
+// `kTracedNames` to a subset would retire the guard the fixture set exists
+// to provide.  The tag is the honest remaining option, not a pretence that
+// the race is gone.
+TEST_CASE("heursol: the fixture set covers every heuristic that can offer", "[heursol][serial]") {
+    std::set<std::string> covered;
+    for (const Fixture& fixture : kFixtures) {
+        INFO("fixture " << fixture.instance);
+        const auto parsed = offers(traced_fixture(fixture));
+        REQUIRE(!parsed.empty());
+        for (const auto& offer : parsed) {
+            covered.insert(offer.name);
+        }
+    }
     CHECK(covered == kTracedNames);
 }
 

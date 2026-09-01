@@ -65,6 +65,56 @@ constexpr double kLimit = 0.1;
 // assertion keeps its teeth at this slack.
 constexpr double kSlack = 0.20;
 
+// Every case built on `presolve_heur_lines` below is tagged `[serial]`,
+// which `CMakeLists.txt` registers with ctest's `RUN_SERIAL` (issue #146).
+// These are wall-clock bounds and they are protected by serialisation, not
+// by their constants — say so plainly rather than pretending otherwise.
+//
+// Note the scope: `[serial]` follows the *fixture*, not the assertion.  The
+// Scylla case asserts on effort alone and is tagged anyway, because the
+// 0.1 s limit is still running while the chain is dispatched, so its
+// `REQUIRE(lines.size() == 1)` is exposed to the clock whatever the `CHECK`
+// below it looks at.  The attempt-level and dive-setup cases at the bottom
+// of the file are *not* tagged: they use an already-expired clock by
+// construction rather than by a race.
+//
+// The constants above were measured on an idle machine, and `kLimit` is
+// 0.1 s.  Under a full `ctest -j$(nproc)` on a saturated host that budget
+// is gone before the code under test is reached.  Two distinct failures
+// were observed on this tree, unmodified, with 32 CPU-saturating spinners
+// beside `ctest -j32`, and **neither is a near-miss on `kSlack`**:
+//
+//   * `REQUIRE(h.readModel(...) == kOk)` returning -1 — the MPS parser's
+//     own budget, described at the `time_limit` write in
+//     `presolve_heur_lines`.  This one has a real fix and now has it: the
+//     limit is set after the read, so parsing is no longer inside it.
+//     `[serial]` is not what addresses it, and must not be read as if it
+//     were — the tag would only have made it rarer.
+//   * `REQUIRE(lines.size() == 1)` returning 0 — the solve reached
+//     `run_sequential` with the clock already past, so the heuristic was
+//     skipped by its own `terminated()` guard and emitted no `[Heur]`
+//     line.  This one is genuine in-run wall clock: the limit is 0.1 s of
+//     solver time and a descheduled thread spends it doing nothing.
+//     Nothing in the code can bound it, so it is what the tag is for.
+//
+// Widening `kSlack` addresses neither, and would be wrong even if it did:
+// it would blunt the assertion that still works.  Raising `kLimit` is no
+// better — the effort bound `effort < kAttemptCapUnits` (9.6-11.0e6 spent
+// against 4.07e7) erodes as the limit grows, trading one flake for
+// another.  What the second mode needs is an unloaded machine, which is
+// what `RUN_SERIAL` gives it and what `RESOURCE_LOCK` would not.
+//
+// Note what serialisation does *not* cover: `RUN_SERIAL` excludes other
+// ctest tests, not other processes.  A CI runner sharing a box, or another
+// build on the same machine, is load this tag cannot see — which is
+// exactly why the parser mode was worth fixing at the source rather than
+// tagging around.
+//
+// The effort half of each assertion needs none of this — a starved runner
+// spends *less* effort, so `effort_of(line) < kAttemptCapUnits` only gets
+// easier under load.  It is the fixture and the `end_s` bound that need an
+// unloaded machine, and that is the whole of what the tag buys.
+
 // Scylla is asserted on effort alone, and this is the reasoning, because
 // it is the one place a slack constant would have been a fudge.
 //
@@ -192,10 +242,29 @@ std::vector<std::string> presolve_heur_lines(Configure&& configure) {
     require_option(h, "random_seed", 0);
     require_option(h, "log_dev_level", 3);
     require_option(h, "mip_heuristic_presolve_only", true);
-    require_option(h, "time_limit", kLimit);
     std::forward<Configure>(configure)(h);
 
     REQUIRE(h.readModel(kInstancesDir + "/" + kInstance) == HighsStatus::kOk);
+    // `time_limit` goes in *after* the read, and this is load-bearing.
+    //
+    // The free-format MPS reader takes `options.time_limit` as a budget of
+    // its own (`io/FilereaderMps.cpp`) against a clock it starts at parse
+    // start (`HMpsFF::start_time`, checked by `HMpsFF::timeout`), so a limit
+    // set beforehand is a limit on *parsing* as well as on solving.  Parsing
+    // `gesa2` costs 4-5 ms idle — measured by bisection on the built binary,
+    // which reports "Free format reader reached time_limit while parsing" at
+    // `--time_limit 0.004` and reads cleanly at `0.005` — so against
+    // `kLimit` the margin is only 20-25x, and `ctest -j$(nproc)` beside a
+    // saturating load closes it.  `readModel` then returns `kError` and the
+    // `REQUIRE` above fails on a build with nothing wrong with it.
+    //
+    // Nothing is lost by moving it: `Highs::run` starts the run clock
+    // (`timer_.start()`) as one of its first acts, so read time never
+    // entered `end_s` and every assertion in this file is unchanged.  Only
+    // `run()` has to see the option.  `build_bare_mipsolver` in
+    // `test_common.h` already orders it this way, for the same reason —
+    // `presolve_heur_lines` was the outlier.
+    require_option(h, "time_limit", kLimit);
     static_cast<void>(h.run());
 
     std::scoped_lock lock(capture.mtx);
@@ -245,7 +314,7 @@ void require_stopped_mid_attempt(const char* heuristic) {
 
 // FJ is the heuristic #114 was reported against: its callback had gates
 // for the attempt budget, the total budget and staleness, and no clock.
-TEST_CASE("deadline: FJ stops at the time limit, not at its effort budget", "[deadline]") {
+TEST_CASE("deadline: FJ stops at the time limit, not at its effort budget", "[deadline][serial]") {
     require_stopped_mid_attempt("fj");
 }
 
@@ -254,7 +323,8 @@ TEST_CASE("deadline: FJ stops at the time limit, not at its effort budget", "[de
 // `kTermCheckInterval` had documented a termination-check cadence for this
 // loop since it was introduced while being referenced nowhere in the tree;
 // it is now what paces the check.
-TEST_CASE("deadline: LocalMIP stops at the time limit, not at its effort budget", "[deadline]") {
+TEST_CASE("deadline: LocalMIP stops at the time limit, not at its effort budget",
+          "[deadline][serial]") {
     require_stopped_mid_attempt("local_mip");
 }
 
@@ -262,7 +332,7 @@ TEST_CASE("deadline: LocalMIP stops at the time limit, not at its effort budget"
 // which writes `mipsolver.termination_status_` from a worker thread when a
 // terminator is attached.  It polls `past_deadline()` now; this pins that
 // the behaviour it had is the behaviour it kept.
-TEST_CASE("deadline: FPR stops at the time limit, not at its effort budget", "[deadline]") {
+TEST_CASE("deadline: FPR stops at the time limit, not at its effort budget", "[deadline][serial]") {
     require_stopped_mid_attempt("fpr");
 }
 
@@ -273,7 +343,7 @@ TEST_CASE("deadline: FPR stops at the time limit, not at its effort budget", "[d
 // act between pump iterations, so the question this case can answer is not
 // "did it stop mid-attempt" but "did it stop at all before its budget",
 // which is the one a removed guard would fail.
-TEST_CASE("deadline: Scylla stops before spending its budget", "[deadline]") {
+TEST_CASE("deadline: Scylla stops before spending its budget", "[deadline][serial]") {
     const std::string line = alone_at_limit("scylla");
     INFO(line);
     CHECK(effort_of(line) < kBudgetUnits / 4);
@@ -288,7 +358,7 @@ TEST_CASE("deadline: Scylla stops before spending its budget", "[deadline]") {
 // Which subset runs is itself a timing fact, so Scylla may be in it and is
 // held to the same effort bound it gets on its own rather than to a wall
 // clock it cannot honour.
-TEST_CASE("deadline: no presolve heuristic outlives the limit", "[deadline]") {
+TEST_CASE("deadline: no presolve heuristic outlives the limit", "[deadline][serial]") {
     const auto lines = presolve_heur_lines([](Highs& h) {
         require_option(h, "mip_heuristic_suite", std::string("all"));
         require_option(h, "mip_heuristic_fj_effort", 1.0);
@@ -423,7 +493,7 @@ TEST_CASE("deadline: one FPR attempt stops on the clock, not on its effort budge
 // This case is therefore a guard rather than a discriminator — it fails if
 // a future change lets the effort option buy time again — and the
 // discriminating measurement is the attempt-level case below it.
-TEST_CASE("deadline: an unbindable budget does not loosen the deadline", "[deadline]") {
+TEST_CASE("deadline: an unbindable budget does not loosen the deadline", "[deadline][serial]") {
     const std::string fpr_line = alone_at_limit("fpr", kUnbindableEffort);
     INFO(fpr_line);
     require_expected_nnz(fpr_line);

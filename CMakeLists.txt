@@ -185,7 +185,48 @@ target_compile_definitions(mip_heuristics_tests PRIVATE
 if(MIP_HEURISTICS_INSTRUMENT)
     target_compile_definitions(mip_heuristics_tests PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
 endif()
-catch_discover_tests(mip_heuristics_tests)
+# Two registrations partitioning the suite on the `[serial]` tag (#146).
+#
+# `[serial]` marks the cases that measure elapsed time against a threshold:
+# the presolve-deadline cases in tests/test_deadline.cpp (a 0.1 s solver
+# limit that a descheduled thread spends doing nothing, after which
+# `run_sequential` skips the heuristic and no `[Heur]` line is emitted),
+# effort-zero's setup-free window, and the two `ContestedPdlp` cases that
+# race a sleeping thread against a deadline.  All were calibrated on an idle
+# machine and all can fail under `ctest -j$(nproc)` on a saturated host with
+# nothing wrong with the code.
+#
+# The tag is the *last* resort, not the first.  Prefer removing the clock
+# from the fixture: the same deadline cases also failed at `readModel`,
+# because the MPS parser takes `time_limit` as its own parse budget, and
+# that one was fixed by writing the option after the read rather than by
+# tagging around it (see the note at that write).  A wall-clock threshold
+# tuned until it stops failing is the same test with a longer fuse, and a
+# tag is only honest where nothing in the code can bound the wait.
+#
+# `RUN_SERIAL` rather than `RESOURCE_LOCK`: these cases need an *unloaded*
+# machine, not merely exclusion from each other.  A lock only serialises its
+# own holders, so the other 160-odd tests would still be running alongside
+# them — which is the load that makes them fail.  Neither, though, excludes
+# load from *outside* ctest: a shared CI runner is beyond what either can
+# do, which is the other half of why the parser fix was worth making.
+#
+# The two specs partition the suite exactly: Catch2's `~[serial]` is the
+# complement of `[serial]` over the non-hidden cases, so no test is dropped
+# and none is registered twice (`ctest -N` counts and a `uniq -d` over the
+# names both confirm it).  The distinct `TEST_LIST` names are hygiene, not
+# a fix for a live bug: `Catch.cmake` keys its generated files on a SHA1 of
+# `TEST_SPEC`, so the two calls already write separate include scripts and
+# nothing in this project reads either variable.  Keep them distinct anyway
+# — the default is `<target>_TESTS` for both, and a future reader of the
+# list should not have to work out which call won.
+catch_discover_tests(mip_heuristics_tests
+    TEST_SPEC "[serial]"
+    TEST_LIST mip_heuristics_tests_SERIAL
+    PROPERTIES RUN_SERIAL TRUE)
+catch_discover_tests(mip_heuristics_tests
+    TEST_SPEC "~[serial]"
+    TEST_LIST mip_heuristics_tests_PARALLEL)
 
 # Python bench tests — unit tests for the log parser, the benchmark
 # harness and the results analysis.  The measurements themselves run off a

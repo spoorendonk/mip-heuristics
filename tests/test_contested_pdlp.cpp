@@ -264,8 +264,24 @@ TEST_CASE("ContestedPdlp: blocking solve() always serialises but never dead-lock
     REQUIRE(static_cast<int>(pdlp.snapshot_generation()) == kWorkers * kIters);
 }
 
+// `[serial]` (issue #146), and it is the same class as the deadline case
+// further down even though it asserts a race outcome rather than an
+// elapsed time.  The probe loop below only runs while the solver thread is
+// inside its ~50 ms faked solve, and it is entered after a 5 ms sleep of
+// its own; deschedule this thread across that whole window — reachable at
+// `ctest -j$(nproc)`, where every other case is spawning its own thread
+// pool — and the loop body never executes, leaving `stale_hits` at 0.
+//
+// The deterministic alternative was considered and rejected: holding `mu_`
+// from a helper thread via `acquire_for_test()` and probing against a
+// signalled ready-flag would remove both sleeps, but no solve would then
+// run through `run_locked_with_accounting`, so the `peak_in_flight() == 1`
+// assertion below — the half that proves stale reads do not accidentally
+// serialise a *real* solve — would be testing an idle mutex.  Buying
+// determinism with that is a bad trade, so the window stays and the tag
+// protects it.
 TEST_CASE("ContestedPdlp: stale workers can round while one worker solves",
-          "[contested_pdlp][overlap]") {
+          "[contested_pdlp][overlap][serial]") {
     // This is the scenario-level regression test for issue #76: one
     // worker is inside a (faked) solve, and other workers must be
     // able to read the *previous* snapshot concurrently — no waiting
@@ -378,8 +394,18 @@ TEST_CASE("ContestedPdlp: a solve entered past the deadline does not run",
     CHECK(pdlp.snapshot_generation() == 0);
 }
 
+// `[serial]` (issue #146): the fixture spends a fixed 250 ms of a 500 ms
+// deadline holding the mutex, and the assertions below need the other half
+// still to be there when the waiter is scheduled.  Under `ctest -j$(nproc)`
+// on a saturated host the 250 ms sleep, the thread launch and the wake
+// after the unlock can together outrun the deadline, at which point
+// `Deadline::remaining()` clamps to 0, `ContestedPdlp::solve` declines
+// outright, and `REQUIRE(solve_count == 1)` fails on a build with nothing
+// wrong with it.  Widening `kLimit` would weaken exactly the half the case
+// exists to check — that the limit is read *after* the wait — so the fix
+// is an unloaded machine instead.
 TEST_CASE("ContestedPdlp: a solve that waited for the mutex gets the time that is left",
-          "[contested_pdlp][deadline]") {
+          "[contested_pdlp][deadline][serial]") {
     // The bug this pins: `ScyllaWorker` used to compute `time_limit -
     // timer.read()` at the top of its pump iteration and pass it here.
     // Every `kMaxStaleRounds` rounds it takes the *blocking* path, where

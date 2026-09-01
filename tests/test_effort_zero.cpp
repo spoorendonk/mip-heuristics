@@ -237,7 +237,16 @@ TEST_CASE("effort-zero: scylla builds no PDLP wrapper at effort 0", "[effort-zer
 // cost the counterfactual pays is real work that every repeat pays again.
 // So the min keeps the false-failure rate near zero without weakening what
 // the test detects.
-TEST_CASE("effort-zero: a zeroed heuristic runs no setup either", "[effort-zero]") {
+//
+// `[serial]` on top of that (issue #146): the min over three repeats is a
+// variance reducer, not a bound, and a 0.3 ms threshold is inside the
+// window a single deschedule opens under `ctest -j$(nproc)` on a saturated
+// host — three of them can all be unlucky.  ctest's `RUN_SERIAL` restores
+// the idle machine the 0.0 ms / 0.5-0.7 ms separation above was measured
+// on.  The alternative — raising `kSetupFreeMs` until it stops failing —
+// would walk it into the unguarded values it has to stay well below, at
+// which point the case asserts nothing.
+TEST_CASE("effort-zero: a zeroed heuristic runs no setup either", "[effort-zero][serial]") {
     constexpr int kRepeats = 3;
     constexpr double kSetupFreeMs = 0.3;
 

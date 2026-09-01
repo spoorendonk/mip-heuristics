@@ -38,6 +38,31 @@ ctest --test-dir build -R "execution-mode: flugpl objective" --output-on-failure
 
 Tests are Catch2 v3 (`TEST_CASE` with `[tag]` filters), not GoogleTest.
 
+`[serial]` is a reserved tag, and the last resort rather than the first. It
+marks the handful of cases that a loaded machine can fail with nothing wrong
+in the code — the presolve-deadline cases, effort-zero's setup-free window,
+the two `ContestedPdlp` cases that race a sleeping thread, and the
+`[HeurSol]` coverage case, which needs real worker parallelism rather than a
+clock. `CMakeLists.txt` registers them through a second
+`catch_discover_tests` call carrying `RUN_SERIAL TRUE`, so ctest runs them
+alone.
+
+When a test flakes under `-j$(nproc)`, work down this list:
+
+1. **Take the clock out of the fixture.** `test_deadline.cpp` was failing in
+   `readModel`, because HiGHS's free-format MPS reader treats `time_limit` as
+   its own *parse* budget — parsing `gesa2` costs 4-5 ms against a 0.1 s
+   limit, and saturation closes that margin. Setting the option after the
+   read fixes it outright, for every machine, including CI boxes with noisy
+   neighbours that `RUN_SERIAL` cannot see.
+2. **Assert the mechanism.** A starved runner spends *less* effort, so an
+   effort bound holds under load where a time bound does not.
+3. **Only then tag it**, for a wait nothing in the code can bound.
+
+**Never widen the threshold.** A wall-clock bound tuned until it stops
+failing is the same test with a longer fuse — and in the case above it would
+not have worked at all, since the failure was not a near-miss.
+
 ### Build options
 
 | Flag | Default | Meaning |
