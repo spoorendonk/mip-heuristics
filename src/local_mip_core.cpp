@@ -61,7 +61,10 @@ WorkerCtx::WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uin
 void WorkerCtx::update_violated(HighsInt i) {
     double viol = compute_violation(i, lhs[i]);
     bool was = violated.contains(i);
-    bool now = (viol > kViolTol);
+    // `feastol`, not the retired `kViolTol` (issue #148): set membership
+    // has to agree with `is_violated` and `compute_tight_delta`'s
+    // violated/satisfied branch, both of which already read `feastol`.
+    bool now = (viol > feastol);
     if (now && !was) {
         violated.add(i);
         satisfied.remove(i);
@@ -124,7 +127,12 @@ bool WorkerCtx::full_recheck(bool update_sets, bool early_exit) {
             l += ar_value[k] * solution[ar_index[k]];
         }
         lhs[i] = l;
-        if (compute_violation(i, l) > kViolTol) {
+        // `feastol`, not the retired `kViolTol` (issue #148): this is
+        // both the violated/satisfied set-membership classifier and the
+        // worker's submission gate, and it must accept exactly what
+        // HiGHS's own `trySolution` (mip/HighsMipSolverData.cpp) would
+        // — no looser, and no stricter.
+        if (compute_violation(i, l) > feastol) {
             feasible = false;
             if (early_exit) {
                 break;

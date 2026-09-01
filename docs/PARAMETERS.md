@@ -161,16 +161,30 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 ## LocalMIP
 
-### `kViolTol` — violation tolerance for constraint classification
+### `kScoreTol` — score-comparison epsilon for candidate scoring
 
 - **File**: `src/local_mip_caches.h`
 - **Default**: `5e-7`
-- **Meaning**: Threshold below which a constraint's violation is
-  considered zero (used to classify rows into `violated` vs
-  `satisfied`). Tighter than HiGHS's default feasibility tolerance
-  to avoid misclassifying nearly-satisfied rows.
-- **Suggested range**: 1e-8–1e-6. Tighten for higher accuracy;
-  loosen to accept near-feasible solutions faster.
+- **Meaning**: Tolerance for comparing two accumulated candidate scores
+  (Defs 5-10: sums of per-row integer constraint weights, an
+  objective-improvement flag, a bonus) for a numerically meaningful
+  difference — floating-point summation noise, not a feasibility
+  question. **Not** used to decide whether a row is violated: that
+  question — set membership in `violated`/`satisfied`, the worker's
+  submission gate, `WorkerCtx::is_violated`, and the branch
+  `compute_tight_delta` rounds on — is answered everywhere in LocalMIP
+  by HiGHS's own runtime `feastol` (`mipsolver.mipdata_->feastol`,
+  not a tunable in this file). Until issue #148, this constant (then
+  named `kViolTol`) answered *both* questions at once, at a value
+  (5e-7) tighter than HiGHS's default `feastol` (1e-6) — a row violated
+  by an amount in between landed in the `violated` set but was scored
+  by the tight-move operator as already satisfied, so it never got a
+  repairing candidate, and the worker's submission gate refused
+  solutions HiGHS's own `trySolution` would accept. See the comment at
+  this constant's definition for the full account.
+- **Suggested range**: 1e-9–1e-5. Too large risks discarding real score
+  differences as noise; too small risks treating floating-point summation
+  noise as a real difference.
 
 ---
 

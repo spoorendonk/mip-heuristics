@@ -69,9 +69,16 @@ inline bool is_integer(const std::vector<HighsVarType>& integrality, HighsInt j)
 }
 
 // Tolerance hierarchy:
-//   feastol  (~1e-6)  — from solver, used for feasibility checks
-//   kViolTol (5e-7)   — local_mip local-search violation threshold
-//   1e-15             — numerical zero (avoids division/move on zero-delta)
+//   feastol   (~1e-6)  — from solver, used for feasibility checks
+//                        everywhere, local_mip's violation partition
+//                        included (issue #148: local_mip used to keep a
+//                        separate, tighter `kViolTol` for that question,
+//                        which disagreed with this one in a narrow
+//                        window and is retired).
+//   kScoreTol (5e-7)   — local_mip local-search *score*-comparison
+//                        epsilon (`src/local_mip_caches.h`); not a
+//                        feasibility tolerance.
+//   1e-15              — numerical zero (avoids division/move on zero-delta)
 
 // Row violation: how much lhs exceeds [lo, hi] bounds.
 inline double row_violation(double lhs, double lo, double hi) {

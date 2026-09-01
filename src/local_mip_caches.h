@@ -10,7 +10,38 @@
 namespace local_mip_detail {
 
 // --- File-scope constants (paper + engineering) ---
-inline constexpr double kViolTol = 5e-7;
+//
+// Two different questions used to share one constant here (issue #148),
+// and that was the bug: "is this row violated?" is a feasibility
+// question, and LocalMIP already has an authoritative answer for it —
+// `WorkerCtx::feastol`, HiGHS's own runtime feasibility tolerance, the
+// same one `HighsMipSolverData::trySolution` checks a row against
+// before accepting a solution. The retired `kViolTol` (5e-7) was
+// *tighter* than that (HiGHS's default `feastol` is 1e-6), so
+// `WorkerCtx::update_violated` / `full_recheck` could classify a row
+// "violated" — and refuse to submit the solution — in a window,
+// (5e-7, 1e-6], where `WorkerCtx::is_violated` and
+// `compute_tight_delta`, which already read `feastol`, disagreed and
+// called the same row satisfied. A row stuck in that window got no
+// repairing candidate: the tight-move operator's satisfied branch is a
+// no-op there by construction. Every violation question in the search
+// worker now reads `feastol` — set membership
+// (`WorkerCtx::update_violated`, `full_recheck`), the submission gate
+// (also `full_recheck`), `is_violated`, `compute_tight_delta`'s branch,
+// and the analogous was-this-row-violated check in
+// `compute_candidate_scores` (`local_mip_search.cpp`) — so the worker
+// is exactly as strict as HiGHS's own acceptance check, never stricter.
+//
+// `kScoreTol` is the *other* question `kViolTol` used to answer:
+// whether two accumulated candidate *scores* (Defs 5-10 — sums of
+// per-row integer constraint weights, an objective-improvement flag,
+// and a bonus) differ by more than floating-point summation noise.
+// That is not a feasibility question — a score has no relationship to
+// a row's activity or bounds — so it keeps its own small constant
+// rather than folding into `feastol`. It happens to reuse `kViolTol`'s
+// old value because nothing has ever needed a different one, not
+// because the two roles are related.
+inline constexpr double kScoreTol = 5e-7;
 inline constexpr HighsInt kRestartInterval = 200000;
 inline constexpr HighsInt kTermCheckInterval = 1000;
 inline constexpr HighsInt kActivityPeriod = 100000;

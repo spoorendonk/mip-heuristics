@@ -883,3 +883,122 @@ TEST_CASE("LocalMIP tight move: compute_tight_delta satisfies the row it targets
         CHECK(new_lhs <= ctx.row_hi[row] + ctx.feastol);
     }
 }
+
+// ── LocalMIP: one tolerance governs the violation partition (#148) ────
+
+// Before this fix, three different questions about "is this row
+// violated?" disagreed. `kViolTol` (5e-7) gated set membership
+// (`WorkerCtx::update_violated`, `full_recheck`) and the worker's
+// submission gate; HiGHS's own `feastol` (1e-6 by default) gated
+// `WorkerCtx::is_violated` and the branch `compute_tight_delta` uses to
+// pick its rounding rule. A row violated by an amount in the window
+// (5e-7, 1e-6] therefore landed in the `violated` set — but the
+// tight-move operator, reading `feastol`, treated it as already
+// satisfied and produced no repairing candidate; and the submission
+// gate refused a solution HiGHS's own `trySolution`
+// (`mip/HighsMipSolverData.cpp`, which bounds every row check to
+// `feastol` alone) would have accepted.
+//
+// The fix threads `feastol` through every one of those sites. A row in
+// this window is therefore not "violated" by any of them any more — it
+// agrees with HiGHS's own tolerance instead of being pickier than it,
+// so no repair is needed and the worker is willing to submit. This
+// pins that outcome directly on the issue's repro shape:
+// `x1 + x2 <= 2`, both integer, `lhs = 2 + 7e-7`.
+TEST_CASE("LocalMIP: violation partition agrees with HiGHS's feastol, not a stricter one (#148)",
+          "[heuristic][local_mip]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+
+    // x1 + x2 <= 2, x1, x2 in [0, 10], both integer.
+    highs.addVar(0.0, 10.0);
+    highs.addVar(0.0, 10.0);
+    highs.changeColIntegrality(0, HighsVarType::kInteger);
+    highs.changeColIntegrality(1, HighsVarType::kInteger);
+    const auto idx = std::to_array<HighsInt>({0, 1});
+    const auto val = std::to_array<double>({1.0, 1.0});
+    highs.addRow(-kHighsInf, 2.0, 2, idx.data(), val.data());
+
+    // Mirrors `build_bare_mipsolver` (test_common.h), minus the
+    // `readModel` call: the repro needs a row shaped exactly
+    // `x1 + x2 <= 2` with unit coefficients, which no bundled instance
+    // is guaranteed to contain, so the model is built directly above.
+    highs.setOptionValue("presolve", "off");
+    require_option(highs, "time_limit", kHighsInf);
+    HighsCallback cb(&highs);
+    auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
+                                                      highs.getSolution());
+    mipsolver->timer_.start();
+    mipsolver->improving_solution_file_ = nullptr;
+    mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
+    mipsolver->mipdata_->init();
+    mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
+    mipsolver->mipdata_->runSetup();
+    mipsolver->mipdata_->workers.emplace_back(
+        *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
+        &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
+        &mipsolver->mipdata_->getPseudoCost());
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+
+    REQUIRE(ctx.nrow == 1);
+    const HighsInt row = 0;
+    REQUIRE(ctx.row_hi[row] == Catch::Approx(2.0));
+    REQUIRE_FALSE(ctx.is_equality(row));
+
+    // The window this issue is about: strictly between the retired
+    // kViolTol (5e-7) and HiGHS's feastol (1e-6). Confirm the fixture's
+    // own feastol matches what the repro assumes before leaning on it.
+    REQUIRE(ctx.feastol == Catch::Approx(1e-6));
+    const double violation = 7e-7;
+    REQUIRE(violation > 5e-7);
+    REQUIRE(violation <= ctx.feastol);
+
+    // Column values chosen only to make the row's real dot product
+    // equal `2 + violation` via floating-point arithmetic (both
+    // coefficients are 1.0) — `full_recheck` recomputes `lhs` from
+    // `solution`, so the target activity has to be reached that way,
+    // not by poking `ctx.lhs` directly. This is a row-activity
+    // tolerance test, not an integer-feasibility one (that is checked
+    // separately, e.g. by `local_mip::is_solution_feasible`).
+    ctx.solution[0] = 2.0;
+    ctx.solution[1] = violation;
+
+    // `is_violated` already read `feastol` before this fix and still
+    // does; check it first so a regression there is not conflated with
+    // the set-membership fix below.
+    REQUIRE_FALSE(ctx.is_violated(row, 2.0 + violation));
+
+    // `rebuild_state` drives `full_recheck(update_sets=true, ...)`,
+    // which is both the set-membership classifier and (in its
+    // `update_sets=false` form below) the submission gate's own
+    // feasibility check.
+    ctx.rebuild_state();
+    REQUIRE(ctx.lhs[row] == Catch::Approx(2.0 + violation));
+
+    // The heart of #148: set membership must agree with `is_violated`.
+    // Before the fix, `kViolTol` (5e-7) made this `true` even though
+    // `is_violated` above says `false` for the same row.
+    REQUIRE_FALSE(ctx.violated.contains(row));
+    REQUIRE(ctx.satisfied.contains(row));
+
+    // The submission gate (mirrors the production call site in
+    // `local_mip_worker.cpp`'s post-improvement recheck): a worker
+    // willing to submit this solution is exactly as strict as HiGHS's
+    // own `trySolution`, which accepts any row activity within
+    // `feastol`. Before the fix `full_recheck` used `kViolTol` and
+    // returned `false` here, refusing a solution HiGHS itself accepts.
+    REQUIRE(ctx.full_recheck(/*update_sets=*/false, /*early_exit=*/true));
+
+    // And the tight-move operator agrees rather than disagreeing with
+    // set membership: since the row is (now, correctly) not violated,
+    // its satisfied-branch delta rounds toward zero to a no-op — the
+    // consistent answer for a row already within tolerance, replacing
+    // the old mismatch where the same row sat in `violated` but got no
+    // repairing candidate.
+    const double delta = ctx.compute_tight_delta(row, /*j=*/0, /*coeff=*/1.0);
+    REQUIRE(std::abs(delta) < local_mip_detail::kEpsZero);
+}

@@ -93,16 +93,28 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
         // without measuring — it would move us away from the reference
         // implementation.  (The reference also scales equality rows by 2x,
         // which we do not do; that part is a genuine gap.)
-        bool was_viol = (old_viol > kViolTol);
-        bool now_viol = (new_viol > kViolTol);
+        // `feastol`, not `kScoreTol` (issue #148): this is the same
+        // "is this row violated?" question `WorkerCtx::is_violated` and
+        // the `violated`/`satisfied` sets answer, just evaluated on a
+        // hypothetical (pre-move / post-move) lhs rather than the
+        // worker's live state — it has to use the one tolerance that
+        // governs violation everywhere else, or this scoring pass would
+        // reintroduce the same kind of mismatch #148 fixed elsewhere.
+        bool was_viol = (old_viol > ctx.feastol);
+        bool now_viol = (new_viol > ctx.feastol);
         if (was_viol && !now_viol) {
             progress += w;  // violated → satisfied
         } else if (!was_viol && now_viol) {
             progress -= w;  // satisfied → violated
         } else if (was_viol && now_viol) {
-            if (new_viol < old_viol - kViolTol) {
+            // `kScoreTol`, not `feastol`: this asks whether the
+            // violation *magnitude* moved by more than floating-point
+            // noise, not whether the row is violated (already decided
+            // above) — see `kScoreTol`'s definition in
+            // `local_mip_caches.h`.
+            if (new_viol < old_viol - kScoreTol) {
                 progress += w;  // still violated, improved
-            } else if (new_viol > old_viol + kViolTol) {
+            } else if (new_viol > old_viol + kScoreTol) {
                 progress -= w;  // still violated, worsened
             }
         }
@@ -193,9 +205,13 @@ Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, 
         auto [prog, bon] =
             compute_candidate_scores(ctx, c.var_idx, c.new_val, best_feasible, best_obj);
 
-        if (prog > best.score + kViolTol) {
+        // `kScoreTol`, every use from here down in this file: comparing
+        // two candidate scores for a numerically meaningful difference,
+        // not a violation question — see its definition in
+        // `local_mip_caches.h` (issue #148).
+        if (prog > best.score + kScoreTol) {
             best = {c.var_idx, c.new_val, prog, bon};
-        } else if (prog > best.score - kViolTol) {
+        } else if (prog > best.score - kScoreTol) {
             if (bon > best.bonus) {
                 best = {c.var_idx, c.new_val, prog, bon};
             }
@@ -278,7 +294,7 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
     Candidate cand = select_best_from_batch(ctx, batch, step, true, best_objective, best_feasible);
 
     // If positive candidate found, done (Alg 2 lines 1-6)
-    if (cand.var_idx != -1 && cand.score > kViolTol) {
+    if (cand.var_idx != -1 && cand.score > kScoreTol) {
         return cand;
     }
 
@@ -299,12 +315,12 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         }
         auto sat_cand =
             select_best_from_batch(ctx, batch, step, false, best_objective, best_feasible);
-        if (sat_cand.var_idx != -1 && sat_cand.score > cand.score + kViolTol) {
+        if (sat_cand.var_idx != -1 && sat_cand.score > cand.score + kScoreTol) {
             cand = sat_cand;
         }
     }
 
-    if (cand.var_idx != -1 && cand.score > kViolTol) {
+    if (cand.var_idx != -1 && cand.score > kScoreTol) {
         return cand;
     }
 
@@ -324,13 +340,13 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         if (!batch.empty()) {
             auto flip_cand =
                 select_best_from_batch(ctx, batch, step, true, best_objective, best_feasible);
-            if (flip_cand.var_idx != -1 && flip_cand.score > cand.score + kViolTol) {
+            if (flip_cand.var_idx != -1 && flip_cand.score > cand.score + kScoreTol) {
                 cand = flip_cand;
             }
         }
     }
 
-    if (cand.var_idx != -1 && cand.score > kViolTol) {
+    if (cand.var_idx != -1 && cand.score > kScoreTol) {
         return cand;
     }
 
@@ -350,8 +366,8 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
         auto fallback =
             select_best_from_batch(ctx, batch, step, false, best_objective, best_feasible);
         if (fallback.var_idx != -1 &&
-            (cand.var_idx == -1 || fallback.score > cand.score + kViolTol ||
-             (fallback.score > cand.score - kViolTol && fallback.bonus > cand.bonus))) {
+            (cand.var_idx == -1 || fallback.score > cand.score + kScoreTol ||
+             (fallback.score > cand.score - kScoreTol && fallback.bonus > cand.bonus))) {
             cand = fallback;
         }
     }
