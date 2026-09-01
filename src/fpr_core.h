@@ -147,12 +147,6 @@ struct FprConfig {
     // `fpr_attempt` lets a single DFS run far longer than the caller's
     // slice budget intended.
     size_t max_effort;
-    // Per-variable hint for choose_fix_value (nullable; length ncol if non-null).
-    // Used only on attempt 0 (papers: FPR uses incumbent, Scylla uses LP sol).
-    const double* hint;
-    // Ranking scores per variable (length ncol; caller computes).
-    // Used only when strategy is null (legacy mode).
-    const double* scores;
     // Fallback values for zero-cost continuous vars (length ncol)
     const double* cont_fallback;
     // Optional pre-built CSC matrix (avoids redundant build if caller already has
@@ -163,10 +157,18 @@ struct FprConfig {
     FrameworkMode mode = FrameworkMode::kDiveprop;
 
     // --- Strategy (paper Table 3) ---
-    // When non-null, uses the paper's variable ranking and value selection.
-    // When null, falls back to legacy scores-based ranking + hint/goodobj.
+    // MUST be non-null: the paper's variable ranking and value selection
+    // is the only path (issue #120 deleted the legacy null-strategy branch
+    // — scores-based ranking plus a hint/goodobj value fallback — because
+    // no production caller ever set `strategy` to null and no test
+    // exercised the branch either).  `fpr_attempt_begin` asserts this.
     const FprStrategyConfig* strategy = nullptr;
-    // LP reference solution for LP-based strategies (nullable).
+    // LP reference solution for LP-based strategies (nullable), and — since
+    // #120/#121 — the single reference-point mechanism into the strategy
+    // path: any caller that wants fix-and-propagate to consult a specific
+    // point (Scylla's PDLP iterate, an LP-based FPR arm's reference
+    // solution) passes it here and picks a value strategy that reads it
+    // (`kZerocore`/`kZerolp`/`kCore`/`kLp` -> `val_lp_based`).
     const double* lp_ref = nullptr;
 
     // --- Pre-computed variable order (avoids data races on cliquePartition) ---
@@ -234,9 +236,10 @@ struct FprConfig {
 };
 
 // Single-attempt one-shot variant. Returns result without submitting.
-// Uses provided RNG and attempt index. If initial_solution is non-null, uses it
-// as the starting point (overriding cfg.hint). Otherwise falls back to cfg.hint
-// on attempt 0, or random initialization on later attempts.
+// Uses provided RNG and attempt index. If initial_solution is non-null, seeds
+// the propagation engine's solution array with it (or with a deterministic /
+// random start otherwise) before Phase 2 — see the seeding block in
+// `fpr_attempt_begin` for which of the two applies.
 HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng& rng,
                             int attempt_idx, const double* initial_solution);
 

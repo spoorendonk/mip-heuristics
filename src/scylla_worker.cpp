@@ -402,8 +402,6 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         const auto& named = kFprConfigs[fpr_config_index_];
         FprConfig cfg{};
         cfg.max_effort = remaining_budget;
-        cfg.hint = x_bar.data();
-        cfg.scores = nullptr;
         cfg.cont_fallback = x_bar.data();
         cfg.csc = &csc_;
         cfg.mode = named.mode;

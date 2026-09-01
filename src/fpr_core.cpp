@@ -132,47 +132,20 @@ PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMa
     return *engine_opt;
 }
 
-// Strategy-aware or legacy hint+objective-greedy value selection.
+// Strategy-aware value selection.  `cfg.strategy` must be non-null — issue
+// #120 deleted the legacy null-strategy branch (scores-based ranking plus a
+// hint/goodobj value fallback): no production caller ever left `strategy`
+// null, and no test reached the branch either, so keeping it as an
+// unreachable fallback was strictly dead code with a maintenance cost.
 // Pure (no state outside its arguments); rebuild fresh in each begin/step/finish.
 double choose_fix_value(HighsInt j, const FprConfig& cfg, const AttemptCtx& c, PropEngine& E,
-                        const CscMatrix& csc, Rng& rng, bool use_hint) {
-    if (cfg.strategy != nullptr) {
-        return choose_value(j, E.var(j).lb, E.var(j).ub, is_integer(c.integrality, j), c.minimize,
-                            c.col_cost[j], cfg.strategy->val_strategy, rng, cfg.lp_ref,
-                            c.row_lo.data(), c.row_hi.data(),
-                            E.activities_initialized() ? E.min_activity_data() : nullptr,
-                            E.activities_initialized() ? E.max_activity_data() : nullptr, &csc);
-    }
-
-    double lo = E.var(j).lb;
-    double hi = E.var(j).ub;
-    const bool is_int = is_integer(c.integrality, j);
-
-    if (use_hint && cfg.hint != nullptr) {
-        double h = cfg.hint[j];
-        if (is_int) {
-            h = std::round(h);
-        }
-        if (h >= lo - c.feastol && h <= hi + c.feastol) {
-            return std::max(lo, std::min(hi, h));
-        }
-    }
-
-    if (c.is_binary(j)) {
-        if (c.minimize) {
-            return (c.col_cost[j] >= 0) ? lo : hi;
-        }
-        return (c.col_cost[j] >= 0) ? hi : lo;
-    }
-
-    if (std::abs(c.col_cost[j]) < 1e-15) {
-        double mid = std::round((lo + hi) * 0.5);
-        return std::max(lo, std::min(hi, mid));
-    }
-    if (c.minimize) {
-        return (c.col_cost[j] > 0) ? lo : hi;
-    }
-    return (c.col_cost[j] > 0) ? hi : lo;
+                        const CscMatrix& csc, Rng& rng) {
+    assert(cfg.strategy != nullptr && "FprConfig::strategy must be set (issue #120)");
+    return choose_value(j, E.var(j).lb, E.var(j).ub, is_integer(c.integrality, j), c.minimize,
+                        c.col_cost[j], cfg.strategy->val_strategy, rng, cfg.lp_ref, c.row_lo.data(),
+                        c.row_hi.data(),
+                        E.activities_initialized() ? E.min_activity_data() : nullptr,
+                        E.activities_initialized() ? E.max_activity_data() : nullptr, &csc);
 }
 
 double compute_alt(HighsInt j, double preferred, const AttemptCtx& c, PropEngine& E) {
@@ -227,6 +200,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     // FPR worker) all carry a stable cfg.csc.
     assert(cfg.csc != nullptr && "fpr_attempt_begin requires cfg.csc");
     const CscMatrix& csc = *cfg.csc;
+    assert(cfg.strategy != nullptr && "FprConfig::strategy must be set (issue #120)");
 
     // --- Phase 1: variable ranking -------------------------------------------------
     auto& var_order = scratch.var_order;
@@ -234,15 +208,8 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     if (cfg.precomputed_var_order != nullptr) {
         var_order.assign(cfg.precomputed_var_order,
                          cfg.precomputed_var_order + cfg.precomputed_var_order_size);
-    } else if (cfg.strategy != nullptr) {
-        var_order = compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
     } else {
-        var_order.resize(c.ncol);
-        for (HighsInt j = 0; j < c.ncol; ++j) {
-            var_order[j] = j;
-        }
-        std::ranges::sort(var_order,
-                          [&](HighsInt a, HighsInt b) { return cfg.scores[a] > cfg.scores[b]; });
+        var_order = compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
     }
     state.var_order_size = static_cast<HighsInt>(var_order.size());
 
@@ -266,14 +233,6 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     if (initial_solution != nullptr) {
         for (HighsInt j = 0; j < c.ncol; ++j) {
             double v = initial_solution[j];
-            if (is_int(j)) {
-                v = std::round(v);
-            }
-            E.sol(j) = std::max(c.col_lb[j], std::min(c.col_ub[j], v));
-        }
-    } else if (attempt_idx == 0 && (cfg.hint != nullptr)) {
-        for (HighsInt j = 0; j < c.ncol; ++j) {
-            double v = cfg.hint[j];
             if (is_int(j)) {
                 v = std::round(v);
             }
@@ -319,7 +278,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
         std::shuffle(var_order.begin(), var_order.begin() + shuffle_len, rng);
     }
 
-    if ((cfg.strategy != nullptr) && cfg.strategy->val_strategy == ValStrategy::kLoosedyn) {
+    if (cfg.strategy->val_strategy == ValStrategy::kLoosedyn) {
         E.init_activities();
     }
 
@@ -348,8 +307,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     E.propagate(-1);
 
     // --- Phase 2 setup -------------------------------------------------------------
-    state.dynamic_var =
-        (cfg.strategy != nullptr) && is_dynamic_var_strategy(cfg.strategy->var_strategy);
+    state.dynamic_var = is_dynamic_var_strategy(cfg.strategy->var_strategy);
     state.do_propagate = mode_propagates(cfg.mode);
     state.do_backtrack = mode_backtracks(cfg.mode);
     state.node_limit = c.ncol + 1;
@@ -392,8 +350,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
         state.found_complete = true;
         state.phase = FprAttemptState::Phase::kReadyToFinish;
     } else {
-        const bool use_hint = (attempt_idx == 0 && cfg.hint != nullptr);
-        double pref = choose_fix_value(first_var, cfg, c, E, csc, rng, use_hint);
+        double pref = choose_fix_value(first_var, cfg, c, E, csc, rng);
         double alt = compute_alt(first_var, pref, c, E);
         HighsInt vs_m = E.vs_mark();
         HighsInt sol_m = E.sol_mark();
@@ -469,7 +426,6 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
     const size_t effort_at_call_start = E.effort();
     // Target as a delta from this call's start, not an absolute.
     const size_t effort_target_delta = effort_remaining;
-    const bool use_hint = (state.attempt_idx == 0 && cfg.hint != nullptr);
 
     // The wall clock, alongside the effort gate above (issue #117).
     // `effort_remaining` is the caller's slice, and every caller sizes it
@@ -522,7 +478,7 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
             break;
         }
 
-        double pref = choose_fix_value(next_var, cfg, c, E, csc, rng, use_hint);
+        double pref = choose_fix_value(next_var, cfg, c, E, csc, rng);
         double alt = compute_alt(next_var, pref, c, E);
         HighsInt vs_m = E.vs_mark();
         HighsInt sol_m = E.sol_mark();
@@ -588,7 +544,6 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
     }
 
     // Phase 2.5: fix remaining unfixed variables (continuous + residual integers).
-    const bool use_hint = (state.attempt_idx == 0 && cfg.hint != nullptr);
     for (HighsInt j = 0; j < c.ncol; ++j) {
         if (E.var(j).fixed) {
             continue;
@@ -605,7 +560,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
                 E.sol(j) = finite_clamp_helper(fallback, lo, hi);
             }
         } else {
-            E.sol(j) = choose_fix_value(j, cfg, c, E, csc, rng, use_hint);
+            E.sol(j) = choose_fix_value(j, cfg, c, E, csc, rng);
             E.sol(j) = std::round(std::max(lo, std::min(hi, E.sol(j))));
         }
         E.sol(j) = std::max(c.col_lb[j], std::min(c.col_ub[j], E.sol(j)));

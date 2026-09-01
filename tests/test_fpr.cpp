@@ -1,10 +1,15 @@
 #include "fpr.h"
+#include "fpr_core.h"
 #include "fpr_strategies.h"
+#include "heuristic_context.h"
 #include "Highs.h"
+#include "parallel/HighsParallel.h"
 #include "test_common.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
+#include <vector>
 
 TEST_CASE("Characterization: flugpl", "[heuristic][fpr]") {
     Highs highs;
@@ -287,4 +292,118 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
     double obj;
     highs.getInfoValue("objective_function_value", obj);
     REQUIRE(obj == Catch::Approx(8966406.49152).epsilon(1e-4));
+}
+
+// ===================================================================
+// Issue #120: cfg.lp_ref reaches the strategy value-selection path
+// ===================================================================
+//
+// `choose_fix_value` has exactly one path once a strategy is set (every
+// production caller sets one): `choose_value`, which for an LP-based value
+// strategy (`kZerocore`/`kZerolp`/`kCore`/`kLp`) rounds toward `cfg.lp_ref`.
+// This drives the lifecycle API directly (begin -> step-to-verdict) rather
+// than the one-shot `fpr_attempt` wrapper: on these small bundled
+// instances a single DFS attempt frequently does not complete within the
+// tight `ncol+1` node budget (`fpr_attempt_finish` then short-circuits to
+// an empty `failed()` result before ever extracting a solution), which
+// would make an assertion on `fpr_attempt(...).solution` vacuous either
+// way. Comparing PropEngine's per-column state after `step()` sidesteps
+// that: it is what the search actually decided, independent of whether
+// the attempt as a whole verdicts complete.
+namespace {
+
+// Two per-column reference points at each column's own bounds — clamped to
+// something finite for an unbounded column — so `val_lp_based`'s
+// `frac(lp_ref[j]) < 1e-10` branch is always taken (both `lb` and `ub` are
+// exact integers here after rounding) and neither run draws from the RNG,
+// keeping the two runs' RNG streams identical regardless of what
+// `choose_fix_value` decides.
+struct LpRefPair {
+    std::vector<double> lo;
+    std::vector<double> hi;
+};
+
+LpRefPair make_bound_refs(const HighsLp& model) {
+    LpRefPair p;
+    p.lo = model.col_lower_;
+    p.hi = model.col_upper_;
+    for (HighsInt j = 0; j < model.num_col_; ++j) {
+        if (p.lo[j] <= -1e30) {
+            p.lo[j] = -1e5;
+        }
+        if (p.hi[j] >= 1e30) {
+            p.hi[j] = 1e5;
+        }
+    }
+    return p;
+}
+
+}  // namespace
+
+TEST_CASE("FPR: a non-null lp_ref changes the strategy's produced assignment (#120)",
+          "[fpr][lp_ref]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps");
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    const HighsInt ncol = mipsolver->model_->num_col_;
+    const LpRefPair refs = make_bound_refs(*mipsolver->model_);
+
+    // Drive begin -> step-to-verdict with `cfg.lp_ref` pointed at each
+    // extreme in turn, everything else (strategy, mode, rng seed, binary
+    // mask, csc) held fixed, and compare the PropEngine's own per-column
+    // `fixed` flags and values -- what the search actually decided.
+    struct Probe {
+        std::vector<uint8_t> fixed;
+        std::vector<double> sol;
+    };
+    auto run_once = [&](const double* lp_ref) {
+        FprScratch scratch;
+        FprConfig cfg{};
+        cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
+        cfg.csc = &csc;
+        cfg.mode = FrameworkMode::kDfs;
+        cfg.strategy = &kStratLp;  // VarStrategy::kTypecl (lp_ref-free order), ValStrategy::kLp
+        cfg.lp_ref = lp_ref;
+        cfg.binary_mask = problem.binary.data();
+        cfg.scratch = &scratch;
+        Rng rng(777);
+        FprAttemptState state;
+        fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0,
+                          /*initial_solution=*/nullptr);
+        while (state.phase == FprAttemptState::Phase::kDfs) {
+            fpr_attempt_step(state, *mipsolver, cfg, rng, cfg.max_effort);
+        }
+        Probe p;
+        for (HighsInt j = 0; j < ncol; ++j) {
+            p.fixed.push_back(scratch.prop_engine->var(j).fixed ? 1 : 0);
+            p.sol.push_back(scratch.prop_engine->sol_data()[j]);
+        }
+        return p;
+    };
+
+    Probe with_lo = run_once(refs.lo.data());
+    Probe with_hi = run_once(refs.hi.data());
+
+    // Variable order is lp_ref-free for this strategy (kTypecl), but which
+    // columns end up fixed is not: `kDfs` propagates and backtracks, so a
+    // different chosen value can cascade into a different tightening (or a
+    // fix/propagate failure that sends the DFS down a different branch of
+    // the stack) — a stronger form of "the assignment differs" than value
+    // selection alone. Treat either kind of divergence as the property
+    // under test.
+    bool any_column_differs = false;
+    for (HighsInt j = 0; j < ncol; ++j) {
+        const auto idx = static_cast<size_t>(j);
+        if (with_lo.fixed[idx] != with_hi.fixed[idx] ||
+            (with_lo.fixed[idx] != 0 && with_lo.sol[idx] != with_hi.sol[idx])) {
+            any_column_differs = true;
+            break;
+        }
+    }
+    REQUIRE(any_column_differs);
 }

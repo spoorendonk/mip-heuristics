@@ -321,8 +321,6 @@ public:
 
         FprConfig cfg{};
         cfg.max_effort = attempt_budget;
-        cfg.hint = setup_.incumbent_snapshot.empty() ? nullptr : setup_.incumbent_snapshot.data();
-        cfg.scores = nullptr;
         cfg.cont_fallback = nullptr;
         cfg.csc = &setup_.csc;
         cfg.mode = arm.config->mode;

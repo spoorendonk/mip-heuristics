@@ -436,8 +436,6 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         // (`cfg.repair_iterations`, `cfg.walksat_iterations`) self-throttle
         // even when the effort budget is large.
         cfg.max_effort = std::max<size_t>(attempt_budget_, 1);
-        cfg.hint = nullptr;
-        cfg.scores = nullptr;
         cfg.cont_fallback = nullptr;
         cfg.csc = &csc_;
         cfg.mode = mode_;
