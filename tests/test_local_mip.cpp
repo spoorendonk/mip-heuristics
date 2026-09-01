@@ -20,6 +20,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -1025,4 +1026,128 @@ TEST_CASE("LocalMIP: violation partition agrees with HiGHS's feastol, not a stri
     REQUIRE(ctx.violated.contains(row));
     REQUIRE_FALSE(ctx.satisfied.contains(row));
     REQUIRE_FALSE(ctx.full_recheck(/*update_sets=*/false, /*early_exit=*/true));
+}
+
+// ── LocalMIP: a failed lift falls through to candidate generation,
+//    not a weight-update spin (#129) ────────────────────────────────
+
+// Before this fix, `LocalMipWorker::run_attempt`'s feasible-mode branch
+// only ever looked for a *lift* move; a failed lift called
+// `ctx.update_weights` and looped, changing nothing about the solution,
+// until `kFeasiblePlateau` (5000) improvement-free steps triggered the
+// random-walk perturbation escape. Breakthrough moves -- the paper's own
+// mechanism for escaping a feasible local optimum (Algorithm 2 lines
+// 5-6) -- were unreachable from a feasible state at all: `infeasible_step`
+// was only ever called once `ctx.violated` was non-empty.
+//
+// This instance is hand-built (mirrors the #148 test above's manual
+// `HighsMipSolver` construction) so the "feasible local optimum that
+// is not the global optimum" shape is exact rather than hoped-for:
+//
+//     minimize x0 + 2*x1
+//     s.t.     x0 + x1 >= 2
+//              x0, x1 in {0, ..., 3}, integer
+//
+// At x0=0, x1=2 (obj=4, feasible): the lift phase moves one variable
+// toward its own cost-favorable bound, holding the other fixed and
+// staying feasible. Both variables are already lift-optimal there --
+// x1 cannot decrease (the row is tight) and x0 cannot decrease either
+// (it is already at its lower bound) -- by hand computation of
+// `LiftCache::recompute_one`'s per-variable lift bounds against this
+// row. Reaching the true optimum (x0=2, x1=0, obj=2) needs
+// *increasing* x0 (cost-unfavorable on its own) so x1 can decrease -- a
+// joint move no single lift can make. That is exactly the paper's
+// breakthrough / candidate-generation mechanism, not the lift phase.
+TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
+          "[heuristic][local_mip]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+
+    highs.addVar(0.0, 3.0);
+    highs.addVar(0.0, 3.0);
+    highs.changeColIntegrality(0, HighsVarType::kInteger);
+    highs.changeColIntegrality(1, HighsVarType::kInteger);
+    highs.changeColCost(0, 1.0);
+    highs.changeColCost(1, 2.0);
+    const auto idx = std::to_array<HighsInt>({0, 1});
+    const auto val = std::to_array<double>({1.0, 1.0});
+    highs.addRow(2.0, kHighsInf, 2, idx.data(), val.data());
+
+    // `Highs::addRow` leaves the matrix row-wise; every downstream path
+    // this test exercises (`HighsMipSolver::solutionFeasible`'s row-value
+    // computation, reached through `addIncumbent`) expects the
+    // column-wise layout `readModel` produces. `Highs::getLp()` is
+    // const, so force it through a copy and `passModel`.
+    HighsLp lp = highs.getLp();
+    lp.ensureColwise();
+    // `std::move(lp)` evaluated outside `REQUIRE`: Catch2's expression
+    // decomposition can reference the macro argument more than once,
+    // which clang-tidy's `bugprone-use-after-move` reads (spuriously) as
+    // `lp` being used again after the move inside the same expression.
+    const HighsStatus pass_status = highs.passModel(std::move(lp));
+    REQUIRE(pass_status == HighsStatus::kOk);
+
+    // Mirrors `build_bare_mipsolver` (test_common.h): the repro needs a
+    // hand-shaped objective and row no bundled instance guarantees.
+    highs.setOptionValue("presolve", "off");
+    require_option(highs, "time_limit", kHighsInf);
+    HighsCallback cb(&highs);
+    auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
+                                                      highs.getSolution());
+    mipsolver->timer_.start();
+    mipsolver->improving_solution_file_ = nullptr;
+    mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
+    mipsolver->mipdata_->init();
+    mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
+    mipsolver->mipdata_->runSetup();
+    // `addIncumbent`, reached through the sink's accept callback as soon
+    // as the worker offers something, reads `mipdata_->workers[0]`.
+    mipsolver->mipdata_->workers.emplace_back(
+        *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
+        &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
+        &mipsolver->mipdata_->getPseudoCost());
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    IncumbentSink sink(*mipsolver, kSolutionSourceLocalMIP);
+
+    // The starting point described above: x0=0, x1=2 (obj=4, feasible,
+    // a lift-phase local optimum).
+    const std::array<double, 2> initial_solution = {0.0, 2.0};
+
+    // Deterministic, pinned seed -- no wall-clock dependence. Unbounded
+    // total/staleness budgets: `attempt_budget` below is the only bound,
+    // so it alone decides how much search the worker gets.
+    local_mip_detail::LocalMipWorker worker(
+        *mipsolver, exec, csc, sink, /*total_budget=*/std::numeric_limits<size_t>::max(),
+        /*stale_budget=*/std::numeric_limits<size_t>::max(), /*seed=*/1, initial_solution.data(),
+        problem.binary.data(), WorkerTrace{});
+
+    // Sized below the *pre-fix* code's own cost of even reaching its
+    // first plateau-escape attempt -- the discriminating evidence for
+    // this fix, not just a generous allowance. A no-op iteration under
+    // the pre-fix code charges zero effort: `ctx.lift.recompute_all`
+    // has nothing marked dirty once the cache is warm (no move was ever
+    // applied to mark anything), and `update_weights` touches no
+    // coefficients. The only effort a run of such iterations charges is
+    // the periodic `full_recheck` every `kFeasibleRecheckPeriod` (100)
+    // steps, at `nnz` (2 -- one row, two nonzeros) effort each -- about
+    // 100 effort over all 5000 pre-escape steps. This budget is well
+    // under that: the pre-fix worker cannot even reach its own escape
+    // hatch inside it, let alone use it, while the fixed worker needs
+    // only a handful of real (non-zero-effort) steps to find the
+    // breakthrough. Confirmed empirically against the pre-fix code
+    // (issue #129 report).
+    worker.run_attempt(/*attempt_budget=*/60);
+
+    // The worker's own first feasible solution (obj=4) is recorded as
+    // an improvement trivially on both sides of this fix -- it is not
+    // what discriminates. What discriminates is a SECOND, better
+    // incumbent (obj=2, the true optimum): the only way to it from this
+    // instance's lift-local-optimum start is the joint two-variable
+    // swap the fall-through path's breakthrough/candidate search can
+    // make and the lift phase alone cannot.
+    REQUIRE(mipsolver->mipdata_->upper_bound == Catch::Approx(2.0));
 }

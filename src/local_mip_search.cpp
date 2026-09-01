@@ -234,7 +234,19 @@ Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, 
 Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_feasible,
                           double best_objective, const std::vector<HighsInt>& costed_vars,
                           const std::vector<HighsInt>& binary_vars) {
-    ctx.was_infeasible = true;
+    // Issue #129: this is now also entered from a *feasible* state, on a
+    // failed lift (`LocalMipWorker::run_attempt`'s fall-through) -- not
+    // only from a genuinely infeasible one.  `was_infeasible` gates the
+    // lift cache's incremental dirty-tracking and the caller's next
+    // `need_full_recheck` (both in `local_mip_worker.cpp`), so it must
+    // record whether *this* entry was genuinely infeasible, not merely
+    // that this function ran: forcing it to `true` unconditionally would
+    // charge a full recheck on every plateau iteration reached through
+    // the fall-through path, and would suppress dirty-marking for moves
+    // that never left feasible territory. Identical to the old
+    // unconditional `true` for the pre-existing (genuinely infeasible)
+    // caller, since `ctx.violated` is non-empty there by construction.
+    ctx.was_infeasible = !ctx.violated.empty();
 
     auto& batch = ctx.batch;
     auto& sampled = ctx.sampled;
@@ -355,7 +367,17 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
     }
 
     // --- Phase 4: Weight update + random constraint fallback (Alg 2 lines 12-14) ---
-    ctx.update_weights(rng, /*is_feasible=*/false, best_feasible, best_objective);
+    //
+    // `is_feasible` reads the CURRENT state (`ctx.violated`, unchanged by
+    // anything above -- phases 1-3 only score candidates, never apply
+    // one), not a hardcoded `false`: issue #129 also reaches this phase
+    // from a feasible worker whose lift just failed, and the paper's
+    // PAWS-style weight scheme strengthens `w(obj)` at a feasible local
+    // optimum, `w(coni)` at an infeasible one (Algorithm 1 lines 4-7 vs.
+    // Algorithm 2 lines 12-14 -- the same update, two triggers). Identical
+    // to the old hardcoded `false` for the pre-existing (genuinely
+    // infeasible) caller.
+    ctx.update_weights(rng, /*is_feasible=*/ctx.violated.empty(), best_feasible, best_objective);
 
     if (!ctx.violated.empty()) {
         batch.clear();

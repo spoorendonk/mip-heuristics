@@ -295,11 +295,33 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
 
             if (lift_best.var_idx != -1) {
                 ctx_.apply_move_with_tabu(lift_best.var_idx, lift_best.new_val, step_, rng_);
+                ++steps_since_improvement_;
             } else {
-                ctx_.update_weights(rng_, /*is_feasible=*/true, best_feasible_, best_objective_);
+                // Issue #129: a failed lift falls through to Algorithm 2's
+                // candidate generation in the SAME iteration, instead of a
+                // standalone weight update followed by looping -- paper
+                // Algorithm 1 lines 8-11 run every iteration, and only a
+                // *successful* lift skips them (the authors' own
+                // implementation falls straight through to this same
+                // exploration on a failed lift). `infeasible_step` handles
+                // an empty `ctx_.violated` on its own (see its comment in
+                // local_mip_core.h): Phase 1b's breakthrough moves are
+                // unconditional on `best_feasible_` -- Algorithm 2 lines
+                // 5-6 with the tight-move term empty -- and its own Phase 4
+                // weight update reads `ctx_.violated` to bump `w(obj)`
+                // rather than the standalone call this replaces.
+                Candidate cand = infeasible_step(ctx_, rng_, step_, best_feasible_, best_objective_,
+                                                 costed_vars_, binary_vars_);
+                if (cand.var_idx != -1) {
+                    ctx_.apply_move_with_tabu(cand.var_idx, cand.new_val, step_, rng_);
+                    ++steps_since_improvement_;
+                }
+                // else: every phase found nothing to do -- a true no-op
+                // iteration.  The plateau counter must not accumulate it
+                // (issue #129 point 3); `infeasible_step`'s own Phase 4
+                // already charged whatever weight update it decided on.
             }
 
-            ++steps_since_improvement_;
             if (steps_since_improvement_ >= kFeasiblePlateau) {
                 // Random-walk diversification on plateau (engineering
                 // extension).  Paper Algorithm 1 (Lin, Zou, Cai CP 2024)
@@ -346,12 +368,15 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
 
             if (cand.var_idx != -1) {
                 ctx_.apply_move_with_tabu(cand.var_idx, cand.new_val, step_, rng_);
+                ++steps_since_improvement_;
+                if (ctx_.violated.empty()) {
+                    steps_since_improvement_ = 0;
+                }
             }
-
-            ++steps_since_improvement_;
-            if (ctx_.violated.empty()) {
-                steps_since_improvement_ = 0;
-            }
+            // else: every phase found nothing to do -- a true no-op
+            // iteration, symmetric with the feasible branch above (issue
+            // #129 point 3): nothing changed, so the plateau counter must
+            // not move either.
         }
 
         // Activity refresh

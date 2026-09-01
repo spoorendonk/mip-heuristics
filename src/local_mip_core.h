@@ -102,7 +102,14 @@ struct WorkerCtx {
     std::vector<BatchCand> batch;
     std::vector<WeightedCon> sampled;
 
-    // Feasibility tracking
+    // Feasibility tracking.  `was_infeasible`: whether the search's last
+    // move came through `infeasible_step`'s general exploration while
+    // genuinely infeasible, rather than through the feasible branch's
+    // lift phase (issue #129: `infeasible_step` is now also entered from
+    // a feasible state on a failed lift, and sets this from `violated`'s
+    // emptiness at entry, not unconditionally). Gates the lift cache's
+    // incremental dirty-tracking in `apply_move` and the next feasible
+    // iteration's forced `full_recheck` in `LocalMipWorker::run_attempt`.
     bool was_infeasible = true;
     HighsInt feasible_recheck_counter = 0;
 
@@ -197,6 +204,19 @@ Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, 
                                  bool aspiration, double best_obj, bool best_feasible);
 
 // --- infeasible_step: candidate generation following paper's Algorithm 2 ---
+//
+// Despite the name, this is Algorithm 2 in full and does not require
+// `ctx.violated` to be non-empty: `LocalMipWorker::run_attempt` also
+// enters it from a *feasible* state, on a failed lift (issue #129 -- the
+// authors' own implementation runs the lift move and falls straight
+// through to this same exploration when it fails). With an empty
+// `violated` set, Phase 1's tight-move half is vacuous and Phase 1b
+// (breakthrough moves, gated on `best_feasible` alone) is exactly
+// Algorithm 2 lines 5-6 with the tight-move term empty -- the mechanism
+// by which the search escapes a feasible local optimum. Phases 4-5's
+// own `!ctx.violated.empty()` guards make the violated-only halves
+// no-ops in that case; Phase 4's weight update reads `ctx.violated`
+// itself to bump `w(obj)` instead of `w(coni)` when so entered.
 //
 // Phase ordering (Algorithm 2):
 // 1. MTM in violated (+ BM if post-feasible)
