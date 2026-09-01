@@ -458,11 +458,17 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             }
             // Cycle-history invariant (Mexi 2023 Algorithm 1.1, line 13):
             // `cycle_history_` is a ring buffer of size at most
-            // `kCycleWindow`, indexed implicitly by `K_`.  The slot for
-            // iteration `K` is `(K - 1) % kCycleWindow` once the buffer
-            // is full; before that we just push_back.  Crucially, both
-            // `K_` AND `cycle_history_` are mutated only inside this
-            // `fresh` block — stale rounds (from issue #76's overlap
+            // `kCycleWindow`, indexed implicitly by `K_`.  The indexing
+            // rule lives in `pump::record_cycle_entry`: `K_` is the count
+            // of fresh rounds already recorded at the point of the write
+            // (`++K_` happens after it), so the incoming iterate replaces
+            // the oldest entry at `K_ % kCycleWindow` once the buffer is
+            // full; before that we just push_back.  It used to be written
+            // at `(K_ - 1) % kCycleWindow` here, which overwrote the
+            // *newest* entry at the first wrap (#126) — a defect the size
+            // check below cannot see, since the size stays correct.
+            // Crucially, both `K_` AND `cycle_history_` are mutated only
+            // inside this `fresh` block — stale rounds (from issue #76's overlap
             // refactor and commit 0c29d86's pump-state freeze) skip
             // both, so the invariant
             //
@@ -493,11 +499,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                              cycle_history_.size(), expected_size, K_);
                 std::abort();
             }
-            if (static_cast<int>(cycle_history_.size()) < pump::kCycleWindow) {
-                cycle_history_.push_back(x_hat);
-            } else {
-                cycle_history_[(K_ - 1) % pump::kCycleWindow] = x_hat;
-            }
+            pump::record_cycle_entry(cycle_history_, K_, x_hat);
 
             alpha_K_ *= pump::kAlpha;
             pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality, model->col_lower_,

@@ -89,6 +89,27 @@ inline bool detect_cycling(const std::vector<std::vector<double>>& history,
     return false;
 }
 
+// Record one fresh-round iterate in the cycle-detection window
+// (Algorithm 1.1, line 13).  `completed_rounds` is the number of fresh
+// pump rounds already recorded — the caller's iteration counter *before*
+// it is incremented for the incoming iterate, since the write precedes
+// the increment.  While the buffer is short of `kCycleWindow` entries we
+// append, so the iterate of round `r` (1-based) lands at index `r - 1`.
+// Once full, the slot to reuse is the oldest entry, which is exactly
+// `completed_rounds % kCycleWindow`: index `i` last held the iterate
+// written at `completed_rounds - kCycleWindow`.  Writing
+// `(completed_rounds - 1) % kCycleWindow` instead clobbers the *newest*
+// entry at the first wrap and shortens the detection window for two
+// rounds (#126).
+inline void record_cycle_entry(std::vector<std::vector<double>>& history, int completed_rounds,
+                               const std::vector<double>& x) {
+    if (static_cast<int>(history.size()) < kCycleWindow) {
+        history.push_back(x);
+    } else {
+        history[completed_rounds % kCycleWindow] = x;
+    }
+}
+
 // Perturb a rounded solution to break cycling (Algorithm 1.1, line 14).
 inline void perturb(std::vector<double>& x, const HighsLp& model, Rng& rng) {
     // `kInfBoundShiftWindow` and `kSafeInt64DoubleRange` are shared

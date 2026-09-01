@@ -1,12 +1,15 @@
 #include "Highs.h"
+#include "pump_common.h"
 #include "test_common.h"
 
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <mutex>
 #include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ── Scylla as the only enabled heuristic ──
@@ -78,4 +81,50 @@ TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][s
     REQUIRE(seen);        // Line was emitted — closes #76's "new trace lines" ask.
     REQUIRE(fresh >= 1);  // Scylla actually ran at least one solve.
     (void)stale;          // Best-effort — see comment above.
+}
+
+// ── Cycle-history ring buffer (#126) ──
+// `pump::record_cycle_entry` is the slot rule of Algorithm 1.1 line 13
+// (Mexi, Besancon, Pokutta et al., *Scylla*).  It used to write
+// `(K - 1) % kCycleWindow`, which overwrote the newest entry at the first
+// wrap: the window at K4 was {K0, K1, K3} and at K5 {K1, K3, K4} instead
+// of the last three iterates.  This drives six fresh rounds in the real
+// order ScyllaWorker uses — record with the pre-increment counter, then
+// increment — and pins the window contents after every one.  The old rule
+// gets rounds 4 and 5 wrong; round 4 is where an execution dies, since
+// `REQUIRE` aborts the case at the first failure.
+
+TEST_CASE("Scylla cycle history keeps the last kCycleWindow iterates", "[heuristic][scylla]") {
+    constexpr int kRounds = 6;
+    std::vector<std::vector<double>> history;
+    history.reserve(pump::kCycleWindow);
+    int completed_rounds = 0;
+
+    for (int round = 1; round <= kRounds; ++round) {
+        // Distinguishable iterate: round 1 is {1.0}, round 2 is {2.0}, ...
+        const std::vector<double> x{static_cast<double>(round)};
+        pump::record_cycle_entry(history, completed_rounds, x);
+        ++completed_rounds;
+
+        const int expected_size = std::min(round, pump::kCycleWindow);
+        REQUIRE(std::cmp_equal(history.size(), expected_size));
+
+        // The window is the last `expected_size` iterates, as a set.
+        std::vector<double> got;
+        got.reserve(history.size());
+        for (const auto& entry : history) {
+            REQUIRE(entry.size() == 1);
+            got.push_back(entry[0]);
+        }
+        std::ranges::sort(got);
+
+        std::vector<double> want;
+        want.reserve(static_cast<size_t>(expected_size));
+        for (int r = round - expected_size + 1; r <= round; ++r) {
+            want.push_back(static_cast<double>(r));
+        }
+        // `want` ends at `round`, so this pins the newest iterate's presence
+        // too — the entry the old rule dropped at the wrap.
+        REQUIRE(got == want);
+    }
 }
