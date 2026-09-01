@@ -381,23 +381,31 @@ def check_vanilla_binary(path: str) -> BinaryProbe:
 _UNKNOWN_OPTION_RE = re.compile(r'Option "([^"]+)" is unknown')
 
 
-def check_vanilla_options(path: str, options: dict[str, str]) -> None:
-    """Refuse `--extra-options` the unpatched binary has no option for.
+def check_known_options(path: str, options: dict[str, str], *, unpatched: bool) -> None:
+    """Refuse `--extra-options` the binary at `path` has no option for.
 
-    `--extra-options` applies to every config, and since #147 the `vanilla`
-    config always runs a separately built unpatched binary — which has none of
-    the ten options the patch adds.  So the documented sweep invocation
-    (`--extra-options mip_heuristic_fpr_effort=1.0`, run over the default
-    `vanilla all` config pair) makes HiGHS exit 255 on *every vanilla
-    instance*: each one lands in `<inst>.log.err`, the vanilla arm never
+    HiGHS exits 255 without solving on an unknown option name, so an
+    `--extra-options` key the binary lacks fails *every instance of every
+    config that runs it*: each lands in `<inst>.log.err`, that arm never
     advances, and `run_plato.sh next` relaunches a campaign that cannot
     finish.  Loud, but only per instance and only once the run is under way.
 
-    The question is asked of the binary rather than answered from a list here.
-    Two of the twelve `mip_heuristic_*` names are upstream's own —
-    `mip_heuristic_effort` and `mip_heuristic_run_feasibility_jump`, both legal
-    on an unpatched build — so a prefix rule would refuse a valid sweep, and a
-    hardcoded set of the other ten would need editing on every option change
+    Two ways in, and both are checked because both cost the same campaign.
+    A typo (`mip_heuristic_fpr_effrot`) breaks the *patched* arm, which is
+    usually the larger one.  A patched-only option breaks the *vanilla* arm,
+    which since #147 is always a separately built unpatched binary with none
+    of the ten options the patch adds — and that is the documented sweep
+    invocation (`--extra-options mip_heuristic_fpr_effort=1.0` over the
+    default `vanilla all` config pair).  `unpatched` only picks which of the
+    two the message explains.
+
+    The question is asked of the binary rather than answered from a list
+    here.  Of the seventeen `mip_heuristic_*` names a patched build carries,
+    **seven are upstream's own** and legal on both binaries —
+    `mip_heuristic_effort` and the six `mip_heuristic_run_*` switches
+    (`feasibility_jump`, `rens`, `rins`, `root_reduced_cost`, `shifting`,
+    `zi_round`) — so a prefix rule would refuse a valid sweep, and a
+    hardcoded list of the other ten would need editing on every option change
     and would be wrong silently when it wasn't.  The binary already knows.
 
     Not the same check as `check_vanilla_binary`: that one identifies the
@@ -430,20 +438,26 @@ def check_vanilla_options(path: str, options: dict[str, str]) -> None:
         finally:
             os.unlink(opts_path)
         # Only "unknown", never "cannot read value": an out-of-range value is
-        # the operator's own typo on an option that does exist, and it fails
-        # identically on the patched binary — not a vanilla-specific refusal.
+        # a mistake on an option that does exist, it fails identically on both
+        # binaries, and refusing it here would be this check overreaching into
+        # HiGHS's own validation.
         if _UNKNOWN_OPTION_RE.search(output):
             unknown.append(key)
-    if unknown:
-        raise ValueError(
-            "--extra-options "
-            + ", ".join(unknown)
-            + f" — the vanilla binary {path} has no such option. It is an "
-            "unpatched HiGHS, so the options the patch adds do not exist "
-            "there, and --extra-options applies to every config. Drop "
-            "`vanilla` from --configs, or move the option to a patched-only "
-            "run"
-        )
+    if not unknown:
+        return
+    why = (
+        "That binary is the unpatched vanilla baseline, so the options the "
+        "patch adds do not exist there, and --extra-options applies to every "
+        "config. Drop `vanilla` from --configs, or move the option to a "
+        "patched-only run"
+        if unpatched
+        else "Check the spelling: --extra-options is passed through verbatim, "
+        "and HiGHS exits 255 without solving on an unknown key, so every run "
+        "of every config on this binary would fail"
+    )
+    raise ValueError(
+        f"--extra-options {', '.join(unknown)} — {path} has no such option. {why}"
+    )
 
 
 def load_instances(path: str) -> list[str]:
@@ -897,10 +911,12 @@ def main() -> None:
         if not os.path.exists(vanilla_binary):
             print(f"Error: vanilla binary not found: {vanilla_binary}", file=sys.stderr)
             sys.exit(1)
-        # Just the path here: whether it really is an unpatched build of this
-        # tag is what the probe below decides, and a header claiming it ahead
-        # of the check is a claim the run has not earned yet.
-        print(f"Vanilla binary : {vanilla_binary}")
+        # Just the path here, under its own label: whether it really is an
+        # unpatched build of this tag is what the probe below decides, and a
+        # header claiming it ahead of the check is a claim the run has not
+        # earned yet.  The probe prints the verdict on the `Vanilla binary`
+        # line, so the two are not two lines with one label.
+        print(f"Vanilla path   : {vanilla_binary}")
     print(f"Patched binary : {binary}")
 
     # Resolve configs before anything else runs: an unknown name, or a
@@ -959,18 +975,23 @@ def main() -> None:
     # tables come out empty rather than wrong, hours later.
     base_opts = build_base_options(args.threads, args.dev_log, args.extra_options)
 
-    # The second half of the vanilla pre-flight, and it has to be here rather
-    # than beside the binary probe above: it needs `base_opts`, which is built
-    # from `--extra-options` after the plans are resolved.  Same exit code and
-    # same reason — a `--extra-options mip_heuristic_fpr_effort=1.0` over the
-    # default `vanilla all` pair fails every vanilla instance at solve time,
-    # and the campaign then never advances past a half-empty tree.
-    if vanilla_plan is not None:
-        try:
-            check_vanilla_options(vanilla_plan.binary, base_opts)
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(2)
+    # The second half of the pre-flight, and it has to be here rather than
+    # beside the binary probe above: it needs `base_opts`, which is built from
+    # `--extra-options` after the plans are resolved.  Every distinct binary
+    # this run will use, not just the vanilla one — a typo'd key fails every
+    # instance of every *patched* config in exactly the same way, on the arm
+    # that is usually larger.  Deduplicated because the plans share binaries;
+    # each key costs one model-free run.
+    try:
+        for path in sorted({p.binary for p in plans}):
+            check_known_options(
+                path,
+                base_opts,
+                unpatched=vanilla_plan is not None and path == vanilla_plan.binary,
+            )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     # Keyed on the option that will actually be written, not on `--dev-log`:
     # `--extra-options log_dev_level=1` overrides the flag, and the header is

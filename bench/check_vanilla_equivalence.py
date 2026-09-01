@@ -295,13 +295,26 @@ def find_instances_dir(binary: str) -> str | None:
     return None
 
 
+# What HiGHS prints when it was configured outside a git repository: its own
+# CMakeLists falls back to `set(GITHASH "n/a")`.  A distro package, a conda
+# build, or one built from the release *source archive* all report it — and
+# that is exactly the kind of binary this script asks you to point
+# `--vanilla-binary` at.  It is the absence of a hash, not a hash.
+NO_GITHASH = "n/a"
+
+
 def version_of(binary: str) -> tuple[str, str]:
-    """`(version, githash)` from `--version`, e.g. ("1.15.1", "04024d701f")."""
+    """`(version, githash)` from `--version`, e.g. ("1.15.1", "04024d701f").
+
+    The hash group stops at the trailing period HiGHS prints after it, rather
+    than at the first non-word character: `\\w+` would take `n/a` down to `n`
+    and turn "no hash" into a hash that matches nothing.
+    """
     out = subprocess.run(
         [binary, "--version"], capture_output=True, text=True, check=False
     ).stdout
     version = re.search(r"HiGHS version (\S+)", out)
-    githash = re.search(r"Githash (\w+)", out)
+    githash = re.search(r"Githash ([^.\s]+)", out)
     return (version.group(1) if version else "?", githash.group(1) if githash else "")
 
 
@@ -312,9 +325,17 @@ def same_build(a: tuple[str, str], b: tuple[str, str]) -> bool:
     depends on how the tree was fetched (a shallow `git clone` and a
     FetchContent checkout of the same tag report different lengths), so
     requiring equality would reject a legitimate pairing.
+
+    A side reporting `n/a` has no hash to compare, so the version decides
+    alone.  Refusing there would reject every unpatched HiGHS that was not
+    built from a git checkout — the common shape of a system install, and the
+    one this script's own docstring recommends.  It is a weaker check on that
+    pairing, and the caller says so rather than pretending otherwise.
     """
     if a[0] != b[0]:
         return False
+    if NO_GITHASH in (a[1], b[1]):
+        return True
     short, long = sorted((a[1], b[1]), key=len)
     return bool(short) and long.startswith(short)
 
@@ -410,6 +431,14 @@ def main() -> None:
         sys.exit(
             f"Error: version mismatch, comparison would be meaningless.\n"
             f"  patched: {pv[0]} githash {pv[1]}\n  vanilla: {vv[0]} githash {vv[1]}"
+        )
+    if NO_GITHASH in (pv[1], vv[1]):
+        # Say which check actually ran.  A binary built outside a git checkout
+        # reports no hash, so the pairing rests on the version string alone —
+        # which cannot tell two builds of the same release apart.
+        print(
+            f"Note: one binary reports githash {NO_GITHASH} (built outside a git "
+            f"checkout), so the builds were matched on version {pv[0]} alone."
         )
 
     instances_dir = args.instances_dir or find_instances_dir(patched)

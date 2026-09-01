@@ -37,11 +37,13 @@
 #                        an unpatched binary that has none of the ten options
 #                        the patch adds — so pair a patched-only option with a
 #                        PLATO_CONFIGS that omits `vanilla`.  The runner probes
-#                        the vanilla binary for each key and refuses before the
-#                        first solve rather than failing every vanilla instance
-#                        at solve time.  (`mip_heuristic_effort` and
-#                        `mip_heuristic_run_feasibility_jump` are upstream's
-#                        own and are legal on both.)
+#                        every binary it will use for each key and refuses
+#                        before the first solve, rather than failing every
+#                        instance of the affected arm at solve time; that
+#                        covers a typo on the patched arm too.  (Seven of the
+#                        seventeen mip_heuristic_* names are upstream's own —
+#                        mip_heuristic_effort and the six mip_heuristic_run_*
+#                        switches — and are legal on both binaries.)
 #   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
 #   PLATO_THREADS    pin the solver thread count (default: unset — see below)
 #   PLATO_COUNT      run at most N *pending* instances, then stop.  The

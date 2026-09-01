@@ -115,14 +115,48 @@ if not argv:
         print("mip-heuristics patch active (custom MIP presolve heuristics)")
     sys.exit(255)
 
-instance = os.path.basename(argv[0]).split(".")[0]
 opts_path = None
 time_limit = "0"
+model = None
+skip = False
 for i, arg in enumerate(argv):
+    if skip:
+        skip = False
+        continue
     if arg == "--options_file":
         opts_path = argv[i + 1]
+        skip = True
     elif arg == "--time_limit":
         time_limit = argv[i + 1]
+        skip = True
+    elif not arg.startswith("--") and model is None:
+        model = arg
+
+# `--options_file` with no model: run_benchmark.py's option probe, which asks
+# whether this binary has a given option and never solves.  The real CLI reads
+# the options file first — that is what makes the probe work — then complains
+# about the missing filename and exits.  Recording it would file a run with an
+# empty instance and config name.
+if model is None:
+    # The unpatched stand-in has none of the ten options the patch adds, and
+    # says so the way HiGHS does.  `mip_heuristic_effort` and the six
+    # `mip_heuristic_run_*` switches are upstream's own and stay legal on both.
+    if opts_path and "unpatched" in os.path.basename(sys.argv[0]):
+        patch_added = {"mip_heuristic_suite", "mip_heuristic_presolve_only"} | {
+            f"mip_heuristic_{h}_{axis}"
+            for h in ("fj", "fpr", "local_mip", "scylla")
+            for axis in ("effort", "patience")
+        }
+        with open(opts_path) as handle:
+            for line in handle:
+                key = line.partition("=")[0].strip()
+                if key in patch_added:
+                    print(f'ERROR:   getOptionIndex: Option "{key}" is unknown')
+                    sys.exit(255)
+    print("Please specify filename in .mps|.lp|.ems format.")
+    sys.exit(255)
+
+instance = os.path.basename(model).split(".")[0]
 
 options = {}
 if opts_path:

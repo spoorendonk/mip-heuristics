@@ -20,8 +20,8 @@ from run_benchmark import (
     build_arg_parser,
     build_base_options,
     build_plan,
+    check_known_options,
     check_vanilla_binary,
-    check_vanilla_options,
     config_options,
     expected_highs_version,
     find_ignored_config_warning,
@@ -447,15 +447,28 @@ def fake_highs(
         "  exit 255\n"
         "fi\n"
         'ARGS="$*"\n'
-        "OPTS=\n"
+        # MODEL is what makes `.solves` mean "reached a solve".  A model-free
+        # `--options_file` run is what the option probe issues and what real
+        # HiGHS answers with "Please specify filename" — recording it here
+        # would make every `assert not …solves.exists()` pass or fail on
+        # whether the probe happened to run, not on whether a solve did.
+        "OPTS=\nMODEL=\n"
         "while [ $# -gt 0 ]; do\n"
-        '  if [ "$1" = "--options_file" ]; then OPTS="$2"; fi\n'
+        '  case "$1" in\n'
+        '    --options_file) OPTS="$2"; shift ;;\n'
+        "    --*) if [ $# -gt 1 ]; then shift; fi ;;\n"
+        '    *) MODEL="$1" ;;\n'
+        "  esac\n"
         "  shift\n"
         "done\n"
         f"{reject}"
-        f'echo "$ARGS" >> "{path}.solves"\n'
         f"{banner_line}\n"
         f"{marker}\n"
+        'if [ -z "$MODEL" ]; then\n'
+        '  echo "Please specify filename in .mps|.lp|.ems format."\n'
+        "  exit 255\n"
+        "fi\n"
+        f'echo "$ARGS" >> "{path}.solves"\n'
         'echo "  Status            Optimal"\n'
     )
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
@@ -545,18 +558,24 @@ def _main(tmp_path: Path, monkeypatch, *argv: str) -> None:
 
 
 def _main_with_one_instance(
-    tmp_path: Path, monkeypatch, *argv: str
+    tmp_path: Path,
+    monkeypatch,
+    *argv: str,
+    patched_unknown: tuple[str, ...] = (),
 ) -> tuple[Path, Path]:
     """Run main() over a list with one real instance file in the data dir.
 
     Returns `(output tree, patched binary)`, so a caller can assert on what a
     refused run left behind — which is the checkable form of "before any
-    solve".
+    solve".  `patched_unknown` names options the *patched* stand-in does not
+    have, for the typo case.
     """
     instances = tmp_path / "one.txt"
     instances.write_text("model\n")
     (tmp_path / "model.mps.gz").write_bytes(b"")
-    binary = fake_highs(tmp_path, "patched", patched=True)
+    binary = fake_highs(
+        tmp_path, "patched", patched=True, unknown_options=patched_unknown
+    )
     out = tmp_path / "out"
     monkeypatch.setattr(
         sys,
@@ -642,9 +661,9 @@ def test_the_option_check_passes_options_the_vanilla_binary_has(tmp_path: Path):
         patched=False,
         unknown_options=("mip_heuristic_suite", "mip_heuristic_fpr_effort"),
     )
-    check_vanilla_options(str(vanilla), {})
-    check_vanilla_options(
-        str(vanilla), {"mip_heuristic_effort": "0.05", "threads": "4"}
+    check_known_options(str(vanilla), {}, unpatched=True)
+    check_known_options(
+        str(vanilla), {"mip_heuristic_effort": "0.05", "threads": "4"}, unpatched=True
     )
 
 
@@ -662,17 +681,59 @@ def test_the_option_check_names_every_option_the_vanilla_binary_lacks(tmp_path: 
         unknown_options=("mip_heuristic_suite", "mip_heuristic_fpr_effort"),
     )
     with pytest.raises(ValueError) as exc:
-        check_vanilla_options(
+        check_known_options(
             str(vanilla),
             {
                 "mip_heuristic_fpr_effort": "1.0",
                 "mip_heuristic_suite": "all",
                 "threads": "4",
             },
+            unpatched=True,
         )
     assert "mip_heuristic_fpr_effort" in str(exc.value)
     assert "mip_heuristic_suite" in str(exc.value)
     assert "threads" not in str(exc.value)
+
+
+def test_a_probe_is_not_recorded_as_a_solve(tmp_path: Path):
+    """`.solves` must mean "reached a solve", or every refusal test is vacuous.
+
+    The option probe runs `highs --options_file <tmp>` with no model, which
+    real HiGHS answers with "Please specify filename" and no solve. A
+    stand-in that logged it would make `assert not …solves.exists()` pass or
+    fail on whether a probe ran rather than on whether a solve did.
+    """
+    binary = fake_highs(tmp_path, "unpatched", patched=False)
+    check_known_options(str(binary), {"threads": "4"}, unpatched=True)
+    assert not Path(f"{binary}.solves").exists()
+
+
+def test_a_typod_extra_option_stops_the_run_on_the_patched_arm(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """The same campaign-cannot-advance failure, on the larger arm.
+
+    `mip_heuristic_fpr_effrot` is a typo the patched binary rejects, so every
+    instance of every patched config would exit 255 without solving. The
+    check runs against every distinct binary the run will use, not only the
+    vanilla one.
+    """
+    with pytest.raises(SystemExit) as exc:
+        _main_with_one_instance(
+            tmp_path,
+            monkeypatch,
+            "--configs",
+            "all",
+            "--extra-options",
+            "mip_heuristic_fpr_effrot=1.0",
+            patched_unknown=("mip_heuristic_fpr_effrot",),
+        )
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "mip_heuristic_fpr_effrot" in err
+    # The typo branch of the message, not the unpatched-baseline one.
+    assert "Check the spelling" in err
+    assert not (tmp_path / "patched.solves").exists()
 
 
 def test_an_extra_option_the_vanilla_binary_lacks_stops_the_run(
