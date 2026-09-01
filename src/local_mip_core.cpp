@@ -59,12 +59,17 @@ WorkerCtx::WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uin
 }
 
 void WorkerCtx::update_violated(HighsInt i) {
-    double viol = compute_violation(i, lhs[i]);
     bool was = violated.contains(i);
-    // `feastol`, not the retired `kViolTol` (issue #148): set membership
-    // has to agree with `is_violated` and `compute_tight_delta`'s
-    // violated/satisfied branch, both of which already read `feastol`.
-    bool now = (viol > feastol);
+    // Calls the shared predicate rather than re-deriving it (issue
+    // #148 follow-up): `is_violated` uses `l > hi + feastol ||
+    // l < lo - feastol`, which is not bitwise identical to
+    // `row_violation(...) > feastol` at the ~1 ulp scale (`fl(hi+ft) !=
+    // hi + fl(ft)` in general) — a residue of the same class of
+    // mismatch #148 removed, just far smaller. Sharing the call site
+    // makes set membership agree with `is_violated`,
+    // `compute_tight_delta`'s branch and HiGHS's own `trySolution` up
+    // to the bit, not just up to the value of `feastol`.
+    bool now = is_violated(i, lhs[i]);
     if (now && !was) {
         violated.add(i);
         satisfied.remove(i);
@@ -127,12 +132,22 @@ bool WorkerCtx::full_recheck(bool update_sets, bool early_exit) {
             l += ar_value[k] * solution[ar_index[k]];
         }
         lhs[i] = l;
-        // `feastol`, not the retired `kViolTol` (issue #148): this is
-        // both the violated/satisfied set-membership classifier and the
-        // worker's submission gate, and it must accept exactly what
-        // HiGHS's own `trySolution` (mip/HighsMipSolverData.cpp) would
-        // — no looser, and no stricter.
-        if (compute_violation(i, l) > feastol) {
+        // `is_violated`, not a re-derived `compute_violation(...) >
+        // feastol` (issue #148 follow-up — see `update_violated`'s
+        // comment for why the two forms are not bitwise identical):
+        // this is both the violated/satisfied set-membership classifier
+        // and the worker's submission gate. Its *row* checks must
+        // accept exactly what HiGHS's own `trySolution`
+        // (mip/HighsMipSolverData.cpp) would — no looser, no stricter.
+        // `trySolution` also checks column bounds and integrality
+        // fractionality, which `full_recheck` does not duplicate here:
+        // every candidate this worker generates is already clamped and
+        // rounded to bounds/integrality by `clamp_and_round`
+        // (`append_candidate` in `local_mip_search.cpp`; the starting
+        // solution goes through an equivalent clamp/round in
+        // `LocalMipWorker`'s constructor, `local_mip_worker.cpp`), so
+        // `solution` never drifts outside them between recheck calls.
+        if (is_violated(i, l)) {
             feasible = false;
             if (early_exit) {
                 break;

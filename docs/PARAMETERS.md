@@ -165,17 +165,20 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 - **File**: `src/local_mip_caches.h`
 - **Default**: `5e-7`
-- **Meaning**: Tolerance for comparing two accumulated candidate scores
-  (Defs 5-10: sums of per-row integer constraint weights, an
+- **Meaning**: Tolerance for comparing two accumulated candidate
+  *scores* (Defs 5-10: sums of per-row integer constraint weights, an
   objective-improvement flag, a bonus) for a numerically meaningful
   difference — floating-point summation noise, not a feasibility
-  question. **Not** used to decide whether a row is violated: that
-  question — set membership in `violated`/`satisfied`, the worker's
-  submission gate, `WorkerCtx::is_violated`, and the branch
-  `compute_tight_delta` rounds on — is answered everywhere in LocalMIP
-  by HiGHS's own runtime `feastol` (`mipsolver.mipdata_->feastol`,
-  not a tunable in this file). Until issue #148, this constant (then
-  named `kViolTol`) answered *both* questions at once, at a value
+  question, and not a violation-magnitude question either (that is
+  `kViolDeltaTol`, immediately below — a score has no relationship to a
+  row's activity or bounds). **Not** used to decide whether a row is
+  violated: that question — set membership in `violated`/`satisfied`,
+  the worker's submission gate, `WorkerCtx::is_violated`, and the
+  branch `compute_tight_delta` rounds on — is answered everywhere in
+  LocalMIP by HiGHS's own runtime `feastol`
+  (`mipsolver.mipdata_->feastol`, not a tunable in this file). Until
+  issue #148, this constant (then named `kViolTol`) answered *both*
+  the violation and the score-comparison question at once, at a value
   (5e-7) tighter than HiGHS's default `feastol` (1e-6) — a row violated
   by an amount in between landed in the `violated` set but was scored
   by the tight-move operator as already satisfied, so it never got a
@@ -184,7 +187,34 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   this constant's definition for the full account.
 - **Suggested range**: 1e-9–1e-5. Too large risks discarding real score
   differences as noise; too small risks treating floating-point summation
-  noise as a real difference.
+  noise as a real difference. This range is specific to score units —
+  do not carry a tuned value over to `kViolDeltaTol`, which lives in
+  row-activity units instead.
+
+---
+
+### `kViolDeltaTol` — violation-magnitude noise floor for scoring
+
+- **File**: `src/local_mip_caches.h`
+- **Default**: `5e-7`
+- **Meaning**: Given two violation *magnitudes* for the same
+  already-violated row (before and after a candidate move, both from
+  `row_violation`/`compute_violation`), the tolerance for deciding
+  whether the magnitude changed by more than floating-point summation
+  noise — i.e. whether the move meaningfully reduced or worsened the
+  violation (`compute_candidate_scores`'s Def 6 still-violated branch,
+  `local_mip_search.cpp`). A row-activity quantity, in the same units
+  as `feastol`, but answering "did this change" rather than "is this
+  violated" (that question stays `feastol`'s alone) — so it is kept
+  separate from both `feastol` and `kScoreTol` (issue #148 follow-up:
+  this constant used to be `kScoreTol` here too, which read correctly
+  only because the two questions happen to share a value today; tuning
+  `kScoreTol` toward its own suggested range without a matching change
+  here would have silently moved this threshold as a side effect).
+- **Suggested range**: 1e-8–1e-6, and generally at or below `feastol`
+  — this constant only fires on rows already known violated, so a value
+  approaching `feastol` starts treating real sub-feastol progress as
+  noise.
 
 ---
 

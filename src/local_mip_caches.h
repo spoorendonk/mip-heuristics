@@ -11,8 +11,9 @@ namespace local_mip_detail {
 
 // --- File-scope constants (paper + engineering) ---
 //
-// Two different questions used to share one constant here (issue #148),
-// and that was the bug: "is this row violated?" is a feasibility
+// Three different questions used to share one constant here (issue
+// #148), and conflating any two of them is the bug class this file is
+// now careful about: "is this row violated?" is a feasibility
 // question, and LocalMIP already has an authoritative answer for it —
 // `WorkerCtx::feastol`, HiGHS's own runtime feasibility tolerance, the
 // same one `HighsMipSolverData::trySolution` checks a row against
@@ -32,16 +33,34 @@ namespace local_mip_detail {
 // `compute_candidate_scores` (`local_mip_search.cpp`) — so the worker
 // is exactly as strict as HiGHS's own acceptance check, never stricter.
 //
-// `kScoreTol` is the *other* question `kViolTol` used to answer:
-// whether two accumulated candidate *scores* (Defs 5-10 — sums of
-// per-row integer constraint weights, an objective-improvement flag,
-// and a bonus) differ by more than floating-point summation noise.
-// That is not a feasibility question — a score has no relationship to
-// a row's activity or bounds — so it keeps its own small constant
-// rather than folding into `feastol`. It happens to reuse `kViolTol`'s
-// old value because nothing has ever needed a different one, not
-// because the two roles are related.
+// `kViolDeltaTol` answers a related but distinct question: given two
+// violation *magnitudes* for the same row (before/after a candidate
+// move, both already known violated), did the magnitude change by more
+// than floating-point noise — i.e. did the move meaningfully reduce or
+// worsen the violation. Still about row activity, still in the same
+// units as `feastol`, but not "is this row violated" (that question is
+// `feastol`'s alone), so it is not folded into `feastol` either.
+// `compute_candidate_scores` (`local_mip_search.cpp`) is the only
+// reader.
+//
+// `kScoreTol` is the third question: whether two accumulated candidate
+// *scores* (Defs 5-10 — sums of per-row integer constraint weights, an
+// objective-improvement flag, and a bonus) differ by more than
+// floating-point summation noise. A score has no relationship to a
+// row's activity or bounds, so it is a different quantity from
+// `kViolDeltaTol` even though both exist to filter numerical noise —
+// merging them would leave a reader unable to tune one without
+// silently retuning the other, which is exactly the kind of coupling
+// issue #148 removed for the violation questions. `kScoreTol` and
+// `kViolDeltaTol` happen to share `kViolTol`'s old value because
+// nothing has ever needed them to differ, not because the roles are
+// related.
 inline constexpr double kScoreTol = 5e-7;
+
+// See `kScoreTol`'s comment above: this is the violation-magnitude
+// noise floor, not the score-comparison one. Same value today; tune
+// them independently.
+inline constexpr double kViolDeltaTol = 5e-7;
 inline constexpr HighsInt kRestartInterval = 200000;
 inline constexpr HighsInt kTermCheckInterval = 1000;
 inline constexpr HighsInt kActivityPeriod = 100000;

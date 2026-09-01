@@ -998,7 +998,31 @@ TEST_CASE("LocalMIP: violation partition agrees with HiGHS's feastol, not a stri
     // its satisfied-branch delta rounds toward zero to a no-op — the
     // consistent answer for a row already within tolerance, replacing
     // the old mismatch where the same row sat in `violated` but got no
-    // repairing candidate.
+    // repairing candidate. This assertion is *not* discriminating on
+    // its own: `compute_tight_delta` already read `feastol` before
+    // this fix, so it passes on both sides of it. It documents intent
+    // (the operator and set membership now genuinely agree), not
+    // coverage — the `violated`/`satisfied`/`full_recheck` assertions
+    // above are what a regression trips.
     const double delta = ctx.compute_tight_delta(row, /*j=*/0, /*coeff=*/1.0);
     REQUIRE(std::abs(delta) < local_mip_detail::kEpsZero);
+
+    // The other side of the same threshold (issue #148 follow-up): a
+    // row violated by more than `feastol` must still land in
+    // `violated` and still fail the submission gate — pinning only the
+    // "not violated within the window" side above would pass a
+    // degenerate regression such as `is_violated`'s `>` becoming
+    // unconditionally false, or `full_recheck`'s predicate becoming
+    // `> 1.0`. `2e-6` is comfortably past `feastol` (1e-6) so the
+    // margin cannot be mistaken for more summation noise.
+    const double clear_violation = 2e-6;
+    REQUIRE(clear_violation > ctx.feastol);
+    ctx.solution[1] = clear_violation;
+    REQUIRE(ctx.is_violated(row, 2.0 + clear_violation));
+
+    ctx.rebuild_state();
+    REQUIRE(ctx.lhs[row] == Catch::Approx(2.0 + clear_violation));
+    REQUIRE(ctx.violated.contains(row));
+    REQUIRE_FALSE(ctx.satisfied.contains(row));
+    REQUIRE_FALSE(ctx.full_recheck(/*update_sets=*/false, /*early_exit=*/true));
 }

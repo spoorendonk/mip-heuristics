@@ -93,13 +93,14 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
         // without measuring — it would move us away from the reference
         // implementation.  (The reference also scales equality rows by 2x,
         // which we do not do; that part is a genuine gap.)
-        // `feastol`, not `kScoreTol` (issue #148): this is the same
-        // "is this row violated?" question `WorkerCtx::is_violated` and
-        // the `violated`/`satisfied` sets answer, just evaluated on a
-        // hypothetical (pre-move / post-move) lhs rather than the
-        // worker's live state — it has to use the one tolerance that
-        // governs violation everywhere else, or this scoring pass would
-        // reintroduce the same kind of mismatch #148 fixed elsewhere.
+        // `feastol`, not `kScoreTol` or `kViolDeltaTol` (issue #148):
+        // this is the same "is this row violated?" question
+        // `WorkerCtx::is_violated` and the `violated`/`satisfied` sets
+        // answer, just evaluated on a hypothetical (pre-move / post-move)
+        // lhs rather than the worker's live state — it has to use the
+        // one tolerance that governs violation everywhere else, or this
+        // scoring pass would reintroduce the same kind of mismatch #148
+        // fixed elsewhere.
         bool was_viol = (old_viol > ctx.feastol);
         bool now_viol = (new_viol > ctx.feastol);
         if (was_viol && !now_viol) {
@@ -107,14 +108,17 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
         } else if (!was_viol && now_viol) {
             progress -= w;  // satisfied → violated
         } else if (was_viol && now_viol) {
-            // `kScoreTol`, not `feastol`: this asks whether the
-            // violation *magnitude* moved by more than floating-point
-            // noise, not whether the row is violated (already decided
-            // above) — see `kScoreTol`'s definition in
-            // `local_mip_caches.h`.
-            if (new_viol < old_viol - kScoreTol) {
+            // `kViolDeltaTol`, not `kScoreTol` and not `feastol`: this
+            // asks whether the violation *magnitude* moved by more than
+            // floating-point noise, not whether the row is violated
+            // (already decided above) and not whether a candidate
+            // *score* changed meaningfully — a violation magnitude is a
+            // row-activity quantity, in the same units as `feastol`,
+            // and has no relationship to the score comparisons below.
+            // See `kViolDeltaTol`'s definition in `local_mip_caches.h`.
+            if (new_viol < old_viol - kViolDeltaTol) {
                 progress += w;  // still violated, improved
-            } else if (new_viol > old_viol + kScoreTol) {
+            } else if (new_viol > old_viol + kViolDeltaTol) {
                 progress -= w;  // still violated, worsened
             }
         }
