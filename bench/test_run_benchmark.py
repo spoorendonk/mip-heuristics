@@ -21,6 +21,7 @@ from run_benchmark import (
     build_base_options,
     build_plan,
     check_vanilla_binary,
+    check_vanilla_options,
     config_options,
     expected_highs_version,
     find_ignored_config_warning,
@@ -407,20 +408,35 @@ def fake_highs(
     patched: bool,
     version: str = "1.15.1",
     banner: bool = True,
+    githash: str = "04024d701f",
+    unknown_options: tuple[str, ...] = (),
 ) -> Path:
     """A stand-in `highs` that answers a no-argument probe like the real one.
 
     With arguments it appends to `<path>.solves`, so a test can assert that a
     refused run never reached a solve.
+
+    `githash` exists because a HiGHS configured outside a git repository
+    prints the literal `n/a` there.  `unknown_options` names options this
+    stand-in does not have: given an `--options_file` mentioning one, it
+    answers the way HiGHS does — the `getOptionIndex` line and exit 255,
+    without solving.
     """
     path = tmp_path / name
     marker = (
         f'echo "{PATCH_MARKER} (custom MIP presolve heuristics)"' if patched else ":"
     )
     banner_line = (
-        f'echo "Running HiGHS {version} (git hash: 04024d701f): Copyright (c) 2026"'
+        f'echo "Running HiGHS {version} (git hash: {githash}): Copyright (c) 2026"'
         if banner
         else ":"
+    )
+    reject = "".join(
+        f'if [ -n "$OPTS" ] && grep -q "^{opt} " "$OPTS"; then\n'
+        f"  echo 'ERROR:   getOptionIndex: Option \"{opt}\" is unknown'\n"
+        "  exit 255\n"
+        "fi\n"
+        for opt in unknown_options
     )
     path.write_text(
         "#!/bin/sh\n"
@@ -430,7 +446,14 @@ def fake_highs(
         f"  {marker}\n"
         "  exit 255\n"
         "fi\n"
-        f'echo "$*" >> "{path}.solves"\n'
+        'ARGS="$*"\n'
+        "OPTS=\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = "--options_file" ]; then OPTS="$2"; fi\n'
+        "  shift\n"
+        "done\n"
+        f"{reject}"
+        f'echo "$ARGS" >> "{path}.solves"\n'
         f"{banner_line}\n"
         f"{marker}\n"
         'echo "  Status            Optimal"\n'
@@ -579,6 +602,114 @@ def test_a_refused_vanilla_binary_stops_the_run_before_any_solve(
     assert not (tmp_path / "patched.solves").exists()
     out = tmp_path / "out"
     assert not out.exists() or not list(out.rglob("*.log"))
+
+
+def test_the_probe_accepts_a_binary_built_outside_a_git_repository():
+    """HiGHS prints `git hash: n/a` with no `.git`, and that is still a banner.
+
+    A distro package, a conda build, or one built from the release source
+    archive all reach `set(GITHASH "n/a")` in HiGHS's own CMakeLists. The
+    banner regex used to require `\\w+` there, so it did not match at all and
+    `check_vanilla_binary` refused the binary for "printing no HiGHS banner"
+    — while quoting that banner back in the same message. Only the version
+    decides anything; the hash is recorded, never compared.
+    """
+    banner = "Running HiGHS 1.15.1 (git hash: n/a): Copyright (c) 2026"
+    match = BANNER_RE.search(banner)
+    assert match is not None
+    assert match.group(1) == "1.15.1"
+    assert match.group(2) == "n/a"
+
+
+def test_a_vanilla_binary_without_a_git_hash_is_accepted(tmp_path: Path):
+    probe = check_vanilla_binary(
+        str(fake_highs(tmp_path, "unpatched", patched=False, githash="n/a"))
+    )
+    assert probe.version == "1.15.1"
+    assert probe.githash == "n/a"
+
+
+def test_the_option_check_passes_options_the_vanilla_binary_has(tmp_path: Path):
+    """No `--extra-options`, or only upstream's own, is not a refusal.
+
+    `mip_heuristic_effort` and `mip_heuristic_run_feasibility_jump` are
+    upstream's, so a prefix rule over `mip_heuristic_*` would refuse a legal
+    sweep. The binary is asked instead.
+    """
+    vanilla = fake_highs(
+        tmp_path,
+        "unpatched",
+        patched=False,
+        unknown_options=("mip_heuristic_suite", "mip_heuristic_fpr_effort"),
+    )
+    check_vanilla_options(str(vanilla), {})
+    check_vanilla_options(
+        str(vanilla), {"mip_heuristic_effort": "0.05", "threads": "4"}
+    )
+
+
+def test_the_option_check_names_every_option_the_vanilla_binary_lacks(tmp_path: Path):
+    """All of them, not just the first.
+
+    HiGHS stops reading an options file at the first unknown key, so a single
+    probing run names one offender and the operator relaunches the campaign
+    once per option. The check asks one key at a time for that reason.
+    """
+    vanilla = fake_highs(
+        tmp_path,
+        "unpatched",
+        patched=False,
+        unknown_options=("mip_heuristic_suite", "mip_heuristic_fpr_effort"),
+    )
+    with pytest.raises(ValueError) as exc:
+        check_vanilla_options(
+            str(vanilla),
+            {
+                "mip_heuristic_fpr_effort": "1.0",
+                "mip_heuristic_suite": "all",
+                "threads": "4",
+            },
+        )
+    assert "mip_heuristic_fpr_effort" in str(exc.value)
+    assert "mip_heuristic_suite" in str(exc.value)
+    assert "threads" not in str(exc.value)
+
+
+def test_an_extra_option_the_vanilla_binary_lacks_stops_the_run(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """The failure this closes: every vanilla instance exits 255 at solve time.
+
+    `--extra-options mip_heuristic_fpr_effort=1.0` over the default `vanilla
+    all` pair is the documented sweep invocation, and since #147 the vanilla
+    arm is always an unpatched binary that has no such option. Each instance
+    would land in `<inst>.log.err`, the vanilla arm would never advance, and
+    `run_plato.sh next` would relaunch a campaign that cannot finish.
+    """
+    vanilla = fake_highs(
+        tmp_path,
+        "unpatched",
+        patched=False,
+        unknown_options=("mip_heuristic_fpr_effort",),
+    )
+    with pytest.raises(SystemExit) as exc:
+        _main_with_one_instance(
+            tmp_path,
+            monkeypatch,
+            "--configs",
+            "vanilla",
+            "all",
+            "--vanilla-binary",
+            str(vanilla),
+            "--extra-options",
+            "mip_heuristic_fpr_effort=1.0",
+        )
+    assert exc.value.code == 2
+    assert "mip_heuristic_fpr_effort" in capsys.readouterr().err
+    # Refused before any solve, on either binary — the point is to prevent a
+    # half-empty tree rather than to explain one.
+    assert not Path(f"{vanilla}.solves").exists()
+    assert not (tmp_path / "patched.solves").exists()
 
 
 def test_a_run_whose_vanilla_binary_passes_the_probe_solves(

@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 
@@ -102,7 +103,17 @@ PATCH_MARKER = "mip-heuristics patch active"
 # The banner both builds print.  Not the `--version` form, which is a
 # different line and — decisively — carries no marker, because `--version`
 # never reaches `highsLogHeader`.
-BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: (\w+)\)")
+#
+# The hash group is `[^)]+`, not `\w+`: HiGHS sets `GITHASH` to the literal
+# `n/a` when it is configured outside a git repository (its own
+# `CMakeLists.txt`, the `else()` branch of the `git describe` block), and `/`
+# is not a word character.  A HiGHS installed from a distro package or built
+# from a release *source archive* prints `git hash: n/a` — so a `\w+` pattern
+# does not match at all, `version` comes back None, and `check_vanilla_binary`
+# refuses a perfectly good baseline with "printed no HiGHS banner", quoting
+# the banner it just printed back at the reader.  Only the version decides
+# anything here; the hash is captured for the manifest and read by no check.
+BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: ([^)]+)\)")
 
 # The HiGHS tag this checkout builds against, read from the one place that
 # defines it — a constant here would be a second definition to keep in step
@@ -362,6 +373,77 @@ def check_vanilla_binary(path: str) -> BinaryProbe:
             "from a different tag is not comparable"
         )
     return probe
+
+
+# How HiGHS names an option it does not have, while *reading* an options file —
+# before it needs a model, which is what makes the check below cost one
+# model-free run.
+_UNKNOWN_OPTION_RE = re.compile(r'Option "([^"]+)" is unknown')
+
+
+def check_vanilla_options(path: str, options: dict[str, str]) -> None:
+    """Refuse `--extra-options` the unpatched binary has no option for.
+
+    `--extra-options` applies to every config, and since #147 the `vanilla`
+    config always runs a separately built unpatched binary — which has none of
+    the ten options the patch adds.  So the documented sweep invocation
+    (`--extra-options mip_heuristic_fpr_effort=1.0`, run over the default
+    `vanilla all` config pair) makes HiGHS exit 255 on *every vanilla
+    instance*: each one lands in `<inst>.log.err`, the vanilla arm never
+    advances, and `run_plato.sh next` relaunches a campaign that cannot
+    finish.  Loud, but only per instance and only once the run is under way.
+
+    The question is asked of the binary rather than answered from a list here.
+    Two of the twelve `mip_heuristic_*` names are upstream's own —
+    `mip_heuristic_effort` and `mip_heuristic_run_feasibility_jump`, both legal
+    on an unpatched build — so a prefix rule would refuse a valid sweep, and a
+    hardcoded set of the other ten would need editing on every option change
+    and would be wrong silently when it wasn't.  The binary already knows.
+
+    Not the same check as `check_vanilla_binary`: that one identifies the
+    binary, this one is about the options *this run* pairs it with, so a
+    caller with no `--extra-options` never reaches a refusal.
+    """
+    unknown: list[str] = []
+    for key, value in sorted(options.items()):
+        # One key per invocation, not all of them in one file: HiGHS stops
+        # reading the file at the first unknown option, so a single run names
+        # only the first offender and the operator fixes them one campaign
+        # launch at a time.  Each run is model-free and costs milliseconds.
+        with tempfile.NamedTemporaryFile("w", suffix=".opts", delete=False) as f:
+            opts_path = f.name
+        try:
+            write_options_file({key: value}, opts_path)
+            result = subprocess.run(
+                [path, "--options_file", opts_path],
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=60,
+            )
+            output = result.stdout + result.stderr
+        except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover
+            raise ValueError(
+                f"could not run {path} to check its options: {exc}"
+            ) from exc
+        finally:
+            os.unlink(opts_path)
+        # Only "unknown", never "cannot read value": an out-of-range value is
+        # the operator's own typo on an option that does exist, and it fails
+        # identically on the patched binary — not a vanilla-specific refusal.
+        if _UNKNOWN_OPTION_RE.search(output):
+            unknown.append(key)
+    if unknown:
+        raise ValueError(
+            "--extra-options "
+            + ", ".join(unknown)
+            + f" — the vanilla binary {path} has no such option. It is an "
+            "unpatched HiGHS, so the options the patch adds do not exist "
+            "there, and --extra-options applies to every config. Drop "
+            "`vanilla` from --configs, or move the option to a patched-only "
+            "run"
+        )
 
 
 def load_instances(path: str) -> list[str]:
@@ -876,6 +958,19 @@ def main() -> None:
     # which is reserved for an instrumented `suite=off` — so the attribution
     # tables come out empty rather than wrong, hours later.
     base_opts = build_base_options(args.threads, args.dev_log, args.extra_options)
+
+    # The second half of the vanilla pre-flight, and it has to be here rather
+    # than beside the binary probe above: it needs `base_opts`, which is built
+    # from `--extra-options` after the plans are resolved.  Same exit code and
+    # same reason — a `--extra-options mip_heuristic_fpr_effort=1.0` over the
+    # default `vanilla all` pair fails every vanilla instance at solve time,
+    # and the campaign then never advances past a half-empty tree.
+    if vanilla_plan is not None:
+        try:
+            check_vanilla_options(vanilla_plan.binary, base_opts)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(2)
 
     # Keyed on the option that will actually be written, not on `--dev-log`:
     # `--extra-options log_dev_level=1` overrides the flag, and the header is

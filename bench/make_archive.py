@@ -94,7 +94,11 @@ ARCHIVE_BENCH_FILES = (
 # in `bench/check_vanilla_equivalence.py`, which normalises it away.
 PATCH_MARKER = "mip-heuristics patch active"
 
-_BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: (\w+)\)")
+# The hash group is `[^)]+`, not `\w+`, and the reason is in the matching
+# comment in `bench/run_benchmark.py`: a HiGHS configured outside a git
+# repository prints the literal `git hash: n/a`, which `\w+` does not match,
+# and a log from such a binary would then record `version: null`.
+_BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: ([^)]+)\)")
 
 # `log_dev_level=3` tags, from `src/effort_ledger.cpp` and
 # `EffortLedger::book`.  Their presence is the observed

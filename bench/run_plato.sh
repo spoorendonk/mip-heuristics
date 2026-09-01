@@ -33,6 +33,15 @@
 #                        an error, not a quietly substituted run.
 #   PLATO_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
 #                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_patience=0"
+#                        These apply to *every* config, and the vanilla one is
+#                        an unpatched binary that has none of the ten options
+#                        the patch adds — so pair a patched-only option with a
+#                        PLATO_CONFIGS that omits `vanilla`.  The runner probes
+#                        the vanilla binary for each key and refuses before the
+#                        first solve rather than failing every vanilla instance
+#                        at solve time.  (`mip_heuristic_effort` and
+#                        `mip_heuristic_run_feasibility_jump` are upstream's
+#                        own and are legal on both.)
 #   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
 #   PLATO_THREADS    pin the solver thread count (default: unset — see below)
 #   PLATO_COUNT      run at most N *pending* instances, then stop.  The
