@@ -189,6 +189,41 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
 // "strictly better than the best found", so it is reused here rather
 // than introducing a second tolerance for the same question.
 //
+// What this changes for a CONTINUOUS costed variable sitting at the tie
+// (`obj(s) == obj(s*)`): `delta = -eps/c_j` is never rounded, so it
+// stays at `ctx.epsilon`'s own scale (`mipdata->epsilon`, HiGHS's
+// `small_matrix_value`, 1e-9). `append_candidate` keeps it (`kEpsZero`
+// is 1e-15), `compute_candidate_scores` scores it ~0 -- it lands exactly
+// at the eps margin it was built to just clear -- and it reaches Phase
+// 4's final `if (cand.var_idx != -1) return cand;` unbeaten, since
+// nothing else scores strictly better. On a continuous-costed model
+// that DISPLACES the Phase 5/6 diversification move that used to be
+// returned there instead: a fall-through move at 1e-9 is closer to a
+// rounding artifact than a search step. This is Definition 2 exactly as
+// written, not a defect -- do not add a guard or a magnitude threshold
+// to suppress it, which would be an unreviewed heuristic approximation
+// this codebase does not otherwise make -- but it is a measured
+// behaviour change, not a neutral one. Isolated by reverting only the
+// `+ ctx.epsilon` below with a fall-through-move probe still in place,
+// counting moves with `|delta| < 1e-6`: rgn 6/284 -> 16,711/16,986
+// (98.4%), egout 28/554 -> 384/808 (47.5%), dcmulti 2/27 -> 7/52, bell5
+// 0/476 -> 3/492. Full-solve A/B across the bundled set (suite=local_mip,
+// presolve_only, threads=1, seed 0, 15s) between the commit before this
+// fix and the one after: 6 better / 7 worse / 92 unchanged -- better on
+// 3015, dcmulti, gt2, issue-2173, p01, rgn (129.3 -> 114.2, the instance
+// most saturated with these nudges), worse on egout, gesa2, issue-2095,
+// lseu, sp150x300d, and marginally on the two OBJSENSE MAX instances.
+//
+// Two corrections to how this fix was first reported (issue #129 cold
+// review, round 2): the escape this restores is *returned* by Phase 4's
+// own unconditional `if (cand.var_idx != -1) return cand;` fallback
+// check, not by Phase 1's early return -- its score is 0, not
+// `> kScoreTol` -- even though it originates in Phase 1b below and
+// survives Phases 2-4 unbeaten; and it is not returned on *every*
+// feasible-mode entry, only most of them -- one entry in an 8-entry
+// trace (`cur=2 best=3`) still correctly returned from Phase 6, because
+// Definition 2's precondition just below did not hold there.
+//
 // Paper Definition 2 additionally requires `obj(s) >= obj(s*)`; this
 // function is not guarded on that precondition, and was not before this
 // fix either -- left unguarded deliberately (issue #129 cold review
@@ -203,11 +238,21 @@ double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_o
 
     double obj_gap = cur_obj - best_obj;
     if (!ctx.minimize) {
+        // Computes the delta in the objective-*worsening* direction
+        // (unverified against the paper) and is dead in this
+        // integration -- HiGHS normalizes every model to minimization,
+        // so `ctx.minimize` was `false` on none of the 105 bundled
+        // instances, the two OBJSENSE MAX ones included. Before the
+        // `+ ctx.epsilon` fix below, a wrong sign here was harmless
+        // whenever it landed on `delta == 0`; with `eps` added it now
+        // produces a small non-zero move in the wrong direction
+        // instead of a no-op, should this branch ever go live.
         obj_gap = -obj_gap;
     }
 
     // `+ ctx.epsilon`: paper Definition 2's own eps, dropped before this
-    // fix -- see the comment above.
+    // fix -- see the comment above, including its continuous-variable
+    // and trajectory consequences.
     double delta = -(obj_gap + ctx.epsilon) / obj_coeff;
 
     if (ctx.is_int(j)) {
