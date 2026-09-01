@@ -216,6 +216,32 @@ bool PropEngine::fix(HighsInt j, double value) {
     return true;
 }
 
+bool PropEngine::refix(HighsInt j, double value) {
+    // Structural bounds, not the current (possibly narrower or, for a
+    // decision-fixed column, possibly stale-wide) vs_[j] range -- see the
+    // header comment on why refix() deliberately overrides rather than
+    // refines the current domain.
+    if (value < col_lb_[j] - feastol_ || value > col_ub_[j] + feastol_) {
+        return false;
+    }
+    value = std::max(col_lb_[j], std::min(col_ub_[j], value));
+    if (is_int(j)) {
+        value = std::round(value);
+    }
+    VarState old_vs = vs_[j];
+    vs_undo_.emplace_back(j, old_vs);
+    sol_undo_.emplace_back(j, solution_[j]);
+    // Narrow to a coherent singleton, unlike fix() -- see header comment.
+    vs_[j].lb = value;
+    vs_[j].ub = value;
+    vs_[j].fixed = true;
+    vs_[j].val = value;
+    solution_[j] = value;
+    update_activities(j, old_vs);
+    pq_notify(j, old_vs);
+    return true;
+}
+
 bool PropEngine::tighten_lb(HighsInt j, double new_lb) {
     if (is_int(j)) {
         new_lb = std::ceil(new_lb - feastol_);

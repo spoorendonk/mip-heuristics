@@ -12,48 +12,111 @@
 #include <utility>
 #include <vector>
 
-namespace {
-
-// SyncChanges(E, R): transfer domain deductions from R to E (paper line 13).
-// Cognitive complexity 33 (threshold 25).  Kept whole: SyncChanges(E, R) from Fig. 5 line 13: the
-// domain-transfer case analysis for binaries and general integers. Decomposing it would move work
-// across a worker's inner loop, and the closeout takes no unmeasured performance risk; the
-// standards also rank fidelity to the reference algorithm above mechanical extraction.
+// SyncChanges(E, R): transfer domain deductions from R to E (paper Fig. 5
+// line 13, Sect. 5.1).  Exposed (not in the anonymous namespace below,
+// declared in repair_search.h) for direct unit testing (issue #125) --
+// this is the paper's own named function and every other caller reaches it
+// only through repair_search().
+//
+// Sect. 5.1's case analysis, unified across the binary/non-binary split the
+// prose makes (verified equivalent -- see the two dedicated tests in
+// tests/test_repair_search.cpp):
+//
+//   - E already fixed to `ev.val`: if R's domain still contains `ev.val`
+//     the two domains agree and there is nothing to do ("leave it as
+//     is"); otherwise R has ruled `ev.val` out (e.g. clique propagation
+//     on a repair move), so E is *re-fixed* to R's domain -- a flip, in
+//     the binary case, and its direct generalization (nearest reachable
+//     point) otherwise.  This is the case the pre-#125 code skipped
+//     entirely (`if (E.var(j).fixed) continue;`), making the paper's
+//     motivating binary swap unreachable.
+//   - E unfixed, R's domain a superset of E's (`Dr ⊇ D`): nothing to
+//     sync.
+//   - E unfixed, non-empty intersection: tighten D to D ∩ Dr (paper case
+//     1).
+//   - E unfixed, disjoint intervals: fix to the endpoint of Dr closer to
+//     D (paper case 2; worked example D=[1,3], Dr=[4,5] -> 4).  This is
+//     the case the pre-#125 code got wrong by calling `tighten_lb`/
+//     `tighten_ub`, which validates against E's *current* bounds and
+//     therefore always rejects a value outside them -- the very
+//     definition of "disjoint" -- so `sync_changes` returned false and
+//     the node was dropped instead of repaired.
+//
+// The two "re-fix / fix past the current domain" branches use
+// `PropEngine::refix`, not `fix()`: both target a value outside E's
+// *current* domain by construction (that is what makes them the
+// override cases rather than the refine cases), and `fix()` validates
+// against exactly that current domain.  See `refix`'s own doc comment.
+//
+// Cognitive complexity 34 (threshold 25).  Kept whole: SyncChanges(E, R) from Fig. 5 line 13, the
+// domain-transfer case analysis unifying the binary and non-binary cases the paper's prose splits.
+// Decomposing it would move work across a worker's inner loop, and the closeout takes no unmeasured
+// performance risk; the standards also rank fidelity to the reference algorithm above mechanical
+// extraction.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool sync_changes(PropEngine& E, const PropEngine& R) {
     bool any_seeded = false;
+    const double feastol = E.feastol();
     for (HighsInt j = 0; j < E.ncol(); ++j) {
-        if (E.var(j).fixed) {
-            continue;
-        }
         const auto& rv = R.var(j);
         const auto& ev = E.var(j);
-        bool r_tightened_lb = rv.lb > ev.lb + E.feastol();
-        bool r_tightened_ub = rv.ub < ev.ub - E.feastol();
-        if (!r_tightened_lb && !r_tightened_ub) {
-            continue;
-        }
+        // R's effective domain for j: a single point if R has fixed it
+        // (regardless of whether R's own vs_[j].lb/ub were narrowed --
+        // R.fix() does not narrow them, so the raw bounds can understate
+        // what R has actually decided).
+        const double r_lb = rv.fixed ? rv.val : rv.lb;
+        const double r_ub = rv.fixed ? rv.val : rv.ub;
 
-        if (rv.fixed || rv.ub - rv.lb < E.feastol()) {
-            double val = rv.fixed ? rv.val : (rv.lb + rv.ub) * 0.5;
-            if (!E.fix(j, val)) {
+        if (ev.fixed) {
+            if (ev.val >= r_lb - feastol && ev.val <= r_ub + feastol) {
+                continue;  // domains agree -- leave as is
+            }
+            const double target = (ev.val < r_lb) ? r_lb : r_ub;
+            if (!E.refix(j, target)) {
                 return false;
             }
             E.seed_worklist(j);
             any_seeded = true;
+            continue;
+        }
+
+        // E unfixed.  Dr ⊇ D means R hasn't restricted this column at
+        // all relative to what E already knows -- nothing to sync.
+        if (r_lb <= ev.lb + feastol && r_ub >= ev.ub - feastol) {
+            continue;
+        }
+
+        const double new_lb = std::max(ev.lb, r_lb);
+        const double new_ub = std::min(ev.ub, r_ub);
+        if (new_lb <= new_ub + feastol) {
+            // Case 1: non-empty intersection -- tighten D to D ∩ Dr.
+            // `new_lb`/`new_ub` are within E's current [ev.lb, ev.ub] by
+            // construction, so `fix()`'s current-domain validation is the
+            // right (and sufficient) check here.
+            if (new_ub - new_lb < feastol) {
+                if (!E.fix(j, (new_lb + new_ub) * 0.5)) {
+                    return false;
+                }
+                E.seed_worklist(j);
+            } else {
+                if (new_lb > ev.lb + feastol && !E.tighten_lb(j, new_lb)) {
+                    return false;
+                }
+                if (new_ub < ev.ub - feastol && !E.tighten_ub(j, new_ub)) {
+                    return false;
+                }
+            }
+            any_seeded = true;
         } else {
-            if (r_tightened_lb) {
-                if (!E.tighten_lb(j, rv.lb)) {
-                    return false;
-                }
-                any_seeded = true;
+            // Case 2: disjoint intervals -- fix to the endpoint of Dr
+            // closer to D.  The target is outside E's current domain by
+            // definition, hence `refix`.
+            const double target = (r_lb > ev.ub) ? r_lb : r_ub;
+            if (!E.refix(j, target)) {
+                return false;
             }
-            if (r_tightened_ub) {
-                if (!E.tighten_ub(j, rv.ub)) {
-                    return false;
-                }
-                any_seeded = true;
-            }
+            E.seed_worklist(j);
+            any_seeded = true;
         }
     }
     if (any_seeded) {
@@ -65,6 +128,8 @@ bool sync_changes(PropEngine& E, const PropEngine& R) {
     }
     return true;
 }
+
+namespace {
 
 // MoveToDisjunction (paper p.128).
 struct Branch {

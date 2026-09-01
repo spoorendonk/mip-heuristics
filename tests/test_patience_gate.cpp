@@ -62,6 +62,16 @@
 //   fj / p0548          15.67x         2.00x           2.00x       1.50x
 //   scylla / flugpl     17.60x         1.00x           1.00x       1.00x
 //
+// All of the above predate #125/#127 (the propagation-engine fixes in
+// prop_engine.cpp / repair_search.cpp) and are stale for FPR specifically:
+// fpr/p0548 seed 0's `+ #116` column reads 5.48x post-#125/#127, not
+// 2.26x -- see the `kMaxGrowth` comment below for the reproduction and
+// why the gate still binds. #125 and #127 are new entries in the list of
+// "code issues affecting the calibration" the `docs/PARAMETERS.md`
+// patience section already tracks; they do not by themselves justify
+// re-running #113's probe (that is still the documented overnight job),
+// but the fpr row above should not be read as current.
+//
 // Two of those *rose* between the last two columns while the gate got
 // tighter, which is worth understanding before reading the column as a
 // score: a stricter improvement signal retires a worker sooner at **both**
@@ -148,13 +158,33 @@ size_t effort_at(const char* inst, const char* heur, const char* option, double 
 // The sweep is 20x wide (0.05 -> 1.00, the option's whole documented
 // range).  A gate that binds holds the growth to a small constant; the
 // pre-#111 numbers in the header comment are 16x-20x at this thread pin.
-// 4x is deliberately loose — the worst post-fix ratio measured over four
-// seeds at `threads=1` was 2.00x (fj/p0548, which sits on its structural
-// ceiling of one gate plus one call of overshoot) and 4.43x at the worst
-// seed of fpr/gt2, which is why gt2 is not asserted on.  The bound only
-// has to separate "bounded by an absolute threshold" from "bounded by
-// the budget".
-constexpr double kMaxGrowth = 4.0;
+// 4x was the original bound here, deliberately loose against the
+// numbers it was written against — the worst post-#116 ratio measured
+// over four seeds at `threads=1` was 2.00x (fj/p0548, which sits on its
+// structural ceiling of one gate plus one call of overshoot) and 4.43x
+// at the worst seed of fpr/gt2, which is why gt2 is not asserted on.
+//
+// Widened to 8.0 by #125/#127 (the fix-propagate-repair propagation
+// fixes): fpr/p0548 seed 0 moved from 3,675,057 to 8,889,916 at the high
+// end (1,624,678 to 1,623,183 at the low end, essentially unchanged) --
+// a deterministic, seed-pinned shift, reproduced identically at `-j1`,
+// not a load flake. Both #125 (RepairSearch's SyncChanges now actually
+// re-syncs an already-fixed column instead of skipping it, so the
+// binary-swap repair the paper describes is reachable) and #127 (budget
+// exhaustion no longer prunes a DFS node, so more of the tree is
+// explored) make FPR's search genuinely more effective; the patience
+// gate reads improved-incumbent acceptances (#116), so a search that
+// finds more genuine improvements resets staleness more often and
+// spends more of its budget before going stale -- exactly what the gate
+// is supposed to do, not a sign it stopped binding. Confirmed still
+// bound rather than merely re-measured: the same sweep with the gate
+// disabled (`patience=0`) spends 92,733,453 at the high end, >10x what
+// the gate-on run spends. 8.0 still cleanly separates from every
+// pre-fix regression signature (fpr ~20x, fj 15.67x, scylla 17.6x)
+// while every passing case sits at 1.0-2.0x. The bound only has to
+// separate "bounded by an absolute threshold" from "bounded by the
+// budget".
+constexpr double kMaxGrowth = 8.0;
 // Both options are multiples of `nnz << 10` since #116, so the sweep that
 // used to run 0.05 -> 1.00 now runs 4 -> 80.  Same 20x width, same budgets.
 constexpr double kLowEffort = 4.0;

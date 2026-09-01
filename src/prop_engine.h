@@ -113,6 +113,30 @@ public:
     // Fix variable j to value. Returns false if value outside domain.
     bool fix(HighsInt j, double value);
 
+    // Re-fix variable j to value, *overriding* its current domain rather
+    // than refining it (issue #125, paper Sect. 5.1's RepairSearch
+    // `SyncChanges`).  `fix()` validates against the column's *current*
+    // `[lb, ub]` -- correct for a DFS branching decision, but wrong here:
+    // syncing a secondary engine's deduction back into the primary one
+    // means overriding what the primary engine already decided (flipping
+    // an already-fixed binary, or moving an unfixed column to a value
+    // outside its currently-propagated range when the two engines'
+    // domains are disjoint), so the only bound that should gate it is the
+    // column's *structural* one -- `col_lb`/`col_ub`, the original problem
+    // bounds -- not whatever this engine's own propagation had narrowed it
+    // to.  Narrows `[lb, ub]` to the singleton `[value, value]` (a
+    // coherent fixed state, unlike `fix()` which leaves the pre-fix bounds
+    // in place) so a later caller cannot see a fixed column with a wider
+    // domain than its value.  Returns false only if `value` falls outside
+    // the column's structural bounds -- callers of `refix()` in
+    // `sync_changes` always derive `value` from the secondary engine R's
+    // own domain, which is itself always inside the structural bounds, so
+    // this should not fail in practice; any deeper inconsistency with the
+    // *rest* of the primary engine's state is a job for the propagation
+    // that follows, not for this call (paper's own ordering: flip, then
+    // let propagation judge).
+    bool refix(HighsInt j, double value);
+
     // Tighten lower bound of variable j. Returns false if infeasible.
     bool tighten_lb(HighsInt j, double new_lb);
 

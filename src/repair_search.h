@@ -9,6 +9,15 @@
 class PropEngine;
 struct FprScratch;
 
+// SyncChanges(E, R) (paper Fig. 5 line 13, Sect. 5.1): transfer domain
+// deductions from the secondary engine R into the primary engine E.
+// Exposed here for direct unit testing (issue #125) -- see the doc comment
+// on its definition in repair_search.cpp for the full case analysis. Not
+// part of the public API used by `fpr_attempt_finish`, which only calls
+// `repair_search` below; every production caller reaches this only through
+// that function.
+bool sync_changes(PropEngine& E, const PropEngine& R);
+
 // Paper Fig. 5: RepairSearch with secondary propagation engine R.
 // E: main propagation engine (has partial assignment from Phase 2).
 // solution/lhs_cache: current complete assignment (may violate constraints).

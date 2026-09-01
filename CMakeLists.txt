@@ -169,6 +169,7 @@ add_executable(mip_heuristics_tests
     tests/test_native_fj.cpp
     tests/test_attribution.cpp
     tests/test_prop_engine.cpp
+    tests/test_repair_search.cpp
     tests/test_continuous_loop.cpp
     tests/test_contested_pdlp.cpp
     tests/test_patience_gate.cpp
