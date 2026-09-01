@@ -6,6 +6,7 @@
 #include "incumbent_sink.h"
 #include "local_mip.h"
 #include "local_mip_construction.h"
+#include "local_mip_core.h"
 #include "local_mip_worker.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
@@ -15,8 +16,10 @@
 #include "solution_pool.h"
 #include "test_common.h"
 
+#include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -657,4 +660,226 @@ TEST_CASE("perturb_solution classifies columns from the mask it is given (#99)",
         }
     }
     REQUIRE(above_one > 0);
+}
+
+// ── Mixed tight move: the integer rounding rule (issue #123) ──────────
+//
+// `WorkerCtx::compute_tight_delta` used to round an integer tight-move
+// delta by the coefficient's sign alone (`coeff > 0 -> floor`,
+// `coeff < 0 -> ceil`).  That collapse is valid only for the paper's
+// one-sided `A_i x <= b_i` form (Lin, Zou, Cai, CP 2024, Def 4 / Eq 5);
+// HiGHS rows are two-sided, and on a lower-bound violation with a
+// positive coefficient the sign rule undershoots and leaves the row
+// violated.  Both call sites now round through the shared
+// `round_tight_delta`: away from zero when the row is violated, toward
+// zero when it is satisfied.
+//
+// Three levels are covered, deliberately: `compute_tight_delta` itself
+// (the only function whose behaviour this issue changes, driven over a
+// real `HighsMipSolver` from `build_bare_mipsolver`), the construction
+// copy `tight_delta_for_row`, and the shared `round_tight_delta` the
+// two now call.
+
+namespace {
+
+struct TightMoveCase {
+    const char* name;
+    double row_lo;
+    double row_hi;
+    double lhs;
+    double coeff;
+    double expected_delta;
+};
+
+// All four combinations of {upper violated, lower violated} x
+// {coeff > 0, coeff < 0} on an integer variable.  "upper violated" is
+// `x0 + x1 <= 2` (resp. `-x0 + x1 <= 2`) sitting at lhs 4.5; "lower
+// violated" is `x0 + x1 >= 3` (resp. `-x0 + x1 >= 3`) sitting at lhs
+// 0.5.  The unrounded delta is +-2.5 in every case.
+//
+// The upper-violated pair rounds identically under the retired
+// sign-based rule and is kept for coverage, not because it ever
+// failed; the lower-violated pair is what issue #123 reports — the old
+// rule gave 2 and -2 there, leaving lhs at 2.5, still violated.
+const std::array<TightMoveCase, 4> kTightMoveCases = {{
+    {"upper violated, coeff > 0", -kHighsInf, 2.0, 4.5, 1.0, -3.0},
+    {"lower violated, coeff > 0", 3.0, kHighsInf, 0.5, 1.0, 3.0},
+    {"upper violated, coeff < 0", -kHighsInf, 2.0, 4.5, -1.0, 3.0},
+    {"lower violated, coeff < 0", 3.0, kHighsInf, 0.5, -1.0, -3.0},
+}};
+
+}  // namespace
+
+TEST_CASE("LocalMIP tight move: the construction copy satisfies the row it targets (#123)",
+          "[heuristic][local_mip]") {
+    const double feastol = 1e-6;
+
+    for (const auto& c : kTightMoveCases) {
+        INFO(c.name);
+        std::vector<double> lhs = {c.lhs};
+        std::vector<double> row_lo = {c.row_lo};
+        std::vector<double> row_hi = {c.row_hi};
+        // Bounds deliberately far wider than the move: a clamped delta
+        // would satisfy the row for the wrong reason and hide the
+        // rounding under test.
+        std::vector<double> col_lb = {-10.0, -10.0};
+        std::vector<double> col_ub = {10.0, 10.0};
+        std::vector<double> solution = {0.0, 0.0};
+
+        double delta = local_mip_detail::tight_delta_for_row(
+            /*i=*/0, /*j=*/0, c.coeff, lhs, row_lo, row_hi, col_lb, col_ub, solution, feastol,
+            /*integer=*/true);
+
+        REQUIRE(delta == Catch::Approx(c.expected_delta));
+        REQUIRE(delta == std::floor(delta));  // the move stays integral
+
+        // The point of the operator (paper Def 4): the row it was
+        // computed for is satisfied afterwards.
+        double new_lhs = c.lhs + (c.coeff * delta);
+        REQUIRE(new_lhs >= c.row_lo - feastol);
+        REQUIRE(new_lhs <= c.row_hi + feastol);
+    }
+}
+
+TEST_CASE("LocalMIP tight move: satisfied rows round toward zero (#123)",
+          "[heuristic][local_mip]") {
+    using local_mip_detail::round_tight_delta;
+
+    // Violated: away from zero, so the shift crosses the bound it aims at.
+    REQUIRE(round_tight_delta(2.5, /*row_violated=*/true) == Catch::Approx(3.0));
+    REQUIRE(round_tight_delta(-2.5, /*row_violated=*/true) == Catch::Approx(-3.0));
+
+    // Satisfied: toward zero, so the shift stops short of the bound it
+    // aims at.  Both nearest-bound sides are covered, because the sign
+    // of the shift is what distinguishes them.
+    //
+    // Nearest bound above (`gap_hi` wins, `coeff > 0` => `delta > 0`):
+    // e.g. `x1 + x2 <= 6` at lhs 3.5 gives delta 2.5; 2 keeps lhs at
+    // 5.5 <= 6, while away-from-zero 3 would land exactly on the bound.
+    REQUIRE(round_tight_delta(2.5, /*row_violated=*/false) == Catch::Approx(2.0));
+
+    // Nearest bound below (`gap_lo` wins, `coeff > 0` => `delta < 0`).
+    // This is the case the issue's first acceptance criterion got
+    // wrong: on `x1 + x2 >= 3` at lhs 5.5 with coeff 1 the satisfied
+    // branch picks `gap = 2.5`, so `delta = -2.5`, and the sign rule's
+    // `floor` gives -3 — lhs 2.5, now violated.  Toward zero gives -2,
+    // leaving lhs 3.5, still satisfied.
+    REQUIRE(round_tight_delta(-2.5, /*row_violated=*/false) == Catch::Approx(-2.0));
+
+    const double satisfied_lhs = 5.5;
+    const double row_lo = 3.0;
+    double new_lhs = satisfied_lhs + (1.0 * round_tight_delta(-2.5, /*row_violated=*/false));
+    REQUIRE(new_lhs >= row_lo);
+}
+
+// The production function this issue changes.  `build_bare_mipsolver`
+// stands up a real `HighsMipSolver`, and `WorkerCtx`'s `lhs` /
+// `solution` are public and mutable, so the rule can be driven
+// directly: pick a row of the shape a case needs out of the instance,
+// park `lhs[i]` on the side of the bound the case is about, and pass
+// the coefficient as an argument — `compute_tight_delta` takes it
+// rather than looking it up, so the instance only has to supply a row
+// of the right *shape*, not a particular coefficient.
+//
+// Reinstating the retired sign rule (`coeff > 0 -> floor`,
+// `coeff < 0 -> ceil`) fails the two lower-violated cases and the
+// satisfied-nearest-bound-below case; the other three are unchanged by
+// it and are here for coverage of the operator's promise.
+TEST_CASE("LocalMIP tight move: compute_tight_delta satisfies the row it targets (#123)",
+          "[heuristic][local_mip]") {
+    struct CtxTightMoveCase {
+        const char* name;
+        bool lower_anchored;  // which bound the case is measured against
+        bool violated;        // park `lhs` outside (true) or inside (false) it
+        double coeff;
+        double expected_delta;
+    };
+    // The unrounded delta is +-2.5 in every case, so the rounding is the
+    // only thing that separates them.
+    const std::array<CtxTightMoveCase, 6> cases = {{
+        {"upper violated, coeff > 0", false, true, 1.0, -3.0},
+        {"lower violated, coeff > 0", true, true, 1.0, 3.0},
+        {"upper violated, coeff < 0", false, true, -1.0, 3.0},
+        {"lower violated, coeff < 0", true, true, -1.0, -3.0},
+        {"satisfied, nearest bound below", true, false, 1.0, -2.0},
+        {"satisfied, nearest bound above", false, false, 1.0, 2.0},
+    }};
+
+    // `build_bare_mipsolver` skips `Highs::run`, which is what normally
+    // starts the task scheduler; `HighsMipSolverData::init` needs it.
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb);
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+
+    // Slack demanded of the opposite bound, and of the variable's own
+    // bounds: wide enough that neither the nearest-bound choice nor the
+    // clamp in `compute_tight_delta` can stand in for the rounding.
+    const double room = 8.0;
+
+    // A non-equality row with the anchor bound finite and the opposite
+    // bound either infinite or `room` away.
+    auto find_row = [&](bool lower_anchored) {
+        for (HighsInt i = 0; i < ctx.nrow; ++i) {
+            if (ctx.is_equality(i)) {
+                continue;
+            }
+            const double lo = ctx.row_lo[i];
+            const double hi = ctx.row_hi[i];
+            const double anchor = lower_anchored ? lo : hi;
+            const double opposite = lower_anchored ? hi : lo;
+            if (std::abs(anchor) >= kHighsInf) {
+                continue;
+            }
+            if (std::abs(opposite) < kHighsInf && hi - lo <= room) {
+                continue;
+            }
+            return i;
+        }
+        return HighsInt{-1};
+    };
+
+    HighsInt col = -1;
+    for (HighsInt j = 0; j < ctx.ncol; ++j) {
+        if (ctx.is_int(j) && ctx.col_lb[j] > -kHighsInf && ctx.col_ub[j] < kHighsInf &&
+            ctx.col_ub[j] - ctx.col_lb[j] >= room) {
+            col = j;
+            break;
+        }
+    }
+    REQUIRE(col >= 0);
+    // Midpoint, so a +-3 move stays clear of both column bounds.
+    const double base_val = std::floor((ctx.col_lb[col] + ctx.col_ub[col]) / 2.0);
+    REQUIRE(base_val - 3.0 >= ctx.col_lb[col]);
+    REQUIRE(base_val + 3.0 <= ctx.col_ub[col]);
+
+    for (const auto& c : cases) {
+        INFO(c.name);
+        const HighsInt row = find_row(c.lower_anchored);
+        REQUIRE(row >= 0);
+
+        const double anchor = c.lower_anchored ? ctx.row_lo[row] : ctx.row_hi[row];
+        // Outward from the anchor when the case wants the row violated,
+        // inward when it wants it satisfied.
+        const double direction = (c.lower_anchored ? -1.0 : 1.0) * (c.violated ? 1.0 : -1.0);
+        ctx.lhs[row] = anchor + (direction * 2.5);
+        ctx.solution[col] = base_val;
+        REQUIRE(ctx.is_violated(row, ctx.lhs[row]) == c.violated);
+
+        const double delta = ctx.compute_tight_delta(row, col, c.coeff);
+        // `CHECK`, not `REQUIRE`: the cases are independent, and a
+        // regression in the rounding rule breaks three of the six — a
+        // report naming all of them is worth more than the first.
+        CHECK(delta == Catch::Approx(c.expected_delta));
+
+        // The operator's promise (paper Def 4): the row it was computed
+        // for is satisfied afterwards.
+        const double new_lhs = ctx.lhs[row] + (c.coeff * delta);
+        CHECK(new_lhs >= ctx.row_lo[row] - ctx.feastol);
+        CHECK(new_lhs <= ctx.row_hi[row] + ctx.feastol);
+    }
 }

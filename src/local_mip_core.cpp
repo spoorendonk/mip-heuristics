@@ -158,24 +158,35 @@ double WorkerCtx::compute_tight_delta(HighsInt i, HighsInt j, double coeff) cons
     }
     double l = lhs[i];
     double gap;
+    bool row_violated;
     // The first two branches share an expression form but differ in which
     // bound they measure against.  (This used to carry a NOLINTBEGIN for
     // bugprone-branch-clone; verified against clang-tidy 22 that the check
     // does not fire here, so the suppression was dead and is gone.)
     if (l > row_hi[i] + feastol) {
         gap = l - row_hi[i];  // upper violated
+        row_violated = true;
     } else if (l < row_lo[i] - feastol) {
         gap = l - row_lo[i];  // lower violated
+        row_violated = true;
     } else {
         // Satisfied: push toward the nearest bound
         double gap_hi = (row_hi[i] < kHighsInf) ? (l - row_hi[i]) : kHighsInf;
         double gap_lo = (row_lo[i] > -kHighsInf) ? (l - row_lo[i]) : kHighsInf;
         gap = (std::abs(gap_hi) <= std::abs(gap_lo)) ? gap_hi : gap_lo;
+        row_violated = false;
     }
 
     double delta = -gap / coeff;
 
     if (is_equality(i)) {
+        // Deliberately keeps the coefficient-sign rule rather than
+        // `round_tight_delta` (issue #123): a violated equality row cannot be
+        // made satisfied by any rounding direction — both sides of the bound
+        // are infeasible — so "round away from zero" has nothing to reach.
+        // The satisfied half of this branch is unreachable in practice: both
+        // `satisfied.add` sites guard on `!is_equality`, so no equality row
+        // enters the set the satisfied-row callers iterate.
         if (is_int(j)) {
             delta = (coeff > 0) ? std::floor(delta) : std::ceil(delta);
         }
@@ -188,9 +199,12 @@ double WorkerCtx::compute_tight_delta(HighsInt i, HighsInt j, double coeff) cons
             }
         }
     } else {
-        // Paper Eq 5: integer rounding depends on coefficient sign.
+        // Integer rounding follows the row's state, not the coefficient's
+        // sign: away from zero when the row is violated, toward zero when it
+        // is satisfied.  See `round_tight_delta` for the rule and the paper
+        // citation (issue #123).
         if (is_int(j)) {
-            delta = (coeff > 0) ? std::floor(delta) : std::ceil(delta);
+            delta = round_tight_delta(delta, row_violated);
         }
         // Clamp to variable bounds (Paper Eq 5 min/max with l_j, u_j).
         double new_val = solution[j] + delta;

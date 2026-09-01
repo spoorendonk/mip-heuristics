@@ -35,6 +35,7 @@
 #include "local_mip_construction.h"
 
 #include "heuristic_common.h"
+#include "local_mip_core.h"
 #include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -139,45 +140,6 @@ void apply_move_inplace(HighsInt j, double new_val, std::vector<double>& solutio
     }
 }
 
-// Compute a tight-move delta for row `i`, variable `j`, coefficient
-// `coeff` that would satisfy row `i` from the current `lhs[i]`.
-// Mirrors `WorkerCtx::compute_tight_delta` but as a free function so we
-// don't need to build a WorkerCtx just for construction.
-double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vector<double>& lhs,
-                           const std::vector<double>& row_lo, const std::vector<double>& row_hi,
-                           const std::vector<double>& col_lb, const std::vector<double>& col_ub,
-                           const std::vector<double>& solution, double feastol, bool integer) {
-    if (std::abs(coeff) < 1e-15) {
-        return 0.0;
-    }
-    double l = lhs[i];
-    double gap;
-    if (l > row_hi[i] + feastol) {
-        gap = l - row_hi[i];
-    } else if (l < row_lo[i] - feastol) {
-        gap = l - row_lo[i];
-    } else {
-        return 0.0;  // already satisfied
-    }
-    double delta = -gap / coeff;
-    if (integer) {
-        // Round in the direction that *reaches* the violated bound,
-        // i.e. away from zero (ceil for positive delta, floor for
-        // negative).  The previous coeff>0 → floor / coeff<0 → ceil
-        // rule was wrong for `lhs < row_lo` violations with positive
-        // coeff: there `delta > 0` and we need to push lhs upward,
-        // which requires `ceil(delta)`, not `floor`.  R1-15 round-3.
-        delta = (delta > 0) ? std::ceil(delta) : std::floor(delta);
-    }
-    double new_val = solution[j] + delta;
-    if (new_val < col_lb[j]) {
-        delta = col_lb[j] - solution[j];
-    } else if (new_val > col_ub[j]) {
-        delta = col_ub[j] - solution[j];
-    }
-    return delta;
-}
-
 // Build a variable order weighted by constraint coverage (number of
 // rows each variable appears in), with ties broken by the supplied
 // RNG.  Matches the issue's "constraint-coverage-weighted order for
@@ -248,6 +210,40 @@ void weighted_order(const CscMatrix& csc, HighsInt ncol, Rng& rng,
 }
 
 }  // namespace
+
+double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vector<double>& lhs,
+                           const std::vector<double>& row_lo, const std::vector<double>& row_hi,
+                           const std::vector<double>& col_lb, const std::vector<double>& col_ub,
+                           const std::vector<double>& solution, double feastol, bool integer) {
+    if (std::abs(coeff) < 1e-15) {
+        return 0.0;
+    }
+    double l = lhs[i];
+    double gap;
+    if (l > row_hi[i] + feastol) {
+        gap = l - row_hi[i];
+    } else if (l < row_lo[i] - feastol) {
+        gap = l - row_lo[i];
+    } else {
+        return 0.0;  // already satisfied
+    }
+    double delta = -gap / coeff;
+    if (integer) {
+        // Only violated rows reach here (the satisfied case returned above),
+        // so the shared rule rounds away from zero.  Rule, rationale and
+        // paper citation live on `round_tight_delta` (issue #123), which is
+        // the one body this copy and `WorkerCtx::compute_tight_delta` share;
+        // the branch structure around it is still each caller's own.
+        delta = round_tight_delta(delta, /*row_violated=*/true);
+    }
+    double new_val = solution[j] + delta;
+    if (new_val < col_lb[j]) {
+        delta = col_lb[j] - solution[j];
+    } else if (new_val > col_ub[j]) {
+        delta = col_ub[j] - solution[j];
+    }
+    return delta;
+}
 
 // Cognitive complexity 47 (threshold 25).  Kept whole: Phase A's bound clamp and Phase B's
 // greedy feasibility sweep share one effort budget and one running LHS cache, and the sweep

@@ -80,6 +80,20 @@ struct ConstructionInputs {
     double feastol;
 };
 
+// Compute a tight-move delta for row `i`, variable `j`, coefficient
+// `coeff` that would satisfy row `i` from the current `lhs[i]`.
+// Mirrors `WorkerCtx::compute_tight_delta` but as a free function so we
+// don't need to build a WorkerCtx just for construction; both round
+// through the shared `round_tight_delta` rule (issue #123), which is
+// what keeps the two copies from diverging.  Returns 0.0 when the row
+// is already satisfied — the construction sweep only ever asks about
+// violated rows.  Declared here rather than kept file-local so the unit
+// tests can exercise this copy on its own.
+double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vector<double>& lhs,
+                           const std::vector<double>& row_lo, const std::vector<double>& row_hi,
+                           const std::vector<double>& col_lb, const std::vector<double>& col_ub,
+                           const std::vector<double>& solution, double feastol, bool integer);
+
 // Produce a starting assignment for the local search.  Writes `ncol`
 // entries to `out_solution`.  The assignment is *not* guaranteed to be
 // feasible — the paper's search framework (Algorithm 2) is designed

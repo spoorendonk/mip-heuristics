@@ -7,12 +7,54 @@
 #include "mip/HighsMipSolverData.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
 
 namespace local_mip_detail {
+
+// --- The mixed tight move's integer rounding rule (issue #123) ---
+//
+// Paper reference: Lin, Zou, Cai — "An Efficient Local Search Solver for
+// Mixed Integer Programming", Proc. CP 2024, Article 19,
+// doi:10.4230/LIPIcs.CP.2024.19.  The mixed tight move (Def 4) assigns a
+// variable the threshold value that makes one row tight; Eq 5 rounds the
+// resulting shift for an integer variable.
+//
+// The rule is stated in terms of the *row's* state, not the coefficient's
+// sign:
+//
+//   * row currently violated  -> round the shift **away from zero**, so it
+//     crosses the bound it is aiming at and leaves the row satisfied;
+//   * row currently satisfied -> round the shift **toward zero**, so it
+//     stops short of the bound it is aiming at and leaves the row satisfied.
+//
+// Both call sites used to collapse this to the coefficient's sign
+// (`coeff > 0 -> floor`, `coeff < 0 -> ceil`).  That collapse is valid only
+// for the paper's one-sided `A_i x <= b_i` form, where the sign of the
+// coefficient determines the sign of the shift.  HiGHS rows are two-sided,
+// and the collapse is wrong on both of the branches where it can disagree:
+//
+//   * violated, `lhs < row_lo` with `coeff > 0`: `gap < 0` gives
+//     `delta > 0`, and `floor` undershoots.  Row `x1 + x2 >= 3` at
+//     `lhs = 0.5` gives `delta = 2.5`; `floor` -> 2 leaves `lhs = 2.5`,
+//     still violated, while `ceil` -> 3 leaves `lhs = 3.5`.
+//   * satisfied, when the *nearest* bound is the lower one: there the
+//     sign rule rounds away from zero and can push the row out of
+//     feasibility.  Same row at `lhs = 5.5` with `coeff = 1` picks
+//     `gap = 2.5`, so `delta = -2.5`; `floor` -> -3 leaves `lhs = 2.5`,
+//     now violated, while `ceil` -> -2 leaves `lhs = 3.5`.
+//
+// Equality rows are the documented exception and do not use this helper —
+// see `WorkerCtx::compute_tight_delta`.
+[[nodiscard]] inline double round_tight_delta(double delta, bool row_violated) {
+    if (row_violated) {
+        return (delta > 0) ? std::ceil(delta) : std::floor(delta);
+    }
+    return (delta > 0) ? std::floor(delta) : std::ceil(delta);
+}
 
 // --- WorkerCtx: central context for the local search worker ---
 struct WorkerCtx {
