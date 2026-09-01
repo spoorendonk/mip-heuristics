@@ -900,7 +900,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "instrumentation visible to parse_highs_log.py. "
             "OFF by default because it is still not free, though far cheaper "
             "than it was: HiGHS's own FeasibilityJump logged one fflushed line "
-            "per weight bump per worker at exactly this level, which was 99.8% "
+            "per weight bump per worker at exactly this level, which was 99.8%% "
             "of a traced run's volume and most of its cost, and apply_patch.cmake "
             "now removes it (453 MB -> 8.7 MB, and 21.6x more FJ search, on a "
             "30 s run of 50v-10). What is left is FJ's periodic table plus our "
