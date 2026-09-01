@@ -109,7 +109,7 @@ PATCH_MARKER = "mip-heuristics patch active"
 # `CMakeLists.txt`, the `else()` branch of the `git describe` block), and `/`
 # is not a word character.  A HiGHS installed from a distro package or built
 # from a release *source archive* prints `git hash: n/a` — so a `\w+` pattern
-# does not match at all, `version` comes back None, and `check_vanilla_binary`
+# does not match at all, `version` comes back None, and `check_binary`
 # refuses a perfectly good baseline with "printed no HiGHS banner", quoting
 # the banner it just printed back at the reader.  Only the version decides
 # anything here; the hash is captured for the manifest and read by no check.
@@ -339,38 +339,56 @@ def expected_highs_version() -> str:
     return match.group(1).removeprefix("v")
 
 
-def check_vanilla_binary(path: str) -> BinaryProbe:
-    """Refuse a `--vanilla-binary` that is not an unpatched HiGHS of our tag.
+def check_binary(path: str, *, flag: str, expect_patched: bool) -> BinaryProbe:
+    """Refuse a binary that is not the build `flag` says it is.
 
     Called before the first solve, because the point is to prevent a bad
-    results tree rather than to describe one afterwards.  Two ways to get it
-    wrong, both silent until now: pointing the flag at the patched build
-    (which then runs `suite=off`, an ablation), and pointing it at a system
-    HiGHS of a different version (which is not comparable at all).
+    results tree rather than to describe one afterwards.  Both directions are
+    checked, because the marker is the only thing that tells the two builds
+    apart and either mistake mislabels a whole arm of the campaign:
+
+    * `--vanilla-binary` must be **unpatched**.  Pointed at the patched build
+      it runs `mip_heuristic_suite=off`, which is the ablation of our four
+      presolve heuristics filed under the name of a baseline.
+    * `--binary` must be **patched**.  Pointed at a stock HiGHS every
+      `mip_heuristic_*` option is unknown, so every run exits 255 — loud, but
+      only per instance and only once the campaign is under way.
+
+    Either way the version must match the tag this tree builds: a baseline
+    from another tag is not comparable, and a patched binary from another tag
+    is not the code under test.
 
     Returns the accepted probe so the caller can report what it verified
     without running the binary — or re-reading the tag — a second time.
     """
     expected = expected_highs_version()
     probe = probe_binary(path)
-    if probe.patched:
+    want = "patched" if expect_patched else "unpatched"
+    if probe.patched and not expect_patched:
         raise ValueError(
-            f"--vanilla-binary {path} is a *patched* binary: it prints "
+            f"{flag} {path} is a *patched* binary: it prints "
             f"'{PATCH_MARKER}'. The baseline must be a separately built "
             "unpatched HiGHS; the patched binary at mip_heuristic_suite=off "
             "is an ablation of our heuristics, not vanilla"
         )
+    if expect_patched and not probe.patched:
+        raise ValueError(
+            f"{flag} {path} is not a patched build: it prints no "
+            f"'{PATCH_MARKER}' line, so it has none of the mip_heuristic_* "
+            "options the configs set and would fail every run. Point it at "
+            "this tree's build/bin/highs, or ask only for the `vanilla` config"
+        )
     if probe.version is None:
         raise ValueError(
-            f"--vanilla-binary {path} printed no HiGHS banner, so it cannot "
-            f"be identified as an unpatched HiGHS {expected}. It printed:\n"
-            f"{probe.output.strip()[:500]}"
+            f"{flag} {path} printed no HiGHS banner, so it cannot "
+            f"be identified as {'a' if expect_patched else 'an'} {want} "
+            f"HiGHS {expected}. It printed:\n{probe.output.strip()[:500]}"
         )
     if probe.version != expected:
         raise ValueError(
-            f"--vanilla-binary {path} is HiGHS {probe.version}, but this tree "
-            f"builds against {expected} (cmake/FetchHiGHS.cmake). A baseline "
-            "from a different tag is not comparable"
+            f"{flag} {path} is HiGHS {probe.version}, but this tree "
+            f"builds against {expected} (cmake/FetchHiGHS.cmake). A "
+            f"{want} binary from a different tag is not comparable"
         )
     return probe
 
@@ -408,7 +426,7 @@ def check_known_options(path: str, options: dict[str, str], *, unpatched: bool) 
     hardcoded list of the other ten would need editing on every option change
     and would be wrong silently when it wasn't.  The binary already knows.
 
-    Not the same check as `check_vanilla_binary`: that one identifies the
+    Not the same check as `check_binary`: that one identifies the
     binary, this one is about the options *this run* pairs it with, so a
     caller with no `--extra-options` never reaches a refusal.
     """
@@ -917,7 +935,7 @@ def main() -> None:
         # earned yet.  The probe prints the verdict on the `Vanilla binary`
         # line, so the two are not two lines with one label.
         print(f"Vanilla path   : {vanilla_binary}")
-    print(f"Patched binary : {binary}")
+    print(f"Patched path   : {binary}")
 
     # Resolve configs before anything else runs: an unknown name, or a
     # `vanilla` with no unpatched binary behind it, must fail here rather than
@@ -933,19 +951,26 @@ def main() -> None:
                 "output directory, so a repeat is the same run twice"
             )
         plans = [build_plan(c, binary, vanilla_binary) for c in config_names]
-        # Before the first solve, not after the tree exists: the probe is here
-        # to prevent a mislabelled baseline rather than to describe one.  The
-        # path comes off the plan rather than from `vanilla_binary`, which is
-        # `str | None`: `build_plan` has already refused a vanilla plan without
-        # one, so the plan's binary records that reasoning where a cast would
-        # have hidden it.
+        # Before the first solve, not after the tree exists: the probes are
+        # here to prevent a mislabelled tree rather than to describe one.  Each
+        # binary is checked in the direction its role demands, and only if a
+        # plan actually uses it — `--configs vanilla` alone never touches the
+        # patched build, so it is not probed and need not exist.  The paths
+        # come off the plans rather than from `binary` / `vanilla_binary`:
+        # `build_plan` has already refused a vanilla plan without one, so the
+        # plan records that reasoning where a cast would have hidden it.
         vanilla_plan = next((p for p in plans if p.base == VANILLA_CONFIG), None)
         if vanilla_plan is not None:
-            probe = check_vanilla_binary(vanilla_plan.binary)
+            probe = check_binary(
+                vanilla_plan.binary, flag="--vanilla-binary", expect_patched=False
+            )
             print(
                 f"Vanilla binary : probed — unpatched HiGHS {probe.version}, "
                 "no custom options"
             )
+        if any(p.base != VANILLA_CONFIG for p in plans):
+            probe = check_binary(binary, flag="--binary", expect_patched=True)
+            print(f"Patched binary : probed — patched HiGHS {probe.version}")
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)

@@ -162,11 +162,11 @@ mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heu
 
 Check for that line before trusting any results tree's provenance.
 
-**Vanilla-binary provenance.** `bench/run_plato.sh` defaults its vanilla binary
-to the system HiGHS (`command -v highs`) and falls back to nothing at all if
-there is none: a config list naming `vanilla` then fails with a message rather
-than substituting the patched build, which is what it used to do. Set it
-explicitly:
+**Vanilla-binary provenance.** The baseline binary is always named, never
+discovered. `bench/run_plato.sh` has no default for it — no PATH search and no
+fallback to the patched build — so a config list naming `vanilla` without
+`PLATO_VANILLA_BINARY` fails with a message rather than running whichever
+`highs` happens to be installed. Set it:
 
 ```bash
 export PLATO_VANILLA_BINARY=/path/to/unpatched/highs

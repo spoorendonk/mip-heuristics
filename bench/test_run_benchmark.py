@@ -20,8 +20,8 @@ from run_benchmark import (
     build_arg_parser,
     build_base_options,
     build_plan,
+    check_binary,
     check_known_options,
-    check_vanilla_binary,
     config_options,
     expected_highs_version,
     find_ignored_config_warning,
@@ -489,7 +489,7 @@ def test_the_two_bench_modules_agree_on_the_shared_constants():
     treatment the MIPLIB search path gets across bash and Python. The tag
     regex is the one that bit: it captures `v1.15.1` and the banner prints
     `1.15.1`, so a copy that quietly absorbed the `v` into the pattern would
-    make `check_vanilla_binary` reject every genuine binary.
+    make `check_binary` reject every genuine binary.
     """
     import make_archive
 
@@ -509,33 +509,68 @@ def test_the_probe_reads_the_banner_and_the_marker(tmp_path: Path):
     assert not unpatched.patched
 
 
+def _vanilla(path) -> None:
+    check_binary(str(path), flag="--vanilla-binary", expect_patched=False)
+
+
+def _patched(path) -> None:
+    check_binary(str(path), flag="--binary", expect_patched=True)
+
+
 def test_the_probe_accepts_an_unpatched_binary_of_the_right_tag(tmp_path: Path):
-    check_vanilla_binary(str(fake_highs(tmp_path, "unpatched", patched=False)))
+    _vanilla(fake_highs(tmp_path, "unpatched", patched=False))
 
 
 def test_the_probe_refuses_a_patched_binary(tmp_path: Path):
     with pytest.raises(ValueError, match="patched"):
-        check_vanilla_binary(str(fake_highs(tmp_path, "patched", patched=True)))
+        _vanilla(fake_highs(tmp_path, "patched", patched=True))
+
+
+def test_the_probe_accepts_a_patched_binary_for_the_patched_flag(tmp_path: Path):
+    """The symmetric direction: `--binary` must carry the marker."""
+    _patched(fake_highs(tmp_path, "patched", patched=True))
+
+
+def test_the_probe_refuses_an_unpatched_binary_for_the_patched_flag(tmp_path: Path):
+    """A stock HiGHS as `--binary` has none of the options the configs set.
+
+    Every run would exit 255 without solving — loud, but only per instance and
+    only once the campaign is under way. The marker is the only thing that
+    tells the two builds apart, so the pre-flight checks it in both directions.
+    """
+    with pytest.raises(ValueError, match="not a patched build"):
+        _patched(fake_highs(tmp_path, "stock", patched=False))
 
 
 def test_the_probe_refuses_another_tag(tmp_path: Path):
     binary = fake_highs(tmp_path, "old", patched=False, version="1.7.2")
     with pytest.raises(ValueError, match=r"1\.7\.2"):
-        check_vanilla_binary(str(binary))
+        _vanilla(binary)
+
+
+def test_the_probe_refuses_another_tag_on_the_patched_flag(tmp_path: Path):
+    binary = fake_highs(tmp_path, "old", patched=True, version="1.7.2")
+    with pytest.raises(ValueError, match=r"1\.7\.2"):
+        _patched(binary)
 
 
 def test_the_probe_refuses_a_binary_that_prints_no_banner(tmp_path: Path):
     """A binary that cannot be identified is not one that may be assumed good."""
     binary = fake_highs(tmp_path, "mystery", patched=False, banner=False)
     with pytest.raises(ValueError, match="no HiGHS banner"):
-        check_vanilla_binary(str(binary))
+        _vanilla(binary)
 
 
 # --- main()'s own guards ---------------------------------------------------
 
 
 def _main(tmp_path: Path, monkeypatch, *argv: str) -> None:
-    """Run main() over an empty instance list — every guard, no solves."""
+    """Run main() over an empty instance list — every guard, no solves.
+
+    `--binary` is a patched stand-in rather than `sys.executable`: the
+    pre-flight probes it for the patch marker, so an arbitrary executable is
+    now refused before any of the guards under test are reached.
+    """
     instances = tmp_path / "none.txt"
     instances.write_text("")
     monkeypatch.setattr(
@@ -546,7 +581,7 @@ def _main(tmp_path: Path, monkeypatch, *argv: str) -> None:
             "--instances",
             str(instances),
             "--binary",
-            sys.executable,
+            str(fake_highs(tmp_path, "patched", patched=True)),
             "--data-dir",
             str(tmp_path),
             "--output",
@@ -629,7 +664,7 @@ def test_the_probe_accepts_a_binary_built_outside_a_git_repository():
     A distro package, a conda build, or one built from the release source
     archive all reach `set(GITHASH "n/a")` in HiGHS's own CMakeLists. The
     banner regex used to require `\\w+` there, so it did not match at all and
-    `check_vanilla_binary` refused the binary for "printing no HiGHS banner"
+    `check_binary` refused the binary for "printing no HiGHS banner"
     — while quoting that banner back in the same message. Only the version
     decides anything; the hash is recorded, never compared.
     """
@@ -641,8 +676,10 @@ def test_the_probe_accepts_a_binary_built_outside_a_git_repository():
 
 
 def test_a_vanilla_binary_without_a_git_hash_is_accepted(tmp_path: Path):
-    probe = check_vanilla_binary(
-        str(fake_highs(tmp_path, "unpatched", patched=False, githash="n/a"))
+    probe = check_binary(
+        str(fake_highs(tmp_path, "unpatched", patched=False, githash="n/a")),
+        flag="--vanilla-binary",
+        expect_patched=False,
     )
     assert probe.version == "1.15.1"
     assert probe.githash == "n/a"
@@ -693,6 +730,48 @@ def test_the_option_check_names_every_option_the_vanilla_binary_lacks(tmp_path: 
     assert "mip_heuristic_fpr_effort" in str(exc.value)
     assert "mip_heuristic_suite" in str(exc.value)
     assert "threads" not in str(exc.value)
+
+
+def test_a_vanilla_only_run_never_probes_the_patched_binary(
+    tmp_path: Path, monkeypatch
+):
+    """Each binary is probed only if a plan uses it.
+
+    `--configs vanilla` runs nothing on the patched build, so `--binary` is
+    not probed and need not even be a HiGHS — which is what keeps the new
+    patched-side check from turning an unused default path into a refusal.
+    """
+    instances = tmp_path / "one.txt"
+    instances.write_text("model\n")
+    (tmp_path / "model.mps.gz").write_bytes(b"")
+    vanilla = fake_highs(tmp_path, "unpatched", patched=False)
+    not_a_solver = tmp_path / "not-highs"
+    not_a_solver.write_text("#!/bin/sh\nexit 127\n")
+    not_a_solver.chmod(not_a_solver.stat().st_mode | stat.S_IEXEC)
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_benchmark.py",
+            "--instances",
+            str(instances),
+            "--binary",
+            str(not_a_solver),
+            "--vanilla-binary",
+            str(vanilla),
+            "--data-dir",
+            str(tmp_path),
+            "--output",
+            str(out),
+            "--time-limit",
+            "1",
+            "--configs",
+            "vanilla",
+        ],
+    )
+    main()
+    assert (out / "vanilla" / "seed0" / "model.log").exists()
 
 
 def test_a_probe_is_not_recorded_as_a_solve(tmp_path: Path):

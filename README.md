@@ -117,7 +117,7 @@ bench/run_plato.sh next 24   # run in chunks; resumes safely — repeat until 23
 python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline --summary
 ```
 
-Results land in `bench/results/plato/`. Vanilla binary defaults to system HiGHS (`which highs`); override with `PLATO_VANILLA_BINARY=/path/to/highs`. What a chunked run does is environment, not a second launcher — `PLATO_CONFIGS`, `PLATO_SEEDS`, `PLATO_INSTANCES` and `PLATO_OUTPUT` — see `docs/REPRODUCIBILITY.md`.
+Results land in `bench/results/plato/`. The vanilla binary has no default and is never searched for on PATH: set `PLATO_VANILLA_BINARY=/path/to/unpatched/highs`, or drop `vanilla` from `PLATO_CONFIGS`. What a chunked run does is environment, not a second launcher — `PLATO_CONFIGS`, `PLATO_SEEDS`, `PLATO_INSTANCES` and `PLATO_OUTPUT` — see `docs/REPRODUCIBILITY.md`.
 
 ### Where the MIPLIB collection lives
 

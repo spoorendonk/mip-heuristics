@@ -26,11 +26,13 @@
 #   PLATO_TIME_LIMIT seconds per solve    (default 600, the PLATO limit)
 #   PLATO_BINARY / PLATO_VANILLA_BINARY   the two binaries.  The vanilla one
 #                        must be a separately built UNPATCHED HiGHS of the
-#                        same tag; it defaults to whatever `highs` is on PATH
-#                        and has no fallback to the patched build, because
-#                        the patched binary is not a vanilla baseline in any
-#                        configuration.  A `vanilla` config with neither is
-#                        an error, not a quietly substituted run.
+#                        same tag, and it has no default: it is named by you
+#                        or it is absent.  Neither a PATH search nor a
+#                        fallback to the patched build, because which binary
+#                        produced a baseline is the one fact the whole
+#                        comparison rests on and it should not depend on what
+#                        happens to be installed.  A `vanilla` config without
+#                        it is an error, not a quietly substituted run.
 #   PLATO_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
 #                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_patience=0"
 #                        These apply to *every* config, and the vanilla one is
@@ -82,12 +84,13 @@ INSTANCES="${PLATO_INSTANCES:-bench/instances_plato.txt}"
 TIME_LIMIT="${PLATO_TIME_LIMIT:-600}"
 OUTPUT="${PLATO_OUTPUT:-bench/results/plato}"
 BINARY="${PLATO_BINARY:-./build/bin/highs}"
-# Vanilla binary: a system HiGHS (unpatched), or PLATO_VANILLA_BINARY.  It is
-# deliberately allowed to end up empty — there is no fallback to $BINARY, since
-# the patched binary is not a vanilla baseline in any configuration (#147).
-# An empty value is passed through to the runner, which reads it as "not
-# given"; `cmd_next` refuses outright when the config list asks for `vanilla`.
-VANILLA_BINARY="${PLATO_VANILLA_BINARY:-$(command -v highs 2>/dev/null || true)}"
+# Vanilla binary: exactly what PLATO_VANILLA_BINARY says, or nothing.  No PATH
+# search and no fallback to $BINARY — a baseline whose binary was discovered
+# rather than named is a baseline nobody chose, and the patched build is not a
+# vanilla baseline in any configuration (#147).  An empty value is passed
+# through to the runner, which reads it as "not given"; `cmd_next` refuses
+# outright when the config list asks for `vanilla`.
+VANILLA_BINARY="${PLATO_VANILLA_BINARY:-}"
 # Word-split on purpose: both are lists.
 # shellcheck disable=SC2206
 CONFIGS=(${PLATO_CONFIGS:-vanilla all})
@@ -221,8 +224,9 @@ cmd_next() {
 	# where the message can name the fix, rather than in the runner.
 	if wants_vanilla && [ -z "$VANILLA_BINARY" ]; then
 		echo "ERROR: config 'vanilla' needs a separately built UNPATCHED HiGHS," >&2
-		echo "       and neither PLATO_VANILLA_BINARY nor a 'highs' on PATH" >&2
-		echo "       names one." >&2
+		echo "       and PLATO_VANILLA_BINARY does not name one.  There is no" >&2
+		echo "       PATH search: the baseline binary is always named, never" >&2
+		echo "       discovered." >&2
 		echo "Build one from the same tag as cmake/FetchHiGHS.cmake and set:" >&2
 		echo "  export PLATO_VANILLA_BINARY=/path/to/unpatched/highs" >&2
 		echo "Or drop 'vanilla' from PLATO_CONFIGS — the 'off' config is the" >&2
