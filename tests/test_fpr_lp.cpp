@@ -1,7 +1,9 @@
 #include "fpr_lp.h"
+#include "fpr_lp_arms.h"
 #include "Highs.h"
 #include "test_common.h"
 
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -122,6 +124,59 @@ TEST_CASE("fpr_lp: arm wrap-around with threads > kNumLpArms", "[fpr_lp][mode-ma
     REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/12) ==
             Catch::Approx(8966406.49152).epsilon(1e-4));
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
+}
+
+// Issue #128: the `cliques2` arm used to sit in the full-obj-LP group even
+// though its ranking (`fpr_var_order.cpp`'s `rank_cliques2`) reads its LP
+// reference — for both the clique-tightness test and the per-clique
+// ranking — as the paper's zero-objective vertex, not the full-objective
+// LP solution. This test ties every LP-consuming arm's `ref_class`
+// (`fpr_lp::lp_arm_table()`) to an expectation derived independently, from
+// strategy identity, so the two facts cannot drift apart again: moving an
+// arm's table entry to the wrong reference-class group — or wiring
+// `build_setup` to the wrong pointer for a `ref_class` — fails here.
+namespace {
+bool same_strategy(const FprStrategyConfig& a, const FprStrategyConfig& b) {
+    return a.var_strategy == b.var_strategy && a.val_strategy == b.val_strategy;
+}
+}  // namespace
+
+TEST_CASE("fpr_lp: every LP arm's reference class matches what its strategy needs",
+          "[fpr_lp][mode-matrix]") {
+    const std::vector<fpr_lp::LpArmInfo> arms = fpr_lp::lp_arm_table();
+    REQUIRE(arms.size() == 10);
+
+    for (const auto& arm : arms) {
+        INFO("arm = " << arm.name);
+        const FprStrategyConfig& strat = arm.config.strat;
+
+        // Paper Sect. 3 (Fig. 2 / zerocore value selection) and Sect. 4.1
+        // (the plain `cliques` clique cover) are both defined against the
+        // zero-obj analytic center.
+        if (same_strategy(strat, kStratZerocore) || same_strategy(strat, kStratCliques)) {
+            CHECK(arm.ref_class == fpr_lp::LpRefClass::kAnalyticCenter);
+            // Paper Sect. 4.1: zerolp value selection and `cliques2` (Fig. 3's
+            // dynamic clique cover) are both defined against the zero-obj
+            // simplex vertex — the fact issue #128 exists to fix for cliques2.
+        } else if (same_strategy(strat, kStratZerolp) || same_strategy(strat, kStratCliques2)) {
+            CHECK(arm.ref_class == fpr_lp::LpRefClass::kZeroObjVertex);
+            // The `lp` value strategy reads the full-objective LP solution.
+        } else if (same_strategy(strat, kStratLp)) {
+            CHECK(arm.ref_class == fpr_lp::LpRefClass::kFullObjLp);
+        } else {
+            FAIL("arm '" << arm.name << "' uses a strategy this test does not classify");
+        }
+    }
+
+    // Directly pin the arm at the center of #128, by name rather than by
+    // position: `cliques2`'s framework mode is `diveprop` in the paper's
+    // Sect. 6.3 portfolio, so identify it by strategy pair rather than by
+    // table index.
+    const auto it = std::ranges::find_if(arms, [](const fpr_lp::LpArmInfo& arm) {
+        return same_strategy(arm.config.strat, kStratCliques2);
+    });
+    REQUIRE(it != arms.end());
+    CHECK(it->ref_class == fpr_lp::LpRefClass::kZeroObjVertex);
 }
 
 // ── Observability: fpr_lp reports its spend (#94) ──

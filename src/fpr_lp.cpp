@@ -2,6 +2,7 @@
 
 #include "effort_ledger.h"
 #include "fpr_core.h"
+#include "fpr_lp_arms.h"
 #include "fpr_lp_refs.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
@@ -26,63 +27,65 @@
 
 namespace fpr_lp {
 
+// ---------------------------------------------------------------------------
+// LP-dependent arms (paper Section 6.3, Classes 2 and 3)
+// ---------------------------------------------------------------------------
+//
+// Each arm is a (strategy, framework mode) pair bound to the LP reference
+// solution its strategy is defined against (Sect. 4.1, Sect. 6.3):
+//   Class 2  — zero-obj LP strategies     — analytic center  (ac_ptr)
+//   Class 3a — zero-obj-vertex strategies — zero-obj vertex  (zv_ptr)
+//   Class 3b — full-obj LP strategies     — full-obj LP      (lp_ptr)
+//
+// `kLpArmTable` is the single ordered source of truth for the whole
+// portfolio: a name, a (strategy, mode) pair, and a reference class travel
+// together in one record, so `kNumLpArms` and the reference-pointer wiring
+// in `build_setup` below are *derived* from it rather than kept in sync by
+// hand across parallel arrays that can silently disagree — which is
+// exactly how issue #128 happened: `cliques2` sat in the full-obj-LP array
+// even though its ranking (`fpr_var_order.cpp`'s `rank_cliques2`) is
+// defined by the paper against the zero-obj vertex. Sect. 4.1: "in
+// strategy cliques2, we construct a clique cover dynamically using both
+// the clique table and a reference LP solution, in this case, a
+// zero-objective vertex." The Sect. 6.3 portfolio puts `diveprop-cliques2`
+// in the zero-objective-vertex stage alongside `dfs-zerolp` /
+// `diveprop-zerolp` — not in the full-objective stage `lp` uses.
+//
+// `lp_arm_table()` (declared in `fpr_lp_arms.h`, deliberately not
+// `fpr_lp.h` — see that header's comment for why) exposes this table so
+// `tests/test_fpr_lp.cpp` can assert every arm's `ref_class` against what
+// its own strategy needs, independent of table position — the test that
+// keeps the two facts (strategy identity, required reference) from
+// drifting apart again.
+constexpr auto kLpArmTable = std::to_array<LpArmInfo>({
+    // Class 2 — zero-obj analytic center
+    {"ZerocoreDfs", {kStratZerocore, FrameworkMode::kDfs}, LpRefClass::kAnalyticCenter},
+    {"ZerocoreDive", {kStratZerocore, FrameworkMode::kDive}, LpRefClass::kAnalyticCenter},
+    {"ZerocoreDiveprop", {kStratZerocore, FrameworkMode::kDiveprop}, LpRefClass::kAnalyticCenter},
+    {"CliquesDfs",
+     {kStratCliques, FrameworkMode::kDfs},
+     LpRefClass::kAnalyticCenter},  // paper: "if predominant clique structure"; run
+                                    // unconditionally, degrades gracefully on
+                                    // non-clique models
+
+    // Class 3a — zero-obj simplex vertex
+    {"ZerolpDfs", {kStratZerolp, FrameworkMode::kDfs}, LpRefClass::kZeroObjVertex},
+    {"ZerolpDiveprop", {kStratZerolp, FrameworkMode::kDiveprop}, LpRefClass::kZeroObjVertex},
+    {"Cliques2Diveprop", {kStratCliques2, FrameworkMode::kDiveprop}, LpRefClass::kZeroObjVertex},
+
+    // Class 3b — full-obj LP solution
+    {"LpDfs", {kStratLp, FrameworkMode::kDfs}, LpRefClass::kFullObjLp},
+    {"LpDive", {kStratLp, FrameworkMode::kDive}, LpRefClass::kFullObjLp},
+    {"LpDiveprop", {kStratLp, FrameworkMode::kDiveprop}, LpRefClass::kFullObjLp},
+});
+constexpr int kNumLpArms = static_cast<int>(std::size(kLpArmTable));
+
 namespace {
 
 // Test hook counters; see fpr_lp.h.  std::atomic so concurrent entry
 // points don't race; relaxed is fine (monotonic, not used for
 // synchronization).
 std::atomic<size_t> g_dispatch_count{0};
-
-// ---------------------------------------------------------------------------
-// LP-dependent arms (paper Section 6.3, Classes 2 and 3)
-// ---------------------------------------------------------------------------
-//
-// Each arm is a (strategy, framework mode) pair bound to a reference LP
-// solution:
-//   Class 2  — zero-obj LP strategies — analytic center  (ac_ptr)
-//   Class 3a — zerolp configs         — zero-obj vertex  (zv_ptr)
-//   Class 3b — lp/cliques2 configs    — full-obj LP      (lp_ptr)
-
-constexpr auto kClass2Configs = std::to_array<NamedConfig>({
-    {kStratZerocore, FrameworkMode::kDfs},
-    {kStratZerocore, FrameworkMode::kDive},
-    {kStratZerocore, FrameworkMode::kDiveprop},
-    {kStratCliques, FrameworkMode::kDfs},  // paper: "if predominant clique
-                                           // structure"; run unconditionally,
-                                           // degrades gracefully on non-clique
-                                           // models
-});
-constexpr int kNumClass2 = static_cast<int>(std::size(kClass2Configs));
-
-constexpr auto kClass3aConfigs = std::to_array<NamedConfig>({
-    {kStratZerolp, FrameworkMode::kDfs},
-    {kStratZerolp, FrameworkMode::kDiveprop},
-});
-constexpr int kNumClass3a = static_cast<int>(std::size(kClass3aConfigs));
-
-constexpr auto kClass3bConfigs = std::to_array<NamedConfig>({
-    {kStratCliques2, FrameworkMode::kDiveprop},
-    {kStratLp, FrameworkMode::kDfs},
-    {kStratLp, FrameworkMode::kDive},
-    {kStratLp, FrameworkMode::kDiveprop},
-});
-constexpr int kNumClass3b = static_cast<int>(std::size(kClass3bConfigs));
-
-constexpr int kNumLpArms = kNumClass2 + kNumClass3a + kNumClass3b;
-
-constexpr auto kLpArmNames = std::to_array<const char*>({
-    "ZerocoreDfs",       // Class 2
-    "ZerocoreDive",      // Class 2
-    "ZerocoreDiveprop",  // Class 2
-    "CliquesDfs",        // Class 2
-    "ZerolpDfs",         // Class 3a
-    "ZerolpDiveprop",    // Class 3a
-    "Cliques2Diveprop",  // Class 3b
-    "LpDfs",             // Class 3b
-    "LpDive",            // Class 3b
-    "LpDiveprop",        // Class 3b
-});
-static_assert(std::size(kLpArmNames) == kNumLpArms, "kLpArmNames must match total LP arm count");
 
 // An arm binds a NamedConfig to the LP reference pointer it requires.
 struct LpArm {
@@ -235,14 +238,20 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
     const double* zv_ptr = s.zero_vertex.empty() ? lp_ptr : s.zero_vertex.data();
 
     s.arms.reserve(kNumLpArms);
-    for (const auto& cfg : kClass2Configs) {
-        s.arms.push_back({&cfg, ac_ptr});
-    }
-    for (const auto& cfg : kClass3aConfigs) {
-        s.arms.push_back({&cfg, zv_ptr});
-    }
-    for (const auto& cfg : kClass3bConfigs) {
-        s.arms.push_back({&cfg, lp_ptr});
+    for (const auto& spec : kLpArmTable) {
+        const double* ref = lp_ptr;
+        switch (spec.ref_class) {
+            case LpRefClass::kAnalyticCenter:
+                ref = ac_ptr;
+                break;
+            case LpRefClass::kZeroObjVertex:
+                ref = zv_ptr;
+                break;
+            case LpRefClass::kFullObjLp:
+                ref = lp_ptr;
+                break;
+        }
+        s.arms.push_back({&spec.config, ref});
     }
 
     // Precompute var_orders sequentially — required before any parallel
@@ -631,6 +640,10 @@ DispatchCounts dispatch_counts() {
 
 void reset_dispatch_counts() {
     g_dispatch_count.store(0, std::memory_order_relaxed);
+}
+
+std::vector<LpArmInfo> lp_arm_table() {
+    return {kLpArmTable.begin(), kLpArmTable.end()};
 }
 
 }  // namespace fpr_lp

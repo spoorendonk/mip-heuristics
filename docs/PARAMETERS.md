@@ -152,10 +152,19 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 ### `kNumLpArms` — total LP-dependent FPR arms
 
 - **File**: `src/fpr_lp.cpp`
-- **Default**: `10` (`kNumClass2=4` + `kNumClass3a=2` + `kNumClass3b=4`)
+- **Default**: `10`, derived from `kLpArmTable`'s size — 4 Class 2 arms
+  (zero-obj analytic center), 3 Class 3a arms (zero-obj simplex vertex:
+  `zerolp` x2 plus `cliques2`, moved here from Class 3b by issue #128 to
+  match the paper's Sect. 4.1 definition), 3 Class 3b arms (full-obj LP:
+  `lp` x3).
 - **Meaning**: Total number of LP-arm configs across Classes 2, 3a, 3b.
   Workers are assigned `w % kNumLpArms`; excess workers wrap around
-  with distinct seeds.
+  with distinct seeds. Each arm's `(strategy, mode)` pair and its required
+  reference class travel together in one `LpArmInfo` record in
+  `kLpArmTable`, so `build_setup`'s reference-pointer wiring cannot drift
+  from the class list independently — `tests/test_fpr_lp.cpp` ("fpr_lp:
+  every LP arm's reference class matches what its strategy needs") asserts
+  the mapping from strategy identity to reference class.
 
 ---
 
