@@ -80,6 +80,45 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 ---
 
+### `kPropagateBudgetPerNnz` — per-call matrix-access budget for `PropEngine::propagate`
+
+- **File**: `src/prop_engine.cpp` (anonymous namespace)
+- **Default**: `100`
+- **Unit**: matrix coefficient accesses per nonzero of the model (a
+  `propagate()` call's budget is `kPropagateBudgetPerNnz * nnz`, where
+  `nnz` is `ar_start[nrow]` for the `PropEngine` instance).
+- **Scope**: **per call** to `propagate()`, not whole-run. The paper
+  (Sect. 6) imposes "a number of matrix accesses of at most 100 times
+  the number of nonzeros in the presolved model" as a whole-run
+  deterministic stopping rule for the heuristic. That whole-run scope is
+  already covered elsewhere — the per-attempt effort budget
+  (`FprConfig::max_effort`) and the wall-clock `Deadline` (#117) both
+  bound the DFS across every `propagate()` call it makes — so mapping
+  the paper's constant onto a per-call cap is deliberate narrowing, not
+  a literal reproduction: this is a safety valve against a single AC-3
+  fixpoint pass pathologically failing to converge (see the
+  geometric-decay construction in
+  `tests/test_prop_engine.cpp`, "budget exhaustion is sound but
+  incomplete"), sized at the paper's own multiplier so that one call
+  cannot itself consume an entire attempt's budget before any outer gate
+  is polled.
+- **Meaning on exhaustion** (issue #127): `propagate()` returns
+  `PropResult::kBudgetExhausted`, distinct from `kInfeasible`. Every
+  caller must **not** treat exhaustion as a pruning verdict — the
+  partial fixpoint reached so far is sound (every tightening applied is
+  a valid deduction), just incomplete. It used to be folded into a
+  single `bool` return that every caller read as "infeasible, prune this
+  node", silently discarding feasible subtrees whenever a fixpoint pass
+  ran long; it was also `10 * nnz`, not `100 * nnz`, with no comment
+  explaining scope or value.
+- **Suggested range**: not intended to be tuned down — lowering it
+  raises the frequency of `kBudgetExhausted` returns (each one leaves
+  the DFS with weaker deductions, not fewer nodes) without changing
+  correctness. Raising it moves the safety valve further from the
+  attempt/deadline gates that already bound total work.
+
+---
+
 ### `kInitialFprConfigs` — curated (strategy, mode) rotation
 
 - **File**: `src/fpr.cpp` (anonymous namespace)

@@ -435,7 +435,12 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
         }
 
         if (state.do_propagate) {
-            if (!E.propagate(node.var)) {
+            // Only a proven inconsistency prunes the node (issue #127).
+            // Budget exhaustion (`kBudgetExhausted`) is sound but
+            // incomplete propagation -- the DFS continues with whatever
+            // was deduced so far rather than discarding a subtree that
+            // may well be feasible.
+            if (E.propagate(node.var) == PropResult::kInfeasible) {
                 continue;
             }
         }

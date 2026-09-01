@@ -72,6 +72,24 @@ private:
     std::vector<HighsInt> pos_;  // pos_[var] = heap index, or kNotPresent.
 };
 
+// Outcome of a `PropEngine::propagate` call (issue #127).
+//
+// A truncated fixpoint (`kBudgetExhausted`) is *not* a verdict: it means
+// fewer inferences were drawn than a full AC-3 pass would have drawn, which
+// is sound (every tightening actually applied is a valid deduction) but
+// incomplete. Only `kInfeasible` is a proof that no completion of the
+// current partial assignment satisfies the model. Every caller that used to
+// read `propagate()`'s `bool` as "prune this node" must distinguish the
+// two: pruning on `kBudgetExhausted` would discard feasible subtrees the
+// engine simply ran out of budget to explore fully.
+enum class PropResult {
+    kFixpoint,         // Worklist drained; every reachable deduction applied.
+    kInfeasible,       // A row's bounds became inconsistent (lb > ub).
+    kBudgetExhausted,  // Per-call matrix-access budget hit before the
+                       // worklist drained. Sound but incomplete -- treat the
+                       // node as propagated-but-unfinished, never pruned.
+};
+
 // Reusable AC-3 constraint propagation engine.
 // Owns its own VarState, solution, and undo stacks.
 // References shared read-only problem data (constraint matrix, bounds).
@@ -103,8 +121,10 @@ public:
 
     // AC-3 constraint propagation. If fixed_var >= 0, seeds worklist from
     // that variable's rows. If fixed_var == -1, assumes worklist already seeded.
-    // Returns false on infeasibility or budget exhaustion.
-    bool propagate(HighsInt fixed_var = -1);
+    // Returns kInfeasible only on a proven bound inconsistency; a per-call
+    // matrix-access budget hit returns kBudgetExhausted, which is not a
+    // verdict -- see PropResult above.
+    PropResult propagate(HighsInt fixed_var = -1);
 
     // Add rows of variable j to the propagation worklist.
     void seed_worklist(HighsInt j);

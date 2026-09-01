@@ -57,7 +57,9 @@ bool sync_changes(PropEngine& E, const PropEngine& R) {
         }
     }
     if (any_seeded) {
-        if (!E.propagate(-1)) {
+        // Budget exhaustion (issue #127) is sound-but-incomplete, not a
+        // verdict; only a proven inconsistency fails the sync.
+        if (E.propagate(-1) == PropResult::kInfeasible) {
             return false;
         }
     }
@@ -114,28 +116,31 @@ void backtrack_best_open(std::vector<RepairSearchNode>& Q) {
 }
 
 // Apply a branch to R: fix or tighten, then propagate.
-// Returns false if infeasible.
+// Returns false only on a proven inconsistency; budget exhaustion
+// (issue #127) leaves R sound but incomplete and does not fail the branch.
 bool apply_branch_to_r(PropEngine& R, const RepairSearchNode& node) {
     if (node.var < 0) {
         return true;  // root node — no branch
     }
     bool ok;
+    PropResult pr = PropResult::kFixpoint;
     if (node.is_fix) {
         ok = R.fix(node.var, node.val);
         if (ok) {
-            ok = R.propagate(node.var);
+            pr = R.propagate(node.var);
         }
     } else if (node.is_lb) {
         ok = R.tighten_lb(node.var, node.val);
         if (ok) {
-            ok = R.propagate(-1);
+            pr = R.propagate(-1);
         }
     } else {
         ok = R.tighten_ub(node.var, node.val);
         if (ok) {
-            ok = R.propagate(-1);
+            pr = R.propagate(-1);
         }
     }
+    ok = ok && pr != PropResult::kInfeasible;
     return ok;
 }
 

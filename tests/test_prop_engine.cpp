@@ -52,14 +52,14 @@ TEST_CASE("PropEngine: fix and propagate", "[prop-engine]") {
 
     // Fix x0 = 0, propagate: row 0 (x0+x1 >= 2) forces x1 >= 2
     REQUIRE(eng.fix(0, 0.0));
-    REQUIRE(eng.propagate(0));
+    REQUIRE(eng.propagate(0) == PropResult::kFixpoint);
     REQUIRE(eng.var(0).fixed);
     REQUIRE(eng.var(0).val == Catch::Approx(0.0));
     REQUIRE(eng.var(1).lb >= 2.0 - 1e-6);
 
     // Fix x1 = 5, propagate: row 1 (x1+x2 <= 8) forces x2 <= 3
     REQUIRE(eng.fix(1, 5.0));
-    REQUIRE(eng.propagate(1));
+    REQUIRE(eng.propagate(1) == PropResult::kFixpoint);
     REQUIRE(eng.var(2).ub <= 3.0 + 1e-6);
 }
 
@@ -71,7 +71,7 @@ TEST_CASE("PropEngine: backtrack restores state", "[prop-engine]") {
     HighsInt sol_m = eng.sol_mark();
 
     REQUIRE(eng.fix(0, 1.0));
-    REQUIRE(eng.propagate(0));
+    REQUIRE(eng.propagate(0) == PropResult::kFixpoint);
     REQUIRE(eng.var(0).fixed);
 
     eng.backtrack_to(vs_m, sol_m);
@@ -103,7 +103,7 @@ TEST_CASE("PropEngine: infeasible propagation", "[prop-engine]") {
     // tries to tighten x1 lb to 2, but ub is 1 → lb > ub → infeasible.
     REQUIRE(eng.fix(0, 0.0));
     REQUIRE(eng.tighten_ub(1, 1.0));
-    REQUIRE_FALSE(eng.propagate(0));
+    REQUIRE(eng.propagate(0) == PropResult::kInfeasible);
 }
 
 TEST_CASE("PropEngine: reset clears state", "[prop-engine]") {
@@ -227,9 +227,9 @@ TEST_CASE("PropEngine: reset matches fresh construction (post-propagate)", "[pro
     // Second engine: exercise fix/propagate/backtrack, then reset.
     auto reused = m.make_engine();
     REQUIRE(reused.fix(0, 1.0));
-    REQUIRE(reused.propagate(0));
+    REQUIRE(reused.propagate(0) == PropResult::kFixpoint);
     REQUIRE(reused.fix(1, 4.0));
-    REQUIRE(reused.propagate(1));
+    REQUIRE(reused.propagate(1) == PropResult::kFixpoint);
     reused.add_effort(4242);
     reused.reset();
 
@@ -254,9 +254,9 @@ TEST_CASE("PropEngine: reset matches fresh construction (with activities + PQ)",
     reused.init_activities();
     reused.init_domain_pq();
     REQUIRE(reused.fix(0, 1.0));
-    REQUIRE(reused.propagate(0));
+    REQUIRE(reused.propagate(0) == PropResult::kFixpoint);
     REQUIRE(reused.fix(1, 3.0));
-    REQUIRE(reused.propagate(1));
+    REQUIRE(reused.propagate(1) == PropResult::kFixpoint);
     reused.reset();
     // Match the fresh-construction path: caller re-initialises the opt-in
     // activity/PQ machinery after reset.
@@ -280,7 +280,7 @@ TEST_CASE("PropEngine: reset matches fresh construction (post-infeasibility)",
     // the engine in a pristine state.
     REQUIRE(reused.fix(0, 0.0));
     REQUIRE(reused.tighten_ub(1, 1.0));
-    REQUIRE_FALSE(reused.propagate(0));
+    REQUIRE(reused.propagate(0) == PropResult::kInfeasible);
     reused.reset();
 
     auto reused_snap = EngineSnapshot::of(reused);
@@ -295,7 +295,7 @@ TEST_CASE("PropEngine: reset allows fresh fix+propagate sequence", "[prop-engine
     // that reset() itself fully restores the engine for a second attempt
     // that produces the *same* outcome as a fresh engine would.
     REQUIRE(eng.fix(0, 1.0));
-    REQUIRE(eng.propagate(0));
+    REQUIRE(eng.propagate(0) == PropResult::kFixpoint);
     // propagate should have touched x1 via row 0 (x0+x1 >= 2 with x0=1
     // forces x1 >= 1), so x1.lb should be tightened.
     REQUIRE(eng.var(1).lb >= 1.0 - 1e-6);
@@ -305,14 +305,14 @@ TEST_CASE("PropEngine: reset allows fresh fix+propagate sequence", "[prop-engine
     SmallModel m2;
     auto fresh_run = m2.make_engine();
     REQUIRE(fresh_run.fix(0, 0.0));
-    REQUIRE(fresh_run.propagate(0));
+    REQUIRE(fresh_run.propagate(0) == PropResult::kFixpoint);
     auto expected = EngineSnapshot::of(fresh_run);
 
     // Reset and run the alternative branch on the reused engine; it
     // must land on exactly the same state the fresh engine reached.
     eng.reset();
     REQUIRE(eng.fix(0, 0.0));
-    REQUIRE(eng.propagate(0));
+    REQUIRE(eng.propagate(0) == PropResult::kFixpoint);
     auto actual = EngineSnapshot::of(eng);
 
     // Full snapshot match: reset() zeroes prop_work_ and empties every
@@ -340,7 +340,7 @@ TEST_CASE("PropEngine: reset leaves prop_worklist drained", "[prop-engine][reset
     // teardown path.
     REQUIRE(eng.fix(0, 0.0));
     REQUIRE(eng.tighten_ub(1, 1.0));
-    REQUIRE_FALSE(eng.propagate(0));
+    REQUIRE(eng.propagate(0) == PropResult::kInfeasible);
 
     eng.reset();
 
@@ -353,16 +353,119 @@ TEST_CASE("PropEngine: reset leaves prop_worklist drained", "[prop-engine][reset
     // indicates stale state.
     size_t baseline = eng.effort();
     REQUIRE(eng.fix(2, 5.0));
-    REQUIRE(eng.propagate(2));
+    REQUIRE(eng.propagate(2) == PropResult::kFixpoint);
     size_t delta = eng.effort() - baseline;
     // Fresh baseline: run the same sequence on a brand-new engine and
     // verify the reused engine didn't do extra work.
     auto fresh = m.make_engine();
     size_t fresh_baseline = fresh.effort();
     REQUIRE(fresh.fix(2, 5.0));
-    REQUIRE(fresh.propagate(2));
+    REQUIRE(fresh.propagate(2) == PropResult::kFixpoint);
     size_t fresh_delta = fresh.effort() - fresh_baseline;
     REQUIRE(delta == fresh_delta);
+}
+
+// ===================================================================
+// Budget exhaustion vs. infeasibility (issue #127).  A truncated AC-3
+// fixpoint is sound but incomplete -- only a proven bound inconsistency
+// (lb > ub on some row) is a verdict.  These tests drive `propagate()`
+// to genuine budget exhaustion on a model that is actually feasible, and
+// check the engine is left in exactly the state a caller relying on
+// "not pruned" needs: a sound (non-infeasible) domain, and undo/reset
+// consistency identical to every other early-exit path.
+// ===================================================================
+
+namespace {
+// Two continuous variables, two rows: x - 2y >= 0, y - 2x >= 0.  Feasible
+// at x = y = 0.  Processing row0 tightens y's ub to roughly half of x's
+// current ub (Pass 2's `bound/a` derivation with row_lo=0), then
+// `seed_worklist` re-adds row1 (which contains y); processing row1
+// symmetrically halves x's ub and re-seeds row0.  Convergence to within
+// feastol of 0 therefore takes on the order of log2(col_ub / feastol)
+// row visits -- roughly 1000 here -- against an nnz of 4, so a single
+// `propagate()` call is guaranteed to hit the `kPropagateBudgetPerNnz *
+// nnz` = 400 budget (prop_engine.cpp) long before it would naturally
+// reach a fixpoint. Neither bound ever tightens past the other's current
+// value here (lb stays 0 throughout), so the model never comes close to
+// lb > ub -- the run is genuinely budget-bound, not on the verge of
+// infeasibility.
+struct HalvingModel {
+    static constexpr HighsInt kNcol = 2;
+    static constexpr HighsInt kNrow = 2;
+    std::vector<HighsInt> ar_start = {0, 2, 4};
+    std::vector<HighsInt> ar_index = {0, 1, 1, 0};
+    std::vector<double> ar_value = {1.0, -2.0, 1.0, -2.0};
+    std::vector<double> col_lb = {0.0, 0.0};
+    std::vector<double> col_ub = {1e300, 1e300};
+    std::array<double, 2> row_lo = {0.0, 0.0};
+    std::array<double, 2> row_hi = {kHighsInf, kHighsInf};
+    std::vector<HighsVarType> integrality = {HighsVarType::kContinuous, HighsVarType::kContinuous};
+    CscMatrix csc;
+
+    HalvingModel() { csc = build_csc(kNcol, kNrow, ar_start, ar_index, ar_value); }
+
+    PropEngine make_engine(double feastol = 1e-6) {
+        return {kNcol,           kNrow,         ar_start.data(),    ar_index.data(),
+                ar_value.data(), csc,           col_lb.data(),      col_ub.data(),
+                row_lo.data(),   row_hi.data(), integrality.data(), feastol};
+    }
+};
+}  // namespace
+
+TEST_CASE("PropEngine: budget exhaustion is sound but incomplete, not infeasibility",
+          "[prop-engine][budget]") {
+    HalvingModel m;
+    auto eng = m.make_engine();
+
+    HighsInt vs_m = eng.vs_mark();
+    HighsInt sol_m = eng.sol_mark();
+
+    // Column 0 (x) is in both rows, so seeding it starts the cascade.
+    eng.seed_worklist(0);
+    PropResult result = eng.propagate(-1);
+
+    REQUIRE(result == PropResult::kBudgetExhausted);
+    // Genuinely exhausted (100 * nnz = 100 * 4 = 400), not a fluke early
+    // return on the first row visited.
+    REQUIRE(eng.effort() > 400);
+
+    // Sound: both domains are still non-empty (lb <= ub). An infeasible
+    // exit -- the other early-return path in propagate() -- is exactly
+    // the case lb > ub on some row; this must not be that.
+    REQUIRE(eng.var(0).lb <= eng.var(0).ub + eng.feastol());
+    REQUIRE(eng.var(1).lb <= eng.var(1).ub + eng.feastol());
+    // Neither variable was spuriously auto-fixed by the partial run.
+    REQUIRE_FALSE(eng.var(0).fixed);
+    REQUIRE_FALSE(eng.var(1).fixed);
+    // Genuine partial progress happened (budget was actually spent doing
+    // real deductions, not just counted and discarded).
+    REQUIRE(eng.var(0).ub < 1e300);
+    REQUIRE(eng.var(1).ub < 1e300);
+
+    // Undo-stack consistency: a caller that continues past a
+    // kBudgetExhausted node (rather than pruning it) must still be able
+    // to backtrack cleanly through everything this call applied.
+    eng.backtrack_to(vs_m, sol_m);
+    REQUIRE(eng.var(0).lb == Catch::Approx(0.0));
+    REQUIRE(eng.var(0).ub == Catch::Approx(1e300));
+    REQUIRE(eng.var(1).lb == Catch::Approx(0.0));
+    REQUIRE(eng.var(1).ub == Catch::Approx(1e300));
+}
+
+TEST_CASE("PropEngine: reset matches fresh construction (post-budget-exhaustion)",
+          "[prop-engine][reset][budget]") {
+    HalvingModel m;
+
+    auto fresh = m.make_engine();
+    auto fresh_snap = EngineSnapshot::of(fresh);
+
+    auto reused = m.make_engine();
+    reused.seed_worklist(0);
+    REQUIRE(reused.propagate(-1) == PropResult::kBudgetExhausted);
+    reused.reset();
+
+    auto reused_snap = EngineSnapshot::of(reused);
+    require_snapshots_equal(fresh_snap, reused_snap);
 }
 
 // Regression test for fpr_core.cpp's pointer-identity guard used when a

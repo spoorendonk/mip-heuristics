@@ -5,6 +5,26 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+// Per-call matrix-access budget for `PropEngine::propagate`, in units of
+// coefficient accesses per nonzero of the model (issue #127).
+//
+// The paper (Sect. 6) imposes "a number of matrix accesses of at most 100
+// times the number of nonzeros in the presolved model" -- but as a
+// deterministic *stopping rule for the whole heuristic*, not a per-call
+// cap and not an infeasibility verdict. Our scope differs on purpose: the
+// paper's whole-run budget is already covered here by the attempt-level
+// effort budget (`cfg.max_effort`) and the wall-clock `Deadline` (#117),
+// both of which bound the DFS across every `propagate()` call it makes.
+// This constant is what remains once exhaustion is no longer a verdict --
+// a per-call safety valve against a single AC-3 fixpoint pass pathologically
+// failing to converge (see the geometric-decay construction in
+// tests/test_prop_engine.cpp), sized at the paper's own multiplier so one
+// call cannot itself burn an entire attempt's budget before the outer
+// gates ever get polled.
+constexpr size_t kPropagateBudgetPerNnz = 100;
+}  // namespace
+
 PropEngine::PropEngine(HighsInt ncol, HighsInt nrow, const HighsInt* ar_start,
                        const HighsInt* ar_index, const double* ar_value, const HighsInt* csc_start,
                        const HighsInt* csc_row_p, const double* csc_val_p, const double* col_lb,
@@ -277,7 +297,7 @@ void PropEngine::seed_worklist(HighsInt j) {
 // it would move work across a worker's inner loop, and the closeout takes no unmeasured performance
 // risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-bool PropEngine::propagate(HighsInt fixed_var) {
+PropResult PropEngine::propagate(HighsInt fixed_var) {
     // Hoist raw pointers once so the tight loop doesn't re-load member
     // fields on every iteration. All of these arrays are read-only (the
     // problem data) except vs_/solution_, which we mutate via vs_data and
@@ -312,7 +332,7 @@ bool PropEngine::propagate(HighsInt fixed_var) {
     // When fixed_var == -1, assume prop_worklist is already seeded by caller.
 
     size_t prop_work = 0;
-    const size_t prop_budget = 10 * nnz_;
+    const size_t prop_budget = kPropagateBudgetPerNnz * nnz_;
     while (!prop_worklist_.empty()) {
         HighsInt i = prop_worklist_.back();
         prop_worklist_.pop_back();
@@ -322,12 +342,21 @@ bool PropEngine::propagate(HighsInt fixed_var) {
         prop_work += static_cast<size_t>(kend - kbeg);
         if (prop_work > prop_budget) {
             prop_work_ += prop_work;
-            // Clear stale worklist markers
+            // Row `i` itself was only *counted*, never processed (Pass 1/2
+            // below never ran for it) -- so no bound was tightened, no undo
+            // entry pushed, and no activity/PQ update skipped for it.  The
+            // remaining worklist entries reference rows whose contents are
+            // untouched since they were last seeded, so dropping them here
+            // (mirroring the infeasibility exit below) leaves every applied
+            // deduction so far exactly as valid as it was when made -- the
+            // engine is a legitimate partial-propagation state, not a
+            // corrupted one (issue #127; see tests/test_prop_engine.cpp for
+            // the reset-equivalence and backtrack checks that pin this).
             for (HighsInt wi : prop_worklist_) {
                 in_wl[wi] = 0;
             }
             prop_worklist_.clear();
-            return false;
+            return PropResult::kBudgetExhausted;
         }
 
         // Pass 1: compute row aggregates (fixed_sum, min_act, max_act) and
@@ -429,7 +458,7 @@ bool PropEngine::propagate(HighsInt fixed_var) {
                     in_wl[wi] = 0;
                 }
                 prop_worklist_.clear();
-                return false;
+                return PropResult::kInfeasible;
             }
 
             const bool tighter_lb = new_lb > old_lb + feastol;
@@ -472,7 +501,7 @@ bool PropEngine::propagate(HighsInt fixed_var) {
         }
     }
     prop_work_ += prop_work;
-    return true;
+    return PropResult::kFixpoint;
 }
 
 void PropEngine::backtrack_to(HighsInt vs_mark_target, HighsInt sol_mark_target,
