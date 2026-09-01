@@ -60,15 +60,14 @@ TEST_CASE("execution-mode: all heuristics disabled still solves", "[mode-matrix]
     REQUIRE(solve_no_heuristics() == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-// #93's headline behaviour change, and what the patch-overhead row of the
-// benchmark matrix rests on: `suite=off` hands HiGHS's standalone
-// FeasibilityJump call site back, where the patch used to rewrite it to
-// `if (false)` in every configuration.  Nothing else in ctest pins it —
-// `bench/check_vanilla_equivalence.py` proves it properly but needs a
-// separately built unpatched binary, so it is deliberately not a test.  A
-// regression of Patch A in apply_patch.cmake compiles, links, and leaves
-// every other case green while silently turning `off` back into
-// vanilla-minus-FJ.
+// #93's headline behaviour change, and what makes `off` an ablation of our
+// heuristics alone: `suite=off` hands HiGHS's standalone FeasibilityJump
+// call site back, where the patch used to rewrite it to `if (false)` in
+// every configuration.  A regression of Patch A in apply_patch.cmake
+// compiles, links, and leaves every other case green while silently
+// leaving `off` with no FeasibilityJump at all.  `test_native_fj.cpp`
+// covers the other half — that the restored call site charges its effort,
+// and that upstream's own switch still silences it.
 //
 // `Feasibility Jump: starting solve` is logged once per FJ solver
 // instance, so the count separates all three states: exactly 1 at `off`

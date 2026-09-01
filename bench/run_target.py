@@ -311,8 +311,8 @@ def suite_value(params: Parameters) -> str:
 
     `off` when no effort is positive, and that exact string is not cosmetic: the
     patch compares `mip_heuristic_suite == "off"` verbatim in two places, so a
-    value that selected nothing without being that string would be a
-    heuristic-free run that is *not* the vanilla-equivalent one.  An empty value
+    value that selected nothing without being that string would be a run with
+    no heuristic at all, HiGHS's own FJ included.  An empty value
     or a trailing comma is worse still — an unrecognised token, which the
     dispatcher warns about and then fails *open* to all four heuristics.
     """
@@ -352,8 +352,8 @@ def solver_options(
     options: dict[str, str] = {"mip_heuristic_suite": suite_value(params)}
     # Effort 0 for FJ has to disable *both* FeasibilityJump call sites, and this
     # is the only option that reaches the other one.  At `suite=off` the patch
-    # hands HiGHS's own standalone FJ back — deliberately, so that value is a
-    # vanilla-equivalent ablation — and that native call site emits no `[Heur]`
+    # hands HiGHS's own standalone FJ back — deliberately, so the ablation is
+    # of our heuristics alone — and that native call site emits no `[Heur]`
     # line, because the patch's `heuristic_effort_used +=` inside HiGHS's
     # `feasibilityJump()` logs nothing.  The all-zero vector therefore banked
     # real FJ quality at tau = 0: free quality, zero measured cost, and `off`

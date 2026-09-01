@@ -144,8 +144,14 @@ than nineteen copies free to drift apart.
 Full detail is in `README.md` (per-heuristic ablation, budget sweep,
 instance subsets and the config oracle) and `docs/REPRODUCIBILITY.md` (the
 PLATO protocol).
-Two rules that are easy to get wrong:
+Three rules that are easy to get wrong:
 
+- **The vanilla baseline is a second binary.** `--vanilla-binary` must point at
+  a separately built *unpatched* HiGHS of the tag in `cmake/FetchHiGHS.cmake`;
+  the `vanilla` config requires it and the run is refused before its first
+  solve if the binary carries the `mip-heuristics patch active` marker or
+  reports a different version. `mip_heuristic_suite=off` on the patched binary
+  is the ablation with our heuristics disabled, and is never a substitute.
 - **Do not set `threads`.** Neither `--threads` on `bench/run_benchmark.py` nor
   `threads=` in an `.opts` file, unless you have been asked to. Forcing
   `threads=1` collapses every heuristic to a single worker: it is the right
@@ -219,9 +225,13 @@ refactors were held to, not a one-off checklist.
   writing an upstream `HighsMipSolverData` counter outside `src/effort_ledger`,
   the one place that deliberately charges the RENS/RINS envelope. Read solver
   options; do not reset, override or restore them. `mip_heuristic_suite=off`
-  has to stay byte-equivalent to an unpatched binary — that is the row every
-  other benchmark row is measured against, and
-  `bench/check_vanilla_equivalence.py` is what proves it.
+  plus `mip_heuristic_run_feasibility_jump=false` — nothing of ours running,
+  and FeasibilityJump out of the picture on both sides — has to stay
+  byte-equivalent to an unpatched binary in the same configuration, which is
+  what `bench/check_vanilla_equivalence.py` proves. `off` on its own is the
+  "our four presolve heuristics disabled" ablation and is **not** a vanilla
+  baseline: it still runs FeasibilityJump, and the FeasibilityJump it runs is
+  ours.
 
 Two further invariants that are easy to violate without a test noticing:
 

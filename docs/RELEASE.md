@@ -5,8 +5,8 @@ maintainer can do v0.2.0 without reverse-engineering v0.1.0.
 
 This document is about *publishing*. It is not about reproducing a run —
 [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md) owns the reproducible recipe, what
-is deliberately not reproducible, the PLATO protocol and the `suite=off`
-equivalence — nor about the day-to-day gates, which
+is deliberately not reproducible, the PLATO protocol and what `suite=off` is
+and is not — nor about the day-to-day gates, which
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) owns. Both are referenced below rather
 than reproduced. Two things are deliberately restated: the gate commands,
 because a release runs them as one clean-tree sequence and a maintainer should
@@ -111,11 +111,15 @@ python3 bench/check_vanilla_equivalence.py \
     --vanilla-binary /path/to/unpatched/highs
 ```
 
-`mip_heuristic_suite=off` on the patched binary is the row every benchmark row
-is measured against, so a release that has not re-proved that equivalence is
-publishing an unverified baseline. Build the unpatched binary from the same
-HiGHS tag; see [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md#suiteoff-is-vanilla-equivalent--since-august-2026)
-for what the check compares and which two residual differences are accepted.
+This compares the pure patch-overhead configuration — `mip_heuristic_suite=off`
+plus `mip_heuristic_run_feasibility_jump=false` on the patched binary, against
+an unpatched one with FeasibilityJump likewise disabled — so what it proves is
+that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP
+path. Every published row rests on that, so a release that has not re-proved it
+is publishing unverified numbers. Build the unpatched binary from the same
+HiGHS tag; see [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md#suiteoff-is-an-ablation-not-a-vanilla-baseline)
+for what the check compares, which two residual differences are accepted, and
+why `suite=off` on its own is an ablation rather than a vanilla baseline.
 
 ## The artifact archive
 
@@ -210,11 +214,12 @@ produces an archive that looks complete and cannot be interpreted:
   apart. Only the `mip-heuristics patch active` line does, and it is printed by
   a solve, not by `--version`. The tool reads it out of every log, so a config
   whose logs disagree is rejected rather than archived.
-- **The baseline.** "Vanilla-equivalent setting on the patched binary" and
-  "separately built unpatched binary" are two different claims and only one of
-  them rests on the build. The first rests on
-  `bench/check_vanilla_equivalence.py`. The manifest names which one this
-  archive supports and cites the right evidence for it.
+- **The baseline.** "Separately built unpatched binary" is the only baseline
+  claim there is. A baseline config whose logs carry the patch marker is an
+  ablation on the patched binary — rows measured against it say what the
+  presolve chain contributes on that binary and nothing about vanilla HiGHS —
+  and the manifest says exactly that rather than offering the reader a weaker
+  version of the vanilla claim.
 - **Instrumentation.** `--dev-log` costs 97–750x the log volume and 1.1–4.4x
   the wall time, concentrated in the FeasibilityJump phase, so an attribution
   run and a headline-timing run are *different runs* whose timings are not

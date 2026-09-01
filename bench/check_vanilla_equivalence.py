@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
-"""Verify that the patched binary at `mip_heuristic_suite=off` matches vanilla.
+"""Verify that injecting our heuristics does not perturb HiGHS itself.
 
-`suite=off` is the patch-overhead row of the closeout benchmark matrix: it
-is only meaningful if it behaves exactly like an unpatched HiGHS of the same
-tag.  This script proves that instead of assuming it, by running both
-binaries on the same instances and comparing what HiGHS itself reports.
+The configuration compared is the **pure patch-overhead** one: FeasibilityJump
+disabled on both sides (`mip_heuristic_run_feasibility_jump=false`, upstream's
+own option), plus `mip_heuristic_suite=off` on the patched side so none of our
+four presolve heuristics and no `fpr_lp` runs.  What that proves is what is
+worth proving: the patch's call sites, its extra option records and its marker
+line do not move HiGHS's presolve, its B&B or its LP path by a single node or
+iteration.
+
+It does **not** prove that `suite=off` equals vanilla, and it is not a licence
+to use `off` as a baseline.  `off` is the "our four presolve heuristics
+disabled" ablation on the patched binary; it hands HiGHS's own standalone
+FeasibilityJump call site back, but that call site drives *our* copy of
+FeasibilityJump, which the patch already modifies (the per-bump `kVerbose` log
+line is gone) and which issue #139 will change further.  FJ is therefore
+excluded from the comparison rather than compared and forgiven.  A benchmark
+baseline is always a separately built unpatched binary — that is what
+`bench/run_benchmark.py --vanilla-binary` takes, and it refuses a patched one.
 
 It is deliberately *not* a ctest: it needs an unpatched HiGHS binary at the
 pinned tag, which no build tree produces (the patch rewrites the source in
 place) and no CI runner is guaranteed to have.  Point `--vanilla-binary` at
-a system install of the same version — `highs --version` on both must agree
-before any comparison means anything, and the script checks that first.
+a system install of the same version — the script refuses a binary carrying
+the patch marker, and `highs --version` on both must agree, before any
+comparison means anything.
 
 Hard gates, per instance and seed:
 
@@ -18,8 +32,8 @@ Hard gates, per instance and seed:
   * identical node count;
   * identical total and heuristic LP iterations.  The heuristic count is
     what `moreHeuristicsAllowed()` reads, so equality there is the proof
-    that the patch does not consume the RENS/RINS budget on the `off`
-    path.  HiGHS does not print RENS/RINS *invocation* counts, but it
+    that the patch does not consume the RENS/RINS budget when nothing of
+    ours runs.  HiGHS does not print RENS/RINS *invocation* counts, but it
     cannot invoke them differently while leaving node count, total LP
     iterations and the solution-source display lines all identical;
   * empty normalized log diff — everything HiGHS printed, minus the parts
@@ -37,13 +51,21 @@ Two differences are known and accepted rather than fixed:
   * the `mip-heuristics patch active` marker line, which is the only way to
     tell a patched binary from an unpatched one (the version and githash
     banners are otherwise identical).  Normalized away;
-  * one `heuristic_effort_used += fj_last_effort` store per FJ callback
-    inside stock `feasibilityJump()`.  No control-flow change; invisible in
-    the log;
-  * the per-heuristic instrumentation lines, emitted at
-    `suite=off` on purpose because that run is the reference the patched
-    rows are compared against.  Only visible at `log_dev_level=3`, which
-    this script does not set, but normalized away regardless.
+  * the per-heuristic instrumentation lines, which only exist on the patched
+    side.  Only visible at `log_dev_level=3`, which this script does not set,
+    but normalized away regardless.
+
+(The `heuristic_effort_used += fj_last_effort` store the patch adds inside
+stock `feasibilityJump()` used to be a third: it is unreachable here, since
+neither side runs FeasibilityJump at all.  `tests/test_native_fj.cpp` is what
+pins that store, and the call site it hangs off.)
+
+Known and accepted: with FeasibilityJump disabled on both sides, **nothing in
+this project compares FJ's search behaviour against upstream's** — this check
+excludes it and `tests/test_native_fj.cpp` covers presence and accounting
+only.  That is the deliberate trade, not an oversight: FJ is precisely what
+the patch changes on purpose, so there is no behaviour to hold equal, and an
+equivalence claim that quietly included it would be the false one.
 
 Usage:
   python bench/check_vanilla_equivalence.py --vanilla-binary /usr/local/bin/highs
@@ -61,6 +83,8 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 
+from run_benchmark import PATCH_MARKER, probe_binary
+
 # Same instance set as bench/correctness_check.py; they ship with HiGHS.
 INSTANCES = [
     "flugpl.mps",
@@ -71,25 +95,34 @@ INSTANCES = [
     "p0548.mps",
 ]
 
-# The one option that puts the patched binary on the vanilla path.
-VANILLA_EQUIVALENT_OPTIONS = {"mip_heuristic_suite": "off"}
+# The pure patch-overhead configuration, per side.
+#
+# `mip_heuristic_run_feasibility_jump` is upstream's own option, so both
+# binaries accept it and both lose FeasibilityJump — the one component the
+# patch deliberately changes, and therefore the one that cannot be part of an
+# equivalence claim.  `mip_heuristic_suite=off` exists only on the patched
+# side and takes our four presolve heuristics and `fpr_lp` out with it.  What
+# is left running is HiGHS's own solver on both sides.
+PATCHED_OPTIONS = {
+    "mip_heuristic_suite": "off",
+    "mip_heuristic_run_feasibility_jump": "false",
+}
+VANILLA_OPTIONS = {"mip_heuristic_run_feasibility_jump": "false"}
 
 # Lines dropped before diffing: wall-clock measurements, the patch's
-# self-identification marker, HiGHS's echo of the options it was given
-# (the patched run is handed `mip_heuristic_suite=off` and the vanilla run
-# has no such option, so that one line always differs by construction —
-# it says nothing about solver behaviour), and the two once-per-solve
-# instrumentation lines from issue #95.
+# self-identification marker, HiGHS's echo of the options it was given (both
+# runs are handed `mip_heuristic_run_feasibility_jump=false`, but only the
+# patched one also gets `mip_heuristic_suite=off`, so the echo differs by
+# construction and says nothing about solver behaviour — the mask is blanket
+# over `Set option`, so it holds however the two option sets diverge), and the
+# two once-per-solve instrumentation lines from issue #95.
 #
-# Those two are emitted at `suite=off` on purpose: that run is the vanilla
-# reference the patched rows are compared against, so its RENS/RINS counts
-# and root-LP timestamp are precisely what the analysis needs.  An
-# unpatched binary cannot print them, so they are a structural difference
-# rather than a behavioural one.  They are invisible below
-# `log_dev_level=3` and this script does not raise it, so the masks are
-# inert today — which is exactly why they belong here now, before someone
-# adds `log_dev_level` to the run and gets an unexplained diff instead of
-# a green equivalence proof.  `[Heur]` and `[Sequential]` need no entry:
+# Those two exist only on the patched side; an unpatched binary cannot print
+# them, so they are a structural difference rather than a behavioural one.
+# They are invisible below `log_dev_level=3` and this script does not raise
+# it, so the masks are inert today — which is exactly why they belong here
+# now, before someone adds `log_dev_level` to the run and gets an unexplained
+# diff instead of a green proof.  `[Heur]` and `[Sequential]` need no entry:
 # `run_sequential` returns before the ledger exists at `suite=off`.
 _VOLATILE_LINE = re.compile(
     r"^\s*(?:"
@@ -324,7 +357,9 @@ def run_solve(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare patched suite=off against an unpatched HiGHS binary"
+        description="Compare the patched binary with FeasibilityJump and our "
+        "heuristics disabled against an unpatched HiGHS with FeasibilityJump "
+        "disabled — the pure patch-overhead configuration"
     )
     parser.add_argument("--patched-binary", default="./build/bin/highs")
     parser.add_argument(
@@ -358,6 +393,18 @@ def main() -> None:
         if not os.path.exists(b):
             sys.exit(f"Error: binary not found: {b}")
 
+    # The same refusal `bench/run_benchmark.py` makes, and for the same
+    # reason: two patched binaries compare equal trivially, so a check run
+    # against one would report a green it never earned.  `probe_binary` is
+    # imported rather than re-implemented — there is one definition of "is
+    # this binary patched?".
+    if probe_binary(vanilla).patched:
+        sys.exit(
+            f"Error: --vanilla-binary {vanilla} prints '{PATCH_MARKER}' — it is "
+            "the patched binary. Build an unpatched HiGHS from the same tag; "
+            "no setting on the patched build stands in for one."
+        )
+
     pv, vv = version_of(patched), version_of(vanilla)
     if not same_build(pv, vv):
         sys.exit(
@@ -384,12 +431,14 @@ def main() -> None:
             p_log = run_solve(
                 patched,
                 path,
-                VANILLA_EQUIVALENT_OPTIONS,
+                PATCHED_OPTIONS,
                 seed,
                 args.time_limit,
                 tmp_dir,
             )
-            v_log = run_solve(vanilla, path, {}, seed, args.time_limit, tmp_dir)
+            v_log = run_solve(
+                vanilla, path, VANILLA_OPTIONS, seed, args.time_limit, tmp_dir
+            )
             c = compare_runs(
                 name, seed, p_log, v_log, args.time_tolerance, args.strict_time
             )

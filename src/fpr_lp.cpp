@@ -485,8 +485,8 @@ void run(HighsMipSolver& mipsolver) {
     }
 
     // Suite gating: fpr_lp runs only at a mip_heuristic_suite value naming fpr.
-    // suite=off must disable it so an off run is comparable to vanilla
-    // HiGHS — this return sits above every read and write of
+    // suite=off must disable it so an off run has nothing of ours running at
+    // dive time either — this return sits above every read and write of
     // heuristic_lp_iterations / total_lp_iterations below, which feed
     // moreHeuristicsAllowed() and therefore decide whether RENS and RINS
     // run.  Do not move it down.

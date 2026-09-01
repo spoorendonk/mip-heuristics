@@ -259,8 +259,8 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
 // `mip_heuristic_suite == "off"` verbatim to hand back upstream's own
 // FeasibilityJump call site and its display key (see
 // `third_party/highs_patch/apply_patch.cmake`), so a value that selected
-// nothing without being that exact string would run no heuristic at all
-// while quietly not being the vanilla-equivalent configuration.  `fj,off`
+// nothing without being that exact string would run no heuristic at all —
+// not even HiGHS's own FJ, which `off` deliberately keeps.  `fj,off`
 // is therefore an unrecognised token, and warns.  `setLocalOptionValue`
 // strips *spaces* — only spaces — from both ends of a string option's value
 // and lower-cases it before storing (the options-file loader strips tabs,
@@ -403,11 +403,12 @@ bool run_presolve(HighsMipSolver& mipsolver) {
         // false, which asks for FJ and then takes it away.  That run is
         // heuristic-free without being `off`, so it also loses the native FJ
         // call site — a benchmark row labelled "FJ isolated" would silently
-        // measure vanilla-minus-FJ.  Say so rather than leave it silent.
+        // run no FeasibilityJump at all.  Say so rather than leave it silent.
         highsLogUser(options.log_options, HighsLogType::kWarning,
                      "mip_heuristic_suite=\"%s\" selects only FeasibilityJump, which "
                      "mip_heuristic_run_feasibility_jump=false disables; no heuristic will "
-                     "run. Use mip_heuristic_suite=off for a vanilla-equivalent run.\n",
+                     "run. Use mip_heuristic_suite=off to run HiGHS's own "
+                     "FeasibilityJump instead.\n",
                      options.mip_heuristic_suite.c_str());
     }
 

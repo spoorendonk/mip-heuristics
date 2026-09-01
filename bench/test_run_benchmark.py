@@ -10,15 +10,22 @@ from pathlib import Path
 import pytest
 import run_benchmark
 from run_benchmark import (
+    BANNER_RE,
     CONFIG_SUITES,
+    HIGHS_TAG_RE,
+    KNOWN_CONFIGS,
     MIPLIB_MIN_INSTANCES,
     MIPLIB_SEARCH_PATH,
+    PATCH_MARKER,
     build_arg_parser,
     build_base_options,
     build_plan,
+    check_vanilla_binary,
     config_options,
+    expected_highs_version,
     find_ignored_config_warning,
     main,
+    probe_binary,
     resolve_data_dir,
     run_single,
     write_log,
@@ -41,13 +48,13 @@ def test_unknown_config_raises():
 def test_unknown_config_message_lists_the_known_ones():
     with pytest.raises(ValueError) as exc:
         config_options("nope")
-    for name in CONFIG_SUITES:
+    for name in KNOWN_CONFIGS:
         assert name in str(exc.value)
 
 
 def test_unknown_config_raises_through_build_plan():
     with pytest.raises(ValueError, match="unknown config"):
-        build_plan("all_opp", PATCHED, PATCHED)
+        build_plan("all_opp", PATCHED, EXTERNAL)
 
 
 # --- the seven-config table ------------------------------------------------
@@ -68,19 +75,20 @@ def test_config_selects_its_suite_value(config, suite):
     assert config_options(config) == {"mip_heuristic_suite": suite}
 
 
-def test_vanilla_on_the_patched_binary_is_suite_off():
-    assert config_options("vanilla") == {"mip_heuristic_suite": "off"}
+def test_vanilla_is_not_a_suite_value():
+    """#147: `vanilla` names a binary, so it maps to no suite at all.
+
+    It used to map to `off`, which is what made a `vanilla` tree without
+    `--vanilla-binary` an ablation on the patched binary.
+    """
+    assert "vanilla" not in CONFIG_SUITES
+    assert "vanilla" in KNOWN_CONFIGS
+    # An unpatched binary has no `mip_heuristic_*` option to set.
+    assert config_options("vanilla") == {}
 
 
-def test_vanilla_on_an_external_binary_sets_nothing():
-    """An unpatched binary has no mip_heuristic_* options to set."""
-    assert config_options("vanilla", external_vanilla=True) == {}
-
-
-def test_external_vanilla_does_not_leak_into_other_configs():
-    assert config_options("fpr", external_vanilla=True) == {
-        "mip_heuristic_suite": "fpr"
-    }
+def test_vanilla_does_not_leak_into_other_configs():
+    assert config_options("fpr") == {"mip_heuristic_suite": "fpr"}
 
 
 # The four heuristics of the presolve chain, in chain order.
@@ -125,17 +133,16 @@ def test_vanilla_takes_the_external_binary():
     assert plan.options == {}
 
 
-def test_vanilla_takes_the_patched_binary_when_no_external_one_is_given():
-    plan = build_plan("vanilla", PATCHED, PATCHED)
-    assert plan.binary == PATCHED
-    assert plan.options == {"mip_heuristic_suite": "off"}
+def test_vanilla_without_an_external_binary_raises():
+    """#147: no fallback to the patched binary, and the message says why."""
+    with pytest.raises(ValueError, match="requires --vanilla-binary") as exc:
+        build_plan("vanilla", PATCHED, None)
+    assert "ablation" in str(exc.value)
 
 
-def test_every_non_vanilla_config_takes_the_patched_binary():
+def test_every_other_config_takes_the_patched_binary_without_a_vanilla_one():
     for config in CONFIG_SUITES:
-        if config == "vanilla":
-            continue
-        assert build_plan(config, PATCHED, EXTERNAL).binary == PATCHED
+        assert build_plan(config, PATCHED, None).binary == PATCHED
 
 
 def test_base_options_are_empty_by_default():
@@ -265,11 +272,12 @@ def test_the_fail_open_warning_is_detected():
 
 
 def test_the_fj_taken_away_warning_is_detected():
-    """`suite=fj` + run_feasibility_jump=false measures vanilla-minus-FJ."""
+    """`suite=fj` + run_feasibility_jump=false runs no FeasibilityJump."""
     output = (
         'WARNING: mip_heuristic_suite="fj" selects only FeasibilityJump, which '
         "mip_heuristic_run_feasibility_jump=false disables; no heuristic will "
-        "run. Use mip_heuristic_suite=off for a vanilla-equivalent run.\n"
+        "run. Use mip_heuristic_suite=off to run HiGHS's own FeasibilityJump "
+        "instead.\n"
     )
     assert find_ignored_config_warning(output) is not None
 
@@ -381,6 +389,112 @@ def test_identity_separates_configs_that_differ_only_by_binary():
     )
 
 
+# --- the --vanilla-binary probe --------------------------------------------
+#
+# Every case here runs against a stand-in binary rather than a real HiGHS: the
+# probe reads a banner, and a shell script prints one for a tenth of a second
+# where building an unpatched HiGHS is a checkout and a compile.  What the
+# stand-in has to reproduce faithfully is the *shape* of a no-argument
+# invocation of the real CLI: the complaint, the banner, the marker on a
+# patched build only, and a non-zero exit — which is why the probe must not
+# read the exit status.
+
+
+def fake_highs(
+    tmp_path: Path,
+    name: str,
+    *,
+    patched: bool,
+    version: str = "1.15.1",
+    banner: bool = True,
+) -> Path:
+    """A stand-in `highs` that answers a no-argument probe like the real one.
+
+    With arguments it appends to `<path>.solves`, so a test can assert that a
+    refused run never reached a solve.
+    """
+    path = tmp_path / name
+    marker = (
+        f'echo "{PATCH_MARKER} (custom MIP presolve heuristics)"' if patched else ":"
+    )
+    banner_line = (
+        f'echo "Running HiGHS {version} (git hash: 04024d701f): Copyright (c) 2026"'
+        if banner
+        else ":"
+    )
+    path.write_text(
+        "#!/bin/sh\n"
+        "if [ $# -eq 0 ]; then\n"
+        '  echo "Please specify filename in .mps|.lp|.ems format."\n'
+        f"  {banner_line}\n"
+        f"  {marker}\n"
+        "  exit 255\n"
+        "fi\n"
+        f'echo "$*" >> "{path}.solves"\n'
+        f"{banner_line}\n"
+        f"{marker}\n"
+        'echo "  Status            Optimal"\n'
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return path
+
+
+def test_expected_highs_version_matches_the_tag_this_tree_builds():
+    """One definition of the tag: cmake/FetchHiGHS.cmake, read at run time."""
+    assert expected_highs_version() == "1.15.1"
+
+
+def test_the_two_bench_modules_agree_on_the_shared_constants():
+    """`make_archive.py` duplicates three constants; drift between them is silent.
+
+    It cannot import them: `make_archive.py` is copied into a release archive
+    and run there by `REGENERATE.sh` with no `run_benchmark.py` beside it. So
+    the two copies are pinned against each other here instead — the same
+    treatment the MIPLIB search path gets across bash and Python. The tag
+    regex is the one that bit: it captures `v1.15.1` and the banner prints
+    `1.15.1`, so a copy that quietly absorbed the `v` into the pattern would
+    make `check_vanilla_binary` reject every genuine binary.
+    """
+    import make_archive
+
+    assert make_archive.PATCH_MARKER == PATCH_MARKER
+    assert make_archive._BANNER_RE.pattern == BANNER_RE.pattern
+    assert make_archive.HIGHS_TAG_RE.pattern == HIGHS_TAG_RE.pattern
+    assert HIGHS_TAG_RE.search("GIT_TAG        v1.15.1").group(1) == "v1.15.1"
+
+
+def test_the_probe_reads_the_banner_and_the_marker(tmp_path: Path):
+    patched = probe_binary(str(fake_highs(tmp_path, "patched", patched=True)))
+    assert patched.version == "1.15.1"
+    assert patched.githash == "04024d701f"
+    assert patched.patched
+    unpatched = probe_binary(str(fake_highs(tmp_path, "unpatched", patched=False)))
+    assert unpatched.version == "1.15.1"
+    assert not unpatched.patched
+
+
+def test_the_probe_accepts_an_unpatched_binary_of_the_right_tag(tmp_path: Path):
+    check_vanilla_binary(str(fake_highs(tmp_path, "unpatched", patched=False)))
+
+
+def test_the_probe_refuses_a_patched_binary(tmp_path: Path):
+    with pytest.raises(ValueError, match="patched"):
+        check_vanilla_binary(str(fake_highs(tmp_path, "patched", patched=True)))
+
+
+def test_the_probe_refuses_another_tag(tmp_path: Path):
+    binary = fake_highs(tmp_path, "old", patched=False, version="1.7.2")
+    with pytest.raises(ValueError, match=r"1\.7\.2"):
+        check_vanilla_binary(str(binary))
+
+
+def test_the_probe_refuses_a_binary_that_prints_no_banner(tmp_path: Path):
+    """A binary that cannot be identified is not one that may be assumed good."""
+    binary = fake_highs(tmp_path, "mystery", patched=False, banner=False)
+    with pytest.raises(ValueError, match="no HiGHS banner"):
+        check_vanilla_binary(str(binary))
+
+
 # --- main()'s own guards ---------------------------------------------------
 
 
@@ -407,6 +521,85 @@ def _main(tmp_path: Path, monkeypatch, *argv: str) -> None:
     main()
 
 
+def _main_with_one_instance(
+    tmp_path: Path, monkeypatch, *argv: str
+) -> tuple[Path, Path]:
+    """Run main() over a list with one real instance file in the data dir.
+
+    Returns `(output tree, patched binary)`, so a caller can assert on what a
+    refused run left behind — which is the checkable form of "before any
+    solve".
+    """
+    instances = tmp_path / "one.txt"
+    instances.write_text("model\n")
+    (tmp_path / "model.mps.gz").write_bytes(b"")
+    binary = fake_highs(tmp_path, "patched", patched=True)
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_benchmark.py",
+            "--instances",
+            str(instances),
+            "--binary",
+            str(binary),
+            "--data-dir",
+            str(tmp_path),
+            "--output",
+            str(out),
+            "--time-limit",
+            "1",
+            *argv,
+        ],
+    )
+    main()
+    return out, binary
+
+
+def test_a_refused_vanilla_binary_stops_the_run_before_any_solve(
+    tmp_path: Path, monkeypatch, capsys
+):
+    vanilla = fake_highs(tmp_path, "also-patched", patched=True)
+    with pytest.raises(SystemExit) as exc:
+        _main_with_one_instance(
+            tmp_path,
+            monkeypatch,
+            "--configs",
+            "vanilla",
+            "all",
+            "--vanilla-binary",
+            str(vanilla),
+        )
+    assert exc.value.code == 2
+    assert PATCH_MARKER in capsys.readouterr().err
+    # Neither binary was handed a model, and no tree was written: the refusal
+    # prevents a bad results tree rather than describing one afterwards.
+    assert not Path(f"{vanilla}.solves").exists()
+    assert not (tmp_path / "patched.solves").exists()
+    out = tmp_path / "out"
+    assert not out.exists() or not list(out.rglob("*.log"))
+
+
+def test_a_run_whose_vanilla_binary_passes_the_probe_solves(
+    tmp_path: Path, monkeypatch
+):
+    """The accepting half: an unpatched stand-in reaches the solve loop."""
+    vanilla = fake_highs(tmp_path, "unpatched", patched=False)
+    out, _ = _main_with_one_instance(
+        tmp_path,
+        monkeypatch,
+        "--configs",
+        "vanilla",
+        "all",
+        "--vanilla-binary",
+        str(vanilla),
+    )
+    assert Path(f"{vanilla}.solves").exists()
+    assert (out / "vanilla" / "seed0" / "model.log").exists()
+    assert (out / "all" / "seed0" / "model.log").exists()
+
+
 def test_main_exits_2_on_an_unknown_config(tmp_path: Path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         _main(tmp_path, monkeypatch, "--configs", "patchd")
@@ -422,13 +615,52 @@ def test_main_exits_2_on_a_duplicate_config(tmp_path: Path, monkeypatch, capsys)
     assert "duplicate config" in capsys.readouterr().err
 
 
-def test_main_warns_that_vanilla_and_off_are_the_same_run(
+def test_an_empty_vanilla_binary_counts_as_absent(tmp_path, monkeypatch, capsys):
+    """`--vanilla-binary ""` is a wrapper passing an unset variable through.
+
+    `bench/run_plato.sh` spells the flag unconditionally in its invocation and
+    lets the value be empty when no unpatched binary was found, so this is
+    load-bearing in both directions: a config list without `vanilla` must run
+    normally, and one with it must get the message explaining the design
+    rather than a "not found" about a blank path (`os.path.exists("")` is
+    False, so an `is not None` check here would produce exactly that).
+    """
+    _main(tmp_path, monkeypatch, "--configs", "off", "--vanilla-binary", "")
+    out = capsys.readouterr().out
+    assert "Vanilla binary" not in out
+
+    with pytest.raises(SystemExit) as exc:
+        _main(tmp_path, monkeypatch, "--configs", "vanilla", "--vanilla-binary", "")
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "requires --vanilla-binary" in err
+    assert "not found" not in err
+
+
+def test_main_exits_2_when_vanilla_has_no_binary(tmp_path, monkeypatch, capsys):
+    """#147: the flag is required, and the refusal says what `off` is instead."""
+    with pytest.raises(SystemExit) as exc:
+        _main(tmp_path, monkeypatch, "--configs", "vanilla")
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--vanilla-binary" in err
+    assert "ablation" in err
+
+
+def test_main_runs_vanilla_and_off_as_two_different_configurations(
     tmp_path, monkeypatch, capsys
 ):
-    """Without --vanilla-binary they are one configuration under two names."""
-    _main(tmp_path, monkeypatch, "--configs", "vanilla", "off")
-    err = capsys.readouterr().err
-    assert "identical" in err and "duplicated work" in err
+    """They differ by binary now, so neither is a duplicate of the other."""
+    _main(
+        tmp_path,
+        monkeypatch,
+        "--configs",
+        "vanilla",
+        "off",
+        "--vanilla-binary",
+        str(fake_highs(tmp_path, "unpatched", patched=False)),
+    )
+    assert "duplicated work" not in capsys.readouterr().err
 
 
 def test_main_warns_when_a_config_overrides_an_extra_option(

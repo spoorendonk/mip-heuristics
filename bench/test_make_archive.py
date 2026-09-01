@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_archive import (
+    BASELINE_CLAIMS,
     HIGHS_TAG_RE,
     MANIFEST_VERSION,
     REPO_ROOT,
@@ -278,12 +279,30 @@ def test_collect_config_flags_an_instrumentation_disagreement(tmp_path: Path):
 # ── baseline classification ──────────────────────────────────────────────────
 
 
-def test_baseline_on_a_patched_binary_is_the_weaker_claim(tree: Path):
+def test_baseline_on_a_patched_binary_is_not_a_vanilla_claim(tree: Path):
+    """#147: `suite=off` on the patched build is an ablation, full stop.
+
+    It used to be labelled "vanilla-equivalent setting on the patched
+    binary" — a weaker version of the same claim.  It is not a version of
+    that claim at all, and the manifest must not offer a reader one.
+    """
     configs = [collect_config(tree, c) for c in ("off", "all")]
     baseline = classify_baseline(configs)
     assert baseline["config"] == "off"
-    assert baseline["claim"] == "vanilla-equivalent setting on the patched binary"
-    assert "check_vanilla_equivalence.py" in baseline["evidence"]
+    assert (
+        baseline["claim"] == "ablation on the patched binary — not a vanilla baseline"
+    )
+    evidence = str(baseline["evidence"])
+    assert "mip_heuristic_suite=off" in evidence
+    assert "separately built unpatched binary" in evidence
+    assert "vanilla-equivalent" not in evidence
+
+
+def test_no_baseline_claim_calls_a_patched_run_vanilla_equivalent():
+    """The retired phrase is gone from the vocabulary, not merely unused."""
+    for claim, evidence in BASELINE_CLAIMS.values():
+        assert "vanilla-equivalent" not in claim
+        assert "vanilla-equivalent" not in evidence
 
 
 def test_baseline_on_an_unpatched_binary_is_the_stronger_claim(tmp_path: Path):
@@ -646,7 +665,7 @@ def test_provenance_document_states_the_facts_a_reader_needs(
     assert "closeout campaign" in text
     assert "HiGHS `v1.15.1`" in text
     assert "mip-heuristics patch active" in text
-    assert "vanilla-equivalent setting on the patched binary" in text
+    assert "ablation on the patched binary — not a vanilla baseline" in text
     assert "Instrumented (`log_dev_level=3`) | yes" in text
     assert "clang-format==22.1.8" in text
     # Every table's exact regeneration command is in the document.

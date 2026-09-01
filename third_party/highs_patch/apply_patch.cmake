@@ -105,7 +105,16 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # a state the search is in — and it lands with the gate's signal moving
 # from pool acceptance to incumbent improvement, which is what makes the
 # measured values mean anything.
-set(PATCH_VERSION "14")
+#
+# Version 15 is a comment inside inserted text (#147): the
+# `printSolutionSourceKey` limits line called the stripped legend the
+# "vanilla-equivalent key".  Nothing executable moved and the printed key is
+# unchanged — but that comment ships into the generated HiGHS tree of every
+# checkout, which made it the last place in the artifact still asserting the
+# claim #147 retracts everywhere else.  A bump for a comment is the contract
+# working as designed: what the marker distinguishes is trees, and this tree's
+# inserted text differs.
+set(PATCH_VERSION "15")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -564,10 +573,18 @@ if(_src_cpp_found EQUAL -1)
     # Update printSolutionSourceKey limits for the 5 new entries (one extra
     # group), and drop that group again at mip_heuristic_suite=off.
     #
-    # `off` is the patch-overhead row of the benchmark matrix: it must be
-    # indistinguishable from an unpatched binary, and a legend advertising
-    # FPR / FPR LP / Local MIP / Scylla / FJ when none of them can run is a
-    # visible difference.  The literal {4, 9, 14, 19} is deliberate — reusing
+    # `off` runs none of the five custom sources, so a legend advertising
+    # FPR / FPR LP / Local MIP / Scylla / FJ there would name solution
+    # sources the run cannot produce.  Dropping the group is what keeps the
+    # printed key equal to upstream's, which is in turn what lets the
+    # patch-overhead comparison — `off` plus
+    # `mip_heuristic_run_feasibility_jump=false`, the configuration
+    # `bench/check_vanilla_equivalence.py` diffs against an unpatched binary
+    # — compare whole logs rather than a filtered subset of them.  (`off` on
+    # its own is the ablation with our heuristics disabled, not a vanilla
+    # baseline; see docs/REPRODUCIBILITY.md.)
+    #
+    # The literal {4, 9, 14, 19} is deliberate — reusing
     # `last_enum` here would print [14, 24) and list the five custom sources
     # in the *third* group instead.  With the literal, the printed key is
     # byte-identical to vanilla's: same four groups over indices 0..18, same
@@ -576,7 +593,7 @@ if(_src_cpp_found EQUAL -1)
     # positional index literals and renumbering them corrupts the legend.
     string(REPLACE
       "std::vector<int> limits = {4, 9, 14, last_enum};"
-      "std::vector<int> limits = {4, 9, 14, 19, last_enum};\n  if (mipsolver.options_mip_->mip_heuristic_suite == \"off\")\n    limits = {4, 9, 14, 19};  // mip-heuristics: vanilla-equivalent key"
+      "std::vector<int> limits = {4, 9, 14, 19, last_enum};\n  if (mipsolver.options_mip_->mip_heuristic_suite == \"off\")\n    limits = {4, 9, 14, 19};  // mip-heuristics: key matches upstream"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
     # Sanity checks: the source-to-string insert must produce exactly one

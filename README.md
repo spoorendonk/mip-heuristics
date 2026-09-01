@@ -22,10 +22,11 @@ printf 'mip_heuristic_suite = fpr\n' > run.opts
 ./build/bin/highs --options_file run.opts model.mps
 ```
 
-Full PLATO benchmark against vanilla HiGHS (requires MIPLIB instances, ~77h total):
+Full PLATO benchmark against vanilla HiGHS (requires MIPLIB instances and a separately built unpatched HiGHS of the same tag, ~77h total):
 
 ```bash
 bash bench/download_miplib.sh
+export PLATO_VANILLA_BINARY=/path/to/unpatched/highs   # not the patched build
 bench/run_plato.sh next 24    # run in chunks; resumes safely
 bench/run_plato.sh status     # check progress
 python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline
@@ -57,7 +58,7 @@ One caveat for library embedders (not CLI users): HiGHS's task executor is a pro
 
 | Value | Heuristics | Notes |
 |--------|-----------|-------|
-| `off` | none | vanilla-equivalent: HiGHS's own pipeline, native FeasibilityJump included |
+| `off` | none of ours | the ablation: HiGHS's own pipeline, native FeasibilityJump included |
 | `fj` | FJ | isolate FeasibilityJump |
 | `fpr` | FPR (+ `fpr_lp`) | isolate FPR for ablation |
 | `local_mip` | LocalMIP | isolate LocalMIP |
@@ -65,11 +66,13 @@ One caveat for library embedders (not CLI users): HiGHS's task executor is a pro
 | `fj,fpr` | FJ+FPR (+ `fpr_lp`) | any comma-separated subset — all fifteen are expressible |
 | `all` | FJ+FPR+LocalMIP+Scylla (+ `fpr_lp`) | **default** |
 
-Order within a list is irrelevant (`fpr,fj` is `fj,fpr`), whitespace around a name is ignored, and repeating a name is harmless. `off` and `all` are aliases for the whole value, not names inside a list: `fj,off` is rejected, because `off` means "the vanilla-equivalent configuration" — it hands HiGHS's own FeasibilityJump call site back — rather than merely "no heuristic".
+Order within a list is irrelevant (`fpr,fj` is `fj,fpr`), whitespace around a name is ignored, and repeating a name is harmless. `off` and `all` are aliases for the whole value, not names inside a list: `fj,off` is rejected, because `off` means "none of ours, HiGHS's own FeasibilityJump call site handed back" rather than merely "no heuristic".
 
 An unrecognised value warns and falls back to `all` rather than silently disabling everything. The warning names the offending token, since one typo inside an otherwise valid list quietly promotes the run to all four heuristics; `bench/run_benchmark.py` greps for that warning and discards the run rather than filing it under the configuration it did not honour.
 
-**`suite=off` is a true vanilla ablation on one binary.** The patch hands HiGHS's standalone FeasibilityJump call site back at `off`, so an `off` run is what an unpatched build of the same tag does. `bench/check_vanilla_equivalence.py` verifies that against an unpatched binary — identical objective, node count and total and heuristic LP iterations, and an empty log diff once wall-clock content is normalized away (the timing block, the P-D integral, the profiling seconds, the git-hash width, the options-file echo and the `mip-heuristics patch active` marker). Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside `mip_heuristic_suite = off` for the pure patch-overhead configuration, with no heuristics at all.
+**`suite=off` is an ablation, not a vanilla baseline.** It disables our four presolve heuristics and `fpr_lp`, and hands HiGHS's standalone FeasibilityJump call site back — but the binary around it is still the patched one, including our copy of FeasibilityJump. Use it to measure what the chain contributes on this binary; a vanilla comparison needs a separately built unpatched HiGHS (`bench/run_benchmark.py --vanilla-binary`, which refuses a binary carrying the patch marker).
+
+Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside `mip_heuristic_suite = off` for the pure patch-overhead configuration, with no heuristic at all. That is the configuration `bench/check_vanilla_equivalence.py` compares against an unpatched binary with FeasibilityJump likewise disabled: identical objective, node count and total and heuristic LP iterations, and an empty log diff once wall-clock content is normalized away (the timing block, the P-D integral, the profiling seconds, the git-hash width, the options-file echo and the `mip-heuristics patch active` marker). What that proves is that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP path — not that any setting of ours reproduces vanilla.
 
 **`fpr_lp` follows the FPR bit.** It runs at B&B dive time on the same continuous workers, and is gated on the same flag as presolve FPR — so it runs at `suite=fpr` and `suite=all`, and is *disabled* at `suite=local_mip` and `suite=scylla` as well as at `off`. That is deliberate: a per-heuristic attribution run must not leave a second FPR variant running at dive time. It does mean a dive-time result under `suite=local_mip` cannot be attributed to `fpr_lp`.
 
@@ -145,7 +148,7 @@ This does not replace `bench/instances_small.txt`, which is stratified on *optim
 
 ### Per-heuristic ablation and budget sweep
 
-`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value and no aliases: `vanilla`, `off`, `all`, the four singletons, and the ten pairs and triples between them (`fj+fpr`, `fj+fpr+local_mip`, …). Config names join with `+` where the option value uses `,`, because the name is a results-tree directory and a table label; they list heuristics in chain order, so one subset has exactly one spelling.
+`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value and no aliases: `off`, `all`, the four singletons, and the ten pairs and triples between them (`fj+fpr`, `fj+fpr+local_mip`, …), plus `vanilla`, which is not a suite value at all but the separately built unpatched binary that `--vanilla-binary` names. Config names join with `+` where the option value uses `,`, because the name is a results-tree directory and a table label; they list heuristics in chain order, so one subset has exactly one spelling.
 
 ```bash
 bash bench/download_miplib.sh                       # once per machine; see above
@@ -160,7 +163,7 @@ python3 bench/analyze_results.py bench/results/sweep --ablation --time-limit 600
 
 `run_benchmark.py` prints the matching `analyze_results.py` command when it finishes, so the config list does not have to be retyped. To move a heuristic's effort or patience option off its default, pass `--extra-options mip_heuristic_fpr_effort=12.0`; a config name is exactly a `mip_heuristic_suite` value and carries no budget of its own.
 
-`off` is the baseline here, not `vanilla`. On the patched binary the two are the same run — `vanilla` *is* `mip_heuristic_suite=off` unless `--vanilla-binary` points at a separately built unpatched binary — so asking for both without that flag runs every instance twice for one data point, and the harness says so. Add `--vanilla-binary /path/to/unpatched/highs` (plus `vanilla` back in the config list) for a headline baseline; it is the stronger claim, and the only thing that makes the two configs differ.
+`off` is the reference row here, not `vanilla`: an ablation sweep asks what each heuristic adds on this binary, and `off` is that binary with none of ours enabled. `vanilla` is a different question and a different binary — it requires `--vanilla-binary /path/to/unpatched/highs`, built from the same HiGHS tag, and the run is refused before its first solve if that binary carries the `mip-heuristics patch active` marker or reports another version. There is no fallback: the patched binary at `mip_heuristic_suite=off` is the ablation, and it is not a stand-in for an unpatched build.
 
 Every config runs each of its heuristics at that heuristic's own shipped default budget. To move one, pass it through `--extra-options`; the four effort options are independent, so raising one does not lower the others.
 

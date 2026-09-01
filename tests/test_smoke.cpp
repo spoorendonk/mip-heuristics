@@ -226,7 +226,7 @@ TEST_CASE("Options: the warnings the bench harness greps for are emitted verbati
     SECTION("suite=fj with FeasibilityJump switched off") {
         // Asks for FJ and then takes it away: heuristic-free without being
         // `off`, so it also loses the native FJ call site.  A benchmark row
-        // labelled "FJ isolated" would silently measure vanilla-minus-FJ.
+        // labelled "FJ isolated" would silently run no FeasibilityJump at all.
         const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
             set_suite(h, "fj");
             require_option(h, "mip_heuristic_run_feasibility_jump", false);

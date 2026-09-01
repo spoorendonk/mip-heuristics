@@ -163,16 +163,20 @@ mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heu
 Check for that line before trusting any results tree's provenance.
 
 **Vanilla-binary provenance.** `bench/run_plato.sh` defaults its vanilla binary
-to the system HiGHS (`which highs`) and falls back to the *patched* build if
-there is none — so an unset `PLATO_VANILLA_BINARY` on a machine without a system
-HiGHS silently runs both arms on one binary. Set it explicitly:
+to the system HiGHS (`command -v highs`) and falls back to nothing at all if
+there is none: a config list naming `vanilla` then fails with a message rather
+than substituting the patched build, which is what it used to do. Set it
+explicitly:
 
 ```bash
 export PLATO_VANILLA_BINARY=/path/to/unpatched/highs
 ```
 
 It must be an unpatched build of the **same tag**; a different version makes the
-comparison meaningless. Confirm it prints no patch marker.
+comparison meaningless. Both facts are checked for you —
+`bench/run_benchmark.py` probes the binary before the first solve and refuses
+one that prints the patch marker or a different version — but check them
+yourself too if the tree came from elsewhere.
 
 **What a stage is.** The four campaign stages differ in what they run, not in
 how they are launched, so each one is `run_plato.sh` with a different
@@ -315,16 +319,30 @@ exactly reproduce one taken at 0.1, and the two are compared over the effort
 range they share.
 
 
-## `suite=off` is vanilla-equivalent — since August 2026
+## `suite=off` is an ablation, not a vanilla baseline
 
-As of the option-surface collapse (issue #93, landed 2026-08-07),
-`mip_heuristic_suite=off` on the *patched* binary is equivalent to an unpatched
-build of the same tag. The patch hands HiGHS's standalone FeasibilityJump call
-site back at that value; previously it was hard-disabled in every
-configuration, which meant the patched binary had no vanilla-equivalent
-setting at all.
+`mip_heuristic_suite=off` disables our four presolve heuristics and the
+dive-time `fpr_lp`, and hands HiGHS's standalone FeasibilityJump call site back
+(it is disabled at every other suite value, where our own parallel FJ runs
+instead). That makes it the reference row for "what does the chain contribute
+on this binary?", and that is the only thing it is.
 
-This is proven rather than assumed:
+It is **not** a vanilla measurement and must not be used as one. The binary is
+still the patched one, and the patch modifies FeasibilityJump itself, so the FJ
+running at `off` is HiGHS's call site driving our copy — visibly so already at
+`log_dev_level=3`, where the per-bump `Reached a local minimum.` line is gone,
+and more so once issue #139 lands its two upstream FeasibilityJump fixes. A
+vanilla baseline is always a **separately built unpatched binary** of the tag
+in `cmake/FetchHiGHS.cmake`, and `bench/run_benchmark.py` enforces it: the
+`vanilla` config requires `--vanilla-binary`, there is no fallback to the
+patched build, and the binary is probed and refused *before the first solve* if
+it carries the `mip-heuristics patch active` marker or reports a different
+version.
+
+What is proven against an unpatched binary is the **pure patch-overhead**
+configuration — nothing of ours running, and FeasibilityJump disabled on both
+sides, so the one component the patch deliberately changes is out of the
+comparison rather than compared and forgiven:
 
 ```bash
 python3 bench/check_vanilla_equivalence.py \
@@ -332,25 +350,28 @@ python3 bench/check_vanilla_equivalence.py \
     --vanilla-binary /path/to/unpatched/highs
 ```
 
-It compares status, primal bound, node count, and total and heuristic LP
-iterations, and diffs the logs once wall-clock content is normalised away
-(the timing block, the P-D integral, profiling seconds, the git-hash width, the
-options-file echo, and the patch marker line). Verified 12/12 on the six
-bundled instances × 2 seeds. Two residual differences are accepted and
-documented: a `heuristic_effort_used` store inside HiGHS's own
-`feasibilityJump()`, and the marker line itself.
+It hands the patched binary `mip_heuristic_suite=off` plus
+`mip_heuristic_run_feasibility_jump=false`, and the unpatched one
+`mip_heuristic_run_feasibility_jump=false` (upstream's own option), then
+compares status, primal bound, node count, and total and heuristic LP
+iterations, and diffs the logs once wall-clock content is normalised away (the
+timing block, the P-D integral, profiling seconds, the git-hash width, the
+options-file echo, and the patch marker line). What that establishes is that
+injecting the heuristics does not move HiGHS's presolve, its B&B or its LP path
+by a node or an iteration. Two residual differences are accepted and
+documented: the marker line itself, and the instrumentation lines only the
+patched side can print. One consequence is deliberate and worth stating: with
+FeasibilityJump disabled on both sides, nothing in this project compares FJ's
+*search behaviour* against upstream's. FJ is what the patch changes on purpose,
+so there is no behaviour to hold equal there — an equivalence claim that
+quietly included it would be the false one. That HiGHS's own FeasibilityJump still runs at `off`
+and still charges its effort is pinned separately, by
+`tests/test_native_fj.cpp` — presence and accounting, not bit-identity.
 
 > **Results produced with the older `mip_heuristic_preset=off` are not
 > comparable.** That value did *not* restore native FeasibilityJump, so an old
-> `preset=off` row is "vanilla minus FJ", not vanilla. Any baseline measured
-> before 2026-08-07 has to be re-run.
-
-For a headline benchmark baseline, prefer `--vanilla-binary` pointed at a real
-unpatched build anyway. It is the stronger claim and costs nothing but a second
-checkout. Note the corollary in `bench/run_benchmark.py`: on the patched binary
-the `vanilla` and `off` configs are the *same run* unless `--vanilla-binary` is
-given, so asking for both without it runs every instance twice for one data
-point.
+> `preset=off` row is the ablation minus FeasibilityJump rather than the
+> ablation. Any such row has to be re-run.
 
 ## The Thompson-sampling negative result
 

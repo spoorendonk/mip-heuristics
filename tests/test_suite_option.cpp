@@ -150,8 +150,8 @@ TEST_CASE("suite: off is an alias for the whole value, never a token", "[options
     // `off` is not merely the empty set: the patched HiGHS tree compares this
     // option to "off" verbatim to hand back the native FeasibilityJump call
     // site.  A list containing it would select nothing on our side while not
-    // being that string — a heuristic-free run that is not the
-    // vanilla-equivalent one.  Loud instead.
+    // being that string — a run with no heuristic at all, HiGHS's own FJ
+    // included.  Loud instead.
     REQUIRE_FALSE(recognized("fj,off"));
     REQUIRE(enabled_for("fj,off") == kAll);
 }

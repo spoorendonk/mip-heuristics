@@ -27,11 +27,11 @@ Provenance this derives from the tree rather than taking on trust:
   marker line separates them, and it is printed by a *solve*, not by
   `--version`.  Every log is checked for it, so a config's binary is a fact
   read off the logs.
-* **Which baseline.** "vanilla-equivalent setting on the patched binary" and
-  "separately built unpatched binary" are different claims — the first rests on
-  `bench/check_vanilla_equivalence.py`, the second on nothing but the build.
-  The marker line tells them apart and the manifest states which one this
-  archive supports.
+* **Which baseline.** "separately built unpatched binary" is the only baseline
+  claim there is.  A baseline row produced by the *patched* binary is an
+  ablation of our heuristics, not a vanilla measurement, and the manifest says
+  so rather than dressing it up as a weaker version of the same claim.  The
+  marker line is what tells the two apart.
 * **Instrumentation state.** `log_dev_level=3` costs 97-750x the log volume and
   1.1-4.4x the wall time, concentrated in the FeasibilityJump phase, so
   attribution runs and headline-timing runs are different runs.  Both the
@@ -90,7 +90,8 @@ ARCHIVE_BENCH_FILES = (
 # The only thing that distinguishes a patched binary from an unpatched build of
 # the same tag.  Inserted into HighsIO.cpp by
 # `third_party/highs_patch/apply_patch.cmake`; the string is duplicated in
-# `bench/check_vanilla_equivalence.py`, which normalises it away.
+# `bench/run_benchmark.py`, which refuses a `--vanilla-binary` carrying it, and
+# in `bench/check_vanilla_equivalence.py`, which normalises it away.
 PATCH_MARKER = "mip-heuristics patch active"
 
 _BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: (\w+)\)")
@@ -498,13 +499,16 @@ BASELINE_CLAIMS = {
         ),
     ),
     "patched": (
-        "vanilla-equivalent setting on the patched binary",
+        "ablation on the patched binary — not a vanilla baseline",
         (
             "The baseline logs carry the `mip-heuristics patch active` marker, so "
-            "the baseline is `mip_heuristic_suite=off` on the patched build. That "
-            "is vanilla-equivalent rather than vanilla, and the equivalence is "
-            "what `bench/check_vanilla_equivalence.py` proves — cite that check, "
-            "not the build, when reporting these rows."
+            "these rows are `mip_heuristic_suite=off` on the patched build: our "
+            "four presolve heuristics and `fpr_lp` disabled, inside a binary that "
+            "is still patched. Rows measured against them state what the presolve "
+            "chain contributes on that binary, and nothing about vanilla HiGHS. A "
+            "vanilla comparison needs a separately built unpatched binary "
+            "(`bench/run_benchmark.py --vanilla-binary`), which this archive does "
+            "not have."
         ),
     ),
 }

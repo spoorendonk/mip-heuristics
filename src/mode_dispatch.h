@@ -41,8 +41,9 @@ struct SuiteDiagnosis {
 // Derive the effective flag set from `options`.  Shared by the presolve
 // dispatch (run_presolve) and the B&B-dive fpr_lp entry point so both
 // honour the same suite semantics — in particular `suite=off` disables
-// fpr_lp too, which is what makes a suite=off run comparable to vanilla
-// HiGHS, and so does any value that does not name `fpr`.
+// fpr_lp too, which is what makes `off` an ablation of every heuristic of
+// ours rather than of the presolve chain alone, and so does any value that
+// does not name `fpr`.
 // A value carrying an unrecognised token fails open (all four on) and
 // reports the offending tokens through `*diagnosis` if non-null; the caller
 // decides whether to warn, because this helper is called once per B&B dive

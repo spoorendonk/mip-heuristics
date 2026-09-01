@@ -24,7 +24,13 @@
 #   PLATO_INSTANCES  instance list        (default bench/instances_plato.txt)
 #   PLATO_OUTPUT     results tree         (default bench/results/plato)
 #   PLATO_TIME_LIMIT seconds per solve    (default 600, the PLATO limit)
-#   PLATO_BINARY / PLATO_VANILLA_BINARY   the two binaries
+#   PLATO_BINARY / PLATO_VANILLA_BINARY   the two binaries.  The vanilla one
+#                        must be a separately built UNPATCHED HiGHS of the
+#                        same tag; it defaults to whatever `highs` is on PATH
+#                        and has no fallback to the patched build, because
+#                        the patched binary is not a vanilla baseline in any
+#                        configuration.  A `vanilla` config with neither is
+#                        an error, not a quietly substituted run.
 #   PLATO_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
 #                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_patience=0"
 #   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
@@ -65,9 +71,12 @@ INSTANCES="${PLATO_INSTANCES:-bench/instances_plato.txt}"
 TIME_LIMIT="${PLATO_TIME_LIMIT:-600}"
 OUTPUT="${PLATO_OUTPUT:-bench/results/plato}"
 BINARY="${PLATO_BINARY:-./build/bin/highs}"
-# Vanilla binary: prefer system HiGHS (unpatched), fall back to patched build.
-# Override with PLATO_VANILLA_BINARY env var if needed.
-VANILLA_BINARY="${PLATO_VANILLA_BINARY:-$(which highs 2>/dev/null || echo "$BINARY")}"
+# Vanilla binary: a system HiGHS (unpatched), or PLATO_VANILLA_BINARY.  It is
+# deliberately allowed to end up empty — there is no fallback to $BINARY, since
+# the patched binary is not a vanilla baseline in any configuration (#147).
+# An empty value is passed through to the runner, which reads it as "not
+# given"; `cmd_next` refuses outright when the config list asks for `vanilla`.
+VANILLA_BINARY="${PLATO_VANILLA_BINARY:-$(command -v highs 2>/dev/null || true)}"
 # Word-split on purpose: both are lists.
 # shellcheck disable=SC2206
 CONFIGS=(${PLATO_CONFIGS:-vanilla all})
@@ -103,6 +112,15 @@ count_done() {
 			done
 		done
 	} | sort | uniq -c | awk -v n="${#SEEDS[@]}" '$1 == n' | wc -l
+}
+
+wants_vanilla() {
+	# Whether the config list asks for the separately built unpatched binary.
+	local config
+	for config in "${CONFIGS[@]}"; do
+		if [ "$config" = "vanilla" ]; then return 0; fi
+	done
+	return 1
 }
 
 paired_done() {
@@ -184,6 +202,23 @@ cmd_next() {
 		exit 1
 	fi
 
+	# The `vanilla` config is a second *binary*, not a setting on the first
+	# one, and there is no longer a fallback to $BINARY: that fallback used to
+	# turn a missing system HiGHS into a `vanilla/` tree holding the patched
+	# binary at mip_heuristic_suite=off, which is an ablation of our four
+	# presolve heuristics rather than a baseline (issue #147).  Fail here,
+	# where the message can name the fix, rather than in the runner.
+	if wants_vanilla && [ -z "$VANILLA_BINARY" ]; then
+		echo "ERROR: config 'vanilla' needs a separately built UNPATCHED HiGHS," >&2
+		echo "       and neither PLATO_VANILLA_BINARY nor a 'highs' on PATH" >&2
+		echo "       names one." >&2
+		echo "Build one from the same tag as cmake/FetchHiGHS.cmake and set:" >&2
+		echo "  export PLATO_VANILLA_BINARY=/path/to/unpatched/highs" >&2
+		echo "Or drop 'vanilla' from PLATO_CONFIGS — the 'off' config is the" >&2
+		echo "ablation with our heuristics disabled, on the patched binary." >&2
+		exit 1
+	fi
+
 	# Held in an array rather than spelled into the invocation: each of the
 	# three is absent by default, and a flag that is only sometimes passed
 	# cannot be written inline.
@@ -208,7 +243,7 @@ cmd_next() {
 	echo "PLATO benchmark — ${hours}h window (launching for ${budget_secs}s)"
 	echo "  Progress before : $(paired_done)/$TOTAL paired"
 	echo "  Configs         : ${CONFIGS[*]}  (seeds ${SEEDS[*]})"
-	echo "  Vanilla binary  : $VANILLA_BINARY"
+	echo "  Vanilla binary  : ${VANILLA_BINARY:-(none — no vanilla config requested)}"
 	echo "  Patched binary  : $BINARY"
 	echo "  Output          : $OUTPUT"
 	echo "  Time limit      : ${TIME_LIMIT}s"

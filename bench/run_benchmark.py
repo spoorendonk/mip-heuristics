@@ -2,11 +2,12 @@
 """Run patched vs vanilla HiGHS on MIPLIB instances.
 
 One config per `mip_heuristic_suite` value, so a per-heuristic ablation is a
-config list rather than a hand-written options file.  Output is
-`<output>/<config>/seed<N>/<instance>.log` — those directory names are
-exactly what `analyze_results.py --configs` takes, so a run is analysable
-with no new
-analysis code.
+config list rather than a hand-written options file — plus `vanilla`, which is
+not a suite value at all but the separately built unpatched binary that
+`--vanilla-binary` names (required for that config, and probed before the first
+solve).  Output is `<output>/<config>/seed<N>/<instance>.log` — those directory
+names are exactly what `analyze_results.py --configs` takes, so a run is
+analysable with no new analysis code.
 
 Everything goes through `--options_file`: HiGHS's CLI11 parser takes only its
 own fixed flag set, and an unknown `--mip_heuristic_*` is a parse error that
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -26,16 +28,18 @@ from dataclasses import dataclass
 # (#93), so the table is a name -> suite-value map rather than a bag of
 # per-config option dicts.
 #
-# `vanilla` maps to `off` because on the *patched* binary `suite=off` hands
-# HiGHS's standalone FeasibilityJump call site back and disables every custom
-# heuristic — the presolve chain (FJ/FPR/LocalMIP/Scylla) and the B&B-dive
-# `fpr_lp` alike — so it is vanilla-equivalent rather than vanilla-minus-FJ.
-# `bench/check_vanilla_equivalence.py` proves that against a separately built
-# unpatched binary.  With `--vanilla-binary` the config resolves to no options
-# at all, since an unpatched binary has no `mip_heuristic_*` options to set.
-# No effort pin is needed either way: the effort-option split reverted
-# `mip_heuristic_effort` to upstream's 0.05 default (vanilla semantics), and
-# the per-heuristic effort options are irrelevant with the presolve chain off.
+# `vanilla` is deliberately **not** in this table, and that absence is the
+# whole of #147.  It used to map to `off`, so a `vanilla` run without
+# `--vanilla-binary` was the patched binary at `mip_heuristic_suite=off` —
+# an ablation of our four presolve heuristics, filed under the name of a
+# baseline.  `off` is not a vanilla proxy: the binary around it is still the
+# patched one.  The baseline is a separately built unpatched binary, which
+# has no `mip_heuristic_*` options at all, so `vanilla` names a *binary*
+# rather than a suite value and carries no options of its own.
+#
+# No effort pin is needed on the patched side either: the effort-option split
+# reverted `mip_heuristic_effort` to upstream's 0.05 default (vanilla
+# semantics), so a patched run's B&B heuristic budget already matches.
 #
 # The ten subset configs are the pairs and triples the mix-selection stage
 # (#107) sweeps alongside the four singletons, `all` and `off` — sixteen
@@ -55,7 +59,6 @@ from dataclasses import dataclass
 # those numbers came from predates the runner cleanup, so do not compare a
 # fresh run against the recorded `all_opp` row.
 CONFIG_SUITES: dict[str, str] = {
-    "vanilla": "off",
     "off": "off",
     "fj": "fj",
     "fpr": "fpr",
@@ -74,6 +77,47 @@ CONFIG_SUITES: dict[str, str] = {
     "all": "all",
 }
 
+# The one config that is a binary rather than a suite value: it runs the
+# separately built unpatched HiGHS named by `--vanilla-binary`, with no
+# `mip_heuristic_*` option at all.
+VANILLA_CONFIG = "vanilla"
+
+# Every legal `--configs` name.  `vanilla` is a name without a suite value,
+# so the two have to be joined here rather than looked up in one table.
+KNOWN_CONFIGS: tuple[str, ...] = (VANILLA_CONFIG, *CONFIG_SUITES)
+
+# Three constants this module shares with `bench/make_archive.py`, spelled out
+# in both rather than imported from one.  That duplication is deliberate and
+# one-directional: `make_archive.py` is copied *into* a release archive and run
+# there by `REGENERATE.sh`, with no checkout and no `run_benchmark.py` beside
+# it, so it cannot import this module.  The three must stay byte-identical;
+# `test_the_two_bench_modules_agree_on_the_shared_constants` in
+# `bench/test_run_benchmark.py` fails if they drift.
+#
+# What a patched binary prints right after its version banner, and the only
+# thing separating it from an unpatched build of the same tag (the banner
+# itself is identical).  `apply_patch.cmake` injects it into `highsLogHeader`.
+PATCH_MARKER = "mip-heuristics patch active"
+
+# The banner both builds print.  Not the `--version` form, which is a
+# different line and — decisively — carries no marker, because `--version`
+# never reaches `highsLogHeader`.
+BANNER_RE = re.compile(r"Running HiGHS (\S+) \(git hash: (\w+)\)")
+
+# The HiGHS tag this checkout builds against, read from the one place that
+# defines it — a constant here would be a second definition to keep in step
+# with a tag bump.  It captures the tag *as written* (`v1.15.1`), which is what
+# `make_archive.py` records in a manifest; the banner prints a bare version, so
+# `expected_highs_version` strips the `v` at the point of comparison rather than
+# in the pattern.  A regex that differed there by one optional character would
+# be the worst kind of duplicate: same name, same file parsed, different value.
+HIGHS_TAG_RE = re.compile(r"GIT_TAG\s+(\S+)")
+FETCH_HIGHS_CMAKE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "cmake",
+    "FetchHiGHS.cmake",
+)
+
 
 @dataclass(frozen=True)
 class ConfigPlan:
@@ -86,7 +130,7 @@ class ConfigPlan:
     """
 
     name: str  # directory name under --output, e.g. `fpr`
-    base: str  # entry in CONFIG_SUITES, e.g. `fpr`
+    base: str  # entry in KNOWN_CONFIGS, e.g. `fpr`
     binary: str
     options: dict[str, str]
 
@@ -108,28 +152,28 @@ class ConfigPlan:
 
 
 def resolve_config(config: str) -> str:
-    """The config's `CONFIG_SUITES` key, with the unknown-name raise.
+    """The config's `KNOWN_CONFIGS` name, with the unknown-name raise.
 
     That raise is the point of this module's config surface: the old
     implementation returned `{}` for anything it did not recognise, so a
     mistyped `--configs patchd` produced a fully populated, plausible-looking,
     completely meaningless results tree that nothing downstream noticed.
     """
-    if config not in CONFIG_SUITES:
-        known = ", ".join(sorted(CONFIG_SUITES))
+    if config not in KNOWN_CONFIGS:
+        known = ", ".join(sorted(KNOWN_CONFIGS))
         raise ValueError(f"unknown config {config!r}; known configs: {known}")
     return config
 
 
-def config_options(config: str, *, external_vanilla: bool = False) -> dict[str, str]:
+def config_options(config: str) -> dict[str, str]:
     """HiGHS options for one config name.
 
-    Raises ValueError on an unknown name (see `resolve_config`).
-    `external_vanilla` says the `vanilla` config runs on a separately built
-    unpatched binary, which has no `mip_heuristic_*` options at all.
+    Raises ValueError on an unknown name (see `resolve_config`).  `vanilla`
+    is the empty one: it always runs the separately built unpatched binary,
+    which has no `mip_heuristic_*` options to set.
     """
     base = resolve_config(config)
-    if base == "vanilla" and external_vanilla:
+    if base == VANILLA_CONFIG:
         return {}
     return {"mip_heuristic_suite": CONFIG_SUITES[base]}
 
@@ -186,18 +230,138 @@ def build_base_options(
     return base
 
 
-def build_plan(config: str, patched_binary: str, vanilla_binary: str) -> ConfigPlan:
+def build_plan(
+    config: str, patched_binary: str, vanilla_binary: str | None
+) -> ConfigPlan:
     """Resolve a config name to its binary and options, in one place.
 
     Both the binary choice and the options come off the same resolved name, so
     a config cannot pick one branch's binary while taking the other branch's
     options.
+
+    `vanilla_binary` is `None` when `--vanilla-binary` was not given, and the
+    `vanilla` config then raises rather than falling back to the patched
+    binary (#147).  The fallback used to be silent: it produced a `vanilla/`
+    tree holding the patched binary at `mip_heuristic_suite=off`, which is an
+    ablation of our four presolve heuristics and not a baseline.
     """
     base = resolve_config(config)
-    external_vanilla = vanilla_binary != patched_binary
-    options = config_options(config, external_vanilla=external_vanilla)
-    binary = vanilla_binary if base == "vanilla" else patched_binary
-    return ConfigPlan(name=config, base=base, binary=binary, options=options)
+    binary = patched_binary
+    if base == VANILLA_CONFIG:
+        if vanilla_binary is None:
+            raise ValueError(
+                "config 'vanilla' requires --vanilla-binary pointing at a "
+                "separately built unpatched HiGHS of the same tag. There is no "
+                "fallback: mip_heuristic_suite=off on the patched binary is the "
+                "'our four presolve heuristics disabled' ablation, not a vanilla "
+                "baseline — use the config named 'off' if that is what you want"
+            )
+        binary = vanilla_binary
+    return ConfigPlan(
+        name=config, base=base, binary=binary, options=config_options(config)
+    )
+
+
+@dataclass(frozen=True)
+class BinaryProbe:
+    """What one HiGHS binary says about itself, without solving anything."""
+
+    version: str | None  # `1.15.1`, or None when no banner was printed
+    githash: str | None
+    patched: bool  # carries the `mip-heuristics patch active` marker
+    output: str  # everything it printed, for the refusal message
+
+
+def probe_binary(path: str) -> BinaryProbe:
+    """Run `path` with no arguments and read the banner it prints.
+
+    No model, so no solve: HiGHS complains that no filename was given, prints
+    its log header, and exits non-zero.  The exit status is therefore ignored
+    on purpose.  The header is the only place the patch marker appears —
+    `--version` bypasses `highsLogHeader` entirely and prints neither it nor
+    this banner form.
+    """
+    try:
+        result = subprocess.run(
+            [path],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+        output = result.stdout + result.stderr
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        output = f"<could not run {path}: {exc}>"
+    match = BANNER_RE.search(output)
+    return BinaryProbe(
+        version=match.group(1) if match else None,
+        githash=match.group(2) if match else None,
+        patched=PATCH_MARKER in output,
+        output=output,
+    )
+
+
+def expected_highs_version() -> str:
+    """The HiGHS version this checkout builds against, from FetchHiGHS.cmake.
+
+    Raises rather than defaulting: the vanilla binary's tag has to be checked
+    against something, and a missing tag file means the check would silently
+    become "any version will do" — the failure family #147 exists to close.
+
+    The `v` of the tag is stripped here, not in `HIGHS_TAG_RE`: the banner
+    prints `Running HiGHS 1.15.1`, while a manifest records the tag `v1.15.1`,
+    and the pattern is shared with `make_archive.py`, which wants the latter.
+    """
+    try:
+        with open(FETCH_HIGHS_CMAKE) as f:
+            text = f.read()
+    except OSError as exc:
+        raise ValueError(
+            f"cannot read the HiGHS tag from {FETCH_HIGHS_CMAKE} ({exc}); "
+            "run run_benchmark.py from a checkout, since the vanilla binary's "
+            "version has to be checked against the tag this tree builds"
+        ) from exc
+    match = HIGHS_TAG_RE.search(text)
+    if not match:
+        raise ValueError(f"no GIT_TAG found in {FETCH_HIGHS_CMAKE}")
+    return match.group(1).removeprefix("v")
+
+
+def check_vanilla_binary(path: str) -> BinaryProbe:
+    """Refuse a `--vanilla-binary` that is not an unpatched HiGHS of our tag.
+
+    Called before the first solve, because the point is to prevent a bad
+    results tree rather than to describe one afterwards.  Two ways to get it
+    wrong, both silent until now: pointing the flag at the patched build
+    (which then runs `suite=off`, an ablation), and pointing it at a system
+    HiGHS of a different version (which is not comparable at all).
+
+    Returns the accepted probe so the caller can report what it verified
+    without running the binary — or re-reading the tag — a second time.
+    """
+    expected = expected_highs_version()
+    probe = probe_binary(path)
+    if probe.patched:
+        raise ValueError(
+            f"--vanilla-binary {path} is a *patched* binary: it prints "
+            f"'{PATCH_MARKER}'. The baseline must be a separately built "
+            "unpatched HiGHS; the patched binary at mip_heuristic_suite=off "
+            "is an ablation of our heuristics, not vanilla"
+        )
+    if probe.version is None:
+        raise ValueError(
+            f"--vanilla-binary {path} printed no HiGHS banner, so it cannot "
+            f"be identified as an unpatched HiGHS {expected}. It printed:\n"
+            f"{probe.output.strip()[:500]}"
+        )
+    if probe.version != expected:
+        raise ValueError(
+            f"--vanilla-binary {path} is HiGHS {probe.version}, but this tree "
+            f"builds against {expected} (cmake/FetchHiGHS.cmake). A baseline "
+            "from a different tag is not comparable"
+        )
+    return probe
 
 
 def load_instances(path: str) -> list[str]:
@@ -301,7 +465,7 @@ def write_options_file(options: dict[str, str], path: str) -> None:
 #
 # The second is the same class from the other side: `suite=fj` with
 # `mip_heuristic_run_feasibility_jump=false` asks for FJ and then takes it
-# away, so an "FJ isolated" row would measure vanilla-minus-FJ.
+# away, so an "FJ isolated" row would run no FeasibilityJump at all.
 #
 # These strings are a contract with `run_presolve` in `src/mode_dispatch.cpp`,
 # which carries the matching note.  Both ends are pinned by the
@@ -517,9 +681,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--vanilla-binary",
         default=None,
         metavar="PATH",
-        help="Separate binary for the vanilla config (e.g. system HiGHS). "
-        "When set, vanilla runs with no custom options — just time limit "
-        "and seed — since the external binary has no mip_heuristic_* options.",
+        help="Separately built UNPATCHED HiGHS of the same tag. Required by "
+        "the `vanilla` config and used by nothing else: vanilla runs with no "
+        "custom options at all — just time limit and seed — since an "
+        "unpatched binary has no mip_heuristic_* options. The binary is "
+        "probed before the first solve and refused if it carries the patch "
+        "marker or reports a different version. An empty value counts as "
+        "absent, so a wrapper may pass an unset variable through.",
     )
     parser.add_argument(
         "--data-dir",
@@ -551,11 +719,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=["all", "vanilla"],
         help=(
             "Configs to run (default: all vanilla). One of: "
-            + ", ".join(sorted(CONFIG_SUITES))
+            + ", ".join(sorted(KNOWN_CONFIGS))
             + ". Each selects a mip_heuristic_suite value, with `+` in a name "
-            "standing for the `,` in that value; `vanilla` runs the external "
-            "--vanilla-binary when one is given. An unknown name is an error, "
-            "not a default-option run."
+            "standing for the `,` in that value; `vanilla` selects no suite "
+            "value at all and requires --vanilla-binary. An unknown name is "
+            "an error, not a default-option run."
         ),
     )
     parser.add_argument(
@@ -639,27 +807,23 @@ def main() -> None:
         print(f"Error: binary not found: {binary}", file=sys.stderr)
         sys.exit(1)
 
-    vanilla_binary = binary  # default: same binary at mip_heuristic_suite=off
-    if args.vanilla_binary is not None:
+    # An empty string counts as absent, the same way `--data-dir ''` does:
+    # that is a wrapper passing an unset variable through, not a path.
+    vanilla_binary = None
+    if args.vanilla_binary:
         vanilla_binary = os.path.abspath(args.vanilla_binary)
         if not os.path.exists(vanilla_binary):
             print(f"Error: vanilla binary not found: {vanilla_binary}", file=sys.stderr)
             sys.exit(1)
-        # `build_plan` decides externality by comparing resolved paths, not by
-        # whether the flag was given — run_plato.sh falls back to --binary when
-        # `which highs` finds nothing, and this is the line a reader checks to
-        # confirm which baseline they measured.
-        if vanilla_binary == binary:
-            print(
-                f"Vanilla binary : {vanilla_binary} (same path as --binary — "
-                "vanilla runs the patched binary at mip_heuristic_suite=off)"
-            )
-        else:
-            print(f"Vanilla binary : {vanilla_binary} (external — no custom options)")
+        # Just the path here: whether it really is an unpatched build of this
+        # tag is what the probe below decides, and a header claiming it ahead
+        # of the check is a claim the run has not earned yet.
+        print(f"Vanilla binary : {vanilla_binary}")
     print(f"Patched binary : {binary}")
 
-    # Resolve configs before anything else runs: an unknown name must fail
-    # here, not after producing hours of default-option results.
+    # Resolve configs before anything else runs: an unknown name, or a
+    # `vanilla` with no unpatched binary behind it, must fail here rather than
+    # after producing hours of results under a name it did not honour.
     try:
         config_names = list(args.configs)
         for config in config_names:
@@ -671,15 +835,28 @@ def main() -> None:
                 "output directory, so a repeat is the same run twice"
             )
         plans = [build_plan(c, binary, vanilla_binary) for c in config_names]
+        # Before the first solve, not after the tree exists: the probe is here
+        # to prevent a mislabelled baseline rather than to describe one.  The
+        # path comes off the plan rather than from `vanilla_binary`, which is
+        # `str | None`: `build_plan` has already refused a vanilla plan without
+        # one, so the plan's binary records that reasoning where a cast would
+        # have hidden it.
+        vanilla_plan = next((p for p in plans if p.base == VANILLA_CONFIG), None)
+        if vanilla_plan is not None:
+            probe = check_vanilla_binary(vanilla_plan.binary)
+            print(
+                f"Vanilla binary : probed — unpatched HiGHS {probe.version}, "
+                "no custom options"
+            )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)
-    # Distinct names can still resolve to one configuration — `vanilla` is
-    # `off` unless an external binary was given.  That is "N identical runs
-    # under N names", the thing the unknown-name raise exists to prevent, so warn
-    # rather than silently burning the compute.  A warning, not an error:
-    # run_plato.sh legitimately reaches the vanilla==off case when `which
-    # highs` finds nothing.
+    # Distinct names resolving to one configuration is "N identical runs under
+    # N names", the thing the unknown-name raise exists to prevent, so warn
+    # rather than silently burning the compute.  No pair of names does that
+    # today — `vanilla` is a separate binary since #147 and every other name
+    # is its own suite value — so this guards a future table edit that gives
+    # one suite value two names.
     seen: dict[tuple[str, tuple[tuple[str, str | float], ...]], str] = {}
     for plan in plans:
         key = plan.identity

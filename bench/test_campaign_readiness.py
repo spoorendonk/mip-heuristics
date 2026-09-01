@@ -102,6 +102,19 @@ def env_list(name):
 
 
 argv = sys.argv[1:]
+
+# No model file: the real CLI complains, prints its log header — banner and,
+# on a patched build, the marker — and exits non-zero without solving.  That
+# invocation is exactly what run_benchmark.py's --vanilla-binary probe reads,
+# and it is the only way to see the marker, since --version never reaches
+# highsLogHeader.
+if not argv:
+    print("Please specify filename in .mps|.lp|.ems format.")
+    print("Running HiGHS 1.15.1 (git hash: 04024d701f): Copyright (c) 2026 HiGHS")
+    if "unpatched" not in os.path.basename(sys.argv[0]):
+        print("mip-heuristics patch active (custom MIP presolve heuristics)")
+    sys.exit(255)
+
 instance = os.path.basename(argv[0]).split(".")[0]
 opts_path = None
 time_limit = "0"
@@ -645,6 +658,7 @@ def test_the_baseline_profile_counts_every_instance_including_never_feasible(tmp
     # never-feasible bucket".  make_tuning_set.py prints it while stratifying.
     names = [f"inst{i:02d}" for i in range(20)]
     data, listing, binary, record = make_run(tmp_path, names)
+    unpatched = fake_highs(tmp_path, "highs-unpatched")
     tree = tmp_path / "results"
     run_benchmark(
         "--instances",
@@ -653,6 +667,8 @@ def test_the_baseline_profile_counts_every_instance_including_never_feasible(tmp
         str(data),
         "--binary",
         str(binary),
+        "--vanilla-binary",
+        str(unpatched),
         "--output",
         str(tree),
         "--configs",
@@ -685,11 +701,10 @@ def test_the_baseline_profile_counts_every_instance_including_never_feasible(tmp
 # ---------------------------------------------------------------------------
 
 # `off` plus the fifteen non-empty subsets of the chain: the sixteen
-# configurations #107 compares.
+# configurations #107 compares.  `vanilla` is not among them and cannot be:
+# it is a separate unpatched binary, not a suite value (#147).
 MIX_CONFIGS = ["off"] + [
-    name
-    for name, suite in CONFIG_SUITES.items()
-    if name != "vanilla" and suite != "off"
+    name for name, suite in CONFIG_SUITES.items() if suite != "off"
 ]
 
 

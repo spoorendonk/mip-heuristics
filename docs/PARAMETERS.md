@@ -1395,8 +1395,8 @@ FeasibilityJump — but *which* FJ it gates depends on
 `mip_heuristic_suite`:
 
 - at `suite=off` it gates HiGHS's own standalone single-threaded FJ,
-  which the patch leaves in place so that `off` is a true
-  vanilla-equivalent ablation;
+  which the patch leaves in place so that `off` ablates our heuristics
+  alone rather than also taking upstream's FJ away;
 - at every other suite value the native call site is off and this
   option gates our parallel FJ instead.
 
@@ -1439,8 +1439,8 @@ The custom patch-added options are exactly five:
   are harmless. `off` is an alias for the whole value only, never a token
   in a list: the patched HiGHS tree compares this option to `"off"`
   verbatim to hand back upstream's own FeasibilityJump call site, so a
-  value that selected nothing without being that exact string would be a
-  heuristic-free run that is *not* the vanilla-equivalent one. HiGHS does
+  value that selected nothing without being that exact string would run no
+  heuristic at all, HiGHS's own FJ included. HiGHS does
   not validate string option values, so an unrecognised one is accepted
   by `setOptionValue` and caught at solve time: the dispatcher warns —
   naming the offending token, which is what makes a typo inside a list
