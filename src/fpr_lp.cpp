@@ -114,13 +114,9 @@ struct LpFprSetup {
     std::vector<double> analytic_center;  // ac_ptr source (Class 2)
     std::vector<double> zero_vertex;      // zv_ptr source (Class 3a)
 
-    // Incumbent hint (copy — snapshot taken before dispatch to keep the
-    // pointer stable while mipdata->incumbent may be mutated by HiGHS).
-    std::vector<double> incumbent_snapshot;
-
-    // Per-column `HighsDomain::isBinary`, snapshotted here for the same
-    // reason (issue #99): the workers below classify columns from it while
-    // an accepted solution may be propagating the live root domain.
+    // Per-column `HighsDomain::isBinary`, snapshotted here because the
+    // workers below classify columns from it while an accepted solution
+    // may be propagating the live root domain (issue #99).
     std::vector<uint8_t> binary;
 
     size_t budget = 0;
@@ -212,7 +208,6 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
 
     s.csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
-    s.incumbent_snapshot = mipdata->incumbent;
     s.binary = build_binary_mask(mipsolver);
 
     // Full-obj LP solution — direct reference to the solver's col_value
@@ -310,12 +305,6 @@ public:
             }
         }
 
-        initial_solution_buf_.clear();
-        const double* init_ptr = nullptr;
-        if (sink_.get_restart(rng_, initial_solution_buf_)) {
-            init_ptr = initial_solution_buf_.data();
-        }
-
         const LpArm& arm = setup_.arms[arm_idx_];
         const auto& var_order = setup_.var_orders[arm_idx_];
 
@@ -331,7 +320,7 @@ public:
         cfg.binary_mask = setup_.binary.data();
         cfg.scratch = &scratch_;
 
-        auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
+        auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_);
         ++attempt_idx_;
 
         attempt.effort = result.effort;
@@ -397,10 +386,6 @@ private:
     // Per-worker scratch reused across fpr_attempt calls to avoid malloc
     // churn on the DFS + WalkSAT repair hot path.
     FprScratch scratch_;
-    // Reused across attempts so the per-attempt pool restart does not
-    // re-allocate an `ncol`-sized vector every call.  Mirrors
-    // `FprWorker::initial_solution_buf_` in fpr.cpp.
-    std::vector<double> initial_solution_buf_;
 
     // Hard cap on the number of soft-threshold arm randomisations
     // without an improvement before the worker declares itself

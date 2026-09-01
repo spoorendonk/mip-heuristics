@@ -452,7 +452,7 @@ size_t one_attempt_effort(const char* instance, double time_limit) {
     cfg.binary_mask = problem.binary.data();
 
     Rng rng(0);
-    return fpr_attempt(*mipsolver, cfg, rng, 0, nullptr).effort;
+    return fpr_attempt(*mipsolver, cfg, rng, 0).effort;
 }
 
 }  // namespace

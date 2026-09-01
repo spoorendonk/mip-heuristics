@@ -373,8 +373,7 @@ TEST_CASE("FPR: a non-null lp_ref changes the strategy's produced assignment (#1
         cfg.scratch = &scratch;
         Rng rng(777);
         FprAttemptState state;
-        fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0,
-                          /*initial_solution=*/nullptr);
+        fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
         while (state.phase == FprAttemptState::Phase::kDfs) {
             fpr_attempt_step(state, *mipsolver, cfg, rng, cfg.max_effort);
         }

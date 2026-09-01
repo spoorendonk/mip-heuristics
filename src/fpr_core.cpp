@@ -13,7 +13,6 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
-#include <random>
 #include <vector>
 
 namespace {
@@ -176,7 +175,7 @@ bool is_row_violated_in_ctx(HighsInt i, double lhs, const AttemptCtx& c) {
 // risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const FprConfig& cfg,
-                       Rng& rng, int attempt_idx, const double* initial_solution) {
+                       Rng& rng, int attempt_idx) {
     assert(cfg.scratch != nullptr && "fpr_attempt_begin requires cfg.scratch");
     FprScratch& scratch = *cfg.scratch;
     const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
@@ -227,50 +226,20 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine& E = acquire_engine(scratch, c, csc);
 
-    // --- Initial solution -----------------------------------------------------------
+    // No E.sol(j) seeding here (issue #122): a prior block wrote a
+    // deterministic-or-random starting solution into every column before
+    // Phase 2, but nothing between `acquire_engine`'s reset() (which
+    // already zeros the array) and the final extraction ever reads a
+    // column's value before writing it — `E.fix()`/propagation auto-fix
+    // overwrite every column the DFS visits, and the Phase 2.5 fill loop
+    // in `fpr_attempt_finish` overwrites every column it does not. Confirmed
+    // both by that code-path argument and empirically (two `fpr_attempt`
+    // runs with wildly different seeds produced identical `fixed`/`sol`
+    // state on every column PropEngine actually touched). Removing this
+    // also drops the RNG draws the random-start branch (attempt_idx > 0,
+    // no caller-supplied seed) used to make, so downstream draws in this
+    // and later attempts shift — expected, not a regression.
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
-
-    if (initial_solution != nullptr) {
-        for (HighsInt j = 0; j < c.ncol; ++j) {
-            double v = initial_solution[j];
-            if (is_int(j)) {
-                v = std::round(v);
-            }
-            E.sol(j) = std::max(c.col_lb[j], std::min(c.col_ub[j], v));
-        }
-    } else if (attempt_idx == 0) {
-        for (HighsInt j = 0; j < c.ncol; ++j) {
-            if (c.is_binary(j)) {
-                E.sol(j) = 0.0;
-            } else if (is_int(j)) {
-                double lo = std::max(c.col_lb[j], -1e8);
-                double hi = std::min(c.col_ub[j], lo + 100.0);
-                E.sol(j) = std::round((lo + hi) * 0.5);
-                E.sol(j) = std::max(c.col_lb[j], std::min(c.col_ub[j], E.sol(j)));
-            } else {
-                E.sol(j) = finite_clamp_helper(0.0, c.col_lb[j], c.col_ub[j]);
-            }
-        }
-    } else {
-        for (HighsInt j = 0; j < c.ncol; ++j) {
-            if (c.is_binary(j)) {
-                E.sol(j) = std::uniform_int_distribution<int>(0, 1)(rng);
-            } else if (is_int(j)) {
-                double lo = std::max(c.col_lb[j], -1e8);
-                double hi = std::min(c.col_ub[j], lo + 100.0);
-                E.sol(j) = std::round(std::uniform_real_distribution<double>(lo, hi)(rng));
-                E.sol(j) = std::max(c.col_lb[j], std::min(c.col_ub[j], E.sol(j)));
-            } else {
-                double lo = finite_clamp_helper(0.0, c.col_lb[j], c.col_ub[j]);
-                double hi = std::min(c.col_ub[j], lo + 1e6);
-                if (hi < kHighsInf && lo > -kHighsInf && hi > lo) {
-                    E.sol(j) = std::uniform_real_distribution<double>(lo, hi)(rng);
-                } else {
-                    E.sol(j) = lo;
-                }
-            }
-        }
-    }
 
     // Shuffle top 30% of ranking for diversity on later attempts.
     if (attempt_idx > 0) {
@@ -661,7 +630,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
 // (matches the pre-#77 contract for those callers).
 
 HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng& rng,
-                            int attempt_idx, const double* initial_solution) {
+                            int attempt_idx) {
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();
     const HighsInt ncol = model->num_col_;
@@ -693,7 +662,7 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng
     }
 
     FprAttemptState state;
-    fpr_attempt_begin(state, mipsolver, effective_cfg, rng, attempt_idx, initial_solution);
+    fpr_attempt_begin(state, mipsolver, effective_cfg, rng, attempt_idx);
 
     // Single-shot DFS gated by `cfg.max_effort` — matches the pre-#77
     // contract for one-shot callers (scylla / fpr_lp / tests).

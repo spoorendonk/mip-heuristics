@@ -236,12 +236,14 @@ struct FprConfig {
 };
 
 // Single-attempt one-shot variant. Returns result without submitting.
-// Uses provided RNG and attempt index. If initial_solution is non-null, seeds
-// the propagation engine's solution array with it (or with a deterministic /
-// random start otherwise) before Phase 2 — see the seeding block in
-// `fpr_attempt_begin` for which of the two applies.
+// Uses provided RNG and attempt index. There is no seed input (issue #122):
+// the propagation engine's solution array starts at PropEngine::reset()'s
+// 0.0 baseline for every column, and no code path reads it before Phase 2's
+// `fix()`/propagation auto-fix or the Phase 2.5 fill loop overwrite it — a
+// prior seeding block wrote plausible-looking starting values here that
+// never survived to any caller-observable output, on any path.
 HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng& rng,
-                            int attempt_idx, const double* initial_solution);
+                            int attempt_idx);
 
 // ---------------------------------------------------------------------------
 // Pause/resume lifecycle (issue #77)
@@ -328,7 +330,7 @@ enum class FprStepResult {
 // one-shot `local_scratch` fallback (one-shot callers should keep using
 // `fpr_attempt`).
 void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const FprConfig& cfg,
-                       Rng& rng, int attempt_idx, const double* initial_solution);
+                       Rng& rng, int attempt_idx);
 
 // Phase 2 DFS resume.  Runs the fix-and-propagate loop until either the
 // per-call effort budget is exhausted (returns `kBudgetGate`) or the DFS

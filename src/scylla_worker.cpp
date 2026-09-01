@@ -423,13 +423,14 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         cfg.binary_mask = binary_;
         cfg.scratch = &fpr_scratch_;
 
-        // No pool restart fed in as `initial_solution`: that parameter
-        // documentedly *overrides* the reference point fpr_attempt_begin
-        // seeds with, and a restart is available whenever the pool is
-        // non-empty (nearly always in production) — which would silently
-        // re-sever line 12 above (issue #121; see also #122, which found
-        // the seed inert everywhere it is used).
-        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0, nullptr);
+        // No pool restart is pulled here: `fpr_attempt` has no seed
+        // parameter to feed one to (issue #122 removed it — the propagation
+        // engine's own state is never read before Phase 2/2.5 overwrite it,
+        // on every path). Before that removal, this call already avoided
+        // pulling one deliberately, since a restart would have overridden
+        // `cfg.lp_ref`'s reference point and silently re-severed line 12
+        // above whenever the pool was non-empty (issue #121).
+        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0);
 
         base_.total_effort += rounded.effort;
         base_.effort_since_improvement += rounded.effort;

@@ -169,7 +169,7 @@ ScyllaProbe round_once(HighsMipSolver& mipsolver, const CscMatrix& csc, const Pr
     cfg.scratch = &scratch;
     Rng rng(2024);
     FprAttemptState state;
-    fpr_attempt_begin(state, mipsolver, cfg, rng, /*attempt_idx=*/0, /*initial_solution=*/nullptr);
+    fpr_attempt_begin(state, mipsolver, cfg, rng, /*attempt_idx=*/0);
     while (state.phase == FprAttemptState::Phase::kDfs) {
         fpr_attempt_step(state, mipsolver, cfg, rng, cfg.max_effort);
     }

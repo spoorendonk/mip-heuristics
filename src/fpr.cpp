@@ -151,11 +151,6 @@ private:
 
     Rng rng_;
     FprScratch scratch_;
-    // Reused across attempts to avoid `std::vector<double>` churn — the
-    // multi-attempt loop in `run_attempt` calls `sink_.get_restart` once
-    // per attempt, and an unhoisted local would re-allocate every
-    // iteration on instances large enough to matter (review R2 CF-1).
-    std::vector<double> initial_solution_buf_;
 };
 
 // Master strategy pool for all FPR parallel paths.  var_orders are
@@ -330,28 +325,23 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     // without bounds we'd burn the slice on `fpr_attempt_begin`'s
     // O(ncol+nrow) setup churn alone.
 
-    // Snapshot the pool restart once per call so all attempts inside the
-    // multi-attempt loop see the same `initial_solution`.  Per-attempt
-    // `sink_.get_restart` would observe interleaved peer `offer` inserts
-    // from other workers running concurrently in `parallel::for_each`,
-    // breaking the issue-#77 determinism guarantee that two runs at
-    // identical seed produce bit-identical [Sequential] summaries —
-    // `initial_solution` is the only non-deterministic input into
-    // `fpr_attempt_begin`.  `initial_solution_buf_` is a member to amortise
-    // the `ncol`-sized allocation across calls (review R2 CF-1).
-    initial_solution_buf_.clear();
-    const bool have_restart = sink_.get_restart(rng_, initial_solution_buf_);
+    // No pool restart is pulled here (issue #122): `fpr_attempt_begin` has
+    // no seed input left to feed it — the propagation engine's own
+    // reset() baseline is never read before Phase 2/2.5 overwrite it — so
+    // `sink_.get_restart` bought nothing but a pool-mutex acquisition and
+    // an `ncol`-sized copy on every call.
 
-    // 32 attempts × 2 mutex ops × N workers is a theoretical upper bound on
-    // pool-mutex acquisitions per outer attempt.  In practice the cap is
-    // rarely approached: each attempt's begin charges O(nnz) coefficient
-    // accesses (initial propagate), and the per-call slice is sized so an
-    // instance with non-trivial DFS spends most of the slice inside step
-    // rather than restarting attempts.  HighsSpinMutex critical sections
-    // in `try_add` / `get_restart` are sub-microsecond (lower_bound over
-    // <= kPoolCapacity entries plus an O(ncol) Hamming or single solution
-    // copy).  Even worst-case, total mutex-time per attempt is bounded ms
-    // (review R2 U-1 / Finding 3).
+    // 32 attempts × 1 mutex op (`sink_.offer`, only on a feasible verdict) ×
+    // N workers is a theoretical upper bound on pool-mutex acquisitions per
+    // outer attempt (down from 2 before issue #122 removed the per-attempt
+    // `get_restart` pull above).  In practice the cap is rarely approached:
+    // each attempt's begin charges O(nnz) coefficient accesses (initial
+    // propagate), and the per-call slice is sized so an instance with
+    // non-trivial DFS spends most of the slice inside step rather than
+    // restarting attempts.  HighsSpinMutex critical sections in `try_add`
+    // are sub-microsecond (lower_bound over <= kPoolCapacity entries plus
+    // an O(ncol) Hamming or single solution copy).  Even worst-case, total
+    // mutex-time per attempt is bounded ms (review R2 U-1 / Finding 3).
     constexpr int kMaxAttemptsPerCall = 32;
     int attempts_started = 0;
     size_t prev_loop_effort = 0;
@@ -447,11 +437,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         cfg.scratch = &scratch_;
 
         if (!attempt_alive()) {
-            // Reuse the restart snapshot taken at the start of `run_attempt`
-            // (review R1 / Finding 1) — `initial_solution_buf_` is the
-            // member buffer the snapshot landed in.
-            const double* init_ptr = have_restart ? initial_solution_buf_.data() : nullptr;
-            fpr_attempt_begin(attempt_state_, mipsolver_, cfg, rng_, attempt_idx_, init_ptr);
+            fpr_attempt_begin(attempt_state_, mipsolver_, cfg, rng_, attempt_idx_);
             // `attempt_state_.phase` is now `kDfs` (or `kReadyToFinish`
             // if Phase 1 already produced a complete fixing); either way
             // `attempt_alive()` is true on the next iteration.
