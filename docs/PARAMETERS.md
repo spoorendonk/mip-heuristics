@@ -160,11 +160,19 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **Meaning**: Total number of LP-arm configs across Classes 2, 3a, 3b.
   Workers are assigned `w % kNumLpArms`; excess workers wrap around
   with distinct seeds. Each arm's `(strategy, mode)` pair and its required
-  reference class travel together in one `LpArmInfo` record in
-  `kLpArmTable`, so `build_setup`'s reference-pointer wiring cannot drift
-  from the class list independently — `tests/test_fpr_lp.cpp` ("fpr_lp:
-  every LP arm's reference class matches what its strategy needs") asserts
-  the mapping from strategy identity to reference class.
+  reference class (`LpRefClass`) travel together in one `LpArmInfo` record
+  in `kLpArmTable`, so the arm-to-class assignment cannot drift from the
+  strategy it names — `tests/test_fpr_lp.cpp` ("fpr_lp: every LP arm's
+  reference class matches what its strategy needs") asserts that mapping.
+  A second mapping, `ref_class` to the actual pointer (`select_ref` in
+  `src/fpr_lp.cpp`, declared in `src/fpr_lp_arms.h`), is tested
+  separately ("fpr_lp: select_ref returns the pointer its LpRefClass
+  names") and has no `default` case, so `-Werror=switch`
+  (`CMakeLists.txt`) fails the build if a future `LpRefClass` enumerator
+  is added without a case for it. A cold review of the first version of
+  this fix found that a single test over `kLpArmTable` alone left the
+  class-to-pointer mapping unguarded — both mappings now need their own
+  test for the whole binding to hold.
 
 ---
 

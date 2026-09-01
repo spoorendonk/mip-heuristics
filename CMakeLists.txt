@@ -121,8 +121,18 @@ add_library(mip_heuristics OBJECT
 # whose *already compiled* objects are injected into `highs`, so the flag
 # cannot reach HiGHS's own translation units, which are third-party and
 # not ours to police.
+#
+# `-Werror=switch` joins it for the same reason (issue #128's cold
+# review): a `switch` over one of our own scoped enums with no `default`
+# and a case an edit forgot to add compiles clean today, silently falling
+# through to whatever the switch's target was last assigned (or, worse,
+# reading it uninitialized) — exactly how `fpr_lp::select_ref`'s
+# class-to-pointer mapping could drift without a single diagnostic. Every
+# switch presently in `src/` and `tests/` either covers its enum
+# exhaustively or carries an explicit `default:`, so this costs nothing
+# today; it is meant to catch the next one that doesn't.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mip_heuristics PRIVATE -Werror=unused-result)
+    target_compile_options(mip_heuristics PRIVATE -Werror=unused-result -Werror=switch)
 endif()
 
 target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
@@ -169,9 +179,10 @@ add_executable(mip_heuristics_tests
     tests/test_setup_bail.cpp
 )
 # Same guard as `mip_heuristics` above — a test that drops the verdict
-# would model the bug rather than catch it.
+# would model the bug rather than catch it. `-Werror=switch` joins it for
+# the same reason as the `mip_heuristics` target: see that target's comment.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mip_heuristics_tests PRIVATE -Werror=unused-result)
+    target_compile_options(mip_heuristics_tests PRIVATE -Werror=unused-result -Werror=switch)
 endif()
 
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)

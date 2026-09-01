@@ -39,24 +39,26 @@ namespace fpr_lp {
 //
 // `kLpArmTable` is the single ordered source of truth for the whole
 // portfolio: a name, a (strategy, mode) pair, and a reference class travel
-// together in one record, so `kNumLpArms` and the reference-pointer wiring
-// in `build_setup` below are *derived* from it rather than kept in sync by
-// hand across parallel arrays that can silently disagree — which is
-// exactly how issue #128 happened: `cliques2` sat in the full-obj-LP array
-// even though its ranking (`fpr_var_order.cpp`'s `rank_cliques2`) is
-// defined by the paper against the zero-obj vertex. Sect. 4.1: "in
-// strategy cliques2, we construct a clique cover dynamically using both
-// the clique table and a reference LP solution, in this case, a
-// zero-objective vertex." The Sect. 6.3 portfolio puts `diveprop-cliques2`
-// in the zero-objective-vertex stage alongside `dfs-zerolp` /
-// `diveprop-zerolp` — not in the full-objective stage `lp` uses.
+// together in one record, so `kNumLpArms` and each arm's `LpRefClass` are
+// *derived* from it rather than kept in sync by hand across parallel
+// arrays that can silently disagree — which is exactly how issue #128
+// happened: `cliques2` sat in the full-obj-LP array even though its
+// ranking (`fpr_var_order.cpp`'s `rank_cliques2`) is defined by the paper
+// against the zero-obj vertex. Sect. 4.1: "in strategy cliques2, we
+// construct a clique cover dynamically using both the clique table and a
+// reference LP solution, in this case, a zero-objective vertex." The
+// Sect. 6.3 portfolio puts `diveprop-cliques2` in the zero-objective-vertex
+// stage alongside `dfs-zerolp` / `diveprop-zerolp` — not in the
+// full-objective stage `lp` uses.
 //
 // `lp_arm_table()` (declared in `fpr_lp_arms.h`, deliberately not
 // `fpr_lp.h` — see that header's comment for why) exposes this table so
 // `tests/test_fpr_lp.cpp` can assert every arm's `ref_class` against what
-// its own strategy needs, independent of table position — the test that
-// keeps the two facts (strategy identity, required reference) from
-// drifting apart again.
+// its own strategy needs, independent of table position. That covers the
+// arm-to-class assignment; `build_setup` below turns a `ref_class` into an
+// actual pointer through `select_ref` (also in `fpr_lp_arms.h`), a second
+// mapping a test exercises separately — see its comment for why that split
+// matters.
 constexpr auto kLpArmTable = std::to_array<LpArmInfo>({
     // Class 2 — zero-obj analytic center
     {"ZerocoreDfs", {kStratZerocore, FrameworkMode::kDfs}, LpRefClass::kAnalyticCenter},
@@ -79,6 +81,33 @@ constexpr auto kLpArmTable = std::to_array<LpArmInfo>({
     {"LpDiveprop", {kStratLp, FrameworkMode::kDiveprop}, LpRefClass::kFullObjLp},
 });
 constexpr int kNumLpArms = static_cast<int>(std::size(kLpArmTable));
+
+// See the declaration in fpr_lp_arms.h for why this is its own function
+// rather than a switch inlined into `build_setup` below: it exists so a
+// test can exercise the class-to-pointer mapping in isolation from the
+// arm-to-class table above, which is a separate fact `kLpArmTable` alone
+// does not pin.
+const double* select_ref(LpRefClass ref_class, const double* ac, const double* zv,
+                         const double* lp) {
+    switch (ref_class) {
+        case LpRefClass::kAnalyticCenter:
+            return ac;
+        case LpRefClass::kZeroObjVertex:
+            return zv;
+        case LpRefClass::kFullObjLp:
+            return lp;
+    }
+    // Unreachable for any of today's enumerators — `-Werror=switch`
+    // (CMakeLists.txt) fails the build if a future one lands here without
+    // a case above. No pointer here is a plausible stand-in for a real
+    // reference class, deliberately: returning one of ac/zv/lp would repeat
+    // #128's failure mode of an unhandled case silently picking a
+    // real-looking answer. Existing `lp_ref` consumers already branch on
+    // `!= nullptr` (e.g. `rank_cliques2`, `choose_value`), so nullptr
+    // degrades through a path that already exists rather than inventing a
+    // new one.
+    return nullptr;
+}
 
 namespace {
 
@@ -233,25 +262,22 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
         return out;
     }
 
-    // Zero-obj LP vertex (for Class 3a zerolp strategies).
+    // Zero-obj LP vertex (for Class 3a zerolp strategies, and — since
+    // #128 — cliques2 too).  A failed or deadline-truncated solve here
+    // falls back to the full-obj LP solution rather than an empty
+    // pointer, same as the analytic-center fallback above: pre-#128 that
+    // was two arms' fallback, and now, with cliques2 correctly reading
+    // `zv_ptr`, it is a third.  Arguably the right degradation (a stale
+    // reference beats none), but worth knowing: on that path cliques2
+    // silently runs against the full-obj LP anyway, the exact reference
+    // #128 exists to move it off of, just for a different reason (a
+    // failed solve, not a wiring bug).
     s.zero_vertex = compute_zero_obj_vertex(mipsolver, deadline, out.lp_iterations);
     const double* zv_ptr = s.zero_vertex.empty() ? lp_ptr : s.zero_vertex.data();
 
     s.arms.reserve(kNumLpArms);
     for (const auto& spec : kLpArmTable) {
-        const double* ref = lp_ptr;
-        switch (spec.ref_class) {
-            case LpRefClass::kAnalyticCenter:
-                ref = ac_ptr;
-                break;
-            case LpRefClass::kZeroObjVertex:
-                ref = zv_ptr;
-                break;
-            case LpRefClass::kFullObjLp:
-                ref = lp_ptr;
-                break;
-        }
-        s.arms.push_back({&spec.config, ref});
+        s.arms.push_back({&spec.config, select_ref(spec.ref_class, ac_ptr, zv_ptr, lp_ptr)});
     }
 
     // Precompute var_orders sequentially — required before any parallel

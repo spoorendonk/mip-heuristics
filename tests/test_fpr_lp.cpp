@@ -132,9 +132,17 @@ TEST_CASE("fpr_lp: arm wrap-around with threads > kNumLpArms", "[fpr_lp][mode-ma
 // ranking — as the paper's zero-objective vertex, not the full-objective
 // LP solution. This test ties every LP-consuming arm's `ref_class`
 // (`fpr_lp::lp_arm_table()`) to an expectation derived independently, from
-// strategy identity, so the two facts cannot drift apart again: moving an
-// arm's table entry to the wrong reference-class group — or wiring
-// `build_setup` to the wrong pointer for a `ref_class` — fails here.
+// strategy identity, so moving an arm's table entry to the wrong
+// reference-class group fails here.
+//
+// This test alone does *not* catch `build_setup` wiring a `ref_class` to
+// the wrong pointer — a cold review of the first version of this fix
+// proved that empirically: reprogramming `fpr_lp::select_ref`'s
+// `kZeroObjVertex` case to return the full-obj LP pointer reintroduces
+// #128's bug and this test still passes, because `ref_class` is still the
+// value `kLpArmTable` says. The class-to-pointer mapping is a second,
+// independent fact, and the next test case below (`fpr_lp::select_ref`
+// directly) is what pins it.
 namespace {
 bool same_strategy(const FprStrategyConfig& a, const FprStrategyConfig& b) {
     return a.var_strategy == b.var_strategy && a.val_strategy == b.val_strategy;
@@ -177,6 +185,28 @@ TEST_CASE("fpr_lp: every LP arm's reference class matches what its strategy need
     });
     REQUIRE(it != arms.end());
     CHECK(it->ref_class == fpr_lp::LpRefClass::kZeroObjVertex);
+}
+
+// Issue #128 cold review: exercises `fpr_lp::select_ref` — the
+// class-to-pointer half of the arm's reference binding — directly, for
+// every current `LpRefClass` enumerator. Distinct sentinel doubles (never
+// dereferenced, only compared by address) stand in for the analytic
+// center, zero-obj vertex and full-obj LP vectors `build_setup` would
+// otherwise pass, so this fails exactly the two probes the review ran and
+// the test above does not: reprogramming a case to return the wrong
+// sentinel, or (with the `-Werror=switch` guard also added by this commit)
+// adding a fourth `LpRefClass` enumerator with no case for it.
+TEST_CASE("fpr_lp: select_ref returns the pointer its LpRefClass names", "[fpr_lp][mode-matrix]") {
+    double ac_sentinel = 0.0;
+    double zv_sentinel = 0.0;
+    double lp_sentinel = 0.0;
+    const double* const ac = &ac_sentinel;
+    const double* const zv = &zv_sentinel;
+    const double* const lp = &lp_sentinel;
+
+    CHECK(fpr_lp::select_ref(fpr_lp::LpRefClass::kAnalyticCenter, ac, zv, lp) == ac);
+    CHECK(fpr_lp::select_ref(fpr_lp::LpRefClass::kZeroObjVertex, ac, zv, lp) == zv);
+    CHECK(fpr_lp::select_ref(fpr_lp::LpRefClass::kFullObjLp, ac, zv, lp) == lp);
 }
 
 // ── Observability: fpr_lp reports its spend (#94) ──

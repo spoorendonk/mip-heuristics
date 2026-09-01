@@ -43,14 +43,41 @@ struct LpArmInfo {
 };
 
 // Test hook: the full LP-arm portfolio, read from the single source of
-// truth (`kLpArmTable` in fpr_lp.cpp) that binds each arm's strategy to the
-// reference vector `build_setup` hands it.  Exists so a test can assert
-// every arm's `ref_class` against what its own strategy needs — e.g.
-// `cliques2`'s ranking (`fpr_var_order.cpp`'s `rank_cliques2`) reads its LP
-// reference for both the clique-tightness test and the per-clique ranking,
-// so an arm using it must report `kZeroObjVertex` — without duplicating the
-// mapping `build_setup` itself uses: both read `kLpArmTable`, so the two
-// cannot drift apart again the way #128 found them.
+// truth (`kLpArmTable` in fpr_lp.cpp) that binds each arm's strategy to a
+// `ref_class`.  Exists so a test can assert every arm's `ref_class` against
+// what its own strategy needs — e.g. `cliques2`'s ranking
+// (`fpr_var_order.cpp`'s `rank_cliques2`) reads its LP reference for both
+// the clique-tightness test and the per-clique ranking, so an arm using it
+// must report `kZeroObjVertex` — without duplicating the mapping
+// `build_setup` itself uses: both read `kLpArmTable`, so the arm-to-class
+// assignment cannot drift apart again the way #128 found it.
+//
+// This covers only *half* of #128's mechanism, though: which reference
+// vector a `ref_class` names — the other half — is a second mapping, owned
+// by `select_ref` below, and a cold review of the first version of this
+// fix found it untested: reprogramming `select_ref`'s `kZeroObjVertex` case
+// to return the full-obj LP pointer reintroduced #128's bug and the whole
+// suite still passed, because nothing exercised that function in
+// isolation. `select_ref` is what closes that gap.
 std::vector<LpArmInfo> lp_arm_table();
+
+// Selects the LP reference vector `ref_class` names, out of the three
+// `build_setup` computes per dispatch (`ac`: zero-obj analytic center,
+// `zv`: zero-obj simplex vertex, `lp`: full-obj LP solution). A standalone,
+// pure function — not a switch inlined at the call site — precisely so
+// `tests/test_fpr_lp.cpp` can call it directly for every `LpRefClass`
+// enumerator and check the returned pointer against the vector its name
+// promises, closing the gap `lp_arm_table()`'s comment above describes.
+//
+// No default case, and no pointer pre-assigned before the switch: an
+// enumerator this function doesn't handle must not silently resolve to a
+// pointer that looks like a legitimate answer (`lp_ptr` used to be exactly
+// that plausible-looking wrong default). `-Werror=switch` on the
+// `mip_heuristics` target (CMakeLists.txt) turns a case an edit forgets to
+// add into a compile error, for exactly this switch and every other one in
+// our own code — the same protection the `select_ref`-level test gives the
+// enumerators that already exist, extended to one added later.
+const double* select_ref(LpRefClass ref_class, const double* ac, const double* zv,
+                         const double* lp);
 
 }  // namespace fpr_lp
