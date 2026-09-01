@@ -59,11 +59,21 @@ inline constexpr int kMaxStaleRounds = kMaxStaleRoundsDefault;
 // strategy is covered once when N >= kNumFprConfigs).  Additional workers
 // receive a seed-driven pseudo-random choice so redundant workers do not
 // cluster on the same strategy — still deterministic per (seed, worker_idx).
+//
+// Every entry's value strategy is `ValStrategy::kLp` (issue #121): Algorithm
+// 1.1 line 12 of the paper is `x_hat = fix-and-propagate(x_bar)`, and
+// `ScyllaWorker::run_attempt` points `FprConfig::lp_ref` at the pump's PDLP
+// iterate `x_bar`, so every chain's rounding must use a value strategy that
+// reads it.  Chain diversity survives in variable strategy and framework
+// mode (unchanged from before #121) plus `val_lp_based`'s own randomized
+// rounding — not in refusing to look at the LP iterate, which is what the
+// pre-#121 entries did (badobj / loosedyn are objective-sign / lock based
+// and never read `lp_ref`).
 inline constexpr auto kFprConfigs = std::to_array<NamedConfig>({
-    {kStratBadobjcl, FrameworkMode::kDfs},
-    {kStratLocks2, FrameworkMode::kDfs},
-    {kStratLocks2, FrameworkMode::kDive},
-    {kStratLocks, FrameworkMode::kDfsrep},
+    {kStratLp, FrameworkMode::kDfs},
+    {FprStrategyConfig{VarStrategy::kLocks, ValStrategy::kLp}, FrameworkMode::kDfs},
+    {FprStrategyConfig{VarStrategy::kLocks, ValStrategy::kLp}, FrameworkMode::kDive},
+    {FprStrategyConfig{VarStrategy::kLR, ValStrategy::kLp}, FrameworkMode::kDfsrep},
 });
 inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 
@@ -216,10 +226,6 @@ private:
     // Persistent scratch reused across fpr_attempt calls inside run_attempt
     // to avoid per-iteration malloc/free churn on the DFS + WalkSAT path.
     FprScratch fpr_scratch_;
-    // Pool-restart buffer, reused for the same reason: the pump loop pulls
-    // a restart on every iteration, so this was an `ncol`-sized alloc/free
-    // per iteration on the hottest path in the heuristic.
-    std::vector<double> restart_buf_;
 
     // Cross-worker improvement broadcast.  When any worker bumps the
     // generation, peers reset their local staleness on the next loop

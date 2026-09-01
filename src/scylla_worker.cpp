@@ -406,17 +406,30 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         cfg.csc = &csc_;
         cfg.mode = named.mode;
         cfg.strategy = &named.strat;
-        cfg.lp_ref = nullptr;
+        // Algorithm 1.1 line 12 (issue #121): x_hat = fix-and-propagate(x_bar).
+        // Every `kFprConfigs` entry now uses an LP-consuming value strategy
+        // (ValStrategy::kLp) that reads this. The variable *order* stays
+        // x_bar-free — `var_order_` is precomputed once per dispatch on the
+        // dispatching thread (`scylla::precompute_config_var_orders`,
+        // `compute_var_order(..., nullptr)`), because a per-iteration
+        // fractionality order would call back into var-order computation
+        // from inside the parallel pump loop, reintroducing the
+        // cliquePartition-vs-addIncumbent race issue #99 fixed. A deliberate
+        // deviation from the paper's ideal (line 11's variable ranking is,
+        // in principle, also a function of x_bar), not an oversight.
+        cfg.lp_ref = x_bar.data();
         cfg.precomputed_var_order = var_order_->data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_->size());
         cfg.binary_mask = binary_;
         cfg.scratch = &fpr_scratch_;
 
-        restart_buf_.clear();
-        sink_.get_restart(rng_, restart_buf_);
-        const double* restart_ptr = restart_buf_.empty() ? nullptr : restart_buf_.data();
-
-        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0, restart_ptr);
+        // No pool restart fed in as `initial_solution`: that parameter
+        // documentedly *overrides* the reference point fpr_attempt_begin
+        // seeds with, and a restart is available whenever the pool is
+        // non-empty (nearly always in production) — which would silently
+        // re-sever line 12 above (issue #121; see also #122, which found
+        // the seed inert everywhere it is used).
+        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0, nullptr);
 
         base_.total_effort += rounded.effort;
         base_.effort_since_improvement += rounded.effort;

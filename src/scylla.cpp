@@ -51,6 +51,13 @@ bool precompute_config_var_orders(HighsMipSolver& mipsolver, const Deadline& dea
             return false;
         }
         Rng rng(base + static_cast<uint32_t>(i));
+        // `nullptr` lp_ref here is deliberate, not a leftover: the order is
+        // computed once, sequentially, before any worker exists, so it
+        // cannot see a per-iteration `x_bar` without reintroducing the
+        // #99 race this function exists to avoid. See the `cfg.lp_ref`
+        // assignment in `ScyllaWorker::run_attempt` (issue #121) for the
+        // full reasoning — value selection reads `x_bar`, variable order
+        // does not.
         orders[i] = compute_var_order(mipsolver, kFprConfigs[i].strat.var_strategy, rng, nullptr);
     }
     return true;
