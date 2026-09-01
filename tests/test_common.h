@@ -249,6 +249,18 @@ inline double solve_no_heuristics() {
 //
 // Callers must have started the HiGHS task scheduler first (see the
 // `initialize_scheduler()` note at each call site).
+//
+// A hand-built model (`Highs::addVar`/`addRow` rather than `readModel`)
+// works here for read-only inspection, but if the caller is going to
+// offer a solution through it (`IncumbentSink::offer` /
+// `HighsMipSolverData::addIncumbent`), round-trip it through
+// `highs.passModel(highs.getLp())` first: `addRow` leaves the matrix
+// row-wise, and offering a solution against a row-wise model segfaults
+// deep in the repair path (`addIncumbent` ->
+// `transformNewIntegerFeasibleSolution` -> `Highs::calledOptimizeModel`
+// -> `solveLp` -> `solveLpSimplex`), not in anything that looks like a
+// feasibility check (issue #129 cold review; see
+// `tests/test_local_mip.cpp`'s "failed lift falls through" case).
 inline std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsCallback& cb,
                                                             const char* instance = "flugpl.mps",
                                                             double time_limit = kHighsInf) {

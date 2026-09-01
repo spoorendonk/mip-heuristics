@@ -1074,19 +1074,18 @@ TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
     const auto val = std::to_array<double>({1.0, 1.0});
     highs.addRow(2.0, kHighsInf, 2, idx.data(), val.data());
 
-    // `Highs::addRow` leaves the matrix row-wise; every downstream path
-    // this test exercises (`HighsMipSolver::solutionFeasible`'s row-value
-    // computation, reached through `addIncumbent`) expects the
-    // column-wise layout `readModel` produces. `Highs::getLp()` is
-    // const, so force it through a copy and `passModel`.
-    HighsLp lp = highs.getLp();
-    lp.ensureColwise();
-    // `std::move(lp)` evaluated outside `REQUIRE`: Catch2's expression
-    // decomposition can reference the macro argument more than once,
-    // which clang-tidy's `bugprone-use-after-move` reads (spuriously) as
-    // `lp` being used again after the move inside the same expression.
-    const HighsStatus pass_status = highs.passModel(std::move(lp));
-    REQUIRE(pass_status == HighsStatus::kOk);
+    // `Highs::addRow` leaves the matrix row-wise. Left that way, offering
+    // a solution later segfaults: `addIncumbent` ->
+    // `transformNewIntegerFeasibleSolution` -> `Highs::calledOptimizeModel`
+    // -> `Highs::callSolveLp` -> `solveLp` -> `solveLpSimplex`, deep
+    // inside a *fresh* `Highs` instance the repair path builds from a
+    // copy of `mipsolver.orig_model_` (`HighsMipSolverData.cpp`) --
+    // nothing to do with `solutionFeasible`'s own (row-wise-tolerant) row
+    // check. `Highs::getLp()` is const, so round-trip through
+    // `passModel`, whose "master" overload (`Highs::passModel(HighsModel)`
+    // in `Highs.cpp`) already calls `ensureColwise()` on the way in -- no
+    // explicit call needed here.
+    REQUIRE(highs.passModel(highs.getLp()) == HighsStatus::kOk);
 
     // Mirrors `build_bare_mipsolver` (test_common.h): the repro needs a
     // hand-shaped objective and row no bundled instance guarantees.

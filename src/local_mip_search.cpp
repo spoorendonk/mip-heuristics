@@ -165,6 +165,35 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
     return ctx.minimize ? (new_obj < best_obj - ctx.epsilon) : (new_obj > best_obj + ctx.epsilon);
 }
 
+// Paper Definition 2: `Delta_j = (obj(s*) - obj(s) - eps) / c_j` -- the
+// shift that moves x_j alone to exactly `eps` past the best found
+// objective, `eps` being, in the paper's own words, "for making the
+// objective value strictly better". The reference implementation
+// (github.com/shaowei-cai-group/Local-MIP, `explore_unsat.cpp`) does the
+// same thing by setting the objective pseudo-constraint's RHS to
+// `m_best_obj - m_opt_tolerance` before solving for the delta.
+//
+// This used to omit `eps` entirely, computing only the delta that
+// reaches `obj(s*)` exactly (issue #129 cold review). At a feasible
+// local optimum `obj(s) == obj(s*)` -- the current solution IS the best
+// found -- so the omitted-eps version computed `delta == 0`, literally
+// at the state Algorithm 2 lines 5-6 exist to escape. The `is_int`
+// rounding below (away from zero: floor a negative delta, ceil a
+// positive one) papered over this for an INTEGER variable away from the
+// tie, since rounding away from zero happens to overshoot into
+// strictly-better territory -- but never for a delta that started at
+// exactly zero, and never for a continuous variable, which this
+// function never rounds at all. `ctx.epsilon` is the same margin
+// `compute_candidate_scores`'s `beats_best`, `is_aspiration`, and
+// `LocalMipWorker::run_attempt`'s own `improved` check already use for
+// "strictly better than the best found", so it is reused here rather
+// than introducing a second tolerance for the same question.
+//
+// Paper Definition 2 additionally requires `obj(s) >= obj(s*)`; this
+// function is not guarded on that precondition, and was not before this
+// fix either -- left unguarded deliberately (issue #129 cold review
+// filed it separately rather than folding a behaviour change into this
+// fix).
 double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_obj,
                                   double best_obj) {
     double obj_coeff = ctx.col_cost[j];
@@ -177,7 +206,9 @@ double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_o
         obj_gap = -obj_gap;
     }
 
-    double delta = -obj_gap / obj_coeff;
+    // `+ ctx.epsilon`: paper Definition 2's own eps, dropped before this
+    // fix -- see the comment above.
+    double delta = -(obj_gap + ctx.epsilon) / obj_coeff;
 
     if (ctx.is_int(j)) {
         delta = (obj_coeff > 0) ? std::floor(delta) : std::ceil(delta);

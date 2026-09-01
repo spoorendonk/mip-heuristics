@@ -299,15 +299,16 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             } else {
                 // Issue #129: a failed lift falls through to Algorithm 2's
                 // candidate generation in the SAME iteration, instead of a
-                // standalone weight update followed by looping -- paper
-                // Algorithm 1 lines 8-11 run every iteration, and only a
-                // *successful* lift skips them (the authors' own
-                // implementation falls straight through to this same
-                // exploration on a failed lift). `infeasible_step` handles
-                // an empty `ctx_.violated` on its own (see its comment in
-                // local_mip_core.h): Phase 1b's breakthrough moves are
-                // unconditional on `best_feasible_` -- Algorithm 2 lines
-                // 5-6 with the tight-move term empty -- and its own Phase 4
+                // standalone weight update followed by looping. The
+                // reference implementation's `run_search` is unconditional
+                // about calling the neighbourhood search every iteration
+                // and only `continue`s past it on a *successful* lift
+                // (github.com/shaowei-cai-group/Local-MIP); paper
+                // Algorithm 1 line 8 reads the same way. `infeasible_step`
+                // handles an empty `ctx_.violated` on its own (see its
+                // comment in local_mip_core.h): Phase 1's tight-move half
+                // is vacuous, Phase 1b's breakthrough moves are
+                // unconditional on `best_feasible_`, and its own Phase 4
                 // weight update reads `ctx_.violated` to bump `w(obj)`
                 // rather than the standalone call this replaces.
                 Candidate cand = infeasible_step(ctx_, rng_, step_, best_feasible_, best_objective_,
@@ -315,11 +316,49 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 if (cand.var_idx != -1) {
                     ctx_.apply_move_with_tabu(cand.var_idx, cand.new_val, step_, rng_);
                     ++steps_since_improvement_;
+                    if (!ctx_.violated.empty()) {
+                        // Cold-review fix (#129): this move can leave the
+                        // row set violated while `ctx_.lift.all_dirty` is
+                        // still false (the lift cache was being maintained
+                        // incrementally, since we were feasible up to this
+                        // move). Before this fall-through existed, an
+                        // infeasible episode could only be *entered* via
+                        // `rebuild_state()` (restart / random walk /
+                        // activity refresh), which already marks the
+                        // cache fully dirty -- so "any infeasible episode
+                        // starts with `all_dirty == true`" held for free.
+                        // This move is a second way to enter one, and it
+                        // does not go through `rebuild_state()`. Every
+                        // move made while genuinely infeasible marks
+                        // nothing dirty (`apply_move`'s `dirty_lift` is
+                        // false whenever `ctx_.was_infeasible` is true,
+                        // which `infeasible_step` now sets from this same
+                        // `ctx_.violated` on its *next* call), so without
+                        // restoring the invariant here, the eventual
+                        // return to feasible mode would recompute only
+                        // the column this move touched via
+                        // `ctx_.lift.recompute_all`'s `dirty_list` path and
+                        // serve stale scores -- including a stale
+                        // `in_positive` membership, not just a stale
+                        // value -- for every other column the infeasible
+                        // episode moves. Marked here, at the one place
+                        // that can newly *cause* such an episode, rather
+                        // than on every `need_full_recheck` in the
+                        // feasible branch above: that fires every
+                        // `kFeasibleRecheckPeriod` (100) steps regardless
+                        // of infeasibility, and forcing a full lift
+                        // recompute there would defeat the incremental
+                        // cache on a much hotter path than this one.
+                        ctx_.lift.mark_all_dirty();
+                    }
                 }
                 // else: every phase found nothing to do -- a true no-op
                 // iteration.  The plateau counter must not accumulate it
                 // (issue #129 point 3); `infeasible_step`'s own Phase 4
                 // already charged whatever weight update it decided on.
+                // Rare on real instances (measured: 0/6 on a spot check
+                // of p0548/egout/bell5/3015/gt2/lseu) but not unreachable
+                // -- every candidate can be tabu simultaneously.
             }
 
             if (steps_since_improvement_ >= kFeasiblePlateau) {
@@ -376,7 +415,8 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             // else: every phase found nothing to do -- a true no-op
             // iteration, symmetric with the feasible branch above (issue
             // #129 point 3): nothing changed, so the plateau counter must
-            // not move either.
+            // not move either. Rare (see the feasible branch's comment)
+            // but reachable, not dead code.
         }
 
         // Activity refresh

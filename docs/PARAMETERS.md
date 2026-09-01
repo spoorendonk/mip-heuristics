@@ -466,6 +466,10 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   before triggering a random-walk perturbation (engineering extension to
   paper §4.1). After `kFeasiblePlateau` plateau steps the worker
   perturbs its solution and resets weights to escape the local optimum.
+  A "step" here means an iteration in which a candidate move was
+  actually applied (issue #129): a failed lift that falls through to
+  Algorithm 2's candidate search and finds nothing at all does not
+  advance this counter, so it no longer inflates on a true no-op.
 - **Suggested range**: 1000–20000.
 
 ---
