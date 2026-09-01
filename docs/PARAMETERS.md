@@ -84,9 +84,17 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 - **File**: `src/prop_engine.cpp` (anonymous namespace)
 - **Default**: `100`
-- **Unit**: matrix coefficient accesses per nonzero of the model (a
-  `propagate()` call's budget is `kPropagateBudgetPerNnz * nnz`, where
-  `nnz` is `ar_start[nrow]` for the `PropEngine` instance).
+- **Unit**: what `prop_work` (the counter this budget gates) actually
+  counts is narrower than "matrix coefficient accesses": once per row
+  popped from the worklist, the row's length (`ar_start[i+1] -
+  ar_start[i]`), added once. It does **not** count Pass 2's rescan of
+  that same range, `update_activities`' per-changed-column scan, or
+  `seed_worklist`'s per-changed-column row scan — all real coefficient
+  accesses the call makes. Real accesses per call therefore run roughly
+  2-3x the counted `prop_work`, so a `propagate()` call's *counted*
+  budget is `kPropagateBudgetPerNnz * nnz` (`nnz` = `ar_start[nrow]` for
+  the `PropEngine` instance) but its *actual* matrix-access ceiling is
+  higher by that same factor.
 - **Scope**: **per call** to `propagate()`, not whole-run. The paper
   (Sect. 6) imposes "a number of matrix accesses of at most 100 times
   the number of nonzeros in the presolved model" as a whole-run
@@ -99,9 +107,16 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   fixpoint pass pathologically failing to converge (see the
   geometric-decay construction in
   `tests/test_prop_engine.cpp`, "budget exhaustion is sound but
-  incomplete"), sized at the paper's own multiplier so that one call
-  cannot itself consume an entire attempt's budget before any outer gate
-  is polled.
+  incomplete"). `kPropagateBudgetPerNnz` **borrows** the paper's own
+  multiplier as a starting scale, not a literal accounting (see Unit
+  above for why the two diverge) — the goal is that one call cannot
+  itself consume an entire attempt's budget before any outer gate is
+  polled, which a factor-of-2-3 undercount does not threaten.
+- Raising this constant also raises the worst-case indivisible unit of
+  work between two wall-clock deadline polls in the FPR DFS and in
+  RepairSearch — see `docs/PARAMETERS.md`, "What bounds the deadline's
+  tightness", "One propagation fixpoint" for the exact multiplier this
+  raise (10x, `10 * nnz` to `100 * nnz`) carried through to that budget.
 - **Meaning on exhaustion** (issue #127): `propagate()` returns
   `PropResult::kBudgetExhausted`, distinct from `kInfeasible`. Every
   caller must **not** treat exhaustion as a pruning verdict — the
@@ -1246,9 +1261,19 @@ carries the same coverage gap #117's setup bail-outs do.
 **The residual floors, none of which a constant can cross:**
 
 - **One propagation fixpoint.** A DFS node is a `fix` plus an AC-3
-  fixpoint over the whole model; `PropEngine::propagate` has no abort
-  channel (its `bool` return means *infeasible*), so a poll inside it
-  would be a different change.
+  fixpoint over the whole model; `PropEngine::propagate` has no *deadline*
+  abort channel -- its `kBudgetExhausted` return (#127) is a matrix-access
+  budget, polled only between rows, not the wall clock, so a poll on the
+  clock itself inside it would be a different change (filed separately;
+  not this entry). #127 also raised `kPropagateBudgetPerNnz` 10x (`10 *
+  nnz` to `100 * nnz`), which multiplies this bullet's own floor by the
+  same 10x: `kDeadlinePollNodes` = 16 DFS nodes between polls, each up to
+  one `propagate()` call, so the worst case between two FPR DFS polls
+  went from ~`160 * nnz` to ~`1600 * nnz` matrix accesses; a RepairSearch
+  node polls every node but does two fixpoints (`apply_branch_to_r` on R,
+  `sync_changes` on E), so its per-poll worst case went from `20 * nnz` to
+  `200 * nnz`. See `kPropagateBudgetPerNnz`'s own entry above for why the
+  raise was still correct despite this.
 - **One `compute_var_order`.** All three of FPR, Scylla and `fpr_lp`
   precompute variable orders on the dispatching thread before any worker
   exists — eight orders for FPR, five for Scylla and ten for `fpr_lp`

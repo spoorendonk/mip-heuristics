@@ -273,7 +273,19 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
             E.seed_worklist(j);
         }
     }
-    E.propagate(-1);
+    // Verdict deliberately discarded (pre-existing; propagate() becoming
+    // [[nodiscard]] under #127 is what makes this explicit now). Nothing
+    // below reads it: the DFS root-node seeding just past this point walks
+    // var_order looking for the first unfixed integer and does not consult
+    // whether this trivial-fixings round reached a full fixpoint, ran into
+    // the budget (kBudgetExhausted -- sound either way, see PropResult), or
+    // proved the model inconsistent (kInfeasible) before it could finish.
+    // An undetected kInfeasible here is not silently wrong: any column left
+    // with lb > ub fails every subsequent E.fix() the DFS tries on it, so
+    // the attempt backtracks and eventually reports failed rather than
+    // producing an unsound result -- just later and less directly than
+    // catching it here would. Not fixed in #125/#127; out of scope for both.
+    static_cast<void>(E.propagate(-1));
 
     // --- Phase 2 setup -------------------------------------------------------------
     state.dynamic_var = is_dynamic_var_strategy(cfg.strategy->var_strategy);

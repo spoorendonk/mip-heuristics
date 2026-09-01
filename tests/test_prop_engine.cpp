@@ -111,7 +111,7 @@ TEST_CASE("PropEngine: reset clears state", "[prop-engine]") {
     auto eng = m.make_engine();
 
     eng.fix(0, 1.0);
-    eng.propagate(0);
+    static_cast<void>(eng.propagate(0));  // side effect only; verdict unused
     REQUIRE(eng.var(0).fixed);
 
     eng.reset();
@@ -128,7 +128,7 @@ TEST_CASE("PropEngine: effort tracking", "[prop-engine]") {
 
     size_t before = eng.effort();
     eng.fix(0, 1.0);
-    eng.propagate(0);
+    static_cast<void>(eng.propagate(0));  // side effect only; verdict unused
     REQUIRE(eng.effort() > before);
 
     eng.add_effort(100);

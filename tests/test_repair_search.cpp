@@ -28,6 +28,11 @@
 //      *current* domain and therefore rejects any value outside it --
 //      i.e. always, for a genuinely disjoint pair -- so the node was
 //      dropped instead of repaired.
+//
+// `E`/`R` throughout this file are the paper's own symbols for the
+// primary/secondary propagation engines (Fig. 5), matching the existing
+// NOLINT precedent in repair_search.cpp -- each local declaration below
+// carries its own NOLINTNEXTLINE for the same reason.
 // ===================================================================
 
 TEST_CASE("sync_changes: flips an already-fixed binary via clique propagation",
@@ -51,6 +56,7 @@ TEST_CASE("sync_changes: flips an already-fixed binary via clique propagation",
     // its bounds genuinely narrowed to [0,0] -- this is the realistic
     // state (not a decision-fix, whose bounds stay wide), and the case
     // that defeats a naive `fix()`-based re-sync: [0,0] cannot hold 1.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
                  col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
     REQUIRE(E.fix(0, 1.0));
@@ -65,6 +71,7 @@ TEST_CASE("sync_changes: flips an already-fixed binary via clique propagation",
     // R: the secondary engine, after RepairSearch applies the opposite
     // branch (fix x1=1) and propagates it.  Clique propagation forces
     // x0 down to 0 in R -- the swap RepairSearch is supposed to detect.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine R(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
                  col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
     REQUIRE(R.fix(1, 1.0));
@@ -101,11 +108,13 @@ TEST_CASE("sync_changes: agreeing domains are left alone", "[repair-search][sync
     CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
     const double feastol = 1e-6;
 
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
                  col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
     REQUIRE(E.fix(0, 1.0));
     REQUIRE(E.propagate(0) == PropResult::kFixpoint);
 
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine R(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
                  col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
     REQUIRE(R.fix(0, 1.0));
@@ -135,6 +144,7 @@ TEST_CASE("sync_changes: disjoint domains fix to the nearest endpoint of R's dom
     const double feastol = 1e-6;
 
     // E: domain D = [1, 3], still unfixed.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
                  col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
     REQUIRE(E.tighten_lb(0, 1.0));
@@ -144,6 +154,7 @@ TEST_CASE("sync_changes: disjoint domains fix to the nearest endpoint of R's dom
     REQUIRE(E.var(0).ub == Catch::Approx(3.0));
 
     // R: domain Dr = [4, 5] -- the paper's own worked example.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine R(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
                  col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
     REQUIRE(R.tighten_lb(0, 4.0));
@@ -163,12 +174,26 @@ TEST_CASE("sync_changes: disjoint domains fix to the nearest endpoint of R's dom
 }
 
 // ===================================================================
-// Full RepairSearch() integration test (acceptance criterion): a binary
-// swap produced end to end, not just by the isolated sync_changes call
-// above.
+// Full repair_search() integration test (acceptance criterion): the
+// SyncChanges flip fires with the whole DFS/backtrack machinery around
+// it, not just in the isolated sync_changes call above.
+//
+// Scope, precisely: this model's *returned solution* does not by itself
+// discriminate the fix -- reverting sync_changes to its pre-#125 skip
+// still leaves `feasible` true and both row assertions passing, because
+// WalkSAT's own move selection (driven by `lhs_cache`/`solution` against
+// the columns' *global* bounds, independent of E) can rediscover "shift
+// x0 back to 0" on its own once x1's flip makes row0 violated, in this
+// small a model. What *does* discriminate -- and is what this test
+// pins -- is `E.var(0).val`: only the #125 fix makes the primary engine's
+// own bookkeeping reflect the swap, which is the fact `sync_changes` is
+// specifically responsible for and the two isolated tests above already
+// prove in the general case. The two direct sync_changes tests above are
+// the ones that discriminate unconditionally.
 // ===================================================================
 
-TEST_CASE("RepairSearch: produces a binary swap on a clique-constrained model", "[repair-search]") {
+TEST_CASE("RepairSearch: SyncChanges' flip is visible in E after a full search",
+          "[repair-search]") {
     // Same clique model as the sync_changes swap test, plus a second row
     // that only x1 can satisfy (x1 >= 1), so the starting assignment
     // (x0=1, x1=0, matching a DFS that fixed x0=1 first) violates
@@ -191,6 +216,7 @@ TEST_CASE("RepairSearch: produces a binary swap on a clique-constrained model", 
     // still unfixed in the current node it is fixed to the same
     // value").  Deliberately *not* propagated here, so x1 stays open
     // for RepairSearch's own move selection to pick up.
+    // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
                  col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
     REQUIRE(E.fix(0, 1.0));

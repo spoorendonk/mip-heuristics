@@ -139,6 +139,17 @@ struct Branch {
     bool is_lb;
 };
 
+// Known limitation (#131, discovered while implementing #125, not fixed
+// here -- out of both issues' stated scope): the binary detection below
+// is `[lb, ub] == [0, 1]`, which degenerates once a binary column's
+// domain has been narrowed to a singleton -- by ordinary AC-3 auto-fix
+// (`tighten_lb`/`tighten_ub` in prop_engine.cpp) or, since #125, by
+// `PropEngine::refix`, which produces the identical narrow shape by
+// design (see its header comment in prop_engine.h). Such a column falls
+// through to the non-binary gap-split path below and produces a vacuous
+// `x <= v \/ x >= v` disjunction instead of an actual flip choice --
+// gating the production binary-swap pipeline one level further up than
+// the `sync_changes` fix addresses.
 std::pair<Branch, Branch> move_to_disjunction(const PropEngine& E, const PropEngine& R,
                                               HighsInt var, double move_val) {
     double e_lb = E.var(var).lb;

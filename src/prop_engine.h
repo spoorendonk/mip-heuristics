@@ -124,17 +124,26 @@ public:
     // domains are disjoint), so the only bound that should gate it is the
     // column's *structural* one -- `col_lb`/`col_ub`, the original problem
     // bounds -- not whatever this engine's own propagation had narrowed it
-    // to.  Narrows `[lb, ub]` to the singleton `[value, value]` (a
-    // coherent fixed state, unlike `fix()` which leaves the pre-fix bounds
-    // in place) so a later caller cannot see a fixed column with a wider
-    // domain than its value.  Returns false only if `value` falls outside
-    // the column's structural bounds -- callers of `refix()` in
-    // `sync_changes` always derive `value` from the secondary engine R's
-    // own domain, which is itself always inside the structural bounds, so
-    // this should not fail in practice; any deeper inconsistency with the
-    // *rest* of the primary engine's state is a job for the propagation
-    // that follows, not for this call (paper's own ordering: flip, then
-    // let propagation judge).
+    // to.  Narrows `[lb, ub]` to the singleton `[value, value]`, unlike
+    // `fix()`, which leaves the pre-fix bounds in place: a column `fix()`
+    // committed keeps whatever `[lb, ub]` it had before the call (wide, for
+    // a DFS decision-fix that never got its own bounds tightened) and can
+    // therefore still show a fixed column with a domain wider than its
+    // value -- this asymmetry is not incidental, it is what lets `fix()`
+    // accept a later flip of its own commitment inside the same wide
+    // bounds.  `refix()`'s narrowing has no such reason to stay wide (its
+    // whole point is a fresh, unambiguous commitment) and produces the
+    // same *shape* of narrow-fixed column that an auto-fix does via
+    // `tighten_lb`/`tighten_ub` -- see the `move_to_disjunction` binary
+    // detection note in `repair_search.cpp` and issue #131: `refix()` is a
+    // second producer of that degeneracy, not a fix for it.  Returns false
+    // only if `value` falls outside the column's structural bounds --
+    // callers of `refix()` in `sync_changes` always derive `value` from
+    // the secondary engine R's own domain, which is itself always inside
+    // the structural bounds, so this should not fail in practice; any
+    // deeper inconsistency with the *rest* of the primary engine's state
+    // is a job for the propagation that follows, not for this call
+    // (paper's own ordering: flip, then let propagation judge).
     bool refix(HighsInt j, double value);
 
     // Tighten lower bound of variable j. Returns false if infeasible.
@@ -147,8 +156,14 @@ public:
     // that variable's rows. If fixed_var == -1, assumes worklist already seeded.
     // Returns kInfeasible only on a proven bound inconsistency; a per-call
     // matrix-access budget hit returns kBudgetExhausted, which is not a
-    // verdict -- see PropResult above.
-    PropResult propagate(HighsInt fixed_var = -1);
+    // verdict -- see PropResult above. [[nodiscard]] because the three
+    // outcomes are not interchangeable (issue #127): a caller that drops
+    // the return would silently treat every call as a fixpoint, the same
+    // shape of bug this three-valuing fixed. A caller that genuinely has
+    // nothing to decide from the verdict discards it explicitly with
+    // `static_cast<void>` and a reason, matching the `-Werror=unused-result`
+    // culture this project already applies to `IncumbentSink::offer`.
+    [[nodiscard]] PropResult propagate(HighsInt fixed_var = -1);
 
     // Add rows of variable j to the propagation worklist.
     void seed_worklist(HighsInt j);

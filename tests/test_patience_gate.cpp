@@ -267,6 +267,34 @@ TEST_CASE("patience gate: mip_heuristic_fpr_patience=0 restores budget-tracking"
     REQUIRE(static_cast<double>(ungated) > kMaxGrowth * static_cast<double>(gated));
 }
 
+// The same gated-vs-ungated shape as the flugpl case above, applied to
+// p0548 -- the case `kMaxGrowth` in `check_gate_binds` is calibrated
+// against (see that constant's comment for the #125/#127 reproduction).
+// This is the more robust check CLAUDE.md's testing section asks for
+// ("assert the mechanism" over adjusting a constant): it compares the
+// gate on against the gate off at the *same* effort, so it is immune to
+// a future FPR improvement walking the gated number up further, the way
+// #125/#127 already did once (3.68M -> 8.89M at kHighEffort) -- as long
+// as the gate keeps binding at all, this passes regardless of where the
+// gated number sits. Measured: gated 8,889,916, ungated 92,733,453, a
+// 10.4x separation. `kMaxGrowth` (8x) is reused rather than a second
+// constant, matching the flugpl test above -- note it is therefore used
+// in *both* directions across this file (an upper bound in
+// `check_gate_binds`, a lower bound here and in the flugpl case): a
+// future widening for one purpose silently loosens the other. Neither
+// direction is anywhere near its margin today (5.48x measured against
+// the 8x ceiling, 10.4x measured against the 8x floor), so this is a
+// latent coupling to keep in mind, not a live conflict.
+TEST_CASE("patience gate: FPR on p0548 binds against its own ungated spend", "[patience]") {
+    const ScopedThreadPin pin;
+    const size_t gated = effort_at("p0548.mps", "fpr", "mip_heuristic_fpr_effort", kHighEffort, 1);
+    const size_t ungated =
+        effort_at("p0548.mps", "fpr", "mip_heuristic_fpr_effort", kHighEffort, 1, /*patience=*/0);
+    REQUIRE(gated > 0);
+    INFO("gated=" << gated << " ungated=" << ungated);
+    REQUIRE(static_cast<double>(ungated) > kMaxGrowth * static_cast<double>(gated));
+}
+
 // The instance #111 recorded as its known miss, now asserted on.
 //
 // `fpr/egout` was 19.98x before #111 and 19.98x after it: FPR genuinely

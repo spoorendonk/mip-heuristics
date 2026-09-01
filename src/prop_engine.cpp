@@ -19,9 +19,14 @@ namespace {
 // This constant is what remains once exhaustion is no longer a verdict --
 // a per-call safety valve against a single AC-3 fixpoint pass pathologically
 // failing to converge (see the geometric-decay construction in
-// tests/test_prop_engine.cpp), sized at the paper's own multiplier so one
-// call cannot itself burn an entire attempt's budget before the outer
-// gates ever get polled.
+// tests/test_prop_engine.cpp), borrowing the paper's own multiplier as a
+// starting scale so one call cannot itself burn an entire attempt's budget
+// before the outer gates ever get polled -- not a literal accounting of the
+// paper's "matrix accesses": `prop_work` below counts only Pass 1's scan of
+// each row popped from the worklist, once; it does not count Pass 2's
+// rescan of that same range, `update_activities`' per-changed-column scan,
+// or `seed_worklist`'s per-changed-column row scan, so real coefficient
+// accesses per call run roughly 2-3x the counted `prop_work`.
 constexpr size_t kPropagateBudgetPerNnz = 100;
 }  // namespace
 
