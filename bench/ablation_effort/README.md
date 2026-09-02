@@ -141,6 +141,29 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   number this derivation rests on. The option ceiling was raised to `1e6` so a
   future probe keeps the headroom the old unit gave it.
 
+* **#152 — OPEN, and it blocks the re-run.** Every clock-bound Scylla
+  dispatch retires at roughly half its wall-clock limit: the shared PDLP
+  `Highs` instance's own timer accumulates across solves while the per-solve
+  limit is set from the *remaining* deadline, the two meet partway, presolve
+  returns a timeout, and the cleared solution reads as a failed solve. Measured
+  at 50.9 % of the limit, constant across 4 / 8 / 16 s, at `threads=1`. **This
+  strikes the property the whole design rests on** — "the wall clock was the
+  single stopping rule, identical for every heuristic on every instance". If it
+  applies at 16 workers (the mechanism is on the shared instance, so it should,
+  but it has not been confirmed at that worker count), Scylla's arm of the run
+  above saw a ~15 s cap where the other three saw 30 s: its knee is understated,
+  its barren rate and its 96 barren dispatches are inflated, and its 112
+  "finished improving" dispatches include ones that were merely truncated.
+  Scylla's is the one arm whose numbers should be treated as measuring
+  something other than what the table says.
+* **#140 — landed, and it moves the axis.** Driving the pump's epsilon through
+  `kkt_tolerance` reaches cuPDLP's primal and dual feasibility tolerances,
+  which the schedule never relaxed before. Charged effort per pump iteration
+  fell to 0.13-0.60x on an indicative six-instance A/B. The effort default is a
+  quantile *on the charged-effort axis*, so Scylla's number moves partly for a
+  unit-like reason rather than a purely behavioural one — worth separating when
+  reading the re-run against this table.
+
 **The precondition was: wait for every code issue above, then run it once.**
 This is a ~9 h overnight window on a bench machine, and each of those changes
 alters either what the binary does or how a dispatch is classified, so a run
@@ -150,8 +173,10 @@ a trajectory the solver measured rather than one reconstructed offline, on a
 binary whose setup paths are bounded and whose barren dispatches are honestly
 labelled. The whole point of the exercise is the second thing.
 
-Precondition, concretely: **satisfied** — #116, #117, #119 and #118 are all
-landed. The re-run is unblocked. What it buys is exactly what the four
+Precondition, concretely: **not satisfied — #152 is open and blocks it.**
+#116, #117, #119 and #118 are all landed; #152 arrived after them and strikes
+the clock-bound property directly, so it must be fixed before the window is
+spent. #140 has also landed and moves Scylla's effort axis. What it buys is exactly what the four
 entries above describe, and every number in this file stays provisional until
 it has been taken.
 
