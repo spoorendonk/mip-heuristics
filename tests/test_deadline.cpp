@@ -605,3 +605,115 @@ TEST_CASE("deadline: an fpr_lp setup skipped for want of an LP is not a deadline
     CHECK(!skipped.deadline_bail);
     CHECK(skipped.lp_iterations == 0);
 }
+
+// ===================================================================
+// ...and the engine is armed where production builds it (#151)
+//
+// #151 put the poll inside `PropEngine::propagate`, and an engine only
+// polls a clock somebody handed it.  Three lines do that handing: the
+// `set_deadline` in `fpr_core.cpp`'s `acquire_engine`, the two in
+// `repair_search`, and — for the poll to be worth anything to the DFS —
+// the `kDeadlineExpired` break in `fpr_attempt_step`.  A cold review of
+// the first version of this fix found all three uncovered: deleting the
+// `acquire_engine` arming, which is the exact bug its own comment warns
+// about, left the whole suite green, and so did neutralising the DFS
+// break together with `repair_search`'s arming.  The unit cases in
+// `tests/test_prop_engine.cpp` arm an engine by hand, so they pin the
+// poll and nothing about who arms it — the same shape as the
+// `select_ref` finding #128 records, and there is no `switch` on
+// `PropResult` anywhere, so `-Werror=switch` supplies no checklist here
+// either.
+//
+// This drives the *lifecycle* API rather than the one-shot
+// `fpr_attempt`, because the hazard is the reuse path: the engine is
+// cached in `FprScratch` across attempts, so an arming that runs only
+// where the engine is constructed leaves every later attempt polling a
+// stale limit.  The limit is therefore moved *between* the two
+// attempts, and attempt 2's assertion is what a construction-only
+// arming fails.
+TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just the first",
+          "[deadline]") {
+    // A limit no attempt here can reach, and one already behind the
+    // solver's clock — which started when the model was read, so a
+    // microsecond is past by construction rather than by a race.  Not
+    // `kHighsInf` for the live one: `make_deadline` collapses an infinite
+    // limit to a null timer, which is the un-armed case and would make
+    // the assertions below say nothing.
+    constexpr double kLiveLimit = 3600.0;
+    constexpr double kExpiredLimit = 1e-6;
+
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    // `p0548` for the reason `one_attempt_effort` above uses it: a DFS
+    // whose per-node propagation cascade is big enough to reach the poll.
+    auto mipsolver = build_bare_mipsolver(highs, cb, "p0548.mps", kLiveLimit);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+
+    FprScratch scratch;
+    FprConfig cfg{};
+    cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
+    cfg.csc = &csc;
+    cfg.mode = FrameworkMode::kDfs;
+    cfg.strategy = &kStratLocks;
+    cfg.binary_mask = problem.binary.data();
+    cfg.scratch = &scratch;
+
+    Rng rng(0);
+
+    // Attempt 1 — the construction path.
+    FprAttemptState first;
+    fpr_attempt_begin(first, *mipsolver, cfg, rng, 0);
+    REQUIRE(scratch.prop_engine.has_value());
+    // Without this the node assertion at the end is vacuous: a
+    // non-propagating mode never calls `propagate` from the DFS at all.
+    REQUIRE(first.do_propagate);
+    CHECK(scratch.prop_engine->deadline().timer == &mipsolver->timer_);
+    CHECK(scratch.prop_engine->deadline().limit == kLiveLimit);
+
+    // Run it out, so the next `begin` sees a genuinely reused engine
+    // rather than one abandoned mid-DFS.
+    while (fpr_attempt_step(first, *mipsolver, cfg, rng, cfg.max_effort) ==
+           FprStepResult::kBudgetGate) {
+    }
+    static_cast<void>(fpr_attempt_finish(first, *mipsolver, cfg, rng));
+
+    // Attempt 2 — the reuse path, with the limit moved behind the clock.
+    // `deadline_of` reads `options_mip_`, which aliases the live `Highs`
+    // options, so this is the limit the next `begin` is obliged to pick
+    // up.  An arming confined to the construction path leaves the engine
+    // on `kLiveLimit` and fails here.
+    require_option(highs, "time_limit", kExpiredLimit);
+    FprAttemptState second;
+    fpr_attempt_begin(second, *mipsolver, cfg, rng, 1);
+    REQUIRE(scratch.prop_engine.has_value());
+    CHECK(scratch.prop_engine->deadline().timer == &mipsolver->timer_);
+    CHECK(scratch.prop_engine->deadline().limit == kExpiredLimit);
+
+    // And the expiry reaches the DFS: the first propagating node's
+    // fixpoint returns `kDeadlineExpired` and `step` breaks out at once,
+    // instead of running the whole `kDeadlinePollNodes` batch that its
+    // own pre-node poll would allow.  Both halves are load-bearing — an
+    // un-armed engine never returns the state, and a `step` that ignores
+    // it visits the full batch.
+    static_cast<void>(fpr_attempt_step(second, *mipsolver, cfg, rng, cfg.max_effort));
+    INFO("nodes visited under an already-expired deadline: " << second.nodes_visited);
+    // The DFS stopped rather than finished -- otherwise the node count
+    // below would be small for a reason that has nothing to do with the
+    // clock, and both mutations would pass it.
+    CHECK_FALSE(second.found_complete);
+    // Fewer than 15, which is what a `step` that never sees a
+    // `kDeadlineExpired` visits: `kDeadlinePollNodes` is 16 and the
+    // pre-node poll fires at the *top* of the sixteenth iteration, before
+    // that node is counted.  Measured 10 with the wiring in place and 15
+    // with either half of it removed (the `acquire_engine` arming, or the
+    // break itself).  The exact 10 is not asserted -- it is a function of
+    // where `kPropagateDeadlinePollWork` falls in each node's cascade --
+    // but the gap between the two is the mechanism, and it is what this
+    // discriminates.
+    CHECK(second.nodes_visited < 15);
+    static_cast<void>(fpr_attempt_finish(second, *mipsolver, cfg, rng));
+}

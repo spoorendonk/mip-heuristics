@@ -112,14 +112,19 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   above for why the two diverge) — the goal is that one call cannot
   itself consume an entire attempt's budget before any outer gate is
   polled, which a factor-of-2-3 undercount does not threaten.
-- Raising this constant also raises the worst-case indivisible unit of
-  work between two wall-clock deadline polls in the FPR DFS and in
-  RepairSearch — see `docs/PARAMETERS.md`, "What bounds the deadline's
-  tightness", "One propagation fixpoint" for the exact multiplier this
-  raise (10x, `10 * nnz` to `100 * nnz`) carried through to that budget.
+- Raising this constant **no longer** raises the worst-case indivisible
+  unit of work between two wall-clock deadline polls (issue #151). It
+  did between #127 and #151 — the 10x raise from `10 * nnz` to
+  `100 * nnz` multiplied that unit by the same 10x, because a fixpoint
+  could only be stopped by this budget. The fixpoint now polls the clock
+  itself on a cadence of its own (`kPropagateDeadlinePollWork`, next
+  entry), so the two constants are independent: this one sizes how much
+  work a slow fixpoint may do, that one sizes how far past the deadline
+  it may run.
 - **Meaning on exhaustion** (issue #127): `propagate()` returns
-  `PropResult::kBudgetExhausted`, distinct from `kInfeasible`. Every
-  caller must **not** treat exhaustion as a pruning verdict — the
+  `PropResult::kBudgetExhausted`, distinct from `kInfeasible` and from
+  `kDeadlineExpired`. Every caller must **not** treat exhaustion as a
+  pruning verdict — the
   partial fixpoint reached so far is sound (every tightening applied is
   a valid deduction), just incomplete. It used to be folded into a
   single `bool` return that every caller read as "infeasible, prune this
@@ -131,6 +136,56 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   the DFS with weaker deductions, not fewer nodes) without changing
   correctness. Raising it moves the safety valve further from the
   attempt/deadline gates that already bound total work.
+
+---
+
+### `kPropagateDeadlinePollWork` — wall-clock poll cadence inside `PropEngine::propagate`
+
+- **File**: `src/prop_engine.cpp` (anonymous namespace)
+- **Default**: `256`
+- **Unit**: counted `prop_work` — the same counter and the same
+  undercount `kPropagateBudgetPerNnz` is denominated in (see its **Unit**
+  above: real coefficient accesses run roughly 2-3x the counted figure).
+  It is deliberately an **absolute** constant, not a multiple of `nnz`
+  and not a fraction of the work budget.
+- **Meaning** (issue #151): a fixpoint reads the wall clock once every
+  `kPropagateDeadlinePollWork` counted units and returns
+  `PropResult::kDeadlineExpired` when the deadline has passed. The poll
+  sits at the same point in the loop as the work-budget check — after a
+  row's length has been counted, before that row is processed — so the
+  two truncating exits leave identical engine state, and the soundness
+  argument for one is the argument for the other. There is deliberately
+  **no poll on entry**: it would put a clock read on every DFS node
+  however small its fixpoint, and would let `propagate()` return having
+  charged nothing, which is the premise `fpr.cpp`'s no-progress guard
+  reasons from.
+- **The bound it buys.** One fixpoint cannot run more than
+  `kPropagateDeadlinePollWork` plus one row's length in counted units
+  past the deadline — roughly 2-3x that in real coefficient accesses —
+  **independent of `kPropagateBudgetPerNnz`, and of `nnz` up to that one
+  row**. The row term is not slack that could be tuned away: `prop_work`
+  grows a whole row at a time and Pass 1/2 treat a row as indivisible,
+  so on a model carrying a dense 100k-entry row the residual is ~100k
+  counted units, not the few microseconds the constant alone suggests.
+  Before #151 the whole figure was one entire `propagate()` call,
+  `kPropagateBudgetPerNnz * nnz`, which #127 had just multiplied by ten.
+- **Non-pruning, like `kBudgetExhausted`.** Neither truncation is a
+  verdict; only `kInfeasible` is. Each caller decides separately what an
+  expiry means *there*: the FPR DFS breaks out of the node loop
+  immediately (pushing the node back, so the paused stack matches the
+  pre-node deadline break), while `sync_changes` and `apply_branch_to_r`
+  in `repair_search.cpp` deliberately do not signal it outward — their
+  `bool` can only say "prune", and the RepairSearch loop already polls
+  the same deadline once per node.
+- **Suggested range**: the trade is poll frequency against clock-read
+  overhead. **The figures here are estimates, not measurements** — unlike
+  the timings elsewhere in this file, nothing in #151 was profiled: a
+  clock read is on the order of 20-30 ns against a few microseconds of
+  work per 256 counted units, so low single digits of percent on an armed
+  fixpoint and exactly nothing on an un-armed one (a null `Deadline` sets
+  the cadence counter to `SIZE_MAX`, so no clock is ever read). Lower it
+  only if a measured overrun demands it; raise it only with that overhead
+  measured.
 
 ---
 
@@ -1219,7 +1274,8 @@ read the reported effort rather than assuming the option was spent. They are reg
 
 - **File**: `src/deadline.h` (`Deadline`), `src/heuristic_context.h`
   (`ExecutionContext::past_deadline`, `deadline_of`), `src/fpr_core.cpp`
-  (`kDeadlinePollNodes`), `src/fpr_lp.cpp` (`build_setup`)
+  (`kDeadlinePollNodes`), `src/prop_engine.cpp`
+  (`kPropagateDeadlinePollWork`), `src/fpr_lp.cpp` (`build_setup`)
 
 The deadline is polled, never interrupted, so **it is only as tight as the
 coarsest indivisible unit of work between two polls** — and until #117
@@ -1234,7 +1290,7 @@ What each heuristic's coarsest unit is, after #117 and #118:
 |---|---|---|
 | FJ | one upstream callback, `CALLBACK_EFFORT` = 500000 effort units | constant |
 | LocalMIP | `kTermCheckInterval` = 1000 local-search steps | constant |
-| FPR | 16 DFS nodes (`kDeadlinePollNodes`), or one RepairSearch node | one propagation fixpoint |
+| FPR | one propagating DFS node, 16 non-propagating ones (`kDeadlinePollNodes`), or one RepairSearch node | `kPropagateDeadlinePollWork` of propagation |
 | Scylla | one pump round: one PDLP solve, then one FPR rounding (which polls as above) | one PDLP solve |
 | FPR, Scylla | one dispatch *setup* — see below | one `compute_var_order`, one shared-LP build |
 | fpr_lp | one dispatch *setup*: one of ten arms' `compute_var_order`, or one reference LP solve | one `compute_var_order`, one reference LP solve |
@@ -1264,20 +1320,29 @@ carries the same coverage gap #117's setup bail-outs do.
 
 **The residual floors, none of which a constant can cross:**
 
-- **One propagation fixpoint.** A DFS node is a `fix` plus an AC-3
-  fixpoint over the whole model; `PropEngine::propagate` has no *deadline*
-  abort channel -- its `kBudgetExhausted` return (#127) is a matrix-access
-  budget, polled only between rows, not the wall clock, so a poll on the
-  clock itself inside it would be a different change (filed separately;
-  not this entry). #127 also raised `kPropagateBudgetPerNnz` 10x (`10 *
-  nnz` to `100 * nnz`), which multiplies this bullet's own floor by the
-  same 10x: `kDeadlinePollNodes` = 16 DFS nodes between polls, each up to
-  one `propagate()` call, so the worst case between two FPR DFS polls
-  went from ~`160 * nnz` to ~`1600 * nnz` matrix accesses; a RepairSearch
-  node polls every node but does two fixpoints (`apply_branch_to_r` on R,
-  `sync_changes` on E), so its per-poll worst case went from `20 * nnz` to
-  `200 * nnz`. See `kPropagateBudgetPerNnz`'s own entry above for why the
-  raise was still correct despite this.
+- **Part of one propagation fixpoint** — and this is the one floor on
+  this list that stopped scaling with the model. A DFS node is a `fix`
+  plus an AC-3 fixpoint over the whole model, and until #151
+  `PropEngine::propagate` had no *deadline* abort channel at all: its
+  `kBudgetExhausted` return (#127) is a matrix-access budget, polled
+  between rows against a cap of `kPropagateBudgetPerNnz * nnz`, not
+  against the clock. So one fixpoint was indivisible, and #127's 10x
+  raise of that cap (`10 * nnz` to `100 * nnz`) multiplied this floor by
+  the same 10x — the worst case between two FPR DFS polls went from
+  ~`160 * nnz` to ~`1600 * nnz` matrix accesses, and a RepairSearch node,
+  which polls every node but does two fixpoints (`apply_branch_to_r` on
+  R, `sync_changes` on E), from `20 * nnz` to `200 * nnz`. **#151 moved
+  the poll inside the fixpoint**, on a cadence of its own
+  (`kPropagateDeadlinePollWork` = 256 counted units, its own entry
+  above), so the floor is now that cadence plus one row's length —
+  independent of `kPropagateBudgetPerNnz`, and of `nnz` up to that one
+  row, which on a model with a dense row is still the dominant term. The DFS breaks out on the expiry rather than finishing its
+  `kDeadlinePollNodes` batch, so a propagating node is the unit there;
+  `kDeadlinePollNodes` still governs the modes that do not propagate
+  (`mode_propagates(cfg.mode) == false`), where a node is a `fix` plus a
+  value choice and nothing bigger. The expiry travels as
+  `PropResult::kDeadlineExpired`, which is **not** a pruning verdict —
+  see `kPropagateDeadlinePollWork` for the per-caller decisions.
 - **One `compute_var_order`.** All three of FPR, Scylla and `fpr_lp`
   precompute variable orders on the dispatching thread before any worker
   exists — eight orders for FPR, five for Scylla and ten for `fpr_lp`

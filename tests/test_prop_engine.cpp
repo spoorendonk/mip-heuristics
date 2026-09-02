@@ -452,6 +452,88 @@ TEST_CASE("PropEngine: budget exhaustion is sound but incomplete, not infeasibil
     REQUIRE(eng.var(1).ub == Catch::Approx(1e300));
 }
 
+// ===================================================================
+// Deadline expiry vs. budget exhaustion vs. infeasibility (issue #151).
+//
+// Before #151 the only way out of a slow fixpoint was the work cap, so
+// the wall-clock deadline was only as tight as one whole `propagate()`
+// call -- `kPropagateBudgetPerNnz * nnz` counted accesses, which grows
+// with the model and grew tenfold when #127 raised that constant.  The
+// fixpoint now polls the clock itself, on a cadence that is a constant
+// in the same units.  The halving model above is the shape that made
+// this reachable: it is the one construction here where a single call
+// runs long enough for a clock to matter.
+//
+// No test in this file may depend on real elapsed time: an *already*
+// expired deadline (a limit behind the timer's origin) is what makes
+// these assertions exact rather than timing-dependent.
+// ===================================================================
+
+TEST_CASE("PropEngine: an expired deadline truncates the fixpoint, and is not infeasibility",
+          "[prop-engine][deadline]") {
+    HalvingModel m;
+    auto eng = m.make_engine();
+
+    // A fresh timer reads >= 0, so a limit of -1 s is unreachably past --
+    // expired on the first poll, with no dependence on wall time.  Built
+    // through `make_deadline`, the same constructor `deadline_of` uses.
+    HighsTimer timer;
+    eng.set_deadline(make_deadline(timer, -1.0));
+
+    HighsInt vs_m = eng.vs_mark();
+    HighsInt sol_m = eng.sol_mark();
+
+    eng.seed_worklist(0);
+    PropResult result = eng.propagate(-1);
+
+    // The clock stopped it, and it is a truncation, not a verdict: this
+    // model is feasible (x = y = 0) and reading the return as "prune"
+    // would discard a feasible subtree, exactly as with kBudgetExhausted.
+    REQUIRE(result == PropResult::kDeadlineExpired);
+    REQUIRE(result != PropResult::kInfeasible);
+
+    // Stopped by the clock rather than by the work cap: the poll cadence
+    // (`kPropagateDeadlinePollWork` = 256 counted units) is below this
+    // model's whole per-call budget (`kPropagateBudgetPerNnz * nnz` =
+    // 100 * 4 = 400), which the identical un-armed call above exhausts.
+    // This is the acceptance criterion in numbers -- the overrun is a
+    // constant, and does not scale with `kPropagateBudgetPerNnz`.
+    REQUIRE(eng.effort() > 0);
+    REQUIRE(eng.effort() < 400);
+
+    // Sound in exactly the sense kBudgetExhausted is: non-empty domains,
+    // nothing spuriously fixed, real partial progress applied.
+    REQUIRE(eng.var(0).lb <= eng.var(0).ub + eng.feastol());
+    REQUIRE(eng.var(1).lb <= eng.var(1).ub + eng.feastol());
+    REQUIRE_FALSE(eng.var(0).fixed);
+    REQUIRE_FALSE(eng.var(1).fixed);
+    REQUIRE(eng.var(0).ub < 1e300);
+
+    // Undo-stack consistency: a caller that continues past this node
+    // (rather than pruning it) must still backtrack cleanly.
+    eng.backtrack_to(vs_m, sol_m);
+    REQUIRE(eng.var(0).lb == Catch::Approx(0.0));
+    REQUIRE(eng.var(0).ub == Catch::Approx(1e300));
+    REQUIRE(eng.var(1).lb == Catch::Approx(0.0));
+    REQUIRE(eng.var(1).ub == Catch::Approx(1e300));
+}
+
+TEST_CASE("PropEngine: an unexpired deadline changes nothing", "[prop-engine][deadline]") {
+    // The poll must not fire on a live limit -- otherwise every armed
+    // fixpoint would truncate at the cadence and the work cap would
+    // become unreachable.  kHighsInf collapses to a null timer inside
+    // `make_deadline`; a large finite limit is the case that actually
+    // exercises the clock read.
+    HalvingModel m;
+    auto eng = m.make_engine();
+    HighsTimer timer;
+    eng.set_deadline(make_deadline(timer, 1e30));
+
+    eng.seed_worklist(0);
+    REQUIRE(eng.propagate(-1) == PropResult::kBudgetExhausted);
+    REQUIRE(eng.effort() > 400);
+}
+
 TEST_CASE("PropEngine: reset matches fresh construction (post-budget-exhaustion)",
           "[prop-engine][reset][budget]") {
     HalvingModel m;

@@ -19,12 +19,19 @@ namespace {
 
 // DFS nodes between two polls of the wall-clock deadline (issue #117).
 //
-// A node is a `fix` plus — in every propagating mode — a full propagation
+// A node is a `fix` plus, in every propagating mode, a propagation
 // fixpoint, so it already costs orders of magnitude more than the
 // `clock_gettime` behind `Deadline::expired()`; the cadence exists to keep
 // the poll off the hottest instruction path, not because the clock read is
-// expensive relative to the work it guards.  Sixteen bounds the overshoot
-// at sixteen nodes, and one node is the residual floor either way — see
+// expensive relative to the work it guards.
+//
+// What this cadence still governs, after #151, is the *non*-propagating
+// modes (`mode_propagates(cfg.mode) == false`), where a node is a `fix`
+// plus a value choice and nothing bigger.  A propagating node no longer
+// waits for it: the fixpoint polls the same clock itself every
+// `kPropagateDeadlinePollWork` counted accesses and the loop below breaks
+// out on `PropResult::kDeadlineExpired`, so the residual floor there is
+// part of one fixpoint rather than sixteen whole ones — see
 // `docs/PARAMETERS.md`, "What bounds the deadline's tightness".
 constexpr HighsInt kDeadlinePollNodes = 16;
 
@@ -128,6 +135,13 @@ PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMa
     } else {
         engine_opt->reset();
     }
+    // Arm the engine's own wall-clock poll (issue #151) on both paths: the
+    // cached engine survives across attempts, so a `set_deadline` only on
+    // the emplace path would leave every attempt after the first
+    // propagating against a null deadline.  `deadline_of` is one of the two
+    // sanctioned constructors, so the fixpoint stops against exactly the
+    // clock and limit the DFS loop below polls.
+    engine_opt->set_deadline(deadline_of(c.mipsolver));
     return *engine_opt;
 }
 
@@ -278,8 +292,13 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     // below reads it: the DFS root-node seeding just past this point walks
     // var_order looking for the first unfixed integer and does not consult
     // whether this trivial-fixings round reached a full fixpoint, ran into
-    // the budget (kBudgetExhausted -- sound either way, see PropResult), or
-    // proved the model inconsistent (kInfeasible) before it could finish.
+    // the budget or the wall clock (kBudgetExhausted / kDeadlineExpired --
+    // sound either way, see PropResult), or proved the model inconsistent
+    // (kInfeasible) before it could finish.
+    // The clock case needs nothing extra here: the round is now bounded by
+    // `kPropagateDeadlinePollWork` past an expiry (#151), and `step` then
+    // breaks out on its first propagating node (or, in a non-propagating
+    // mode, on its own `kDeadlinePollNodes` poll).
     // An undetected kInfeasible here is not silently wrong: any column left
     // with lb > ub fails every subsequent E.fix() the DFS tries on it, so
     // the attempt backtracks and eventually reports failed rather than
@@ -452,8 +471,24 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
             // incomplete propagation -- the DFS continues with whatever
             // was deduced so far rather than discarding a subtree that
             // may well be feasible.
-            if (E.propagate(node.var) == PropResult::kInfeasible) {
+            const PropResult pr = E.propagate(node.var);
+            if (pr == PropResult::kInfeasible) {
                 continue;
+            }
+            if (pr == PropResult::kDeadlineExpired) {
+                // The fixpoint's own poll fired (issue #151) -- this
+                // loop's poll arriving from one level down.  Stop here
+                // rather than carrying on for up to `kDeadlinePollNodes`
+                // more nodes, and stop the way the pre-node
+                // `deadline.expired()` break above stops: that one breaks
+                // *before* popping, so push `node` back to leave a paused
+                // stack of exactly the same shape.  This is not a prune --
+                // nothing was refuted, the node is simply unfinished, and a
+                // resume re-runs it from its own marks like any other
+                // (`backtrack_to` then `fix`) -- which is the whole reason
+                // #151 gave the clock a state distinct from `kInfeasible`.
+                dfs_stack.push_back(node);
+                break;
             }
         }
 

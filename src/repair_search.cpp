@@ -120,8 +120,15 @@ bool sync_changes(PropEngine& E, const PropEngine& R) {
         }
     }
     if (any_seeded) {
-        // Budget exhaustion (issue #127) is sound-but-incomplete, not a
-        // verdict; only a proven inconsistency fails the sync.
+        // Budget exhaustion (issue #127) and deadline expiry (#151) are
+        // both sound-but-incomplete, not verdicts; only a proven
+        // inconsistency fails the sync.  An expiry deliberately does *not*
+        // propagate outward through this `bool`: the only thing a `false`
+        // can mean to `repair_search` is "prune this node", which is the
+        // exact misreading #127 and #151 exist to prevent.  Promptness is
+        // already covered one level up -- the RepairSearch loop polls the
+        // same deadline on every node, so an expiry costs at most the
+        // remainder of the node it fired in.
         if (E.propagate(-1) == PropResult::kInfeasible) {
             return false;
         }
@@ -193,7 +200,11 @@ void backtrack_best_open(std::vector<RepairSearchNode>& Q) {
 
 // Apply a branch to R: fix or tighten, then propagate.
 // Returns false only on a proven inconsistency; budget exhaustion
-// (issue #127) leaves R sound but incomplete and does not fail the branch.
+// (issue #127) and deadline expiry (#151) each leave R sound but
+// incomplete and neither fails the branch -- a `false` here prunes, and
+// neither truncation refutes anything.  As in `sync_changes` above, an
+// expiry is not signalled outward: the loop below polls the same deadline
+// once per node, which bounds the wait at the rest of one node.
 bool apply_branch_to_r(PropEngine& R, const RepairSearchNode& node) {
     if (node.var < 0) {
         return true;  // root node — no branch
@@ -391,6 +402,15 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
     // back to the paper, which the standards rank above naming.
     // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine& R = *engine_r_opt;
+
+    // Arm both engines' internal fixpoint polls (issue #151) with this
+    // call's deadline, on the reuse path as much as on the construction
+    // path.  E is armed too, not only R: `sync_changes` propagates on E,
+    // and a standalone caller (a unit test, or any future one that does
+    // not come through `fpr_attempt_begin`'s `acquire_engine`) would
+    // otherwise leave that half of every node unbounded.
+    E.set_deadline(deadline);
+    R.set_deadline(deadline);
 
     size_t total_effort = 0;
     size_t e_effort_baseline = E.effort();

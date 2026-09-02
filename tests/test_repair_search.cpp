@@ -192,6 +192,71 @@ TEST_CASE("sync_changes: disjoint domains fix to the nearest endpoint of R's dom
 // the ones that discriminate unconditionally.
 // ===================================================================
 
+// ===================================================================
+// A deadline expiry inside a fixpoint must not prune (issue #151).
+//
+// `sync_changes` returns a `bool`, and the only thing a `false` can mean
+// to `repair_search` is "this node is infeasible, drop it".  So the new
+// `PropResult::kDeadlineExpired` must not reach that `false` -- the same
+// misreading #127 removed for the work budget.  Promptness at this site
+// is the RepairSearch loop's own per-node poll, not this return value.
+// ===================================================================
+
+TEST_CASE("sync_changes: an expired deadline truncates propagation without pruning",
+          "[repair-search][sync-changes][deadline]") {
+    // Two continuous columns, two rows: x - 2y >= 0 and y - 2x >= 0.
+    // Feasible at x = y = 0, but each row visit only halves the other
+    // column's upper bound, so a fixpoint takes ~log2(ub / feastol) row
+    // visits -- long enough for either stopping rule to fire.  (Same
+    // construction as the halving model in tests/test_prop_engine.cpp.)
+    const HighsInt ncol = 2;
+    const HighsInt nrow = 2;
+    std::vector<HighsInt> ar_start = {0, 2, 4};
+    std::vector<HighsInt> ar_index = {0, 1, 1, 0};
+    std::vector<double> ar_value = {1.0, -2.0, 1.0, -2.0};
+    std::vector<double> col_lb = {0.0, 0.0};
+    std::vector<double> col_ub = {1e300, 1e300};
+    std::vector<double> row_lo = {0.0, 0.0};
+    std::vector<double> row_hi = {kHighsInf, kHighsInf};
+    std::vector<HighsVarType> integrality = {HighsVarType::kContinuous, HighsVarType::kContinuous};
+    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
+    const double feastol = 1e-6;
+
+    // R restricts column 0, which is what gives `sync_changes` something
+    // to transfer into E and therefore something to propagate.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine R(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
+                 col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
+    REQUIRE(R.tighten_ub(0, 1e299));
+
+    // Control: with no deadline the sync succeeds having spent the whole
+    // per-call work budget (100 * nnz = 400 counted accesses).
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E_free(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc,
+                      col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
+                      integrality.data(), feastol);
+    REQUIRE(sync_changes(E_free, R));
+    REQUIRE(E_free.effort() > 400);
+
+    // Armed with a limit already behind the timer's origin: no dependence
+    // on real elapsed time, and expired on the fixpoint's first poll.
+    HighsTimer timer;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
+                 col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
+    E.set_deadline(make_deadline(timer, -1.0));
+
+    // The sync still succeeds -- the node is not pruned -- and it stopped
+    // on the clock, well short of the control's spend.
+    REQUIRE(sync_changes(E, R));
+    REQUIRE(E.effort() > 0);
+    REQUIRE(E.effort() < E_free.effort());
+    REQUIRE(E.effort() < 400);
+    // Sound: the domain E was left with is a legitimate partial fixpoint.
+    REQUIRE(E.var(0).lb <= E.var(0).ub + feastol);
+    REQUIRE(E.var(1).lb <= E.var(1).ub + feastol);
+}
+
 TEST_CASE("RepairSearch: SyncChanges' flip is visible in E after a full search",
           "[repair-search]") {
     // Same clique model as the sync_changes swap test, plus a second row
@@ -246,4 +311,69 @@ TEST_CASE("RepairSearch: SyncChanges' flip is visible in E after a full search",
     // forever (its sync_changes skipped every already-fixed column).
     REQUIRE(E.var(0).fixed);
     REQUIRE(E.var(0).val == Catch::Approx(0.0));
+}
+
+// ===================================================================
+// RepairSearch arms the engines it propagates on (#151)
+//
+// `repair_search` builds (or reuses, out of the scratch) the secondary
+// engine R and propagates on both it and E, so both have to be handed
+// this call's `Deadline` or #151's in-fixpoint poll is dead on the whole
+// Phase 3 path.  A cold review found the two `set_deadline` calls that
+// do it uncovered: removing them left the suite green.  Asserted through
+// the engines' own `deadline()` rather than through a timing, which
+// nothing here could make decidable.
+TEST_CASE("RepairSearch: E and R are armed with the call's deadline", "[repair-search][deadline]") {
+    // Reuses the shape of the search test above; the model does not
+    // matter here, only that `repair_search` is entered.
+    const HighsInt ncol = 2;
+    const HighsInt nrow = 2;
+    std::vector<HighsInt> ar_start = {0, 2, 3};
+    std::vector<HighsInt> ar_index = {0, 1, 1};
+    std::vector<double> ar_value = {1.0, 1.0, 1.0};
+    std::vector<double> col_lb = {0.0, 0.0};
+    std::vector<double> col_ub = {1.0, 1.0};
+    std::vector<double> row_lo = {-kHighsInf, 1.0};
+    std::vector<double> row_hi = {1.0, kHighsInf};
+    std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kInteger};
+    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
+    const double feastol = 1e-6;
+
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
+                 col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
+    REQUIRE(E.fix(0, 1.0));
+    // Un-armed going in, which is the state a production E is in only if
+    // `acquire_engine` failed to arm it -- here it makes the assertions
+    // below about `repair_search` and nothing else.
+    REQUIRE(E.deadline().timer == nullptr);
+
+    std::vector<double> solution = {1.0, 0.0};
+    std::vector<double> lhs_cache = {1.0, 0.0};
+
+    FprScratch scratch;
+    Rng rng(42);
+    HighsTimer timer;
+    // A live limit, so the node loop actually runs: an expired one would
+    // fail its own `!deadline.expired()` condition immediately, which
+    // would still prove the arming but would test less of the path.
+    const Deadline deadline = make_deadline(timer, 3600.0);
+    size_t effort_out = 0;
+
+    static_cast<void>(repair_search(E, solution, lhs_cache, col_lb.data(), col_ub.data(),
+                                    row_lo.data(), row_hi.data(), /*repair_iterations=*/50,
+                                    /*repair_noise=*/0.75, /*repair_track_best=*/true,
+                                    /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
+                                    effort_out, scratch, deadline));
+
+    CHECK(E.deadline().timer == &timer);
+    CHECK(E.deadline().limit == 3600.0);
+    // Reached through an explicitly guarded pointer: `REQUIRE` is a Catch2
+    // macro, and clang-tidy's optional dataflow does not read it as the
+    // engagement check that a bare `->` or `.value()` would then need.
+    const PropEngine* r_engine =
+        scratch.repair_prop_engine_r.has_value() ? &scratch.repair_prop_engine_r.value() : nullptr;
+    REQUIRE(r_engine != nullptr);
+    CHECK(r_engine->deadline().timer == &timer);
+    CHECK(r_engine->deadline().limit == 3600.0);
 }

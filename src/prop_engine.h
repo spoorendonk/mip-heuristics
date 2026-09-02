@@ -1,5 +1,6 @@
 #pragma once
 
+#include "deadline.h"
 #include "heuristic_common.h"
 #include "util/HighsInt.h"
 
@@ -72,22 +73,32 @@ private:
     std::vector<HighsInt> pos_;  // pos_[var] = heap index, or kNotPresent.
 };
 
-// Outcome of a `PropEngine::propagate` call (issue #127).
+// Outcome of a `PropEngine::propagate` call (issues #127, #151).
 //
-// A truncated fixpoint (`kBudgetExhausted`) is *not* a verdict: it means
-// fewer inferences were drawn than a full AC-3 pass would have drawn, which
-// is sound (every tightening actually applied is a valid deduction) but
-// incomplete. Only `kInfeasible` is a proof that no completion of the
-// current partial assignment satisfies the model. Every caller that used to
-// read `propagate()`'s `bool` as "prune this node" must distinguish the
-// two: pruning on `kBudgetExhausted` would discard feasible subtrees the
-// engine simply ran out of budget to explore fully.
+// A truncated fixpoint (`kBudgetExhausted`, `kDeadlineExpired`) is *not* a
+// verdict: it means fewer inferences were drawn than a full AC-3 pass would
+// have drawn, which is sound (every tightening actually applied is a valid
+// deduction) but incomplete. Only `kInfeasible` is a proof that no
+// completion of the current partial assignment satisfies the model. Every
+// caller that used to read `propagate()`'s `bool` as "prune this node" must
+// distinguish the verdict from the two truncations: pruning on either would
+// discard feasible subtrees the engine simply stopped short of exploring.
+//
+// The two truncations differ only in what the caller should do *next*, and
+// that is the whole reason #151 gave the clock its own state rather than
+// folding it into `kBudgetExhausted`. Budget exhaustion says "this one
+// fixpoint got expensive", and the search is expected to carry on; deadline
+// expiry says "the solve is over", so a caller that can stop promptly
+// should, and one that cannot must at least not read it as infeasibility.
 enum class PropResult {
     kFixpoint,         // Worklist drained; every reachable deduction applied.
     kInfeasible,       // A row's bounds became inconsistent (lb > ub).
     kBudgetExhausted,  // Per-call matrix-access budget hit before the
                        // worklist drained. Sound but incomplete -- treat the
                        // node as propagated-but-unfinished, never pruned.
+    kDeadlineExpired,  // The wall-clock deadline passed mid-fixpoint (#151).
+                       // Exactly as sound and exactly as non-pruning as
+                       // kBudgetExhausted; see `set_deadline` below.
 };
 
 // Reusable AC-3 constraint propagation engine.
@@ -155,9 +166,10 @@ public:
     // AC-3 constraint propagation. If fixed_var >= 0, seeds worklist from
     // that variable's rows. If fixed_var == -1, assumes worklist already seeded.
     // Returns kInfeasible only on a proven bound inconsistency; a per-call
-    // matrix-access budget hit returns kBudgetExhausted, which is not a
-    // verdict -- see PropResult above. [[nodiscard]] because the three
-    // outcomes are not interchangeable (issue #127): a caller that drops
+    // matrix-access budget hit returns kBudgetExhausted and an expired
+    // wall-clock deadline returns kDeadlineExpired, neither of which is a
+    // verdict -- see PropResult above. [[nodiscard]] because the four
+    // outcomes are not interchangeable (issues #127, #151): a caller that drops
     // the return would silently treat every call as a fixpoint, the same
     // shape of bug this three-valuing fixed. A caller that genuinely has
     // nothing to decide from the verdict discards it explicitly with
@@ -208,6 +220,24 @@ public:
     [[nodiscard]] HighsInt pq_top() const;
     [[nodiscard]] HighsInt pq_mark() const;
     [[nodiscard]] bool pq_initialized() const { return pq_active_; }
+
+    // The wall-clock deadline `propagate()` polls from *inside* its own
+    // fixpoint loop (issue #151).  A default-constructed `Deadline` (null
+    // timer) means "no limit" and costs the loop nothing: the poll cadence
+    // counter is then initialised to SIZE_MAX, so the per-row comparison
+    // can never fire and no clock is ever read -- an un-armed engine, which
+    // is every engine a unit test builds, runs exactly what it ran before.
+    //
+    // Set rather than taken by the constructor, because the engine outlives
+    // an attempt: `fpr_core.cpp`'s `acquire_engine` caches one `PropEngine`
+    // per worker across attempts and `repair_search` caches the secondary
+    // engine R the same way, so the arming has to happen on the *reuse*
+    // path as much as on the construction path.  The `Deadline` must come
+    // from `ExecutionContext::deadline()` or `deadline_of(mipsolver)` --
+    // the only two ways to build one -- so a fixpoint cannot stop against a
+    // different clock or limit than the runner above it.
+    void set_deadline(const Deadline& d) { deadline_ = d; }
+    [[nodiscard]] const Deadline& deadline() const { return deadline_; }
 
     // Accumulated propagation effort (coefficient accesses).
     [[nodiscard]] size_t effort() const { return prop_work_; }
@@ -265,6 +295,9 @@ private:
     std::vector<HighsInt> prop_worklist_;
     std::vector<char> prop_in_wl_;
     size_t prop_work_ = 0;
+
+    // Null (no finite limit) until `set_deadline` arms it.
+    Deadline deadline_;
 
     // Per-row min/max activities (empty until init_activities() is called)
     std::vector<double> min_activity_;

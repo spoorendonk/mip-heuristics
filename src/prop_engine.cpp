@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 // Per-call matrix-access budget for `PropEngine::propagate`, in units of
@@ -28,6 +29,33 @@ namespace {
 // or `seed_worklist`'s per-changed-column row scan, so real coefficient
 // accesses per call run roughly 2-3x the counted `prop_work`.
 constexpr size_t kPropagateBudgetPerNnz = 100;
+
+// How much counted `prop_work` one fixpoint may do between two polls of the
+// wall-clock deadline (issue #151).
+//
+// It is deliberately an *absolute* constant in the same units as
+// `kPropagateBudgetPerNnz * nnz` gates, and deliberately independent of that
+// constant: the point of the fix is that raising the work cap must no longer
+// be able to raise the deadline's overrun.  Independent of `nnz`, too, but
+// only up to one row's length -- `prop_work` grows a whole row at a time and
+// Pass 1/2 treat a row as indivisible, so the residual is 255 + `rowlen`
+// counted units, and `rowlen` is O(ncol) on a model with a dense row. #127's raise
+// from `10 * nnz` to `100 * nnz` did exactly that, taking the worst case
+// between two FPR DFS polls from ~`160 * nnz` counted accesses to
+// ~`1600 * nnz` -- unbounded in the model size, in the one regime where the
+// cap actually binds (propagation that converges slowly, which is real for
+// continuous columns).
+//
+// 256 balances the two costs, on estimates rather than measurement (none
+// of the figures in this paragraph has been profiled): a clock read is on
+// the order of 20-30 ns, and 256 counted units is 2-3x that many real
+// coefficient accesses (see `kPropagateBudgetPerNnz` above for why the
+// counter undercounts), so the poll should cost an armed loop low single
+// digits of percent and an un-armed one nothing at all. Below the smallest
+// per-call budget the tests exercise
+// (`100 * nnz` with `nnz = 4`, the halving model), which is what lets a
+// fixpoint be stopped by the clock rather than by the budget.
+constexpr size_t kPropagateDeadlinePollWork = 256;
 }  // namespace
 
 PropEngine::PropEngine(HighsInt ncol, HighsInt nrow, const HighsInt* ar_start,
@@ -364,6 +392,33 @@ PropResult PropEngine::propagate(HighsInt fixed_var) {
 
     size_t prop_work = 0;
     const size_t prop_budget = kPropagateBudgetPerNnz * nnz_;
+    // Cadence counter for the wall-clock poll (issue #151).  SIZE_MAX when
+    // no deadline is armed, so the comparison can never fire, no clock is
+    // ever read, and an un-armed engine pays one integer compare per row.
+    size_t next_deadline_poll = deadline_.timer != nullptr ? kPropagateDeadlinePollWork
+                                                           : std::numeric_limits<size_t>::max();
+
+    // Abandon the fixpoint where it stands, booking what it spent.  Shared
+    // by the two truncating exits -- #127's work budget and #151's
+    // deadline -- because the soundness argument is identical for both:
+    // row `i` was only *counted*, never processed (Pass 1/2 below never ran
+    // for it), so no bound was tightened, no undo entry pushed, and no
+    // activity/PQ update skipped for it.  The remaining worklist entries
+    // reference rows whose contents are untouched since they were last
+    // seeded, so dropping them here (mirroring the infeasibility exit
+    // below) leaves every applied deduction exactly as valid as it was when
+    // made -- the engine is a legitimate partial-propagation state, not a
+    // corrupted one (see tests/test_prop_engine.cpp for the
+    // reset-equivalence and backtrack checks that pin this).
+    auto truncate = [&](PropResult why) {
+        prop_work_ += prop_work;
+        for (HighsInt wi : prop_worklist_) {
+            in_wl[wi] = 0;
+        }
+        prop_worklist_.clear();
+        return why;
+    };
+
     while (!prop_worklist_.empty()) {
         HighsInt i = prop_worklist_.back();
         prop_worklist_.pop_back();
@@ -372,22 +427,22 @@ PropResult PropEngine::propagate(HighsInt fixed_var) {
         const HighsInt kend = ar_start[i + 1];
         prop_work += static_cast<size_t>(kend - kbeg);
         if (prop_work > prop_budget) {
-            prop_work_ += prop_work;
-            // Row `i` itself was only *counted*, never processed (Pass 1/2
-            // below never ran for it) -- so no bound was tightened, no undo
-            // entry pushed, and no activity/PQ update skipped for it.  The
-            // remaining worklist entries reference rows whose contents are
-            // untouched since they were last seeded, so dropping them here
-            // (mirroring the infeasibility exit below) leaves every applied
-            // deduction so far exactly as valid as it was when made -- the
-            // engine is a legitimate partial-propagation state, not a
-            // corrupted one (issue #127; see tests/test_prop_engine.cpp for
-            // the reset-equivalence and backtrack checks that pin this).
-            for (HighsInt wi : prop_worklist_) {
-                in_wl[wi] = 0;
+            return truncate(PropResult::kBudgetExhausted);
+        }
+        // The clock is polled here and nowhere else in this function: at
+        // the same point as the budget check, so both truncations leave the
+        // identical engine state.  Deliberately *not* on entry -- an entry
+        // poll would put one clock read on every DFS node however small its
+        // fixpoint, and it would make `propagate` able to return having
+        // charged nothing, which is the "every begin runs at least one
+        // propagate round (>0 ops)" premise `fpr.cpp`'s no-progress guard
+        // reasons from.  A caller that wants to stop before propagating has
+        // its own poll (`fpr_core.cpp`, `repair_search.cpp`).
+        if (prop_work >= next_deadline_poll) {
+            if (deadline_.expired()) {
+                return truncate(PropResult::kDeadlineExpired);
             }
-            prop_worklist_.clear();
-            return PropResult::kBudgetExhausted;
+            next_deadline_poll = prop_work + kPropagateDeadlinePollWork;
         }
 
         // Pass 1: compute row aggregates (fixed_sum, min_act, max_act) and
