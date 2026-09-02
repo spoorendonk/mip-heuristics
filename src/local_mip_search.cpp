@@ -224,13 +224,48 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
 // trace (`cur=2 best=3`) still correctly returned from Phase 6, because
 // Definition 2's precondition just below did not hold there.
 //
-// Paper Definition 2 additionally requires `obj(s) >= obj(s*)`; this
-// function is not guarded on that precondition, and was not before this
-// fix either -- left unguarded deliberately (issue #129 cold review
-// filed it separately rather than folding a behaviour change into this
-// fix).
+// Definition 2 also states the operator only for a solution `s` with
+// `obj(s) >= obj(s*)`, and the first guard below is that precondition
+// (issue #150; the #129 cold review that added the `+ eps` filed it
+// separately rather than fold a second behaviour change in, so this
+// function was unguarded until then -- the paragraph here used to say
+// so).  The formula is a move *toward* `obj(s*)`, so evaluated from a
+// solution that already beats the best found it points backwards:
+// `obj_gap < 0` flips `delta`'s sign, and the operator offers an
+// objective-worsening candidate under the label of a breakthrough. That
+// state is reachable -- during an infeasible episode the current
+// solution may beat the incumbent while violating rows.
+//
+// The authors' implementation spells the same precondition at the call
+// site rather than in the operator
+// (github.com/shaowei-cai-group/Local-MIP): both of its breakthrough
+// loops, in `explore_unsat.cpp` and `explore_unsat_random.cpp`, are
+// gated on `m_is_found_feasible && !m_current_obj_breakthrough`, and
+// `Local_Search.cpp` maintains `m_current_obj_breakthrough` as
+// `obj(s) <= m_best_obj - m_opt_tolerance` -- current strictly better
+// than best found, the same question `ctx.epsilon` asks here.  Paper
+// and reference agree, so this is Definition 2 implemented, not a
+// deviation recorded.  It sits in the operator, not at Phase 1b's loop,
+// because Definition 2 attaches it to `bm(x_j, s)` itself and because
+// Phase 4 has already once considered re-scoring breakthrough
+// candidates from a second call site; a `return 0.0` is equivalent to
+// skipping the loop, since `append_candidate` drops a zero delta.
+//
+// The comparison is the same strict form `is_aspiration` and
+// `compute_candidate_scores`'s `beats_best` use for "strictly better
+// than the best found", rather than a second spelling of it.  It
+// differs from the reference's `<=` only at `cur_obj == best_obj - eps`
+// exactly, where the unguarded formula yields `delta == 0` and
+// `append_candidate` drops the candidate anyway -- so the two are
+// behaviourally identical, not merely close.
 double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_obj,
                                   double best_obj) {
+    bool already_breaks_through =
+        ctx.minimize ? (cur_obj < best_obj - ctx.epsilon) : (cur_obj > best_obj + ctx.epsilon);
+    if (already_breaks_through) {
+        return 0.0;
+    }
+
     double obj_coeff = ctx.col_cost[j];
     if (std::abs(obj_coeff) < kEpsZero) {
         return 0.0;
@@ -471,6 +506,11 @@ Candidate infeasible_step(WorkerCtx& ctx, Rng& rng, HighsInt step, bool best_fea
     }
 
     // --- Phase 1b: Breakthrough moves (only post-feasible, Alg 2 line 5-6) ---
+    //
+    // Definition 2's other precondition, `obj(s) >= obj(s*)`, is enforced
+    // inside `compute_breakthrough_delta` rather than here (issue #150 --
+    // the authors' code spells it at this loop instead; see that
+    // function's comment for why the operator is the place for it).
     if (best_feasible) {
         for (HighsInt j : costed_vars) {
             double delta = compute_breakthrough_delta(ctx, j, ctx.current_obj, best_objective);

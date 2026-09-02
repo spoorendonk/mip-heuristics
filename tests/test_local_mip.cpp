@@ -1278,3 +1278,64 @@ TEST_CASE("LocalMIP: the lift phase applies a move the tabu list forbids (#149)"
     // tabu lists forbid at this step, and it selects it anyway.
     REQUIRE(ctx.is_tabu(lift.var_idx, lift.new_val - ctx.solution[lift.var_idx], step));
 }
+
+// ── LocalMIP: Definition 2's `obj(s) >= obj(s*)` precondition (#150) ──
+//
+// The breakthrough move is defined (paper Definition 2) only for a
+// current solution that is *no better* than the best found:
+// `Delta_j = (obj(s*) - obj(s) - eps) / c_j` is a move toward the best
+// objective, so evaluating it from a solution that already beats the
+// best found points it the wrong way.  The authors' implementation
+// spells the same precondition at the call site
+// (github.com/shaowei-cai-group/Local-MIP, `explore_unsat.cpp` and
+// `explore_unsat_random.cpp`): both breakthrough loops are gated on
+// `m_is_found_feasible && !m_current_obj_breakthrough`, and
+// `m_current_obj_breakthrough` is maintained (`Local_Search.cpp`) as
+// `obj(s) <= m_best_obj - m_opt_tolerance` -- current strictly better
+// than best found.  Paper and reference agree, so this is the paper's
+// behaviour implemented, not a deviation recorded.
+//
+// Same instance as the #149 case: column 0 has `c_0 = 1` and sits at 2
+// inside `[0, 3]`, which is enough domain on both sides that none of
+// the three cases below is decided by `compute_breakthrough_delta`'s
+// out-of-bounds clamp instead of by Definition 2's formula.
+TEST_CASE("LocalMIP: breakthrough delta obeys Definition 2's obj(s) >= obj(s*) (#150)",
+          "[heuristic][local_mip]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_lift_tabu_mipsolver(highs, cb);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+
+    ctx.solution[0] = 2.0;
+    ctx.solution[1] = 0.0;
+    ctx.rebuild_state();
+    REQUIRE(ctx.minimize);
+
+    // `obj(s) > obj(s*)`: Definition 2's main case.  The unrounded delta
+    // is `-(1 + eps)`, floored away from zero to -2, landing x0 on its
+    // lower bound -- strictly past `obj(s*)`, which is the point.
+    REQUIRE(local_mip_detail::compute_breakthrough_delta(ctx, /*j=*/0, /*cur_obj=*/6.0,
+                                                         /*best_obj=*/5.0) == Catch::Approx(-2.0));
+
+    // `obj(s) == obj(s*)`: the tie the `+ eps` restored in #129 exists
+    // for -- without it the delta is exactly 0 and no candidate is
+    // produced at the state Algorithm 2 lines 5-6 exist to escape.  The
+    // guard this test is about must not swallow this case; it is the
+    // over-firing direction, and only this assertion catches it.
+    REQUIRE(local_mip_detail::compute_breakthrough_delta(ctx, /*j=*/0, /*cur_obj=*/5.0,
+                                                         /*best_obj=*/5.0) == Catch::Approx(-1.0));
+
+    // `obj(s) < obj(s*)`: outside Definition 2 -- reachable during an
+    // infeasible episode, where the current solution can beat the
+    // incumbent while violating rows.  Unguarded, the formula returns
+    // `floor(2 - eps) = +1` here: an objective-*worsening* move offered
+    // as a breakthrough candidate.  Guarded, there is no operation, and
+    // `append_candidate` drops the zero delta.
+    REQUIRE(local_mip_detail::compute_breakthrough_delta(ctx, /*j=*/0, /*cur_obj=*/3.0,
+                                                         /*best_obj=*/5.0) == 0.0);
+}
