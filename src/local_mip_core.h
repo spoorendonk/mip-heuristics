@@ -204,9 +204,15 @@ Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, 
                                  bool aspiration, double best_obj, bool best_feasible);
 
 // Paper Algorithm 1 line 5: the lift move process.  Highest-scoring
-// entry of `WorkerCtx::lift`'s positive list, or a default `Candidate`
-// (`var_idx == -1`) when the current solution is lift-optimal.  Also
-// compacts that list.  Call `LiftCache::recompute_all` first.
+// entry of `WorkerCtx::lift`'s positive list, and compacts that list on
+// the way.  Call `LiftCache::recompute_all` first.
+//
+// Returns `var_idx == -1` when no entry yields a move -- the current
+// solution is lift-optimal, or the list holds only entries the scan
+// itself rejects (an empty lift interval, or a target already equal to
+// the current value).  The rest of such a result is not a default
+// `Candidate`: `score` is 0.0, the scan's floor, rather than `-inf`.
+// No caller reads it on a `-1` result.
 //
 // Deliberately consults no tabu list -- see the block comment above its
 // definition in `local_mip_search.cpp` before changing that.

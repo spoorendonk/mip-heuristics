@@ -1028,42 +1028,27 @@ TEST_CASE("LocalMIP: violation partition agrees with HiGHS's feastol, not a stri
     REQUIRE_FALSE(ctx.full_recheck(/*update_sets=*/false, /*early_exit=*/true));
 }
 
-// ── LocalMIP: a failed lift falls through to candidate generation,
-//    not a weight-update spin (#129) ────────────────────────────────
+namespace {
 
-// Before this fix, `LocalMipWorker::run_attempt`'s feasible-mode branch
-// only ever looked for a *lift* move; a failed lift called
-// `ctx.update_weights` and looped, changing nothing about the solution,
-// until `kFeasiblePlateau` (5000) improvement-free steps triggered the
-// random-walk perturbation escape. Breakthrough moves -- the paper's own
-// mechanism for escaping a feasible local optimum (Algorithm 2 lines
-// 5-6) -- were unreachable from a feasible state at all: `infeasible_step`
-// was only ever called once `ctx.violated` was non-empty.
-//
-// This instance is hand-built (mirrors the #148 test above's manual
-// `HighsMipSolver` construction) so the "feasible local optimum that
-// is not the global optimum" shape is exact rather than hoped-for:
+// The instance the #129, #149 and #150 cases below share:
 //
 //     minimize x0 + 2*x1
 //     s.t.     x0 + x1 >= 2
 //              x0, x1 in {0, ..., 3}, integer
 //
-// At x0=0, x1=2 (obj=4, feasible): the lift phase moves one variable
-// toward its own cost-favorable bound, holding the other fixed and
-// staying feasible. Both variables are already lift-optimal there --
-// x1 cannot decrease (the row is tight) and x0 cannot decrease either
-// (it is already at its lower bound) -- by hand computation of
-// `LiftCache::recompute_one`'s per-variable lift bounds against this
-// row. Reaching the true optimum (x0=2, x1=0, obj=2) needs
-// *increasing* x0 (cost-unfavorable on its own) so x1 can decrease -- a
-// joint move no single lift can make. That is exactly the paper's
-// breakthrough / candidate-generation mechanism, not the lift phase.
-TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
-          "[heuristic][local_mip]") {
-    highs::parallel::initialize_scheduler();
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-
+// Hand-built rather than taken from `INSTANCES_DIR` (mirroring the #148
+// case above's manual `HighsMipSolver` construction, and otherwise
+// `build_bare_mipsolver` in test_common.h): all three cases turn on an
+// exactly-known lift interval and an exactly-known objective
+// coefficient, which no bundled instance guarantees.
+//
+// `with_bnb_worker` is the one axis the three callers differ on, and it
+// is a real requirement rather than a tidiness knob: a case that runs a
+// worker and *offers* a solution reaches `addIncumbent`, which reads
+// `mipdata_->workers[0]`.  A case that only drives `WorkerCtx` directly
+// never gets there and leaves the vector empty.
+std::unique_ptr<HighsMipSolver> build_two_var_lift_mipsolver(Highs& highs, HighsCallback& cb,
+                                                             bool with_bnb_worker) {
     highs.addVar(0.0, 3.0);
     highs.addVar(0.0, 3.0);
     highs.changeColIntegrality(0, HighsVarType::kInteger);
@@ -1087,11 +1072,8 @@ TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
     // explicit call needed here.
     REQUIRE(highs.passModel(highs.getLp()) == HighsStatus::kOk);
 
-    // Mirrors `build_bare_mipsolver` (test_common.h): the repro needs a
-    // hand-shaped objective and row no bundled instance guarantees.
     highs.setOptionValue("presolve", "off");
     require_option(highs, "time_limit", kHighsInf);
-    HighsCallback cb(&highs);
     auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
                                                       highs.getSolution());
     mipsolver->timer_.start();
@@ -1100,12 +1082,52 @@ TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
     mipsolver->mipdata_->init();
     mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
     mipsolver->mipdata_->runSetup();
-    // `addIncumbent`, reached through the sink's accept callback as soon
-    // as the worker offers something, reads `mipdata_->workers[0]`.
-    mipsolver->mipdata_->workers.emplace_back(
-        *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
-        &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
-        &mipsolver->mipdata_->getPseudoCost());
+    if (with_bnb_worker) {
+        mipsolver->mipdata_->workers.emplace_back(
+            *mipsolver, &mipsolver->mipdata_->getLp(), &mipsolver->mipdata_->getDomain(),
+            &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
+            &mipsolver->mipdata_->getPseudoCost());
+    }
+    return mipsolver;
+}
+
+}  // namespace
+
+// ── LocalMIP: a failed lift falls through to candidate generation,
+//    not a weight-update spin (#129) ────────────────────────────────
+
+// Before this fix, `LocalMipWorker::run_attempt`'s feasible-mode branch
+// only ever looked for a *lift* move; a failed lift called
+// `ctx.update_weights` and looped, changing nothing about the solution,
+// until `kFeasiblePlateau` (5000) improvement-free steps triggered the
+// random-walk perturbation escape. Breakthrough moves -- the paper's own
+// mechanism for escaping a feasible local optimum (Algorithm 2 lines
+// 5-6) -- were unreachable from a feasible state at all: `infeasible_step`
+// was only ever called once `ctx.violated` was non-empty.
+//
+// The instance is `build_two_var_lift_mipsolver`'s above, hand-built so
+// the "feasible local optimum that is not the global optimum" shape is
+// exact rather than hoped-for.
+//
+// At x0=0, x1=2 (obj=4, feasible): the lift phase moves one variable
+// toward its own cost-favorable bound, holding the other fixed and
+// staying feasible. Both variables are already lift-optimal there --
+// x1 cannot decrease (the row is tight) and x0 cannot decrease either
+// (it is already at its lower bound) -- by hand computation of
+// `LiftCache::recompute_one`'s per-variable lift bounds against this
+// row. Reaching the true optimum (x0=2, x1=0, obj=2) needs
+// *increasing* x0 (cost-unfavorable on its own) so x1 can decrease -- a
+// joint move no single lift can make. That is exactly the paper's
+// breakthrough / candidate-generation mechanism, not the lift phase.
+TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
+          "[heuristic][local_mip]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    // This case runs a real worker and offers solutions through the
+    // sink, so it needs the `mipdata_->workers[0]` entry.
+    auto mipsolver = build_two_var_lift_mipsolver(highs, cb, /*with_bnb_worker=*/true);
 
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);
@@ -1151,59 +1173,6 @@ TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
     REQUIRE(mipsolver->mipdata_->upper_bound == Catch::Approx(2.0));
 }
 
-namespace {
-
-// The instance the #149 and #150 cases below share:
-//
-//     minimize x0 + 2*x1
-//     s.t.     x0 + x1 >= 2
-//              x0, x1 in {0, ..., 3}, integer
-//
-// Hand-built rather than taken from `INSTANCES_DIR` for the same reason
-// the #129 case above is: both cases turn on an exactly-known lift
-// interval and an exactly-known objective coefficient, which no bundled
-// instance guarantees.  Construction mirrors that case and
-// `build_bare_mipsolver` (test_common.h) -- neither of these tests runs
-// a worker, so it stops at `runSetup()` and adds no `mipdata_->workers`
-// entry.
-std::unique_ptr<HighsMipSolver> build_lift_tabu_mipsolver(Highs& highs, HighsCallback& cb) {
-    highs.addVar(0.0, 3.0);
-    highs.addVar(0.0, 3.0);
-    highs.changeColIntegrality(0, HighsVarType::kInteger);
-    highs.changeColIntegrality(1, HighsVarType::kInteger);
-    highs.changeColCost(0, 1.0);
-    highs.changeColCost(1, 2.0);
-    const auto idx = std::to_array<HighsInt>({0, 1});
-    const auto val = std::to_array<double>({1.0, 1.0});
-    highs.addRow(2.0, kHighsInf, 2, idx.data(), val.data());
-
-    // `Highs::addRow` leaves the matrix row-wise; `WorkerCtx` reads the
-    // column-wise layout through `CscMatrix`.  `Highs::getLp()` is const,
-    // so force it through a copy and `passModel`.  `std::move(lp)`
-    // evaluated outside `REQUIRE`: Catch2's expression decomposition can
-    // reference the macro argument more than once, which clang-tidy's
-    // `bugprone-use-after-move` reads (spuriously) as a use after the
-    // move inside the same expression.
-    HighsLp lp = highs.getLp();
-    lp.ensureColwise();
-    const HighsStatus pass_status = highs.passModel(std::move(lp));
-    REQUIRE(pass_status == HighsStatus::kOk);
-
-    highs.setOptionValue("presolve", "off");
-    require_option(highs, "time_limit", kHighsInf);
-    auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
-                                                      highs.getSolution());
-    mipsolver->timer_.start();
-    mipsolver->improving_solution_file_ = nullptr;
-    mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
-    mipsolver->mipdata_->init();
-    mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
-    mipsolver->mipdata_->runSetup();
-    return mipsolver;
-}
-
-}  // namespace
-
 // ── LocalMIP: the lift phase ignores the tabu lists (#149) ─────────
 //
 // A characterization test, and the assertion is deliberately the
@@ -1238,7 +1207,7 @@ TEST_CASE("LocalMIP: the lift phase applies a move the tabu list forbids (#149)"
     Highs highs;
     highs.setOptionValue("output_flag", false);
     HighsCallback cb(&highs);
-    auto mipsolver = build_lift_tabu_mipsolver(highs, cb);
+    auto mipsolver = build_two_var_lift_mipsolver(highs, cb, /*with_bnb_worker=*/false);
 
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);
@@ -1305,7 +1274,7 @@ TEST_CASE("LocalMIP: breakthrough delta obeys Definition 2's obj(s) >= obj(s*) (
     Highs highs;
     highs.setOptionValue("output_flag", false);
     HighsCallback cb(&highs);
-    auto mipsolver = build_lift_tabu_mipsolver(highs, cb);
+    auto mipsolver = build_two_var_lift_mipsolver(highs, cb, /*with_bnb_worker=*/false);
 
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);

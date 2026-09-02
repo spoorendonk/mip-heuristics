@@ -240,9 +240,12 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
 // site rather than in the operator
 // (github.com/shaowei-cai-group/Local-MIP): both of its breakthrough
 // loops, in `explore_unsat.cpp` and `explore_unsat_random.cpp`, are
-// gated on `m_is_found_feasible && !m_current_obj_breakthrough`, and
-// `Local_Search.cpp` maintains `m_current_obj_breakthrough` as
-// `obj(s) <= m_best_obj - m_opt_tolerance` -- current strictly better
+// gated on `m_is_found_feasible && !m_current_obj_breakthrough`.  That
+// flag is the objective pseudo-constraint's satisfaction: `Local_Search.h`'s
+// inline `update_best_solution` parks its RHS at
+// `m_con_constant[0] = m_best_obj - m_opt_tolerance`, and the three
+// activity sites in `Local_Search.cpp` set the flag to
+// `activity(obj) <= m_con_constant[0]` -- i.e. current strictly better
 // than best found, the same question `ctx.epsilon` asks here.  Paper
 // and reference agree, so this is Definition 2 implemented, not a
 // deviation recorded.  It sits in the operator, not at Phase 1b's loop,
@@ -254,10 +257,14 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
 // The comparison is the same strict form `is_aspiration` and
 // `compute_candidate_scores`'s `beats_best` use for "strictly better
 // than the best found", rather than a second spelling of it.  It
-// differs from the reference's `<=` only at `cur_obj == best_obj - eps`
-// exactly, where the unguarded formula yields `delta == 0` and
-// `append_candidate` drops the candidate anyway -- so the two are
-// behaviourally identical, not merely close.
+// differs from the reference's `<=` only around `cur_obj ==
+// best_obj - eps`, where the formula yields a zero delta that
+// `append_candidate` drops.  Not an exact-equality claim: `best_obj -
+// ctx.epsilon` here and `cur_obj - best_obj` below round independently,
+// so in principle a ~1e-17 residual of the wrong sign survives the
+// away-from-zero `floor`/`ceil` as a +-1 delta where the reference
+// would skip.  The unguarded code has the same property, so the guard
+// neither introduces nor removes it.
 double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_obj,
                                   double best_obj) {
     bool already_breaks_through =
@@ -362,9 +369,12 @@ Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, 
 // sets the reverse-direction tabu for every move it applies, lift moves
 // included.  The lift phase writes the tabu lists and never reads them:
 // an asymmetry inside one solver, not an omission in a code path that
-// forgot the lists existed.  The reference's own anti-cycling device
-// here is a different one -- `lift_age` breaks equal-score ties toward
-// the variable whose last modification is oldest.
+// forgot the lists existed.  Its own anti-cycling device here is a
+// different one, and only by default: the `lift_age` scorer breaks
+// equal-score ties toward the variable whose last modification is
+// oldest, while the `lift_random` scorer it also ships
+// (`set_lift_method("lift_random")`) breaks them on a coin flip with no
+// age term at all.
 //
 // The consequence is the one issue #149 recorded, and it is pinned by
 // `tests/test_local_mip.cpp` ("LocalMIP: the lift phase applies a move

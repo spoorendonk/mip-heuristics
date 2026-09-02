@@ -131,7 +131,7 @@ LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const ExecutionContext
     best_solution_.resize(ncol);
 }
 
-// Cognitive complexity 132 (threshold 25).  Kept whole: one LocalMIP attempt: the
+// Cognitive complexity 115 (threshold 25).  Kept whole: one LocalMIP attempt: the
 // feasible/infeasible step loop with tabu and constraint-weight updates, restart, and the lift
 // phase. Decomposing it would move work across a worker's inner loop, and the closeout takes no
 // unmeasured performance risk; the standards also rank fidelity to the reference algorithm above
