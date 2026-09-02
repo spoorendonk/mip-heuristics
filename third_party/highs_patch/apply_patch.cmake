@@ -114,7 +114,18 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # claim #147 retracts everywhere else.  A bump for a comment is the contract
 # working as designed: what the marker distinguishes is trees, and this tree's
 # inserted text differs.
-set(PATCH_VERSION "15")
+#
+# Version 16 adds two const accessors to `HighsCliqueTable` — `getCliques()`
+# and `getCliqueEntries()` — so the paper's Sect. 4.1 clique-cover rankings
+# can read the clique table itself rather than `cliquePartition`'s output
+# (#141).  The equality flag, the stored literal order within a clique, and
+# every clique the partition greedy did not pick are all unreachable through
+# the public API; nothing upstream is modified, only exposed.  The marker
+# lives in HighsOptions.h and speaks for the tree, not for that file, so a
+# tree carrying version 15 is rejected even though HighsOptions.h itself is
+# unchanged — which is the contract, since its HighsCliqueTable.h would
+# silently lack the accessors.
+set(PATCH_VERSION "16")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -557,6 +568,39 @@ if(_src_enum_found EQUAL -1)
     message(STATUS "Applied custom solution source enums to HighsMipSolverData.h")
 else()
     message(STATUS "Custom solution source enums already applied, skipping")
+endif()
+
+# ── Patch HighsCliqueTable.h: expose the raw clique list ──
+#
+# The paper's clique-cover variable rankings (Salvagnin, Roberti, Fischetti,
+# Sect. 4.1) are defined over the clique *table*: they need the equality flag,
+# one pass over every clique in stored order, and the literal order within a
+# clique.  `cliquePartition` — the only public entry point HiGHS offers —
+# supplies none of the three: it returns a partition of the columns a caller
+# hands it, in its own greedy's order, with the equality status and every
+# clique the partition did not pick discarded.  Two const accessors are the
+# whole patch; nothing upstream is modified or removed.
+file(READ "${MIP_DIR}/HighsCliqueTable.h" CLQ_H)
+
+string(FIND "${CLQ_H}" "getCliqueEntries" _clq_acc_found)
+if(_clq_acc_found EQUAL -1)
+    string(REPLACE
+      "  HighsInt getNumEntries() const { return numEntries; }"
+      "  HighsInt getNumEntries() const { return numEntries; }\n\n  // mip-heuristics: read-only view of the raw clique list.  A slot is live\n  // iff its `start` is not -1 (`removeClique` recycles slots through\n  // `freeslots`); the literals of a live clique `c` are the half-open range\n  // `getCliqueEntries()[c.start, c.end)`.  This is the same mutable state\n  // `cliquePartition` reads, so a caller must be on the dispatching thread\n  // (issue #99): `addIncumbent` mutates the table.\n  const std::vector<Clique>& getCliques() const { return cliques; }\n  const std::vector<CliqueVar>& getCliqueEntries() const {\n    return cliqueentries;\n  }"
+      CLQ_H "${CLQ_H}")
+
+    string(FIND "${CLQ_H}" "getCliqueEntries" _clq_acc_ok)
+    if(_clq_acc_ok EQUAL -1)
+        message(FATAL_ERROR
+            "HighsCliqueTable.h clique-list accessor patch failed: the anchor "
+            "'HighsInt getNumEntries() const { return numEntries; }' was not found. "
+            "Upstream HiGHS likely reformatted or renamed it. "
+            "${CLEAN_REBUILD}")
+    endif()
+    file(WRITE "${MIP_DIR}/HighsCliqueTable.h" "${CLQ_H}")
+    message(STATUS "Applied raw clique-list accessors to HighsCliqueTable.h")
+else()
+    message(STATUS "Clique-list accessors already applied, skipping")
 endif()
 
 # ── Patch HighsMipSolverData.cpp: add source strings + fix key display ──

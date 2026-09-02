@@ -82,6 +82,7 @@ endif()
 include(cmake/FetchHiGHS.cmake)
 
 add_library(mip_heuristics OBJECT
+    src/clique_cover.cpp
     src/contested_pdlp.cpp
     src/effort_ledger.cpp
     src/fj.cpp
@@ -178,6 +179,7 @@ add_executable(mip_heuristics_tests
     tests/test_heursol_trace.cpp
     tests/test_deadline.cpp
     tests/test_setup_bail.cpp
+    tests/test_clique_cover.cpp
 )
 # Same guard as `mip_heuristics` above — a test that drops the verdict
 # would model the bug rather than catch it. `-Werror=switch` joins it for

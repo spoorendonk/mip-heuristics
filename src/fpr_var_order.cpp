@@ -1,7 +1,9 @@
 #include "fpr_var_order.h"
 
+#include "clique_cover.h"
 #include "heuristic_common.h"
 #include "mip/HighsCliqueTable.h"
+#include "mip/HighsDomain.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
@@ -31,9 +33,11 @@ struct TypeBuckets {
 // and — since #99 — `scylla::precompute_config_var_orders`.  That last one
 // exists precisely because `ScyllaWorker`'s constructor used to compute its
 // own order, and `scylla::run` rebuilds a retired worker from inside the
-// parallel loop.  It is the same property that makes the `cliquePartition`
-// call below safe, and it is load-bearing for both: keep any new caller on
-// the dispatching thread.
+// parallel loop.  It is the same property that makes the clique-table reads
+// below safe — `HighsCliqueTable::getCliques()` / `getCliqueEntries()` hand
+// out references into state `addIncumbent`'s `extractObjCliques` reallocates —
+// and it is load-bearing for both: keep any new caller on the dispatching
+// thread.
 TypeBuckets bucket_by_type(const HighsMipSolver& mipsolver) {
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();
@@ -102,182 +106,122 @@ std::vector<HighsInt> rank_locks(const HighsMipSolver& mipsolver) {
 }
 
 // --- typecl: clique cover for binaries, then type ---
-// Paper's greedy algorithm: process equality cliques first, add disjoint ones,
-// then remaining. Within each clique, formulation order.
+// Paper Sect. 4.1's five-step greedy, in `clique_cover::build_clique_cover`:
+// equality cliques first (disjoint ones only, in clique-table order), then a
+// largest-covering-clique assignment over what is left, sorted by size; within
+// a group, the order the variables appear in the clique; binaries no clique
+// covers, at the end of the binary bucket in formulation order.
+//
+// This used to delegate to HiGHS's `cliquePartition`, which is a different
+// greedy (#141): no equality pass, no disjointness test, no size sort,
+// singletons interleaved rather than appended, and the within-clique order
+// replaced by a sort of the column indices.  The paper's construction needs
+// the clique table itself — the equality flag and the stored literal order —
+// which `cliquePartition` does not expose; the patch adds the two const
+// accessors that do (`third_party/highs_patch/apply_patch.cmake`).
 std::vector<HighsInt> rank_typecl(const HighsMipSolver& mipsolver) {
     auto* mipdata = mipsolver.mipdata_.get();
     auto b = bucket_by_type(mipsolver);
-
-    // Build CliqueVar vector for all binary variables (positive literal)
-    using CV = HighsCliqueTable::CliqueVar;
-    std::vector<CV> clq_vars;
-    clq_vars.reserve(b.bin.size());
-    for (HighsInt j : b.bin) {
-        clq_vars.emplace_back(j, 1);
-    }
-
-    if (clq_vars.empty()) {
+    if (b.bin.empty()) {
         return concat_buckets(b);
     }
 
-    std::vector<HighsInt> partition_start;
-    mipdata->cliquetable.cliquePartition(clq_vars, partition_start);
+    const HighsCliqueTable& clq = mipdata->cliquetable;
+    const clique_cover::Cover cover = clique_cover::build_clique_cover(
+        clq.getCliques(), clq.getCliqueEntries(), b.bin, mipsolver.model_->num_col_);
 
-    // Rebuild binary bucket: clique order, formulation order within each clique
-    b.bin.clear();
-    for (size_t c = 0; c + 1 < partition_start.size(); ++c) {
-        HighsInt start = partition_start[c];
-        HighsInt end = partition_start[c + 1];
-        // Extract columns in this clique
-        std::vector<HighsInt> clique_cols;
-        for (HighsInt k = start; k < end; ++k) {
-            clique_cols.push_back(static_cast<HighsInt>(clq_vars[k].col));
-        }
-        // Sort by formulation order within clique
-        std::ranges::sort(clique_cols);
-        b.bin.insert(b.bin.end(), clique_cols.begin(), clique_cols.end());
-    }
-
+    b.bin = cover.members;
+    b.bin.insert(b.bin.end(), cover.uncovered.begin(), cover.uncovered.end());
     return concat_buckets(b);
 }
 
-// --- cliques: clique partition + analytic-center-weighted random sort ---
-// Paper's Fig. 2: within each clique, sort using weighted discrete distribution
-// based on analytic center values.
+// --- cliques: the same clique cover, analytic-center-weighted within ---
+// Paper Sect. 4.1: "The same clique cover is also used in strategy cliques,
+// where however we exploit the analytic center x^ac in order to sort variables
+// within each clique in the cover."  So the cover is typecl's, verbatim, and
+// only the within-group order differs — Fig. 2.
+//
+// Fig. 2 line 14 reads `w_j <- log(Rand(0,1) / w_j)` with an ascending
+// `Sort(vars, w)`.  That is *not* what this code computes and the disagreement
+// is deliberate: taken literally the figure's key is `log(u) - log(w)`, whose
+// ascending order does favour large weights, but it is a different
+// distribution from weighted sampling without replacement, and one closing
+// parenthesis moved — `log(Rand(0,1)) / w_j` — turns it into the standard
+// Efraimidis-Spirakis key, which is exactly weighted sampling without
+// replacement and is what a "weighted discrete distribution" over the analytic
+// center is meant to be.  We use the Efraimidis-Spirakis form, sorted
+// *descending* (the figure's ascending sort pairs with its own expression, not
+// with this one).  Recorded as an ambiguity in the reference, not as a claim
+// about what the figure says (#141).
 std::vector<HighsInt> rank_cliques(const HighsMipSolver& mipsolver, Rng& rng,
                                    const double* lp_ref) {
-    auto* mipdata = mipsolver.mipdata_.get();
-    const auto& col_lb = mipsolver.model_->col_lower_;
-    const auto& col_ub = mipsolver.model_->col_upper_;
-    auto b = bucket_by_type(mipsolver);
-
-    using CV = HighsCliqueTable::CliqueVar;
-    std::vector<CV> clq_vars;
-    clq_vars.reserve(b.bin.size());
-    for (HighsInt j : b.bin) {
-        clq_vars.emplace_back(j, 1);
-    }
-
-    if (clq_vars.empty() || (lp_ref == nullptr)) {
+    if (lp_ref == nullptr) {
         return rank_typecl(mipsolver);
     }
+    auto* mipdata = mipsolver.mipdata_.get();
+    auto b = bucket_by_type(mipsolver);
+    if (b.bin.empty()) {
+        return concat_buckets(b);
+    }
 
-    std::vector<HighsInt> partition_start;
-    mipdata->cliquetable.cliquePartition(clq_vars, partition_start);
+    const HighsCliqueTable& clq = mipdata->cliquetable;
+    const clique_cover::Cover cover = clique_cover::build_clique_cover(
+        clq.getCliques(), clq.getCliqueEntries(), b.bin, mipsolver.model_->num_col_);
 
-    // Rebuild binary bucket with weighted random sort within each clique
+    // Fig. 2 lines 5-6 skip a variable with `l_j = u_j`.  That test cannot
+    // fire here: `bucket_by_type` puts a column in the binary bucket only when
+    // the *root domain* has it at [0, 1], and the cover carries no other
+    // column, so the filter is already applied upstream.  It is not dropped,
+    // it is hoisted.
     b.bin.clear();
-    for (size_t c = 0; c + 1 < partition_start.size(); ++c) {
-        HighsInt start = partition_start[c];
-        HighsInt end = partition_start[c + 1];
-        // Collect vars and weights (paper Fig. 2)
-        std::vector<std::pair<HighsInt, double>> vars_weights;
-        for (HighsInt k = start; k < end; ++k) {
-            auto col = static_cast<HighsInt>(clq_vars[k].col);
-            // Skip fixed variables
-            if (col_ub[col] - col_lb[col] < 1e-6) {
-                continue;
-            }
-            // Weight = x_ac[col] for positive literal (val=1)
-            double w = clq_vars[k].val ? lp_ref[col] : 1.0 - lp_ref[col];
+    std::vector<std::pair<HighsInt, double>> keyed;
+    for (HighsInt g = 0; g < cover.num_groups(); ++g) {
+        keyed.clear();
+        for (HighsInt i = cover.group_start[g]; i < cover.group_start[g + 1]; ++i) {
+            const HighsInt col = cover.members[i];
+            double w = cover.member_pos[i] != 0 ? lp_ref[col] : 1.0 - lp_ref[col];
             w = std::max(w, 1e-10);  // avoid zero weights
-            vars_weights.emplace_back(col, w);
+            const double u = std::uniform_real_distribution<double>(1e-15, 1.0)(rng);
+            keyed.emplace_back(col, std::log(u) / w);
         }
-
-        if (vars_weights.empty()) {
-            continue;
-        }
-
-        // Weighted random sort: paper uses log(Rand(0,1))/w as sort key
-        // This is the Gumbel-max trick for weighted sampling without replacement
-        for (auto& [col, w] : vars_weights) {
-            double u = std::uniform_real_distribution<double>(1e-15, 1.0)(rng);
-            w = std::log(u) / w;
-        }
-        std::ranges::sort(vars_weights,
-                          [](const auto& a, const auto& b) { return a.second > b.second; });
-
-        for (const auto& [col, _] : vars_weights) {
+        std::ranges::sort(keyed, [](const auto& a, const auto& c) { return a.second > c.second; });
+        for (const auto& [col, key] : keyed) {
             b.bin.push_back(col);
         }
     }
-
+    b.bin.insert(b.bin.end(), cover.uncovered.begin(), cover.uncovered.end());
     return concat_buckets(b);
 }
 
 // --- cliques2: dynamic clique cover using LP solution (paper Fig. 3) ---
-// For each clique, pick the most positive literal w.r.t. LP solution,
-// then remaining uncovered binaries.
-// Cognitive complexity 29 (threshold 25).  Kept whole: the cliques2 variable order (Table 3):
-// clique partition, per-clique ranking, and the non-clique tail. Decomposing it would move work
-// across a worker's inner loop, and the closeout takes no unmeasured performance risk; the
-// standards also rank fidelity to the reference algorithm above mechanical extraction.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+// A *different* cover from typecl's, by the paper's own description: "we
+// construct a clique cover dynamically using both the clique table and a
+// reference LP solution, in this case, a zero-objective vertex.  The method is
+// quite simple: we just loop over the cliques in the problem, skipping fixed
+// variables and non-tight cliques (w.r.t. to the reference LP solution), pick
+// the most positive literal in the clique and then the remaining uncovered
+// binary variables (again, in the order they appear in the clique)."  One pass
+// over the whole table, no partition step — see `clique_cover::cliques2_order`
+// for the figure line by line, including the skip of an entire clique whose
+// literal is already fixed true.
+//
+// The reference vector is the zero-objective vertex, and `fpr_lp`'s arm table
+// is what binds it there (#128); nothing in this function chooses it.
 std::vector<HighsInt> rank_cliques2(const HighsMipSolver& mipsolver, const double* lp_ref) {
-    auto* mipdata = mipsolver.mipdata_.get();
-    auto b = bucket_by_type(mipsolver);
-
-    if (b.bin.empty() || (lp_ref == nullptr)) {
+    if (lp_ref == nullptr) {
         return rank_typecl(mipsolver);
     }
-
-    using CV = HighsCliqueTable::CliqueVar;
-    std::vector<CV> clq_vars;
-    clq_vars.reserve(b.bin.size());
-    for (HighsInt j : b.bin) {
-        clq_vars.emplace_back(j, 1);
+    auto* mipdata = mipsolver.mipdata_.get();
+    auto b = bucket_by_type(mipsolver);
+    if (b.bin.empty()) {
+        return concat_buckets(b);
     }
 
-    // Use the objective-weighted clique partition variant
-    // This sorts within each clique by LP-weighted preference
-    std::vector<HighsInt> partition_start;
-    std::vector<double> lp_vec(lp_ref, lp_ref + mipsolver.model_->num_col_);
-    mipdata->cliquetable.cliquePartition(lp_vec, clq_vars, partition_start);
-
-    // Paper Fig. 3: for each clique, pick best variable, then rest
-    b.bin.clear();
-    const auto& col_lb = mipsolver.model_->col_lower_;
-    const auto& col_ub = mipsolver.model_->col_upper_;
-
-    for (size_t c = 0; c + 1 < partition_start.size(); ++c) {
-        HighsInt start = partition_start[c];
-        HighsInt end = partition_start[c + 1];
-
-        // Paper Fig. 3: compute sum of LP literal values for tightness check
-        double sum = 0.0;
-        HighsInt best_col = -1;
-        double best_val = -1.0;
-
-        for (HighsInt k = start; k < end; ++k) {
-            auto col = static_cast<HighsInt>(clq_vars[k].col);
-            double v = clq_vars[k].val ? lp_ref[col] : 1.0 - lp_ref[col];
-            sum += v;
-            if (col_ub[col] - col_lb[col] < 1e-6) {
-                continue;
-            }
-            if (v > best_val) {
-                best_val = v;
-                best_col = col;
-            }
-        }
-
-        // Paper Fig. 3, line 24: only reorder if clique is LP-tight (sum ≈ 1)
-        if (best_col >= 0 && sum >= 1.0 - 1e-6) {
-            b.bin.push_back(best_col);
-            for (HighsInt k = start; k < end; ++k) {
-                auto col = static_cast<HighsInt>(clq_vars[k].col);
-                if (col != best_col) {
-                    b.bin.push_back(col);
-                }
-            }
-        } else {
-            // Not tight — keep original clique order
-            for (HighsInt k = start; k < end; ++k) {
-                b.bin.push_back(static_cast<HighsInt>(clq_vars[k].col));
-            }
-        }
-    }
-
+    const HighsCliqueTable& clq = mipdata->cliquetable;
+    const HighsDomain& dom = mipdata->getDomain();
+    b.bin = clique_cover::cliques2_order(clq.getCliques(), clq.getCliqueEntries(), b.bin,
+                                         mipsolver.model_->num_col_, lp_ref, dom.col_lower_.data(),
+                                         dom.col_upper_.data());
     return concat_buckets(b);
 }
 

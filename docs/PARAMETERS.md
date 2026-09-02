@@ -233,6 +233,41 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 ---
 
+### `kCliqueTightnessTol` — Fig. 3 clique-tightness tolerance
+
+- **File**: `src/clique_cover.h`
+- **Default**: `1e-6`
+- **Meaning**: How far the sum of a clique's literal values in the
+  reference LP solution may sit from 1 and still count as tight, in the
+  `cliques2` variable ranking (paper Fig. 3 line 24, which tests exact
+  equality). A clique that is not tight contributes nothing to the
+  order; its members reach it through the formulation-order tail.
+- **Two-sided on purpose**: a one-sided `sum >= 1 - tol` is equivalent
+  only on cliques that are rows of the model, where LP feasibility caps
+  the literal sum at 1. This pass iterates the whole clique table,
+  which also holds merged and lifted cliques bounded by no single row,
+  and those can exceed 1 at a given LP point.
+- **Suggested range**: 1e-9–1e-4, and it should track the LP solver's
+  own feasibility tolerance rather than move independently.
+
+---
+
+### `kMinCliqueGroupSize` — smallest usable cover group
+
+- **File**: `src/clique_cover.h`
+- **Default**: `2`
+- **Meaning**: How many *rankable* binaries — columns in the binary
+  bucket — a clique must contribute before the Sect. 4.1 greedy will
+  use it as a cover group. The paper is silent because the question
+  does not arise in its setting; here the root domain can have fixed
+  some of a clique's columns since the table was built, and a group of
+  one variable expresses no ordering the uncovered tail does not
+  already express.
+- **Suggested range**: 2. Raising it discards genuine clique structure;
+  1 admits degenerate one-variable groups that only reorder the tail.
+
+---
+
 ## FPR-LP (`fpr_lp`)
 
 ### `kHardRandomizationLimit` — per-worker hard attempt restart cap
@@ -1346,8 +1381,8 @@ carries the same coverage gap #117's setup bail-outs do.
 - **One `compute_var_order`.** All three of FPR, Scylla and `fpr_lp`
   precompute variable orders on the dispatching thread before any worker
   exists — eight orders for FPR, five for Scylla and ten for `fpr_lp`
-  (one per LP arm), several of them a
-  `HighsCliqueTable::cliquePartition` over the whole model. This is
+  (one per LP arm), several of them a clique-cover greedy over the whole
+  model (`clique_cover::build_clique_cover`). This is
   checked *between* orders, so one order is the floor. It is also the
   largest floor in practice: on `rail02` (542k nonzeros, 16 workers,
   presolve-only) FPR's setup measured 34.5 s, and the tail of a single
