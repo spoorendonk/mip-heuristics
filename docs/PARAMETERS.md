@@ -674,10 +674,15 @@ instead of silently reverting the pump to fixed tolerances.
 
 One consequence to know: HiGHS's own KKT accounting also resolves five of
 its thresholds from `kkt_tolerance`, and it demotes `kOptimal` to
-`kUnknown` on excessive relative violation — so `ε` moves that demotion.
-Benign today, because `ScyllaWorker::absorb_fresh_solve` retires a chain
-on `kError` and `kInfeasible` alone, but any future caller testing
-`SolveResult::model_status == kOptimal` must account for it.
+`kUnknown` on excessive relative violation. This route keeps that check
+*consistent with the solve*, since both read the same constant — a second
+reason to prefer it. Measured at 1e-2, the three-option route demotes to
+`Unknown` on both `afiro` and `25fv47`; the `kkt_tolerance` route reports
+`Optimal`, exactly as the untouched default does. It remains
+`ε`-dependent in principle and `SolveResult::model_status` is a public
+field, so a future caller testing `== kOptimal` should account for it,
+though it is benign either way: `ScyllaWorker::absorb_fresh_solve` retires
+a chain on `kError` and `kInfeasible` alone.
 
 `kkt_tolerance`'s domain is `[1e-10, kHighsInf]`, so every value the
 schedule produces is in range and nothing is clamped.

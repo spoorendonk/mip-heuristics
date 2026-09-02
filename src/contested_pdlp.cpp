@@ -135,8 +135,12 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // attempt at #140 shipped it.  `primal_feasibility_tolerance` and
     // `dual_feasibility_tolerance` are not private to the PDLP solve:
     // `Highs::run` always reaches `runPresolve(force_lp_presolve=true)` on
-    // this instance (with `solver="pdlp"` there is no basis, so the
-    // skip branch is never taken), and `HPresolve` takes
+    // this instance — the presolve-skip branch is
+    // `(unconstrained_lp || has_basis || without_presolve) &&
+    // solver_will_use_basis`, and it is the last conjunct that decides:
+    // `solver_will_use_basis` is false for anything but `simplex` and
+    // `choose`, so `solver="pdlp"` can never take it (having no basis is
+    // true but is not the operative guard) — and `HPresolve` takes
     // `primal_feastol` verbatim from the option and uses it in ~100
     // places — `weaklyDominatedCol` fixes a column to a bound whenever
     // `direction * dualBound >= -dual_feasibility_tolerance`, and the
@@ -186,13 +190,17 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     //      `kkt_tolerance` — both feasibility tolerances plus the primal
     //      residual, dual residual and optimality tolerances — and
     //      `HighsSolution.cpp` demotes `kOptimal` to `kUnknown` when the
-    //      relative violation exceeds them.  So epsilon moves that
-    //      demotion: less likely at a loose epsilon, marginally more
-    //      likely at the 1e-8 floor.  `SolveResult::model_status` is a
-    //      public field, so this is visible — it is benign only because
+    //      relative violation exceeds them.  This route keeps that check
+    //      *consistent with the solve*, since both now read the same
+    //      constant, and that is a second reason to prefer it: measured on
+    //      afiro and 25fv47 at 1e-2, the three-write route demotes to
+    //      `Unknown` on both while the `kkt_tolerance` route reports
+    //      `Optimal`, exactly as the untouched default does.  It is still
+    //      epsilon-dependent in principle, and `SolveResult::model_status`
+    //      is a public field, so a future caller testing `== kOptimal`
+    //      should read this — but it is benign in any case, because
     //      `ScyllaWorker::absorb_fresh_solve` retires a chain on `kError`
-    //      and `kInfeasible` alone.  A future caller that tests
-    //      `== kOptimal` must read this paragraph first.
+    //      and `kInfeasible` alone.
     //  (2) `analysePdlpSolution` in the same wrapper is
     //      `#if CUPDLP_DEBUG`-gated and dead in our builds.
     //  (3) `Highs.cpp`'s PDLP cleanup pass also reads `kkt_tolerance`,
@@ -238,8 +246,19 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // the per-solve limit shrinks with the deadline, so `runPresolve`'s
     // `left = time_limit - timer_.read()` crosses zero at T/2 and returns
     // a cleared solution, which `absorb_fresh_solve` reads as a retired
-    // chain.  Pre-existing and out of scope for #140; it is symmetric
-    // across the A/B, so the comparison above stays internally fair.
+    // chain.  Pre-existing and out of scope for #140 (filed as #152).  It
+    // does not invalidate the comparison above, and the reason is better
+    // than "it is symmetric", which was not measured: the trip point is
+    // `T/(1+alpha)` for `alpha` the fraction of dispatch wall time spent
+    // inside `highs_.run()` — the measured 50.9% implies alpha ~= 0.965,
+    // and its constancy across 4/8/16 s is the signature of a constant-
+    // alpha model — and this route lowers alpha slightly, so the
+    // after-arm's window is slightly *longer*.  The metric is a rate, so a
+    // longer window scales numerator and denominator together; and because
+    // epsilon decays geometrically, a longer window holds proportionally
+    // more of the expensive late iterations.  Any residual asymmetry
+    // therefore biases the ratio downward — 2.13x is if anything
+    // conservative.
     //
     // Hypothesis worth recording, not observed: a loose tolerance could in
     // principle make a 0-iteration return reachable — cuPDLP checks
@@ -299,11 +318,14 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
 
 ContestedPdlp::SolveTolerances ContestedPdlp::tolerances_for_test() const {
     SolveTolerances t;
-    // `getOptionValue` leaves its out-parameter alone on a bad name, so a
-    // renamed option would read back as the zero these fields start at.
-    // That is why all four names are pinned by "ContestedPdlp: every PDLP
-    // option name we write exists in HiGHS" — without it the
-    // stays-at-default assertions here could pass on a stale zero.
+    // `getOptionValue` leaves its out-parameter alone on a bad name, and
+    // `SolveTolerances` zero-initialises, so a renamed-away option reads
+    // back as 0.0 and fails the caller's comparison rather than passing
+    // quietly.  The names are nonetheless pinned by "ContestedPdlp: every
+    // PDLP option name we write exists in HiGHS", which additionally
+    // establishes on a *fresh* `Highs` that the three unwritten options'
+    // defaults really are `kDefaultKktTolerance` — the constant the
+    // stays-at-default assertions here compare against.
     static_cast<void>(highs_.getOptionValue("kkt_tolerance", t.kkt));
     static_cast<void>(highs_.getOptionValue("primal_feasibility_tolerance", t.primal_feasibility));
     static_cast<void>(highs_.getOptionValue("dual_feasibility_tolerance", t.dual_feasibility));

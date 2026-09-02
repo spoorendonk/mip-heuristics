@@ -369,11 +369,19 @@ TEST_CASE("ContestedPdlp: every PDLP option name we write exists in HiGHS",
 
     // The three options we deliberately do NOT write, kept here as named
     // negative controls: cuPDLP-C reads them too, but so does `HPresolve`,
-    // so driving them from epsilon presolves a different LP.  They must
-    // keep existing, because "ContestedPdlp: epsilon drives kkt_tolerance
-    // alone on every solve" asserts they stay at their defaults, and an
-    // assertion against an option that has been renamed away would pass
-    // reading a stale zero.
+    // so driving them from epsilon presolves a different LP.
+    //
+    // This loop does two jobs, and neither is guarding against a stale
+    // read — `getOptionValue` leaves its out-parameter untouched on a bad
+    // name and every reader here zero-initialises, so a renamed-away
+    // option fails its comparison rather than passing.  What it does
+    // establish, on a *fresh* `Highs`, is that these three options'
+    // HiGHS defaults really are `kDefaultKktTolerance` — the constant
+    // "ContestedPdlp: epsilon drives kkt_tolerance alone on every solve"
+    // asserts against.  And because it runs two lines after a
+    // `kkt_tolerance` write, it incidentally shows that writing
+    // `kkt_tolerance` does not resolve into them at write time, which is
+    // the whole premise of taking that route.
     for (const char* name : {"primal_feasibility_tolerance", "dual_feasibility_tolerance",
                              "pdlp_optimality_tolerance"}) {
         INFO("option: " << name);
@@ -567,11 +575,31 @@ TEST_CASE("ContestedPdlp: a looser epsilon really does terminate PDLP sooner",
 
     const HighsInt loose = iters_at(pump::kEpsilonInit);
     const HighsInt tight = iters_at(pump::kEpsilonFloor);
+    // Third arm, and it is the one that pins the *loose* end.  At exactly
+    // `kDefaultKktTolerance` the override does not fire, so this is the
+    // solve cuPDLP-C would do with `kkt_tolerance` untouched.
+    const HighsInt untouched = iters_at(kDefaultKktTolerance);
     INFO("iterations at kEpsilonInit=" << pump::kEpsilonInit << ": " << loose);
     INFO("iterations at kEpsilonFloor=" << pump::kEpsilonFloor << ": " << tight);
+    INFO("iterations at the untouched default: " << untouched);
+
     // Strict: the schedule's whole purpose is that its first solves are
     // cheaper than its last ones.  Equality would mean epsilon reaches
-    // nothing that terminates the solver.
+    // nothing that terminates the solver — which is what an outright
+    // removal of `getCupdlpParams`'s override branch looks like, since
+    // that branch is the only path by which `kkt_tolerance` reaches
+    // cuPDLP-C: with it gone both epsilons produce identical parameters
+    // on a deterministic solver and this fails.
     CHECK(loose < tight);
     CHECK(loose > 0);
+    // Monotone dependence alone would not be enough.  A bump that
+    // re-conditioned the override to, say, `if (kkt_tolerance <
+    // kDefaultKktTolerance)` would silently stop the *loose* end from
+    // firing — epsilon=0.01 would fall back to the 1e-7 defaults while
+    // epsilon=1e-8 still fired, `tight` would still exceed `loose`, and
+    // the schedule's cheap early solves would quietly stop happening with
+    // the two checks above still green.  This closes that: the loose end
+    // must beat the untouched default, which it cannot do by falling back
+    // to it.
+    CHECK(loose < untouched);
 }
