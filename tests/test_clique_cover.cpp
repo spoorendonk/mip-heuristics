@@ -20,6 +20,7 @@
 #include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "Highs.h"
+#include "mip/HighsCliqueTable.h"
 #include "parallel/HighsParallel.h"
 #include "test_common.h"
 
@@ -281,8 +282,12 @@ TEST_CASE("compute_var_order: clique strategies return a bucketed permutation",
           "[clique-cover][heuristic]") {
     // The end-to-end invariant every caller relies on: a permutation of
     // [0, ncol) with binaries first, then general integers, then continuous.
-    // `p0548` is a bundled set-packing-flavoured instance, so its clique
-    // table is non-trivial.
+    // This harness's clique table is *empty* — `build_bare_mipsolver` turns
+    // HiGHS presolve off and it is `HPresolve` that extracts cliques — so
+    // what this pins is the plumbing and the invariant on the degenerate
+    // path, not the cover.  The cover itself is covered by the synthetic and
+    // real-`HighsCliqueTable` cases above and, end to end, by the
+    // characterization solves, which run presolve.
     highs::parallel::initialize_scheduler();
     Highs highs;
     highs.setOptionValue("output_flag", false);
@@ -313,4 +318,31 @@ TEST_CASE("compute_var_order: clique strategies return a bucketed permutation",
             REQUIRE(order[j] == j);
         }
     }
+}
+
+TEST_CASE("clique_cover: the patched accessors expose a real HighsCliqueTable", "[clique-cover]") {
+    // The synthetic-table cases above would pass against accessors that
+    // returned the wrong arrays, and `build_bare_mipsolver` cannot help: it
+    // turns HiGHS presolve off, and it is `HPresolve` that extracts cliques,
+    // so that harness's table is empty and every clique strategy degenerates
+    // to `type`.  Drive a real `HighsCliqueTable` instead — `doAddClique` is
+    // public — so the patch's `getCliques()` / `getCliqueEntries()` are held
+    // to the slot bounds, the entry order and the equality flag they promise.
+    constexpr HighsInt kNcol = 6;
+    HighsCliqueTable table(kNcol);
+    auto packing = pos({4, 0, 2});
+    auto partitioning = pos({5, 1});
+    table.doAddClique(packing.data(), static_cast<HighsInt>(packing.size()),
+                      /*equality=*/false);
+    table.doAddClique(partitioning.data(), static_cast<HighsInt>(partitioning.size()),
+                      /*equality=*/true);
+
+    const auto cover = clique_cover::build_clique_cover(
+        table.getCliques(), table.getCliqueEntries(), iota_cols(kNcol), kNcol);
+
+    REQUIRE(cover.num_equality_groups == 1);
+    REQUIRE(cover.num_groups() == 2);
+    CHECK(group(cover, 0) == std::vector<HighsInt>{5, 1});
+    CHECK(group(cover, 1) == std::vector<HighsInt>{4, 0, 2});
+    CHECK(cover.uncovered == std::vector<HighsInt>{3});
 }
