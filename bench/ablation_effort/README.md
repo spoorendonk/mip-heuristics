@@ -185,6 +185,20 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   pass. Read every FPR/Scylla number in this file as measured on a binary
   whose FPR kernel no longer exists.
 
+  **The magnitude is larger than the phrase "a unit-like reason" suggests,
+  and larger than #140's.** A refuted node went from O(column degree) to
+  O(`nrow` + walk), and in a non-backtracking mode a violation the walk
+  fails to repair *stays in the state*, so every later node incident to
+  that row is itself a refuted node and re-runs the whole walk from
+  scratch (the tabu list starts empty on each call and the walk's
+  best-state restore returns to that call's own starting point). The
+  per-attempt bound is `ncol × (100 × nnz + nrow)`. Against that, #140's
+  0.13–0.60x on Scylla's charged effort is small. Concretely: a probe run
+  at `fpr_effort = 7.672` now buys materially fewer real DFS nodes than
+  that number was calibrated to buy, so the FPR knee in this table should
+  be read as an upper bound on where the new binary's knee sits, not as
+  an estimate of it.
+
 **The precondition was: wait for every code issue above, then run it once.**
 This is a ~9 h overnight window on a bench machine, and each of those changes
 alters either what the binary does or how a dispatch is classified, so a run

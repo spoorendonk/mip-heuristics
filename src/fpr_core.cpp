@@ -579,34 +579,56 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
         auto [next_var, next_idx] = find_next_unfixed_int();
 
         if (next_var < 0) {
-            // Fig. 1 lines 12-16: no branches left.  A still-infeasible
-            // leaf backtracks (line 14); a feasible one is the answer
-            // (line 16).
-            if (infeas && state.do_backtrack) {
-                continue;
-            }
-            // Non-backtracking mode: the dive is over either way, and
-            // `found_complete` is set even on the infeasible leaf.  It
-            // means what its declaration says -- every integer is fixed --
-            // and that is true here, so `fpr_attempt_finish` goes on to
-            // fill the continuous columns (Phase 2.5) and run the
-            // leaf-time repair (Phase 3), which is what every `dive`
-            // reached before the activity half of `Apply` existed and what
-            // every recorded benchmark number was measured with.
+            // Fig. 1 lines 12-16: no branches left.  Line 14's backtrack
+            // has already run for every mode that has one -- the
+            // `if (infeas && state.do_backtrack)` above is the same test
+            // and nothing between the two writes `infeas` -- so this
+            // states the invariant rather than re-testing it.
+            assert(!(infeas && state.do_backtrack) &&
+                   "Fig. 1 line 14 already backtracked this node");
+
+            // Non-backtracking mode.  `found_complete` is set even on a
+            // still-infeasible leaf, and that is **not** a deviation from
+            // Fig. 1: the figure ends at line 16.  Phase 2.5 and Phase 3
+            // are a local post-process whose precondition has always been
+            // `found_complete`, declared as "a leaf with every integer
+            // fixed" (see `FprAttemptState` in fpr_core.h) and never as
+            // "Fig. 1's running `infeas` was false".  Those two were
+            // indistinguishable until #124 gave a fixing a way to set
+            // `infeas` at all; reading it the other way is what would be
+            // new.  So lines 9-16 are transcribed exactly and the only
+            // difference from the paper is the leaf post-process that
+            // always existed.
             //
-            // Fig. 1 is not being deviated from here: it has no Phase 2.5
-            // and no Phase 3, so its line 14 says nothing about them, and
-            // in a backtracking mode -- where line 14 does have somewhere
-            // to go -- the backtrack above is unconditional.  What settles
-            // it is that the alternative makes the verdict arbitrary:
-            // `any_violated_row_in_column` scans the *fixed column's* rows
-            // alone, so two dives ending in the same violated state get
-            // opposite answers according to whether the last column
-            // happened to be incident to a violated row.  The leaf-time
-            // walk works on a point rather than on activity ranges and
-            // starts from its own RNG stream, so it is a second chance and
-            // not a duplicate; `finish`'s own row re-check is what decides
-            // whether anything is returned.
+            // The two non-backtracking modes are not affected alike.  For
+            // `dive` this *restores* what every dive did before the
+            // activity half of `Apply` existed -- which is what the
+            // recorded benchmark numbers were measured with.  For
+            // `diveprop` it is genuinely new: a refuted node used to end
+            // the attempt outright, so no refuted diveprop ever reached
+            // Phase 3.  Same rule and same precondition, different blast
+            // radius -- four shipped `dive` configurations
+            // (`kInitialFprConfigs[2]`, Scylla's `kFprConfigs[2]`, and the
+            // `ZerocoreDive` / `LpDive` arms of `kLpArmTable`) against
+            // five `diveprop` ones (`kInitialFprConfigs[5]` and the four
+            // `*Diveprop` arms).
+            //
+            // What this leaves is **one verdict site**.  Fig. 1's
+            // `infeas` feeds the repair call and the backtrack decision
+            // and nothing else; whether anything is *returned* is decided
+            // solely by `fpr_attempt_finish`'s point re-check over every
+            // row.  That is also what makes
+            // `any_violated_row_in_column`'s one-column scan sound: it is
+            // a correct definition of `Apply`'s verdict and an incorrect
+            // one of "the problem is infeasible", and this deletes the
+            // only consumer that read the per-node fact as a global one.
+            // `infeas` is non-global for two further reasons that predate
+            // #124 and that the same re-check also covers: Phase 1's
+            // batch fixings bypass `Apply` entirely, so a row they both
+            // complete and violate is invisible to it and to propagation
+            // (which skips a row with no unfixed columns); and a repair's
+            // collateral damage on rows no later column touches is never
+            // re-reported.
             state.found_complete = true;
             break;
         }

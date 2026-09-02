@@ -1728,6 +1728,18 @@ why the four `mip_heuristic_<name>_effort` defaults (quantiles on that
 axis) are stale for FPR, Scylla and `fpr_lp` until #113's probe is
 re-run.
 
+**The magnitude is larger than it looks, because a violation persists.**
+A refuted node went from O(column degree) to O(`nrow` + walk). Worse, in
+a non-backtracking mode a violation the walk fails to repair stays in the
+state, so **every later node incident to that row is itself a refuted
+node** and re-runs the whole walk from scratch — the tabu list starts
+empty each call and `restore_best` returns to that call's own starting
+point, so nothing carries over except the domains. The per-attempt bound
+is `ncol × (kRepairWalkBudgetPerNnz × nnz + nrow)`. That can dwarf the
+0.13–0.60x #140 moved Scylla's axis by, which means `fpr_effort = 7.672`
+buys materially fewer *real* DFS nodes than the number was calibrated to
+buy.
+
 ### `kRepairWalkBudgetPerNnz` — per-call effort valve
 
 - **File**: `src/repair_walk.cpp` (anonymous namespace)
