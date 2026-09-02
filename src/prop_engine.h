@@ -157,6 +157,37 @@ public:
     // (paper's own ordering: flip, then let propagation judge).
     bool refix(HighsInt j, double value);
 
+    // Translate variable j's current domain by `delta` -- the paper's
+    // repair *shift* (Sect. 5, issue #124).  The interval moves; its width
+    // does not.  That is the whole point: Sect. 5 needs shifts on non-fixed
+    // columns so a propagated tightening can be moved rather than dropped,
+    // and its footnote rules domain *enlargement* out as a repair move
+    // outright, "as it would lead to trivial repair actions where fixings
+    // are just undone".  So this is neither `fix()` (which refines within
+    // the current domain) nor `refix()` (which overrides it with a
+    // singleton): it is the one operation that leaves the current domain
+    // intact and only relocates it.
+    //
+    // A fixed column shifts by its value, since its effective domain is the
+    // singleton `[val, val]` -- note that `fix()` leaves the pre-fix
+    // `[lb, ub]` wide, so the *value*, not the bounds, is what a fixed
+    // column's interval is read from.  The shifted result is then narrowed
+    // to that singleton, the same shape `refix()` produces (see its comment
+    // and issue #131).
+    //
+    // Returns false, changing nothing, when the shift is not available:
+    // either endpoint of the current interval infinite (an unbounded
+    // interval cannot be translated -- and its activity contribution would
+    // not move if it were), or the translated interval leaving the column's
+    // *structural* bounds `[col_lb, col_ub]`.  Callers clip `delta` to the
+    // structural bounds themselves, so the second case is a guard rather
+    // than a control path.
+    //
+    // Does **not** seed the propagation worklist, unlike `tighten_lb` /
+    // `tighten_ub`: repair runs on a state propagation has already refuted,
+    // and the paper is explicit that it may not propagate from there.
+    bool shift_domain(HighsInt j, double delta);
+
     // Tighten lower bound of variable j. Returns false if infeasible.
     bool tighten_lb(HighsInt j, double new_lb);
 

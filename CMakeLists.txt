@@ -101,6 +101,7 @@ add_library(mip_heuristics OBJECT
     src/local_mip_worker.cpp
     src/prop_engine.cpp
     src/repair_search.cpp
+    src/repair_walk.cpp
     src/mode_dispatch.cpp
     src/scylla_worker.cpp
     src/solution_pool.cpp
@@ -171,6 +172,7 @@ add_executable(mip_heuristics_tests
     tests/test_attribution.cpp
     tests/test_prop_engine.cpp
     tests/test_repair_search.cpp
+    tests/test_repair_walk.cpp
     tests/test_continuous_loop.cpp
     tests/test_contested_pdlp.cpp
     tests/test_patience_gate.cpp

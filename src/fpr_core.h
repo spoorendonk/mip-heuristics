@@ -2,6 +2,7 @@
 
 #include "fpr_strategies.h"
 #include "prop_engine.h"
+#include "repair_walk.h"
 #include "rng.h"
 #include "util/HighsInt.h"
 #include "walksat.h"
@@ -80,6 +81,14 @@ struct FprScratch {
     // walksat_select_move call inside repair_search uses cand /
     // best_indices.
     WalkSatScratch walksat;
+
+    // Phase 2 in-tree repair: RepairWalk scratch (paper Fig. 1 line 8,
+    // issue #124).  Separate from `walksat` above because it is live
+    // *during* the DFS, not at the leaf: `walksat_repair` and
+    // `repair_search` are alternative Phase 3 paths at one call site and
+    // provably never overlap, while this one would be the first sharer
+    // whose non-overlap rests on an argument about phases.
+    RepairWalkScratch repair_walk;
 
     // Phase 3 RepairSearch: DFS node stack (paper Fig. 5 Q).
     std::vector<RepairSearchNode> repair_dfs_stack;
@@ -281,6 +290,9 @@ struct FprAttemptState {
     bool dynamic_var = false;
     bool do_propagate = false;
     bool do_backtrack = false;
+    // Fig. 1's `repair` parameter: call `RepairWalk` at every node the
+    // node processing left infeasible (issue #124).
+    bool do_repair = false;
     HighsInt node_limit = 0;
     HighsInt var_order_size = 0;
 

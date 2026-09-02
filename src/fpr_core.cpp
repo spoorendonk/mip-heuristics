@@ -7,6 +7,7 @@
 #include "mip/HighsMipSolverData.h"
 #include "prop_engine.h"
 #include "repair_search.h"
+#include "repair_walk.h"
 #include "walksat.h"
 
 #include <algorithm>
@@ -261,7 +262,18 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
         std::shuffle(var_order.begin(), var_order.begin() + shuffle_len, rng);
     }
 
-    if (cfg.strategy->val_strategy == ValStrategy::kLoosedyn) {
+    // Row activities are needed by two independent consumers, and either
+    // one alone arms them: `val_loosedyn`'s dynamic lock counts, and --
+    // since #124 -- `repair_walk`, whose whole violation measure *is* the
+    // activity range (paper Sect. 5: "the very same quantities are needed
+    // for constraint propagation as well, a fact that is exploited by our
+    // implementation").  Arming them changes nothing else: `choose_value`
+    // reads `min_act`/`max_act` on the `kLoosedyn` branch and on no other,
+    // so a repairing mode paired with any other value strategy selects
+    // exactly the values it did before -- it only pays for the O(nnz)
+    // initialization and the incremental `update_activities` on each
+    // fix/tighten.
+    if (cfg.strategy->val_strategy == ValStrategy::kLoosedyn || mode_repairs(cfg.mode)) {
         E.init_activities();
     }
 
@@ -310,6 +322,13 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     state.dynamic_var = is_dynamic_var_strategy(cfg.strategy->var_strategy);
     state.do_propagate = mode_propagates(cfg.mode);
     state.do_backtrack = mode_backtracks(cfg.mode);
+    // Fig. 1's `repair` parameter.  `mode_repairs` is exactly the paper's
+    // three repair-enabled presets (dfsrep / dive / diveprop); it excludes
+    // `kRepairSearch`, whose repair procedure (Fig. 5) still runs only at
+    // the leaf.  Moving *that* one into the tree needs `repair_search` to
+    // work on a partial assignment rather than a complete one, which is
+    // issues #130/#131's ground and deliberately not touched here.
+    state.do_repair = mode_repairs(cfg.mode);
     state.node_limit = c.ncol + 1;
     state.var_order_cursor = 0;
     state.nodes_visited = 0;
@@ -461,20 +480,24 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
         E.backtrack_to(node.vs_mark, node.sol_mark, node.act_mark, node.pq_mark);
         state.var_order_cursor = node.cursor_reset;
 
-        if (!E.fix(node.var, node.val)) {
-            continue;
-        }
+        // Node processing, Fig. 1 lines 4-10, in the paper's own order.
+        // `infeas` is the figure's variable: it starts as the verdict of
+        // `Apply(fixing, P)` and is then handed to propagation, to repair,
+        // and finally to the backtrack decision.  Reading it as "prune
+        // here" at any earlier point is the defect issue #124 names.
+        bool infeas = !E.fix(node.var, node.val);
 
-        if (state.do_propagate) {
-            // Only a proven inconsistency prunes the node (issue #127).
-            // Budget exhaustion (`kBudgetExhausted`) is sound but
+        if (!infeas && state.do_propagate) {
+            // Only a proven inconsistency makes the node infeasible (issue
+            // #127).  Budget exhaustion (`kBudgetExhausted`) is sound but
             // incomplete propagation -- the DFS continues with whatever
             // was deduced so far rather than discarding a subtree that
-            // may well be feasible.
+            // may well be feasible.  Neither truncation may reach the
+            // repair call below either: repair is what Fig. 1 does with a
+            // *refuted* node, and running it on a node that merely ran out
+            // of budget would spend the walk's whole step limit repairing
+            // nothing.
             const PropResult pr = E.propagate(node.var);
-            if (pr == PropResult::kInfeasible) {
-                continue;
-            }
             if (pr == PropResult::kDeadlineExpired) {
                 // The fixpoint's own poll fired (issue #151) -- this
                 // loop's poll arriving from one level down.  Stop here
@@ -490,11 +513,65 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
                 dfs_stack.push_back(node);
                 break;
             }
+            infeas = pr == PropResult::kInfeasible;
         }
 
+        // Fig. 1 lines 7-8: `if infeas and repair: infeas = RepairWalk(P)`.
+        // The repair runs on the *partial* assignment this node's domain
+        // encodes -- see `repair_walk` -- which is the whole of issue #124.
+        // Bounded three ways so it cannot become a new indivisible unit
+        // between two deadline polls: the paper's own per-call step limit,
+        // whatever is left of this call's effort slice, and the same
+        // `Deadline` this loop polls (which `repair_walk` polls per step).
+        if (infeas && state.do_repair) {
+            // Capped by the *attempt* budget, not this call's slice, and
+            // deliberately: Fig. 1 processes a node atomically, and the
+            // slice is already spent by the time a node's propagation has
+            // refuted it -- gating on the remainder would mean the repair
+            // never ran whenever the DFS was sliced finely, which is
+            // exactly the pause/resume regime `FprWorker` runs in.  This
+            // matches how the node's other expensive half is bounded:
+            // `E.propagate` answers to its own `kPropagateBudgetPerNnz`
+            // cap rather than the slice, and Phase 3's `walksat_repair`
+            // to `cfg.max_effort` in the same way.  The slice still gates
+            // whether the *next* node starts, since the repair's effort
+            // lands in `E.effort()`.
+            const size_t walk_cap = cfg.max_effort > E.effort() ? cfg.max_effort - E.effort() : 0;
+            size_t walk_effort = 0;
+            const bool repaired = repair_walk(E, cfg.walksat_iterations, cfg.repair_noise, walk_cap,
+                                              rng, walk_effort, scratch.repair_walk, deadline);
+            // Charge into the engine's own counter, which is what both the
+            // loop's budget gate above and `state.effort_consumed` below
+            // read -- an in-tree repair that reported its effort anywhere
+            // else would be work no gate in the attempt can see.
+            E.add_effort(walk_effort);
+            infeas = !repaired;
+        }
+
+        // Fig. 1 lines 9-10: `if infeas and backtrackOnInfeas: Backtrack`.
+        // Popping the next node *is* the backtrack here -- in a
+        // backtracking mode the sibling this node's parent pushed is
+        // directly underneath it on the stack.
+        if (infeas && state.do_backtrack) {
+            continue;
+        }
+
+        // Fig. 1 line 11: `branches = Branch(P)`.  Note this is reached
+        // with `infeas` still true in a non-backtracking mode: `dive` and
+        // `diveprop` construct "a complete solution in a single big dive"
+        // and are not entitled to stop early, which is why a diveprop
+        // whose propagation failed used to return failure exactly where
+        // the paper's would have carried on.
         auto [next_var, next_idx] = find_next_unfixed_int();
 
         if (next_var < 0) {
+            // Fig. 1 lines 12-16: no branches left.  A still-infeasible
+            // leaf backtracks (line 14) -- with nothing left on the stack
+            // in a non-backtracking mode, which ends the dive; a feasible
+            // one is the answer (line 16).
+            if (infeas) {
+                continue;
+            }
             state.found_complete = true;
             break;
         }

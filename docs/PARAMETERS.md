@@ -44,10 +44,18 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 - **File**: `src/fpr_core.h` (field of `FprConfig`)
 - **Default**: `200`
-- **Meaning**: Maximum number of WalkSAT repair steps (paper Fig. 4,
-  loop bound). Kept at the paper's value because each step is cheap
-  (O(row degree) coefficient accesses) and the RepairSearch blow-up
-  rationale does not apply.
+- **Meaning**: Maximum number of WalkSAT repair steps, per call. Kept at
+  the paper's own value ("as we call the repair function very frequently,
+  we use a small iteration limit of 200 for each call") because each step
+  is cheap (O(row degree) coefficient accesses) and the RepairSearch
+  blow-up rationale does not apply.
+- **Bounds two call sites since #124**: the leaf-time `walksat_repair` on
+  a complete assignment, and `repair_walk` on the *partial* assignment at
+  every DFS node propagation refutes (paper Fig. 1 lines 7-8). The paper's
+  200 is the in-tree one's limit; the leaf-time walk inherited it.
+- **Setting it to `0` disables both**, which is how a test isolates Fig.
+  1's branching half (an unrepaired node in a non-backtracking mode must
+  still dive on) from its repair half.
 - **Suggested range**: 50–1000. Increasing helps on highly infeasible
   starting points; decreasing speeds up fast-feasible instances.
 
@@ -58,8 +66,11 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **File**: `src/fpr_core.h` (field of `FprConfig`)
 - **Default**: `0.75`
 - **Meaning**: Probability of taking a random move rather than a greedy
-  (minimum-damage) move in `walksat_select_move` (paper Fig. 4, line
-  17). Paper default is 0.75. Greedy probability = 1 − `repair_noise`.
+  (minimum-damage) move, in `walksat_select_move` on a complete
+  assignment and in `repair_walk` on a partial one. Paper default is 0.75
+  ("the noise parameter is set to p = 0.75 in our implementation").
+  Greedy probability = 1 − `repair_noise`. Neither site consults it when
+  a zero-damage move exists — the paper takes those greedily.
 - **Suggested range**: 0.5–0.95. Lower values (more greedy) can work
   better on structured instances; higher values add diversification on
   hard instances.
@@ -1378,7 +1389,8 @@ What each heuristic's coarsest unit is, after #117 and #118:
 |---|---|---|
 | FJ | one upstream callback, `CALLBACK_EFFORT` = 500000 effort units | constant |
 | LocalMIP | `kTermCheckInterval` = 1000 local-search steps | constant |
-| FPR | one propagating DFS node, 16 non-propagating ones (`kDeadlinePollNodes`), or one RepairSearch node | `kPropagateDeadlinePollWork` of propagation |
+| FPR | one propagating DFS node, 16 non-propagating ones (`kDeadlinePollNodes`), one RepairSearch node, or one RepairWalk step | `kPropagateDeadlinePollWork` of propagation |
+| FPR | one RepairWalk step is a row scan plus one column's damage evaluation, and every `kSoftRestartPeriod`-th step also an O(`nrow`) rescan of the violated set | one row's degree x one column's degree, plus `nrow` |
 | Scylla | one pump round: one PDLP solve, then one FPR rounding (which polls as above) | one PDLP solve |
 | FPR, Scylla | one dispatch *setup* — see below | one `compute_var_order`, one shared-LP build |
 | fpr_lp | one dispatch *setup*: one of ten arms' `compute_var_order`, or one reference LP solve | one `compute_var_order`, one reference LP solve |
@@ -1675,6 +1687,43 @@ effort-gap distribution).
 - **Side effects**: no root LP means no dual bound (`mip_dual_bound` is
   `-inf`), no B&B nodes, no LP iterations, and no dive-time heuristics —
   `fpr_lp` never runs under this option, and neither do RENS/RINS.
+
+---
+
+## Repair Walk (`repair_walk`)
+
+The in-tree repair of paper Fig. 1 lines 7-8, on the partial assignment
+the current domain encodes (issue #124). Its step limit and noise are
+`walksat_iterations` and `repair_noise` above; the two constants below are
+the paper's two "simple tricks" on top of the basic walk.
+
+### `kTabuLength` — short tabu list of recent shifts
+
+- **File**: `src/repair_walk.cpp` (anonymous namespace)
+- **Default**: `3`
+- **Meaning**: A column shifted within the last `kTabuLength` moves is
+  skipped as a candidate. Paper Sect. 5: "we maintain a short tabu list
+  of the last 3 shifts in order to avoid short cycles (whose probability
+  is quite large when there are very few violated constraints)".
+- **Suggested range**: 0–10. `0` disables the tabu entirely.
+
+---
+
+### `kSoftRestartPeriod` — soft restart cadence
+
+- **File**: `src/repair_walk.cpp` (anonymous namespace)
+- **Default**: `10`
+- **Meaning**: Every `kSoftRestartPeriod` applied shifts, the walk returns
+  to the least-violated state it has seen if it has since drifted away
+  from it. Paper Sect. 5: "we soft restart from the best state every 10
+  shifts (this is to avoid the repair process to diverge to states from
+  which it is very time consuming to recover)". The restore is a
+  `PropEngine::backtrack_to` on a recorded undo mark, so it costs the
+  shifts it undoes and not a domain copy.
+- **Whether the tabu list should survive a restart is not stated by the
+  paper**; ours does — the list is read as a rolling window over the last
+  three shifts, full stop.
+- **Suggested range**: 5–50. A large value approximates never restarting.
 
 ---
 

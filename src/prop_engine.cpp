@@ -275,6 +275,48 @@ bool PropEngine::refix(HighsInt j, double value) {
     return true;
 }
 
+bool PropEngine::shift_domain(HighsInt j, double delta) {
+    const VarState old_vs = vs_[j];
+    // A fixed column's effective interval is the singleton at its value --
+    // `fix()` deliberately leaves `[lb, ub]` wide, so reading the bounds
+    // here would translate an interval the search does not actually hold.
+    const double cur_lb = old_vs.fixed ? old_vs.val : old_vs.lb;
+    const double cur_ub = old_vs.fixed ? old_vs.val : old_vs.ub;
+    if (cur_lb <= -kHighsInf || cur_ub >= kHighsInf) {
+        return false;
+    }
+    double new_lb = cur_lb + delta;
+    double new_ub = cur_ub + delta;
+    if (new_lb < col_lb_[j] - feastol_ || new_ub > col_ub_[j] + feastol_) {
+        return false;
+    }
+    // Numerical hygiene only -- the caller's clip already put the interval
+    // inside the structural bounds, and clamping can only ever shrink it,
+    // never widen it past what the check above accepted.
+    new_lb = std::max(new_lb, col_lb_[j]);
+    new_ub = std::min(new_ub, col_ub_[j]);
+    if (new_lb > new_ub + feastol_) {
+        return false;
+    }
+
+    vs_undo_.emplace_back(j, old_vs);
+    sol_undo_.emplace_back(j, solution_[j]);
+    vs_[j].lb = new_lb;
+    vs_[j].ub = new_ub;
+    if (old_vs.fixed || new_ub - new_lb < feastol_) {
+        double val = (new_lb + new_ub) * 0.5;
+        if (is_int(j)) {
+            val = std::round(val);
+        }
+        vs_[j].fixed = true;
+        vs_[j].val = val;
+        solution_[j] = val;
+    }
+    update_activities(j, old_vs);
+    pq_notify(j, old_vs);
+    return true;
+}
+
 bool PropEngine::tighten_lb(HighsInt j, double new_lb) {
     if (is_int(j)) {
         new_lb = std::ceil(new_lb - feastol_);
