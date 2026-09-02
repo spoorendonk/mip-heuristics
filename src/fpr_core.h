@@ -171,7 +171,7 @@ struct FprConfig {
     // (`kZerocore`/`kZerolp`/`kCore`/`kLp` -> `val_lp_based`).
     const double* lp_ref = nullptr;
 
-    // --- Pre-computed variable order (avoids data races on cliquePartition) ---
+    // --- Pre-computed variable order (avoids data races on the clique table) ---
     // When non-null, fpr_attempt uses this order instead of computing one.
     const HighsInt* precomputed_var_order = nullptr;
     HighsInt precomputed_var_order_size = 0;

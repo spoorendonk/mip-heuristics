@@ -133,7 +133,7 @@ struct LpFprSetup {
     std::vector<LpArm> arms;
 
     // Per-arm variable orderings, precomputed sequentially before any
-    // parallel region to avoid races on HighsCliqueTable::cliquePartition.
+    // parallel region to avoid races on the live clique table and domain.
     VarOrderTable var_orders;
 
     // CSC matrix of the model — built once, shared read-only.
@@ -200,8 +200,8 @@ struct SetupResult {
 // the reason `fpr::precompute_var_orders` is (issue #117): this whole
 // function runs sequentially on the dispatching thread before a worker
 // exists, so no gate the dispatch derives from its budget has any bearing
-// on it, and one `compute_var_order` is a `cliquePartition` over the whole
-// model.  Ten of them here, against eight for presolve FPR.
+// on it, and one `compute_var_order` is a clique-cover greedy over the
+// whole model.  Ten of them here, against eight for presolve FPR.
 //
 // It was not merely unpolled before: an expiry was actively *masked*.  The
 // reference solves return an empty vector when the clock has passed, the
@@ -281,8 +281,8 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
     }
 
     // Precompute var_orders sequentially — required before any parallel
-    // region because clique-based var_strategies call
-    // HighsCliqueTable::cliquePartition which mutates internal state.
+    // region because clique-based var_strategies read the live clique
+    // table and root domain, which `addIncumbent` mutates.
     s.var_orders.resize(kNumLpArms);
     const uint32_t base = heuristic_base_seed(mipsolver.options_mip_->random_seed);
     for (int i = 0; i < kNumLpArms; ++i) {

@@ -121,8 +121,8 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ExecutionContext& ex
     cycle_history_.reserve(pump::kCycleWindow);
 
     // Look up this worker's variable order from the dispatch-time table.
-    // Computing it here would read the live root domain and call
-    // cliquePartition — see the constructor's contract (issue #99).
+    // Computing it here would read the live root domain and clique table —
+    // see the constructor's contract (issue #99).
     assert(fpr_config_index_ >= 0 && fpr_config_index_ < static_cast<int>(var_orders.size()));
     var_order_ = &var_orders[fpr_config_index_];
 }
@@ -420,7 +420,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // `compute_var_order(..., nullptr)`), because a per-iteration
         // fractionality order would call back into var-order computation
         // from inside the parallel pump loop, reintroducing the
-        // cliquePartition-vs-addIncumbent race issue #99 fixed. A deliberate
+        // clique-table-vs-addIncumbent race issue #99 fixed. A deliberate
         // deviation from the paper's ideal (line 11's variable ranking is,
         // in principle, also a function of x_bar), not an oversight.
         //

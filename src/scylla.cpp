@@ -28,9 +28,8 @@ namespace {
 // in `run_opportunistic_loop`'s callback: that runs on a task thread, so a
 // rebuilt worker read the live root domain through `bucket_by_type` while
 // a peer's accepted solution was propagating it (issue #99), and for the
-// `kTypecl` strategies also called `HighsCliqueTable::cliquePartition`,
-// which mutates and reallocates the clique table that `addIncumbent`'s
-// `extractObjCliques` is writing at the same time.  `fpr::run` has always
+// `kTypecl` strategies also read `HighsCliqueTable`'s own clique list,
+// which `addIncumbent`'s `extractObjCliques` reallocates at the same time.  `fpr::run` has always
 // precomputed for exactly this reason; Scylla now does too.
 //
 // Behaviour-identical: the per-config seed is `base_seed + config_index`,
@@ -119,7 +118,7 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
 
     std::atomic<uint64_t> improvement_gen{0};
 
-    // Sequential: `compute_var_order` reaches `cliquePartition` and the live
+    // Sequential: `compute_var_order` reaches the clique table and the live
     // root domain, neither of which is safe from a worker thread (#99).
     //
     // Deadline-gated for the reason `fpr::run`'s is (issue #117): a Scylla

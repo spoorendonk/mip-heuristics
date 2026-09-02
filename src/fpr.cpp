@@ -43,8 +43,8 @@ void reset_test_counters() {
 #endif
 
 // Precomputed variable orders indexed by kFprStrategies position.  Built
-// once sequentially before any parallel region (some strategies call
-// HighsCliqueTable::cliquePartition which is not thread-safe).
+// once sequentially before any parallel region (some strategies read the
+// live clique table and root domain, which is not thread-safe).
 using VarOrderTable = std::vector<std::vector<HighsInt>>;
 
 namespace {
@@ -156,8 +156,8 @@ private:
 // Master strategy pool for all FPR parallel paths.  var_orders are
 // precomputed for each entry (see precompute_var_orders) so any strategy
 // — including clique-based ones like kStratBadobjcl whose compute_var_order
-// calls HighsCliqueTable::cliquePartition — can be used inside a parallel
-// region without racing on cliquePartition's internal state.
+// reads the live HighsCliqueTable — can be used inside a parallel region
+// without racing on the table `addIncumbent` reallocates.
 constexpr auto kFprStrategies = std::to_array<FprStrategyConfig>({
     // Strategies used by the paper's curated initial configs.
     kStratBadobjcl,  // 0: type+cliques / badobj
@@ -192,15 +192,15 @@ constexpr auto kInitialFprConfigs = std::to_array<InitialFprConfig>({
 constexpr int kNumInitialFprConfigs = static_cast<int>(std::size(kInitialFprConfigs));
 
 // Compute variable orders for every strategy in kFprStrategies.  MUST be
-// called from a sequential context: clique-based var_strategies invoke
-// HighsCliqueTable::cliquePartition which mutates internal state and is
-// not thread-safe.
+// called from a sequential context: clique-based var_strategies read the
+// live HighsCliqueTable, which `addIncumbent`'s `extractObjCliques`
+// reallocates, and the live root domain.
 //
 // Returns false when the solve's wall-clock deadline passed part-way
 // through, leaving `orders` incomplete (issue #117).  This setup is the
 // single largest deadline-unaware unit in an FPR dispatch and it is not
-// small: eight `compute_var_order` calls, several of them a
-// `cliquePartition` over the whole model, measured at 34.5 s on `rail02`
+// small: eight `compute_var_order` calls, several of them a clique-cover
+// greedy over the whole model, measured at 34.5 s on `rail02`
 // — while the dispatch's own budget, and therefore every gate derived
 // from it, has no bearing on it whatsoever.  A caller that gets `false`
 // must not use the table; `fpr::run` returns instead, which is also why
