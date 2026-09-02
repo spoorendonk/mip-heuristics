@@ -632,25 +632,55 @@ quantity: the pump's PDLP stopping error `ε`, which Mexi et al. Sect. 2.2
 describes as "a maximum error `ε` on the primal and dual feasibilities".
 
 `ContestedPdlp::solve_locked` writes that value, on **every** solve, to
-**all three** of the HiGHS options cuPDLP-C's termination check reads:
+exactly one HiGHS option — `kkt_tolerance` — and cuPDLP-C resolves it into
+**all three** parameters its termination check reads:
 
-| HiGHS option | cuPDLP-C parameter | quantity |
+| cuPDLP-C parameter | quantity | normally from |
 |---|---|---|
-| `primal_feasibility_tolerance` | `D_PRIMAL_TOL` | primal residual |
-| `dual_feasibility_tolerance` | `D_DUAL_TOL` | dual residual |
-| `pdlp_optimality_tolerance` | `D_GAP_TOL` | duality gap |
+| `D_PRIMAL_TOL` | primal residual | `primal_feasibility_tolerance` |
+| `D_DUAL_TOL` | dual residual | `dual_feasibility_tolerance` |
+| `D_GAP_TOL` | duality gap | `pdlp_optimality_tolerance` |
 
 All three, because cuPDLP-C terminates on their conjunction — relaxing a
-subset relaxes nothing. Until #140 only the third was written, so the two
-the paper names sat at the HiGHS default `kDefaultKktTolerance` (1e-7) for
-every solve and the schedule bought only the gap term. `kkt_tolerance` is
-deliberately **not** written: cuPDLP-C overwrites all three parameters
-from it, but only when it differs from its default, and depending on a
-"changed from default" side-effect is exactly the silent cross-version
-fragility this project's HiGHS-bump guidance warns about.
+subset relaxes nothing. Until #140 only `pdlp_optimality_tolerance` was
+written, so the two tolerances the paper names sat at the HiGHS default
+`kDefaultKktTolerance` (1e-7) on every solve and the schedule bought only
+the gap term.
 
-All three options share the domain `[1e-10, kHighsInf]`, so every value
-the schedule produces is in range and nothing is clamped.
+**Why the `kkt_tolerance` route and not the three options directly.** The
+two feasibility options are not private to the PDLP solve: `Highs::run`
+always presolves the wrapped instance, and `HPresolve` reads both verbatim
+in roughly a hundred places. At `ε = 0.01` that changes what presolve
+*does* — `weaklyDominatedCol` fixes every column whose dual bound falls in
+the widened band to a bound — so writing them solves a different LP rather
+than the same LP loosely. Measured presolve dimensions, `highs --solver=pdlp`:
+
+| instance | default | `primal=dual=1e-2` | `kkt_tolerance=1e-2` |
+|---|---|---|---|
+| `afiro` | 7 / 10 / 28 | 8 / 11 / 30 | 7 / 10 / 28 |
+| `25fv47` | 666 / 1434 / 9659 | 663 / 1427 / 9623 | 666 / 1434 / 9659 |
+
+`kkt_tolerance` is resolved into the feasibility thresholds only as
+function-local variables inside HiGHS's KKT checks; nothing writes it back
+into the option fields `HPresolve` reads. So it reaches cuPDLP-C's three
+parameters and leaves LP presolve bit-identical.
+
+The cost of the route is that it depends on an upstream "if changed from
+its default" branch, which is the cross-version fragility the HiGHS-bump
+guidance warns about. That is why `tests/test_contested_pdlp.cpp` asserts
+the *effect* (a looser `ε` takes strictly fewer PDLP iterations) and not
+just the option name: a removed or re-conditioned branch fails the suite
+instead of silently reverting the pump to fixed tolerances.
+
+One consequence to know: HiGHS's own KKT accounting also resolves five of
+its thresholds from `kkt_tolerance`, and it demotes `kOptimal` to
+`kUnknown` on excessive relative violation — so `ε` moves that demotion.
+Benign today, because `ScyllaWorker::absorb_fresh_solve` retires a chain
+on `kError` and `kInfeasible` alone, but any future caller testing
+`SolveResult::model_status == kOptimal` must account for it.
+
+`kkt_tolerance`'s domain is `[1e-10, kHighsInf]`, so every value the
+schedule produces is in range and nothing is clamped.
 
 ---
 
@@ -659,7 +689,7 @@ the schedule produces is in range and nothing is clamped.
 - **File**: `src/pump_common.h`
 - **Default**: `0.01`
 - **Meaning**: Starting value of the PDLP stopping error `ε` (all three
-  tolerances above). Each iteration it decays by `kBeta` until it reaches
+  cuPDLP-C parameters above, via `kkt_tolerance`). Each iteration it decays by `kBeta` until it reaches
   `kEpsilonFloor`. Larger initial values allow faster but less accurate
   early solves — the returned `x_bar` is a rounding guide for
   fix-and-propagate, not a solution that is submitted, so a loose early
@@ -684,9 +714,10 @@ the schedule produces is in range and nothing is clamped.
 - **File**: `src/pump_common.h`
 - **Default**: `1e-8`
 - **Meaning**: Floor value for the PDLP stopping error `ε`. Once `ε` decays
-  to this level it stays there for the remainder of the pump. It is two
-  orders of magnitude below HiGHS's own default tolerance, so a converged
-  pump solves *more* accurately than a stock PDLP call, not less.
+  to this level it stays there for the remainder of the pump. It is one
+  order of magnitude below HiGHS's own default tolerance
+  (`kDefaultKktTolerance` = 1e-7), so a converged pump solves *more*
+  accurately than a stock PDLP call, not less.
 - **Suggested range**: 1e-10–1e-6.
 
 ---

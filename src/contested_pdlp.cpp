@@ -35,11 +35,11 @@ void set_option_or_die(Highs& highs, const char* name, T value) {
         // exactly what this helper exists to eliminate — so abort
         // unconditionally, matching `run_locked_with_accounting` below.
         // Every call site passes a compile-time-constant option name, and
-        // the four runtime-valued writes are provably in domain (epsilon
-        // is floored at `pump::kEpsilonFloor`=1e-8 against the 1e-10
-        // minimum shared by all three tolerance options it is written to;
-        // `time_limit` is guarded `> 0` in `run_locked_with_accounting`),
-        // so this cannot fire on legitimate solve data.
+        // the two runtime-valued writes are provably in domain (epsilon is
+        // floored at `pump::kEpsilonFloor`=1e-8 against `kkt_tolerance`'s
+        // 1e-10 minimum; `time_limit` is guarded `> 0` in
+        // `run_locked_with_accounting`), so this cannot fire on
+        // legitimate solve data.
         assert(false && "ContestedPdlp: unknown or invalid HiGHS option");
         std::abort();
     }
@@ -103,80 +103,155 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     highs_.changeColsCost(0, ncol_ - 1, modified_cost.data());
 
     // The pump's epsilon schedule drives *all three* of cuPDLP-C's
-    // termination tolerances, not just the duality gap (#140).
+    // termination tolerances, and it does so through `kkt_tolerance`
+    // (#140).  Both halves of that sentence were arrived at the hard way;
+    // read the whole comment before changing either.
     //
     // What the paper says (Mexi et al., Sect. 2.2): "The standard stopping
     // criterion for PDLP is a maximum error e on the primal and dual
     // feasibilities. This error can be relaxed ... " — a *single* maximum
     // error, and the two quantities it names are the primal and dual
     // feasibilities, not the gap.  Reading implemented here: epsilon is
-    // that one error, so it is written to the primal and dual feasibility
-    // tolerances **as well as** the gap tolerance, rather than instead of
-    // it.  "As well as" and not "instead of" because cuPDLP-C's
-    // termination check is a conjunction over all three residuals: leaving
-    // the gap pinned at the HiGHS default would defeat a relaxed epsilon
-    // exactly as leaving the two feasibilities pinned did before this fix,
-    // only mirrored.  A single epsilon across all three is also what
-    // PDLP's own stopping criterion means by "error tolerance".
+    // that one error, and it reaches the primal and dual feasibility
+    // thresholds **as well as** the gap, rather than instead of the gap.
+    // "As well as" because cuPDLP-C's termination check is a conjunction
+    // over all three residuals, so relaxing a subset relaxes nothing.
     //
     // The mapping, verified against the vendored HiGHS v1.15.1
     // (`highs/pdlp/CupdlpWrapper.cpp`, `getCupdlpParams`):
     //     floatParam[D_PRIMAL_TOL] = options.primal_feasibility_tolerance;
     //     floatParam[D_DUAL_TOL]   = options.dual_feasibility_tolerance;
     //     floatParam[D_GAP_TOL]    = options.pdlp_optimality_tolerance;
-    // Before this fix only the last of the three was written, so the two
+    //     if (options.kkt_tolerance != kDefaultKktTolerance) {
+    //       floatParam[D_PRIMAL_TOL] = floatParam[D_DUAL_TOL] =
+    //           floatParam[D_GAP_TOL] = options.kkt_tolerance;
+    //     }
+    // Until #140 only `pdlp_optimality_tolerance` was written, so the two
     // tolerances the paper actually names sat at `kDefaultKktTolerance`
-    // (1e-7) for every solve and the schedule bought almost nothing.
+    // (1e-7) on every solve and the schedule bought only the gap term.
     //
-    // Why three explicit writes and NOT `kkt_tolerance`: the same function
-    // overwrites all three floatParams with `options.kkt_tolerance` — but
-    // only `if (options.kkt_tolerance != kDefaultKktTolerance)`.  That is a
-    // "changed from its default" side-effect, i.e. precisely the silent
+    // WHY `kkt_tolerance` AND NOT THREE EXPLICIT WRITES.  The obvious fix
+    // — write the three options directly — is wrong, and the first
+    // attempt at #140 shipped it.  `primal_feasibility_tolerance` and
+    // `dual_feasibility_tolerance` are not private to the PDLP solve:
+    // `Highs::run` always reaches `runPresolve(force_lp_presolve=true)` on
+    // this instance (with `solver="pdlp"` there is no basis, so the
+    // skip branch is never taken), and `HPresolve` takes
+    // `primal_feastol` verbatim from the option and uses it in ~100
+    // places — `weaklyDominatedCol` fixes a column to a bound whenever
+    // `direction * dualBound >= -dual_feasibility_tolerance`, and the
+    // pump's modified costs are O(0.1-1), so at epsilon=0.01 that band is
+    // 1-10% of a typical cost.  Writing those two options therefore does
+    // not solve the same LP loosely, it solves a *different* LP, with
+    // `x_bar` pushed to bounds by presolve rather than by PDLP.
+    //
+    // Measured on the bundled LPs, `highs --solver=pdlp`, presolve
+    // dimensions after reductions:
+    //     afiro   default 7/10/28     primal=dual=1e-2 8/11/30
+    //     25fv47  default 666/1434/9659   ...        663/1427/9623
+    //     afiro   kkt_tolerance=1e-2  7/10/28      (identical)
+    //     25fv47  kkt_tolerance=1e-2  666/1434/9659 (identical)
+    // `kkt_tolerance` is resolved into the feasibility thresholds only as
+    // *function-local* variables (`HighsSolution.cpp`'s `getKktFailures`
+    // and friends); nothing writes it back into
+    // `options_.primal_feasibility_tolerance`, and `HighsOptions.cpp` has
+    // no resolution step for it at all.  So it is the one route that
+    // reaches exactly the three cuPDLP parameters and leaves LP presolve
+    // bit-identical to what it did before #140 — which is what makes this
+    // a pure fidelity fix rather than a fidelity fix plus an unmeasured
+    // change of LP.  Same instances, iterations to convergence at 1e-2:
+    // afiro 320 -> 120, 25fv47 63240 -> 520, and the objective stays
+    // closer to the true LP optimum than the three-write version manages
+    // (25fv47: true 5501.8, kkt route 5512.7, three-write route 5688.2).
+    //
+    // The cost of this route, stated plainly: it depends on an upstream
+    // "if changed from its default" branch, which is the silent
     // cross-version fragility this project's HiGHS-bump guidance warns
-    // about, and it would additionally break the moment a scheduled
-    // epsilon happened to equal 1e-7.  We therefore leave `kkt_tolerance`
-    // untouched at its default, which is what keeps that override branch
-    // dead — do not start writing it.
+    // about.  That risk is real but it is *detectable*, and
+    // `tests/test_contested_pdlp.cpp` detects it — "a looser epsilon
+    // takes strictly fewer PDLP iterations" fails outright if the branch
+    // is ever removed or renamed, which no option-name check could catch.
+    // What is NOT a reason to avoid this route, contrary to the first
+    // attempt's comment: a scheduled epsilon of exactly 1e-7 is harmless
+    // — the override does not fire, and all three parameters then sit at
+    // their 1e-7 defaults, which is the value that was wanted anyway.
     //
-    // Domains (same header, `HighsOptions.h`): all three options are
+    // Domain (`HighsOptions.h`): `kkt_tolerance` is
     // `[kMinimumKktTolerance = 1e-10, kHighsInf]`, and the schedule runs
     // from `pump::kEpsilonInit` (0.01) down to `pump::kEpsilonFloor`
     // (1e-8), so every value is in domain and no clamping is needed.
     //
-    // Second-order effect of loosening `primal_feasibility_tolerance`,
-    // considered and accepted: it is read in two further places on this
-    // instance.  (1) `analysePdlpSolution` in the same wrapper, which is
-    // `#if CUPDLP_DEBUG`-gated and dead in our builds.  (2) HiGHS's own
-    // post-solve KKT accounting, which only populates `info_` counters
-    // this class never reads.  What the solve hands back can therefore be
-    // a looser LP point at large epsilon — and that is fine, because
-    // `x_bar` is a *rounding guide*, not a solution we submit: it reaches
-    // FPR as `FprConfig::lp_ref` (value selection) and `cont_fallback`
-    // (continuous fill), where every value is clamped into the propagated
-    // domain and the resulting `x_hat` has its rows re-checked by FPR
-    // itself, with anything that survives still going through
-    // `IncumbentSink` and HiGHS's own `trySolution`.  The only status
-    // `ScyllaWorker::absorb_fresh_solve` retires a chain on are `kError`
-    // and `kInfeasible`, and a looser tolerance moves *away* from a
-    // spurious `kInfeasible`, never toward one.
+    // Second-order effects, considered and accepted.
+    //  (1) `getKktFailures` resolves *five* of its own thresholds from
+    //      `kkt_tolerance` — both feasibility tolerances plus the primal
+    //      residual, dual residual and optimality tolerances — and
+    //      `HighsSolution.cpp` demotes `kOptimal` to `kUnknown` when the
+    //      relative violation exceeds them.  So epsilon moves that
+    //      demotion: less likely at a loose epsilon, marginally more
+    //      likely at the 1e-8 floor.  `SolveResult::model_status` is a
+    //      public field, so this is visible — it is benign only because
+    //      `ScyllaWorker::absorb_fresh_solve` retires a chain on `kError`
+    //      and `kInfeasible` alone.  A future caller that tests
+    //      `== kOptimal` must read this paragraph first.
+    //  (2) `analysePdlpSolution` in the same wrapper is
+    //      `#if CUPDLP_DEBUG`-gated and dead in our builds.
+    //  (3) `Highs.cpp`'s PDLP cleanup pass also reads `kkt_tolerance`,
+    //      but sits behind `const bool consider_pdlp_cleanup = false;`.
+    //  (4) What the solve hands back can be a looser LP point at large
+    //      epsilon, and that is fine: `x_bar` is a *rounding guide*, not
+    //      a solution we submit.  It reaches FPR as `FprConfig::lp_ref`
+    //      (value selection) and `cont_fallback` (continuous fill), where
+    //      every value is clamped into the propagated domain and the
+    //      resulting `x_hat` has its rows re-checked by FPR itself, with
+    //      anything that survives still going through `IncumbentSink` and
+    //      HiGHS's own `trySolution`.
     //
-    // Measured, six bundled instances, `suite=scylla`,
-    // `presolve_only=true`, `threads=1`, seed 0, a 5 s limit with the
-    // effort budget raised past binding so the wall clock is the single
-    // stopping rule: pump iterations per second (fresh PDLP solves per
-    // second of the scylla dispatch) go up **1.81x geomean** — flugpl
-    // 1.02x, egout 1.29x, gt2 1.33x, p0548 1.51x, lseu 2.44x, bell5
-    // 5.57x — while charged effort *per pump iteration*, which is
-    // `pdlp_iters * nnz` and therefore proportional to PDLP iterations
-    // per solve, falls to 0.13-0.60x.  More pump iterations for less
-    // work per iteration is exactly the mechanism the paper describes,
-    // and it was almost entirely absent before.  Only `lseu` produced an
-    // incumbent at this scale (12.1 ms -> 6.2 ms, obj 2269 -> 2030), so
-    // treat time-to-first-incumbent here as anecdote; the throughput
-    // number is the measurement.
-    set_option_or_die(highs_, "primal_feasibility_tolerance", epsilon);
-    set_option_or_die(highs_, "dual_feasibility_tolerance", epsilon);
-    set_option_or_die(highs_, "pdlp_optimality_tolerance", epsilon);
+    // AN INDICATIVE LOCAL A/B, not a benchmark.  Six bundled instances,
+    // `suite=scylla`, `presolve_only=true`, `threads=1`, seed 0, one seed,
+    // effort raised past binding so the wall clock is the only stopping
+    // rule.  Pump iterations per second (fresh PDLP solves per second of
+    // the scylla dispatch), before -> after:
+    //     flugpl 5260 -> 5833 (1.11x)   lseu   909 -> 2482 (2.73x)
+    //     egout  2221 -> 3312 (1.49x)   gt2    949 -> 1658 (1.75x)
+    //     bell5   145 ->  889 (6.12x)   p0548  184 ->  359 (1.95x)
+    // 2.13x geomean.  Charged effort per pump iteration falls to
+    // 0.13-0.60x; that counter is `pdlp_iters * nnz` plus the round's FPR
+    // rounding effort, so read the drop as a *floor* on the reduction in
+    // PDLP iterations per solve, not as that quantity.
+    //
+    // What this does NOT establish.  It is `threads=1`, so it says nothing
+    // about the contended regime `try_solve_or_snapshot` and
+    // `kMaxStaleRounds` exist for.  It is one seed on six small bundled
+    // instances with no variance statement.  And the issue's
+    // time-to-first-incumbent criterion is effectively unmet at this
+    // scale: only `lseu` produced an incumbent on both sides (12.1 ms ->
+    // 5.8 ms, obj 2269 -> 2030) and `gt2` produced one only after (2.26 s,
+    // obj 21166, its known optimum) — two data points are an anecdote.
+    // Throughput is the only number here with any weight, and it wants a
+    // real campaign before it is quoted as a result.
+    //
+    // One thing the A/B did establish, worth knowing before timing this
+    // code: every dispatch stopped at almost exactly half its wall-clock
+    // limit (bell5 measured 2.037 s / 4 s, 4.075 s / 8 s, 8.146 s / 16 s).
+    // That is not this code and not a stall — the wrapped `Highs`
+    // instance's own `timer_` accumulates across every pump solve while
+    // the per-solve limit shrinks with the deadline, so `runPresolve`'s
+    // `left = time_limit - timer_.read()` crosses zero at T/2 and returns
+    // a cleared solution, which `absorb_fresh_solve` reads as a retired
+    // chain.  Pre-existing and out of scope for #140; it is symmetric
+    // across the A/B, so the comparison above stays internally fair.
+    //
+    // Hypothesis worth recording, not observed: a loose tolerance could in
+    // principle make a 0-iteration return reachable — cuPDLP checks
+    // termination at `nIter == 0`, so a warm start already satisfying
+    // 1e-2 would return `pdlp_iteration_count == 0`, and
+    // `pump::kMaxPdlpStalls` consecutive such rounds retire the chain.
+    // Not seen in any A/B run here: at `threads=1` a retired chain ends
+    // the dispatch, and every dispatch ran thousands of fresh solves to
+    // its wall-clock stop.  The modified cost changes between rounds,
+    // which moves the dual residual and gap even when the primal point
+    // does not, so a run of three is harder to reach than it looks.
+    set_option_or_die(highs_, "kkt_tolerance", epsilon);
     // The one place the wrapped instance's time limit is written, and the
     // caller's guarantee is that `time_limit > 0` (see
     // `run_locked_with_accounting`) — HiGHS reads `time_limit == 0` as *no
@@ -224,14 +299,15 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
 
 ContestedPdlp::SolveTolerances ContestedPdlp::tolerances_for_test() const {
     SolveTolerances t;
-    // `getOptionValue` leaves its out-parameter alone on a bad name, and
-    // these three names are pinned by
-    // "ContestedPdlp: every PDLP option name we write exists in HiGHS",
-    // so a zero here would itself be the failure a caller is looking for.
+    // `getOptionValue` leaves its out-parameter alone on a bad name, so a
+    // renamed option would read back as the zero these fields start at.
+    // That is why all four names are pinned by "ContestedPdlp: every PDLP
+    // option name we write exists in HiGHS" — without it the
+    // stays-at-default assertions here could pass on a stale zero.
+    static_cast<void>(highs_.getOptionValue("kkt_tolerance", t.kkt));
     static_cast<void>(highs_.getOptionValue("primal_feasibility_tolerance", t.primal_feasibility));
     static_cast<void>(highs_.getOptionValue("dual_feasibility_tolerance", t.dual_feasibility));
     static_cast<void>(highs_.getOptionValue("pdlp_optimality_tolerance", t.pdlp_optimality));
-    static_cast<void>(highs_.getOptionValue("kkt_tolerance", t.kkt));
     return t;
 }
 

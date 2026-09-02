@@ -102,13 +102,15 @@ public:
     //
     // `warm_start_col_value` / `warm_start_row_dual` may be empty (cold
     // start) but must otherwise have length == ncol/nrow respectively.
-    // `epsilon` is the pump's single stopping error and is written to all
-    // three of cuPDLP-C's termination tolerances —
-    // `primal_feasibility_tolerance`, `dual_feasibility_tolerance` and
-    // `pdlp_optimality_tolerance` (#140).  Writing only the last of those
-    // relaxed the duality gap while the two feasibilities the paper names
-    // stayed at the HiGHS default; see `solve_locked` for the full
-    // derivation and for why `kkt_tolerance` is deliberately left alone.
+    // `epsilon` is the pump's single stopping error.  It is written to
+    // `kkt_tolerance`, which cuPDLP-C resolves into all three of its
+    // termination tolerances — `D_PRIMAL_TOL`, `D_DUAL_TOL` and
+    // `D_GAP_TOL` (#140).  Writing `pdlp_optimality_tolerance` alone, as
+    // this used to, relaxed the duality gap while the two feasibilities
+    // the paper names stayed at the HiGHS default; writing the three
+    // options explicitly, as the first fix did, additionally perturbs LP
+    // presolve and so changes the LP being solved.  See `solve_locked`
+    // for the evidence behind both of those.
     //
     // This solve's wall-clock cap is *not* a parameter (issue #117): it is
     // the time left on the solve's own deadline, read inside the critical
@@ -152,21 +154,30 @@ public:
         return snapshot_.load(std::memory_order_acquire);
     }
 
-    // The three cuPDLP-C termination tolerances as they currently stand on
-    // the wrapped instance.  Exposed for tests: `solve_locked` writes them
-    // from `epsilon` on every solve, and the whole of #140 was that two of
-    // the three were never written at all — a defect invisible from
-    // outside the class without a way to read them back.  Reads the live
-    // option values, so call it after a solve.
+    // The tolerance options as they currently stand on the wrapped
+    // instance.  Exposed for tests, and both halves of it are load-bearing
+    // (#140): `kkt` is the one `solve_locked` writes from `epsilon` on
+    // every solve, and the other three must stay at their HiGHS defaults,
+    // because writing *those* is what perturbs LP presolve and changes the
+    // LP the pump is solving.  None of that is observable from outside the
+    // class without a way to read the options back.
+    //
+    // THREAD CONTRACT: dispatching-thread only, with no solve in flight.
+    // This reads `highs_` without taking `mu_`, and `solve_locked` writes
+    // the same options under it — matching the explicit contracts on
+    // `acquire_for_test` and `publish_snapshot_for_test`.  Call it after a
+    // solve has returned and before another is started.
     struct SolveTolerances {
+        // Written from `epsilon`; cuPDLP-C resolves it into all three
+        // termination parameters.
+        double kkt = 0.0;
+        // Deliberately *not* written: these are read by `HPresolve` as
+        // well as by cuPDLP-C, so driving them from `epsilon` silently
+        // presolves a different LP.  Expected to equal
+        // `kDefaultKktTolerance` at all times.
         double primal_feasibility = 0.0;
         double dual_feasibility = 0.0;
         double pdlp_optimality = 0.0;
-        // Not written by us, and that is the point: cuPDLP-C overwrites
-        // all three of the above from `kkt_tolerance` whenever it differs
-        // from `kDefaultKktTolerance`, so leaving it alone is what keeps
-        // the three explicit writes authoritative.
-        double kkt = 0.0;
     };
     SolveTolerances tolerances_for_test() const;
 

@@ -358,26 +358,29 @@ TEST_CASE("ContestedPdlp: every PDLP option name we write exists in HiGHS",
     REQUIRE(highs.setOptionValue("pdlp_iteration_limit", HighsInt{1000}) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("time_limit", 1.0) == HighsStatus::kOk);
 
-    // The three tolerance options the epsilon schedule drives (#140).  All
-    // three are what cuPDLP-C's termination check reads; writing only the
-    // last of them was the whole of that bug.  Both ends of the schedule
-    // must be in domain -- `[kMinimumKktTolerance = 1e-10, kHighsInf]` --
-    // since a rejected write would silently leave the tolerance wherever
-    // the previous solve left it.
+    // The option the epsilon schedule drives (#140).  cuPDLP-C resolves it
+    // into all three of its termination tolerances, which is what makes it
+    // the single write; both ends of the schedule must be in domain --
+    // `[kMinimumKktTolerance = 1e-10, kHighsInf]` -- since a rejected
+    // write would silently leave the tolerance wherever the last solve
+    // left it.
+    REQUIRE(highs.setOptionValue("kkt_tolerance", pump::kEpsilonInit) == HighsStatus::kOk);
+    REQUIRE(highs.setOptionValue("kkt_tolerance", pump::kEpsilonFloor) == HighsStatus::kOk);
+
+    // The three options we deliberately do NOT write, kept here as named
+    // negative controls: cuPDLP-C reads them too, but so does `HPresolve`,
+    // so driving them from epsilon presolves a different LP.  They must
+    // keep existing, because "ContestedPdlp: epsilon drives kkt_tolerance
+    // alone on every solve" asserts they stay at their defaults, and an
+    // assertion against an option that has been renamed away would pass
+    // reading a stale zero.
     for (const char* name : {"primal_feasibility_tolerance", "dual_feasibility_tolerance",
                              "pdlp_optimality_tolerance"}) {
         INFO("option: " << name);
-        REQUIRE(highs.setOptionValue(name, pump::kEpsilonInit) == HighsStatus::kOk);
-        REQUIRE(highs.setOptionValue(name, pump::kEpsilonFloor) == HighsStatus::kOk);
+        double value = 0.0;
+        REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
+        REQUIRE(value == kDefaultKktTolerance);
     }
-
-    // The path we deliberately do NOT take: cuPDLP-C overwrites all three
-    // of those from `kkt_tolerance`, but only when it differs from its
-    // default.  We never write it, which is what keeps that branch dead;
-    // the option must nonetheless still exist, because its disappearance
-    // would mean the override branch has moved and the three explicit
-    // writes need re-deriving.
-    REQUIRE(highs.setOptionValue("kkt_tolerance", 1e-7) == HighsStatus::kOk);
 
     // Negative control: the two dropped names must stay absent.  If a future
     // HiGHS reintroduces either, revisit the rationale comment in the
@@ -471,23 +474,30 @@ TEST_CASE("ContestedPdlp: a solve that waited for the mutex gets the time that i
 }
 
 // ===================================================================
-// The epsilon schedule reaches every tolerance cuPDLP-C terminates on
-// (#140)
+// The epsilon schedule reaches every tolerance cuPDLP-C terminates on,
+// and reaches nothing else (#140)
 // ===================================================================
 
-// The defect this pins: `solve_locked` wrote the caller's epsilon to
+// Two defects, one test case each below.
+//
+// The original: `solve_locked` wrote the caller's epsilon to
 // `pdlp_optimality_tolerance` alone, so cuPDLP-C's D_GAP_TOL followed the
 // schedule while D_PRIMAL_TOL and D_DUAL_TOL -- the two the paper's Sect.
-// 2.2 actually names -- sat at `kDefaultKktTolerance` (1e-7) on every
-// solve.  cuPDLP-C terminates on a conjunction over all three, so a
-// relaxed epsilon bought almost nothing.
+// 2.2 actually names -- sat at `kDefaultKktTolerance` (1e-7).  cuPDLP-C
+// terminates on a conjunction over all three, so a relaxed epsilon bought
+// almost nothing.
 //
-// This drives the *real* `ContestedPdlp`, not the `FakePdlp` double: the
-// double overrides `solve_locked`, which is the function under test.  Two
-// solves at two different epsilons, because the schedule needs the writes
-// to be per-solve -- a construction-time write would pass a single-solve
-// check and still never follow the decay.
-TEST_CASE("ContestedPdlp: epsilon reaches all three cuPDLP tolerances on every solve",
+// The first fix's: writing those two options explicitly *does* reach
+// cuPDLP-C, but they are not private to it.  `Highs::run` always presolves
+// this instance, and `HPresolve` reads both verbatim -- at epsilon=1e-2 it
+// fixes weakly dominated columns to bounds and returns a smaller, different
+// LP (measured: afiro 7/10/28 -> 8/11/30, 25fv47 666/1434/9659 ->
+// 663/1427/9623).  Driving `kkt_tolerance` instead reaches exactly the same
+// three cuPDLP parameters and leaves presolve bit-identical.
+//
+// Both cases drive the *real* `ContestedPdlp`, not the `FakePdlp` double:
+// the double overrides `solve_locked`, which is the function under test.
+TEST_CASE("ContestedPdlp: epsilon drives kkt_tolerance alone on every solve",
           "[contested_pdlp][options][scylla]") {
     // `ContestedPdlp`'s constructor needs a real `mipdata_`, whose `init`
     // reads `parallel::num_threads()`; see the note at the other
@@ -505,20 +515,63 @@ TEST_CASE("ContestedPdlp: epsilon reaches all three cuPDLP tolerances on every s
     const std::vector<double> cost(static_cast<size_t>(pdlp.num_col()), 0.0);
     const std::vector<double> empty;
 
-    // Both ends of the schedule: its first value, and a value well down
-    // the geometric decay.  `kEpsilonFloor` itself is covered by the
-    // in-domain half of the option-name pin above.
+    // Two solves at two epsilons, because the schedule needs the write to
+    // be per-solve: a construction-time write would pass a single-solve
+    // check and still never follow the decay.  Both ends of the schedule
+    // are covered for domain by the option-name pin above.
     for (const double epsilon : {pump::kEpsilonInit, 5e-4}) {
         INFO("epsilon: " << epsilon);
         static_cast<void>(pdlp.solve(cost, empty, empty, false, epsilon));
         const auto tol = pdlp.tolerances_for_test();
-        CHECK(tol.primal_feasibility == epsilon);
-        CHECK(tol.dual_feasibility == epsilon);
-        CHECK(tol.pdlp_optimality == epsilon);
-        // The negative side of the same fact, on the instance that
-        // actually solves: `kkt_tolerance` stays at its default, which is
-        // what keeps cuPDLP-C's "overwrite all three" branch dead and the
-        // three explicit writes authoritative.
-        CHECK(tol.kkt == kDefaultKktTolerance);
+        CHECK(tol.kkt == epsilon);
+        // And the half that keeps LP presolve out of it: the three
+        // options `HPresolve` also reads must never move.
+        CHECK(tol.primal_feasibility == kDefaultKktTolerance);
+        CHECK(tol.dual_feasibility == kDefaultKktTolerance);
+        CHECK(tol.pdlp_optimality == kDefaultKktTolerance);
     }
+}
+
+// The option-value check above pins *what we write*.  This pins *what the
+// write does*, which is the half no option-name check can reach: the whole
+// route depends on `getCupdlpParams`'s `if (kkt_tolerance !=
+// kDefaultKktTolerance)` override, an upstream "changed from its default"
+// branch.  If a HiGHS bump removes, renames or re-conditions it, epsilon
+// stops reaching cuPDLP-C's termination check entirely and every option
+// name we write still exists -- so only an effect test catches it.
+//
+// Each epsilon gets its own `ContestedPdlp`, so neither solve can inherit
+// the other's iterate through the wrapped instance; both are cold starts
+// against the same LP with the same costs, and the only difference is the
+// tolerance.
+TEST_CASE("ContestedPdlp: a looser epsilon really does terminate PDLP sooner",
+          "[contested_pdlp][options][scylla]") {
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps");
+
+    const std::vector<double> empty;
+
+    auto iters_at = [&](double epsilon) {
+        ContestedPdlp pdlp(*mipsolver, 100000);
+        REQUIRE(pdlp.initialized());
+        // A non-zero objective, so the gap term is a live part of the
+        // termination check rather than trivially satisfied at zero.
+        const std::vector<double> cost(static_cast<size_t>(pdlp.num_col()), 1.0);
+        const auto result = pdlp.solve(cost, empty, empty, false, epsilon);
+        return result.pdlp_iters;
+    };
+
+    const HighsInt loose = iters_at(pump::kEpsilonInit);
+    const HighsInt tight = iters_at(pump::kEpsilonFloor);
+    INFO("iterations at kEpsilonInit=" << pump::kEpsilonInit << ": " << loose);
+    INFO("iterations at kEpsilonFloor=" << pump::kEpsilonFloor << ": " << tight);
+    // Strict: the schedule's whole purpose is that its first solves are
+    // cheaper than its last ones.  Equality would mean epsilon reaches
+    // nothing that terminates the solver.
+    CHECK(loose < tight);
+    CHECK(loose > 0);
 }
