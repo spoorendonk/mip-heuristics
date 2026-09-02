@@ -19,7 +19,7 @@ class PropEngine;
 // `WalkSatScratch`: that one is shared between `walksat_repair` and
 // `repair_search`, which are alternative *Phase 3* paths at one call site
 // and provably never overlap.  `repair_walk` runs inside Phase 2, so it
-// would be the first user whose non-overlap rests on an argument about
+// would be the first sharer whose non-overlap rests on an argument about
 // two different phases rather than on one `if`/`else`.
 struct RepairWalkScratch {
     // A candidate repair move: shift column `var`'s whole current domain
@@ -43,7 +43,40 @@ struct RepairWalkScratch {
     // list of the last 3 shifts in order to avoid short cycles").  Kept as
     // a plain vector because it holds three entries.
     std::vector<HighsInt> tabu;
+
+    // Columns shifted since the best-so-far mark was taken.  A soft
+    // restart undoes exactly those shifts, so only the rows they appear in
+    // can change violation status -- which is what lets the restart repair
+    // the violated set in O(sum of their column degrees) instead of
+    // rescanning all `nrow` rows.  At 200 steps a walk can restart twenty
+    // times, so the difference is 20 x `nrow` per call.
+    std::vector<HighsInt> shifted_since_best;
 };
+
+// Whether applying a fixing to column `j` left one of the rows `j` appears
+// in unsatisfiable -- the infeasibility half of `Apply(fixing, P)`, paper
+// Fig. 1 line 4.
+//
+// A row is unsatisfiable when the activity range its current domain admits
+// is disjoint from the row's bounds: *no* completion satisfies it, so the
+// node is refuted.  Only `j`'s own rows are scanned, because only their
+// activities moved -- the same incremental reading the paper's shared
+// activity structures exist for.
+//
+// This is what makes `dive` a repair strategy rather than a blind dive.
+// With propagation disabled nothing else can report an infeasible node:
+// `PropEngine::fix` rejects a value only when it falls outside the
+// column's *own* current domain and never looks at a row, so before this
+// existed `infeas` was permanently false in `dive` and the repair below
+// was unreachable there -- while the paper calls `dive` "an incremental
+// repair strategy that constructs a complete solution in a single big
+// dive".  It also covers a case propagation misses in every mode:
+// `PropEngine::propagate` skips a row with no unfixed columns, so a row
+// that a fixing both completes *and* violates is invisible to it.
+//
+// `E` must have had `init_activities()` called; returns false otherwise.
+// `effort` is incremented by the coefficient accesses consumed.
+bool any_violated_row_in_column(const PropEngine& E, HighsInt j, size_t& effort);
 
 // RepairWalk on a *partial* assignment (paper Fig. 1 line 8, Sect. 5).
 //
@@ -65,7 +98,10 @@ struct RepairWalkScratch {
 //     that shifts must therefore be available on non-fixed columns too, so
 //     that propagation's tightenings can be moved rather than dropped.
 //     The shift is clipped so the translated interval still lies inside
-//     the column's *structural* bounds -- see `PropEngine::shift_domain`.
+//     the column's *structural* bounds ("clip it so that the variable is
+//     still within its global bounds") -- see `PropEngine::shift_domain`.
+//     Note the two rules are independent: the clip keeps the interval
+//     legal, width preservation is what forbids enlargement.
 //
 // Every change goes through `E`, so the engine's own undo stacks are what
 // makes both the paper's soft restart and the DFS's backtrack work: a
@@ -81,10 +117,16 @@ struct RepairWalkScratch {
 // repaired.  `effort_out` is the coefficient accesses consumed; the caller
 // charges them (`PropEngine::add_effort`) so they land in the same counter
 // the DFS budget gate reads.  `max_steps` is the paper's per-call
-// iteration limit and `max_effort`/`deadline` are the project's own two
-// stopping rules; the deadline is polled once per step, and an expiry is
-// **not** signalled outward -- like `sync_changes`, the only thing this
-// `bool` can mean to its caller is "the node is still infeasible", and
-// reading a truncation as a verdict is the bug #127/#151 exist to prevent.
-bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_effort, Rng& rng,
-                 size_t& effort_out, RepairWalkScratch& scratch, const Deadline& deadline);
+// iteration limit; the effort valve is *internal*
+// (`kRepairWalkBudgetPerNnz`, see its definition) rather than a caller
+// argument, because every effort number a caller here could derive is
+// either the per-call DFS slice -- already spent by the time propagation
+// has refuted the node -- or the attempt budget, which `E.effort()`
+// outgrows on a long attempt, silently turning the repair into a no-op
+// exactly on the hard instances it exists for.  The deadline is polled
+// once per step, and an expiry is **not** signalled outward: like
+// `sync_changes`, the only thing this `bool` can mean to its caller is
+// "the node is still infeasible", and reading a truncation as a verdict is
+// the bug #127/#151 exist to prevent.
+bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, Rng& rng, size_t& effort_out,
+                 RepairWalkScratch& scratch, const Deadline& deadline);

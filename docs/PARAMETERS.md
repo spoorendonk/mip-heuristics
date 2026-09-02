@@ -71,6 +71,22 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   ("the noise parameter is set to p = 0.75 in our implementation").
   Greedy probability = 1 − `repair_noise`. Neither site consults it when
   a zero-damage move exists — the paper takes those greedily.
+- **Deviation on the violation measure both sites score with.** Damage,
+  and the best-state comparison the soft restart and the end-of-walk
+  restore target, sum violation **magnitudes**. §5 says of the
+  complete-assignment WalkSAT it generalizes, "In our implementation, we
+  use violation count as a measure", in explicit contrast to cumulative
+  violation ("for linear constraints the two measures are different") —
+  and then defines the partial-assignment case as a magnitude ("we can
+  detect whether a constraint is currently violated and *by how much* ...
+  the violation of a given constraint is the distance between the
+  interval [m_i, M_i] and b_i") and asks for "the increases in violation"
+  to be summed. The paper states both, so this is a reading, not a gap:
+  we take the magnitude, for the gradient it gives a walk choosing among
+  moves none of which satisfies its row outright, and because
+  `walksat_select_move` had already made that choice at the leaf. A
+  count-based variant would change which move is picked and where the
+  walk restarts to.
 - **Suggested range**: 0.5–0.95. Lower values (more greedy) can work
   better on structured instances; higher values add diversification on
   hard instances.
@@ -1390,7 +1406,7 @@ What each heuristic's coarsest unit is, after #117 and #118:
 | FJ | one upstream callback, `CALLBACK_EFFORT` = 500000 effort units | constant |
 | LocalMIP | `kTermCheckInterval` = 1000 local-search steps | constant |
 | FPR | one propagating DFS node, 16 non-propagating ones (`kDeadlinePollNodes`), one RepairSearch node, or one RepairWalk step | `kPropagateDeadlinePollWork` of propagation |
-| FPR | one RepairWalk step is a row scan plus one column's damage evaluation, and every `kSoftRestartPeriod`-th step also an O(`nrow`) rescan of the violated set | one row's degree x one column's degree, plus `nrow` |
+| FPR | one RepairWalk step is a row scan plus one column's damage evaluation, and every `kSoftRestartPeriod`-th step also a rescan of the columns undone since the best state | one row's degree x one column's degree |
 | Scylla | one pump round: one PDLP solve, then one FPR rounding (which polls as above) | one PDLP solve |
 | FPR, Scylla | one dispatch *setup* — see below | one `compute_var_order`, one shared-LP build |
 | fpr_lp | one dispatch *setup*: one of ten arms' `compute_var_order`, or one reference LP solve | one `compute_var_order`, one reference LP solve |
@@ -1694,8 +1710,43 @@ effort-gap distribution).
 
 The in-tree repair of paper Fig. 1 lines 7-8, on the partial assignment
 the current domain encodes (issue #124). Its step limit and noise are
-`walksat_iterations` and `repair_noise` above; the two constants below are
-the paper's two "simple tricks" on top of the basic walk.
+`walksat_iterations` and `repair_noise` above; the three constants below
+are the paper's two "simple tricks" on top of the basic walk, plus this
+project's own effort valve.
+
+**Cost note, because it is new and it is not free.** A refuted DFS node
+used to cost O(1) — a `continue`. It now costs one O(`nrow`) scan to find
+the violated rows the walk starts from, plus the walk itself, at every
+refuted node of the dive. Nothing upstream maintains a violated-row set,
+so that entry scan is not avoidable without giving `PropEngine` one;
+everything after it is incremental, including the soft restart, which
+rescans only the columns it undid. All of it is charged to
+`PropEngine::effort()`, so every gate sees it — which is exactly why a
+fixed effort budget now buys fewer DFS nodes than it did before #124, and
+why the four `mip_heuristic_<name>_effort` defaults (quantiles on that
+axis) are stale for FPR, Scylla and `fpr_lp` until #113's probe is
+re-run.
+
+### `kRepairWalkBudgetPerNnz` — per-call effort valve
+
+- **File**: `src/repair_walk.cpp` (anonymous namespace)
+- **Default**: `100` (coefficient accesses per model nonzero)
+- **Meaning**: The safety valve underneath the paper's step limit. One
+  walk step is O(row degree × column degree), which a dense row makes
+  arbitrarily large, so this bounds a single call the way
+  `kPropagateBudgetPerNnz` bounds a single propagation fixpoint — same
+  scale, same rationale, and deliberately independent of it.
+- **Why it is not a caller argument**: the two effort numbers
+  `fpr_core.cpp` could pass are both wrong. The per-call DFS slice is
+  already spent by the time propagation has refuted the node, and
+  `FprConfig::max_effort` is not an upper bound on `PropEngine::effort()`
+  — the DFS gate is the slice and an attempt spans calls — so an
+  attempt-budget cap silently turns every repair after the crossing into
+  a no-op that still pays its entry scan, on precisely the long attempts
+  repair exists for.
+- **Suggested range**: 10–1000. The step limit usually binds first.
+
+---
 
 ### `kTabuLength` — short tabu list of recent shifts
 
@@ -1723,6 +1774,13 @@ the paper's two "simple tricks" on top of the basic walk.
 - **Whether the tabu list should survive a restart is not stated by the
   paper**; ours does — the list is read as a rolling window over the last
   three shifts, full stop.
+- **Not covered by a test.** Every model in `tests/test_repair_walk.cpp`
+  settles in one or two shifts, so `since_restart` never reaches this
+  value and changing it moves nothing in the suite. What *is* covered is
+  the restore machinery this and the end-of-walk restore share ("a failed
+  walk leaves the node in the best state it saw", plus the backtrack
+  case). Constructing a walk that takes more than ten
+  worsening-then-recovering shifts deterministically was not attempted.
 - **Suggested range**: 5–50. A large value approximates never restarting.
 
 ---

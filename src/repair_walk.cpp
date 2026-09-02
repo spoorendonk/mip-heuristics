@@ -24,6 +24,28 @@ constexpr HighsInt kTabuLength = 3;
 // is very time consuming to recover)".
 constexpr HighsInt kSoftRestartPeriod = 10;
 
+// Per-call effort valve, in coefficient accesses per nonzero of the model.
+//
+// The same kind of constant as `kPropagateBudgetPerNnz` in
+// `prop_engine.cpp`, at the same scale and for the same reason: a node's
+// two expensive halves each answer to their own deterministic cap so that
+// neither can burn an attempt's whole budget before the outer gates are
+// polled again.  The paper's own bound on a repair call is the step limit
+// (`walksat_iterations`, 200); this is the safety valve underneath it,
+// because one step is O(row degree x column degree) and a dense row makes
+// that arbitrarily large.
+//
+// It is deliberately *not* a caller argument.  The two effort numbers a
+// caller in `fpr_core.cpp` could pass are both wrong: the per-call DFS
+// slice is already spent by the time propagation has refuted the node, and
+// the attempt budget (`FprConfig::max_effort`) is not an upper bound on
+// `E.effort()` at all -- the DFS gate is the slice, an attempt spans calls,
+// so on a long attempt `E.effort()` passes `max_effort` and every
+// subsequent repair silently becomes a no-op that still pays its entry
+// scan.  That is the long attempt on the hard model, which is precisely
+// the case the repair exists for.
+constexpr size_t kRepairWalkBudgetPerNnz = 100;
+
 // A row's violation on a *partial* assignment (paper Sect. 5): the
 // distance between the activity range `[m, mx]` the current domain admits
 // and the row's bounds.  Zero unless the row is unsatisfiable by *every*
@@ -51,14 +73,38 @@ bool range_violated(double min_act, double max_act, double lo, double hi, double
 
 }  // namespace
 
-// Cognitive complexity 63 (threshold 25).  Kept whole: RepairWalk from Sect. 5 in full — the
+bool any_violated_row_in_column(const PropEngine& E, HighsInt j, size_t& effort) {
+    if (!E.activities_initialized()) {
+        return false;
+    }
+    const HighsInt* csc_start = E.csc_start();
+    const HighsInt* csc_row = E.csc_row();
+    const double* row_lo = E.row_lo();
+    const double* row_hi = E.row_hi();
+    const double* min_act = E.min_activity_data();
+    const double* max_act = E.max_activity_data();
+    const double feastol = E.feastol();
+
+    const HighsInt cbeg = csc_start[j];
+    const HighsInt cend = csc_start[j + 1];
+    effort += static_cast<size_t>(cend - cbeg);
+    for (HighsInt p = cbeg; p < cend; ++p) {
+        const HighsInt i = csc_row[p];
+        if (range_violated(min_act[i], max_act[i], row_lo[i], row_hi[i], feastol)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Cognitive complexity 66 (threshold 25).  Kept whole: RepairWalk from Sect. 5 in full — the
 // activity-range violation bookkeeping, the shift/clip/damage candidate rule and the WalkSAT
 // selection are one algorithm and share the per-step state. Decomposing it would move work across a
 // worker's inner loop (this runs at every infeasible DFS node), and the closeout takes no
 // unmeasured performance risk; the standards also rank fidelity to the reference algorithm above
 // mechanical extraction. NOLINTNEXTLINE(readability-function-cognitive-complexity)
-bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_effort, Rng& rng,
-                 size_t& effort_out, RepairWalkScratch& scratch, const Deadline& deadline) {
+bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, Rng& rng, size_t& effort_out,
+                 RepairWalkScratch& scratch, const Deadline& deadline) {
     // Sect. 5 leans on this explicitly -- "the very same quantities are
     // needed for constraint propagation as well, a fact that is exploited
     // by our implementation" -- so an engine without activities cannot
@@ -92,6 +138,8 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
     const double* min_act = E.min_activity_data();
     const double* max_act = E.max_activity_data();
 
+    const size_t max_effort =
+        (kRepairWalkBudgetPerNnz * static_cast<size_t>(ar_start[nrow])) + static_cast<size_t>(nrow);
     size_t effort = 0;
 
     auto& violated = scratch.violated;
@@ -124,23 +172,29 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
         violated.pop_back();
         violated_pos[i] = -1;
     };
-
-    double total_viol = 0.0;
-    auto rescan = [&]() {
-        for (auto vi : violated) {
-            violated_pos[vi] = -1;
-        }
-        violated.clear();
-        total_viol = 0.0;
-        effort += static_cast<size_t>(nrow);
-        for (HighsInt i = 0; i < nrow; ++i) {
-            total_viol += range_violation(min_act[i], max_act[i], row_lo[i], row_hi[i]);
-            if (range_violated(min_act[i], max_act[i], row_lo[i], row_hi[i], feastol)) {
-                add_violated(i);
-            }
+    auto refresh_violated = [&](HighsInt i) {
+        const bool was = violated_pos[i] != -1;
+        const bool now = range_violated(min_act[i], max_act[i], row_lo[i], row_hi[i], feastol);
+        if (was && !now) {
+            remove_violated(i);
+        } else if (!was && now) {
+            add_violated(i);
         }
     };
-    rescan();
+
+    // The one full scan of the model this call makes: nothing upstream
+    // maintains a violated-row set, so the walk has to find its starting
+    // point.  O(`nrow`) at every refuted node, where a refuted node used to
+    // cost O(1) -- see `docs/PARAMETERS.md`.  Everything after this is
+    // incremental, including the soft restart below.
+    double total_viol = 0.0;
+    effort += static_cast<size_t>(nrow);
+    for (HighsInt i = 0; i < nrow; ++i) {
+        total_viol += range_violation(min_act[i], max_act[i], row_lo[i], row_hi[i]);
+        if (range_violated(min_act[i], max_act[i], row_lo[i], row_hi[i], feastol)) {
+            add_violated(i);
+        }
+    }
     if (violated.empty()) {
         effort_out = effort;
         return true;
@@ -161,7 +215,6 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
         return Mark{E.vs_mark(), E.sol_mark(), E.act_mark(),
                     E.pq_initialized() ? E.pq_mark() : HighsInt{-1}};
     };
-    auto restore = [&](const Mark& m) { E.backtrack_to(m.vs, m.sol, m.act, m.pq); };
 
     Mark best_mark = mark_now();
     double best_viol = total_viol;
@@ -169,7 +222,27 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
     auto& cand = scratch.cand;
     auto& best_indices = scratch.best_indices;
     auto& tabu = scratch.tabu;
+    auto& shifted_since_best = scratch.shifted_since_best;
     tabu.clear();
+    shifted_since_best.clear();
+
+    // Undo back to the least-violated state seen, and repair the violated
+    // set incrementally: `backtrack_to` reverts exactly the shifts made
+    // since `best_mark`, so only the rows those columns appear in can have
+    // changed status, and `total_viol` is `best_viol` by definition.
+    auto restore_best = [&]() {
+        E.backtrack_to(best_mark.vs, best_mark.sol, best_mark.act, best_mark.pq);
+        for (const HighsInt var : shifted_since_best) {
+            const HighsInt cbeg = csc_start[var];
+            const HighsInt cend = csc_start[var + 1];
+            effort += static_cast<size_t>(cend - cbeg);
+            for (HighsInt p = cbeg; p < cend; ++p) {
+                refresh_violated(csc_row[p]);
+            }
+        }
+        shifted_since_best.clear();
+        total_viol = best_viol;
+    };
 
     HighsInt since_restart = 0;
     for (HighsInt step = 0; step < max_steps && !violated.empty(); ++step) {
@@ -239,10 +312,12 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
                 s = floor_it ? std::floor(s + feastol) : std::ceil(s - feastol);
             }
             // Clip so the *translated interval* still lies inside the
-            // column's structural bounds.  This is where "no domain
-            // enlargement" is enforced: the interval keeps its width, so
-            // the only freedom is how far it may slide, and both ends of
-            // the clip window bracket zero.
+            // column's structural bounds -- the paper's "clip it so that
+            // the variable is still within its global bounds".  Both ends
+            // of the clip window bracket zero, so this can only shorten a
+            // shift, never reverse one.  Note that "no domain enlargement"
+            // is enforced a line earlier, by the interval keeping its
+            // width; the clip is a separate rule.
             s = std::max(s, col_lb[j] - cur_lb);
             s = std::min(s, col_ub[j] - cur_ub);
             if (integer) {
@@ -266,6 +341,23 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
             // Damage: the *increases* in violation over the other rows `j`
             // appears in.  As in the original WalkSAT, improvements are
             // ignored.
+            //
+            // Measured as summed magnitude, not as a count of newly
+            // violated rows -- a deliberate deviation, and the paper says
+            // both things.  Sect. 5 first states, of the complete-assignment
+            // WalkSAT it generalizes, "we use violation count as a measure",
+            // in explicit contrast to cumulative violation ("for linear
+            // constraints the two measures are different"); it then defines
+            // the partial-assignment case as a magnitude -- "we can detect
+            // whether a constraint is currently violated and by how much.
+            // Thus, the violation of a given constraint is the distance
+            // between the interval [m_i, M_i] and b_i" -- and asks for "the
+            // increases in violation" to be summed.  We take the magnitude
+            // reading, for the gradient it gives a walk that has to choose
+            // among moves none of which satisfies the row outright, and for
+            // consistency with `walksat_select_move`, which has made the
+            // same choice at the leaf since before this existed.  Recorded
+            // in `docs/PARAMETERS.md` beside `repair_noise`.
             const HighsInt cbeg = csc_start[j];
             const HighsInt cend = csc_start[j + 1];
             effort += static_cast<size_t>(cend - cbeg);
@@ -333,16 +425,10 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
         for (HighsInt p = cbeg; p < cend; ++p) {
             const HighsInt i2 = csc_row[p];
             added += range_violation(min_act[i2], max_act[i2], row_lo[i2], row_hi[i2]);
-            const bool was = violated_pos[i2] != -1;
-            const bool now =
-                range_violated(min_act[i2], max_act[i2], row_lo[i2], row_hi[i2], feastol);
-            if (was && !now) {
-                remove_violated(i2);
-            } else if (!was && now) {
-                add_violated(i2);
-            }
+            refresh_violated(i2);
         }
         total_viol += added - removed;
+        shifted_since_best.push_back(var);
 
         tabu.push_back(var);
         if (std::cmp_greater(tabu.size(), kTabuLength)) {
@@ -352,13 +438,13 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
         if (total_viol < best_viol - feastol) {
             best_viol = total_viol;
             best_mark = mark_now();
+            shifted_since_best.clear();
         }
 
         if (++since_restart >= kSoftRestartPeriod) {
             since_restart = 0;
             if (total_viol > best_viol + feastol) {
-                restore(best_mark);
-                rescan();
+                restore_best();
             }
         }
         // The tabu list deliberately survives a soft restart.  The paper
@@ -367,13 +453,18 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, size_t max_eff
         // list is a rolling window over the last three shifts, full stop.
     }
 
-    // Paper Sect. 5's end-of-walk restore, and the reason a failed repair
-    // is not simply a wasted node: the node is left in the least-violated
-    // state the walk saw, which is the state the DFS below carries on from
-    // in a non-backtracking mode.
+    // Leave the node in the least-violated state the walk saw.  **Not a
+    // paper citation**: Sect. 5 names exactly two additions to the basic
+    // walk, the tabu list and the soft restart, and no end-of-walk
+    // restore.  This is ours, and it is the same property
+    // `FprConfig::repair_track_best` gives the leaf-time walk -- it
+    // matters here because a non-backtracking mode carries whatever state
+    // this leaves it into the rest of the dive, so ending on a random
+    // late state rather than the best one would make repair able to hurt.
+    // Unlike at the leaf it is not optional: the soft restart above needs
+    // the same best-state bookkeeping, and that one *is* the paper's.
     if (!violated.empty() && total_viol > best_viol + feastol) {
-        restore(best_mark);
-        rescan();
+        restore_best();
     }
 
     effort_out = effort;

@@ -170,6 +170,21 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   unit-like reason rather than a purely behavioural one — worth separating when
   reading the re-run against this table.
 
+* **#124 — landed, and it moves three arms of the axis.** FPR's repair now
+  runs *inside* the fix-and-propagate tree, at every node propagation (or the
+  fixing itself) refutes, instead of only at the leaf. A refuted node used to
+  cost O(1); it now costs an O(`nrow`) scan to find the violated rows plus a
+  bounded WalkSAT-style walk over the node's domains, all charged to the same
+  effort counter. That raises charged effort per unit of real work for **FPR,
+  for Scylla** (whose per-round rounding is the same kernel) **and for
+  `fpr_lp`**, and the effort defaults are quantiles on exactly that axis — so
+  three of the four numbers in the table move for a unit-like reason on top of
+  the behavioural one. It is also a genuine search change: `dive` repairs at
+  all for the first time, `diveprop` no longer terminates at its first
+  propagation failure, and `dfsrep` differs from `dfs` by more than a leaf
+  pass. Read every FPR/Scylla number in this file as measured on a binary
+  whose FPR kernel no longer exists.
+
 **The precondition was: wait for every code issue above, then run it once.**
 This is a ~9 h overnight window on a bench machine, and each of those changes
 alters either what the binary does or how a dispatch is classified, so a run
@@ -193,7 +208,8 @@ issue, not a solver one, and does not bear on the probe.)
 
 Two *input changes* remain known and unfixed, and neither blocks — they change
 what the re-run will measure, so read its Scylla arm against them rather than
-against this table. #140 has landed and moves Scylla's effort axis (above).
+against this table. #140 has landed and moves Scylla's effort axis (above), as
+does #124 for FPR, Scylla and `fpr_lp` (above).
 **#153 is open**: HiGHS runs full LP presolve on every one of the thousands of
 PDLP solves a dispatch performs, on a model whose structure never changes.
 Disabling it changes how many pump rounds fit inside a 30 s cap, and Scylla's

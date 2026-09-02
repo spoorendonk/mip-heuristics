@@ -487,6 +487,29 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
         // here" at any earlier point is the defect issue #124 names.
         bool infeas = !E.fix(node.var, node.val);
 
+        // The rest of `Apply(fixing, P)`: the fixing is also infeasible
+        // when it leaves one of the fixed column's rows unsatisfiable by
+        // *any* completion of the current domain (issue #124).
+        // `PropEngine::fix` alone answers a narrower question -- is the
+        // value inside the column's own domain -- and never looks at a
+        // row, which is why `dive` (propagation off, so nothing else can
+        // report an infeasible node) could never reach the repair below,
+        // although the paper calls `dive` "an incremental repair strategy
+        // that constructs a complete solution in a single big dive".
+        //
+        // Gated on `do_repair` rather than run unconditionally: in a
+        // non-repairing mode `infeas` feeds only the backtrack decision,
+        // where propagation already supplies it, and the activity arrays
+        // this reads are armed for exactly the repairing modes.  Arming
+        // them in `dfs`/`repairsearch` too, to prune a fully-fixed
+        // violated row marginally sooner, is a cost with no repair to pay
+        // for it and is not this issue's business.
+        if (!infeas && state.do_repair) {
+            size_t apply_effort = 0;
+            infeas = any_violated_row_in_column(E, node.var, apply_effort);
+            E.add_effort(apply_effort);
+        }
+
         if (!infeas && state.do_propagate) {
             // Only a proven inconsistency makes the node infeasible (issue
             // #127).  Budget exhaustion (`kBudgetExhausted`) is sound but
@@ -521,25 +544,16 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
         // encodes -- see `repair_walk` -- which is the whole of issue #124.
         // Bounded three ways so it cannot become a new indivisible unit
         // between two deadline polls: the paper's own per-call step limit,
-        // whatever is left of this call's effort slice, and the same
-        // `Deadline` this loop polls (which `repair_walk` polls per step).
+        // `repair_walk`'s own `kRepairWalkBudgetPerNnz` effort valve
+        // (deliberately internal -- neither the call slice nor the attempt
+        // budget bounds `E.effort()` in a way that could be handed in
+        // here without silently switching the repair off mid-attempt), and
+        // the same `Deadline` this loop polls, which `repair_walk` polls
+        // once per step.
         if (infeas && state.do_repair) {
-            // Capped by the *attempt* budget, not this call's slice, and
-            // deliberately: Fig. 1 processes a node atomically, and the
-            // slice is already spent by the time a node's propagation has
-            // refuted it -- gating on the remainder would mean the repair
-            // never ran whenever the DFS was sliced finely, which is
-            // exactly the pause/resume regime `FprWorker` runs in.  This
-            // matches how the node's other expensive half is bounded:
-            // `E.propagate` answers to its own `kPropagateBudgetPerNnz`
-            // cap rather than the slice, and Phase 3's `walksat_repair`
-            // to `cfg.max_effort` in the same way.  The slice still gates
-            // whether the *next* node starts, since the repair's effort
-            // lands in `E.effort()`.
-            const size_t walk_cap = cfg.max_effort > E.effort() ? cfg.max_effort - E.effort() : 0;
             size_t walk_effort = 0;
-            const bool repaired = repair_walk(E, cfg.walksat_iterations, cfg.repair_noise, walk_cap,
-                                              rng, walk_effort, scratch.repair_walk, deadline);
+            const bool repaired = repair_walk(E, cfg.walksat_iterations, cfg.repair_noise, rng,
+                                              walk_effort, scratch.repair_walk, deadline);
             // Charge into the engine's own counter, which is what both the
             // loop's budget gate above and `state.effort_consumed` below
             // read -- an in-tree repair that reported its effort anywhere
