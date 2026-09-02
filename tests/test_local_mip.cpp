@@ -1150,3 +1150,131 @@ TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
     // make and the lift phase alone cannot.
     REQUIRE(mipsolver->mipdata_->upper_bound == Catch::Approx(2.0));
 }
+
+namespace {
+
+// The instance the #149 and #150 cases below share:
+//
+//     minimize x0 + 2*x1
+//     s.t.     x0 + x1 >= 2
+//              x0, x1 in {0, ..., 3}, integer
+//
+// Hand-built rather than taken from `INSTANCES_DIR` for the same reason
+// the #129 case above is: both cases turn on an exactly-known lift
+// interval and an exactly-known objective coefficient, which no bundled
+// instance guarantees.  Construction mirrors that case and
+// `build_bare_mipsolver` (test_common.h) -- neither of these tests runs
+// a worker, so it stops at `runSetup()` and adds no `mipdata_->workers`
+// entry.
+std::unique_ptr<HighsMipSolver> build_lift_tabu_mipsolver(Highs& highs, HighsCallback& cb) {
+    highs.addVar(0.0, 3.0);
+    highs.addVar(0.0, 3.0);
+    highs.changeColIntegrality(0, HighsVarType::kInteger);
+    highs.changeColIntegrality(1, HighsVarType::kInteger);
+    highs.changeColCost(0, 1.0);
+    highs.changeColCost(1, 2.0);
+    const auto idx = std::to_array<HighsInt>({0, 1});
+    const auto val = std::to_array<double>({1.0, 1.0});
+    highs.addRow(2.0, kHighsInf, 2, idx.data(), val.data());
+
+    // `Highs::addRow` leaves the matrix row-wise; `WorkerCtx` reads the
+    // column-wise layout through `CscMatrix`.  `Highs::getLp()` is const,
+    // so force it through a copy and `passModel`.  `std::move(lp)`
+    // evaluated outside `REQUIRE`: Catch2's expression decomposition can
+    // reference the macro argument more than once, which clang-tidy's
+    // `bugprone-use-after-move` reads (spuriously) as a use after the
+    // move inside the same expression.
+    HighsLp lp = highs.getLp();
+    lp.ensureColwise();
+    const HighsStatus pass_status = highs.passModel(std::move(lp));
+    REQUIRE(pass_status == HighsStatus::kOk);
+
+    highs.setOptionValue("presolve", "off");
+    require_option(highs, "time_limit", kHighsInf);
+    auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
+                                                      highs.getSolution());
+    mipsolver->timer_.start();
+    mipsolver->improving_solution_file_ = nullptr;
+    mipsolver->mipdata_ = std::make_unique<HighsMipSolverData>(*mipsolver);
+    mipsolver->mipdata_->init();
+    mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
+    mipsolver->mipdata_->runSetup();
+    return mipsolver;
+}
+
+}  // namespace
+
+// ── LocalMIP: the lift phase ignores the tabu lists (#149) ─────────
+//
+// A characterization test, and the assertion is deliberately the
+// INVERSE of what issue #149 asked for.  The issue's acceptance
+// criterion offered two arms -- add the tabu check, or record why the
+// lift phase deliberately omits it -- and the authors' implementation
+// decides the second: `Neighbor::tabu` / `tabu_latest` is consulted in
+// all five of its neighbourhood explorers and in none of its lift path,
+// while the `Local_Search::apply_move` both share sets the
+// reverse-direction tabu for every move, lift moves included.  The full
+// citation is the `DELIBERATE DEVIATION FROM THE PAPER, MATCHING THE
+// AUTHORS' CODE` block above `select_lift_move` in
+// `local_mip_search.cpp`.
+//
+// So this pins the alternation the issue reported as *reachable*,
+// rather than asserting it cannot occur: it fails if someone adds an
+// `is_tabu` filter to the lift phase without revisiting that block.
+//
+//     minimize x0 + 2*x1
+//     s.t.     x0 + x1 >= 2
+//              x0, x1 in {0, ..., 3}, integer
+//
+// At x0=2, x1=0 the row is tight, so column 0's lift interval is [2, 3]
+// and its cost-favorable end is the lower one: the lift phase wants
+// x0 -> 2 whenever x0 sits at 3.  Driving the exact trace from the
+// issue -- an exploration move x0 -> 3 (which sets column 0's
+// decrease-tabu), then the next iteration's lift move x0 -> 2 (the
+// decrease that tabu just forbade).
+TEST_CASE("LocalMIP: the lift phase applies a move the tabu list forbids (#149)",
+          "[heuristic][local_mip]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_lift_tabu_mipsolver(highs, cb);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+
+    // The feasible starting point: x0=2, x1=0, row tight at its lower
+    // bound.  `rebuild_state` is what fills `lhs`, the violated/satisfied
+    // partition and `current_obj` from it.
+    ctx.solution[0] = 2.0;
+    ctx.solution[1] = 0.0;
+    ctx.rebuild_state();
+    REQUIRE(ctx.violated.empty());
+
+    Rng rng(/*seed=*/1);
+    HighsInt step = 0;
+
+    // Iteration 0 -- the tabu-setting move.  This is the shape the #129
+    // fall-through applies from a feasible state: an *increase* on
+    // column 0, which forbids the reverse direction for
+    // `kTabuBase + rand(kTabuVar)` (>= 3) steps.  Going through
+    // `apply_move_with_tabu` rather than writing `tabu_dec_until`
+    // directly is the point -- it is the production applier, and it is
+    // the one the lift phase also calls.
+    ctx.apply_move_with_tabu(/*j=*/0, /*new_val=*/3.0, step, rng);
+    ++step;
+    REQUIRE(ctx.solution[0] == Catch::Approx(3.0));
+    REQUIRE(ctx.is_tabu(/*j=*/0, /*delta=*/-1.0, step));
+
+    // Iteration 1 -- the lift phase, immediately after.
+    ctx.lift.recompute_all(ctx);
+    const local_mip_detail::Candidate lift = local_mip_detail::select_lift_move(ctx);
+
+    REQUIRE(lift.var_idx == 0);
+    REQUIRE(lift.new_val == Catch::Approx(2.0));
+
+    // The pin: the move the lift phase selects is exactly the one the
+    // tabu lists forbid at this step, and it selects it anyway.
+    REQUIRE(ctx.is_tabu(lift.var_idx, lift.new_val - ctx.solution[lift.var_idx], step));
+}

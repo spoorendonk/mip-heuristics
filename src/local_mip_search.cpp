@@ -301,6 +301,101 @@ Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, 
     return best;
 }
 
+// --- Lift move selection (paper Algorithm 1 line 5) ---
+//
+// Returns the highest-scoring entry of `LiftCache`'s positive-score list
+// -- the feasibility-preserving objective improvement the paper calls the
+// lift move process -- compacting the list's lazily-removed entries on
+// the way.  Extracted verbatim out of `LocalMipWorker::run_attempt`
+// (issue #149) so that the tabu behaviour documented below is pinnable by
+// a unit test rather than only reachable through a full attempt loop.
+//
+// DELIBERATE DEVIATION FROM THE PAPER, MATCHING THE AUTHORS' CODE:
+// this consults no tabu list, even though `apply_move_with_tabu` -- the
+// only applier of what it returns -- sets one.  The paper states the
+// forbidding strategy in general terms (Sect. 5: "Once a variable is
+// modified, it forbids the modification for the reverse direction in the
+// following tt iterations") without scoping it to a phase; the authors'
+// implementation (github.com/shaowei-cai-group/Local-MIP) resolves that
+// silence unambiguously.  `Neighbor::tabu` / `Neighbor::tabu_latest` is
+// consulted in every one of its five neighbourhood explorers
+// (`explore_unsat.cpp`, `explore_unsat_random.cpp`, `explore_sat.cpp`,
+// `explore_flip.cpp`, `explore_easy.cpp`) and in no part of the lift path
+// (`lift_move.cpp`'s `lift_move()` / `lift_move_operation()`,
+// `lift_scoring.cpp`'s `score_lift` / `lift_age` / `lift_random`) --
+// while their shared `Local_Search::apply_move`, which both paths call,
+// sets the reverse-direction tabu for every move it applies, lift moves
+// included.  The lift phase writes the tabu lists and never reads them:
+// an asymmetry inside one solver, not an omission in a code path that
+// forgot the lists existed.  The reference's own anti-cycling device
+// here is a different one -- `lift_age` breaks equal-score ties toward
+// the variable whose last modification is oldest.
+//
+// The consequence is the one issue #149 recorded, and it is pinned by
+// `tests/test_local_mip.cpp` ("LocalMIP: the lift phase applies a move
+// the tabu list forbids (#149)"): a neighbourhood move on column j
+// immediately followed by a lift move reversing it is not prevented.
+// It cannot repeat indefinitely, because only one half of the
+// alternation ignores the lists.  The reversing lift move itself goes
+// through `apply_move_with_tabu`, which sets the opposite-direction
+// tabu on j, and the exploration side does check
+// (`select_best_from_batch`'s `ctx.is_tabu`), so it will not re-apply
+// the move it just made for the next `kTabuBase + rand(kTabuVar)`
+// steps -- unless the aspiration criterion fires, which requires the
+// move to strictly beat the best-found objective and is therefore
+// wanted.  The cycle costs one round trip and is then broken at the
+// half that checks.
+//
+// Do not "fix" this by adding an `is_tabu` filter without re-reading the
+// two reference files named above: a lift move is objective-improving
+// and feasibility-preserving by construction
+// (`LiftCache::recompute_one` lists only columns whose best in-domain
+// target strictly improves the objective), so a tabu filter here
+// suppresses guaranteed progress, which is not a change this project
+// makes to a reference algorithm on its own judgement.
+Candidate select_lift_move(WorkerCtx& ctx) {
+    Candidate best;
+    best.score = 0.0;
+
+    HighsInt write = 0;
+    // Compaction, not traversal: the body writes back into the same
+    // vector at `write <= read` and never resizes it (the `resize`
+    // below is what shortens the list), so the bound is
+    // loop-invariant.  Hoisting it drops a size() load per iteration
+    // of LocalMIP's per-restart loop and keeps modernize-loop-convert
+    // from proposing a range-for that would hide the rewrite.
+    const auto n_positive = static_cast<HighsInt>(ctx.lift.positive_list.size());
+    for (HighsInt read = 0; read < n_positive; ++read) {
+        HighsInt j = ctx.lift.positive_list[read];
+        if (!ctx.lift.in_positive[j]) {
+            continue;
+        }
+        ctx.lift.positive_list[write++] = j;
+        if (ctx.lift.score[j] <= best.score) {
+            continue;
+        }
+        double lo = ctx.lift.lo[j];
+        double hi = ctx.lift.hi[j];
+        if (lo > hi) {
+            continue;
+        }
+        double target;
+        if (ctx.minimize) {
+            target = (ctx.col_cost[j] > 0) ? lo : hi;
+        } else {
+            target = (ctx.col_cost[j] > 0) ? hi : lo;
+        }
+        target = ctx.clamp_and_round(j, target);
+        if (std::abs(target - ctx.solution[j]) < kEpsZero) {
+            continue;
+        }
+        best = {j, target, ctx.lift.score[j], 0.0};
+    }
+    ctx.lift.positive_list.resize(write);
+
+    return best;
+}
+
 // Cognitive complexity 93 (threshold 25).  Kept whole: Algorithm 2 in full: six numbered phases,
 // each the fallback for the previous one, sharing the candidate batch and effort counter.
 // Decomposing it would move work across a worker's inner loop, and the

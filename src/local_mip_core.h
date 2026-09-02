@@ -203,6 +203,15 @@ double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_o
 Candidate select_best_from_batch(WorkerCtx& ctx, std::vector<BatchCand>& batch, HighsInt step,
                                  bool aspiration, double best_obj, bool best_feasible);
 
+// Paper Algorithm 1 line 5: the lift move process.  Highest-scoring
+// entry of `WorkerCtx::lift`'s positive list, or a default `Candidate`
+// (`var_idx == -1`) when the current solution is lift-optimal.  Also
+// compacts that list.  Call `LiftCache::recompute_all` first.
+//
+// Deliberately consults no tabu list -- see the block comment above its
+// definition in `local_mip_search.cpp` before changing that.
+Candidate select_lift_move(WorkerCtx& ctx);
+
 // --- infeasible_step: candidate generation following paper's Algorithm 2 ---
 //
 // Despite the name, this is Algorithm 2 in full and does not require

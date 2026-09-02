@@ -253,45 +253,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             }
 
             ctx_.lift.recompute_all(ctx_);
-            Candidate lift_best;
-            lift_best.score = 0.0;
-            {
-                HighsInt write = 0;
-                // Compaction, not traversal: the body writes back into the same
-                // vector at `write <= read` and never resizes it (the `resize`
-                // below is what shortens the list), so the bound is
-                // loop-invariant.  Hoisting it drops a size() load per iteration
-                // of LocalMIP's per-restart loop and keeps modernize-loop-convert
-                // from proposing a range-for that would hide the rewrite.
-                const auto n_positive = static_cast<HighsInt>(ctx_.lift.positive_list.size());
-                for (HighsInt read = 0; read < n_positive; ++read) {
-                    HighsInt j = ctx_.lift.positive_list[read];
-                    if (!ctx_.lift.in_positive[j]) {
-                        continue;
-                    }
-                    ctx_.lift.positive_list[write++] = j;
-                    if (ctx_.lift.score[j] <= lift_best.score) {
-                        continue;
-                    }
-                    double lo = ctx_.lift.lo[j];
-                    double hi = ctx_.lift.hi[j];
-                    if (lo > hi) {
-                        continue;
-                    }
-                    double target;
-                    if (ctx_.minimize) {
-                        target = (ctx_.col_cost[j] > 0) ? lo : hi;
-                    } else {
-                        target = (ctx_.col_cost[j] > 0) ? hi : lo;
-                    }
-                    target = ctx_.clamp_and_round(j, target);
-                    if (std::abs(target - ctx_.solution[j]) < kEpsZero) {
-                        continue;
-                    }
-                    lift_best = {j, target, ctx_.lift.score[j], 0.0};
-                }
-                ctx_.lift.positive_list.resize(write);
-            }
+            Candidate lift_best = select_lift_move(ctx_);
 
             if (lift_best.var_idx != -1) {
                 ctx_.apply_move_with_tabu(lift_best.var_idx, lift_best.new_val, step_, rng_);
