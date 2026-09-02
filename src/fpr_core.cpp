@@ -580,12 +580,33 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
 
         if (next_var < 0) {
             // Fig. 1 lines 12-16: no branches left.  A still-infeasible
-            // leaf backtracks (line 14) -- with nothing left on the stack
-            // in a non-backtracking mode, which ends the dive; a feasible
-            // one is the answer (line 16).
-            if (infeas) {
+            // leaf backtracks (line 14); a feasible one is the answer
+            // (line 16).
+            if (infeas && state.do_backtrack) {
                 continue;
             }
+            // Non-backtracking mode: the dive is over either way, and
+            // `found_complete` is set even on the infeasible leaf.  It
+            // means what its declaration says -- every integer is fixed --
+            // and that is true here, so `fpr_attempt_finish` goes on to
+            // fill the continuous columns (Phase 2.5) and run the
+            // leaf-time repair (Phase 3), which is what every `dive`
+            // reached before the activity half of `Apply` existed and what
+            // every recorded benchmark number was measured with.
+            //
+            // Fig. 1 is not being deviated from here: it has no Phase 2.5
+            // and no Phase 3, so its line 14 says nothing about them, and
+            // in a backtracking mode -- where line 14 does have somewhere
+            // to go -- the backtrack above is unconditional.  What settles
+            // it is that the alternative makes the verdict arbitrary:
+            // `any_violated_row_in_column` scans the *fixed column's* rows
+            // alone, so two dives ending in the same violated state get
+            // opposite answers according to whether the last column
+            // happened to be incident to a violated row.  The leaf-time
+            // walk works on a point rather than on activity ranges and
+            // starts from its own RNG stream, so it is a second chance and
+            // not a duplicate; `finish`'s own row re-check is what decides
+            // whether anything is returned.
             state.found_complete = true;
             break;
         }

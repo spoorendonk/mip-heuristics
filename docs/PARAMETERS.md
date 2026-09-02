@@ -1717,10 +1717,11 @@ project's own effort valve.
 **Cost note, because it is new and it is not free.** A refuted DFS node
 used to cost O(1) — a `continue`. It now costs one O(`nrow`) scan to find
 the violated rows the walk starts from, plus the walk itself, at every
-refuted node of the dive. Nothing upstream maintains a violated-row set,
-so that entry scan is not avoidable without giving `PropEngine` one;
-everything after it is incremental, including the soft restart, which
-rescans only the columns it undid. All of it is charged to
+refuted node of the dive; a soft restart pays that scan again, so a
+200-step walk can pay it up to `1 + 200 / kSoftRestartPeriod` times.
+Nothing upstream maintains a violated-row set, so the scan is not
+avoidable without giving `PropEngine` one; within the walk the set is
+maintained incrementally. All of it is charged to
 `PropEngine::effort()`, so every gate sees it — which is exactly why a
 fixed effort budget now buys fewer DFS nodes than it did before #124, and
 why the four `mip_heuristic_<name>_effort` defaults (quantiles on that
@@ -1774,13 +1775,19 @@ re-run.
 - **Whether the tabu list should survive a restart is not stated by the
   paper**; ours does — the list is read as a rolling window over the last
   three shifts, full stop.
-- **Not covered by a test.** Every model in `tests/test_repair_walk.cpp`
-  settles in one or two shifts, so `since_restart` never reaches this
-  value and changing it moves nothing in the suite. What *is* covered is
-  the restore machinery this and the end-of-walk restore share ("a failed
-  walk leaves the node in the best state it saw", plus the backtrack
-  case). Constructing a walk that takes more than ten
-  worsening-then-recovering shifts deterministically was not attempted.
+- **The value itself is not pinned by a test, deliberately.** "a long
+  drifting walk is restored to the state it started in" (`DriftModel`,
+  `tests/test_repair_walk.cpp`) does apply far more than ten shifts, so
+  the restart path executes — but raising this constant to disable the
+  restart outright leaves the suite green, because the end-of-walk
+  restore targets the same best state and therefore masks every
+  observable difference a mid-walk restart makes. Distinguishing them
+  needs a walk that succeeds *only* because it restarted, which is a
+  probabilistic property of a randomized walk rather than something a
+  fixed seed can pin honestly. What the tests do cover is the machinery
+  both callers share: `restore_best`'s undo (deleting it fails
+  `DriftModel`) and the rescan it uses, which is the same lambda the
+  covered entry scan uses.
 - **Suggested range**: 5–50. A large value approximates never restarting.
 
 ---

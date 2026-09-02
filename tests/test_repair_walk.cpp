@@ -672,10 +672,13 @@ TEST_CASE("FPR diveprop: an unrepaired node keeps diving instead of ending the a
     // the stack of a non-backtracking mode, so the attempt ends at the
     // refuted node having visited exactly one.
     REQUIRE(h.state.nodes_visited >= 2);
-    // And it then failed at the *bottom*, not at the refuted node: with
-    // every integer fixed and a row still unsatisfiable, Fig. 1 line 14
-    // backtracks, which in a non-backtracking mode is where the dive ends.
-    REQUIRE_FALSE(h.state.found_complete);
+    // It reached the bottom with every integer fixed, which is all
+    // `found_complete` claims, so `finish` runs its normal path -- but
+    // with the repair budget at zero the leaf-time walk cannot help
+    // either, and the row re-check rejects the assignment.
+    REQUIRE(h.state.found_complete);
+    Rng finish_rng(1);
+    REQUIRE_FALSE(fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, finish_rng).found_feasible);
 }
 
 TEST_CASE("FPR diveprop: the in-tree repair's effort reaches the engine's counter (#124)",
@@ -819,4 +822,288 @@ TEST_CASE("FPR diveprop: a budget-exhausted fixpoint does not trigger repair (#1
     // per row before it can discover there is nothing to repair.
     const auto apply_charge = static_cast<size_t>(csc.col_start[3] - csc.col_start[2]);
     REQUIRE(state.effort_consumed == ref_effort + apply_charge);
+}
+
+namespace {
+
+// u + v >= 3 with u, v binary: unsatisfiable, and unsatisfiable in the
+// activity sense from the first fixing onwards, so every node of the dive
+// is refuted and no shift can help (both columns want to move *up* and
+// both are already at their structural upper bound).  The second row is
+// there only to give both columns an up-lock beside the down-lock, so
+// Phase 1's trivially-roundable pass leaves them for the DFS.
+void build_unreachable_leaf_mip(Highs& highs) {
+    highs.addVar(0.0, 1.0);
+    highs.addVar(0.0, 1.0);
+    highs.changeColIntegrality(0, HighsVarType::kInteger);
+    highs.changeColIntegrality(1, HighsVarType::kInteger);
+    const auto idx = std::to_array<HighsInt>({0, 1});
+    const auto val = std::to_array<double>({1.0, 1.0});
+    highs.addRow(3.0, kHighsInf, 2, idx.data(), val.data());
+    highs.addRow(-kHighsInf, 5.0, 2, idx.data(), val.data());
+}
+
+}  // namespace
+
+TEST_CASE("FPR dive: a dive refuted at its own leaf still runs Phase 2.5 and Phase 3 (#124)",
+          "[repair-walk][fpr][dive]") {
+    // Before the activity half of `Apply` existed, `dive` had no way to
+    // set `infeas` at all, so every dive reached its leaf, set
+    // `found_complete`, and got the Phase 2.5 fill plus the leaf-time
+    // `walksat_repair` and `greedy_1opt`.  That leaf walk was the only
+    // repair `dive` had, and it is what every recorded benchmark number
+    // was measured with.  It works on a *point* rather than on activity
+    // ranges and starts from its own RNG stream, so losing it would be a
+    // real loss and not a de-duplication -- and the verdict deciding it
+    // would be arbitrary, since `any_violated_row_in_column` scans only
+    // the last-fixed column's rows.
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = bare_mipsolver_on(highs, cb, build_unreachable_leaf_mip);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    FprScratch scratch;
+    FprConfig cfg{};
+    cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
+    cfg.csc = &csc;
+    cfg.mode = FrameworkMode::kDive;
+    cfg.strategy = &kForcedUpLr;
+    cfg.binary_mask = problem.binary.data();
+    cfg.scratch = &scratch;
+    Rng rng(41);
+
+    FprAttemptState state;
+    fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
+    while (state.phase == FprAttemptState::Phase::kDfs) {
+        static_cast<void>(fpr_attempt_step(state, *mipsolver, cfg, rng, cfg.max_effort));
+    }
+
+    // The dive was refuted at every node, including its last one, and no
+    // shift was available anywhere -- yet it reached the bottom with every
+    // integer fixed, which is all `found_complete` claims.
+    REQUIRE(state.nodes_visited >= 2);
+    REQUIRE(state.found_complete);
+
+    const size_t dive_effort = state.effort_consumed;
+    const HeuristicResult result = fpr_attempt_finish(state, *mipsolver, cfg, rng);
+
+    // This model has no feasible solution, so the verdict is `failed`
+    // either way; what distinguishes the two is whether `finish` did any
+    // work before saying so.  Its `!found_complete` shortcut returns
+    // `E.effort()` untouched, while the normal path charges at least the
+    // row-activity rebuild Phase 2.5 needs.
+    REQUIRE_FALSE(result.found_feasible);
+    REQUIRE(result.effort > dive_effort);
+}
+
+namespace {
+
+// A model where propagation, and only propagation, refutes a node --
+// which is what `Apply`'s arrival made hard to arrange, since for a
+// *single* row the activity test and propagation's own bound derivation
+// are the same test.  Refuting through propagation alone therefore needs
+// a cascade across two rows:
+//
+//   R0: x0 + y <= 1     R1: y + w >= 2     R2: z <= 1
+//   R3: x0 + z >= 1     R4: w <= 1
+//
+// Fixing x0 = 1 leaves both of x0's own rows satisfiable -- R0's range is
+// [1, 2] against `hi = 1`, R3's is [1, 2] against `lo = 1` -- so `Apply`
+// reports nothing.  Propagation then tightens y to 0 through R0, and R1
+// derives an empty domain for w from that.  R2 and R4 exist only to give
+// z and w an up-lock apiece so Phase 1 leaves all four columns alone.
+void build_prop_refute_mip(Highs& highs) {
+    for (HighsInt j = 0; j < 4; ++j) {
+        highs.addVar(0.0, 1.0);
+        highs.changeColIntegrality(j, HighsVarType::kInteger);
+    }
+    const auto ones = std::to_array<double>({1.0, 1.0});
+    const auto one = std::to_array<double>({1.0});
+    const auto r0_idx = std::to_array<HighsInt>({0, 1});
+    highs.addRow(-kHighsInf, 1.0, 2, r0_idx.data(), ones.data());
+    const auto r1_idx = std::to_array<HighsInt>({1, 3});
+    highs.addRow(2.0, kHighsInf, 2, r1_idx.data(), ones.data());
+    const auto r2_idx = std::to_array<HighsInt>({2});
+    highs.addRow(-kHighsInf, 1.0, 1, r2_idx.data(), one.data());
+    const auto r3_idx = std::to_array<HighsInt>({0, 2});
+    highs.addRow(1.0, kHighsInf, 2, r3_idx.data(), ones.data());
+    const auto r4_idx = std::to_array<HighsInt>({3});
+    highs.addRow(-kHighsInf, 1.0, 1, r4_idx.data(), one.data());
+}
+
+struct PropRefuteHarness {
+    Highs highs;
+    HighsCallback cb{&highs};
+    std::unique_ptr<HighsMipSolver> mipsolver;
+    CscMatrix csc;
+    ProblemView problem;
+    FprScratch scratch;
+    FprConfig cfg{};
+    FprAttemptState state;
+
+    PropRefuteHarness() {
+        highs::parallel::initialize_scheduler();
+        highs.setOptionValue("output_flag", false);
+        mipsolver = bare_mipsolver_on(highs, cb, build_prop_refute_mip);
+        problem = make_problem(*mipsolver, csc);
+        cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
+        cfg.csc = &csc;
+        cfg.mode = FrameworkMode::kDiveprop;
+        cfg.strategy = &kForcedUpLr;
+        cfg.binary_mask = problem.binary.data();
+        cfg.scratch = &scratch;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("FPR diveprop: a propagation-only refutation triggers the repair (#124 x #127)",
+          "[repair-walk][fpr][diveprop]") {
+    PropRefuteHarness h;
+
+    // Premise, asserted rather than assumed: `Apply` is silent on this
+    // node and propagation is what refutes it.  Without it the case would
+    // be a third copy of the `Apply` path, and deleting
+    // `infeas = pr == PropResult::kInfeasible` would be unopposed in the
+    // file that owns the behaviour.
+    {
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        PropEngine E(h.problem.ncol, h.problem.nrow, h.problem.mipdata->ARstart_.data(),
+                     h.problem.mipdata->ARindex_.data(), h.problem.mipdata->ARvalue_.data(), h.csc,
+                     h.problem.model->col_lower_.data(), h.problem.model->col_upper_.data(),
+                     h.problem.model->row_lower_.data(), h.problem.model->row_upper_.data(),
+                     h.problem.model->integrality_.data(), h.problem.mipdata->feastol);
+        E.init_activities();
+        REQUIRE(E.fix(0, 1.0));
+        size_t probe_effort = 0;
+        REQUIRE_FALSE(any_violated_row_in_column(E, 0, probe_effort));
+        REQUIRE(E.propagate(0) == PropResult::kInfeasible);
+    }
+
+    Rng rng(43);
+    fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+    while (h.state.phase == FprAttemptState::Phase::kDfs) {
+        static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, h.cfg.max_effort));
+    }
+
+    REQUIRE(h.state.found_complete);
+    // The repair undid the decision propagation refuted and lifted y with
+    // it, and the dive then completed feasibly on top of that.
+    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
+    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+
+    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    REQUIRE(result.found_feasible);
+}
+
+TEST_CASE("FPR diveprop: a child node starts from the repaired state, not the refuted one (#124)",
+          "[repair-walk][fpr][diveprop]") {
+    // The undo marks a node records for its children are read *after* the
+    // in-tree repair.  Read them before it and every descent silently
+    // undoes its parent's repair, which defeats most of #124 -- and on a
+    // two-column model the repair simply re-fires at the next node and the
+    // same answer comes out, so nothing notices.  Here the second node's
+    // own column is incident to no violated row, so it runs no repair of
+    // its own: whatever state it inherits is the state it leaves.
+    PropRefuteHarness h;
+    Rng rng(47);
+
+    fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+    // One node per `step` call, so the engine can be read between them.
+    REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
+    static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, /*effort_remaining=*/1));
+    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
+    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+
+    REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
+    static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, /*effort_remaining=*/1));
+
+    // Node 2 fixed z and nothing else; x0 and y still carry what node 1's
+    // repair decided.  Marks taken before the repair would show x0 back at
+    // the refuted 1 and y back at propagation's 0.
+    REQUIRE(h.scratch.prop_engine->var(2).fixed);
+    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
+    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+}
+
+namespace {
+
+// Twelve columns, each with its own row `a_i <= 0`, plus one shared row
+// `3 * sum(a_i) >= 36`.  Fixed at all-ones the twelve small rows are each
+// violated by 1 and the shared row is exactly satisfied, so every repair
+// move trades one unit of violation for three: the walk drifts steadily
+// away from the state it started in and never finds a better one.  That
+// makes it the only model here that both applies more than
+// `kSoftRestartPeriod` shifts and has somewhere to be restored to.
+struct DriftModel {
+    static constexpr HighsInt kNcol = 12;
+    static constexpr HighsInt kNrow = kNcol + 1;
+    std::vector<HighsInt> ar_start;
+    std::vector<HighsInt> ar_index;
+    std::vector<double> ar_value;
+    std::vector<double> col_lb = std::vector<double>(kNcol, 0.0);
+    std::vector<double> col_ub = std::vector<double>(kNcol, 1.0);
+    std::vector<double> row_lo;
+    std::vector<double> row_hi;
+    std::vector<HighsVarType> integrality =
+        std::vector<HighsVarType>(kNcol, HighsVarType::kInteger);
+    CscMatrix csc;
+
+    DriftModel() {
+        ar_start.push_back(0);
+        for (HighsInt j = 0; j < kNcol; ++j) {
+            ar_index.push_back(j);
+            ar_value.push_back(1.0);
+            ar_start.push_back(static_cast<HighsInt>(ar_index.size()));
+            row_lo.push_back(-kHighsInf);
+            row_hi.push_back(0.0);
+        }
+        for (HighsInt j = 0; j < kNcol; ++j) {
+            ar_index.push_back(j);
+            ar_value.push_back(3.0);
+        }
+        ar_start.push_back(static_cast<HighsInt>(ar_index.size()));
+        row_lo.push_back(3.0 * kNcol);
+        row_hi.push_back(kHighsInf);
+        csc = build_csc(kNcol, kNrow, ar_start, ar_index, ar_value);
+    }
+
+    PropEngine make_engine(double feastol = 1e-6) {
+        return {kNcol,           kNrow,         ar_start.data(),    ar_index.data(),
+                ar_value.data(), csc,           col_lb.data(),      col_ub.data(),
+                row_lo.data(),   row_hi.data(), integrality.data(), feastol};
+    }
+};
+
+}  // namespace
+
+TEST_CASE("repair_walk: a long drifting walk is restored to the state it started in",
+          "[repair-walk][fpr][restart]") {
+    DriftModel m;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E = m.make_engine();
+    E.init_activities();
+    for (HighsInt j = 0; j < DriftModel::kNcol; ++j) {
+        REQUIRE(E.fix(j, 1.0));
+    }
+
+    RepairWalkScratch scratch;
+    Rng rng(53);
+    size_t effort = 0;
+    REQUIRE_FALSE(walk(E, /*max_steps=*/200, rng, effort, scratch));
+
+    // Every one of the twelve columns is back where it started.  Reaching
+    // this state requires `restore_best` to undo an arbitrary run of
+    // shifts and rebuild the violated set from the engine's activities --
+    // and this is the one model in the file that exercises the soft
+    // restart at all, since the walk applies far more than
+    // `kSoftRestartPeriod` shifts before it gives up.
+    for (HighsInt j = 0; j < DriftModel::kNcol; ++j) {
+        INFO("column " << j);
+        REQUIRE(E.var(j).fixed);
+        REQUIRE(E.var(j).val == Catch::Approx(1.0));
+    }
 }

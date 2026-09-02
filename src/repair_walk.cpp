@@ -182,19 +182,37 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, Rng& rng, size
         }
     };
 
-    // The one full scan of the model this call makes: nothing upstream
-    // maintains a violated-row set, so the walk has to find its starting
-    // point.  O(`nrow`) at every refuted node, where a refuted node used to
-    // cost O(1) -- see `docs/PARAMETERS.md`.  Everything after this is
-    // incremental, including the soft restart below.
+    // Rebuild the violated set and the total violation from the engine's
+    // activities.  Nothing upstream maintains a violated-row set, so the
+    // walk has to find its starting point this way; within the walk the
+    // set is then maintained incrementally, one column at a time.
+    //
+    // O(`nrow`), at every refuted node, where a refuted node used to cost
+    // O(1) -- see `docs/PARAMETERS.md`.  A soft restart pays it again, so
+    // a 200-step walk can pay it up to 1 + 200/`kSoftRestartPeriod` times.
+    // An earlier version repaired the set incrementally there instead,
+    // from the columns the restart had undone; that was measurably cheaper
+    // and provably equivalent, and it is gone because no test in this
+    // suite could reach it -- the end-of-walk restore targets the same
+    // best state, so it masks every observable difference a soft restart
+    // makes.  Untestable cleverness on the correctness-critical path is
+    // the worse trade.
     double total_viol = 0.0;
-    effort += static_cast<size_t>(nrow);
-    for (HighsInt i = 0; i < nrow; ++i) {
-        total_viol += range_violation(min_act[i], max_act[i], row_lo[i], row_hi[i]);
-        if (range_violated(min_act[i], max_act[i], row_lo[i], row_hi[i], feastol)) {
-            add_violated(i);
+    auto rescan = [&]() {
+        for (const HighsInt vi : violated) {
+            violated_pos[vi] = -1;
         }
-    }
+        violated.clear();
+        total_viol = 0.0;
+        effort += static_cast<size_t>(nrow);
+        for (HighsInt i = 0; i < nrow; ++i) {
+            total_viol += range_violation(min_act[i], max_act[i], row_lo[i], row_hi[i]);
+            if (range_violated(min_act[i], max_act[i], row_lo[i], row_hi[i], feastol)) {
+                add_violated(i);
+            }
+        }
+    };
+    rescan();
     if (violated.empty()) {
         effort_out = effort;
         return true;
@@ -222,26 +240,16 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, Rng& rng, size
     auto& cand = scratch.cand;
     auto& best_indices = scratch.best_indices;
     auto& tabu = scratch.tabu;
-    auto& shifted_since_best = scratch.shifted_since_best;
     tabu.clear();
-    shifted_since_best.clear();
 
-    // Undo back to the least-violated state seen, and repair the violated
-    // set incrementally: `backtrack_to` reverts exactly the shifts made
-    // since `best_mark`, so only the rows those columns appear in can have
-    // changed status, and `total_viol` is `best_viol` by definition.
+    // Undo back to the least-violated state seen.  `backtrack_to` reverts
+    // exactly the shifts made since `best_mark`, and the rescan then reads
+    // the restored activities, so the set and the total are correct by
+    // construction rather than by an argument about which rows can have
+    // moved.
     auto restore_best = [&]() {
         E.backtrack_to(best_mark.vs, best_mark.sol, best_mark.act, best_mark.pq);
-        for (const HighsInt var : shifted_since_best) {
-            const HighsInt cbeg = csc_start[var];
-            const HighsInt cend = csc_start[var + 1];
-            effort += static_cast<size_t>(cend - cbeg);
-            for (HighsInt p = cbeg; p < cend; ++p) {
-                refresh_violated(csc_row[p]);
-            }
-        }
-        shifted_since_best.clear();
-        total_viol = best_viol;
+        rescan();
     };
 
     HighsInt since_restart = 0;
@@ -428,7 +436,6 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, Rng& rng, size
             refresh_violated(i2);
         }
         total_viol += added - removed;
-        shifted_since_best.push_back(var);
 
         tabu.push_back(var);
         if (std::cmp_greater(tabu.size(), kTabuLength)) {
@@ -438,7 +445,6 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, Rng& rng, size
         if (total_viol < best_viol - feastol) {
             best_viol = total_viol;
             best_mark = mark_now();
-            shifted_since_best.clear();
         }
 
         if (++since_restart >= kSoftRestartPeriod) {

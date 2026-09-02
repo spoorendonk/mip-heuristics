@@ -43,14 +43,6 @@ struct RepairWalkScratch {
     // list of the last 3 shifts in order to avoid short cycles").  Kept as
     // a plain vector because it holds three entries.
     std::vector<HighsInt> tabu;
-
-    // Columns shifted since the best-so-far mark was taken.  A soft
-    // restart undoes exactly those shifts, so only the rows they appear in
-    // can change violation status -- which is what lets the restart repair
-    // the violated set in O(sum of their column degrees) instead of
-    // rescanning all `nrow` rows.  At 200 steps a walk can restart twenty
-    // times, so the difference is 20 x `nrow` per call.
-    std::vector<HighsInt> shifted_since_best;
 };
 
 // Whether applying a fixing to column `j` left one of the rows `j` appears
