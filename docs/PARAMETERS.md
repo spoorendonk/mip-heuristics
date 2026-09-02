@@ -252,22 +252,6 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 ---
 
-### `kMinCliqueGroupSize` — smallest usable cover group
-
-- **File**: `src/clique_cover.h`
-- **Default**: `2`
-- **Meaning**: How many *rankable* binaries — columns in the binary
-  bucket — a clique must contribute before the Sect. 4.1 greedy will
-  use it as a cover group. The paper is silent because the question
-  does not arise in its setting; here the root domain can have fixed
-  some of a clique's columns since the table was built, and a group of
-  one variable expresses no ordering the uncovered tail does not
-  already express.
-- **Suggested range**: 2. Raising it discards genuine clique structure;
-  1 admits degenerate one-variable groups that only reorder the tail.
-
----
-
 ## FPR-LP (`fpr_lp`)
 
 ### `kHardRandomizationLimit` — per-worker hard attempt restart cap
@@ -1381,8 +1365,15 @@ carries the same coverage gap #117's setup bail-outs do.
 - **One `compute_var_order`.** All three of FPR, Scylla and `fpr_lp`
   precompute variable orders on the dispatching thread before any worker
   exists — eight orders for FPR, five for Scylla and ten for `fpr_lp`
-  (one per LP arm), several of them a clique-cover greedy over the whole
-  model (`clique_cover::build_clique_cover`). This is
+  (one per LP arm), several of them a clique-cover pass over the whole
+  model. **The 34.5 s below was measured against the retired
+  `HighsCliqueTable::cliquePartition`** — a random shuffle plus a
+  `partitionNeighbourhood` hash-tree walk per variable — which #141
+  replaced with `clique_cover::build_clique_cover`, a single linear pass
+  over the clique entries. The new pass is plausibly much cheaper, but it
+  has not been measured at that scale and `rail02` is not bundled, so
+  treat the figure as an upper bound of unknown tightness rather than a
+  current measurement. This is
   checked *between* orders, so one order is the floor. It is also the
   largest floor in practice: on `rail02` (542k nonzeros, 16 workers,
   presolve-only) FPR's setup measured 34.5 s, and the tail of a single

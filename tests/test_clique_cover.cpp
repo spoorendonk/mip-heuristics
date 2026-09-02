@@ -85,6 +85,15 @@ std::vector<HighsInt> group(const clique_cover::Cover& cover, HighsInt g) {
             cover.members.begin() + cover.group_start[g + 1]};
 }
 
+// The literal signs of one group, as `1` / `0` — what Fig. 2's weights read.
+std::vector<int> group_signs(const clique_cover::Cover& cover, HighsInt g) {
+    std::vector<int> out;
+    for (HighsInt i = cover.group_start[g]; i < cover.group_start[g + 1]; ++i) {
+        out.push_back(cover.member_pos[i]);
+    }
+    return out;
+}
+
 }  // namespace
 
 TEST_CASE("clique_cover: equality cliques come before inequality cliques", "[clique-cover]") {
@@ -117,9 +126,16 @@ TEST_CASE("clique_cover: an equality clique overlapping an accepted one is dropp
     const auto cover = clique_cover::build_clique_cover(t.cliques, t.entries, iota_cols(6), 6);
 
     REQUIRE(cover.num_equality_groups == 1);
-    REQUIRE(cover.num_groups() == 1);
     CHECK(group(cover, 0) == std::vector<HighsInt>{0, 1});
-    CHECK(cover.uncovered == std::vector<HighsInt>{2, 3, 4, 5});
+
+    // The rejected clique is rejected *as an equality clique*, not struck from
+    // the table: step 2 counts "how many binary variables are covered by each
+    // clique", and it still covers column 5.  So 5 is grouped, not tailed —
+    // and there is no size floor keeping a one-variable group out, because the
+    // paper's greedy has none.
+    REQUIRE(cover.num_groups() == 2);
+    CHECK(group(cover, 1) == std::vector<HighsInt>{5});
+    CHECK(cover.uncovered == std::vector<HighsInt>{2, 3, 4});
 }
 
 TEST_CASE("clique_cover: selected cliques are sorted by size, descending", "[clique-cover]") {
@@ -189,6 +205,66 @@ TEST_CASE("clique_cover: every binary appears exactly once", "[clique-cover]") {
     auto flat = flatten(cover);
     std::ranges::sort(flat);
     CHECK(flat == bin);
+}
+
+TEST_CASE("clique_cover: a shared binary goes to the largest covering clique", "[clique-cover]") {
+    // Sect. 4.1 step 2, bullet 2.  Column 3 is covered by both cliques; the
+    // larger one must take it.  Every other cover case here uses *disjoint*
+    // cliques, where the assignment is forced and this rule is unfalsifiable.
+    //
+    // The sizes are chosen so bullet 4 cannot paper over a wrong pick: send 3
+    // to the smaller clique instead and the two end up with three variables
+    // each, which is not the strict inequality the local adjustment moves on,
+    // so the groups come out {0,1,2} / {3,4,5} and both assertions fail.
+    FakeTable t;
+    t.add(pos({0, 1, 2, 3}), false);
+    t.add(pos({3, 4, 5}), false);
+
+    const auto cover = clique_cover::build_clique_cover(t.cliques, t.entries, iota_cols(6), 6);
+
+    REQUIRE(cover.num_groups() == 2);
+    CHECK(group(cover, 0) == std::vector<HighsInt>{0, 1, 2, 3});
+    CHECK(group(cover, 1) == std::vector<HighsInt>{4, 5});
+}
+
+TEST_CASE("clique_cover: the local adjustment moves a stranded variable", "[clique-cover]") {
+    // Sect. 4.1 step 2, bullet 4 — "doing some local adjustments (e.g., switch
+    // a variable to a larger selected clique)".  Pass 1 ranks by *potential*
+    // size, pass 2 by how many variables each clique actually kept, and the
+    // two orders have to disagree for the adjustment to be observable at all.
+    //
+    // R has the largest potential and takes columns 0-6.  P's potential (6)
+    // beats Q's (3), so pass 1 sends column 9 to P — which R has otherwise
+    // emptied, leaving P with one variable against Q's two.  The adjustment
+    // moves 9 into Q.  Make pass 2 a no-op and P survives as a third,
+    // one-variable group holding 9, so both assertions below fail.
+    FakeTable t;
+    t.add(pos({0, 1, 2, 3, 4, 5, 6}), false);
+    t.add(pos({0, 1, 2, 3, 4, 9}), false);
+    t.add(pos({7, 8, 9}), false);
+
+    const auto cover = clique_cover::build_clique_cover(t.cliques, t.entries, iota_cols(10), 10);
+
+    REQUIRE(cover.num_groups() == 2);
+    CHECK(group(cover, 0) == std::vector<HighsInt>{0, 1, 2, 3, 4, 5, 6});
+    CHECK(group(cover, 1) == std::vector<HighsInt>{7, 8, 9});
+    CHECK(cover.uncovered.empty());
+}
+
+TEST_CASE("clique_cover: a group records its literals' signs", "[clique-cover]") {
+    // `member_pos` is the only thing carrying the literal's sign out of the
+    // cover, and it is what Fig. 2's weight reads (`x^ac_j` for a positive
+    // literal, `1 - x^ac_j` for a negative one).  Every other cover case here
+    // builds positive-only cliques, so nothing else would notice the field
+    // being wrong.
+    FakeTable t;
+    t.add({CliqueVar(2, 0), CliqueVar(0, 1), CliqueVar(1, 0)}, false);
+
+    const auto cover = clique_cover::build_clique_cover(t.cliques, t.entries, iota_cols(3), 3);
+
+    REQUIRE(cover.num_groups() == 1);
+    CHECK(group(cover, 0) == std::vector<HighsInt>{2, 0, 1});
+    CHECK(group_signs(cover, 0) == std::vector<int>{0, 1, 0});
 }
 
 TEST_CASE("cliques2: a clique with a literal already fixed true is skipped entirely",

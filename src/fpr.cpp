@@ -200,9 +200,13 @@ constexpr int kNumInitialFprConfigs = static_cast<int>(std::size(kInitialFprConf
 // through, leaving `orders` incomplete (issue #117).  This setup is the
 // single largest deadline-unaware unit in an FPR dispatch and it is not
 // small: eight `compute_var_order` calls, several of them a clique-cover
-// greedy over the whole model, measured at 34.5 s on `rail02`
-// — while the dispatch's own budget, and therefore every gate derived
-// from it, has no bearing on it whatsoever.  A caller that gets `false`
+// pass over the whole model.  The 34.5 s on `rail02` below was measured
+// against the retired `HighsCliqueTable::cliquePartition`, not against
+// `clique_cover::build_clique_cover` (#141), which is a single linear
+// pass and plausibly much cheaper; unmeasured at that scale, so read it
+// as an upper bound of unknown tightness.  Whatever it costs, the
+// dispatch's own budget — and therefore every gate derived from it — has
+// no bearing on it whatsoever.  A caller that gets `false`
 // must not use the table; `fpr::run` returns instead, which is also why
 // the deadline is checked *between* strategies rather than inside the
 // loop body: one `compute_var_order` is indivisible here, and it is the

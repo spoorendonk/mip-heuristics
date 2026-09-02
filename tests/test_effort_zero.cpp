@@ -200,11 +200,11 @@ TEST_CASE("effort-zero: a zeroed heuristic charges nothing and offers nothing", 
 }
 
 // Scylla's setup is the expensive one — a `ContestedPdlp` wraps a whole
-// `Highs` LP copy, and the per-config variable orders reach
-// `cliquePartition`.  `[ScyllaOverlap]` is emitted at the end of
-// `scylla::run` from the workers it constructed, so its absence is a
-// direct observable that none of that setup ran.  It is also exactly what
-// omitting Scylla from the suite produces, which is the point.
+// `Highs` LP copy, and the per-config variable orders reach the clique
+// table (`clique_cover::build_clique_cover`, once per config).  `[ScyllaOverlap]` is emitted at the
+// end of `scylla::run` from the workers it constructed, so its absence is a direct observable that
+// none of that setup ran.  It is also exactly what omitting Scylla from the suite produces, which
+// is the point.
 TEST_CASE("effort-zero: scylla builds no PDLP wrapper at effort 0", "[effort-zero]") {
     CHECK(log_contains(trace_solve("flugpl.mps", [](Highs& h) { set_suite(h, "all"); }),
                        "[ScyllaOverlap]"));

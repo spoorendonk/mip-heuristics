@@ -44,20 +44,22 @@ using CliqueVar = HighsCliqueTable::CliqueVar;
 // paper's `sum = 1` skips.
 inline constexpr double kCliqueTightnessTol = 1e-6;
 
-// A clique must contribute at least this many *rankable* binaries — columns in
-// the binary bucket — before it can become a cover group.  The paper is silent
-// because the question does not arise in its setting; here the root domain can
-// have fixed some of a clique's columns since the table was built, and a group
-// of one variable expresses no ordering the uncovered tail does not already
-// express.
-inline constexpr HighsInt kMinCliqueGroupSize = 2;
-
 // The output of the Sect. 4.1 greedy: binaries grouped by the clique that
 // covers them, plus the ones no clique does.
 struct Cover {
     // Covered binaries, concatenated group by group.  Within a group the order
     // is "the order in which they appear in the clique itself" (Sect. 4.1),
     // i.e. the clique table's own entry order.
+    //
+    // That is not the row's order, and the difference is systematic rather
+    // than incidental: `HighsCliqueTable::extractCliques` pdqsorts a row's
+    // binaries on descending `(coefficient, position)` before inserting them,
+    // so for a **set-packing row** — all coefficients equal, and the dominant
+    // clique source — the stored order is the exact reverse of the row's index
+    // order.  The paper's phrase is ambiguous once the clique is a table entry
+    // rather than a row; we take the table at its word, but a comparison
+    // against the authors' implementation should know that the retired
+    // ascending sort was arguably closer here.
     std::vector<HighsInt> members;
     // `member_pos[i]` is 1 iff `members[i]` entered its group as a positive
     // literal.  Fig. 2's weights are literal-valued, so `cliques` needs this.
@@ -70,7 +72,13 @@ struct Cover {
     std::vector<HighsInt> uncovered;
     // The first `num_equality_groups` groups are the equality cliques of step
     // 1, in clique-table order; the rest are the step-2 selection, sorted by
-    // size descending.
+    // size.  **Descending is an interpretation**: Sect. 4.1's last bullet says
+    // only "finally sorting the selected cliques by size" and never names a
+    // direction, so this is a genuine 50/50.  Descending is what makes the
+    // ordered list of cliques put the most constrained groups first, which is
+    // the point of ranking binaries by clique membership at all — but the
+    // paper does not say so, and a future comparison against the authors'
+    // implementation should treat the direction as unsettled.
     HighsInt num_equality_groups = 0;
 
     [[nodiscard]] HighsInt num_groups() const {
@@ -86,7 +94,10 @@ Cover build_clique_cover(const std::vector<Clique>& cliques, const std::vector<C
 
 // Fig. 3.  Returns the whole binary bucket as one ordered list: the cliques it
 // selected, in clique-table order, followed by the binaries none of them
-// covered, in formulation order.  `dom_lower` / `dom_upper` are the *root
+// covered, in formulation order.  "Clique-table order" is slot order and
+// carries the same approximation step 1 does — see `build_clique_cover` — for
+// the same reason: `Clique::origin` is not a key the whole table can be sorted
+// on.  `dom_lower` / `dom_upper` are the *root
 // domain* bounds — the figure's `l` and `u` — which is what makes its
 // already-fixed-literal test (lines 9-10 and 17-18) mean anything: a column
 // the root propagation fixed is no longer in `bin` at all.

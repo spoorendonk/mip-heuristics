@@ -70,7 +70,12 @@ HighsInt add_equality_groups(const std::vector<Clique>& cliques,
             stamp[j] = c;
             picked.push_back(k);
         }
-        if (!disjoint || static_cast<HighsInt>(picked.size()) < kMinCliqueGroupSize) {
+        // Empty, not "small": a clique that contributes no rankable binary is
+        // no group at all.  There is deliberately no size threshold — the
+        // paper's greedy has none, and one here would be a deviation, not a
+        // gap being filled (a clique overlapping an accepted equality group is
+        // left with one rankable binary in the paper's own setting too).
+        if (!disjoint || picked.empty()) {
             continue;
         }
 
@@ -153,7 +158,10 @@ void assign_to_cliques(const std::vector<HighsInt>& bin, const std::vector<uint8
             continue;
         }
         HighsInt best = -1;
-        HighsInt best_size = kMinCliqueGroupSize - 1;
+        // Any clique covering `j` is a candidate: "assigning each binary
+        // variable to the largest clique covering it", with no floor on what
+        // counts as a clique.
+        HighsInt best_size = 0;
         for (HighsInt p = idx.start[j]; p < idx.start[j + 1]; ++p) {
             const HighsInt c = idx.clq[p];
             if (idx.size[c] > best_size) {
@@ -334,6 +342,12 @@ std::vector<HighsInt> cliques2_order(const std::vector<Clique>& cliques,
             continue;
         }
 
+        // `best_var` is a clique column, which need not be in the binary
+        // bucket: a column the root domain moved off [0, 1] is not rankable
+        // and `append` drops it, so the group is emitted headless and the
+        // second-best literal leads.  The figure's own `l_j`/`u_j` guards
+        // already exclude the fixed cases, which is why no construction of
+        // this was found; the code absorbs it rather than special-casing it.
         append(scan.best_var);
         for (HighsInt k = cl.start; k < cl.end; ++k) {
             const auto j = static_cast<HighsInt>(entries[k].col);
