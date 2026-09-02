@@ -178,8 +178,28 @@ public:
         double primal_feasibility = 0.0;
         double dual_feasibility = 0.0;
         double pdlp_optimality = 0.0;
+        // The per-solve deadline `solve_locked` writes from
+        // `Deadline::remaining()` (#152).  Read back for the same reason as
+        // `kkt`: nothing outside this class can otherwise see that the
+        // solve was given a deadline at all, and deleting the write left
+        // the whole suite green on a build that handed cuPDLP-C none —
+        // every wall-clock case here is an *upper* bound, which an
+        // unlimited sub-solve does not violate, and the one lower bound
+        // (#152's ratio) is only made easier by it.
+        double time_limit = 0.0;
     };
     SolveTolerances tolerances_for_test() const;
+
+    // The wrapped instance's accumulated `Highs` run time, i.e. exactly
+    // the quantity `runPresolve` charges against `options_.time_limit`
+    // (#152).  `solve_locked` zeroes the clock before every solve, so
+    // this reads back one solve's duration however many have run; without
+    // that reset it is their sum, which is what made a dispatch's
+    // per-solve limit meet the accumulated total at the halfway point.
+    //
+    // THREAD CONTRACT: dispatching-thread only, with no solve in flight —
+    // as for `tolerances_for_test` above, and for the same reason.
+    double run_time_for_test() const;
 
     // Exposed for tests: peak number of concurrent solves observed.
     // Must always be <= 1 (the one-solve-in-flight invariant).

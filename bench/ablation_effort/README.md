@@ -141,21 +141,27 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   number this derivation rests on. The option ceiling was raised to `1e6` so a
   future probe keeps the headroom the old unit gave it.
 
-* **#152 — OPEN, and it blocks the re-run.** Every clock-bound Scylla
-  dispatch retires at roughly half its wall-clock limit: the shared PDLP
-  `Highs` instance's own timer accumulates across solves while the per-solve
-  limit is set from the *remaining* deadline, the two meet partway, presolve
-  returns a timeout, and the cleared solution reads as a failed solve. Measured
-  at 50.9 % of the limit, constant across 4 / 8 / 16 s, at `threads=1`. **This
-  strikes the property the whole design rests on** — "the wall clock was the
-  single stopping rule, identical for every heuristic on every instance". If it
-  applies at 16 workers (the mechanism is on the shared instance, so it should,
-  but it has not been confirmed at that worker count), Scylla's arm of the run
-  above saw a ~15 s cap where the other three saw 30 s: its knee is understated,
-  its barren rate and its 96 barren dispatches are inflated, and its 112
-  "finished improving" dispatches include ones that were merely truncated.
-  Scylla's is the one arm whose numbers should be treated as measuring
-  something other than what the table says.
+* **#152 — LANDED, and it no longer blocks the re-run.** Every clock-bound
+  Scylla dispatch used to retire at roughly half its wall-clock limit: the
+  shared PDLP `Highs` instance's own timer accumulates across solves while the
+  per-solve limit is set from the *remaining* deadline, the two meet partway,
+  `runPresolve` returns a timeout, and the resulting invalid solution reads as
+  a failed solve and retires the chain. Measured at 51.5-52.5 % of the limit
+  across 0.5 / 1 / 4 / 8 / 16 s on `bell5` and `gesa2`, at `threads=1` (58 %
+  at 0.25 s, where a dispatch is only a few pump rounds long). The fix zeroes
+  the wrapped instance's clock before every solve, inside the lock, so the
+  per-solve limit is measured from the same origin both of its consumers use;
+  the same measurements now report 100.0 %. **It struck the property the whole
+  design rests on** — "the wall clock was the single stopping rule, identical
+  for every heuristic on every instance" — so the numbers *in this file* are
+  still affected: they were taken on a binary with the defect. If it applied at
+  16 workers (the mechanism is on the shared instance, so it should, but it was
+  never confirmed at that worker count), Scylla's arm of the run above saw a
+  ~15 s cap where the other three saw 30 s: its knee is understated, its barren
+  rate and its 96 barren dispatches are inflated, and its 112 "finished
+  improving" dispatches include ones that were merely truncated. Scylla's is
+  the one arm whose recorded numbers should be treated as measuring something
+  other than what the table says — and the re-run is what replaces them.
 * **#140 — landed, and it moves the axis.** Driving the pump's epsilon through
   `kkt_tolerance` reaches cuPDLP's primal and dual feasibility tolerances,
   which the schedule never relaxed before. Charged effort per pump iteration
@@ -173,12 +179,33 @@ a trajectory the solver measured rather than one reconstructed offline, on a
 binary whose setup paths are bounded and whose barren dispatches are honestly
 labelled. The whole point of the exercise is the second thing.
 
-Precondition, concretely: **not satisfied — #152 is open and blocks it.**
-#116, #117, #119 and #118 are all landed; #152 arrived after them and strikes
-the clock-bound property directly, so it must be fixed before the window is
-spent. #140 has also landed and moves Scylla's effort axis. What it buys is exactly what the four
-entries above describe, and every number in this file stays provisional until
-it has been taken.
+Precondition, concretely: **satisfied — no *correctness* blocker is open.**
+That is the bar, and it is worth stating rather than leaving implicit: what
+blocks this window is a defect that makes a dispatch measure something other
+than what the probe thinks it measures, not any open issue touching Scylla.
+#116, #117, #119 and #118 are all landed, and #152 — which arrived after them
+and struck the clock-bound property directly — is fixed: a clock-bound Scylla
+dispatch now spends its whole limit, pinned by "deadline: a clock-bound Scylla
+dispatch spends its whole limit" in `tests/test_deadline.cpp`. (That fix also
+uncovered #154 — the deadline suite's effort constants are 80x stale, so
+several of its cases pass without discriminating. It is a test-quality
+issue, not a solver one, and does not bear on the probe.)
+
+Two *input changes* remain known and unfixed, and neither blocks — they change
+what the re-run will measure, so read its Scylla arm against them rather than
+against this table. #140 has landed and moves Scylla's effort axis (above).
+**#153 is open**: HiGHS runs full LP presolve on every one of the thousands of
+PDLP solves a dispatch performs, on a model whose structure never changes.
+Disabling it changes how many pump rounds fit inside a 30 s cap, and Scylla's
+effort default is a quantile on exactly that axis — so landing #153 after the
+re-run would move Scylla's number again for a purely cost reason. #153's own
+notes ask for #152 to be fixed or accounted for first, which it now is. Taking
+the window before #153 is a defensible trade (a cost change is measurable
+against the new table; a correctness defect is not), but it is a trade, not a
+non-issue.
+
+The re-run buys exactly what the entries above describe, and every number in
+this file stays provisional until it has been taken.
 
 ## Caveats that travel with these numbers
 

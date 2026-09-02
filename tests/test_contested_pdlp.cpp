@@ -542,7 +542,7 @@ TEST_CASE("ContestedPdlp: epsilon drives kkt_tolerance alone on every solve",
 
 // The option-value check above pins *what we write*.  This pins *what the
 // write does*, which is the half no option-name check can reach: the whole
-// route depends on `getCupdlpParams`'s `if (kkt_tolerance !=
+// route depends on `getUserParamsFromOptions`'s `if (kkt_tolerance !=
 // kDefaultKktTolerance)` override, an upstream "changed from its default"
 // branch.  If a HiGHS bump removes, renames or re-conditions it, epsilon
 // stops reaching cuPDLP-C's termination check entirely and every option
@@ -586,7 +586,7 @@ TEST_CASE("ContestedPdlp: a looser epsilon really does terminate PDLP sooner",
     // Strict: the schedule's whole purpose is that its first solves are
     // cheaper than its last ones.  Equality would mean epsilon reaches
     // nothing that terminates the solver — which is what an outright
-    // removal of `getCupdlpParams`'s override branch looks like, since
+    // removal of `getUserParamsFromOptions`'s override branch looks like, since
     // that branch is the only path by which `kkt_tolerance` reaches
     // cuPDLP-C: with it gone both epsilons produce identical parameters
     // on a deterministic solver and this fails.
@@ -602,4 +602,164 @@ TEST_CASE("ContestedPdlp: a looser epsilon really does terminate PDLP sooner",
     // must beat the untouched default, which it cannot do by falling back
     // to it.
     CHECK(loose < untouched);
+}
+
+// The cause behind #152's half-deadline ratio, pinned where the ratio
+// cannot pin it.
+//
+// `deadline_.remaining()` says "this solve may run for at most this long",
+// and two things downstream of `options_.time_limit` charge against it:
+// LP presolve, from the *wrapped instance's accumulated* run time
+// (`runPresolve`'s `left = options_.time_limit - timer_.read()`), and
+// cuPDLP-C, from *this solve's* elapsed time (`dSolvingBeg` is set at
+// entry to `PDHG_Solve`).  Reusing one `Highs` across a whole dispatch
+// made the first of those a growing number compared against a shrinking
+// one; measured directly on `bell5` at a 4 s limit, the accumulated run
+// time reached 1.944 s while the remaining limit fell to 1.943, and from
+// that solve on every `run()` returned `Time limit reached` with 0 PDLP
+// iterations and `value_valid=0` — which `ScyllaWorker::absorb_fresh_solve`
+// retires the chain on.
+//
+// `test_deadline.cpp`'s "a clock-bound Scylla dispatch spends its whole
+// limit" measures the *symptom*.  It cannot tell this fix from the one the
+// issue explicitly rules out — inflating the limit handed to the
+// sub-solver, e.g. writing `remaining + accumulated` — which would restore
+// the ratio while leaving LP presolve budgeting against an ever-growing
+// origin, and would over-grant cuPDLP-C's `D_TIME_LIM` by that same
+// growing amount on top.  This case fails for that fix and passes only for
+// one that resets the origin.
+//
+// The assertion is exact rather than a threshold, which is why it needs no
+// slack and no `[serial]`: with the clock zeroed per solve,
+// `run_time_for_test()` covers a strict sub-interval of the wall time
+// measured around the enclosing `solve()` call, so `reported <= wall` holds
+// by construction on any machine at any load.  Without the reset the
+// reported value is the *sum* over all `kSolves` runs, which exceeds one
+// call's wall time by roughly `kSolves`x.  A starved runner stretches both
+// sides together.
+TEST_CASE("ContestedPdlp: the wrapped instance's clock does not accumulate across solves",
+          "[contested_pdlp][deadline][scylla]") {
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps");
+
+    // A cap high enough that each solve does real work — the point is for
+    // the accumulated total to be visibly larger than any one solve.
+    ContestedPdlp pdlp(*mipsolver, 100000);
+    REQUIRE(pdlp.initialized());
+
+    // Non-zero costs so the gap term is live rather than trivially
+    // satisfied at zero, and a tight epsilon so a solve is not over in one
+    // iteration.
+    const std::vector<double> cost(static_cast<size_t>(pdlp.num_col()), 1.0);
+    const std::vector<double> empty;
+
+    constexpr int kSolves = 6;
+    double last_wall = 0.0;
+    double total_wall = 0.0;
+    for (int i = 0; i < kSolves; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto result = pdlp.solve(cost, empty, empty, false, pump::kEpsilonFloor);
+        const auto t1 = std::chrono::steady_clock::now();
+        // Every solve must actually have run: a run that did nothing would
+        // make both sides of the comparison below zero and the case
+        // vacuous.  This is also the assertion that would have caught the
+        // defect's *downstream* symptom directly — after the crossing,
+        // `pdlp_iters` went to 0 and stayed there.
+        INFO("solve " << i << " iters " << result.pdlp_iters);
+        REQUIRE(result.pdlp_iters > 0);
+        last_wall = std::chrono::duration<double>(t1 - t0).count();
+        total_wall += last_wall;
+    }
+
+    const double reported = pdlp.run_time_for_test();
+    // Slack expressed as a fraction of the measured total rather than as an
+    // absolute constant, so the bound says the same thing on a machine of
+    // any speed.  It absorbs the one way `reported <= last_wall` can fail
+    // without the bug — `HighsTimer` bottoms out in `high_resolution_clock`,
+    // which libstdc++ aliases to the non-monotonic `system_clock`, so a
+    // forward step inside the last solve can inflate `reported` against the
+    // `steady_clock` measured around it.  It does not blunt the assertion:
+    // the accumulating value overshoots `last_wall` by (kSolves-1)/kSolves
+    // of the total, four times this slack.
+    //
+    // Measured on the development machine: `reported` 0.479 ms against a
+    // `last_wall` of 0.502 ms and a `total_wall` of 3.20 ms, i.e. a bound of
+    // 0.822 ms met with 1.7x room, where the accumulating value is 3.04 ms
+    // and misses it by 3.7x.
+    const double slack = 0.1 * total_wall;
+    INFO("reported run time " << reported << ", last solve wall " << last_wall << ", total wall "
+                              << total_wall << " over " << kSolves << " solves, bound "
+                              << (last_wall + slack));
+    // The hook reads something: a stub returning 0.0, or a `Highs` whose
+    // clock never ran, would satisfy the bound below without the reset
+    // doing anything.
+    CHECK(reported > 0.0);
+    // The bound itself.  One solve's worth, not six.
+    CHECK(reported <= last_wall + slack);
+}
+
+// The per-solve deadline actually reaches the wrapped instance, and it is
+// written per solve rather than once.
+//
+// This closes a hole that predates #152 but that #152 is the moment to
+// close, because #152 is *about* that write.  Deleting
+// `set_option_or_die(highs_, "time_limit", time_limit)` from `solve_locked`
+// left the entire suite green on a build that handed cuPDLP-C no deadline
+// at all: every wall-clock assertion in `test_deadline.cpp` is an *upper*
+// bound, which an unlimited sub-solve does not violate, and #152's own
+// ratio assertion is a *lower* bound, which an unlimited sub-solve makes
+// easier rather than harder.  `a solve that waited for the mutex gets the
+// time that is left` looks like it covers this and does not: it drives
+// `FakePdlp`, which overrides `solve_locked` and records the argument
+// instead of performing the option write on a real `Highs`.
+//
+// Why a readback rather than an effect, against #140's precedent.  The
+// observable effect of a *shorter* limit is a truncated solve, and every
+// way of provoking one here is a race against a live clock — unlike #140's
+// tolerance, whose effect (iteration count at a fixed tolerance) is
+// deterministic on a deterministic solver.  What is deterministic is the
+// value itself and, more usefully, the fact that it *moves*: `time_limit`
+// is `Deadline::remaining()`, so under a finite deadline consecutive solves
+// must see a strictly smaller one.  That is what separates the write being
+// present from it being hoisted to the constructor, and it is also what an
+// "inflate the limit" fix — `remaining + accumulated`, the one #152's issue
+// rules out — fails, since those two move in opposite directions by
+// construction.
+TEST_CASE("ContestedPdlp: every solve is given the deadline's remaining time",
+          "[contested_pdlp][deadline][scylla]") {
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    // A finite limit, generous enough that it cannot expire mid-case: the
+    // point is that `remaining()` shrinks, not that it runs out.
+    constexpr double kDeadlineSeconds = 30.0;
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps", kDeadlineSeconds);
+
+    ContestedPdlp pdlp(*mipsolver, 100000);
+    REQUIRE(pdlp.initialized());
+
+    const std::vector<double> cost(static_cast<size_t>(pdlp.num_col()), 1.0);
+    const std::vector<double> empty;
+
+    static_cast<void>(pdlp.solve(cost, empty, empty, false, pump::kEpsilonFloor));
+    const double first = pdlp.tolerances_for_test().time_limit;
+    static_cast<void>(pdlp.solve(cost, empty, empty, false, pump::kEpsilonFloor));
+    const double second = pdlp.tolerances_for_test().time_limit;
+
+    INFO("time_limit after solve 1: " << first << ", after solve 2: " << second);
+    // A limit was written at all.  HiGHS's own default is `kHighsInf`, so
+    // this is exactly what a deleted write reads back as.
+    CHECK(first < kHighsInf);
+    // It is the deadline's remaining time, not some larger constant.
+    CHECK(first > 0.0);
+    CHECK(first <= kDeadlineSeconds);
+    // And it is written per solve.  A write hoisted to the constructor, or
+    // any value that does not track `remaining()`, fails here.
+    CHECK(second < first);
 }

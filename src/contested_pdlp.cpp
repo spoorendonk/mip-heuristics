@@ -118,7 +118,7 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // over all three residuals, so relaxing a subset relaxes nothing.
     //
     // The mapping, verified against the vendored HiGHS v1.15.1
-    // (`highs/pdlp/CupdlpWrapper.cpp`, `getCupdlpParams`):
+    // (`highs/pdlp/CupdlpWrapper.cpp`, `getUserParamsFromOptions`):
     //     floatParam[D_PRIMAL_TOL] = options.primal_feasibility_tolerance;
     //     floatParam[D_DUAL_TOL]   = options.dual_feasibility_tolerance;
     //     floatParam[D_GAP_TOL]    = options.pdlp_optimality_tolerance;
@@ -241,13 +241,11 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // One thing the A/B did establish, worth knowing before timing this
     // code: every dispatch stopped at almost exactly half its wall-clock
     // limit (bell5 measured 2.037 s / 4 s, 4.075 s / 8 s, 8.146 s / 16 s).
-    // That is not this code and not a stall — the wrapped `Highs`
-    // instance's own `timer_` accumulates across every pump solve while
-    // the per-solve limit shrinks with the deadline, so `runPresolve`'s
-    // `left = time_limit - timer_.read()` crosses zero at T/2 and returns
-    // a cleared solution, which `absorb_fresh_solve` reads as a retired
-    // chain.  Pre-existing and out of scope for #140 (filed as #152).  It
-    // does not invalidate the comparison above, and the reason is better
+    // That is not this code and not a stall — it is the #152 defect, whose
+    // mechanism and measured consequences are written out in full at the
+    // `zeroAllClocks()` call below rather than twice here.  Both arms of
+    // the A/B quoted above therefore ran at half length.  It does not
+    // invalidate the comparison, and the reason is better
     // than "it is symmetric", which was not measured: the trip point is
     // `T/(1+alpha)` for `alpha` the fraction of dispatch wall time spent
     // inside `highs_.run()` — the measured 50.9% implies alpha ~= 0.965,
@@ -271,26 +269,81 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // which moves the dual residual and gap even when the primal point
     // does not, so a run of three is harder to reach than it looks.
     set_option_or_die(highs_, "kkt_tolerance", epsilon);
+    // The wrapped instance's clock origin, reset here so that
+    // `time_limit` means the same thing to both of its consumers (#152).
+    //
+    // `deadline_.remaining()` is time left on the *solve's* deadline as of
+    // now, so the only correct reading of it is "this solve may run for at
+    // most this long".  Two things downstream of `options_.time_limit`
+    // charge against it, and until this call they did so from different
+    // origins:
+    //
+    //   1. `Highs::runPresolve` (`highs/lp_data/Highs.cpp`) opens with
+    //      `start_presolve = timer_.read()` and refuses to presolve when
+    //      `left = options_.time_limit - start_presolve <= 0`, returning
+    //      `kTimeout`.  `HPresolve` itself repeats the comparison
+    //      (`timer->read() >= options->time_limit`) on the same timer.
+    //      `timer_` is the *wrapped instance's* clock: `optimizeModel`
+    //      starts it and `returnFromHighs` stops it, accumulating into
+    //      `clock_time[0]` across every `run()` we have ever made on this
+    //      instance.  Its origin is therefore construction, not this
+    //      solve.
+    //   2. cuPDLP-C charges `dSolvingTime = getTimeStamp() -
+    //      dSolvingBeg`, and `PDHG_Solve` sets `dSolvingBeg` at entry
+    //      (`highs/pdlp/cupdlp/cupdlp_solver.c`), so its origin *is* this
+    //      solve.
+    //
+    // Consumer 2 was already right; consumer 1 compared a shrinking
+    // remaining time against a growing accumulated time, and the two meet
+    // at `T/(1+alpha)` for `alpha` the fraction of dispatch wall time
+    // spent inside `run()` — near enough half, since a pump chain spends
+    // almost all of its time there.  Measured directly on `bell5` at a 4 s
+    // limit by printing both quantities per solve: the accumulated run
+    // time reached 1.944 s on the solve where the remaining limit had
+    // fallen to 1.943, and *that* solve returned `Time limit reached` with
+    // `pdlp_iteration_count == 0` and `value_valid == 0`, where its
+    // predecessor had returned `Optimal` after 520 iterations.  Note what
+    // it is not: `getSolution().col_value` still holds the previous
+    // solve's 98 entries, so the signal `absorb_fresh_solve` retires the
+    // chain on is `!value_valid`, not an empty vector.  End to end,
+    // end_s/time_limit was 0.515-0.525 on `bell5` and `gesa2` at every
+    // limit tried — 0.25 / 0.5 / 1 / 4 / 8 / 16 s — and is 1.000-1.028
+    // with this call in place: Scylla was handing back half of every
+    // deadline.
+    //
+    // `zeroAllClocks()` is a public `Highs` method that forwards to
+    // `HighsTimer::zeroAllClocks`, zeroing `clock_time` and re-marking
+    // every clock stopped.  It is safe exactly here: we hold `mu_`, no
+    // solve is in flight, and `returnFromHighs` has already stopped the
+    // run clock, so the `start()` inside the next `run()` still sees a
+    // stopped clock.  This is a fix at the cause — it makes consumer 1's
+    // origin this solve, matching consumer 2's and matching what
+    // `remaining()` means — and deliberately not a wider limit: nothing
+    // here inflates the number handed to the sub-solver.
+    highs_.zeroAllClocks();
     // The one place the wrapped instance's time limit is written, and the
     // caller's guarantee is that `time_limit > 0` (see
     // `run_locked_with_accounting`) — HiGHS reads `time_limit == 0` as *no
     // limit*, so a zero here would be the opposite of what it looks like.
     //
-    // What cuPDLP-C does with it, as of HiGHS v1.15.1: `getCupdlpParams`
-    // (`highs/pdlp/CupdlpWrapper.cpp`, lines 700-707) computes a
-    // remaining-time adjustment and then assigns the *unadjusted*
-    // `options.time_limit` to `floatParam[D_TIME_LIM]` — the adjustment is
-    // dead code.  That upstream bug is load-bearing here in our favour:
-    // the adjustment subtracts `timer.read()` of the wrapped `Highs`
-    // instance, which accumulates across every `run()` we make on it, so
-    // the "fixed" version would hand a late solve a limit of 0 — which
-    // cuPDLP-C reads as "already over" rather than "no limit", stalling
-    // the pump. The solver's own loop then honours the limit properly:
-    // `PDHG_Solve` recomputes `dSolvingTime` every iteration and its
-    // termination check includes `dSolvingTime > dTimeLim` directly, so
-    // one PDLP iteration is the granularity, not one check interval.
-    // If a HiGHS bump fixes line 707, re-derive this: the per-solve
-    // meaning of the limit changes silently.
+    // What cuPDLP-C does with it, as of HiGHS v1.15.1:
+    // `getUserParamsFromOptions` (`highs/pdlp/CupdlpWrapper.cpp`, lines
+    // 700-707) computes a remaining-time adjustment and then assigns the
+    // *unadjusted* `options.time_limit` to `floatParam[D_TIME_LIM]` — the
+    // adjustment is dead code.  That used to be load-bearing here in our
+    // favour, because the adjustment subtracts `timer.read()` of the
+    // wrapped instance and that value accumulated: a "fixed" upstream
+    // would have handed a late solve a limit of 0, which cuPDLP-C reads
+    // as "already over" rather than "no limit".  With the clock zeroed
+    // above it is load-bearing no longer — the adjustment would now
+    // subtract only this solve's own elapsed time, which is what it was
+    // written to do — so a HiGHS bump that revives line 707 is no longer
+    // a silent hazard.  Do not read that as licence to stop checking it:
+    // the granularity claim below still needs re-deriving on a bump.
+    // The solver's own loop honours the limit properly: `PDHG_Solve`
+    // recomputes `dSolvingTime` every iteration and its termination check
+    // includes `dSolvingTime > dTimeLim` directly, so one PDLP iteration
+    // is the granularity, not one check interval.
     set_option_or_die(highs_, "time_limit", time_limit);
 
     if (warm_start_valid && std::cmp_equal(warm_start_col_value.size(), ncol_) &&
@@ -330,7 +383,12 @@ ContestedPdlp::SolveTolerances ContestedPdlp::tolerances_for_test() const {
     static_cast<void>(highs_.getOptionValue("primal_feasibility_tolerance", t.primal_feasibility));
     static_cast<void>(highs_.getOptionValue("dual_feasibility_tolerance", t.dual_feasibility));
     static_cast<void>(highs_.getOptionValue("pdlp_optimality_tolerance", t.pdlp_optimality));
+    static_cast<void>(highs_.getOptionValue("time_limit", t.time_limit));
     return t;
+}
+
+double ContestedPdlp::run_time_for_test() const {
+    return highs_.getRunTime();
 }
 
 ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(

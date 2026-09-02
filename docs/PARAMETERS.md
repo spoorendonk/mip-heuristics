@@ -1461,7 +1461,23 @@ carries the same coverage gap #117's setup bail-outs do.
   stale by the length of the peer solve the caller blocked behind — and
   cuPDLP-C checks its own clock every iteration. What the limit does not
   cover is the wrapped `Highs::run`'s own per-call LP setup, and the
-  granularity is one PDLP iteration.
+  granularity is one PDLP iteration. **That limit reaches two consumers
+  with different clock origins** (#152): cuPDLP-C measures from this
+  solve's `PDHG_Solve` entry, while `Highs::runPresolve` budgets
+  `options_.time_limit - timer_.read()` against the *wrapped instance's*
+  run time, which accumulates across every solve of the dispatch. Until
+  #152 the two met at `T/(1+alpha)` — 51.5-52.5% of the limit, measured
+  constant from 0.5 s to 16 s — after which presolve returned a timeout
+  and every solve came back with 0 PDLP iterations and `value_valid=0`,
+  retiring the chain. `solve_locked` now calls `highs_.zeroAllClocks()`
+  before each solve, inside the lock, so both consumers measure from this
+  solve. This is not a floor and never was; it is listed here because it
+  is what makes the floor above the *only* thing between a Scylla
+  dispatch and its deadline. Consequence for full solves: a clock-bound
+  Scylla dispatch now spends the whole remaining solve limit rather than
+  half of it, so B&B after presolve gets less wall clock than in any run
+  recorded before the fix. Nothing in the presolve chain is truncated —
+  Scylla is last in `kChain`.
 - **One reference LP solve**, `fpr_lp` only (#118). Its setup solves an
   analytic-center LP and a zero-objective vertex LP before the arms, and
   each is handed `min(30 s, Deadline::remaining())` — so unlike the
