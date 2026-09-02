@@ -625,14 +625,45 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 ---
 
+### What `ε` actually controls
+
+`kEpsilonInit` / `kBeta` / `kEpsilonFloor` are one schedule over one
+quantity: the pump's PDLP stopping error `ε`, which Mexi et al. Sect. 2.2
+describes as "a maximum error `ε` on the primal and dual feasibilities".
+
+`ContestedPdlp::solve_locked` writes that value, on **every** solve, to
+**all three** of the HiGHS options cuPDLP-C's termination check reads:
+
+| HiGHS option | cuPDLP-C parameter | quantity |
+|---|---|---|
+| `primal_feasibility_tolerance` | `D_PRIMAL_TOL` | primal residual |
+| `dual_feasibility_tolerance` | `D_DUAL_TOL` | dual residual |
+| `pdlp_optimality_tolerance` | `D_GAP_TOL` | duality gap |
+
+All three, because cuPDLP-C terminates on their conjunction — relaxing a
+subset relaxes nothing. Until #140 only the third was written, so the two
+the paper names sat at the HiGHS default `kDefaultKktTolerance` (1e-7) for
+every solve and the schedule bought only the gap term. `kkt_tolerance` is
+deliberately **not** written: cuPDLP-C overwrites all three parameters
+from it, but only when it differs from its default, and depending on a
+"changed from default" side-effect is exactly the silent cross-version
+fragility this project's HiGHS-bump guidance warns about.
+
+All three options share the domain `[1e-10, kHighsInf]`, so every value
+the schedule produces is in range and nothing is clamped.
+
+---
+
 ### `kEpsilonInit` — initial PDLP tolerance
 
 - **File**: `src/pump_common.h`
 - **Default**: `0.01`
-- **Meaning**: Starting tolerance for the PDLP approximate LP solver.
-  Each iteration the tolerance decays by `kBeta` until it reaches
+- **Meaning**: Starting value of the PDLP stopping error `ε` (all three
+  tolerances above). Each iteration it decays by `kBeta` until it reaches
   `kEpsilonFloor`. Larger initial values allow faster but less accurate
-  early solves.
+  early solves — the returned `x_bar` is a rounding guide for
+  fix-and-propagate, not a solution that is submitted, so a loose early
+  iterate is cheap rather than wrong.
 - **Suggested range**: 1e-4–0.1.
 
 ---
@@ -642,7 +673,7 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **File**: `src/pump_common.h`
 - **Default**: `0.98`
 - **Meaning**: Per-iteration multiplicative decay applied to the PDLP
-  solve tolerance `ε`. The sequence is `ε_{K+1} = max(kBeta * ε_K,
+  stopping error `ε`. The sequence is `ε_{K+1} = max(kBeta * ε_K,
   kEpsilonFloor)`. Closer to 1.0 means slower tightening.
 - **Suggested range**: 0.9–0.999.
 
@@ -652,8 +683,10 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 - **File**: `src/pump_common.h`
 - **Default**: `1e-8`
-- **Meaning**: Floor value for the PDLP solve tolerance. Once `ε` decays
-  to this level it stays there for the remainder of the pump.
+- **Meaning**: Floor value for the PDLP stopping error `ε`. Once `ε` decays
+  to this level it stays there for the remainder of the pump. It is two
+  orders of magnitude below HiGHS's own default tolerance, so a converged
+  pump solves *more* accurately than a stock PDLP call, not less.
 - **Suggested range**: 1e-10–1e-6.
 
 ---

@@ -15,6 +15,8 @@
 //       publication; stale rounds do not.
 
 #include "contested_pdlp.h"
+#include "pump_common.h"
+#include "test_common.h"
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
@@ -354,8 +356,28 @@ TEST_CASE("ContestedPdlp: every PDLP option name we write exists in HiGHS",
     REQUIRE(highs.setOptionValue("output_flag", false) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("solver", "pdlp") == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("pdlp_iteration_limit", HighsInt{1000}) == HighsStatus::kOk);
-    REQUIRE(highs.setOptionValue("pdlp_optimality_tolerance", 1e-8) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("time_limit", 1.0) == HighsStatus::kOk);
+
+    // The three tolerance options the epsilon schedule drives (#140).  All
+    // three are what cuPDLP-C's termination check reads; writing only the
+    // last of them was the whole of that bug.  Both ends of the schedule
+    // must be in domain -- `[kMinimumKktTolerance = 1e-10, kHighsInf]` --
+    // since a rejected write would silently leave the tolerance wherever
+    // the previous solve left it.
+    for (const char* name : {"primal_feasibility_tolerance", "dual_feasibility_tolerance",
+                             "pdlp_optimality_tolerance"}) {
+        INFO("option: " << name);
+        REQUIRE(highs.setOptionValue(name, pump::kEpsilonInit) == HighsStatus::kOk);
+        REQUIRE(highs.setOptionValue(name, pump::kEpsilonFloor) == HighsStatus::kOk);
+    }
+
+    // The path we deliberately do NOT take: cuPDLP-C overwrites all three
+    // of those from `kkt_tolerance`, but only when it differs from its
+    // default.  We never write it, which is what keeps that branch dead;
+    // the option must nonetheless still exist, because its disappearance
+    // would mean the override branch has moved and the three explicit
+    // writes need re-deriving.
+    REQUIRE(highs.setOptionValue("kkt_tolerance", 1e-7) == HighsStatus::kOk);
 
     // Negative control: the two dropped names must stay absent.  If a future
     // HiGHS reintroduces either, revisit the rationale comment in the
@@ -446,4 +468,57 @@ TEST_CASE("ContestedPdlp: a solve that waited for the mutex gets the time that i
     // waiting, not less.
     CHECK(pdlp.time_limits.front() < kLimit / 2.0);
     CHECK(pdlp.time_limits.front() > 0.0);
+}
+
+// ===================================================================
+// The epsilon schedule reaches every tolerance cuPDLP-C terminates on
+// (#140)
+// ===================================================================
+
+// The defect this pins: `solve_locked` wrote the caller's epsilon to
+// `pdlp_optimality_tolerance` alone, so cuPDLP-C's D_GAP_TOL followed the
+// schedule while D_PRIMAL_TOL and D_DUAL_TOL -- the two the paper's Sect.
+// 2.2 actually names -- sat at `kDefaultKktTolerance` (1e-7) on every
+// solve.  cuPDLP-C terminates on a conjunction over all three, so a
+// relaxed epsilon bought almost nothing.
+//
+// This drives the *real* `ContestedPdlp`, not the `FakePdlp` double: the
+// double overrides `solve_locked`, which is the function under test.  Two
+// solves at two different epsilons, because the schedule needs the writes
+// to be per-solve -- a construction-time write would pass a single-solve
+// check and still never follow the decay.
+TEST_CASE("ContestedPdlp: epsilon reaches all three cuPDLP tolerances on every solve",
+          "[contested_pdlp][options][scylla]") {
+    // `ContestedPdlp`'s constructor needs a real `mipdata_`, whose `init`
+    // reads `parallel::num_threads()`; see the note at the other
+    // `build_bare_mipsolver` call sites.  A no-op once started.
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps");
+
+    ContestedPdlp pdlp(*mipsolver, 200);
+    REQUIRE(pdlp.initialized());
+
+    const std::vector<double> cost(static_cast<size_t>(pdlp.num_col()), 0.0);
+    const std::vector<double> empty;
+
+    // Both ends of the schedule: its first value, and a value well down
+    // the geometric decay.  `kEpsilonFloor` itself is covered by the
+    // in-domain half of the option-name pin above.
+    for (const double epsilon : {pump::kEpsilonInit, 5e-4}) {
+        INFO("epsilon: " << epsilon);
+        static_cast<void>(pdlp.solve(cost, empty, empty, false, epsilon));
+        const auto tol = pdlp.tolerances_for_test();
+        CHECK(tol.primal_feasibility == epsilon);
+        CHECK(tol.dual_feasibility == epsilon);
+        CHECK(tol.pdlp_optimality == epsilon);
+        // The negative side of the same fact, on the instance that
+        // actually solves: `kkt_tolerance` stays at its default, which is
+        // what keeps cuPDLP-C's "overwrite all three" branch dead and the
+        // three explicit writes authoritative.
+        CHECK(tol.kkt == kDefaultKktTolerance);
+    }
 }

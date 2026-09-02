@@ -102,7 +102,13 @@ public:
     //
     // `warm_start_col_value` / `warm_start_row_dual` may be empty (cold
     // start) but must otherwise have length == ncol/nrow respectively.
-    // `epsilon` is passed as `pdlp_optimality_tolerance`.
+    // `epsilon` is the pump's single stopping error and is written to all
+    // three of cuPDLP-C's termination tolerances —
+    // `primal_feasibility_tolerance`, `dual_feasibility_tolerance` and
+    // `pdlp_optimality_tolerance` (#140).  Writing only the last of those
+    // relaxed the duality gap while the two feasibilities the paper names
+    // stayed at the HiGHS default; see `solve_locked` for the full
+    // derivation and for why `kkt_tolerance` is deliberately left alone.
     //
     // This solve's wall-clock cap is *not* a parameter (issue #117): it is
     // the time left on the solve's own deadline, read inside the critical
@@ -145,6 +151,24 @@ public:
     std::shared_ptr<const Snapshot> latest_snapshot() const {
         return snapshot_.load(std::memory_order_acquire);
     }
+
+    // The three cuPDLP-C termination tolerances as they currently stand on
+    // the wrapped instance.  Exposed for tests: `solve_locked` writes them
+    // from `epsilon` on every solve, and the whole of #140 was that two of
+    // the three were never written at all — a defect invisible from
+    // outside the class without a way to read them back.  Reads the live
+    // option values, so call it after a solve.
+    struct SolveTolerances {
+        double primal_feasibility = 0.0;
+        double dual_feasibility = 0.0;
+        double pdlp_optimality = 0.0;
+        // Not written by us, and that is the point: cuPDLP-C overwrites
+        // all three of the above from `kkt_tolerance` whenever it differs
+        // from `kDefaultKktTolerance`, so leaving it alone is what keeps
+        // the three explicit writes authoritative.
+        double kkt = 0.0;
+    };
+    SolveTolerances tolerances_for_test() const;
 
     // Exposed for tests: peak number of concurrent solves observed.
     // Must always be <= 1 (the one-solve-in-flight invariant).
