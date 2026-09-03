@@ -1806,14 +1806,36 @@ buy.
 
 ## Repair Search (`repair_search`)
 
-### `kProgressThreshold` — no-progress trigger for best-open jump
+### `kRepairProgressThreshold` — no-progress trigger for best-open jump
 
-- **File**: `src/repair_search.cpp` (anonymous namespace)
+- **File**: `src/repair_search.h`
 - **Default**: `10`
-- **Meaning**: Number of consecutive RepairSearch DFS nodes without a
-  violation improvement before the algorithm swaps to the lowest-
-  violation open node (paper Fig. 5 best-first steering, line 27).
-- **Suggested range**: 5–30.
+- **Meaning**: Number of consecutive RepairSearch DFS nodes without an
+  improvement to the best total violation before the search abandons the
+  current subtree and jumps to the lowest-violation open node — paper
+  Fig. 5 lines 18-19, Sect. 5.1: "if we detect that we are not making
+  enough progress in the current subtree, we backtrack directly to the
+  most promising open node". It is **not** Fig. 5 line 27, which is the
+  post-loop backtrack; the old entry here said line 27 and named the
+  mechanism "best-first steering", which is what the defect looked like
+  rather than what the paper asks for.
+- **Renamed and moved in #130**, from `kProgressThreshold` in
+  `repair_search.cpp`'s anonymous namespace. `repair_search` now takes it
+  as the `progress_threshold` parameter and `fpr_core.cpp` passes this
+  constant, so a test can vary the axis; nothing else in `src/` does, and
+  there is no option behind it.
+- **This axis was inert until #130.** A second, ungated
+  `BacktrackBestOpen` ran at the foot of every node-loop iteration, so
+  the search already sat on the lowest-violation open node at every step
+  and the gate had no subtree left to abandon. With that call gone the
+  gate is the loop's only steering, and the two ends of the range are two
+  different searches — `tests/test_repair_search.cpp`'s "the progress
+  threshold decides the search" finds a feasible repair at `1` and
+  exhausts its node budget without one at `10^6`, on the same model and
+  the same RNG stream.
+- **Suggested range**: 5–30. `0` is not special-cased: any value at or
+  below 1 fires on the first node that fails to improve, and any value
+  above `repair_iterations` can never fire.
 
 ---
 

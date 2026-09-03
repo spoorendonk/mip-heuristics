@@ -241,9 +241,15 @@ bool apply_branch_to_r(PropEngine& R, const RepairSearchNode& node) {
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
-                   const double* row_hi, HighsInt repair_iterations, double repair_noise,
-                   bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
-                   FprScratch& scratch, const Deadline& deadline) {
+                   const double* row_hi, HighsInt repair_iterations, HighsInt progress_threshold,
+                   double repair_noise, bool repair_track_best, size_t max_effort, Rng& rng,
+                   size_t& effort_out, FprScratch& scratch, const Deadline& deadline,
+                   RepairSearchStats* stats) {
+    // Counters go somewhere unconditionally; `local_stats` is the sink when
+    // the caller does not want them, which keeps the two increment sites
+    // below free of null checks.
+    RepairSearchStats local_stats;
+    RepairSearchStats& st = (stats != nullptr) ? *stats : local_stats;
     const HighsInt ncol = E.ncol();
     const HighsInt nrow = E.nrow();
     const double feastol = E.feastol();
@@ -416,7 +422,6 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
     size_t e_effort_baseline = E.effort();
     size_t r_effort_baseline = R.effort();
     HighsInt nodes_without_progress = 0;
-    constexpr HighsInt kProgressThreshold = 10;
 
     // --- DFS stack (paper Fig. 5, lines 3-4).  Reused across calls via
     // scratch to avoid per-call allocations. ---
@@ -454,6 +459,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         RepairSearchNode node = Q.back();
         Q.pop_back();
         ++nodes_visited;
+        ++st.nodes_visited;
 
         // Restore parent state (paper lines 7-8).  Pass `node.e_pq_mark`
         // explicitly: when E was `init_domain_pq`'d in Phase 2 (any
@@ -513,10 +519,20 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
             ++nodes_without_progress;
         }
 
-        // Check progress — jump to best open node if stuck (paper lines 18-19)
-        if (nodes_without_progress >= kProgressThreshold && !Q.empty()) {
+        // Check progress — jump to best open node if stuck (paper Fig. 5
+        // lines 18-19, Sect. 5.1: "if we detect that we are not making
+        // enough progress in the current subtree, we backtrack directly to
+        // the most promising open node").  This gate is the *only* thing
+        // that reorders Q (issue #130).  Until #130 a second, ungated
+        // `backtrack_best_open` ran at the foot of every iteration, after
+        // the children were pushed, so the node popped next was the
+        // lowest-violation open node on every step and the search was
+        // best-first rather than the paper's DFS-with-occasional-jumps;
+        // the gate could not change anything it did.
+        if (nodes_without_progress >= progress_threshold && !Q.empty()) {
             backtrack_best_open(Q);
             nodes_without_progress = 0;
+            ++st.best_open_jumps;
         }
 
         // FindRepairMove: WalkSAT on current solution (paper line 20)
@@ -548,12 +564,20 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
                      total_viol});
         Q.push_back({preferred.var, preferred.val, preferred.is_fix, preferred.is_lb, cur_e_vs,
                      cur_e_sol, cur_e_pq, cur_r_vs, cur_r_sol, cur_sol, cur_lhs, total_viol});
-
-        // Best-first steering (paper line 27)
-        backtrack_best_open(Q);
     }
 
-    // Restore best state (paper line 28)
+    // Fig. 5 line 27 ends the search by backtracking to the best open node
+    // and returning the state E associated with it.  This is not that, and
+    // cannot be: in the complete-assignment variant a node does not carry
+    // an E of its own to return -- the state it stands for is the
+    // (solution, lhs_cache) pair that was live while it was expanded, and
+    // the only one of those still in hand is the snapshot line 17's
+    // improvement test took of the *best* state seen.  So the search ends
+    // by restoring that snapshot.  Two differences from line 27 follow and
+    // are deliberate: the state restored is the best node *visited*, not
+    // the best node still open, and with `repair_track_best` false no
+    // snapshot was ever taken, so nothing is restored and the caller keeps
+    // whatever assignment the last expanded node left behind.
     if (repair_track_best && best_viol < total_viol) {
         solution.assign(best_solution.begin(), best_solution.end());
         lhs_cache.assign(best_lhs.begin(), best_lhs.end());

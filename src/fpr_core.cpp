@@ -759,11 +759,12 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
     const Deadline deadline = deadline_of(mipsolver);
     if (!feasible && !deadline.expired() && cfg.mode == FrameworkMode::kRepairSearch) {
         size_t rs_effort = 0;
-        feasible = repair_search(
-            E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(), c.row_lo.data(),
-            c.row_hi.data(), cfg.repair_iterations, cfg.repair_noise, cfg.repair_track_best,
-            cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0, rng, rs_effort,
-            scratch, deadline);
+        feasible =
+            repair_search(E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(), c.row_lo.data(),
+                          c.row_hi.data(), cfg.repair_iterations, kRepairProgressThreshold,
+                          cfg.repair_noise, cfg.repair_track_best,
+                          cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0,
+                          rng, rs_effort, scratch, deadline, /*stats=*/nullptr);
         total_prop_work += rs_effort;
     } else if (!feasible && !deadline.expired() && mode_repairs(cfg.mode)) {
         size_t walk_effort = 0;

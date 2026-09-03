@@ -296,7 +296,8 @@ TEST_CASE("RepairSearch: SyncChanges' flip is visible in E after a full search",
 
     bool feasible = repair_search(
         E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
-        /*repair_iterations=*/50, /*repair_noise=*/0.75,
+        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
+        /*repair_noise=*/0.75,
         /*repair_track_best=*/true,
         /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline);
 
@@ -362,6 +363,7 @@ TEST_CASE("RepairSearch: E and R are armed with the call's deadline", "[repair-s
 
     static_cast<void>(repair_search(E, solution, lhs_cache, col_lb.data(), col_ub.data(),
                                     row_lo.data(), row_hi.data(), /*repair_iterations=*/50,
+                                    /*progress_threshold=*/kRepairProgressThreshold,
                                     /*repair_noise=*/0.75, /*repair_track_best=*/true,
                                     /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
                                     effort_out, scratch, deadline));
@@ -376,4 +378,134 @@ TEST_CASE("RepairSearch: E and R are armed with the call's deadline", "[repair-s
     REQUIRE(r_engine != nullptr);
     CHECK(r_engine->deadline().timer == &timer);
     CHECK(r_engine->deadline().limit == 3600.0);
+}
+
+// ===================================================================
+// The stall gate is the node loop's only steering (issue #130).
+//
+// Fig. 5 lines 18-19 / Sect. 5.1: "if we detect that we are not making
+// enough progress in the current subtree, we backtrack directly to the
+// most promising open node".  Until #130 `repair_search` also called the
+// same `BacktrackBestOpen` unconditionally at the foot of every
+// iteration -- annotated "paper line 27", which is the *post-loop*
+// backtrack and is implemented separately -- so the node popped next was
+// the lowest-violation open node on every step.  The paper's
+// DFS-with-occasional-jumps was a per-node best-first search, and the
+// threshold had almost nothing left to decide.
+//
+// The model below is what makes that decidable.  It was found by a
+// randomized sweep over sparse +/-1 binary models (15 columns, 7 rows,
+// one-sided row bounds inside the activity range) looking for one where
+// the *first* subtree a pure DFS enters is a dead end it cannot leave
+// within `repair_iterations` nodes, while a feasible repair sits
+// elsewhere in the tree.  On it:
+//
+//   threshold 1     -> jumps out of the dead subtree, reaches a feasible
+//                      assignment after 17 of the 50 permitted nodes;
+//   threshold 10^6  -> the gate can never fire, the search is the pure
+//                      DFS Fig. 5 describes, and it spends all 50 nodes
+//                      in the dead subtree without finding anything.
+//
+// Both halves are load-bearing, and each fails against a different
+// mutation.  Restoring the ungated call makes *both* thresholds fail to
+// find a solution (measured: threshold 1 then also returns infeasible
+// after all 50 nodes), because the steering no longer depends on the
+// counter.  Deleting the gated `backtrack_best_open` while keeping the
+// counter, or reading a hardcoded 10 instead of the parameter, collapses
+// threshold 1 onto the threshold-10^6 run for the same reason.  An
+// assertion that the two runs merely *differ* would not catch the first
+// of those: the pre-#130 code's two runs differ too, since the gate still
+// permuted Q and reset its own counter even when it changed nothing about
+// which node came next.
+// ===================================================================
+
+namespace {
+
+// 15 binaries, 7 rows of +/-1 coefficients, each row bounded on one side.
+struct StallModel {
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    static constexpr HighsInt ncol = 15;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    static constexpr HighsInt nrow = 7;
+    std::vector<HighsInt> ar_start = {0, 7, 16, 26, 33, 39, 47, 56};
+    std::vector<HighsInt> ar_index = {4,  6,  7, 9,  11, 13, 14, 0, 1,  2,  3,  4,  8,  11,
+                                      12, 13, 0, 1,  3,  4,  5,  9, 10, 11, 12, 13, 0,  1,
+                                      2,  4,  5, 13, 14, 4,  6,  8, 10, 12, 13, 0,  1,  5,
+                                      6,  7,  8, 10, 14, 0,  3,  5, 6,  7,  8,  10, 11, 12};
+    std::vector<double> ar_value = {1,  1,  -1, -1, -1, -1, 1,  1,  1,  -1, -1, -1, 1,  -1,
+                                    -1, -1, -1, 1,  -1, 1,  -1, 1,  -1, -1, -1, 1,  -1, -1,
+                                    -1, 1,  -1, 1,  1,  -1, -1, 1,  1,  1,  1,  -1, -1, 1,
+                                    1,  -1, 1,  -1, -1, -1, -1, -1, 1,  -1, -1, 1,  -1, 1};
+    std::vector<double> col_lb = std::vector<double>(ncol, 0.0);
+    std::vector<double> col_ub = std::vector<double>(ncol, 1.0);
+    std::vector<double> row_lo = {1.0, 0.0, -kHighsInf, -kHighsInf, 2.0, -kHighsInf, 0.0};
+    std::vector<double> row_hi = {kHighsInf, kHighsInf, -2.0, -2.0, kHighsInf, -3.0, kHighsInf};
+    std::vector<HighsVarType> integrality = std::vector<HighsVarType>(ncol, HighsVarType::kInteger);
+};
+
+// One `repair_search` run on the model above, from the all-zero
+// assignment, with a fresh engine and a fresh RNG so the two runs differ
+// in the threshold and in nothing else.
+struct StallRun {
+    bool feasible = false;
+    RepairSearchStats stats;
+    std::vector<double> solution;
+    std::vector<double> lhs_cache;
+};
+
+StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt progress_threshold) {
+    const double feastol = 1e-6;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(StallModel::ncol, StallModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    StallRun out;
+    out.solution.assign(StallModel::ncol, 0.0);
+    out.lhs_cache.assign(StallModel::nrow, 0.0);
+    FprScratch scratch;
+    Rng rng(42);
+    Deadline deadline;  // never expires
+    size_t effort_out = 0;
+    out.feasible = repair_search(E, out.solution, out.lhs_cache, m.col_lb.data(), m.col_ub.data(),
+                                 m.row_lo.data(), m.row_hi.data(), /*repair_iterations=*/50,
+                                 progress_threshold, /*repair_noise=*/0.75,
+                                 /*repair_track_best=*/true,
+                                 /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out,
+                                 scratch, deadline, &out.stats);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-search][progress]") {
+    const StallModel m;
+    CscMatrix csc =
+        build_csc(StallModel::ncol, StallModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+    const double feastol = 1e-6;
+
+    // Out of reach: 10^6 exceeds `repair_iterations`, so the gate cannot
+    // fire even once and the node loop is a pure DFS.
+    const StallRun dfs = run_stall_model(m, csc, /*progress_threshold=*/1000000);
+    CHECK(dfs.stats.best_open_jumps == 0);
+    CHECK(dfs.stats.nodes_visited == 50);  // the whole node budget, in one dead subtree
+    REQUIRE_FALSE(dfs.feasible);
+
+    // Threshold 1: abandon the subtree at the first node that fails to
+    // improve the best violation.
+    const StallRun jumping = run_stall_model(m, csc, /*progress_threshold=*/1);
+    CHECK(jumping.stats.best_open_jumps > 0);
+    CHECK(jumping.stats.nodes_visited < dfs.stats.nodes_visited);
+    REQUIRE(jumping.feasible);
+
+    // ... and what it returns really is feasible, checked against the rows
+    // rather than trusting the return value.
+    for (HighsInt i = 0; i < StallModel::nrow; ++i) {
+        double lhs = 0.0;
+        for (HighsInt k = m.ar_start[i]; k < m.ar_start[i + 1]; ++k) {
+            lhs += m.ar_value[k] * jumping.solution[m.ar_index[k]];
+        }
+        INFO("row " << i);
+        CHECK(lhs >= m.row_lo[i] - feastol);
+        CHECK(lhs <= m.row_hi[i] + feastol);
+    }
 }
