@@ -52,6 +52,15 @@ struct RepairSearchStats {
     // `repair_iterations` stopped on feasibility, an empty Q, the effort
     // budget or the clock.
     size_t nodes_visited = 0;
+    // Nodes whose *bound* branch -- the non-binary half of
+    // `MoveToDisjunction` -- actually moved the incumbent point (issue
+    // #131).  Before #131 this was zero on every model: the disjunction
+    // was built from the node's current domain rather than from the
+    // shifted interval the repair move implies, so both branches
+    // re-imposed a bound R already had and `sync_changes` had nothing to
+    // transfer.  Binary nodes are not counted here -- they take the
+    // `fix` branch, which applies unconditionally.
+    size_t bound_branch_moves = 0;
 };
 
 // Paper Fig. 5: RepairSearch with secondary propagation engine R.

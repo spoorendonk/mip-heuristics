@@ -509,3 +509,280 @@ TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-se
         CHECK(lhs <= m.row_hi[i] + feastol);
     }
 }
+
+// ===================================================================
+// MoveToDisjunction uses the repair move (issue #131).
+//
+// Sect. 5.1 builds the non-binary disjunction from the *shifted*
+// interval [a, b] -- D translated by the repair move's shift s.
+// `move_to_disjunction` built it from D itself and never read the move
+// outside the binary branch, so both children re-imposed a bound R
+// already held, `tighten_lb`/`tighten_ub` took their no-tightening early
+// return, `sync_changes` found nothing to transfer, and the incumbent
+// point never moved: a RepairSearch node on a general-integer variable
+// cost two propagation fixpoints and moved nothing.
+//
+// The three models below are one general integer each with a single row,
+// so `walksat_select_move` has exactly one violated row and exactly one
+// candidate -- every assertion is on the disjunction, with no dependence
+// on the RNG stream.  All three return `bound_branch_moves == 0` and no
+// solution against the pre-#131 code.
+// ===================================================================
+
+namespace {
+
+// x0 integer in [0, 10]; one row `x0 >= row_lo0`.  The caller sets up E
+// and the incumbent point, which is what distinguishes the three cases.
+struct OneIntModel {
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    static constexpr HighsInt ncol = 1;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    static constexpr HighsInt nrow = 1;
+    std::vector<HighsInt> ar_start = {0, 1};
+    std::vector<HighsInt> ar_index = {0};
+    std::vector<double> ar_value = {1.0};
+    std::vector<double> col_lb = {0.0};
+    std::vector<double> col_ub = {10.0};
+    std::vector<double> row_lo;
+    std::vector<double> row_hi = {kHighsInf};
+    std::vector<HighsVarType> integrality = {HighsVarType::kInteger};
+
+    explicit OneIntModel(double lo) : row_lo({lo}) {}
+};
+
+}  // namespace
+
+TEST_CASE("MoveToDisjunction: a fixed general integer is moved by a bound branch",
+          "[repair-search][disjunction]") {
+    // E has x0 decision-fixed to 2 (so `[lb, ub]` stays the wide [0, 10],
+    // as `fix()` leaves them) and the row wants x0 >= 7.  The single
+    // repair move is the shift s = +5, so the shifted interval is the
+    // singleton [7, 7]; against R's root domain [0, 10] that is
+    // l = 7 > r = 3, so the preferred branch is `x0 <= 7`, R propagates
+    // the row back to [7, 7], and `sync_changes` re-fixes E to 7.
+    const OneIntModel m(7.0);
+    CscMatrix csc =
+        build_csc(OneIntModel::ncol, OneIntModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+    const double feastol = 1e-6;
+
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE(E.fix(0, 2.0));
+    REQUIRE(E.var(0).lb == Catch::Approx(0.0));   // wide, as `fix()` leaves them
+    REQUIRE(E.var(0).ub == Catch::Approx(10.0));  // -- which is why D is the value
+
+    std::vector<double> solution = {2.0};
+    std::vector<double> lhs_cache = {2.0};
+    FprScratch scratch;
+    Rng rng(42);
+    Deadline deadline;
+    size_t effort_out = 0;
+    RepairSearchStats stats;
+
+    const bool feasible = repair_search(
+        E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
+        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
+        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
+        &stats);
+
+    REQUIRE(feasible);
+    CHECK(stats.bound_branch_moves == 1);
+    CHECK(solution[0] == Catch::Approx(7.0));
+    CHECK(lhs_cache[0] == Catch::Approx(7.0));
+    // E agrees: the sync is what moved the point, so it must have moved
+    // E's own domain first.
+    CHECK(E.var(0).fixed);
+    CHECK(E.var(0).val == Catch::Approx(7.0));
+}
+
+TEST_CASE("MoveToDisjunction: the interval shifts, it does not collapse to the move value",
+          "[repair-search][disjunction]") {
+    // E has x0 unfixed on D = [2, 4] and the point at 3; the row wants
+    // x0 >= 7, so the single move is s = +4 and the shifted interval is
+    // [6, 8] -- width 2, not the singleton [7, 7].  That distinction is
+    // the whole assertion: against R's [0, 10],
+    //
+    //   [6, 8] -> l = 6 > r = 2 -> `x0 <= 6` first (R propagates the row
+    //             to lb 7 against ub 6 and the child is refuted), then
+    //             `x0 >= 8` -> R = [8, 10], disjoint from D, so
+    //             `sync_changes` fixes x0 to 8;
+    //   [7, 7] -> l = 7 > r = 3 -> `x0 <= 7` -> R = [7, 7] -> x0 fixed
+    //             to 7 on the *first* child.
+    //
+    // So an implementation that used the move value in place of the
+    // shifted interval returns 7 here, and this test reads 8.
+    const OneIntModel m(7.0);
+    CscMatrix csc =
+        build_csc(OneIntModel::ncol, OneIntModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+    const double feastol = 1e-6;
+
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE(E.tighten_lb(0, 2.0));
+    REQUIRE(E.tighten_ub(0, 4.0));
+    REQUIRE_FALSE(E.var(0).fixed);
+
+    std::vector<double> solution = {3.0};
+    std::vector<double> lhs_cache = {3.0};
+    FprScratch scratch;
+    Rng rng(42);
+    Deadline deadline;
+    size_t effort_out = 0;
+    RepairSearchStats stats;
+
+    const bool feasible = repair_search(
+        E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
+        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
+        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
+        &stats);
+
+    REQUIRE(feasible);
+    CHECK(stats.bound_branch_moves == 1);
+    CHECK(solution[0] == Catch::Approx(8.0));
+    CHECK(E.var(0).fixed);
+    CHECK(E.var(0).val == Catch::Approx(8.0));
+}
+
+TEST_CASE("MoveToDisjunction: a sync that fixes inside E's own bounds still moves the point",
+          "[repair-search][disjunction]") {
+    // E leaves x0 unfixed on the full [0, 10] with the point at 0, and
+    // the row wants x0 >= 8.  The move is s = +8, so the shifted interval
+    // is [8, 18], clipped into R's [0, 10] as [8, 10]: l = 8 > r = 0, the
+    // preferred branch is `x0 <= 8`, R propagates the row to [8, 8], and
+    // `sync_changes` takes its *intersection* case -- D and Dr overlap in
+    // the single point 8 -- which commits through `PropEngine::fix`.
+    //
+    // `fix()` leaves `[lb, ub]` at [0, 10], so a clamp reading the raw
+    // bounds finds 0 already inside them and drops the move even though E
+    // is fixed at 8.  The clamp reads the interval E holds instead, which
+    // is what this test pins; the other two cases reach E through
+    // `refix`, which narrows, and cannot see the difference.
+    const OneIntModel m(8.0);
+    CscMatrix csc =
+        build_csc(OneIntModel::ncol, OneIntModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+    const double feastol = 1e-6;
+
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE_FALSE(E.var(0).fixed);
+
+    std::vector<double> solution = {0.0};
+    std::vector<double> lhs_cache = {0.0};
+    FprScratch scratch;
+    Rng rng(42);
+    Deadline deadline;
+    size_t effort_out = 0;
+    RepairSearchStats stats;
+
+    const bool feasible = repair_search(
+        E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
+        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
+        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
+        &stats);
+
+    REQUIRE(feasible);
+    CHECK(stats.bound_branch_moves == 1);
+    CHECK(solution[0] == Catch::Approx(8.0));
+    CHECK(E.var(0).fixed);
+    CHECK(E.var(0).val == Catch::Approx(8.0));
+    CHECK(E.var(0).lb == Catch::Approx(0.0));   // `fix()` left them wide ...
+    CHECK(E.var(0).ub == Catch::Approx(10.0));  // ... which is the point of this case
+}
+
+// ===================================================================
+// The shifted interval is clipped back into R's domain (issue #131).
+//
+// Sect. 5.1 states the containment "the shifted interval [a, b] in D is
+// always contained in the interval [c, d] in Dr, by construction" as a
+// precondition.  It does not hold here as written: `walksat_select_move`
+// clips a shift to the column's *structural* bounds, not to R's current
+// domain, so the translate can leave [c, d] -- and then one branch is a
+// bound R already satisfies (a no-op) while the other is refuted
+// outright, so the node makes no progress at all.  Clipping [a, b] back
+// into [c, d] restores the precondition and turns both branches back
+// into real restrictions.
+//
+// This only bites below the root, since R starts at the structural
+// bounds and a shift cannot leave *those*: it needs an ancestor branch
+// to have narrowed R first.  That makes it out of reach of the
+// single-row, single-candidate models above -- reaching depth two needs
+// enough rows for `walksat_select_move` to have a choice of violated
+// row, and a choice is drawn from `rng`.  The model below is therefore a
+// characterization test, found by sweeping random small integer models
+// for one where the clip changes the outcome; with it, x0 is moved and
+// every row ends satisfied, and without it no bound branch moves
+// anything and the search returns nothing.
+// ===================================================================
+
+TEST_CASE("MoveToDisjunction: the shifted interval is clipped into R's domain",
+          "[repair-search][disjunction]") {
+    // 7 general integers on [0, 6], two >= rows; x6 is in no row.
+    //   r0: 2*x0 + 2*x1 + 2*x2 - 3*x3 >= 11
+    //   r1: 3*x0 + 2*x3 -   x4 + 3*x5 >= 23
+    const HighsInt ncol = 7;
+    const HighsInt nrow = 2;
+    std::vector<HighsInt> ar_start = {0, 4, 8};
+    std::vector<HighsInt> ar_index = {0, 1, 2, 3, 0, 3, 4, 5};
+    std::vector<double> ar_value = {2.0, 2.0, 2.0, -3.0, 3.0, 2.0, -1.0, 3.0};
+    std::vector<double> col_lb(ncol, 0.0);
+    std::vector<double> col_ub(ncol, 6.0);
+    std::vector<double> row_lo = {11.0, 23.0};
+    std::vector<double> row_hi = {kHighsInf, kHighsInf};
+    std::vector<HighsVarType> integrality(ncol, HighsVarType::kInteger);
+    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
+    const double feastol = 1e-6;
+
+    // E as a dive would leave it: a mix of one-sided tightenings and two
+    // decision fixes, so D is a strict subinterval on most columns.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
+                 col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
+    REQUIRE(E.tighten_lb(0, 2.0));
+    REQUIRE(E.fix(1, 2.0));
+    REQUIRE(E.tighten_ub(2, 4.0));
+    REQUIRE(E.tighten_ub(3, 4.0));
+    REQUIRE(E.tighten_lb(4, 2.0));
+    REQUIRE(E.fix(5, 2.0));
+    REQUIRE(E.tighten_ub(6, 4.0));
+
+    // The incumbent point, and its row activities: r0 = 7 (needs 11),
+    // r1 = 18 (needs 23), so both rows are violated going in.
+    std::vector<double> solution = {3.0, 2.0, 3.0, 3.0, 3.0, 2.0, 3.0};
+    std::vector<double> lhs_cache = {7.0, 18.0};
+
+    FprScratch scratch;
+    Rng rng(42);
+    Deadline deadline;
+    size_t effort_out = 0;
+    RepairSearchStats stats;
+
+    const bool feasible = repair_search(
+        E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
+        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
+        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
+        &stats);
+
+    REQUIRE(feasible);
+    CHECK(stats.bound_branch_moves == 1);
+    CHECK(solution[0] == Catch::Approx(6.0));
+    // Feasible against the rows themselves, not just per the return value.
+    for (HighsInt i = 0; i < nrow; ++i) {
+        double lhs = 0.0;
+        for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
+            lhs += ar_value[k] * solution[ar_index[k]];
+        }
+        INFO("row " << i);
+        CHECK(lhs >= row_lo[i] - feastol);
+        CHECK(lhs <= row_hi[i] + feastol);
+    }
+}

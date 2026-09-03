@@ -145,9 +145,13 @@ public:
     // bounds.  `refix()`'s narrowing has no such reason to stay wide (its
     // whole point is a fresh, unambiguous commitment) and produces the
     // same *shape* of narrow-fixed column that an auto-fix does via
-    // `tighten_lb`/`tighten_ub` -- see the `move_to_disjunction` binary
-    // detection note in `repair_search.cpp` and issue #131: `refix()` is a
-    // second producer of that degeneracy, not a fix for it.  Returns false
+    // `tighten_lb`/`tighten_ub`, so a binary it re-fixes stops matching
+    // `move_to_disjunction`'s `[lb, ub] == [0, 1]` test and takes the
+    // gap-split branch instead of the flip branch -- see that function's
+    // own note and issue #131.  Since #131 the gap-split is no longer
+    // vacuous there (the shifted interval is the singleton at the flipped
+    // value, so one of the two children forces the flip), but it still
+    // spends a node on the other child that the flip form would not.  Returns false
     // only if `value` falls outside the column's structural bounds --
     // callers of `refix()` in `sync_changes` always derive `value` from
     // the secondary engine R's own domain, which is itself always inside

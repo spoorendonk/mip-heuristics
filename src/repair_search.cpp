@@ -146,42 +146,98 @@ struct Branch {
     bool is_lb;
 };
 
-// Known limitation (#131, discovered while implementing #125, not fixed
-// here -- out of both issues' stated scope): the binary detection below
-// is `[lb, ub] == [0, 1]`, which degenerates once a binary column's
-// domain has been narrowed to a singleton -- by ordinary AC-3 auto-fix
-// (`tighten_lb`/`tighten_ub` in prop_engine.cpp) or, since #125, by
-// `PropEngine::refix`, which produces the identical narrow shape by
-// design (see its header comment in prop_engine.h). Such a column falls
-// through to the non-binary gap-split path below and produces a vacuous
-// `x <= v \/ x >= v` disjunction instead of an actual flip choice --
-// gating the production binary-swap pipeline one level further up than
-// the `sync_changes` fix addresses.
+// Sect. 5.1, last paragraph: "In the non-binary case, a repair move is
+// always a shift s and the shifted interval [a, b] in D is always
+// contained in the interval [c, d] in Dr, by construction.  We compute
+// the gaps to the left and to the right w.r.t. to [c, d], i.e., l = a - c
+// and r = d - b, and the disjunction is then as follows: if l <= r, we
+// impose x_j <= b \/ x_j >= b, otherwise x_j <= a \/ x_j >= a."
+//
+// Two readings are needed to turn that into code, and only one of them
+// is #131's subject.
+//
+// (1) **`[a, b]` is the SHIFTED interval, and that is the fix (#131).**
+//     This used to read `E.var(var).lb/.ub` -- the node's *current*
+//     domain -- so the chosen move reached the disjunction only through
+//     the binary branch and was ignored entirely for every other column.
+//     The two branches then said "tighten to a bound R already has",
+//     which `tighten_lb`/`tighten_ub` answer with their no-tightening
+//     early return; `sync_changes` therefore had nothing to transfer and
+//     the incumbent point never moved.  A RepairSearch node on a
+//     general-integer variable cost two propagation fixpoints and moved
+//     nothing.  What shifts is the *interval*, not the value -- Sect. 5,
+//     "in general we do not shift just values, but intervals" -- so the
+//     whole of D translates by `s`, keeping its width, which is what
+//     separates this from `[move_val, move_val]`.  A fixed column's D is
+//     the singleton at its value, because `fix()` leaves `[lb, ub]` wide
+//     (see `PropEngine::shift_domain`, which reads D the same way).
+//
+//     The paper's containment precondition does not hold here as stated:
+//     `walksat_select_move` clips a shift to the column's *structural*
+//     bounds, not to R's current domain, so the translate can leave
+//     [c, d].  Clipping [a, b] back into [c, d] restores the
+//     precondition, keeps both gaps non-negative -- a negative gap would
+//     decide the `l <= r` test on a case the paper does not contemplate
+//     -- and keeps both branch values inside R's domain, where
+//     `tighten_lb`/`tighten_ub` can act on them instead of no-opping or
+//     failing outright.
+//
+// (2) **Which side is preferred.** As printed, both sides of the
+//     disjunction use the same endpoint, which reads as a typo; this
+//     code's repair of it is preferred `x <= b` / alternative `x >= a`,
+//     mirrored in the else branch.  #131 deliberately leaves that
+//     reading alone.  What it decides is the *order* the two children
+//     are tried in, not whether the move can happen: a bound branch
+//     moves the incumbent point only through `sync_changes`, which needs
+//     R's domain to end up excluding that point -- and that domain is
+//     the branch plus whatever propagating it implies, so either child
+//     can be the one that lands the move.  Both are pushed, so both are
+//     reachable either way.
+//
+// The binary test below stays on the *raw* `[lb, ub] == [0, 1]`, not on
+// D: a decision-fixed binary keeps wide bounds and must still take the
+// flip branch (`fix` to `move_val` vs `fix` to `1 - move_val`), which is
+// what makes the paper's clique swap available.  A binary whose domain
+// has been narrowed to a singleton -- by AC-3 auto-fix, or by
+// `PropEngine::refix` since #125 -- still falls through to the
+// gap-split.  It is no longer vacuous there, since the shifted interval
+// is the singleton at the flipped value and one of the two branches
+// therefore forces the flip, but it does spend a node on the other
+// branch, which the flip form would not.
 std::pair<Branch, Branch> move_to_disjunction(const PropEngine& E, const PropEngine& R,
-                                              HighsInt var, double move_val) {
-    double e_lb = E.var(var).lb;
-    double e_ub = E.var(var).ub;
+                                              HighsInt var, double cur_val, double move_val) {
+    const VarState& ev = E.var(var);
 
     // Binary: fix to move_val vs fix to 1-move_val
-    if (e_lb == 0.0 && e_ub == 1.0 && E.is_int(var)) {
+    if (ev.lb == 0.0 && ev.ub == 1.0 && E.is_int(var)) {
         double alt = (move_val < 0.5) ? 1.0 : 0.0;
         return {{var, move_val, true, false}, {var, alt, true, false}};
     }
 
-    // Non-binary: gap-based split using R's propagated domain.
-    // E domain [a, b], R domain [c, d].
-    // Gaps: l = a - c (positive if R extended left), r = d - b (right).
-    double left_gap = e_lb - R.var(var).lb;
-    double right_gap = R.var(var).ub - e_ub;
+    // D, the node's current interval for this column, and Dr = [c, d].
+    const double d_lb = ev.fixed ? ev.val : ev.lb;
+    const double d_ub = ev.fixed ? ev.val : ev.ub;
+    const VarState& rv = R.var(var);
+    const double c = rv.fixed ? rv.val : rv.lb;
+    const double d = rv.fixed ? rv.val : rv.ub;
+
+    // [a, b]: D translated by the repair move's shift, clipped into
+    // [c, d].  Clipping is monotone, so a <= b survives it.
+    const double shift = move_val - cur_val;
+    const double a = std::max(c, std::min(d, d_lb + shift));
+    const double b = std::max(c, std::min(d, d_ub + shift));
+
+    const double left_gap = a - c;
+    const double right_gap = d - b;
 
     if (left_gap <= right_gap) {
         // Paper: x_j ≤ b ∨ x_j ≥ a
-        return {{var, e_ub, false, false},  // tighten_ub — preferred
-                {var, e_lb, false, true}};  // tighten_lb — alternative
+        return {{var, b, false, false},  // tighten_ub — preferred
+                {var, a, false, true}};  // tighten_lb — alternative
     }
     // Paper: x_j ≤ a ∨ x_j ≥ b
-    return {{var, e_lb, false, false},  // tighten_ub(a) — preferred
-            {var, e_ub, false, true}};  // tighten_lb(b) — alternative
+    return {{var, a, false, false},  // tighten_ub(a) — preferred
+            {var, b, false, true}};  // tighten_lb(b) — alternative
 }
 
 // BacktrackBestOpen: swap the lowest-violation node to the back of Q.
@@ -491,12 +547,23 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
             if (node.is_fix) {
                 apply_move(node.var, node.val, total_effort);
             } else {
+                // A bound branch moves the point only through what
+                // `sync_changes` transferred into E, so the clamp has to
+                // read the interval E actually holds: `fix()` leaves
+                // `[lb, ub]` wide on a column it fixed, so a column the
+                // sync fixed inside its own bounds would otherwise clamp
+                // against a domain the search no longer believes and the
+                // move would be dropped (issue #131 -- the same reading
+                // `move_to_disjunction` and `PropEngine::shift_domain`
+                // take of a fixed column's interval).
+                const VarState& bv = E.var(node.var);
                 double cur = solution[node.var];
-                double new_lb = E.var(node.var).lb;
-                double new_ub = E.var(node.var).ub;
+                double new_lb = bv.fixed ? bv.val : bv.lb;
+                double new_ub = bv.fixed ? bv.val : bv.ub;
                 double clamped = std::max(new_lb, std::min(new_ub, cur));
                 if (std::abs(clamped - cur) > feastol) {
                     apply_move(node.var, clamped, total_effort);
+                    ++st.bound_branch_moves;
                 }
             }
         }
@@ -547,7 +614,8 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         }
 
         // MoveToDisjunction (paper lines 24-26)
-        auto [preferred, alternative] = move_to_disjunction(E, R, move.var, move.val);
+        auto [preferred, alternative] =
+            move_to_disjunction(E, R, move.var, solution[move.var], move.val);
 
         // Save current state marks
         HighsInt cur_e_vs = E.vs_mark();

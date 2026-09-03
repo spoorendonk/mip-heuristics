@@ -326,8 +326,10 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     // three repair-enabled presets (dfsrep / dive / diveprop); it excludes
     // `kRepairSearch`, whose repair procedure (Fig. 5) still runs only at
     // the leaf.  Moving *that* one into the tree needs `repair_search` to
-    // work on a partial assignment rather than a complete one, which is
-    // issues #130/#131's ground and deliberately not touched here.
+    // work on a partial assignment rather than a complete one, and that
+    // is still open: #130 and #131 fixed two defects *inside* Fig. 5 (the
+    // stall gate, and the disjunction ignoring the repair move) without
+    // changing which assignment it runs on.
     state.do_repair = mode_repairs(cfg.mode);
     state.node_limit = c.ncol + 1;
     state.var_order_cursor = 0;
