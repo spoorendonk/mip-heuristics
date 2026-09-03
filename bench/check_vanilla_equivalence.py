@@ -13,8 +13,8 @@ It does **not** prove that `suite=off` equals vanilla, and it is not a licence
 to use `off` as a baseline.  `off` is the "our four presolve heuristics
 disabled" ablation on the patched binary; it hands HiGHS's own standalone
 FeasibilityJump call site back, but that call site drives *our* copy of
-FeasibilityJump, which the patch already modifies (the per-bump `kVerbose` log
-line is gone) and which issue #139 will change further.  FJ is therefore
+FeasibilityJump, which the patch modifies (the per-bump `kVerbose` log line is
+gone, and #139 corrected two upstream defects in the search itself).  FJ is therefore
 excluded from the comparison rather than compared and forgiven.  A benchmark
 baseline is always a separately built unpatched binary — that is what
 `bench/run_benchmark.py --vanilla-binary` takes, and it refuses a patched one.

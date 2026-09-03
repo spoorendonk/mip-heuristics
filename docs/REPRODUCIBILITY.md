@@ -331,7 +331,8 @@ It is **not** a vanilla measurement and must not be used as one. The binary is
 still the patched one, and the patch modifies FeasibilityJump itself, so the FJ
 running at `off` is HiGHS's call site driving our copy — visibly so already at
 `log_dev_level=3`, where the per-bump `Reached a local minimum.` line is gone,
-and more so once issue #139 lands its two upstream FeasibilityJump fixes. A
+and in the search itself since #139 corrected two upstream FeasibilityJump
+defects — the negative-coefficient jump value and the objective term's sign. A
 vanilla baseline is always a **separately built unpatched binary** of the tag
 in `cmake/FetchHiGHS.cmake`, and `bench/run_benchmark.py` enforces it: the
 `vanilla` config requires `--vanilla-binary`, there is no fallback to the

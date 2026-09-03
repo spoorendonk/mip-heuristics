@@ -1726,7 +1726,14 @@ maintained incrementally. All of it is charged to
 fixed effort budget now buys fewer DFS nodes than it did before #124, and
 why the four `mip_heuristic_<name>_effort` defaults (quantiles on that
 axis) are stale for FPR, Scylla and `fpr_lp` until #113's probe is
-re-run.
+re-run.  **FJ's arm is stale too, for its own reason** (#139): the two
+upstream FeasibilityJump defects that fix corrects are in the jump value
+and in the sign of the move score's objective term, so FJ now evaluates
+different jumps per unit of charged effort and its post-feasibility
+improving mode runs toward better objectives instead of away from them —
+and an incumbent improvement is exactly the event both the effort and the
+patience quantiles are defined on.  So all four arms are stale, and FJ is
+the one none of the earlier input changes had touched.
 
 **The magnitude is larger than it looks, because a violation persists.**
 A refuted node went from O(column degree) to O(`nrow` + walk). Worse, in

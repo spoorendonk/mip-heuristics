@@ -246,7 +246,19 @@ Two *input changes* remain known and unfixed, and neither blocks — they change
 what the re-run will measure, so read its Scylla arm against them rather than
 against this table. #140 has landed and moves Scylla's effort axis (above), as
 does #124 for FPR, Scylla and `fpr_lp`, and #130/#131 for FPR's one
-RepairSearch arm (all above).
+RepairSearch arm (all above). **#139 moves the FJ arm**, which none of those
+touch: it corrects two upstream FeasibilityJump defects — the
+negative-coefficient jump value, so FJ evaluates different jumps per unit of
+charged effort, and the sign of the objective term in the move score, so the
+post-feasibility improving mode runs toward better objectives instead of away
+from them. Both the effort and the patience quantiles are defined on incumbent
+improvements, and the second defect is the mechanism that produces them after
+first feasibility, so FJ's two numbers here are stale on the same footing as
+Scylla's and FPR's. Its measured direction, on 25 instances x 3 seeds at a
+fixed 10 s presolve-only cap: time-to-first-feasible is unchanged (35 of 75
+runs find something, the same 35 before and after — as the mechanism predicts,
+since `objectiveWeight` starts at 0 and rises only once no constraint is
+violated), while objective quality improves on 29 of those 35.
 **#153 is open**: HiGHS runs full LP presolve on every one of the thousands of
 PDLP solves a dispatch performs, on a model whose structure never changes.
 Disabling it changes how many pump rounds fit inside a 30 s cap, and Scylla's
