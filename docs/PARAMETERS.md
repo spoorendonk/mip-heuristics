@@ -1821,9 +1821,15 @@ buy.
   rather than what the paper asks for.
 - **Renamed and moved in #130**, from `kProgressThreshold` in
   `repair_search.cpp`'s anonymous namespace. `repair_search` now takes it
-  as the `progress_threshold` parameter and `fpr_core.cpp` passes this
-  constant, so a test can vary the axis; nothing else in `src/` does, and
-  there is no option behind it.
+  as the trailing `progress_threshold` parameter, *defaulted* to this
+  constant, so a test can vary the axis while `fpr_core.cpp` names no
+  value at all and the one production value lives in one place. There is
+  no option behind it.
+- **The jump runs after the node's children are pushed**, not where
+  Fig. 5's lines 18-19 sit: `Q` is a LIFO stack, so a promotion made
+  before the pushes is buried under them until their subtree is
+  exhausted, which is the failure mode Sect. 5.1 says the jump exists to
+  avoid.
 - **This axis was inert until #130.** A second, ungated
   `BacktrackBestOpen` ran at the foot of every node-loop iteration, so
   the search already sat on the lowest-violation open node at every step
@@ -1833,9 +1839,12 @@ buy.
   threshold decides the search" finds a feasible repair at `1` and
   exhausts its node budget without one at `10^6`, on the same model and
   the same RNG stream.
-- **Suggested range**: 5–30. `0` is not special-cased: any value at or
-  below 1 fires on the first node that fails to improve, and any value
-  above `repair_iterations` can never fire.
+- **Suggested range**: 5–30. `0` is not special-cased and is **not**
+  "no gate": the test is `nodes_without_progress >= threshold`, so `0`
+  promotes the best open node after *every* expansion, improving ones
+  included, which is the per-node best-first search #130 removed. `1`
+  fires on the first node that fails to improve; any value above
+  `repair_iterations` can never fire.
 
 ---
 

@@ -297,10 +297,10 @@ bool apply_branch_to_r(PropEngine& R, const RepairSearchNode& node) {
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
-                   const double* row_hi, HighsInt repair_iterations, HighsInt progress_threshold,
-                   double repair_noise, bool repair_track_best, size_t max_effort, Rng& rng,
-                   size_t& effort_out, FprScratch& scratch, const Deadline& deadline,
-                   RepairSearchStats* stats) {
+                   const double* row_hi, HighsInt repair_iterations, double repair_noise,
+                   bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
+                   FprScratch& scratch, const Deadline& deadline, RepairSearchStats* stats,
+                   HighsInt progress_threshold) {
     // Counters go somewhere unconditionally; `local_stats` is the sink when
     // the caller does not want them, which keeps the two increment sites
     // below free of null checks.
@@ -586,22 +586,6 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
             ++nodes_without_progress;
         }
 
-        // Check progress — jump to best open node if stuck (paper Fig. 5
-        // lines 18-19, Sect. 5.1: "if we detect that we are not making
-        // enough progress in the current subtree, we backtrack directly to
-        // the most promising open node").  This gate is the *only* thing
-        // that reorders Q (issue #130).  Until #130 a second, ungated
-        // `backtrack_best_open` ran at the foot of every iteration, after
-        // the children were pushed, so the node popped next was the
-        // lowest-violation open node on every step and the search was
-        // best-first rather than the paper's DFS-with-occasional-jumps;
-        // the gate could not change anything it did.
-        if (nodes_without_progress >= progress_threshold && !Q.empty()) {
-            backtrack_best_open(Q);
-            nodes_without_progress = 0;
-            ++st.best_open_jumps;
-        }
-
         // FindRepairMove: WalkSAT on current solution (paper line 20)
         HighsInt pick = std::uniform_int_distribution<HighsInt>(
             0, static_cast<HighsInt>(violated.size()) - 1)(rng);
@@ -632,20 +616,58 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
                      total_viol});
         Q.push_back({preferred.var, preferred.val, preferred.is_fix, preferred.is_lb, cur_e_vs,
                      cur_e_sol, cur_e_pq, cur_r_vs, cur_r_sol, cur_sol, cur_lhs, total_viol});
+
+        // Check progress -- jump to the best open node if stuck (paper
+        // Fig. 5 lines 18-19, Sect. 5.1: "if we detect that we are not
+        // making enough progress in the current subtree, we backtrack
+        // directly to the most promising open node").  This gate is the
+        // only thing that reorders Q (issue #130).  Until #130 the same
+        // `BacktrackBestOpen` also ran unconditionally, so the node
+        // popped next was the lowest-violation open node on every step
+        // and the search was best-first rather than the paper's
+        // DFS-with-occasional-jumps; the gate could not change anything.
+        //
+        // **The position is deliberate and is not the figure's line
+        // order.**  Q is a LIFO stack, so a promotion made where lines
+        // 18-19 sit -- before this node's two children are pushed at
+        // lines 24-26 -- is immediately buried under them and resurfaces
+        // only once their whole subtree has been explored: precisely the
+        // "inability to escape a wrong subtree without exploring it all"
+        // Sect. 5.1 gives as the jump's reason to exist, and why it says
+        // to backtrack *directly*.  Promoting after the pushes is what
+        // makes the promoted node the one popped next.
+        //
+        // Consequence worth naming: a node that reaches neither push --
+        // refuted by R, refuted by the sync, or offering no repair move
+        // -- never jumps.  The two refutation paths `continue` before
+        // `nodes_without_progress` is even touched; a node with no move
+        // increments it and leaves the jump to the next node that does
+        // push.
+        if (nodes_without_progress >= progress_threshold) {
+            backtrack_best_open(Q);
+            nodes_without_progress = 0;
+            ++st.best_open_jumps;
+        }
     }
 
     // Fig. 5 line 27 ends the search by backtracking to the best open node
-    // and returning the state E associated with it.  This is not that, and
-    // cannot be: in the complete-assignment variant a node does not carry
-    // an E of its own to return -- the state it stands for is the
-    // (solution, lhs_cache) pair that was live while it was expanded, and
-    // the only one of those still in hand is the snapshot line 17's
-    // improvement test took of the *best* state seen.  So the search ends
-    // by restoring that snapshot.  Two differences from line 27 follow and
-    // are deliberate: the state restored is the best node *visited*, not
-    // the best node still open, and with `repair_track_best` false no
-    // snapshot was ever taken, so nothing is restored and the caller keeps
-    // whatever assignment the last expanded node left behind.
+    // and returning the state E associated with it.  This restores the
+    // best state *visited* instead -- the (solution, lhs_cache) snapshot
+    // line 17's improvement test took -- and that is a **choice, not a
+    // necessity**: every `RepairSearchNode` carries a complete set of
+    // restore marks (`e_vs_mark`, `e_sol_mark`, `e_pq_mark`, `r_vs_mark`,
+    // `r_sol_mark`, `sol_undo_mark`, `lhs_undo_mark`), which is exactly
+    // what the head of the loop above replays on every iteration, so line
+    // 27 is implementable here verbatim.
+    //
+    // The reason for the choice is that the best visited state is at
+    // least as good, under the paper's own line-17 measure, and needs no
+    // re-walk: a node's recorded `violation` is the total violation of
+    // the state that pushed it, i.e. some visited node's post-move total,
+    // so every open node's violation is >= `best_viol` by construction.
+    // With `repair_track_best` false no snapshot was ever taken, so
+    // nothing is restored and the caller keeps whatever assignment the
+    // last expanded node left behind.
     if (repair_track_best && best_viol < total_viol) {
         solution.assign(best_solution.begin(), best_solution.end());
         lhs_cache.assign(best_lhs.begin(), best_lhs.end());

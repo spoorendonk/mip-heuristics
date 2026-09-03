@@ -296,10 +296,10 @@ TEST_CASE("RepairSearch: SyncChanges' flip is visible in E after a full search",
 
     bool feasible = repair_search(
         E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
-        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
-        /*repair_noise=*/0.75,
+        /*repair_iterations=*/50, /*repair_noise=*/0.75,
         /*repair_track_best=*/true,
-        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline);
+        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
+        /*stats=*/nullptr);
 
     REQUIRE(feasible);
     // Both rows genuinely satisfied.
@@ -363,10 +363,9 @@ TEST_CASE("RepairSearch: E and R are armed with the call's deadline", "[repair-s
 
     static_cast<void>(repair_search(E, solution, lhs_cache, col_lb.data(), col_ub.data(),
                                     row_lo.data(), row_hi.data(), /*repair_iterations=*/50,
-                                    /*progress_threshold=*/kRepairProgressThreshold,
                                     /*repair_noise=*/0.75, /*repair_track_best=*/true,
                                     /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
-                                    effort_out, scratch, deadline));
+                                    effort_out, scratch, deadline, /*stats=*/nullptr));
 
     CHECK(E.deadline().timer == &timer);
     CHECK(E.deadline().limit == 3600.0);
@@ -401,10 +400,13 @@ TEST_CASE("RepairSearch: E and R are armed with the call's deadline", "[repair-s
 // elsewhere in the tree.  On it:
 //
 //   threshold 1     -> jumps out of the dead subtree, reaches a feasible
-//                      assignment after 17 of the 50 permitted nodes;
+//                      assignment after 19 of the 50 permitted nodes;
 //   threshold 10^6  -> the gate can never fire, the search is the pure
 //                      DFS Fig. 5 describes, and it spends all 50 nodes
 //                      in the dead subtree without finding anything.
+//
+// The shipped default of 10 sits on the escaping side too (feasible at
+// node 29), which is what the third case below pins to the constant.
 //
 // Both halves are load-bearing, and each fails against a different
 // mutation.  Restoring the ungated call makes *both* thresholds fail to
@@ -453,7 +455,11 @@ struct StallRun {
     std::vector<double> lhs_cache;
 };
 
-StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt progress_threshold) {
+// `use_default` calls `repair_search` without a `progress_threshold`
+// argument, exactly as `fpr_core.cpp` does, so the third case below reads
+// the production value rather than a copy of it.
+StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt progress_threshold,
+                         bool use_default = false) {
     const double feastol = 1e-6;
     // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(StallModel::ncol, StallModel::nrow, m.ar_start.data(), m.ar_index.data(),
@@ -466,12 +472,19 @@ StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt pro
     Rng rng(42);
     Deadline deadline;  // never expires
     size_t effort_out = 0;
-    out.feasible = repair_search(E, out.solution, out.lhs_cache, m.col_lb.data(), m.col_ub.data(),
-                                 m.row_lo.data(), m.row_hi.data(), /*repair_iterations=*/50,
-                                 progress_threshold, /*repair_noise=*/0.75,
-                                 /*repair_track_best=*/true,
-                                 /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out,
-                                 scratch, deadline, &out.stats);
+    if (use_default) {
+        out.feasible = repair_search(
+            E, out.solution, out.lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+            m.row_hi.data(), /*repair_iterations=*/50, /*repair_noise=*/0.75,
+            /*repair_track_best=*/true, /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
+            effort_out, scratch, deadline, &out.stats);
+    } else {
+        out.feasible = repair_search(
+            E, out.solution, out.lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+            m.row_hi.data(), /*repair_iterations=*/50, /*repair_noise=*/0.75,
+            /*repair_track_best=*/true, /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
+            effort_out, scratch, deadline, &out.stats, progress_threshold);
+    }
     return out;
 }
 
@@ -496,6 +509,32 @@ TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-se
     CHECK(jumping.stats.best_open_jumps > 0);
     CHECK(jumping.stats.nodes_visited < dfs.stats.nodes_visited);
     REQUIRE(jumping.feasible);
+
+    // The value itself, which `docs/PARAMETERS.md` documents and nothing
+    // else checks: the two runs below agree by construction whatever it
+    // is, so without this a retune would move production's search
+    // silently.  Same reason `tests/test_smoke.cpp` pins the four effort
+    // defaults.
+    STATIC_REQUIRE(kRepairProgressThreshold == 10);
+
+    // The production call site names no threshold -- it takes the
+    // parameter's default -- so this is what `fpr_core.cpp` actually runs,
+    // and it must be `kRepairProgressThreshold`'s search and no other.
+    // Neighbouring values are all distinguishable here (9 -> 32 nodes,
+    // 10 -> 29, 11 -> 33, 3 -> 15), so moving the constant or the default
+    // moves this.
+    const StallRun production = run_stall_model(m, /*csc=*/csc, /*progress_threshold=*/0,
+                                                /*use_default=*/true);
+    const StallRun named = run_stall_model(m, csc, kRepairProgressThreshold);
+    CHECK(production.feasible == named.feasible);
+    CHECK(production.stats.nodes_visited == named.stats.nodes_visited);
+    CHECK(production.stats.best_open_jumps == named.stats.best_open_jumps);
+    CHECK(production.solution == named.solution);
+    // Between the two ends, and strictly inside the node budget, so the
+    // pin above is on a search that actually escapes.
+    CHECK(named.stats.best_open_jumps > 0);
+    CHECK(named.stats.nodes_visited < 50);
+    CHECK(named.feasible);
 
     // ... and what it returns really is feasible, checked against the rows
     // rather than trusting the return value.
@@ -583,8 +622,7 @@ TEST_CASE("MoveToDisjunction: a fixed general integer is moved by a bound branch
 
     const bool feasible = repair_search(
         E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
-        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
-        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
         /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
         &stats);
 
@@ -637,8 +675,7 @@ TEST_CASE("MoveToDisjunction: the interval shifts, it does not collapse to the m
 
     const bool feasible = repair_search(
         E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
-        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
-        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
         /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
         &stats);
 
@@ -684,8 +721,7 @@ TEST_CASE("MoveToDisjunction: a sync that fixes inside E's own bounds still move
 
     const bool feasible = repair_search(
         E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
-        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
-        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
         /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
         &stats);
 
@@ -767,8 +803,7 @@ TEST_CASE("MoveToDisjunction: the shifted interval is clipped into R's domain",
 
     const bool feasible = repair_search(
         E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
-        /*repair_iterations=*/50, /*progress_threshold=*/kRepairProgressThreshold,
-        /*repair_noise=*/0.75, /*repair_track_best=*/true,
+        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
         /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
         &stats);
 

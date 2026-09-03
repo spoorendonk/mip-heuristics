@@ -34,6 +34,15 @@ bool sync_changes(PropEngine& E, const PropEngine& R);
 // is the only steering the node loop has, and the two ends of its range
 // are two different searches -- which is what
 // tests/test_repair_search.cpp pins.
+//
+// It is the *default* of `repair_search`'s trailing parameter rather
+// than an argument the production call site spells out, so the one
+// production value lives in exactly one place and no call site can
+// disagree with it.  `stats` below carries no default for the opposite
+// reason (#118/#119's precedent): it is a per-caller choice, not a
+// tuning constant.  The value itself is pinned by the same test, since
+// the defaulted call and a `kRepairProgressThreshold` call agree by
+// construction whatever it is.
 inline constexpr HighsInt kRepairProgressThreshold = 10;
 
 // Optional instrumentation for `repair_search` (issue #130).  Nothing in
@@ -79,12 +88,13 @@ struct RepairSearchStats {
 // `Deadline` never expires, which is what a caller with no time limit
 // gets from `make_deadline`.
 // Returns true if a feasible solution was found (solution modified in-place).
-// `progress_threshold` is the stall gate above; production passes
-// `kRepairProgressThreshold`.  `stats`, when non-null, accumulates the
-// counters in `RepairSearchStats`.
+// `stats`, when non-null, accumulates the counters in
+// `RepairSearchStats`; production passes nullptr.  `progress_threshold`
+// is the stall gate above and is defaulted, so production names no value
+// -- see `kRepairProgressThreshold`.
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
-                   const double* row_hi, HighsInt repair_iterations, HighsInt progress_threshold,
-                   double repair_noise, bool repair_track_best, size_t max_effort, Rng& rng,
-                   size_t& effort_out, FprScratch& scratch, const Deadline& deadline,
-                   RepairSearchStats* stats = nullptr);
+                   const double* row_hi, HighsInt repair_iterations, double repair_noise,
+                   bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
+                   FprScratch& scratch, const Deadline& deadline, RepairSearchStats* stats,
+                   HighsInt progress_threshold = kRepairProgressThreshold);
