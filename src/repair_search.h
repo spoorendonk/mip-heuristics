@@ -5,6 +5,7 @@
 #include "util/HighsInt.h"
 
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 class PropEngine;
@@ -71,6 +72,30 @@ struct RepairSearchStats {
     // `fix` branch, which applies unconditionally.
     size_t bound_branch_moves = 0;
 };
+
+// One side of the repair disjunction (paper Sect. 5.1's
+// `MoveToDisjunction`), in the form `RepairSearchNode` carries and
+// `apply_branch_to_r` replays: `is_fix` selects `PropEngine::fix(val)`,
+// otherwise `is_lb` selects `tighten_lb(val)` over `tighten_ub(val)`.
+struct RepairBranch {
+    HighsInt var;
+    double val;
+    bool is_fix;
+    bool is_lb;
+};
+
+// MoveToDisjunction(move, E, R) (paper Sect. 5.1, last paragraph): turn
+// the repair move `var: cur_val -> move_val` into the two-branch
+// disjunction the repair tree searches over.  Exposed here for direct
+// unit testing for the same reason `sync_changes` above is (issue #125):
+// it is the paper's own named function, its arithmetic is what issue
+// #131 was about, and the outcome of a whole `repair_search` run cannot
+// separate its endpoints -- the point ends up clamped to whatever bound
+// propagation implies, which is usually the row's, not the branch's.
+// Every production caller reaches this through `repair_search` below.
+std::pair<RepairBranch, RepairBranch> move_to_disjunction(const PropEngine& E, const PropEngine& R,
+                                                          HighsInt var, double cur_val,
+                                                          double move_val);
 
 // Paper Fig. 5: RepairSearch with secondary propagation engine R.
 // E: main propagation engine (has partial assignment from Phase 2).

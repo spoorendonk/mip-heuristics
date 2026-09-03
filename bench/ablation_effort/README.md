@@ -199,6 +199,28 @@ re-measured once they land — roughly 9 h, one overnight window, chunked.
   be read as an upper bound on where the new binary's knee sits, not as
   an estimate of it.
 
+* **#131 — landed, and it moves one arm of the axis, narrowly.**
+  `MoveToDisjunction` now branches on the *shifted* interval, so a
+  RepairSearch node's two children impose bounds R does not already hold.
+  Before, both children re-imposed a bound inside R's own domain, which
+  either changed nothing or tightened R only to E's existing bound, and
+  `sync_changes` then had nothing to transfer: the node's second fixpoint
+  ran on a state the first had not moved. Now both children are real
+  restrictions, propagation on R has something to do, the sync usually
+  seeds a fixpoint on E as well, and the node can move the incumbent
+  point — so charged effort per RepairSearch node rises, and
+  `effort_spent()` gates the node loop on exactly that counter. The size
+  is unmeasured; the direction is not in doubt.
+
+  **Scope is one arm of eight, and FPR only.** `kRepairSearch` appears in
+  `kInitialFprConfigs[6]` and nowhere else: Scylla's four `kFprConfigs`
+  are `kDfs`/`kDfs`/`kDive`/`kDfsrep` and every `kLpArmTable` entry is
+  `kDfs`/`kDive`/`kDiveprop`, so neither heuristic's effort number moves
+  for this reason. Contrast #124, which moved three of the four. The
+  companion change in #130 (the stall jump now runs after the node's
+  children are pushed, so it actually escapes a subtree) changes which
+  nodes that arm visits, on the same arm and no other.
+
 **The precondition was: wait for every code issue above, then run it once.**
 This is a ~9 h overnight window on a bench machine, and each of those changes
 alters either what the binary does or how a dispatch is classified, so a run
@@ -223,7 +245,8 @@ issue, not a solver one, and does not bear on the probe.)
 Two *input changes* remain known and unfixed, and neither blocks — they change
 what the re-run will measure, so read its Scylla arm against them rather than
 against this table. #140 has landed and moves Scylla's effort axis (above), as
-does #124 for FPR, Scylla and `fpr_lp` (above).
+does #124 for FPR, Scylla and `fpr_lp`, and #130/#131 for FPR's one
+RepairSearch arm (all above).
 **#153 is open**: HiGHS runs full LP presolve on every one of the thousands of
 PDLP solves a dispatch performs, on a model whose structure never changes.
 Disabling it changes how many pump rounds fit inside a 30 s cap, and Scylla's

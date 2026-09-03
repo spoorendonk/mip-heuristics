@@ -7,6 +7,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
+#include <optional>
 #include <vector>
 
 // ===================================================================
@@ -550,28 +551,45 @@ TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-se
 }
 
 // ===================================================================
-// MoveToDisjunction uses the repair move (issue #131).
+// MoveToDisjunction (issue #131).
 //
-// Sect. 5.1 builds the non-binary disjunction from the *shifted*
-// interval [a, b] -- D translated by the repair move's shift s.
-// `move_to_disjunction` built it from D itself and never read the move
-// outside the binary branch, so both children re-imposed a bound R
-// already held, `tighten_lb`/`tighten_ub` took their no-tightening early
-// return, `sync_changes` found nothing to transfer, and the incumbent
-// point never moved: a RepairSearch node on a general-integer variable
-// cost two propagation fixpoints and moved nothing.
+// Sect. 5.1's last paragraph, verbatim: "In the non-binary case, a
+// repair move is always a shift s and the shifted interval [a, b] in D
+// is always contained in the interval [c, d] in Dr, by construction. We
+// compute the gaps to the left and to the right w.r.t. to [c, d], i.e.,
+// l = a - c and r = d - b, and the disjunction is then as follows: if
+// l <= r, we impose x_j <= b \/ x_j >= b, otherwise x_j <= a \/
+// x_j >= a."
 //
-// The three models below are one general integer each with a single row,
-// so `walksat_select_move` has exactly one violated row and exactly one
-// candidate -- every assertion is on the disjunction, with no dependence
-// on the RNG stream.  All three return `bound_branch_moves == 0` and no
-// solution against the pre-#131 code.
+// Two facts to pin, and the second is why these are unit tests on
+// `move_to_disjunction` rather than only end-to-end runs.
+//
+//   1. `[a, b]` is D *translated by the move's shift*, keeping D's
+//      width.  It used to be D itself, so the move never reached the
+//      disjunction for a non-binary column, both children re-imposed a
+//      bound R already held, and the node moved nothing.
+//   2. Each disjunction is a *point split*: both children name the same
+//      endpoint.  Reading the repeated endpoint as a typo and widening
+//      one side to the other endpoint puts the open interval (a, b) --
+//      which holds the move value whenever the point is interior to D --
+//      in neither child.
+//
+// An end-to-end `repair_search` run cannot separate the endpoints: the
+// incumbent point ends up clamped to whatever bound propagation implies
+// for the column, which is the row's bound and not the branch's, so two
+// different split points routinely produce the same solution.  That is
+// what makes the direct tests necessary; the runs below them then pin
+// that the corrected disjunction actually moves the point.
+//
+// `move_to_disjunction` is declared in `repair_search.h` for this, the
+// same way and for the same reason as `sync_changes`.
 // ===================================================================
 
 namespace {
 
-// x0 integer in [0, 10]; one row `x0 >= row_lo0`.  The caller sets up E
-// and the incumbent point, which is what distinguishes the three cases.
+// x0 integer in [0, 10]; one row `row_lo0 <= x0 <= row_hi0`.  The caller
+// sets up E and the incumbent point, which is what distinguishes the
+// cases.
 struct OneIntModel {
     // NOLINTNEXTLINE(readability-identifier-naming)
     static constexpr HighsInt ncol = 1;
@@ -583,27 +601,205 @@ struct OneIntModel {
     std::vector<double> col_lb = {0.0};
     std::vector<double> col_ub = {10.0};
     std::vector<double> row_lo;
-    std::vector<double> row_hi = {kHighsInf};
+    std::vector<double> row_hi;
     std::vector<HighsVarType> integrality = {HighsVarType::kInteger};
 
-    explicit OneIntModel(double lo) : row_lo({lo}) {}
+    explicit OneIntModel(double lo, double hi = kHighsInf) : row_lo({lo}), row_hi({hi}) {}
+
+    [[nodiscard]] CscMatrix csc() const {
+        return build_csc(ncol, nrow, ar_start, ar_index, ar_value);
+    }
 };
 
 }  // namespace
 
-TEST_CASE("MoveToDisjunction: a fixed general integer is moved by a bound branch",
+TEST_CASE("MoveToDisjunction: a decision-fixed binary still gets the flip pair",
           "[repair-search][disjunction]") {
-    // E has x0 decision-fixed to 2 (so `[lb, ub]` stays the wide [0, 10],
-    // as `fix()` leaves them) and the row wants x0 >= 7.  The single
-    // repair move is the shift s = +5, so the shifted interval is the
-    // singleton [7, 7]; against R's root domain [0, 10] that is
-    // l = 7 > r = 3, so the preferred branch is `x0 <= 7`, R propagates
-    // the row back to [7, 7], and `sync_changes` re-fixes E to 7.
-    const OneIntModel m(7.0);
-    CscMatrix csc =
-        build_csc(OneIntModel::ncol, OneIntModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+    // The binary case is the paper's own: "a repair move fixes x_j = b_j
+    // on the preferred branch, and the other side of the disjunction is
+    // simply x_j = 1 - b_j".  It is detected on the *raw* [lb, ub], which
+    // `fix()` leaves wide, so a decision-fixed binary keeps it -- the
+    // clique swap RepairSearch exists for depends on that.
+    OneIntModel m(0.0);
+    m.col_ub = {1.0};
+    CscMatrix csc = m.csc();
     const double feastol = 1e-6;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine R(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE(E.fix(0, 0.0));
 
+    auto [preferred, alternative] = move_to_disjunction(E, R, 0, /*cur_val=*/0.0,
+                                                        /*move_val=*/1.0);
+    CHECK(preferred.is_fix);
+    CHECK(preferred.val == Catch::Approx(1.0));
+    CHECK(alternative.is_fix);
+    CHECK(alternative.val == Catch::Approx(0.0));
+}
+
+TEST_CASE("MoveToDisjunction: the split is a point split, at one endpoint of [a, b]",
+          "[repair-search][disjunction]") {
+    // D = [2, 4] unfixed, point 3, move to 7: s = +4, so the shifted
+    // interval is [6, 8] -- width 2 -- against R's root domain [0, 10].
+    // l = 6 > r = 2, so the paper splits at a = 6.
+    //
+    // Three things are wrong with any other answer, and each is a
+    // separate CHECK below.  A disjunction built from D rather than from
+    // the shifted interval names 2 and 4 (that is the pre-#131 code).
+    // One built from [move_val, move_val] names 7 (that is the interval
+    // shifted but collapsed to a point, losing D's width).  And a
+    // disjunction whose two children name *different* endpoints leaves
+    // the open interval (6, 8) -- which holds the move value 7 -- in
+    // neither child.
+    const OneIntModel m(7.0);
+    CscMatrix csc = m.csc();
+    const double feastol = 1e-6;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine R(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE(E.tighten_lb(0, 2.0));
+    REQUIRE(E.tighten_ub(0, 4.0));
+
+    auto [preferred, alternative] = move_to_disjunction(E, R, 0, /*cur_val=*/3.0,
+                                                        /*move_val=*/7.0);
+    // A point split: same value, opposite senses, neither a fix.
+    CHECK(preferred.val == Catch::Approx(alternative.val));
+    CHECK_FALSE(preferred.is_fix);
+    CHECK_FALSE(alternative.is_fix);
+    CHECK(preferred.is_lb != alternative.is_lb);
+    // Split at a = D.lb + s = 6, which is neither D's own 2 nor the move
+    // value 7.
+    CHECK(preferred.val == Catch::Approx(6.0));
+    // l > r, so the preferred child is the one holding [a, b]: x0 >= a.
+    CHECK(preferred.is_lb);
+    CHECK_FALSE(alternative.is_lb);
+}
+
+TEST_CASE("MoveToDisjunction: l <= r splits at b instead, with the senses swapped",
+          "[repair-search][disjunction]") {
+    // Same column, mirrored: D = [6, 8] unfixed, point 7, move to 3, so
+    // s = -4 and the shifted interval is [2, 4].  Now l = 2 <= r = 6, so
+    // the split is at b = 4 and the child holding [a, b] is x0 <= b.
+    // Together with the case above this pins both arms of the `l <= r`
+    // test, and that the preferred sense follows the arm rather than
+    // being fixed.
+    const OneIntModel m(0.0, 3.0);
+    CscMatrix csc = m.csc();
+    const double feastol = 1e-6;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine R(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE(E.tighten_lb(0, 6.0));
+    REQUIRE(E.tighten_ub(0, 8.0));
+
+    auto [preferred, alternative] = move_to_disjunction(E, R, 0, /*cur_val=*/7.0,
+                                                        /*move_val=*/3.0);
+    CHECK(preferred.val == Catch::Approx(alternative.val));
+    CHECK(preferred.val == Catch::Approx(4.0));
+    CHECK_FALSE(preferred.is_lb);
+    CHECK(alternative.is_lb);
+}
+
+TEST_CASE("MoveToDisjunction: the shifted interval is clipped into R's domain",
+          "[repair-search][disjunction]") {
+    // Sect. 5.1 asserts [a, b] is inside [c, d] "by construction"; here
+    // it is not, because `walksat_select_move` clips a shift to the
+    // column's structural bounds and not to R's domain.  D is the
+    // singleton {8} of a decision-fixed column and the point has drifted
+    // to 0 -- which is what `apply_move` does, since it writes `solution`
+    // and never E -- so a move to 3 is a shift of +3 and the shifted
+    // interval is {11}, outside R's [0, 10].
+    //
+    // Clipped, the split is at 10 and both children are real bound
+    // changes.  Unclipped it is at 11, where `x0 >= 11` is refuted on the
+    // spot and `x0 <= 11` is a bound R already satisfies, so the node
+    // moves nothing.
+    const OneIntModel m(3.0);
+    CscMatrix csc = m.csc();
+    const double feastol = 1e-6;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    PropEngine R(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE(E.fix(0, 8.0));
+
+    auto [preferred, alternative] = move_to_disjunction(E, R, 0, /*cur_val=*/0.0,
+                                                        /*move_val=*/3.0);
+    CHECK(preferred.val == Catch::Approx(10.0));
+    CHECK(alternative.val == Catch::Approx(10.0));
+    CHECK(preferred.is_lb);
+}
+
+// ===================================================================
+// ... and the same disjunction, driving a whole search.
+//
+// One general integer and one row, so `walksat_select_move` has exactly
+// one violated row and exactly one candidate: every assertion below is
+// on the disjunction, with no dependence on the RNG stream.  All three
+// return `bound_branch_moves == 0` and no solution against the pre-#131
+// code, which never let the move reach the disjunction at all.
+// ===================================================================
+
+namespace {
+
+// One `repair_search` run on `m` from the given E state and point.
+struct OneIntRun {
+    bool feasible = false;
+    RepairSearchStats stats;
+    std::vector<double> solution;
+    std::vector<double> lhs_cache;
+};
+
+OneIntRun run_one_int(const OneIntModel& m, PropEngine& e_engine, const CscMatrix& csc,
+                      double point) {
+    static_cast<void>(csc);
+    OneIntRun out;
+    out.solution = {point};
+    out.lhs_cache = {point};
+    FprScratch scratch;
+    Rng rng(42);
+    Deadline deadline;  // never expires
+    size_t effort_out = 0;
+    out.feasible = repair_search(e_engine, out.solution, out.lhs_cache, m.col_lb.data(),
+                                 m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
+                                 /*repair_iterations=*/50, /*repair_noise=*/0.75,
+                                 /*repair_track_best=*/true,
+                                 /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out,
+                                 scratch, deadline, &out.stats);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("RepairSearch: a fixed general integer is moved by a bound branch",
+          "[repair-search][disjunction]") {
+    // x0 decision-fixed to 2 (so `[lb, ub]` stays the wide [0, 10]) and
+    // the row wants x0 >= 7.  The one move is the shift +5, the shifted
+    // interval is the singleton [7, 7], l = 7 > r = 3, so the split is at
+    // 7 and the preferred child `x0 >= 7` drives R to [7, 10];
+    // `sync_changes` then re-fixes E, which is what moves the point.
+    const OneIntModel m(7.0);
+    CscMatrix csc = m.csc();
+    const double feastol = 1e-6;
     // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
                  m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
@@ -612,51 +808,25 @@ TEST_CASE("MoveToDisjunction: a fixed general integer is moved by a bound branch
     REQUIRE(E.var(0).lb == Catch::Approx(0.0));   // wide, as `fix()` leaves them
     REQUIRE(E.var(0).ub == Catch::Approx(10.0));  // -- which is why D is the value
 
-    std::vector<double> solution = {2.0};
-    std::vector<double> lhs_cache = {2.0};
-    FprScratch scratch;
-    Rng rng(42);
-    Deadline deadline;
-    size_t effort_out = 0;
-    RepairSearchStats stats;
-
-    const bool feasible = repair_search(
-        E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
-        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
-        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
-        &stats);
-
-    REQUIRE(feasible);
-    CHECK(stats.bound_branch_moves == 1);
-    CHECK(solution[0] == Catch::Approx(7.0));
-    CHECK(lhs_cache[0] == Catch::Approx(7.0));
-    // E agrees: the sync is what moved the point, so it must have moved
-    // E's own domain first.
+    const OneIntRun r = run_one_int(m, E, csc, /*point=*/2.0);
+    REQUIRE(r.feasible);
+    CHECK(r.stats.bound_branch_moves == 1);
+    CHECK(r.solution[0] == Catch::Approx(7.0));
+    CHECK(r.lhs_cache[0] == Catch::Approx(7.0));
     CHECK(E.var(0).fixed);
     CHECK(E.var(0).val == Catch::Approx(7.0));
 }
 
-TEST_CASE("MoveToDisjunction: the interval shifts, it does not collapse to the move value",
+TEST_CASE("RepairSearch: an unfixed general integer is moved by a bound branch",
           "[repair-search][disjunction]") {
-    // E has x0 unfixed on D = [2, 4] and the point at 3; the row wants
-    // x0 >= 7, so the single move is s = +4 and the shifted interval is
-    // [6, 8] -- width 2, not the singleton [7, 7].  That distinction is
-    // the whole assertion: against R's [0, 10],
-    //
-    //   [6, 8] -> l = 6 > r = 2 -> `x0 <= 6` first (R propagates the row
-    //             to lb 7 against ub 6 and the child is refuted), then
-    //             `x0 >= 8` -> R = [8, 10], disjoint from D, so
-    //             `sync_changes` fixes x0 to 8;
-    //   [7, 7] -> l = 7 > r = 3 -> `x0 <= 7` -> R = [7, 7] -> x0 fixed
-    //             to 7 on the *first* child.
-    //
-    // So an implementation that used the move value in place of the
-    // shifted interval returns 7 here, and this test reads 8.
+    // The disjunction of the point-split test above, run: D = [2, 4],
+    // point 3, row x0 >= 7, split at 6, preferred `x0 >= 6`.  R
+    // propagates that to [7, 10], which is disjoint from D, so
+    // `sync_changes` takes its disjoint case and fixes x0 to R's nearer
+    // endpoint.
     const OneIntModel m(7.0);
-    CscMatrix csc =
-        build_csc(OneIntModel::ncol, OneIntModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+    CscMatrix csc = m.csc();
     const double feastol = 1e-6;
-
     // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
                  m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
@@ -665,159 +835,71 @@ TEST_CASE("MoveToDisjunction: the interval shifts, it does not collapse to the m
     REQUIRE(E.tighten_ub(0, 4.0));
     REQUIRE_FALSE(E.var(0).fixed);
 
-    std::vector<double> solution = {3.0};
-    std::vector<double> lhs_cache = {3.0};
-    FprScratch scratch;
-    Rng rng(42);
-    Deadline deadline;
-    size_t effort_out = 0;
-    RepairSearchStats stats;
-
-    const bool feasible = repair_search(
-        E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
-        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
-        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
-        &stats);
-
-    REQUIRE(feasible);
-    CHECK(stats.bound_branch_moves == 1);
-    CHECK(solution[0] == Catch::Approx(8.0));
+    const OneIntRun r = run_one_int(m, E, csc, /*point=*/3.0);
+    REQUIRE(r.feasible);
+    CHECK(r.stats.bound_branch_moves == 1);
+    CHECK(r.solution[0] == Catch::Approx(7.0));
     CHECK(E.var(0).fixed);
-    CHECK(E.var(0).val == Catch::Approx(8.0));
+    CHECK(E.var(0).val == Catch::Approx(7.0));
 }
 
-TEST_CASE("MoveToDisjunction: a sync that fixes inside E's own bounds still moves the point",
+TEST_CASE("RepairSearch: a sync that fixes inside E's own bounds still moves the point",
           "[repair-search][disjunction]") {
-    // E leaves x0 unfixed on the full [0, 10] with the point at 0, and
-    // the row wants x0 >= 8.  The move is s = +8, so the shifted interval
-    // is [8, 18], clipped into R's [0, 10] as [8, 10]: l = 8 > r = 0, the
-    // preferred branch is `x0 <= 8`, R propagates the row to [8, 8], and
-    // `sync_changes` takes its *intersection* case -- D and Dr overlap in
-    // the single point 8 -- which commits through `PropEngine::fix`.
+    // x0 unfixed on the full [0, 10], point 0, and the row is the
+    // equality x0 = 8.  The move is +8, the shifted interval [8, 18]
+    // clips to [8, 10], l = 8 > r = 0, so the preferred child is
+    // `x0 >= 8`; R propagates the equality to [8, 8], and that intersects
+    // D in the single point 8, which is `sync_changes`' intersection case
+    // -- committed through `PropEngine::fix`, which leaves `[lb, ub]` at
+    // [0, 10].
     //
-    // `fix()` leaves `[lb, ub]` at [0, 10], so a clamp reading the raw
-    // bounds finds 0 already inside them and drops the move even though E
-    // is fixed at 8.  The clamp reads the interval E holds instead, which
-    // is what this test pins; the other two cases reach E through
-    // `refix`, which narrows, and cannot see the difference.
-    const OneIntModel m(8.0);
-    CscMatrix csc =
-        build_csc(OneIntModel::ncol, OneIntModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+    // So a clamp reading the raw bounds finds the point 0 already inside
+    // them and drops the move even though E is fixed at 8.  The clamp
+    // reads the interval E holds instead, which is what this case pins;
+    // the two above reach E through `refix`, which narrows, and cannot
+    // see the difference.
+    const OneIntModel m(8.0, 8.0);
+    CscMatrix csc = m.csc();
     const double feastol = 1e-6;
-
     // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
                  m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
                  m.row_hi.data(), m.integrality.data(), feastol);
     REQUIRE_FALSE(E.var(0).fixed);
 
-    std::vector<double> solution = {0.0};
-    std::vector<double> lhs_cache = {0.0};
-    FprScratch scratch;
-    Rng rng(42);
-    Deadline deadline;
-    size_t effort_out = 0;
-    RepairSearchStats stats;
-
-    const bool feasible = repair_search(
-        E, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
-        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
-        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
-        &stats);
-
-    REQUIRE(feasible);
-    CHECK(stats.bound_branch_moves == 1);
-    CHECK(solution[0] == Catch::Approx(8.0));
+    const OneIntRun r = run_one_int(m, E, csc, /*point=*/0.0);
+    REQUIRE(r.feasible);
+    CHECK(r.stats.bound_branch_moves == 1);
+    CHECK(r.solution[0] == Catch::Approx(8.0));
     CHECK(E.var(0).fixed);
     CHECK(E.var(0).val == Catch::Approx(8.0));
     CHECK(E.var(0).lb == Catch::Approx(0.0));   // `fix()` left them wide ...
     CHECK(E.var(0).ub == Catch::Approx(10.0));  // ... which is the point of this case
 }
 
-// ===================================================================
-// The shifted interval is clipped back into R's domain (issue #131).
-//
-// Sect. 5.1 states the containment "the shifted interval [a, b] in D is
-// always contained in the interval [c, d] in Dr, by construction" as a
-// precondition.  It does not hold here as written: `walksat_select_move`
-// clips a shift to the column's *structural* bounds, not to R's current
-// domain, so the translate can leave [c, d] -- and then one branch is a
-// bound R already satisfies (a no-op) while the other is refuted
-// outright, so the node makes no progress at all.  Clipping [a, b] back
-// into [c, d] restores the precondition and turns both branches back
-// into real restrictions.
-//
-// This only bites below the root, since R starts at the structural
-// bounds and a shift cannot leave *those*: it needs an ancestor branch
-// to have narrowed R first.  That makes it out of reach of the
-// single-row, single-candidate models above -- reaching depth two needs
-// enough rows for `walksat_select_move` to have a choice of violated
-// row, and a choice is drawn from `rng`.  The model below is therefore a
-// characterization test, found by sweeping random small integer models
-// for one where the clip changes the outcome; with it, x0 is moved and
-// every row ends satisfied, and without it no bound branch moves
-// anything and the search returns nothing.
-// ===================================================================
-
-TEST_CASE("MoveToDisjunction: the shifted interval is clipped into R's domain",
+TEST_CASE("RepairSearch: the clip decides which node lands the move",
           "[repair-search][disjunction]") {
-    // 7 general integers on [0, 6], two >= rows; x6 is in no row.
-    //   r0: 2*x0 + 2*x1 + 2*x2 - 3*x3 >= 11
-    //   r1: 3*x0 + 2*x3 -   x4 + 3*x5 >= 23
-    const HighsInt ncol = 7;
-    const HighsInt nrow = 2;
-    std::vector<HighsInt> ar_start = {0, 4, 8};
-    std::vector<HighsInt> ar_index = {0, 1, 2, 3, 0, 3, 4, 5};
-    std::vector<double> ar_value = {2.0, 2.0, 2.0, -3.0, 3.0, 2.0, -1.0, 3.0};
-    std::vector<double> col_lb(ncol, 0.0);
-    std::vector<double> col_ub(ncol, 6.0);
-    std::vector<double> row_lo = {11.0, 23.0};
-    std::vector<double> row_hi = {kHighsInf, kHighsInf};
-    std::vector<HighsVarType> integrality(ncol, HighsVarType::kInteger);
-    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
+    // The clip case above, run.  x0 decision-fixed to 8, point drifted to
+    // 0, row x0 >= 3: the shifted interval is {11}, outside R's [0, 10].
+    //
+    // Clipped, the split is at 10, the preferred child `x0 >= 10` drives
+    // R to [10, 10], the sync re-fixes E, and the second node ends the
+    // search at 10.  Unclipped the split is at 11: `x0 >= 11` is refuted
+    // outright and `x0 <= 11` is a bound R already satisfies, so the
+    // first two nodes move nothing and the search only lands -- on 8, out
+    // of E's own singleton -- at the third.
+    const OneIntModel m(3.0);
+    CscMatrix csc = m.csc();
     const double feastol = 1e-6;
-
-    // E as a dive would leave it: a mix of one-sided tightenings and two
-    // decision fixes, so D is a strict subinterval on most columns.
     // NOLINTNEXTLINE(readability-identifier-naming)
-    PropEngine E(ncol, nrow, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
-                 col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), feastol);
-    REQUIRE(E.tighten_lb(0, 2.0));
-    REQUIRE(E.fix(1, 2.0));
-    REQUIRE(E.tighten_ub(2, 4.0));
-    REQUIRE(E.tighten_ub(3, 4.0));
-    REQUIRE(E.tighten_lb(4, 2.0));
-    REQUIRE(E.fix(5, 2.0));
-    REQUIRE(E.tighten_ub(6, 4.0));
+    PropEngine E(OneIntModel::ncol, OneIntModel::nrow, m.ar_start.data(), m.ar_index.data(),
+                 m.ar_value.data(), csc, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
+                 m.row_hi.data(), m.integrality.data(), feastol);
+    REQUIRE(E.fix(0, 8.0));
 
-    // The incumbent point, and its row activities: r0 = 7 (needs 11),
-    // r1 = 18 (needs 23), so both rows are violated going in.
-    std::vector<double> solution = {3.0, 2.0, 3.0, 3.0, 3.0, 2.0, 3.0};
-    std::vector<double> lhs_cache = {7.0, 18.0};
-
-    FprScratch scratch;
-    Rng rng(42);
-    Deadline deadline;
-    size_t effort_out = 0;
-    RepairSearchStats stats;
-
-    const bool feasible = repair_search(
-        E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
-        /*repair_iterations=*/50, /*repair_noise=*/0.75, /*repair_track_best=*/true,
-        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
-        &stats);
-
-    REQUIRE(feasible);
-    CHECK(stats.bound_branch_moves == 1);
-    CHECK(solution[0] == Catch::Approx(6.0));
-    // Feasible against the rows themselves, not just per the return value.
-    for (HighsInt i = 0; i < nrow; ++i) {
-        double lhs = 0.0;
-        for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
-            lhs += ar_value[k] * solution[ar_index[k]];
-        }
-        INFO("row " << i);
-        CHECK(lhs >= row_lo[i] - feastol);
-        CHECK(lhs <= row_hi[i] + feastol);
-    }
+    const OneIntRun r = run_one_int(m, E, csc, /*point=*/0.0);
+    REQUIRE(r.feasible);
+    CHECK(r.stats.bound_branch_moves == 1);
+    CHECK(r.stats.nodes_visited == 2);
+    CHECK(r.solution[0] == Catch::Approx(10.0));
 }

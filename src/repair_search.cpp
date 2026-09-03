@@ -136,76 +136,77 @@ bool sync_changes(PropEngine& E, const PropEngine& R) {
     return true;
 }
 
-namespace {
-
-// MoveToDisjunction (paper p.128).
-struct Branch {
-    HighsInt var;
-    double val;
-    bool is_fix;
-    bool is_lb;
-};
-
-// Sect. 5.1, last paragraph: "In the non-binary case, a repair move is
-// always a shift s and the shifted interval [a, b] in D is always
-// contained in the interval [c, d] in Dr, by construction.  We compute
-// the gaps to the left and to the right w.r.t. to [c, d], i.e., l = a - c
-// and r = d - b, and the disjunction is then as follows: if l <= r, we
-// impose x_j <= b \/ x_j >= b, otherwise x_j <= a \/ x_j >= a."
+// MoveToDisjunction (paper Sect. 5.1, last paragraph, verbatim):
 //
-// Two readings are needed to turn that into code, and only one of them
-// is #131's subject.
+//   "In the non-binary case, a repair move is always a shift s and the
+//    shifted interval [a, b] in D is always contained in the interval
+//    [c, d] in Dr, by construction. We compute the gaps to the left and
+//    to the right w.r.t. to [c, d], i.e., l = a - c and r = d - b, and
+//    the disjunction is then as follows: if l <= r, we impose
+//    x_j <= b \/ x_j >= b, otherwise x_j <= a \/ x_j >= a."
 //
-// (1) **`[a, b]` is the SHIFTED interval, and that is the fix (#131).**
-//     This used to read `E.var(var).lb/.ub` -- the node's *current*
-//     domain -- so the chosen move reached the disjunction only through
-//     the binary branch and was ignored entirely for every other column.
-//     The two branches then said "tighten to a bound R already has",
-//     which `tighten_lb`/`tighten_ub` answer with their no-tightening
-//     early return; `sync_changes` therefore had nothing to transfer and
-//     the incumbent point never moved.  A RepairSearch node on a
-//     general-integer variable cost two propagation fixpoints and moved
-//     nothing.  What shifts is the *interval*, not the value -- Sect. 5,
-//     "in general we do not shift just values, but intervals" -- so the
-//     whole of D translates by `s`, keeping its width, which is what
-//     separates this from `[move_val, move_val]`.  A fixed column's D is
-//     the singleton at its value, because `fix()` leaves `[lb, ub]` wide
-//     (see `PropEngine::shift_domain`, which reads D the same way).
+// Both sides of each disjunction naming the *same* endpoint is not a
+// printing error, and reading it as one is what issue #131's first
+// attempt got wrong.  `x_j <= v \/ x_j >= v` is a complete point split:
+// it covers the whole line, it leaves the shifted interval intact in
+// exactly one child, and choosing *which* endpoint to split at is the
+// only thing the two gaps are computed for -- the split lands on the
+// endpoint whose far side is the *smaller* gap, so the child that does
+// not hold [a, b] gets the larger one.  The overlapping reading this
+// code shipped first (`x <= b \/ x >= a` when l <= r, `x <= a \/ x >= b`
+// otherwise) turns the second case into a cover with a **hole**: since
+// a <= b, the open interval (a, b) is in neither child, and the move
+// value sits exactly there whenever the incumbent point is interior to
+// D -- so the branch that was supposed to encode the repair move
+// excluded it from both children.
 //
-//     The paper's containment precondition does not hold here as stated:
-//     `walksat_select_move` clips a shift to the column's *structural*
-//     bounds, not to R's current domain, so the translate can leave
-//     [c, d].  Clipping [a, b] back into [c, d] restores the
-//     precondition, keeps both gaps non-negative -- a negative gap would
-//     decide the `l <= r` test on a case the paper does not contemplate
-//     -- and keeps both branch values inside R's domain, where
-//     `tighten_lb`/`tighten_ub` can act on them instead of no-opping or
-//     failing outright.
+// Which child is `preferred` is not in the text.  We take the one that
+// holds [a, b] -- `x <= b` when the split is at b, `x >= a` when it is
+// at a -- by analogy with the binary case, where the paper does say the
+// preferred branch is the move itself ("a repair move fixes x_j = b_j on
+// the preferred branch, and the other side of the disjunction is simply
+// x_j = 1 - b_j").
 //
-// (2) **Which side is preferred.** As printed, both sides of the
-//     disjunction use the same endpoint, which reads as a typo; this
-//     code's repair of it is preferred `x <= b` / alternative `x >= a`,
-//     mirrored in the else branch.  #131 deliberately leaves that
-//     reading alone.  What it decides is the *order* the two children
-//     are tried in, not whether the move can happen: a bound branch
-//     moves the incumbent point only through `sync_changes`, which needs
-//     R's domain to end up excluding that point -- and that domain is
-//     the branch plus whatever propagating it implies, so either child
-//     can be the one that lands the move.  Both are pushed, so both are
-//     reachable either way.
+// **`[a, b]` is the SHIFTED interval (issue #131).**  This used to read
+// `E.var(var).lb/.ub` -- the node's *current* domain -- so the chosen
+// move reached the disjunction only through the binary branch and was
+// ignored entirely for every other column.  Both branches then said
+// "tighten to a bound R already has", `sync_changes` had nothing to
+// transfer, and a RepairSearch node on a general-integer variable cost
+// two propagation fixpoints and moved nothing.  What shifts is the
+// *interval*, not the value -- Sect. 5, "in general we do not shift just
+// values, but intervals" -- so the whole of D translates by `s`, keeping
+// its width, which is what separates this from `[move_val, move_val]`.
+// A fixed column's D is the singleton at its value, because `fix()`
+// leaves `[lb, ub]` wide (see `PropEngine::shift_domain`, which reads D
+// the same way).
+//
+// **Deviation: the containment is asserted by the paper and is not true
+// here.**  Sect. 5.1 has [a, b] inside [c, d] "by construction", but
+// `walksat_select_move` clips a shift to the column's *structural*
+// bounds rather than to R's current domain, so the translate can leave
+// [c, d] -- and then the split point lies outside R's domain, where one
+// child is a bound R already satisfies and the other is refuted on the
+// spot, so the node moves nothing.  Clipping [a, b] back into [c, d]
+// restores the paper's precondition; it is our repair of a gap in the
+// reference, not something the reference asks for.  Reachable only when
+// the width is zero and the incumbent point has drifted off a fixed
+// column's value (which `apply_move` does, since it writes `solution`
+// and not E): for a positive width, `width(D) <= width(Dr)` -- which
+// `sync_changes` maintains and a shift preserves -- forces the endpoint
+// the gap test selects to be the one still inside [c, d].
 //
 // The binary test below stays on the *raw* `[lb, ub] == [0, 1]`, not on
 // D: a decision-fixed binary keeps wide bounds and must still take the
-// flip branch (`fix` to `move_val` vs `fix` to `1 - move_val`), which is
-// what makes the paper's clique swap available.  A binary whose domain
-// has been narrowed to a singleton -- by AC-3 auto-fix, or by
-// `PropEngine::refix` since #125 -- still falls through to the
-// gap-split.  It is no longer vacuous there, since the shifted interval
-// is the singleton at the flipped value and one of the two branches
-// therefore forces the flip, but it does spend a node on the other
-// branch, which the flip form would not.
-std::pair<Branch, Branch> move_to_disjunction(const PropEngine& E, const PropEngine& R,
-                                              HighsInt var, double cur_val, double move_val) {
+// flip branch, which is what makes the paper's clique swap available.  A
+// binary whose domain has been narrowed to a singleton -- by AC-3
+// auto-fix, or by `PropEngine::refix` since #125 -- falls through to the
+// point split, which fixes it to the flipped value on one child and
+// re-imposes its current value on the other: correct, but a node dearer
+// than the flip form.
+std::pair<RepairBranch, RepairBranch> move_to_disjunction(const PropEngine& E, const PropEngine& R,
+                                                          HighsInt var, double cur_val,
+                                                          double move_val) {
     const VarState& ev = E.var(var);
 
     // Binary: fix to move_val vs fix to 1-move_val
@@ -231,14 +232,16 @@ std::pair<Branch, Branch> move_to_disjunction(const PropEngine& E, const PropEng
     const double right_gap = d - b;
 
     if (left_gap <= right_gap) {
-        // Paper: x_j ≤ b ∨ x_j ≥ a
-        return {{var, b, false, false},  // tighten_ub — preferred
-                {var, a, false, true}};  // tighten_lb — alternative
+        // "if l <= r, we impose x_j <= b \/ x_j >= b"
+        return {{var, b, false, false},  // tighten_ub(b) — holds [a, b]
+                {var, b, false, true}};  // tighten_lb(b) — the larger gap
     }
-    // Paper: x_j ≤ a ∨ x_j ≥ b
-    return {{var, a, false, false},  // tighten_ub(a) — preferred
-            {var, b, false, true}};  // tighten_lb(b) — alternative
+    // "otherwise x_j <= a \/ x_j >= a"
+    return {{var, a, false, true},    // tighten_lb(a) — holds [a, b]
+            {var, a, false, false}};  // tighten_ub(a) — the larger gap
 }
+
+namespace {
 
 // BacktrackBestOpen: swap the lowest-violation node to the back of Q.
 void backtrack_best_open(std::vector<RepairSearchNode>& Q) {
