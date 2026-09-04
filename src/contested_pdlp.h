@@ -201,6 +201,23 @@ public:
     // as for `tolerances_for_test` above, and for the same reason.
     double run_time_for_test() const;
 
+    // The presolve status the wrapped instance's last `run()` left behind
+    // (#153).  `presolve` is written `off` in the constructor, so this must
+    // read `HighsPresolveStatus::kNotPresolved` after every solve — the
+    // only way, from outside the class, to see that the pump's warm start
+    // is reaching cuPDLP-C in the full column space rather than as a
+    // prefix truncated onto a reduced LP's columns.
+    //
+    // `getModelPresolveStatus()` stands after `run()` returns:
+    // `clearPresolve` runs at the head of the next `run`/`presolve` or on a
+    // model-modifying call, and `changeColsCost` precedes `run` inside
+    // `solve_locked`, so this reports the last solve.
+    //
+    // THREAD CONTRACT: dispatching-thread only, with no solve in flight —
+    // as for `tolerances_for_test` and `run_time_for_test` above, and for
+    // the same reason.
+    HighsPresolveStatus presolve_status_for_test() const;
+
     // Exposed for tests: peak number of concurrent solves observed.
     // Must always be <= 1 (the one-solve-in-flight invariant).
     int peak_in_flight() const { return peak_in_flight_.load(std::memory_order_relaxed); }

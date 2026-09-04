@@ -728,13 +728,21 @@ written, so the two tolerances the paper names sat at the HiGHS default
 `kDefaultKktTolerance` (1e-7) on every solve and the schedule bought only
 the gap term.
 
+**LP presolve is off on the shared instance** (#153), so the paragraphs
+below describe the evidence that produced the `kkt_tolerance` route rather
+than a live description of the code path. `ContestedPdlp`'s constructor
+writes `presolve` = `off`; see "Why the shared PDLP instance never
+presolves" at the end of this section for the reason, which is the pump's
+warm start and not the cost of presolving.
+
 **Why the `kkt_tolerance` route and not the three options directly.** The
-two feasibility options are not private to the PDLP solve: `Highs::run`
-always presolves the wrapped instance, and `HPresolve` reads both verbatim
-in roughly a hundred places. At `ε = 0.01` that changes what presolve
-*does* — `weaklyDominatedCol` fixes every column whose dual bound falls in
-the widened band to a bound — so writing them solves a different LP rather
-than the same LP loosely. Measured presolve dimensions, `highs --solver=pdlp`:
+two feasibility options are not private to the PDLP solve. When this
+evidence was gathered, `Highs::run` presolved the wrapped instance on every
+solve, and `HPresolve` reads both options verbatim in roughly a hundred
+places. At `ε = 0.01` that changes what presolve *does* —
+`weaklyDominatedCol` fixes every column whose dual bound falls in the
+widened band to a bound — so writing them solved a different LP rather than
+the same LP loosely. Measured presolve dimensions, `highs --solver=pdlp`:
 
 | instance | default | `primal=dual=1e-2` | `kkt_tolerance=1e-2` |
 |---|---|---|---|
@@ -744,14 +752,28 @@ than the same LP loosely. Measured presolve dimensions, `highs --solver=pdlp`:
 `kkt_tolerance` is resolved into the feasibility thresholds only as
 function-local variables inside HiGHS's KKT checks; nothing writes it back
 into the option fields `HPresolve` reads. So it reaches cuPDLP-C's three
-parameters and leaves LP presolve bit-identical.
+parameters and left LP presolve bit-identical.
+
+**Two of the route's three reasons survive presolve being off, and they are
+enough.** The "writing those two options presolves a different LP" argument
+is now moot — presolve does not run. What stands is (1) KKT-consistency,
+the paragraph two below: HiGHS's own KKT accounting resolves five of its
+thresholds from `kkt_tolerance`, so writing that one constant keeps the
+accounting consistent with the solve, and three explicit writes would give
+that up for nothing; and (2) detectability, immediately below. The route is
+kept on those, not re-derived from presolve.
 
 The cost of the route is that it depends on an upstream "if changed from
 its default" branch, which is the cross-version fragility the HiGHS-bump
 guidance warns about. That is why `tests/test_contested_pdlp.cpp` asserts
 the *effect* (a looser `ε` takes strictly fewer PDLP iterations) and not
 just the option name: a removed or re-conditioned branch fails the suite
-instead of silently reverting the pump to fixed tolerances.
+instead of silently reverting the pump to fixed tolerances. Its recorded
+flugpl iteration counts moved when presolve went off — loose / tight /
+untouched are 200 / 840 / 760 where they were 80 / 1160 / 840 on the
+reduced LP — because the LP being solved is now the unreduced one. The
+ordering is what that case asserts; the magnitudes are recorded beside it
+so a future move is read as a change of LP and not as a regression.
 
 One consequence to know: HiGHS's own KKT accounting also resolves five of
 its thresholds from `kkt_tolerance`, and it demotes `kOptimal` to
@@ -767,6 +789,76 @@ a chain on `kError` and `kInfeasible` alone.
 
 `kkt_tolerance`'s domain is `[1e-10, kHighsInf]`, so every value the
 schedule produces is in range and nothing is clamped.
+
+### Why the shared PDLP instance never presolves
+
+`ContestedPdlp`'s constructor writes `presolve` = `off` (#153). The reason
+is **the pump's warm start**, not the cost of presolving.
+
+`Highs::optimizeModel` cannot take its presolve-skip branch under
+`solver=pdlp` — the branch is `(unconstrained_lp || has_basis ||
+without_presolve) && solver_will_use_basis`, and `solver_will_use_basis` is
+false for anything but `simplex` and `choose` — so at default options every
+one of the thousands of solves a dispatch performs ran `runPresolve`. On
+`kReduced` HiGHS then calls `solveLp(reduced_lp, ...)`, which builds its
+solver object around the **full-model** solution object; `solveLpCupdlp`
+resizes that solution to the *reduced* LP's dimensions
+(`col_value.resize(lp.num_col_)`, `row_dual.resize(lp.num_row_)`) and passes
+`value_valid` / `dual_valid` through unchanged, and `PDHG_PreSolve` reads the
+truncated prefix as its hot start. A reduced LP's column *k* is original
+column *≥ k*, so the previous iterate we hand `setSolution` — the whole
+point of a pump chain — landed on the wrong columns and rows. Upstream's
+own hot-start tests (`check/TestPdlp.cpp`, `pdlp-restart-lp` and
+`pdlp-restart-add-row`) all set `presolve=off`, so the combination we were
+in is untested there.
+
+The reduction is real on our models. Measured with `--solver=pdlp
+--solve_relaxation=true presolve=on`:
+
+| instance | production pump LP (relaxation of the MIP-presolved model) | test-fixture pump LP (raw relaxation) |
+|---|---|---|
+| `flugpl` | Not reduced | reduced (14 cols, −4) |
+| `lseu` | Not reduced | reduced |
+| `gt2` | Not reduced | reduced |
+| `egout` | reduced (26 cols, −16) | reduced |
+| `bell5` | reduced (82 cols, −16) | reduced (85, −19) |
+| `p0548` | reduced (380 cols, −5; nnz −89) | reduced (538, −10) |
+
+So the defect was live on half the A/B set in production and on every
+bundled instance in the suite — which is why the two new cases in
+`tests/test_contested_pdlp.cpp` can pin it at all: `build_bare_mipsolver`
+turns HiGHS presolve off, so the LP the fixture wraps is the raw relaxation.
+"the shared instance never presolves" reads the status back through
+`ContestedPdlp::presolve_status_for_test()`, and "a warm start at the
+previous optimum reaches cuPDLP-C intact" pins the effect — a start already
+inside `ε` terminates at `nIter == 0`, where with presolve on the same
+fixture takes 120 warm iterations against 80 cold, i.e. the warm start costs
+*more* than a cold one.
+
+Turning it off is well defined here: `runPresolve` returns `kNotPresolved`
+immediately, `optimizeModel` solves the model directly, there is no
+postsolve step, and `getSolution()` is the solver's output in the full
+column space — which is what `absorb_fresh_solve` already stores and what
+`ScyllaWorker` already asserts on.
+
+Three things to carry forward.
+
+- The issue behind this framed the LP as having a structure that never
+  changes between solves. That is not quite true: `weaklyDominatedCol` and
+  friends read the objective, and the pump rewrites the costs every round,
+  so the *reduced* LP could differ from round to round even with the matrix
+  fixed. It only strengthens the case.
+- **Throughput and time-to-first-incumbent are a separate measurement**, and
+  no number is quoted here until it has run — issue #161. Presolve may well
+  have been earning its cost by shrinking what the projection iterates over;
+  that question is open and is not what this change turned on. A visible
+  consequence for the effort axis: charged Scylla effort per round is
+  `pdlp_iters * nnz`, and a warm start that now works lowers `pdlp_iters` on
+  reduced instances, so the #113 Scylla arm moves on its unit axis again.
+- The truncation lives in upstream `solveLpCupdlp`. A future HiGHS that maps
+  a user solution into the reduced space would make presolve safe here
+  again, but the decision should still rest on the argument above unless it
+  is re-measured.
 
 ---
 

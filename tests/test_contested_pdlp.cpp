@@ -357,6 +357,12 @@ TEST_CASE("ContestedPdlp: every PDLP option name we write exists in HiGHS",
     REQUIRE(highs.setOptionValue("solver", "pdlp") == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("pdlp_iteration_limit", HighsInt{1000}) == HighsStatus::kOk);
     REQUIRE(highs.setOptionValue("time_limit", 1.0) == HighsStatus::kOk);
+    // Presolve is written `off` on the shared instance (#153).  Both the
+    // name and the value string are pinned here: a rename or a re-spelling
+    // of the "off" level would otherwise leave `set_option_or_die` aborting
+    // a benchmark run rather than failing a test, and "ContestedPdlp: the
+    // shared instance never presolves" can only see the consequence.
+    REQUIRE(highs.setOptionValue("presolve", "off") == HighsStatus::kOk);
 
     // The option the epsilon schedule drives (#140).  cuPDLP-C resolves it
     // into all three of its termination tolerances, which is what makes it
@@ -579,6 +585,11 @@ TEST_CASE("ContestedPdlp: a looser epsilon really does terminate PDLP sooner",
     // `kDefaultKktTolerance` the override does not fire, so this is the
     // solve cuPDLP-C would do with `kkt_tolerance` untouched.
     const HighsInt untouched = iters_at(kDefaultKktTolerance);
+    // Recorded for the next reader: 200 / 840 / 760 on flugpl as of #153.
+    // These moved when `presolve=off` landed on the shared instance — they
+    // were 80 / 1160 / 840, taken on the *reduced* LP, and the ordering
+    // this case asserts is what is stable, not the magnitudes.  Do not
+    // treat a change in them as a regression on its own.
     INFO("iterations at kEpsilonInit=" << pump::kEpsilonInit << ": " << loose);
     INFO("iterations at kEpsilonFloor=" << pump::kEpsilonFloor << ": " << tight);
     INFO("iterations at the untouched default: " << untouched);
@@ -762,4 +773,120 @@ TEST_CASE("ContestedPdlp: every solve is given the deadline's remaining time",
     // And it is written per solve.  A write hoisted to the constructor, or
     // any value that does not track `remaining()`, fails here.
     CHECK(second < first);
+}
+
+// ===================================================================
+// LP presolve is off on the shared instance (#153)
+// ===================================================================
+
+// The wrapped instance must never presolve, and the reason is the warm
+// start rather than the cost of presolving.
+//
+// `Highs::optimizeModel` cannot take its presolve-skip branch under
+// `solver=pdlp` (the `solver_will_use_basis` conjunct decides it), so at
+// default options every pump solve presolved.  On `kReduced` HiGHS then
+// hands `solveLp(reduced_lp, ...)` the *full-model* solution object, and
+// `solveLpCupdlp` resizes it to the reduced LP's dimensions while passing
+// `value_valid` / `dual_valid` through unchanged — so `PDHG_PreSolve` reads
+// a truncated prefix of our warm start as its hot start, on columns and
+// rows that are not the ones those values belong to.
+//
+// This case pins the status and the shape.  The *effect* — that a warm
+// start now arrives intact — is the case below it; both are needed,
+// because the status alone would survive a HiGHS that stopped honouring
+// `presolve=off`'s consequences and the effect alone would not say which
+// mechanism produced it.
+//
+// The status readback is sound after `solve()` returns: `clearPresolve`
+// runs at the head of the next `run`/`presolve` or on a model-modifying
+// call, and `changeColsCost` precedes `run` inside `solve_locked`, so the
+// value stands for the last solve.  What is deliberately *not* asserted is
+// the presolve *time* — under `kNotPresolved` HiGHS emits no presolve log
+// line and `run_data_.presolve_time` is ~0, but neither is a sound
+// assertion about work not done.
+TEST_CASE("ContestedPdlp: the shared instance never presolves", "[contested_pdlp][options]") {
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps");
+
+    ContestedPdlp pdlp(*mipsolver, 100000);
+    REQUIRE(pdlp.initialized());
+
+    const std::vector<double> cost(static_cast<size_t>(pdlp.num_col()), 1.0);
+    const std::vector<double> empty;
+    const auto result = pdlp.solve(cost, empty, empty, false, pump::kEpsilonInit);
+
+    // The solve ran, so the status below is about a real `run()` rather
+    // than an instance that never solved anything.
+    REQUIRE(result.pdlp_iters > 0);
+
+    // With the constructor's `presolve=off` write deleted this reads
+    // `kReduced` on this instance — `build_bare_mipsolver` turns HiGHS's
+    // *MIP* presolve off, so the LP the pump wraps is the raw relaxation
+    // and every bundled instance reduces.
+    CHECK(pdlp.presolve_status_for_test() == HighsPresolveStatus::kNotPresolved);
+
+    // And the solver's output is in the full model's column space, with no
+    // postsolve step between: this is what `absorb_fresh_solve` stores and
+    // what `ScyllaWorker` asserts on.
+    CHECK(result.col_value.size() == static_cast<size_t>(pdlp.num_col()));
+    CHECK(result.row_dual.size() == static_cast<size_t>(mipsolver->model_->num_row_));
+}
+
+// The effect the status above exists for: a warm start survives the trip
+// into cuPDLP-C.
+//
+// Solve cold, then solve again from the point that solve returned, with the
+// same costs and the same epsilon.  cuPDLP-C runs its termination check on
+// every one of the first ten iterations, so a hot start already inside
+// epsilon terminates at `nIter == 0`.  That is an exact number, not a
+// threshold, which is why this case needs no slack and no `[serial]`.
+//
+// With presolve back on, the second count is *not* zero: the previous
+// solve's `x_bar` is truncated onto the reduced LP's first `num_col_`
+// columns, which are not the columns those values belong to, so the warm
+// start is a worse starting point than a cold one and the solver has to
+// work its way back.  Measured on this fixture by deleting the
+// constructor's `presolve=off` write: cold 80 / warm 120 — the warm start
+// costs *more* than the cold one — against cold 200 / warm 0 as shipped.
+TEST_CASE("ContestedPdlp: a warm start at the previous optimum reaches cuPDLP-C intact",
+          "[contested_pdlp][scylla]") {
+    highs::parallel::initialize_scheduler();
+
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps");
+
+    ContestedPdlp pdlp(*mipsolver, 100000);
+    REQUIRE(pdlp.initialized());
+
+    // The same non-zero cost vector the "looser epsilon" case uses, so the
+    // gap term is a live part of the termination check rather than
+    // trivially satisfied at zero.
+    const std::vector<double> cost(static_cast<size_t>(pdlp.num_col()), 1.0);
+    const std::vector<double> empty;
+
+    const auto cold = pdlp.solve(cost, empty, empty, false, pump::kEpsilonInit);
+    REQUIRE(cold.value_valid);
+    REQUIRE(cold.dual_valid);
+    // A cold solve that already terminated at 0 would make the comparison
+    // below vacuous.
+    REQUIRE(cold.pdlp_iters > 0);
+    REQUIRE(cold.col_value.size() == static_cast<size_t>(pdlp.num_col()));
+    REQUIRE(cold.row_dual.size() == static_cast<size_t>(mipsolver->model_->num_row_));
+
+    const auto warm = pdlp.solve(cost, cold.col_value, cold.row_dual, true, pump::kEpsilonInit);
+
+    INFO("cold iterations: " << cold.pdlp_iters << ", warm iterations: " << warm.pdlp_iters);
+    // The exact assertion: a start already within epsilon is recognised on
+    // the very first termination check.
+    CHECK(warm.pdlp_iters == 0);
+    // Stated separately so a future cuPDLP-C that checked termination less
+    // eagerly would still be held to the point of the case — the warm start
+    // must be *worth* something.
+    CHECK(warm.pdlp_iters < cold.pdlp_iters);
 }

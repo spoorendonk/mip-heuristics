@@ -151,8 +151,13 @@ constexpr double kSlack = 0.20;
 // follows.  All rows on this model at `threads=1`, seed 0, presolve-only, patience 0
 // (no gate at all), three repeats each, taken after #152 — which roughly
 // doubled what a clock-bound Scylla dispatch charges by giving it its whole
-// deadline instead of half — and after #140, which moved the same axis
-// again by cutting charged effort per pump round.
+// deadline instead of half — after #140, which moved the same axis again by
+// cutting charged effort per pump round, and after #153, which moved the
+// Scylla rows alone: `presolve=off` on the shared PDLP instance means the
+// pump iterates over the unreduced LP, and charged effort per round is
+// `pdlp_iters * nnz`.  Measured on this model, that roughly doubled every
+// clock-bound Scylla row again (0.5 s: 41.4-42.9e6 -> 86.0-88.0e6) and left
+// the budget-bound one where it was, since a budget is a budget.
 //
 // A clock-bound row is a *rate*, so it is a range and not a figure: it is
 // what the host got through in the time, and it moves a few percent between
@@ -168,11 +173,11 @@ constexpr double kSlack = 0.20;
 //   fj         kClockBindingEffort  17.1-18.2e6 (0.102)  83.6-88.2e6
 //   fpr        kClockBindingEffort  9.9-10.3e6           54.6-55.3e6
 //   local_mip  kClockBindingEffort  2156255     (0.104)  9.9-10.1e6
-//   scylla     kClockBindingEffort  9779068     (0.106)  41.4-42.9e6
-//   scylla     kUnbindableEffort    9779068              41.4-42.9e6
+//   scylla     kClockBindingEffort  15702275    (0.100)  86.3-87.8e6
+//   scylla     kUnbindableEffort    16.1-18.9e6 (0.103)  86.0-88.0e6
 //   fj         1.0                  5110832     (0.036)  5110832
 //   fpr        1.0                  5087251     (0.055)  5087251
-//   scylla     1.0                  5152601     (0.100)  5152601
+//   scylla     1.0                  5092240     (0.046)  5092240
 //
 // The last three rows are what #154 was about, and they are the reason the
 // cases below do not run at `effort=1.0`: those dispatches report the *same*
@@ -181,9 +186,15 @@ constexpr double kSlack = 0.20;
 // between the two limits, which is the certification `require_clock_bound`
 // makes of every case that claims the clock stopped it.
 //
-// Scylla's two `kClockBindingEffort` and `kUnbindableEffort` rows are
-// identical because at `threads=1` the clock-bound trajectory does not
-// depend on the effort option once the option stops binding.
+// Scylla's two `kClockBindingEffort` and `kUnbindableEffort` rows used to be
+// identical to the digit, because at `threads=1` the clock-bound trajectory
+// does not depend on the effort option once the option stops binding.  Since
+// #153 they agree only to about 20% at 0.1 s: a clock-bound Scylla row is
+// quantised in whole pump rounds — nothing can stop the round it is inside —
+// and #153 made a round expensive enough on this model that whether the last
+// one fits inside 0.1 s is no longer settled.  Both rows are still the same
+// trajectory; only the point it is cut at moves.  Hence the range, and hence
+// the constants below taking the top of it.
 
 // gesa2's post-presolve nonzero count, which the two sizes below are
 // derived from.  Read back off the `[Heur] nnz=` field of every line these
@@ -256,9 +267,25 @@ const size_t kAttemptCapUnits =
 // for a slower or faster host; effort is the load-safe direction for an
 // upper bound, since a starved runner charges less.  They are transcribed
 // measurements rather than derived sizes, so they have to be re-measured if
-// `kLimit` or `kRatioLimit` moves.
-constexpr size_t kScyllaEffortAtLimit = 9779068;        // effort=1e6, 0.1 s
-constexpr size_t kScyllaEffortAtRatioLimit = 42970944;  // effort=1e6, 0.5 s
+// `kLimit` or `kRatioLimit` moves — and, as #153 showed, whenever a change
+// moves what a pump round *charges*.  Each is the largest of five repeats,
+// which is the conservative end for an upper bound: a starved runner charges
+// less, so the risk is a bound that never fires, not one that fires
+// spuriously.  Values before #153 took LP presolve off the shared PDLP
+// instance: 9779068 and 42970944, i.e. this roughly doubled.
+//
+// What the `2 x` in the two bounds below is buying, since #154's whole
+// point is that a transcribed constant has to say: the observed spread
+// across five repeats is 86.0-88.0e6 at `kRatioLimit`, about 2%, so the
+// factor is roughly 100x that spread and is host headroom, not slack in
+// the assertion.  What it still catches is a *mechanism* failure -- a
+// dispatch that ignores the deadline and runs to its unbindable budget
+// charges orders of magnitude more, not 2x.  And note how the old value
+// behaved when the axis moved under it: it did not quietly keep passing,
+// it went red at 0.4% over, which is why these were re-measured rather
+// than widened.
+constexpr size_t kScyllaEffortAtLimit = 18888466;       // effort=1e6, 0.1 s
+constexpr size_t kScyllaEffortAtRatioLimit = 87975670;  // effort=1e6, 0.5 s
 
 // Value of `key=` in `line`, as text.
 std::string field_of(const std::string& line, const std::string& key) {

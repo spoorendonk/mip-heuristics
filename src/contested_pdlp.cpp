@@ -61,6 +61,52 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
     auto lp = pump::build_lp_relaxation(*model, *mipdata);
     set_option_or_die(highs_, "solver", "pdlp");
     set_option_or_die(highs_, "output_flag", false);
+    // LP presolve is OFF on this instance, and the reason is a
+    // correctness one rather than a cost one (#153).
+    //
+    // `Highs::optimizeModel` cannot take its presolve-skip branch here
+    // (see the `kkt_tolerance` block in `solve_locked` for why
+    // `solver_will_use_basis` decides it), so with presolve left at its
+    // default every one of the pump's solves ran `runPresolve`.  On
+    // `kReduced` it then calls `solveLp(reduced_lp, ...)` with the
+    // *full-model* `solution_` object, and `solveLpCupdlp` resizes that
+    // solution to the reduced LP's dimensions
+    // (`col_value.resize(lp.num_col_)`, `row_dual.resize(lp.num_row_)`)
+    // while passing `value_valid` / `dual_valid` through unchanged.
+    // `PDHG_PreSolve` then reads that truncated prefix as the hot start.
+    // A reduced LP's column k is original column >= k, so the warm start
+    // we hand `setSolution` below — the previous solve's `x_bar`, the
+    // whole point of a pump chain — lands on the *wrong* columns and
+    // rows.  Upstream's own hot-start tests (`check/TestPdlp.cpp`,
+    // `pdlp-restart-lp` and `pdlp-restart-add-row`) all set
+    // `presolve=off`, so the combination we were in is untested there.
+    //
+    // The reduction is real on our models, measured with `--solver=pdlp
+    // --solve_relaxation=true` at default presolve.  On the production
+    // pump LP (the relaxation of the MIP-presolved model) presolve
+    // strictly reduces egout (26 cols, -16), bell5 (82, -16) and p0548
+    // (380, -5, nnz -89) and reports "Not reduced" on flugpl, lseu and
+    // gt2; on the test-fixture pump LP (`build_bare_mipsolver` turns
+    // HiGHS presolve off, so the raw relaxation) all six reduce.
+    //
+    // Turning it off is well defined for this path: `runPresolve`
+    // returns `kNotPresolved` immediately, `optimizeModel` solves
+    // `incumbent_lp` directly, there is no postsolve step, and
+    // `getSolution()` is the solver's own output in the full column
+    // space — which is what `absorb_fresh_solve` already stores and what
+    // `ScyllaWorker` already asserts on (`x_bar.size() == ncol_`).
+    //
+    // Two footnotes.  The issue behind this framed the LP as having a
+    // structure that never changes between solves; that is not quite
+    // true — `weaklyDominatedCol` and friends read the objective, and
+    // the pump rewrites the costs every round, so the *reduced* LP could
+    // differ from round to round even with the matrix fixed.  That only
+    // strengthens the case.  And the truncation lives in upstream
+    // `solveLpCupdlp`: a future HiGHS that maps a user solution into the
+    // reduced space would make presolve safe again here, but the
+    // decision should still rest on the never-reduced-structure argument
+    // unless it is re-measured (see issue #161).
+    set_option_or_die(highs_, "presolve", "off");
     // Two options used to be set here, `pdlp_scaling=true` and
     // `pdlp_e_restart_method=2`.  Both existed in HiGHS v1.13.1 and were
     // renamed in v1.14.0, so they have been silently rejected since that
@@ -133,9 +179,10 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // WHY `kkt_tolerance` AND NOT THREE EXPLICIT WRITES.  The obvious fix
     // — write the three options directly — is wrong, and the first
     // attempt at #140 shipped it.  `primal_feasibility_tolerance` and
-    // `dual_feasibility_tolerance` are not private to the PDLP solve:
-    // `Highs::run` always reaches `runPresolve(force_lp_presolve=true)` on
-    // this instance — the presolve-skip branch is
+    // `dual_feasibility_tolerance` are not private to the PDLP solve.
+    // When this evidence was gathered, `Highs::run` reached
+    // `runPresolve(force_lp_presolve=true)` on this instance on every
+    // solve — the presolve-skip branch is
     // `(unconstrained_lp || has_basis || without_presolve) &&
     // solver_will_use_basis`, and it is the last conjunct that decides:
     // `solver_will_use_basis` is false for anything but `simplex` and
@@ -167,6 +214,22 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // afiro 320 -> 120, 25fv47 63240 -> 520, and the objective stays
     // closer to the true LP optimum than the three-write version manages
     // (25fv47: true 5501.8, kkt route 5512.7, three-write route 5688.2).
+    //
+    // PRESOLVE IS NOW OFF ON THIS INSTANCE (#153), and the paragraphs
+    // above are kept as the history that produced this route rather than
+    // as a live description of the code path.  The constructor writes
+    // `presolve=off`, for the warm-start reason written out there, so LP
+    // presolve no longer runs and the "writing those two options presolves
+    // a different LP" half of the argument no longer bites.  The route
+    // stays, on the two reasons that survive it.  (1) KKT-consistency:
+    // `getKktFailures` resolves five of its own thresholds from
+    // `kkt_tolerance`, so writing that one constant keeps HiGHS's own
+    // accounting consistent with the solve — point (1) under
+    // "second-order effects" below, which presolve never entered into.
+    // (2) Detectability: the effect test named below fails outright if the
+    // upstream override branch is ever removed or re-conditioned, which no
+    // option-name check can see.  Three explicit writes would buy nothing
+    // in exchange for giving up (1).
     //
     // The cost of this route, stated plainly: it depends on an upstream
     // "if changed from its default" branch, which is the silent
@@ -268,6 +331,14 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // its wall-clock stop.  The modified cost changes between rounds,
     // which moves the dual residual and gap even when the primal point
     // does not, so a run of three is harder to reach than it looks.
+    // #153 makes it *reachable* — a warm start now arrives in the full
+    // column space instead of truncated onto a reduced LP's columns, so a
+    // start already inside epsilon really does return at `nIter == 0`, and
+    // "ContestedPdlp: a warm start at the previous optimum reaches
+    // cuPDLP-C intact" asserts exactly that.  Three consecutive ones still
+    // need the cost to stop moving, and `test_deadline.cpp`'s "a
+    // clock-bound Scylla dispatch spends its whole limit" is the standing
+    // check that a dispatch is not retiring on the stall rule early.
     set_option_or_die(highs_, "kkt_tolerance", epsilon);
     // The wrapped instance's clock origin, reset here so that
     // `time_limit` means the same thing to both of its consumers (#152).
@@ -389,6 +460,10 @@ ContestedPdlp::SolveTolerances ContestedPdlp::tolerances_for_test() const {
 
 double ContestedPdlp::run_time_for_test() const {
     return highs_.getRunTime();
+}
+
+HighsPresolveStatus ContestedPdlp::presolve_status_for_test() const {
+    return highs_.getModelPresolveStatus();
 }
 
 ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(

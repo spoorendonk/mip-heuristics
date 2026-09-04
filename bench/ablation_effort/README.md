@@ -276,8 +276,8 @@ nothing past the crossing" to its 50-node limit. Charged effort per unit of
 real work therefore rises again on the FPR, Scylla and `fpr_lp` arms — the same
 axis #124 moved, and the axis the four effort defaults are quantiles on.
 
-Two *input changes* remain known and unfixed, and neither blocks — they change
-what the re-run will measure, so read its Scylla arm against them rather than
+Two further *input changes* are worth naming here — both have landed, and both
+change what the re-run will measure, so read its arms against them rather than
 against this table. #140 has landed and moves Scylla's effort axis (above), as
 does #124 for FPR, Scylla and `fpr_lp`, and #130/#131 for FPR's one
 RepairSearch arm (all above). **#139 moves the FJ arm**, which none of those
@@ -293,15 +293,25 @@ fixed 10 s presolve-only cap: time-to-first-feasible is unchanged (35 of 75
 runs find something, the same 35 before and after — as the mechanism predicts,
 since `objectiveWeight` starts at 0 and rises only once no constraint is
 violated), while objective quality improves on 29 of those 35.
-**#153 is open**: HiGHS runs full LP presolve on every one of the thousands of
-PDLP solves a dispatch performs, on a model whose structure never changes.
-Disabling it changes how many pump rounds fit inside a 30 s cap, and Scylla's
-effort default is a quantile on exactly that axis — so landing #153 after the
-re-run would move Scylla's number again for a purely cost reason. #153's own
-notes ask for #152 to be fixed or accounted for first, which it now is. Taking
-the window before #153 is a defensible trade (a cost change is measurable
-against the new table; a correctness defect is not), but it is a trade, not a
-non-issue.
+**#153 has landed, and it moves the Scylla arm.** The shared PDLP instance now
+writes `presolve` = `off`, and the reason turned out to be correctness rather
+than cost: HiGHS's `solveLpCupdlp` truncates a user-supplied warm start onto
+the *reduced* LP's leading columns and rows without remapping it, so on every
+instance whose LP presolve reduced — egout, bell5 and p0548 among the six
+bundled ones, at production shape — the pump's previous iterate reached
+cuPDLP-C attached to the wrong variables. Charged Scylla effort per round is
+`pdlp_iters * nnz`, and both inputs to `pdlp_iters` moved: the warm start now
+works, and the LP being iterated over is no longer the smaller one. **The net
+direction is up, and by roughly 2x**: a clock-bound Scylla dispatch on `gesa2`
+at `threads=1` charges 9.78e6 -> 18.9e6 at a 0.1 s limit and 43.0e6 -> 88.0e6
+at 0.5 s, the two transcribed constants `tests/test_deadline.cpp` had to
+re-measure. That is one small model rather than a set, so take it as the sign
+and the order of magnitude, not as a factor to divide by. Scylla's effort
+default is a quantile on exactly that axis, so read its arm against this the
+way you read it against #140 and #155. The cost
+question the issue originally asked — pump iterations per second and
+time-to-first-incumbent, with presolve on versus off — is **#161**, still open,
+and no number for it is quoted anywhere yet.
 
 The re-run buys exactly what the entries above describe, and every number in
 this file stays provisional until it has been taken.
