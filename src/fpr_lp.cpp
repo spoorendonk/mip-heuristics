@@ -381,6 +381,14 @@ public:
             // presolve-only probe covered the dive, so this stays on
             // "reached a feasible point" until someone measures that
             // envelope.
+            // Its coupling with the FPR leaf rule was examined and
+            // accepted (#157): `found_feasible` is
+            // `fpr_attempt_finish`'s point re-check over every row for all
+            // ten arms, this worker's stale counter is per worker rather
+            // than per arm, and the trigger re-rolls `arm_idx_` uniformly
+            // over the whole pool, so the six dive/diveprop arms' higher
+            // odds of reaching a leaf cannot starve any arm.  Reasoning in
+            // `docs/PARAMETERS.md` under `kStaleAttemptThreshold`.
             // `effort_at`: this worker's cumulative charge including the
             // attempt that just produced the solution.  `LpFprWorker` keeps
             // no `WorkerBudgetState`, so `total_effort_` below is the

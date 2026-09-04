@@ -360,6 +360,32 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   the randomization counter. Lower values trigger diversification
   sooner.
 - **Suggested range**: 1–10.
+- **The coupling with the FPR leaf rule was examined and accepted** (#157).
+  Six of the ten arms are `dive` or `diveprop`, and whether an attempt
+  reports feasibility is decided by `fpr_attempt_finish`'s point re-check
+  over every row — so an attempt that never reached a complete assignment
+  (`!found_complete`, which skips Phase 3) has strictly fewer chances to
+  come back feasible than one that did. That asymmetry is real, and it runs
+  *toward* the dive arms rather than away from them: a dive fixes one column
+  per node and reaches its leaf inside the `ncol + 1` node limit, where a
+  backtracking arm's normal ending is the node limit or the one-shot effort
+  gate. It is also mostly older than #124, whose contribution here is the
+  `diveprop` half alone — a refuted `diveprop` used to end the attempt
+  outright and so reached Phase 3 never, and letting it finish the dive is
+  Fig. 1's own behaviour. Three things make the coupling benign rather than
+  a defect in the signal. (1) No path is left where a leaf rule discards an
+  attempt that searched: since #155 every failure return carries an integral
+  point, and the verdict on it is that same row re-check for all ten arms.
+  (2) This counter is **per worker, not per arm**, and the trigger re-rolls
+  `arm_idx_` uniformly over the whole pool — it retires no arm, and it may
+  re-draw the arm it just left — so a lower feasibility rate on some arms
+  cannot compound into arm starvation; all ten stay reachable for the life
+  of the dispatch, and only `kHardRandomizationLimit` retires anything, that
+  being the worker. (3) For the same reason "retirement counts per arm", the
+  measurement the issue asked for, is not a quantity this code produces:
+  after the first re-roll the counter mixes attempts taken under different
+  arms, and it is cleared on every trigger. None was taken. If this gate is
+  ever revisited, the thing to make per-arm first is the counter.
 
 ---
 
