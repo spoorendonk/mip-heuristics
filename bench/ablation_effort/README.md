@@ -230,14 +230,23 @@ a trajectory the solver measured rather than one reconstructed offline, on a
 binary whose setup paths are bounded and whose barren dispatches are honestly
 labelled. The whole point of the exercise is the second thing.
 
-Precondition, concretely: **satisfied — no *correctness* blocker is open.**
+Precondition, concretely: **not satisfied as of 2026-09-04 — two open
+correctness defects meet the bar.**
 That is the bar, and it is worth stating rather than leaving implicit: what
 blocks this window is a defect that makes a dispatch measure something other
 than what the probe thinks it measures, not any open issue touching Scylla.
 #116, #117, #119 and #118 are all landed, and #152 — which arrived after them
 and struck the clock-bound property directly — is fixed: a clock-bound Scylla
 dispatch now spends its whole limit, pinned by "deadline: a clock-bound Scylla
-dispatch spends its whole limit" in `tests/test_deadline.cpp`. (That fix also
+dispatch spends its whole limit" in `tests/test_deadline.cpp`. **But #156 and #158,
+filed after that line was written, meet the same bar and are open.** #156: Phase 3's
+effort cap is derived from a number that does not bound the counter, so the leaf-time
+repair silently no-ops past the crossing — and #124 made the crossing common, on exactly
+the long attempts this probe's tail is made of. #158: `backtrack_best_open` breaks the
+mark-ordering invariant `backtrack_to` relies on, which can corrupt engine state on the
+`kRepairSearch` arm (1 of 8, FPR only; caught by the point re-check, so it wastes work
+rather than emitting anything invalid). #155 is borderline and #154 is test-quality only;
+all five are triaged in the campaign epic. Land #156 and #158 before the window. (That fix also
 uncovered #154 — the deadline suite's effort constants are 80x stale, so
 several of its cases pass without discriminating. It is a test-quality
 issue, not a solver one, and does not bear on the probe.)
