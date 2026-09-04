@@ -55,8 +55,14 @@ When a test flakes under `-j$(nproc)`, work down this list:
    limit, and saturation closes that margin. Setting the option after the
    read fixes it outright, for every machine, including CI boxes with noisy
    neighbours that `RUN_SERIAL` cannot see.
-2. **Assert the mechanism.** A starved runner spends *less* effort, so an
-   effort bound holds under load where a time bound does not.
+2. **Assert the mechanism.** A starved runner spends *less* effort, so a
+   one-sided effort bound (`effort < cap`) holds under load where a time
+   bound does not. Note the qualifier: what makes it load-safe is that the
+   comparison can only move the safe way, not that it is denominated in
+   effort. A *differential* effort assertion — `effort` at one limit against
+   `effort` at a longer one, which is how `test_deadline.cpp` certifies that
+   the clock and not the budget stopped a dispatch — is two-sided and is a
+   case for (3).
 3. **Only then tag it**, for a wait nothing in the code can bound.
 
 **Never widen the threshold.** A wall-clock bound tuned until it stops

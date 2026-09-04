@@ -44,25 +44,39 @@
 namespace {
 
 // The instance these cases run on.  gesa2 is the largest bundled MIP that
-// still reads and presolves quickly.  At `effort=1.0` and `threads=1` its
-// budget is `nnz * 81920` = ~4.07e8 effort units, which every one of the
-// four heuristics needs seconds to spend (measured 8.5 s for FJ, 4.1 s for
-// LocalMIP, 3.3 s for FPR, 1.5 s for Scylla).  That headroom over the
-// limit below is the whole reason the instance is this one.
+// still reads and presolves quickly — reading it fast is what the instance
+// is chosen for.  It is *not* what buys headroom over the limit: at
+// `threads=1` the budget is `heuristic_effort_budget(nnz, effort)` =
+// `nnz << 10 * effort` (#116), which at `effort=1.0` is 5087232 units, and
+// three of the four heuristics spend the whole of that in tens of
+// milliseconds on this model (measured: FJ 26 ms, FPR 46 ms, Scylla 90 ms).
+// So `effort=1.0` here is a *budget*-bound configuration and not a
+// clock-bound one — that was #154 — and the headroom comes from the effort
+// option instead.  See `kClockBindingEffort`.
 constexpr const char* kInstance = "gesa2.mps";
 
-// Far below the time any of the four needs to exhaust its budget, and —
-// the property that gives these cases teeth — far below the time any of
-// them needs to finish a single *attempt*.  See `kAttemptCapUnits`.
+// Far below the time any of the four needs to exhaust its budget at
+// `kClockBindingEffort`, and — the property that gives these cases teeth —
+// far below the time any of them needs to finish a single *attempt* at that
+// setting.  See `kAttemptCapUnits`.
 constexpr double kLimit = 0.1;
+
+// The second limit, 5x `kLimit`.  Two things use it: `require_clock_bound`
+// below, which certifies that a `kLimit` dispatch was stopped by the clock
+// by showing the same configuration charges strictly more when given more
+// time; and the #152 ratio case at the foot of the presolve group — see the
+// note above that case for why *that* one needs the longer limit
+// specifically.
+constexpr double kRatioLimit = 0.5;
 
 // Allowance above the limit for the polling cadence plus teardown.
 // Measured overshoot on the development machine is 0-6 ms for FJ, FPR and
 // LocalMIP, and 26 ms for Scylla, whose floor is a whole PDLP solve; a
 // slow shared runner is given far more rather than a tight bound that
 // turns scheduler jitter into a red suite.  Without a sub-attempt
-// deadline check these runs end at 0.66 s (FJ, measured), so the
-// assertion keeps its teeth at this slack.
+// deadline check these runs end at 2.75 s (FJ at `kClockBindingEffort`,
+// measured with its callback's clock check neutralised), so the assertion
+// keeps its teeth at this slack.
 constexpr double kSlack = 0.20;
 
 // Every case built on `presolve_heur_lines` below is tagged `[serial]`,
@@ -99,8 +113,8 @@ constexpr double kSlack = 0.20;
 //
 // Widening `kSlack` addresses neither, and would be wrong even if it did:
 // it would blunt the assertion that still works.  Raising `kLimit` is no
-// better — the effort bound `effort < kAttemptCapUnits` (9.6-11.0e6 spent
-// against 4.07e7) erodes as the limit grows, trading one flake for
+// better — the effort bound `effort < kAttemptCapUnits` (2.2-17.6e6 spent
+// against 5.09e8) erodes as the limit grows, trading one flake for
 // another.  What the second mode needs is an unloaded machine, which is
 // what `RUN_SERIAL` gives it and what `RESOURCE_LOCK` would not.
 //
@@ -133,85 +147,118 @@ constexpr double kSlack = 0.20;
 // The three other heuristics keep their wall-clock upper bound: their
 // floors are milliseconds, so for them it is a real one.
 //
-// The effort figures quoted through this file were re-measured after #152,
-// which roughly doubled what a clock-bound Scylla dispatch charges by
-// giving it its whole deadline instead of half — the earlier 35409804 was
-// taken before both #152 and #140, and #140 moved the axis again by
-// cutting charged effort per pump round.  Current, on this model at
-// `threads=1`, seed 0, presolve-only, patience off, and reproducible to
-// the digit across repeats:
+// The measured table this file's constants and margins are chosen from
+// follows.  All rows on this model at `threads=1`, seed 0, presolve-only, patience 0
+// (no gate at all), three repeats each, taken after #152 — which roughly
+// doubled what a clock-bound Scylla dispatch charges by giving it its whole
+// deadline instead of half — and after #140, which moved the same axis
+// again by cutting charged effort per pump round.
 //
-//   scylla, effort=1.0,           any limit 0.1-5 s : 5152601  (end_s 0.099)
-//   scylla, effort=kUnbindable..., limit 0.1 s      : 9779068
-//   scylla, effort=kUnbindable..., limit 0.5 s      : 42921044-42970944
+// A clock-bound row is a *rate*, so it is a range and not a figure: it is
+// what the host got through in the time, and it moves a few percent between
+// repeats and a few percent again between the standalone CLI and this
+// fixture, which pins the thread and installs a log callback.  The ranges
+// below span both, so a reader re-measuring either way lands inside one.
+// Only the `1.0` rows and Scylla's 0.1 s rows are exact, and they are exact
+// for the reason the whole issue was about: those dispatches are stopped by
+// something other than the clock.
 //
-// Read the first row carefully, because it is not what its case's name
-// says: `heuristic_effort_budget(nnz, 1.0)` is `nnz << 10` = 5087232, so
-// that dispatch spends 101.3% of its budget and ends at the same effort
-// whether the limit is 0.1 s or 5 s.  At `effort=1.0` on this model Scylla
-// is *budget*-bound, not clock-bound, and so are FJ (5089737, end_s 0.025)
-// and FPR (5088164, end_s 0.058); only LocalMIP (2156255, end_s 0.105)
-// still runs into the clock.  See the note on `kAttemptCapUnits` below.
+//   heuristic  effort               0.1 s               0.5 s
+//   ---------  -------------------  ------------------  ------------------
+//   fj         kClockBindingEffort  17.1-18.2e6 (0.102)  83.6-88.2e6
+//   fpr        kClockBindingEffort  9.9-10.3e6           54.6-55.3e6
+//   local_mip  kClockBindingEffort  2156255     (0.104)  9.9-10.1e6
+//   scylla     kClockBindingEffort  9779068     (0.106)  41.4-42.9e6
+//   scylla     kUnbindableEffort    9779068              41.4-42.9e6
+//   fj         1.0                  5110832     (0.036)  5110832
+//   fpr        1.0                  5087251     (0.055)  5087251
+//   scylla     1.0                  5152601     (0.100)  5152601
+//
+// The last three rows are what #154 was about, and they are the reason the
+// cases below do not run at `effort=1.0`: those dispatches report the *same*
+// effort at both limits, which is what a budget-bound dispatch does and what
+// a clock-bound one cannot do.  The first four rows increase 4.2-5.6x
+// between the two limits, which is the certification `require_clock_bound`
+// makes of every case that claims the clock stopped it.
+//
+// Scylla's two `kClockBindingEffort` and `kUnbindableEffort` rows are
+// identical because at `threads=1` the clock-bound trajectory does not
+// depend on the effort option once the option stops binding.
 
-// `HeuristicBudget::attempt_cap` for this configuration, in effort units
-// **as the budget was denominated before #116**, which is 80x the unit in
-// force today.  Read the warning below before using either constant.
-//
-// `make_budget` computes `total / (num_workers * 10)`, and at
-// `threads = 1` all four heuristics land on the same number: FJ's option
-// is per-worker so its `total` is `nnz * <base> * N`, the other three size
-// a whole dispatch at `nnz * <base>`, and `N` is 1.
-//
-// The discriminator these were chosen to be: a build whose deadline is
-// checked only between attempts cannot report *less* than one
-// `attempt_cap`, because nothing can stop the attempt it is inside —
-// measured at exactly this value with the FJ callback's check removed,
-// identically at a 0.25 s and a 0.5 s limit.  Spending materially less
-// than one attempt is positive evidence that the heuristic stopped
-// mid-attempt.
-//
-// **They are stale by 80x and the bounds keyed to them are correspondingly
-// loose.**  `<base>` here is 81920, which is the pre-#116 `nnz << 12 *
-// (value / 0.05)`; #116 re-denominated the option to `nnz << 10` and this
-// file was not updated, so `heuristic_effort_budget(nnz, 1.0)` is 5087232,
-// not the 406978560 `kBudgetUnits` claims, and one `attempt_cap` is 508723,
-// not 40697856.  Verified against the built binary: at `effort` 1.0 / 2.0 /
-// 4.0 a Scylla dispatch charges 5.15e6 / 1.08e7 / 2.27e7 against budgets of
-// 5.09e6 / 1.02e7 / 2.03e7, i.e. it tracks `nnz << 10` exactly, plus its
-// documented one-attempt overshoot.  The consequence is that three of the
-// four `require_stopped_mid_attempt` cases and the two Scylla cases here
-// are now measuring *budget*-bound dispatches while asserting a bound 80x
-// above the budget, so they pass without discriminating.  Fixing that means
-// re-choosing `kLimit` and the per-case effort so the clock actually binds,
-// which is its own measurement exercise and is filed as #154; #152
-// deliberately did not attempt it, and only re-sized the two bounds it had
-// re-measured.  Do not read a pass from a case keyed to these constants as
-// evidence that a deadline check works.
 // gesa2's post-presolve nonzero count, which the two sizes below are
 // derived from.  Read back off the `[Heur] nnz=` field of every line these
 // cases parse rather than trusted: a HiGHS tag bump that changes presolve
 // would otherwise erode the margins silently instead of failing here.
 constexpr size_t kNnz = 4968;
 
-constexpr size_t kAttemptCapUnits = kNnz * 8192;
+// The `mip_heuristic_<name>_effort` every case that claims the clock
+// stopped a dispatch runs at.  One variable, feeding both the option those
+// cases write and the two bounds below, so the pair cannot drift from the
+// configuration it describes — which is exactly how #154 happened: the
+// bounds were literals in a unit the option had stopped being denominated
+// in, and nothing recomputed them.
+//
+// Why this value.  It is two-sided, and both sides are measured:
+//
+//   * From below, it has to make `effort < kAttemptCapUnits` a real
+//     discriminator.  A build whose deadline is checked only *between*
+//     attempts cannot report less than one `attempt_cap`, since nothing can
+//     stop the attempt it is inside; so the bound only says anything if a
+//     clock-bound dispatch charges materially less than one cap.  Measured
+//     margins against the 508723200 below: 28.9x (fj), 50.0x (fpr), 236x
+//     (local_mip), and 520x for Scylla against its budget.  At `effort=100`
+//     FJ's margin is 2.9x, which is too thin to survive a faster host.
+//
+//   * From above, one `attempt_cap` has to stay small enough that a
+//     *regressed* build — one that runs its whole attempt out — finishes
+//     inside ctest's timeout, so a regression is a red assertion and not a
+//     hang.  At the option's 1e6 ceiling one cap is 5.09e11 units, which is
+//     roughly 45 minutes of FJ; here it is 508723200 units, 2.7 s of FJ and
+//     23 s of LocalMIP.
+//
+// It is the configuration under test, not a fuse: raising it to make an
+// assertion pass would be re-introducing #154 from the other end.
+constexpr double kClockBindingEffort = 1000.0;
 
-// What the whole allowance used to be, on the same pre-#116 unit as
-// `kAttemptCapUnits` — see the warning above, which applies to this
-// constant equally.  Scylla is measured against a budget rather than
-// against an attempt cap for the reason the "asserted on effort alone"
-// note at the top of this file gives: one Scylla attempt legitimately
-// charges more than one attempt cap, so the cap says nothing about it.
-constexpr size_t kBudgetUnits = kNnz * 81920;
+// `heuristic_effort_budget(nnz, kClockBindingEffort)` and
+// `HeuristicBudget::attempt_cap` for this configuration — *derived*, not
+// transcribed, because a literal is what #116's re-denomination silently
+// invalidated.  Both helpers are `inline` rather than `constexpr`, so these
+// are runtime `const`s; nothing here needs them at compile time.
+//
+// `make_budget` computes `total / (num_workers * 10)`, and at `threads = 1`
+// all four heuristics land on the same number: FJ's option is per-worker,
+// so `run_sequential` scales its total by the pool
+// (`saturating_mul(sized, N)` in `mode_dispatch.cpp`), and at `N = 1` that
+// is the identity; the other three size a whole dispatch and are not
+// scaled.  The fixture pins `threads=1`, which is what makes one derivation
+// cover all four.
+//
+// The third argument is the staleness ceiling, which does not enter
+// `attempt_cap` at all; it is spelled the way `run_sequential` spells it,
+// at the patience option these cases set (`0`, i.e. no gate — which
+// `patience_threshold` returns as SIZE_MAX).
+//
+// Note what the name does *not* say: this is the budget at
+// `kClockBindingEffort`, not "the budget".  The two `kUnbindableEffort`
+// cases below run at a different effort and their budget is a thousand
+// times larger, so `kBudgetUnits` is not a bound they may be given — a
+// `CHECK(effort < kBudgetUnits)` there would be wrong and green.
+const size_t kBudgetUnits = heuristic_effort_budget(kNnz, kClockBindingEffort);
+const size_t kAttemptCapUnits =
+    make_budget(kBudgetUnits, /*num_workers=*/1, patience_threshold(kNnz, 0.0, kBudgetUnits))
+        .attempt_cap;
 
-// What a clock-bound Scylla dispatch actually charges at each of the two
-// configurations the cases below use, measured on the fixed (#152) binary
-// and reproducible to the digit — see the table in the note at the top of
-// this file.  The bounds are these values with room for a slower or faster
-// host; effort is the load-safe direction for an upper bound, since a
-// starved runner charges less.
-constexpr size_t kScyllaEffortAtDefaultEffort = 5152601;  // effort=1.0, any limit
-constexpr size_t kScyllaEffortAtLimit = 9779068;          // effort=1e6, 0.1 s
-constexpr size_t kScyllaEffortAtRatioLimit = 42970944;    // effort=1e6, 0.5 s
+// What a clock-bound Scylla dispatch charges at the two `kUnbindableEffort`
+// configurations the last two cases in the presolve group use, measured on
+// the fixed (#152) binary and reproducible to the digit — see the table in
+// the note at the top of this file.  The bounds are these values with room
+// for a slower or faster host; effort is the load-safe direction for an
+// upper bound, since a starved runner charges less.  They are transcribed
+// measurements rather than derived sizes, so they have to be re-measured if
+// `kLimit` or `kRatioLimit` moves.
+constexpr size_t kScyllaEffortAtLimit = 9779068;        // effort=1e6, 0.1 s
+constexpr size_t kScyllaEffortAtRatioLimit = 42970944;  // effort=1e6, 0.5 s
 
 // Value of `key=` in `line`, as text.
 std::string field_of(const std::string& line, const std::string& key) {
@@ -318,21 +365,29 @@ std::vector<std::string> presolve_heur_lines(Configure&& configure, double limit
     return out;
 }
 
-// One heuristic, alone, at `effort` with its patience gate disabled (`0`
-// means no gate at all, not "give up immediately"), so the budget is the
-// only thing competing with the deadline.  The default is one whole
-// vanilla FJ budget, which on this instance is already more than the limit
-// allows; `kUnbindableEffort` is the setting at which the budget stops
-// competing at all.
-std::string alone_at_limit(const std::string& heuristic, double effort = 1.0) {
-    const auto lines = presolve_heur_lines([&](Highs& h) {
-        require_option(h, "mip_heuristic_suite", heuristic);
-        require_option(h, "mip_heuristic_" + heuristic + "_effort", effort);
-        require_option(h, "mip_heuristic_" + heuristic + "_patience", 0);
-    });
+// One heuristic, alone, under `limit`, at `effort` with its patience gate
+// disabled (`0` means no gate at all, not "give up immediately"), so the
+// wall clock and the effort budget are the only two things that can stop
+// it — which is what makes "which of the two stopped it" answerable.
+std::string alone_at(const std::string& heuristic, double effort, double limit) {
+    const auto lines = presolve_heur_lines(
+        [&](Highs& h) {
+            require_option(h, "mip_heuristic_suite", heuristic);
+            require_option(h, "mip_heuristic_" + heuristic + "_effort", effort);
+            require_option(h, "mip_heuristic_" + heuristic + "_patience", 0);
+        },
+        limit);
     REQUIRE(lines.size() == 1);
     require_expected_nnz(lines.front());
     return lines.front();
+}
+
+// The same at `kLimit`.  The default effort is the clock-binding one, so a
+// case that does not name an effort is asking for the configuration the
+// margins above were measured at; `kUnbindableEffort` is the setting at
+// which the budget stops competing at all.
+std::string alone_at_limit(const std::string& heuristic, double effort = kClockBindingEffort) {
+    return alone_at(heuristic, effort, kLimit);
 }
 
 // The `mip_heuristic_<name>_effort` ceiling (#116).  At this setting the
@@ -342,6 +397,34 @@ std::string alone_at_limit(const std::string& heuristic, double effort = 1.0) {
 // get (issue #117).
 constexpr double kUnbindableEffort = 1e6;
 
+// The certification, and the check whose absence #154 was: the identical
+// configuration, given 5x the time, charges strictly more effort.
+//
+// At `threads=1` with a fixed seed a dispatch stopped by its budget or by
+// its attempt cap reports the *same* effort at every limit — measured to
+// the digit, and it is how #154 was found.  A strict increase therefore
+// cannot come from anywhere but the clock, so this certifies that the
+// `kLimit` run passed in here was clock-bound.  That run and no other: the
+// longer run may itself be budget-bound and nothing here bounds its effort,
+// which is deliberate — it is a witness, not a second assertion.
+//
+// Strict, not `!=`: a starved runner charges *less*, so `!=` would accept a
+// longer run that was descheduled into charging less than the short one and
+// call that a certification.  `[serial]` is why the increase is reliable at
+// all; it cannot be arranged by taking the clock out of the fixture, since
+// the clock is the thing under test.
+//
+// `effort` is the effort the caller took `at_limit` at, and is not defaulted:
+// the two runs have to be the *identical* configuration for the comparison to
+// mean anything, and a default would let a caller pair a witness taken at one
+// effort with a longer run taken at another and still pass.
+void require_clock_bound(const std::string& heuristic, double effort, const std::string& at_limit) {
+    const std::string longer = alone_at(heuristic, effort, kRatioLimit);
+    INFO("at " << kLimit << " s: " << at_limit);
+    INFO("at " << kRatioLimit << " s: " << longer);
+    CHECK(effort_of(at_limit) < effort_of(longer));
+}
+
 // The property, for one heuristic that charges effort in units an attempt
 // cap can be compared against.
 void require_stopped_mid_attempt(const char* heuristic) {
@@ -349,11 +432,8 @@ void require_stopped_mid_attempt(const char* heuristic) {
     INFO(line);
     CHECK(end_s_of(line) <= kLimit + kSlack);
     CHECK(effort_of(line) < kAttemptCapUnits);
+    require_clock_bound(heuristic, kClockBindingEffort, line);
 }
-
-// The limit the #152 ratio case below runs at, longer than `kLimit`
-// deliberately — see the note above that case.
-constexpr double kRatioLimit = 0.5;
 
 // The fraction of its limit a clock-bound Scylla dispatch must spend.
 // Below the after-fix ratio (1.00-1.03 measured) by a wide margin and far
@@ -396,21 +476,20 @@ TEST_CASE("deadline: FPR stops at the time limit, not at its effort budget", "[d
 // "did it stop mid-attempt" but "did it stop at all before its budget",
 // which is the one a removed guard would fail.
 //
-// **What this case establishes today is weaker than its name.**  Its
-// `effort=1.0` dispatch charges 5152601 against a real budget of
-// `nnz << 10` = 5087232, and it reports that same effort at a 0.1 s limit
-// and at a 5 s one — so it is *budget*-bound, and it stops just past its
-// budget rather than before it.  The old `kBudgetUnits / 4` bound did not
-// notice because `kBudgetUnits` is 80x the current budget (see the warning
-// on `kAttemptCapUnits`).  The bound below is the measured charge with 2x
-// of room, which at least fails on a regression; making the case mean what
-// its name says needs a limit and an effort at which the clock actually
-// binds, which is #154.
+// So the assertion is the budget comparison the name promises, against the
+// budget this dispatch was actually given — 9779068 charged against
+// 5087232000, a 520x margin — and `require_clock_bound` is what says the
+// number on the left is a clock-bound one rather than a heuristic that
+// happened to stop early for some other reason.  Both halves are needed:
+// at `effort=1.0` this dispatch charges 5152601 against a budget of
+// 5087232, i.e. it *exceeds* its budget and reports the same effort at
+// 0.1 s and at 5 s, so a budget comparison alone was satisfiable only
+// because the constant it used was 80x the budget (#154).
 TEST_CASE("deadline: Scylla stops before spending its budget", "[deadline][serial]") {
     const std::string line = alone_at_limit("scylla");
     INFO(line);
-    require_expected_nnz(line);
-    CHECK(effort_of(line) < 2 * kScyllaEffortAtDefaultEffort);
+    CHECK(effort_of(line) < kBudgetUnits);
+    require_clock_bound("scylla", kClockBindingEffort, line);
 }
 
 // Scylla's *lower* bound, and the one #152 was filed for: a clock-bound
@@ -480,27 +559,39 @@ TEST_CASE("deadline: a clock-bound Scylla dispatch spends its whole limit",
 
 // The dispatch-level statement, which is the one the benchmark harness
 // depends on: whatever subset of the chain gets to run, none of it is
-// still running past the limit.  Note the *subset* — at `effort=1.0` the
-// first heuristic legitimately consumes the whole limit and its
-// successors are skipped by `run_sequential`'s own `terminated()` guard.
+// still running past the limit.  Note the *subset* — at
+// `kClockBindingEffort` the first heuristic legitimately consumes the whole
+// limit and its successors are skipped by `run_sequential`'s own
+// `terminated()` guard.  Measured here: FJ alone, ending at 0.100-0.107 s.
+//
+// The whole configuration is the point, and it is the same one every other
+// case in this group runs — `kClockBindingEffort` and patience `0` on all
+// four.  Before #154 this case ran at `effort=1.0` with the patience
+// options left at their shipped defaults, which made every heuristic in the
+// chain *patience*-bound (measured 3/3: fj ended at 0.021 s, fpr 0.032,
+// local_mip 0.071, scylla 0.092) — so the `end_s <= kLimit + kSlack` bound
+// was being met by a gate that has nothing to do with the deadline, and
+// Scylla was bounded by a quarter of a `kBudgetUnits` that was itself 80x
+// its budget.  Neither half said anything about the clock.
 //
 // Which subset runs is itself a timing fact, so Scylla may be in it and is
-// held to the same effort bound it gets on its own rather than to a wall
-// clock it cannot honour.
+// held to the same budget bound it gets on its own rather than to a wall
+// clock it cannot honour — its floor is one whole PDLP solve; see the
+// "asserted on effort alone" note at the top of this file.
 TEST_CASE("deadline: no presolve heuristic outlives the limit", "[deadline][serial]") {
     const auto lines = presolve_heur_lines([](Highs& h) {
         require_option(h, "mip_heuristic_suite", std::string("all"));
-        require_option(h, "mip_heuristic_fj_effort", 1.0);
-        require_option(h, "mip_heuristic_fpr_effort", 1.0);
-        require_option(h, "mip_heuristic_local_mip_effort", 1.0);
-        require_option(h, "mip_heuristic_scylla_effort", 1.0);
+        for (const std::string name : {"fj", "fpr", "local_mip", "scylla"}) {
+            require_option(h, "mip_heuristic_" + name + "_effort", kClockBindingEffort);
+            require_option(h, "mip_heuristic_" + name + "_patience", 0);
+        }
     });
     REQUIRE(!lines.empty());
     for (const auto& line : lines) {
         require_expected_nnz(line);
         INFO(line);
         if (line.contains("name=scylla ")) {
-            CHECK(effort_of(line) < kBudgetUnits / 4);
+            CHECK(effort_of(line) < kBudgetUnits);
         } else {
             CHECK(end_s_of(line) <= kLimit + kSlack);
         }
@@ -632,8 +723,9 @@ TEST_CASE("deadline: an unbindable budget does not loosen the deadline", "[deadl
     // Scylla on effort, for the reason the "asserted on effort alone" note
     // at the top of this file gives: its floor is one whole PDLP solve,
     // whose wall time varies 127-700 ms with machine load while its charge
-    // does not.  Measured charge with 2x of room, rather than the stale
-    // `kBudgetUnits / 4` (which is 10x above it and bounded nothing).
+    // does not.  Measured charge with 2x of room; a quarter of the budget,
+    // which is what this bound used to be, is 1.27e12 at `kUnbindableEffort`
+    // and bounds nothing.
     const std::string scylla_line = alone_at_limit("scylla", kUnbindableEffort);
     INFO(scylla_line);
     require_expected_nnz(scylla_line);
