@@ -357,7 +357,16 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
 // build.  Always runs to verdict in one call (Phase 3 self-throttles via
 // `cfg.repair_iterations` / `cfg.walksat_iterations`).  Sets
 // `state.phase = kIdle` so the next attempt can call `begin` on the same
-// state object.  `state.found_complete == false` shortcuts to a `failed`
-// verdict.
+// state object.
+//
+// **A result with `found_feasible == false` still carries a solution**
+// (issue #155).  `state.found_complete == false` no longer shortcuts past
+// Phase 2.5: the fill runs regardless and the completed integer point goes
+// back, because Mexi et al. Sect. 2.3 say fix-and-propagate "always
+// produces an integer-feasible, but not necessarily LP-feasible, solution"
+// and Alg. 1.1 line 14 wants exactly that point.  `.solution` is
+// `ncol`-sized and integral on every non-degenerate return; only
+// `found_feasible` says whether it satisfies the rows.  The two degenerate
+// `ncol == 0 || nrow == 0` returns are the sole empty ones.
 HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipsolver,
                                    const FprConfig& cfg, Rng& rng);

@@ -203,7 +203,8 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
 
     if (c.ncol == 0 || c.nrow == 0) {
         // Degenerate model — no DFS to do.  Leave phase = kIdle so a
-        // subsequent finish would short-circuit on found_complete=false.
+        // subsequent finish takes its `ncol == 0 || nrow == 0` guard, which
+        // since #155 is the only return that hands back an empty solution.
         // Match the legacy fpr_attempt early-return shape.
         state.phase = FprAttemptState::Phase::kIdle;
         return;
@@ -473,7 +474,8 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
                 // its own deadline poll fires first.  Nothing here decides
                 // that; a paused attempt is simply what "stop now" means
                 // mid-DFS, and it is what the one-shot wrapper turns into
-                // a `failed` verdict.
+                // a not-feasible verdict — carrying Phase 2.5's point
+                // since #155, not an empty result.
                 break;
             }
         }
@@ -755,9 +757,14 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
 
     // The DFS never reached a leaf: no Phase 3, no verdict, but the point
     // the fill just completed goes back to the caller (issue #155).  It is
-    // charged the fill plus the row rebuild rather than the untouched
-    // `E.effort()` the old shortcut returned, because that is what it now
-    // costs — the whole-dispatch and per-attempt gates read this number.
+    // charged the row rebuild rather than the untouched `E.effort()` the
+    // old shortcut returned, because that is what it now costs — the
+    // whole-dispatch and per-attempt gates read this number.  Note the
+    // charge is the rebuild and *only* the rebuild: `E.effort()` is
+    // `prop_work_`, which nothing but `propagate` and `reset` writes, and
+    // the fill runs through `choose_fix_value` and `E.sol(j) = ...`, which
+    // touch no counter.  So the fill is real wall time that no effort gate
+    // can see.
     //
     // Worth knowing when sizing that charge: of the two halves only the
     // fill buys anything here.  `lhs_cache` is rebuilt above and then
@@ -828,40 +835,45 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
         total_prop_work += walk_effort;
     }
 
-    // Both failure returns below hand back the point too (issue #155).
-    // What the point *is* on these two paths is whatever `scratch.solution`
-    // holds at the failing return: `walksat_repair` and `repair_search`
+    // The failure return below hands back the point too (issue #155).
+    // What the point *is* on this path is whatever `scratch.solution`
+    // holds at the return: `walksat_repair` and `repair_search`
     // mutate it in place and, under `repair_track_best`, restore their own
     // best state into it before returning.  So it is the leaf as Phase 3
     // left it, not the pre-repair leaf — a distinction with no consumer
     // (the pump wants a direction, and Phase 3's best-known point is at
     // least as good a one), but not one to misdescribe.
+    // Phase 3's answer is not the verdict; this re-check is (see
+    // `fpr_attempt_step`, which names this the one verdict site).  A
+    // `true` from `walksat_repair` / `repair_search` says only that their
+    // own `lhs_cache` had no violated row left, so the point is re-checked
+    // against every row before anything is returned, and the two answers
+    // are folded into one `feasible` rather than into two returns.
+    //
+    // **One return, deliberately.** A separate one for "Phase 3 said yes
+    // and a row disagreed" is a return no fixture can drive: for
+    // `walksat_repair` it is bug-or-nothing, since it returns
+    // `violated.empty()` on this very cache; for `repair_search` it is
+    // reachable only on a drift between the cache it maintains
+    // incrementally through `apply_move` and this recomputation from
+    // `solution` -- which is exactly what the re-check exists to catch,
+    // and so is unreachable-as-far-as-we-know rather than unreachable.
+    // A second return would therefore be one no test could pin and a
+    // mutation could silently delete.  Folded in, every failure return in
+    // this function is driven by a test.
+    if (feasible) {
+        for (HighsInt i = 0; i < c.nrow; ++i) {
+            if (is_row_violated_in_ctx(i, lhs_cache[i], c)) {
+                feasible = false;
+                break;
+            }
+        }
+    }
+
     if (!feasible) {
         state.phase = FprAttemptState::Phase::kIdle;
         state.effort_consumed = total_prop_work;
         return HeuristicResult::infeasible_point(std::move(solution), total_prop_work);
-    }
-
-    for (HighsInt i = 0; i < c.nrow; ++i) {
-        if (is_row_violated_in_ctx(i, lhs_cache[i], c)) {
-            // Phase 3 reported success but a row disagrees.  This is the
-            // one verdict site (see `fpr_attempt_step`), so it overrides;
-            // the point still goes back.
-            //
-            // Unpinned by any test, and the honest reason is narrower than
-            // "unreachable".  `walksat_repair` returns `violated.empty()`
-            // on the same `lhs_cache` this loop reads, so for that half it
-            // really is a bug-or-nothing.  `repair_search` maintains its
-            // `lhs_cache` incrementally through `apply_move`, while this
-            // loop recomputes activity from `solution` -- a drift between
-            // the two is exactly what this re-check exists to catch, so
-            // for that half it is unreachable-as-far-as-we-know rather
-            // than unreachable.  The return is a line-for-line copy of the
-            // one above.
-            state.phase = FprAttemptState::Phase::kIdle;
-            state.effort_consumed = total_prop_work;
-            return HeuristicResult::infeasible_point(std::move(solution), total_prop_work);
-        }
     }
 
     greedy_1opt(E, solution, lhs_cache, c.col_cost.data(), c.minimize, total_prop_work);
@@ -928,10 +940,11 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng
     // Single-shot DFS gated by `cfg.max_effort` — matches the pre-#77
     // contract for one-shot callers (scylla / fpr_lp / tests).
     // The `if` (not a `while`) reflects the actual control flow: step
-    // either returns `kVerdictReady` (which finish handles, possibly via
-    // its `!found_complete` shortcut to `failed`) or `kBudgetGate`, in
-    // which case we force a `kReadyToFinish` and let finish emit
-    // `failed(E.effort())`.  Either way, exactly one step call.
+    // either returns `kVerdictReady` or `kBudgetGate`, in which case we
+    // force a `kReadyToFinish`.  Either way, exactly one step call, and
+    // either way finish runs Phase 2.5 and returns a point — since #155 a
+    // `found_complete == false` attempt is an infeasible *point*, not an
+    // empty `failed`, which is what lets Scylla's pump advance on it.
     if (state.phase == FprAttemptState::Phase::kDfs) {
         const size_t already_used =
             effective_cfg.scratch->prop_engine ? effective_cfg.scratch->prop_engine->effort() : 0;

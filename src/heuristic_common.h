@@ -37,12 +37,6 @@ struct HeuristicResult {
     double objective = std::numeric_limits<double>::infinity();
     size_t effort = 0;
 
-    static HeuristicResult failed(size_t e = 0) {
-        HeuristicResult r;
-        r.effort = e;
-        return r;
-    }
-
     // A complete integer assignment that violates at least one row.
     // `found_feasible` stays false, so every offer site — all of which
     // gate on it — is unaffected; what changes is that a caller which
@@ -50,10 +44,8 @@ struct HeuristicResult {
     // `objective` is left at its default and is *not* the cost of `point`:
     // a cost on an assignment that violates rows is not an answer, and
     // leaving it there means no caller can mistake it for one.  Every
-    // *decision* site reads it only under `found_feasible`.  One place
-    // reads it regardless — `fpr_lp`'s `kVerbose` trace line, which
-    // printed `inf` for a failed attempt before this existed too — so the
-    // rule is "no caller acts on it otherwise", not "no caller reads it".
+    // site reads it only under `found_feasible` — checked across `src/`,
+    // and it holds for reads as well as for decisions.
     static HeuristicResult infeasible_point(std::vector<double> point, size_t e) {
         HeuristicResult r;
         r.solution = std::move(point);

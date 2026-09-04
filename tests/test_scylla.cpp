@@ -424,6 +424,14 @@ TEST_CASE("Scylla: the pump advances on a failed FPR rounding (#155)",
     // every one of them from a failed rounding.  Without it, two
     // identical failed roundings stay invisible to `detect_cycling` and
     // the perturbation that exists to break them never fires.
+    // `fresh_solves() == K_` is a property of *this fixture*, not of the
+    // class: `fresh_solves_` is bumped before both the MIP-feasible fast
+    // path and the exhausted-budget break, neither of which reaches
+    // `++K_`.  Here neither can fire -- the model is integer-infeasible so
+    // the fast path is unreachable, and the budget is orders above what
+    // three rounds spend -- so the identity holds and is the sharper
+    // assertion.  The `>= 2` below is the part that survives if that ever
+    // stops being true.
     CHECK(worker.cycle_history_size_for_test() ==
           std::min<size_t>(static_cast<size_t>(worker.fresh_solves()), pump::kCycleWindow));
     CHECK(worker.cycle_history_size_for_test() >= 2);

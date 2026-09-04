@@ -339,10 +339,15 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 - **File**: `src/fpr_lp.cpp` (`LpFprWorker`)
 - **Default**: `50`
-- **Meaning**: After this many consecutive stale attempts (no improvement
-  and no arm switch) the worker forces a new random seed, resetting its
-  LP arm assignment. Prevents a worker from replaying the same arm
-  forever on degenerate instances.
+- **Meaning**: After this many *soft randomizations* — not attempts — the
+  worker **retires** (`finished_ = true`) and stops taking attempts at
+  all. The counter it reads is `randomizations_without_improvement_`,
+  bumped once per `kStaleAttemptThreshold` trigger and never reset, which
+  is why it is the *hard* cap sitting above the soft one: the soft
+  threshold clears `attempts_without_improvement_` on every trigger, so
+  without a second counter the worker could switch arms forever. It does
+  not force a new seed, and it is not a per-attempt count; the entry said
+  both until this was corrected.
 - **Suggested range**: 20–200.
 
 ---
