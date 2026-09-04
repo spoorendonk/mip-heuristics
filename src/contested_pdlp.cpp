@@ -123,7 +123,13 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
     // maps a user solution into the
     // reduced space would make presolve safe again here, but the
     // decision should still rest on the never-reduced-structure argument
-    // unless it is re-measured (see issue #161).
+    // unless it is re-measured.  The throughput cost of solving the
+    // unreduced LP was never measured (issue #161, closed unmeasured):
+    // the comparison needed a build whose warm start is truncated, so its
+    // number would not have been a target anything could steer back
+    // towards.  If that cost ever needs recovering, the shape that keeps
+    // the warm start intact is to presolve once here and keep the pump in
+    // the reduced space, mapping the iterate ourselves.
     set_option_or_die(highs_, "presolve", "off");
     // Two options used to be set here, `pdlp_scaling=true` and
     // `pdlp_e_restart_method=2`.  Both existed in HiGHS v1.13.1 and were

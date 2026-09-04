@@ -310,8 +310,12 @@ and the order of magnitude, not as a factor to divide by. Scylla's effort
 default is a quantile on exactly that axis, so read its arm against this the
 way you read it against #140 and #155. The cost
 question the issue originally asked — pump iterations per second and
-time-to-first-incumbent, with presolve on versus off — is **#161**, still open,
-and no number for it is quoted anywhere yet.
+time-to-first-incumbent, with presolve on versus off — was **#161**, closed
+unmeasured: its "presolve on" arm is a build whose warm start is truncated
+into the reduced column space, so the throughput it showed would not have been
+a target anything could steer back towards, and no number here depends on it.
+The per-dispatch figures above are a different quantity and are not an answer
+to it. `docs/PARAMETERS.md` carries the surviving design option.
 
 The re-run buys exactly what the entries above describe, and every number in
 this file stays provisional until it has been taken.

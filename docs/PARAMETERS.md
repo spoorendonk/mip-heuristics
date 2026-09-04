@@ -853,13 +853,27 @@ Three things to carry forward.
   friends read the objective, and the pump rewrites the costs every round,
   so the *reduced* LP could differ from round to round even with the matrix
   fixed. It only strengthens the case.
-- **Throughput and time-to-first-incumbent are a separate measurement**, and
-  no number is quoted here until it has run — issue #161. Presolve may well
-  have been earning its cost by shrinking what the projection iterates over;
-  that question is open and is not what this change turned on. A visible
-  consequence for the effort axis: charged Scylla effort per round is
-  `pdlp_iters * nnz`, and a warm start that now works lowers `pdlp_iters` on
-  reduced instances, so the #113 Scylla arm moves on its unit axis again.
+- **Throughput and time-to-first-incumbent were never measured, and issue
+  #161 was closed unmeasured.** Presolve may well have been earning its cost
+  by shrinking what the projection iterates over, but the comparison needed a
+  second build whose warm start is truncated into the reduced column space —
+  the defect this change removes — so the number it produced would have
+  described an LP nothing can go back to solving, not a throughput target.
+  Nothing branches on it: the decision here rests on fidelity, and the #113
+  Scylla arm is calibrated on the shipped binary either way. What *has* been
+  measured is a different quantity, and must not be read as an answer to this
+  one: charged effort over a whole clock-bound dispatch, roughly 2x on
+  `gesa2` (see `bench/ablation_effort/README.md`). Charged Scylla effort per
+  round is `pdlp_iters * nnz`, and both inputs moved — the warm start now
+  works, and the LP being iterated over is no longer the smaller one — so the
+  #113 Scylla arm moves on its unit axis again, in a direction that is
+  recorded per dispatch and unmeasured per round.
+- **The surviving design option is not "put presolve back".** If the pump's
+  LP cost ever needs recovering, the shape that keeps the warm start intact
+  is to presolve *once* in the wrapper and keep the pump in the reduced space
+  for the life of the instance, mapping the iterate ourselves — and that
+  would be measured against the shipped binary, not against the truncated
+  arm #161 asked for.
 - The truncation lives in upstream `solveLpCupdlp`. A future HiGHS that maps
   a user solution into the reduced space would make presolve safe here
   again, but the decision should still rest on the argument above unless it
