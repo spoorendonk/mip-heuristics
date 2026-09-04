@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <random>
 #include <utility>
 #include <vector>
@@ -241,21 +242,81 @@ std::pair<RepairBranch, RepairBranch> move_to_disjunction(const PropEngine& E, c
             {var, a, false, false}};  // tighten_ub(a) — the larger gap
 }
 
-namespace {
-
-// BacktrackBestOpen: swap the lowest-violation node to the back of Q.
-void backtrack_best_open(std::vector<RepairSearchNode>& Q) {
+// BacktrackBestOpen: re-seat the search on the lowest-violation open
+// node, discarding the open nodes beneath it.  Declared in
+// repair_search.h -- see the doc comment there for why the discard is
+// what the paper's "at the cost of giving up on completeness" names, and
+// why clamping the two backtracks instead would hide the defect rather
+// than fix it (issue #158).
+size_t backtrack_best_open(std::vector<RepairSearchNode>& Q) {
     if (Q.empty()) {
-        return;
+        return 0;
     }
     auto best =
         std::ranges::min_element(Q, [](const RepairSearchNode& a, const RepairSearchNode& b) {
             return a.violation < b.violation;
         });
-    if (best != Q.end() - 1) {
-        std::iter_swap(best, Q.end() - 1);
+    const auto p = static_cast<size_t>(best - Q.begin());
+    // By value, not by reference: the compaction loop below writes into
+    // `Q` (never at index `p`, since `out` starts past it), and a
+    // reference into a container being rewritten is the kind of aliasing
+    // that survives review and not a refactor.
+    const RepairSearchNode ref = Q[p];
+
+    // A node is *deeper* than the promoted node B (`ref`) iff any one of
+    // its seven undo marks exceeds B's.  Its state was recorded on a
+    // trail that a backtrack to B's marks unwinds away, so after the jump
+    // its marks name a prefix that no longer exists: popping it either
+    // grows a stack through `resize` or replays an unrelated one.
+    // `e_pq_mark` is -1 on every node when E has no domain PQ, so it
+    // never discriminates in that case.
+    auto deeper_than_best = [&ref](const RepairSearchNode& n) {
+        return n.e_vs_mark > ref.e_vs_mark || n.e_sol_mark > ref.e_sol_mark ||
+               n.e_pq_mark > ref.e_pq_mark || n.r_vs_mark > ref.r_vs_mark ||
+               n.r_sol_mark > ref.r_sol_mark || n.sol_undo_mark > ref.sol_undo_mark ||
+               n.lhs_undo_mark > ref.lhs_undo_mark;
+    };
+
+    // The scan covers the **whole** of Q, not the suffix after `p`, and
+    // that is load-bearing rather than defensive.  Q is sorted while the
+    // invariant holds, which would make the prefix vacuous -- but this
+    // function is the only thing that breaks the sort, and it runs many
+    // times in one search.  A previous jump swapped its own B to the
+    // back and left that B's deeper former neighbours to its left; once
+    // B is popped and its children pushed at the new, lower live marks,
+    // those older nodes sit *before* shallower ones.  The next jump can
+    // then promote a node with deeper nodes on its left, and a
+    // suffix-only scan leaves exactly the node that later pops into the
+    // `resize`-grows path this issue is about.  Scanning all of Q is what
+    // makes the post-condition below hold rather than merely hold on the
+    // fixtures.
+    size_t out = 0;
+    size_t new_p = 0;
+    for (size_t i = 0; i < Q.size(); ++i) {
+        if (i != p && deeper_than_best(Q[i])) {
+            continue;
+        }
+        if (i == p) {
+            new_p = out;
+        }
+        Q[out] = Q[i];
+        ++out;
     }
+    const size_t dropped = Q.size() - out;
+    Q.resize(out);
+
+    // Safe after the truncation, and it preserves sortedness.  Q is
+    // sorted on entry (this function is the only thing that can break
+    // that, and the full scan above is what makes it restore it, so the
+    // property is inductive), so a survivor sitting *after* B is both
+    // >= B by sortedness and <= B by the filter -- it carries B's own
+    // marks.  Moving B past that tail is therefore mark-neutral, and the
+    // survivors before B are shallower and stay put.
+    std::iter_swap(Q.begin() + static_cast<std::ptrdiff_t>(new_p), Q.end() - 1);
+    return dropped;
 }
+
+namespace {
 
 // Apply a branch to R: fix or tighten, then propagate.
 // Returns false only on a proven inconsistency; budget exhaustion
@@ -519,6 +580,24 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         ++nodes_visited;
         ++st.nodes_visited;
 
+        // The mark-ordering invariant, observed rather than asserted
+        // (issue #158): a node may only ever restore *downward*, so
+        // every one of its seven marks must sit at or below the
+        // corresponding live stack.  A node that fails this restores to
+        // a state the trail no longer holds, and both backtracks answer
+        // an over-large target with a `resize` that grows the stack into
+        // value-initialized entries -- see `RepairSearchStats::
+        // mark_overshoots`.  Checked in Release too, because that is
+        // where the tests run; the cost is seven integer compares
+        // against a node worth two propagation fixpoints.
+        if (node.e_vs_mark > E.vs_mark() || node.e_sol_mark > E.sol_mark() ||
+            (E.pq_initialized() && node.e_pq_mark > E.pq_mark()) || node.r_vs_mark > R.vs_mark() ||
+            node.r_sol_mark > R.sol_mark() ||
+            std::cmp_greater(node.sol_undo_mark, sol_undo.size()) ||
+            std::cmp_greater(node.lhs_undo_mark, lhs_undo.size())) {
+            ++st.mark_overshoots;
+        }
+
         // Restore parent state (paper lines 7-8).  Pass `node.e_pq_mark`
         // explicitly: when E was `init_domain_pq`'d in Phase 2 (any
         // dynamic-var strategy), omitting the PQ undo target here leaves
@@ -623,11 +702,28 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         // Fig. 5 lines 18-19, Sect. 5.1: "if we detect that we are not
         // making enough progress in the current subtree, we backtrack
         // directly to the most promising open node").  This gate is the
-        // only thing that reorders Q (issue #130).  Until #130 the same
-        // `BacktrackBestOpen` also ran unconditionally, so the node
-        // popped next was the lowest-violation open node on every step
-        // and the search was best-first rather than the paper's
-        // DFS-with-occasional-jumps; the gate could not change anything.
+        // only thing that changes the shape of Q (issue #130).  Until
+        // #130 the same `BacktrackBestOpen` also ran unconditionally, so
+        // the node popped next was the lowest-violation open node on
+        // every step and the search was best-first rather than the
+        // paper's DFS-with-occasional-jumps; the gate could not change
+        // anything.
+        //
+        // **A jump gives the abandoned subtree up; it does not reorder
+        // it** (issue #158).  Every open node restores its parent state
+        // by replaying an undo trail down to a mark, so the marks along
+        // Q have to stay non-decreasing front-to-back for a pop to
+        // unwind downward -- and a permutation that merely moved the
+        // best node to the back left the strictly-deeper open nodes
+        // stranded above a trail the search then unwound beneath them,
+        // corrupting engine state when one was later popped.  So
+        // `backtrack_best_open` discards them, which is also what
+        // Sect. 5.1 describes when it prices the jump: "we backtrack
+        // directly to the most promising open node, at the cost of
+        // giving up on completeness".  A permutation gives up no
+        // completeness at all.  `st.nodes_abandoned_by_jump` counts what
+        // this costs; `st.mark_overshoots`, checked at the pop site
+        // above, is the invariant it buys.
         //
         // **The position is deliberate and is not the figure's line
         // order.**  Q is a LIFO stack, so a promotion made where lines
@@ -646,7 +742,7 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
         // increments it and leaves the jump to the next node that does
         // push.
         if (nodes_without_progress >= progress_threshold) {
-            backtrack_best_open(Q);
+            st.nodes_abandoned_by_jump += backtrack_best_open(Q);
             nodes_without_progress = 0;
             ++st.best_open_jumps;
         }
@@ -661,6 +757,14 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
     // `r_sol_mark`, `sol_undo_mark`, `lhs_undo_mark`), which is exactly
     // what the head of the loop above replays on every iteration, so line
     // 27 is implementable here verbatim.
+    //
+    // That last claim holds *because* the mark-ordering invariant is
+    // maintained (issue #158), and not otherwise: replaying an open
+    // node's marks is only meaningful while they sit at or below the
+    // live stacks, which is precisely what `backtrack_best_open`'s
+    // discard restores after a jump.  Under the pre-#158 permutation an
+    // open node's marks could exceed them, and line 27 would then
+    // restore a state the trail no longer holds.
     //
     // The reason for the choice is that the best visited state is at
     // least as good, under the paper's own line-17 measure, and needs no

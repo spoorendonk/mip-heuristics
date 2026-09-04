@@ -10,6 +10,7 @@
 
 class PropEngine;
 struct FprScratch;
+struct RepairSearchNode;
 
 // SyncChanges(E, R) (paper Fig. 5 line 13, Sect. 5.1): transfer domain
 // deductions from the secondary engine R into the primary engine E.
@@ -62,6 +63,26 @@ struct RepairSearchStats {
     // `repair_iterations` stopped on feasibility, an empty Q or the
     // clock.
     size_t nodes_visited = 0;
+    // Open nodes discarded by `backtrack_best_open`'s jumps, summed
+    // over the run (issue #158).  A jump gives up the subtree it
+    // escapes rather than permuting it to the front of Q -- see the
+    // doc comment on `backtrack_best_open` below for why it must.
+    size_t nodes_abandoned_by_jump = 0;
+    // Nodes popped with at least one undo mark above the corresponding
+    // live stack size (issue #158).  **Must stay zero**: such a node
+    // restores to a state the trail no longer holds, and
+    // `PropEngine::backtrack_to` / `backtrack_sol_lhs` answer a target
+    // above the current size with a `resize` that *grows* the stack,
+    // value-initializing entries a later backtrack then replays --
+    // `vs_[0] = VarState{}` (column 0 forced to `[0, 0]`, unfixed) and
+    // `solution_[0] = 0.0`.  Silent state corruption, not a crash, and
+    // invisible to any assertion on the returned point, since
+    // `fpr_attempt_finish` re-checks every row before anything is
+    // emitted.  This is the *Release-mode* observable of the ordering
+    // invariant: the tests build with `-DNDEBUG`, so an assert could
+    // not be it.  Seven integer compares per node, against a node that
+    // costs two propagation fixpoints.
+    size_t mark_overshoots = 0;
     // Nodes whose *bound* branch -- the non-binary half of
     // `MoveToDisjunction` -- actually moved the incumbent point (issue
     // #131).  Before #131 this was zero on every model: the disjunction
@@ -96,6 +117,50 @@ struct RepairBranch {
 std::pair<RepairBranch, RepairBranch> move_to_disjunction(const PropEngine& E, const PropEngine& R,
                                                           HighsInt var, double cur_val,
                                                           double move_val);
+
+// BacktrackBestOpen (paper Fig. 5 lines 18-19, Sect. 5.1): re-seat the
+// search on the lowest-violation open node.  Locate the best node B in
+// `Q`, **discard every open node after it whose undo marks are strictly
+// deeper than B's in any component**, then move B to the back so the
+// LIFO stack pops it next.  Returns how many nodes were discarded.
+//
+// The discard is what makes the jump sound (issue #158), and it is what
+// the paper describes.  Each `RepairSearchNode` restores its parent
+// state by *replaying an undo trail down to a mark*, which is only
+// meaningful while the marks along `Q` are non-decreasing front-to-back,
+// so that a pop always unwinds downward.  A plain swap breaks that: it
+// can seat a deep node at an interior position, the search then unwinds
+// below that node's mark, and popping it later resizes the undo stacks
+// *upward* into value-initialized entries -- see `mark_overshoots`
+// above.  Clamping the two backtracks instead would only hide it: after
+// a jump the trail beneath a deeper node's mark has been rewritten, so
+// even a non-growing restore reinstates an unrelated state and the
+// node's recorded `violation` no longer describes it.  Sect. 5.1 says
+// the price outright -- "we backtrack directly to the most promising
+// open node, at the cost of giving up on completeness" -- and a
+// permutation that kept the deeper nodes would cost no completeness at
+// all.  Dropping them is the cost the sentence names.
+//
+// Nodes whose marks *equal* B's are kept: they are the alt/pref pair
+// pushed together at the same parent state, so they share B's trail
+// prefix and stay legally restorable.  Post-condition on `Q`: marks are
+// componentwise non-decreasing front-to-back, i.e. the invariant is
+// restored rather than merely not-worsened.
+//
+// That post-condition needs the scan to cover the **whole** of `Q` and
+// not just the nodes after the promoted one, and it is inductive rather
+// than free: this function is the only thing that can break the order,
+// so the deeper node a later jump has to discard can perfectly well sit
+// to the promoted node's *left*, left there by an earlier jump's own
+// swap-to-back.  A suffix-only scan strands exactly that node.
+//
+// Declared here, not left in the anonymous namespace, for the reason
+// `sync_changes` (#125) and `move_to_disjunction` (#131) are: a
+// whole-search outcome cannot separate "dropped the subtree" from
+// "permuted it to the back", because both leave B popped next and the
+// difference only shows up nodes later, so the discard is unit-tested
+// directly.
+size_t backtrack_best_open(std::vector<RepairSearchNode>& Q);
 
 // Paper Fig. 5: RepairSearch with secondary propagation engine R.
 // E: main propagation engine (has partial assignment from Phase 2).

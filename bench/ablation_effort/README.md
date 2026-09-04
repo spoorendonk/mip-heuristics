@@ -230,8 +230,8 @@ a trajectory the solver measured rather than one reconstructed offline, on a
 binary whose setup paths are bounded and whose barren dispatches are honestly
 labelled. The whole point of the exercise is the second thing.
 
-Precondition, concretely: **not satisfied as of 2026-09-04 — one open
-correctness defect meets the bar.**
+Precondition, concretely: **satisfied as of 2026-09-04 — no open correctness
+defect meets the bar, and the window is unblocked.**
 That is the bar, and it is worth stating rather than leaving implicit: what
 blocks this window is a defect that makes a dispatch measure something other
 than what the probe thinks it measures, not any open issue touching Scylla.
@@ -245,16 +245,27 @@ leaf-time repair silently no-oped past the crossing — and #124 had made the
 crossing common, on exactly the long attempts this probe's tail is made of.
 Both Phase 3 repairs now follow the #124 pattern: `repair_search` is governed
 by its node limit and `walksat_repair` by its step limit plus an internal
-`kWalkSatBudgetPerNnz` valve, neither taking a cap from its caller. **#158
-remains open and meets the bar**: `backtrack_best_open` breaks the
-mark-ordering invariant `backtrack_to` relies on, which can corrupt engine
+`kWalkSatBudgetPerNnz` valve, neither taking a cap from its caller. **#158 is now fixed as
+well**, which was the last one meeting the bar: `backtrack_best_open` broke the
+mark-ordering invariant `backtrack_to` relies on and could corrupt engine
 state on the `kRepairSearch` arm (1 of 8, FPR only; caught by the point
-re-check, so it wastes work rather than emitting anything invalid). #155 is
+re-check, so it wasted work rather than emitting anything invalid). A jump now
+discards the open nodes strictly beneath the one it promotes — the paper's own
+"at the cost of giving up on completeness" — and `RepairSearchStats::
+mark_overshoots` is the Release-mode check that the invariant holds. #155 is
 borderline and #154 is test-quality only; all five are triaged in the campaign
-epic. Land #158 before the window. (#152's fix also
+epic. **The window can be taken.** (#152's fix also
 uncovered #154 — the deadline suite's effort constants are 80x stale, so
 several of its cases pass without discriminating. It is a test-quality
 issue, not a solver one, and does not bear on the probe.)
+
+**#158 is an input change too**, and the narrowest of them: a jump on the
+`kRepairSearch` arm now visits different nodes after it fires, since the
+subtree it escapes is given up rather than permuted to the back. One arm of
+eight and FPR alone, so it moves no Scylla or `fpr_lp` number. On the
+`StallModel` unit fixture the production threshold is unmoved (29 nodes at
+seed 42 before and after); at threshold 1 the same fixture goes 17 nodes with
+one mark overshoot to 11 nodes with none.
 
 **#156 is itself an input change**, and a third one beside the two below: every
 `mode_repairs` leaf walk — FPR, two of Scylla's four chains, six of `fpr_lp`'s ten arms — is

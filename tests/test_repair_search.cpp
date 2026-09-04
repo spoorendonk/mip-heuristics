@@ -396,28 +396,40 @@ TEST_CASE("RepairSearch: E and R are armed with the call's deadline", "[repair-s
 // one-sided row bounds inside the activity range) looking for one where
 // the *first* subtree a pure DFS enters is a dead end it cannot leave
 // within `repair_iterations` nodes, while a feasible repair sits
-// elsewhere in the tree.  On it:
+// elsewhere in the tree.  At RNG seed 52 on it:
 //
 //   threshold 1     -> jumps out of the dead subtree, reaches a feasible
-//                      assignment after 19 of the 50 permitted nodes;
+//                      assignment after 25 of the 50 permitted nodes;
 //   threshold 10^6  -> the gate can never fire, the search is the pure
 //                      DFS Fig. 5 describes, and it spends all 50 nodes
 //                      in the dead subtree without finding anything.
 //
 // The shipped default of 10 sits on the escaping side too (feasible at
-// node 29), which is what the third case below pins to the constant.
+// node 25), which is what the third case below pins to the constant.
+//
+// The seed moved from 42 to 52 with issue #158, which made a jump
+// *discard* the open nodes beneath it rather than permute them to the
+// back: at seed 42 the threshold-1 arm now gives the dropped subtree up
+// and returns infeasible after 11 nodes, which is the paper's own "cost
+// of giving up on completeness" and is pinned by its own test below
+// rather than hidden.  52 is the smallest seed that still separates the
+// three thresholds, and the production arm is unmoved by #158 either way
+// (threshold 10 at seed 42: 29 nodes, feasible, before and after).
 //
 // Both halves are load-bearing, and each fails against a different
-// mutation.  Restoring the ungated call makes *both* thresholds fail to
-// find a solution (measured: threshold 1 then also returns infeasible
-// after all 50 nodes), because the steering no longer depends on the
-// counter.  Deleting the gated `backtrack_best_open` while keeping the
-// counter, or reading a hardcoded 10 instead of the parameter, collapses
-// threshold 1 onto the threshold-10^6 run for the same reason.  An
-// assertion that the two runs merely *differ* would not catch the first
-// of those: the pre-#130 code's two runs differ too, since the gate still
-// permuted Q and reset its own counter even when it changed nothing about
-// which node came next.
+// mutation -- re-measured at seed 52 on the post-#158 code.  Restoring
+// the ungated call makes the steering independent of the counter, so
+// every threshold from 9 upwards runs the same search and the 10^6 arm
+// finds a solution in 19 nodes: `REQUIRE_FALSE(dfs.feasible)` fails.
+// Deleting the gated `backtrack_best_open` while keeping the counter
+// collapses threshold 1 onto the threshold-10^6 run (both 50 nodes, both
+// infeasible), failing `REQUIRE(jumping.feasible)`.  Reading a hardcoded
+// 10 instead of the parameter collapses *all* the thresholds onto the
+// threshold-10 search (25 nodes, feasible), which again fails
+// `REQUIRE_FALSE(dfs.feasible)`.  An assertion that the two runs merely
+// *differ* would not catch the first of those: under the ungated call
+// the two runs still differ (13 nodes against 19), so it is the
+// feasibility verdicts and not the node counts that do the work.
 // ===================================================================
 
 namespace {
@@ -458,7 +470,7 @@ struct StallRun {
 // argument, exactly as `fpr_core.cpp` does, so the third case below reads
 // the production value rather than a copy of it.
 StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt progress_threshold,
-                         bool use_default = false) {
+                         bool use_default = false, unsigned seed = 42) {
     const double feastol = 1e-6;
     // NOLINTNEXTLINE(readability-identifier-naming)
     PropEngine E(StallModel::ncol, StallModel::nrow, m.ar_start.data(), m.ar_index.data(),
@@ -468,7 +480,7 @@ StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt pro
     out.solution.assign(StallModel::ncol, 0.0);
     out.lhs_cache.assign(StallModel::nrow, 0.0);
     FprScratch scratch;
-    Rng rng(42);
+    Rng rng(seed);
     Deadline deadline;  // never expires
     size_t effort_out = 0;
     if (use_default) {
@@ -489,21 +501,27 @@ StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt pro
 }  // namespace
 
 TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-search][progress]") {
+    constexpr unsigned kSeed = 52;
     const StallModel m;
     CscMatrix csc =
         build_csc(StallModel::ncol, StallModel::nrow, m.ar_start, m.ar_index, m.ar_value);
     const double feastol = 1e-6;
 
     // Out of reach: 10^6 exceeds `repair_iterations`, so the gate cannot
-    // fire even once and the node loop is a pure DFS.
-    const StallRun dfs = run_stall_model(m, csc, /*progress_threshold=*/1000000);
+    // fire even once and the node loop is a pure DFS.  `kSeed` is 52
+    // rather than the fixture default of 42 -- see the section comment
+    // above for why #158 moved it, and the give-up test below for what
+    // 42 pins now.
+    const StallRun dfs =
+        run_stall_model(m, csc, /*progress_threshold=*/1000000, /*use_default=*/false, kSeed);
     CHECK(dfs.stats.best_open_jumps == 0);
     CHECK(dfs.stats.nodes_visited == 50);  // the whole node budget, in one dead subtree
     REQUIRE_FALSE(dfs.feasible);
 
     // Threshold 1: abandon the subtree at the first node that fails to
     // improve the best violation.
-    const StallRun jumping = run_stall_model(m, csc, /*progress_threshold=*/1);
+    const StallRun jumping =
+        run_stall_model(m, csc, /*progress_threshold=*/1, /*use_default=*/false, kSeed);
     CHECK(jumping.stats.best_open_jumps > 0);
     CHECK(jumping.stats.nodes_visited < dfs.stats.nodes_visited);
     REQUIRE(jumping.feasible);
@@ -518,12 +536,13 @@ TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-se
     // The production call site names no threshold -- it takes the
     // parameter's default -- so this is what `fpr_core.cpp` actually runs,
     // and it must be `kRepairProgressThreshold`'s search and no other.
-    // Neighbouring values are all distinguishable here (9 -> 32 nodes,
-    // 10 -> 29, 11 -> 33, 3 -> 15), so moving the constant or the default
+    // Neighbouring values are all distinguishable here (9 -> 24 nodes,
+    // 10 -> 25, 11 -> 27, 3 -> 18), so moving the constant or the default
     // moves this.
     const StallRun production = run_stall_model(m, /*csc=*/csc, /*progress_threshold=*/0,
-                                                /*use_default=*/true);
-    const StallRun named = run_stall_model(m, csc, kRepairProgressThreshold);
+                                                /*use_default=*/true, kSeed);
+    const StallRun named =
+        run_stall_model(m, csc, kRepairProgressThreshold, /*use_default=*/false, kSeed);
     CHECK(production.feasible == named.feasible);
     CHECK(production.stats.nodes_visited == named.stats.nodes_visited);
     CHECK(production.stats.best_open_jumps == named.stats.best_open_jumps);
@@ -545,6 +564,209 @@ TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-se
         CHECK(lhs >= m.row_lo[i] - feastol);
         CHECK(lhs <= m.row_hi[i] + feastol);
     }
+}
+
+// ===================================================================
+// BacktrackBestOpen gives its subtree up (issue #158).
+//
+// Every `RepairSearchNode` restores its parent state by replaying an
+// undo trail down to a mark, which is sound only while the marks along
+// `Q` are non-decreasing front-to-back so that a pop always unwinds
+// *downward*.  The pre-#158 jump was a plain `std::iter_swap` of the
+// best node to the back, which can seat a deep node at an interior
+// position; the search then unwinds beneath that node's mark, and
+// popping it later hands `PropEngine::backtrack_to` /
+// `backtrack_sol_lhs` a target above the live stack size, whose
+// `resize` *grows* the stack into value-initialized entries -- a later
+// backtrack replays them as `vs_[0] = VarState{}` and
+// `solution_[0] = 0.0`.
+//
+// Sect. 5.1 prices the jump as "we backtrack directly to the most
+// promising open node, at the cost of giving up on completeness", and a
+// permutation costs no completeness at all: the fix is to discard the
+// strictly-deeper open nodes, which is what these two cases pin
+// directly.  They are unit tests on `backtrack_best_open` rather than
+// assertions on a whole search because a search cannot separate
+// "dropped the subtree" from "permuted it to the back" -- both leave the
+// best node popped next, and the difference only surfaces nodes later.
+// ===================================================================
+
+namespace {
+
+// A node carrying the same value in all seven undo marks, which is the
+// shape the invariant is about; `var` is the label the cases identify it
+// by and plays no part in the drop rule.
+RepairSearchNode marked_node(HighsInt label, HighsInt mark, double violation) {
+    return RepairSearchNode{/*var=*/label,
+                            /*val=*/0.0,
+                            /*is_fix=*/true,
+                            /*is_lb=*/false,
+                            /*e_vs_mark=*/mark,
+                            /*e_sol_mark=*/mark,
+                            /*e_pq_mark=*/mark,
+                            /*r_vs_mark=*/mark,
+                            /*r_sol_mark=*/mark,
+                            /*sol_undo_mark=*/mark,
+                            /*lhs_undo_mark=*/mark,
+                            /*violation=*/violation};
+}
+
+// The seven marks, as assignable references, in the order
+// `RepairSearchNode` declares them.  Used to raise exactly one of them.
+std::vector<HighsInt*> marks_of(RepairSearchNode& n) {
+    return {&n.e_vs_mark,  &n.e_sol_mark,    &n.e_pq_mark,    &n.r_vs_mark,
+            &n.r_sol_mark, &n.sol_undo_mark, &n.lhs_undo_mark};
+}
+
+}  // namespace
+
+TEST_CASE("BacktrackBestOpen: a jump drops the open nodes beneath it",
+          "[repair-search][backtrack-best-open]") {
+    // The issue's own trace: Q = [A(0), C(m1), E(m2)] with m1 < m2 and A
+    // the lowest-violation node.  Under the pre-#158 swap this became
+    // [E(m2), C(m1), A(0)]; A is then popped, the stacks unwind to 0, A's
+    // own children are pushed at marks far below m1 and consumed, and the
+    // next pop is C(m1) against stacks sitting below m1 -- the resize
+    // path.  After #158 the two nodes beneath A are given up instead.
+    std::vector<RepairSearchNode> q = {marked_node(/*label=*/10, /*mark=*/0, /*violation=*/1.0),
+                                       marked_node(/*label=*/11, /*mark=*/4, /*violation=*/5.0),
+                                       marked_node(/*label=*/12, /*mark=*/9, /*violation=*/7.0)};
+
+    const size_t dropped = backtrack_best_open(q);
+
+    CHECK(dropped == size_t{2});
+    REQUIRE(q.size() == size_t{1});
+    CHECK(q.front().var == 10);
+    CHECK(q.front().violation == Catch::Approx(1.0));
+}
+
+TEST_CASE("BacktrackBestOpen: the alt/pref pair at the best node's own marks survives",
+          "[repair-search][backtrack-best-open]") {
+    // The two children of one parent are pushed together at the same
+    // state, so their marks are *equal*, not deeper: they share the best
+    // node's trail prefix and stay legally restorable.  Dropping them
+    // would throw away the jump's own destination subtree, and would
+    // also move the production search -- this equality case is what
+    // keeps the threshold-10 node counts identical across #158.
+    //
+    // `std::ranges::min_element` returns the *first* minimum, so with the
+    // pair tied on violation the alternative is chosen and the swap sends
+    // it to the back, where the LIFO pop takes it next.  That tie rule is
+    // load-bearing and unchanged.
+    std::vector<RepairSearchNode> q = {marked_node(/*label=*/20, /*mark=*/0, /*violation=*/5.0),
+                                       marked_node(/*label=*/21, /*mark=*/3, /*violation=*/1.0),
+                                       marked_node(/*label=*/22, /*mark=*/3, /*violation=*/1.0)};
+
+    const size_t dropped = backtrack_best_open(q);
+
+    CHECK(dropped == size_t{0});
+    REQUIRE(q.size() == size_t{3});
+    CHECK(q[0].var == 20);
+    CHECK(q[1].var == 22);  // pref, left where it was
+    CHECK(q[2].var == 21);  // alt, the first minimum, swapped to the back
+}
+
+TEST_CASE("BacktrackBestOpen: any one deeper mark is enough to drop a node",
+          "[repair-search][backtrack-best-open]") {
+    // The drop rule is a *componentwise* comparison over all seven marks,
+    // and the two cases above cannot see that: there every mark moves
+    // together, so an implementation testing only `e_vs_mark` -- or only
+    // `sol_undo_mark`, the one `backtrack_sol_lhs` reads -- passes both.
+    // A stale mark in any single component is a corrupt restore, so each
+    // is checked on its own here.
+    RepairSearchNode probe = marked_node(/*label=*/0, /*mark=*/0, /*violation=*/0.0);
+    const size_t num_marks = marks_of(probe).size();
+    for (size_t k = 0; k < num_marks; ++k) {
+        INFO("mark component " << k);
+        RepairSearchNode best = marked_node(/*label=*/30, /*mark=*/2, /*violation=*/1.0);
+        RepairSearchNode other = marked_node(/*label=*/31, /*mark=*/2, /*violation=*/9.0);
+        *marks_of(other)[k] = 3;  // deeper in exactly one component
+
+        std::vector<RepairSearchNode> q = {best, other};
+        const size_t dropped = backtrack_best_open(q);
+
+        CHECK(dropped == size_t{1});
+        REQUIRE(q.size() == size_t{1});
+        CHECK(q.front().var == 30);
+    }
+}
+
+TEST_CASE("BacktrackBestOpen: a deeper node before the best one is dropped too",
+          "[repair-search][backtrack-best-open]") {
+    // The three cases above all place the best node at the front, where
+    // the prefix is empty, so a suffix-only scan passes every one of
+    // them.  It is not sufficient: this function is the only thing that
+    // can break Q's sort order, and it runs many times in one search.  A
+    // previous jump swapped its own B to the back, leaving that B's
+    // deeper former neighbours to its *left*; when B is popped and its
+    // children are pushed at the new, lower live marks, those older
+    // nodes sit before shallower ones.  The next jump then promotes a
+    // node with deeper nodes on its left -- and a suffix-only scan
+    // strands exactly the node that later pops into the resize-grows
+    // path.
+    //
+    // Q here is that state: a deep leftover at 9, the promoted node at 3
+    // in the middle, and a deeper node after it.  Both deep nodes go.
+    std::vector<RepairSearchNode> q = {marked_node(/*label=*/40, /*mark=*/9, /*violation=*/7.0),
+                                       marked_node(/*label=*/41, /*mark=*/3, /*violation=*/1.0),
+                                       marked_node(/*label=*/42, /*mark=*/5, /*violation=*/6.0)};
+
+    const size_t dropped = backtrack_best_open(q);
+
+    CHECK(dropped == size_t{2});
+    REQUIRE(q.size() == size_t{1});
+    CHECK(q.front().var == 41);
+
+    // And the shallower prefix survives, in place, with the promoted node
+    // still swapped to the back where the LIFO pop takes it next.
+    std::vector<RepairSearchNode> q2 = {marked_node(/*label=*/50, /*mark=*/1, /*violation=*/7.0),
+                                        marked_node(/*label=*/51, /*mark=*/3, /*violation=*/1.0),
+                                        marked_node(/*label=*/52, /*mark=*/5, /*violation=*/6.0)};
+
+    const size_t dropped2 = backtrack_best_open(q2);
+
+    CHECK(dropped2 == size_t{1});
+    REQUIRE(q2.size() == size_t{2});
+    CHECK(q2[0].var == 50);
+    CHECK(q2[1].var == 51);
+}
+
+TEST_CASE("RepairSearch: a jump abandons its subtree instead of corrupting the trail",
+          "[repair-search][backtrack-best-open]") {
+    // The whole-search half of #158, on the same `StallModel` and at the
+    // fixture's own seed 42, where the defect is reachable: at
+    // `progress_threshold` 1 the gate fires often enough to strand a
+    // deeper open node above a rewritten trail.
+    //
+    // Measured on this fixture at seed 42, threshold 1, by temporarily
+    // restoring the plain `std::iter_swap`:
+    //
+    //   pre-#158:  17 nodes,  9 jumps,  0 dropped,  1 mark overshoot,
+    //              feasible -- and that one overshoot is the resize path,
+    //              i.e. a node whose marks exceeded the live stacks;
+    //   post-#158: 11 nodes,  7 jumps,  8 dropped,  0 overshoots,
+    //              infeasible.
+    //
+    // The infeasible verdict is the point rather than a regression: the
+    // eight discarded nodes are the completeness Sect. 5.1 says the jump
+    // gives up, and the alternative is a search that keeps them and then
+    // restores them against state that no longer exists.  Seed 2 is the
+    // same defect an order of magnitude larger (15 overshoots pre-fix, 0
+    // after), and the production threshold is untouched -- 10 at seed 42
+    // visits 29 nodes and finds a solution both before and after.
+    //
+    // Mutation-sensitive twice over: dropping the discard from
+    // `backtrack_best_open` turns `nodes_abandoned_by_jump` to 0 *and*
+    // `mark_overshoots` nonzero, so neither assertion alone carries it.
+    const StallModel m;
+    CscMatrix csc =
+        build_csc(StallModel::ncol, StallModel::nrow, m.ar_start, m.ar_index, m.ar_value);
+
+    const StallRun run = run_stall_model(m, csc, /*progress_threshold=*/1);
+
+    CHECK(run.stats.best_open_jumps > size_t{0});
+    CHECK(run.stats.nodes_abandoned_by_jump > size_t{0});
+    CHECK(run.stats.mark_overshoots == size_t{0});
 }
 
 // ===================================================================

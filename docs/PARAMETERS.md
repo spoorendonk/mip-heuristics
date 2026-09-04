@@ -1900,7 +1900,21 @@ buy.
   different searches — `tests/test_repair_search.cpp`'s "the progress
   threshold decides the search" finds a feasible repair at `1` and
   exhausts its node budget without one at `10^6`, on the same model and
-  the same RNG stream.
+  the same RNG stream (seed 52 since #158; it was 42 before).
+- **A jump discards the open nodes beneath it** (#158). Each node
+  restores its parent state by replaying an undo trail down to a mark,
+  so the marks along `Q` must stay non-decreasing front-to-back for a
+  pop to unwind downward. `backtrack_best_open` therefore drops every
+  open node whose marks are strictly deeper than the promoted node's in
+  any of the seven components, keeping only the ones whose marks *equal*
+  it — the alt/pref pair pushed beside it at the same parent state.
+  That is the price Sect. 5.1 names for the jump, "at the cost of giving
+  up on completeness"; the plain permutation it replaces cost no
+  completeness and instead stranded deeper nodes above a trail the search
+  had since rewritten, corrupting engine state when one was popped.
+  Raising this threshold therefore also lowers how much of the tree the
+  search gives up — a second effect of the same knob, though far below
+  the steering effect in magnitude.
 - **Suggested range**: 5–30. `0` is not special-cased and is **not**
   "no gate": the test is `nodes_without_progress >= threshold`, so `0`
   promotes the best open node after *every* expansion, improving ones
