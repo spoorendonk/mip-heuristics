@@ -173,8 +173,8 @@ constexpr double kSlack = 0.20;
 //   fj         kClockBindingEffort  17.1-18.2e6 (0.102)  83.6-88.2e6
 //   fpr        kClockBindingEffort  9.9-10.3e6           54.6-55.3e6
 //   local_mip  kClockBindingEffort  2156255     (0.104)  9.9-10.1e6
-//   scylla     kClockBindingEffort  15702275    (0.100)  86.3-87.8e6
-//   scylla     kUnbindableEffort    16.1-18.9e6 (0.103)  86.0-88.0e6
+//   scylla     kClockBindingEffort  15.7-18.9e6 (0.100)  84.8-87.8e6
+//   scylla     kUnbindableEffort    15.7-18.9e6 (0.103)  84.8-88.0e6
 //   fj         1.0                  5110832     (0.036)  5110832
 //   fpr        1.0                  5087251     (0.055)  5087251
 //   scylla     1.0                  5092240     (0.046)  5092240

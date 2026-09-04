@@ -96,13 +96,31 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
     // space — which is what `absorb_fresh_solve` already stores and what
     // `ScyllaWorker` already asserts on (`x_bar.size() == ncol_`).
     //
+    // It moves two chain-retirement paths, in opposite directions, and
+    // both are worth naming.  A working warm start makes a
+    // `pdlp_iters == 0` return reachable, which `absorb_fresh_solve`
+    // retires on after `pump::kMaxPdlpStalls` in a row — measured not to
+    // fire on any bundled instance at `threads=1`, since the modified cost
+    // moves every round.  In the other direction, HiGHS's `kReduced`
+    // branch clears the solution when a solve ends at a time or iteration
+    // limit (`setHighsModelStatusAndClearSolutionAndBasis`), which
+    // `absorb_fresh_solve` reads as `!value_valid` and also retires on;
+    // neither the `kNotPresolved` nor the `kNotReduced` branch does that.
+    // So on the instances that *were* reducing, a truncated solve now
+    // yields a usable-but-inexact `x_bar` and the chain continues where it
+    // used to retire.
+    //
     // Two footnotes.  The issue behind this framed the LP as having a
     // structure that never changes between solves; that is not quite
     // true — `weaklyDominatedCol` and friends read the objective, and
     // the pump rewrites the costs every round, so the *reduced* LP could
     // differ from round to round even with the matrix fixed.  That only
     // strengthens the case.  And the truncation lives in upstream
-    // `solveLpCupdlp`: a future HiGHS that maps a user solution into the
+    // `solveLpCupdlp` (the reduction figures quoted with this decision
+    // were taken with `solver=pdlp`, `solve_relaxation=true` and
+    // `presolve=on` in an *options file* — the CLI has no `--solver=pdlp`
+    // or `--solve_relaxation` flag and rejects them): a future HiGHS that
+    // maps a user solution into the
     // reduced space would make presolve safe again here, but the
     // decision should still rest on the never-reduced-structure argument
     // unless it is re-measured (see issue #161).

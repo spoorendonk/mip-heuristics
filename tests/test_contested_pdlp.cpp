@@ -374,8 +374,10 @@ TEST_CASE("ContestedPdlp: every PDLP option name we write exists in HiGHS",
     REQUIRE(highs.setOptionValue("kkt_tolerance", pump::kEpsilonFloor) == HighsStatus::kOk);
 
     // The three options we deliberately do NOT write, kept here as named
-    // negative controls: cuPDLP-C reads them too, but so does `HPresolve`,
-    // so driving them from epsilon presolves a different LP.
+    // negative controls.  The original reason was that `HPresolve` reads
+    // them too; since #153 presolve is off on this instance, and what keeps
+    // them unwritten is that `kkt_tolerance` is what cuPDLP-C's termination
+    // check resolves from.
     //
     // This loop does two jobs, and neither is guarding against a stale
     // read — `getOptionValue` leaves its out-parameter untouched on a bad
@@ -502,8 +504,10 @@ TEST_CASE("ContestedPdlp: a solve that waited for the mutex gets the time that i
 // almost nothing.
 //
 // The first fix's: writing those two options explicitly *does* reach
-// cuPDLP-C, but they are not private to it.  `Highs::run` always presolves
-// this instance, and `HPresolve` reads both verbatim -- at epsilon=1e-2 it
+// cuPDLP-C, but they were not private to it.  `Highs::run` presolved this
+// instance at the time -- #153 has since turned presolve off here, so this
+// paragraph is the history of the decision and not a live fact about the
+// wrapper.  `HPresolve` reads both verbatim -- at epsilon=1e-2 it
 // fixes weakly dominated columns to bounds and returns a smaller, different
 // LP (measured: afiro 7/10/28 -> 8/11/30, 25fv47 666/1434/9659 ->
 // 663/1427/9623).  Driving `kkt_tolerance` instead reaches exactly the same
@@ -538,8 +542,10 @@ TEST_CASE("ContestedPdlp: epsilon drives kkt_tolerance alone on every solve",
         static_cast<void>(pdlp.solve(cost, empty, empty, false, epsilon));
         const auto tol = pdlp.tolerances_for_test();
         CHECK(tol.kkt == epsilon);
-        // And the half that keeps LP presolve out of it: the three
-        // options `HPresolve` also reads must never move.
+        // And the half that pins the route: the three options
+        // `HPresolve` also reads must never move.  (That mattered for
+        // presolve until #153 turned it off here; it still pins that
+        // `epsilon` reaches cuPDLP-C through `kkt_tolerance` alone.)
         CHECK(tol.primal_feasibility == kDefaultKktTolerance);
         CHECK(tol.dual_feasibility == kDefaultKktTolerance);
         CHECK(tol.pdlp_optimality == kDefaultKktTolerance);
@@ -882,6 +888,14 @@ TEST_CASE("ContestedPdlp: a warm start at the previous optimum reaches cuPDLP-C 
     const auto warm = pdlp.solve(cost, cold.col_value, cold.row_dual, true, pump::kEpsilonInit);
 
     INFO("cold iterations: " << cold.pdlp_iters << ", warm iterations: " << warm.pdlp_iters);
+    // First: the second solve actually ran.  A `SolveResult` from the
+    // deadline short-circuit is default-constructed -- `pdlp_iters == 0`
+    // and `value_valid == false` -- which would satisfy both assertions
+    // below vacuously.  Unreachable in this fixture (`build_bare_mipsolver`
+    // leaves `time_limit` at infinity, so the `Deadline` is null), but the
+    // subject of this case is the *content* of the warm solve, so it says
+    // so rather than relying on the fixture.
+    REQUIRE(warm.value_valid);
     // The exact assertion: a start already within epsilon is recognised on
     // the very first termination check.
     CHECK(warm.pdlp_iters == 0);

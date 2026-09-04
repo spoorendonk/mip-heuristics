@@ -157,10 +157,14 @@ public:
     // The tolerance options as they currently stand on the wrapped
     // instance.  Exposed for tests, and both halves of it are load-bearing
     // (#140): `kkt` is the one `solve_locked` writes from `epsilon` on
-    // every solve, and the other three must stay at their HiGHS defaults,
-    // because writing *those* is what perturbs LP presolve and changes the
-    // LP the pump is solving.  None of that is observable from outside the
-    // class without a way to read the options back.
+    // every solve, and the other three must stay at their HiGHS defaults.
+    // The original reason was that writing *those* perturbs LP presolve and
+    // changes the LP the pump is solving; #153 then turned presolve off on
+    // this instance, so that reason is history.  What survives it: the
+    // three are not what cuPDLP-C's termination check resolves from, and
+    // `kkt_tolerance` keeps HiGHS's own KKT accounting consistent with the
+    // solve.  None of it is observable from outside the class without a way
+    // to read the options back.
     //
     // THREAD CONTRACT: dispatching-thread only, with no solve in flight.
     // This reads `highs_` without taking `mu_`, and `solve_locked` writes
@@ -171,9 +175,11 @@ public:
         // Written from `epsilon`; cuPDLP-C resolves it into all three
         // termination parameters.
         double kkt = 0.0;
-        // Deliberately *not* written: these are read by `HPresolve` as
-        // well as by cuPDLP-C, so driving them from `epsilon` silently
-        // presolves a different LP.  Expected to equal
+        // Deliberately *not* written.  Historically because `HPresolve`
+        // reads them too, so driving them from `epsilon` presolved a
+        // different LP -- moot since #153 turned presolve off here.  They
+        // stay unwritten because `kkt_tolerance` is the parameter
+        // cuPDLP-C's termination check resolves from.  Expected to equal
         // `kDefaultKktTolerance` at all times.
         double primal_feasibility = 0.0;
         double dual_feasibility = 0.0;
