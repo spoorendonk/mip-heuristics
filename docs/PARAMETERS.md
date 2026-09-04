@@ -32,8 +32,19 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   reduction of that number, which was a misattribution.) 50 is ours,
   chosen because RepairSearch runs two full PropEngine fixpoints per
   node, which dominates cost on tight instances (~760k coefficient
-  accesses on 9k-nnz LPs). 200 nodes can burn ~1.4 s regardless of the
-  effort cap.
+  accesses on 9k-nnz LPs). 200 nodes can burn ~1.4 s.
+- **It is RepairSearch's effort governor, and the only one.** The call
+  takes no effort cap at all (issue #156): a node is two propagation
+  fixpoints, each already valved at `kPropagateBudgetPerNnz * nnz`, plus
+  one `walksat_select_move` (≤ row degree + `nnz`) and one move
+  application (≤ column degree), so this node limit bounds the call by
+  construction. A search-level valve on top would be a third cap on
+  already-valved work with no derivable value — anything large enough not
+  to bind is dead code, anything smaller silently recalibrates the
+  `kRepairSearch` arm without a measurement. The caller-supplied cap this
+  used to take beside it was derived from `FprConfig::max_effort`, which
+  does not bound `PropEngine::effort()` under the lifecycle API, so past
+  the crossing it arrived as `0` and the node loop never ran.
 - **Suggested range**: 10–200. Raise on fast instances or when
   RepairSearch quality matters; lower on dense LPs where each node is
   expensive.
@@ -56,8 +67,49 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **Setting it to `0` disables both**, which is how a test isolates Fig.
   1's branching half (an unrepaired node in a non-backtracking mode must
   still dive on) from its repair half.
+- **Each site has its own per-nnz valve underneath it** —
+  `kRepairWalkBudgetPerNnz` in the tree, `kWalkSatBudgetPerNnz` at the
+  leaf (next entry) — because one step is O(row degree × column degree)
+  and a dense row makes that arbitrarily large. Neither takes an effort
+  cap from its caller.
 - **Suggested range**: 50–1000. Increasing helps on highly infeasible
   starting points; decreasing speeds up fast-feasible instances.
+
+---
+
+### `kWalkSatBudgetPerNnz` — per-call effort valve
+
+- **File**: `src/walksat.cpp` (anonymous namespace)
+- **Default**: `100` (coefficient accesses per model nonzero)
+- **Meaning**: The safety valve underneath `walksat_iterations` for the
+  *leaf-time* walk, the exact twin of `kRepairWalkBudgetPerNnz` for the
+  in-tree one (issue #156) — same value, same shape, and same rationale,
+  because the two walks have the same step shape: pick a violated row,
+  score its columns, apply one move. One step is O(row degree × column
+  degree), which a dense row makes arbitrarily large, so this bounds a
+  single call the way `kPropagateBudgetPerNnz` bounds a single
+  propagation fixpoint, and is deliberately independent of both.
+- **Measured against the delta, not the absolute.** `walksat_repair`'s
+  `effort` parameter is in-out — a caller's running total — so the budget
+  gates what *this call* charges. That is what keeps it per call whatever
+  a caller hands in.
+- **Why it is not a caller argument**: the same reasoning as
+  `kRepairWalkBudgetPerNnz`, one call site later. The two effort numbers
+  `fpr_core.cpp` could pass are both wrong. The per-call DFS slice is
+  already spent by the time the attempt reaches a leaf, and
+  `FprConfig::max_effort` is not an upper bound on `PropEngine::effort()`
+  — the DFS gate is the slice and an attempt spans calls — so past the
+  crossing the subtraction `cfg.max_effort - total_prop_work` arrived as
+  `0` and the leaf repair became a no-op that still paid its entry scan,
+  on precisely the long attempts on hard models it exists for. #124 had
+  already removed exactly this cap from the in-tree walk; Phase 3 was left
+  on the old pattern until #156.
+- **Scope of the behaviour change**: every `mode_repairs` leaf walk — FPR,
+  two of Scylla's four chains, six of `fpr_lp`'s ten arms — is now bounded by
+  `walksat_iterations` steps and this valve rather than by whatever
+  remained of the pump or attempt budget. That is a #113 input change on
+  the FPR, Scylla and `fpr_lp` arms.
+- **Suggested range**: 10–1000. The step limit usually binds first.
 
 ---
 
@@ -126,9 +178,11 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   (Sect. 6) imposes "a number of matrix accesses of at most 100 times
   the number of nonzeros in the presolved model" as a whole-run
   deterministic stopping rule for the heuristic. That whole-run scope is
-  already covered elsewhere — the per-attempt effort budget
-  (`FprConfig::max_effort`) and the wall-clock `Deadline` (#117) both
-  bound the DFS across every `propagate()` call it makes — so mapping
+  already covered elsewhere — the per-call DFS slice every caller sizes
+  from its effort option and the wall-clock `Deadline` (#117) both bound
+  the DFS across every `propagate()` call it makes (**not**
+  `FprConfig::max_effort`, which is the one-shot `fpr_attempt` wrapper's
+  gate and bounds nothing under the lifecycle API — issue #156) — so mapping
   the paper's constant onto a per-call cap is deliberate narrowing, not
   a literal reproduction: this is a safety valve against a single AC-3
   fixpoint pass pathologically failing to converge (see the
@@ -1763,7 +1817,8 @@ buy.
   — the DFS gate is the slice and an attempt spans calls — so an
   attempt-budget cap silently turns every repair after the crossing into
   a no-op that still pays its entry scan, on precisely the long attempts
-  repair exists for.
+  repair exists for. The leaf-time walk was left on that old pattern until
+  #156, which gave it the identical valve — see `kWalkSatBudgetPerNnz`.
 - **Suggested range**: 10–1000. The step limit usually binds first.
 
 ---

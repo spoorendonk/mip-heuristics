@@ -301,8 +301,8 @@ bool apply_branch_to_r(PropEngine& R, const RepairSearchNode& node) {
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
                    const double* row_hi, HighsInt repair_iterations, double repair_noise,
-                   bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
-                   FprScratch& scratch, const Deadline& deadline, RepairSearchStats* stats,
+                   bool repair_track_best, Rng& rng, size_t& effort_out, FprScratch& scratch,
+                   const Deadline& deadline, RepairSearchStats* stats,
                    HighsInt progress_threshold) {
     // Counters go somewhere unconditionally; `local_stats` is the sink when
     // the caller does not want them, which keeps the two increment sites
@@ -500,21 +500,20 @@ bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<dou
 
     HighsInt nodes_visited = 0;
 
-    // The budget gate must include PropEngine propagation effort; `total_effort`
-    // only tracks WalkSAT move counters, so without the `E.effort()`/`R.effort()`
-    // deltas the AC-3 fixpoints below (one per node on `R` in apply_branch_to_r,
-    // one on `E` in sync_changes) would be unbounded.  The same compound sum is
-    // charged to `effort_out` below, so guard and report stay consistent.
+    // What this call charges its caller: the WalkSAT move counters plus
+    // both engines' propagation effort, which is where the bulk of a node
+    // goes (one AC-3 fixpoint on `R` in apply_branch_to_r, one on `E` in
+    // sync_changes).  Reported only -- it is no longer also a gate (issue
+    // #156): the node limit is the effort governor here, since each of a
+    // node's two fixpoints already answers to `kPropagateBudgetPerNnz`.
     auto effort_spent = [&]() -> size_t {
         return total_effort + (E.effort() - e_effort_baseline) + (R.effort() - r_effort_baseline);
     };
-    // The wall clock joins the node and effort gates (issue #117).  Polled
-    // on every node rather than on a cadence: `repair_iterations` is 50, so
-    // fifty clock reads is the whole cost, while one node is two
-    // propagation fixpoints — the reason this loop can outlive a time limit
-    // at all.
-    while (!Q.empty() && nodes_visited < repair_iterations && effort_spent() < max_effort &&
-           !deadline.expired()) {
+    // The wall clock joins the node gate (issue #117).  Polled on every
+    // node rather than on a cadence: `repair_iterations` is 50, so fifty
+    // clock reads is the whole cost, while one node is two propagation
+    // fixpoints — the reason this loop can outlive a time limit at all.
+    while (!Q.empty() && nodes_visited < repair_iterations && !deadline.expired()) {
         RepairSearchNode node = Q.back();
         Q.pop_back();
         ++nodes_visited;

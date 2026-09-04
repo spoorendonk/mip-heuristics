@@ -441,9 +441,11 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
     // an absolute target derived from current effort would treat the
     // DFS as already-exhausted on entry and exit immediately, making
     // forward progress impossible (the bug that hangs `infeasible-mip0`
-    // when run alongside FJ/LocalMIP/Scylla).  cfg.max_effort still
-    // bounds Phase 3 (repair/walksat) inside `fpr_attempt_finish`; it
-    // is no longer the DFS gate's cap.
+    // when run alongside FJ/LocalMIP/Scylla).  cfg.max_effort bounds
+    // neither this loop nor Phase 3 under the lifecycle API: it is the
+    // one-shot `fpr_attempt` wrapper's DFS gate and nothing else (issue
+    // #156 removed the Phase 3 caps derived from it, which arrived as 0
+    // on every attempt whose effort had outgrown it).
     const size_t effort_at_call_start = E.effort();
     // Target as a delta from this call's start, not an absolute.
     const size_t effort_target_delta = effort_remaining;
@@ -754,26 +756,42 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
     // catches only the attempts that failed.  RepairSearch is the
     // expensive half — `repair_iterations` nodes, each two propagation
     // fixpoints — and takes the deadline itself so it stops between
-    // nodes rather than only before the first.  WalkSAT does not: its
-    // `walksat_iterations` steps are O(row degree) each, which is
-    // milliseconds even on the largest instance in the PLATO list, so
-    // the entry gate is the whole bound it needs.
+    // nodes rather than only before the first.  WalkSAT does not, and
+    // its residual is bounded by its own internal valve rather than by a
+    // poll: a step is O(row degree x column degree), which a dense row
+    // makes arbitrarily large, so `walksat_iterations` alone was never
+    // the argument -- `kWalkSatBudgetPerNnz * nnz` is.  Note the one
+    // direction #156 loosens this: past the crossing the old cap arrived
+    // as 0 and the walk broke at step 0, so the unpolled residual here
+    // grew from ~0 to that valve.  A poll inside `walksat_repair` is the
+    // fix if it ever matters; it did not before, because the walk could
+    // not run at all.
+    //
+    // Neither takes an effort cap from here any more (issue #156).  The
+    // only two numbers this site could derive are the per-call DFS slice
+    // — already spent by the time a leaf is reached — and
+    // `cfg.max_effort`, which under the lifecycle API is not an upper
+    // bound on `E.effort()` at all, so past the crossing the cap arrived
+    // as 0 and Phase 3 silently became a no-op that still paid its entry
+    // scan.  `repair_search` is governed by `cfg.repair_iterations` (each
+    // node's two fixpoints already answer to `kPropagateBudgetPerNnz`)
+    // and `walksat_repair` by `cfg.walksat_iterations` plus its own
+    // internal per-nnz valve, the shape `repair_walk` has used since
+    // #124.  What both spend is still charged to the attempt through
+    // `total_prop_work`.
     const Deadline deadline = deadline_of(mipsolver);
     if (!feasible && !deadline.expired() && cfg.mode == FrameworkMode::kRepairSearch) {
         size_t rs_effort = 0;
-        feasible = repair_search(
-            E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(), c.row_lo.data(),
-            c.row_hi.data(), cfg.repair_iterations, cfg.repair_noise, cfg.repair_track_best,
-            cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0, rng, rs_effort,
-            scratch, deadline, /*stats=*/nullptr);
+        feasible = repair_search(E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(),
+                                 c.row_lo.data(), c.row_hi.data(), cfg.repair_iterations,
+                                 cfg.repair_noise, cfg.repair_track_best, rng, rs_effort, scratch,
+                                 deadline, /*stats=*/nullptr);
         total_prop_work += rs_effort;
     } else if (!feasible && !deadline.expired() && mode_repairs(cfg.mode)) {
         size_t walk_effort = 0;
-        feasible =
-            walksat_repair(E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(),
-                           cfg.walksat_iterations, cfg.repair_noise, cfg.repair_track_best,
-                           cfg.max_effort > total_prop_work ? cfg.max_effort - total_prop_work : 0,
-                           rng, walk_effort, scratch.walksat);
+        feasible = walksat_repair(E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(),
+                                  cfg.walksat_iterations, cfg.repair_noise, cfg.repair_track_best,
+                                  rng, walk_effort, scratch.walksat);
         total_prop_work += walk_effort;
     }
 

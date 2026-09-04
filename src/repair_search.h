@@ -59,8 +59,8 @@ struct RepairSearchStats {
     // reached, which is half of what the #130 test asserts.
     size_t best_open_jumps = 0;
     // DFS nodes popped from Q.  A run that stops short of
-    // `repair_iterations` stopped on feasibility, an empty Q, the effort
-    // budget or the clock.
+    // `repair_iterations` stopped on feasibility, an empty Q or the
+    // clock.
     size_t nodes_visited = 0;
     // Nodes whose *bound* branch -- the non-binary half of
     // `MoveToDisjunction` -- actually moved the incumbent point (issue
@@ -107,11 +107,28 @@ std::pair<RepairBranch, RepairBranch> move_to_disjunction(const PropEngine& E, c
 // are cleared/resized at entry so prior contents are discarded — capacity
 // persists across calls.
 // `deadline` stops the node loop on the solve's wall clock, alongside
-// `repair_iterations` and `max_effort` (issue #117): one node is two
-// propagation fixpoints, so on a large model the effort gate alone lets
-// this run for seconds past a time limit.  A default-constructed
-// `Deadline` never expires, which is what a caller with no time limit
-// gets from `make_deadline`.
+// `repair_iterations` (issue #117): one node is two propagation
+// fixpoints, so on a large model the node limit alone lets this run for
+// seconds past a time limit.  A default-constructed `Deadline` never
+// expires, which is what a caller with no time limit gets from
+// `make_deadline`.
+//
+// There is deliberately **no effort cap** (issue #156).  The node limit
+// *is* the effort governor: every part of a node is bounded by the model
+// or by a valve underneath it -- two propagation fixpoints, each already
+// valved at `kPropagateBudgetPerNnz * nnz`; one `walksat_select_move`
+// (<= row degree + nnz) and one move application (<= column degree);
+// `rebuild_violated`'s O(`nrow`) scan at the loop head; `sync_changes`'
+// O(`ncol`) sweep; and `backtrack_best_open`'s O(|Q|) min-scan, with
+// |Q| <= 2 * `repair_iterations`.  So `repair_iterations` bounds the call
+// by construction.  A search-level valve on top would be a third cap on
+// already-valved work with no derivable value: anything large enough not
+// to bind is dead code, anything smaller silently recalibrates the
+// `kRepairSearch` arm without a measurement.  The caller-supplied
+// `max_effort` this used to take was derived from `FprConfig::max_effort`,
+// which does not bound `PropEngine::effort()` at all -- past the crossing
+// it arrived as 0 and the node loop never ran.
+//
 // Returns true if a feasible solution was found (solution modified in-place).
 // `stats`, when non-null, accumulates the counters in
 // `RepairSearchStats`; production passes nullptr.  `progress_threshold`
@@ -120,6 +137,6 @@ std::pair<RepairBranch, RepairBranch> move_to_disjunction(const PropEngine& E, c
 bool repair_search(PropEngine& E, std::vector<double>& solution, std::vector<double>& lhs_cache,
                    const double* col_lb, const double* col_ub, const double* row_lo,
                    const double* row_hi, HighsInt repair_iterations, double repair_noise,
-                   bool repair_track_best, size_t max_effort, Rng& rng, size_t& effort_out,
-                   FprScratch& scratch, const Deadline& deadline, RepairSearchStats* stats,
+                   bool repair_track_best, Rng& rng, size_t& effort_out, FprScratch& scratch,
+                   const Deadline& deadline, RepairSearchStats* stats,
                    HighsInt progress_threshold = kRepairProgressThreshold);

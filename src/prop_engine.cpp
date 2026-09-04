@@ -14,14 +14,17 @@ namespace {
 // times the number of nonzeros in the presolved model" -- but as a
 // deterministic *stopping rule for the whole heuristic*, not a per-call
 // cap and not an infeasibility verdict. Our scope differs on purpose: the
-// paper's whole-run budget is already covered here by the attempt-level
-// effort budget (`cfg.max_effort`) and the wall-clock `Deadline` (#117),
-// both of which bound the DFS across every `propagate()` call it makes.
+// paper's whole-run budget is already covered here by the per-call DFS
+// slice every caller sizes from its effort option and by the wall-clock
+// `Deadline` (#117), both of which bound the DFS across every
+// `propagate()` call it makes.  (Not `cfg.max_effort`: that is the
+// one-shot `fpr_attempt` wrapper's gate, and under the lifecycle API the
+// slice is the gate -- see issue #156.)
 // This constant is what remains once exhaustion is no longer a verdict --
 // a per-call safety valve against a single AC-3 fixpoint pass pathologically
 // failing to converge (see the geometric-decay construction in
 // tests/test_prop_engine.cpp), borrowing the paper's own multiplier as a
-// starting scale so one call cannot itself burn an entire attempt's budget
+// starting scale so one call cannot itself burn an entire slice's budget
 // before the outer gates ever get polled -- not a literal accounting of the
 // paper's "matrix accesses": `prop_work` below counts only Pass 1's scan of
 // each row popped from the worklist, once; it does not count Pass 2's
@@ -223,10 +226,11 @@ void PropEngine::reset() {
     domain_pq_.clear();
     pq_undo_.clear();
     // Zero the accumulated propagation effort so the Phase 1-2 DFS gate
-    // (E.effort() < cfg.max_effort) starts each attempt fresh. Without
-    // this, a second fpr_attempt call on the same PropEngine would see
-    // effort already at or above the previous attempt's total and exit
-    // the DFS loop immediately.
+    // -- the per-call slice, measured as a delta from each call's own
+    // starting effort -- starts each attempt fresh. Without this, a
+    // second fpr_attempt call on the same PropEngine would see effort
+    // already at or above the previous attempt's total and exit the DFS
+    // loop immediately.
     prop_work_ = 0;
 }
 

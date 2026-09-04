@@ -8,10 +8,12 @@
 #include "repair_walk.h"
 #include "rng.h"
 #include "test_common.h"
+#include "walksat.h"
 
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1106,4 +1108,240 @@ TEST_CASE("repair_walk: a long drifting walk is restored to the state it started
         REQUIRE(E.var(j).fixed);
         REQUIRE(E.var(j).val == Catch::Approx(1.0));
     }
+}
+
+// ===================================================================
+// Phase 3 no longer takes an effort cap from its caller (issue #156).
+//
+// `fpr_attempt_finish` used to size both leaf-time repairs as
+// `cfg.max_effort - total_prop_work`, but under the lifecycle API
+// `cfg.max_effort` bounds nothing: the DFS gate is the per-call slice and
+// an attempt spans calls, so `PropEngine::effort()` outgrows it and the
+// subtraction arrives as 0 -- a Phase 3 that returns without a step while
+// still paying its entry scan, on precisely the long attempts on hard
+// models it exists for.  #124 had already removed the same caller-supplied
+// cap from the in-tree `repair_walk` above; these cases are the leaf-time
+// half of that.
+// ===================================================================
+
+namespace {
+
+// One binary x0 carrying both an up- and a down-lock row, plus two
+// zero-cost continuous columns c1, c2 in [0, 1] joined by `c1 + c2 >= 1`.
+//
+// The shape exists for *when* the violation appears.  x0's two rows are
+// satisfied by either of its values, so `Apply`'s activity scan -- which
+// looks at the fixed column's own rows and nothing else -- reports
+// nothing, and propagation deduces nothing from `c1 + c2 >= 1` while both
+// columns are open.  The row only becomes violated in Phase 2.5, which
+// fills a zero-cost continuous column from `cfg.cont_fallback` (null here,
+// so 0.0).  So every in-tree check has already passed when the leaf turns
+// out to be infeasible, and Phase 3 is the only repair that can run --
+// which is what makes the two cases below about Phase 3's budget and
+// nothing else.
+//
+// x0's rows are what keep it out of Phase 1's batch: a column with only an
+// up-lock or only a down-lock is trivially roundable and never reaches the
+// DFS, and a dive with no nodes is not the attempt these cases need.
+void build_late_violation_mip(Highs& highs) {
+    highs.addVar(0.0, 1.0);
+    highs.changeColIntegrality(0, HighsVarType::kInteger);
+    highs.addVar(0.0, 1.0);
+    highs.addVar(0.0, 1.0);
+    const auto x_idx = std::to_array<HighsInt>({0});
+    const auto one = std::to_array<double>({1.0});
+    highs.addRow(-kHighsInf, 1.0, 1, x_idx.data(), one.data());
+    highs.addRow(0.0, kHighsInf, 1, x_idx.data(), one.data());
+    const auto c_idx = std::to_array<HighsInt>({1, 2});
+    const auto ones = std::to_array<double>({1.0, 1.0});
+    highs.addRow(1.0, kHighsInf, 2, c_idx.data(), ones.data());
+}
+
+struct LateViolationHarness {
+    Highs highs;
+    HighsCallback cb{&highs};
+    std::unique_ptr<HighsMipSolver> mipsolver;
+    CscMatrix csc;
+    ProblemView problem;
+    FprScratch scratch;
+    FprConfig cfg{};
+    FprAttemptState state;
+
+    explicit LateViolationHarness(FrameworkMode mode) {
+        highs::parallel::initialize_scheduler();
+        highs.setOptionValue("output_flag", false);
+        mipsolver = bare_mipsolver_on(highs, cb, build_late_violation_mip);
+        problem = make_problem(*mipsolver, csc);
+        // The defect's premise, spelled at its smallest: an attempt whose
+        // accumulated effort has passed `cfg.max_effort`.  A worker
+        // reaches the same state with a realistic budget and a long
+        // attempt; one is the cheap way to reproduce it.
+        cfg.max_effort = 1;
+        cfg.csc = &csc;
+        cfg.mode = mode;
+        cfg.strategy = &kForcedUpLr;
+        cfg.binary_mask = problem.binary.data();
+        cfg.scratch = &scratch;
+    }
+
+    // Run the DFS to its verdict on a slice far larger than the attempt
+    // needs, so `cfg.max_effort` is the only small number in play.
+    void dive(Rng& rng) {
+        fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
+        int guard = 0;
+        while (state.phase == FprAttemptState::Phase::kDfs && guard++ < 100) {
+            static_cast<void>(fpr_attempt_step(state, *mipsolver, cfg, rng,
+                                               std::numeric_limits<size_t>::max() / 4));
+        }
+        REQUIRE(guard < 100);
+    }
+};
+
+}  // namespace
+
+TEST_CASE(
+    "FPR dive: Phase 3's walk runs on an attempt whose effort has passed cfg.max_effort "
+    "(#156)",
+    "[repair-walk][walksat_repair][fpr][dive]") {
+    LateViolationHarness h(FrameworkMode::kDive);
+    Rng rng(42);
+    h.dive(rng);
+
+    REQUIRE(h.state.found_complete);
+    // The premise, asserted rather than assumed: the attempt has already
+    // spent more than `cfg.max_effort`, which is what made the old
+    // `cfg.max_effort - total_prop_work` cap arrive as 0.
+    REQUIRE(h.state.effort_consumed > h.cfg.max_effort);
+
+    const size_t effort_before_finish = h.scratch.prop_engine->effort();
+    const auto nnz = static_cast<size_t>(h.problem.mipdata->ARindex_.size());
+
+    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+
+    // Phase 2.5 filled c1 = c2 = 0, so `c1 + c2 >= 1` is violated at the
+    // leaf and only the leaf-time `walksat_repair` can recover it.
+    REQUIRE(result.found_feasible);
+    REQUIRE(result.solution.size() == 3);
+    REQUIRE(result.solution[1] + result.solution[2] >= 1.0 - 1e-6);
+    // `finish` charges the dive's effort plus one `nnz` row-activity
+    // rebuild before Phase 3 starts, so anything above that is the walk's
+    // own spend.  With the old cap it was exactly that sum: the walk broke
+    // out of its loop before its first step.
+    REQUIRE(result.effort > effort_before_finish + nnz);
+}
+
+TEST_CASE(
+    "FPR repairsearch: Phase 3's search runs on an attempt whose effort has passed "
+    "cfg.max_effort (#156)",
+    "[repair-walk][repair-search][fpr][repairsearch]") {
+    // The other Phase 3 branch, and it needs its own case: the two repairs
+    // took the same expression from two separate arguments, so a cap
+    // restored on either one alone is invisible to the other's test.
+    LateViolationHarness h(FrameworkMode::kRepairSearch);
+    Rng rng(42);
+    h.dive(rng);
+
+    REQUIRE(h.state.found_complete);
+    REQUIRE(h.state.effort_consumed > h.cfg.max_effort);
+
+    const size_t effort_before_finish = h.scratch.prop_engine->effort();
+    const auto nnz = static_cast<size_t>(h.problem.mipdata->ARindex_.size());
+
+    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+
+    REQUIRE(result.found_feasible);
+    REQUIRE(result.solution.size() == 3);
+    REQUIRE(result.solution[1] + result.solution[2] >= 1.0 - 1e-6);
+    REQUIRE(result.effort > effort_before_finish + nnz);
+}
+
+namespace {
+
+// `y0 + y1 >= 5` with both columns binary: unsatisfiable, and the walk
+// cannot even stall quietly on it.  The first two steps push both columns
+// to their upper bound; from then on every candidate clips to the bound it
+// already holds, so `walksat_select_move` returns no move -- after
+// charging the row's length -- and the loop `continue`s.  With
+// `max_iterations` at 10^9 nothing but the internal valve can stop it.
+// One binary row `sum y_j >= ncol + 4`, which no assignment satisfies, so
+// every step finds a candidate, charges a row length and makes no progress.
+// `ncol` is a parameter because the valve is `kWalkSatBudgetPerNnz * nnz`
+// and a single width cannot tell that apart from a flat constant.
+struct UnrepairableRowModel {
+    static constexpr HighsInt kNrow = 1;
+    HighsInt ncol;
+    std::vector<HighsInt> ar_start;
+    std::vector<HighsInt> ar_index;
+    std::vector<double> ar_value;
+    std::vector<double> col_lb;
+    std::vector<double> col_ub;
+    std::array<double, 1> row_lo;
+    std::array<double, 1> row_hi = {kHighsInf};
+    std::vector<HighsVarType> integrality;
+    CscMatrix csc;
+
+    explicit UnrepairableRowModel(HighsInt n)
+        : ncol(n),
+          ar_start{0, n},
+          ar_value(static_cast<size_t>(n), 1.0),
+          col_lb(static_cast<size_t>(n), 0.0),
+          col_ub(static_cast<size_t>(n), 1.0),
+          row_lo{static_cast<double>(n) + 4.0},
+          integrality(static_cast<size_t>(n), HighsVarType::kInteger) {
+        ar_index.reserve(static_cast<size_t>(n));
+        for (HighsInt j = 0; j < n; ++j) {
+            ar_index.push_back(j);
+        }
+        csc = build_csc(ncol, kNrow, ar_start, ar_index, ar_value);
+    }
+
+    PropEngine make_engine(double feastol = 1e-6) {
+        return {ncol,
+                kNrow,
+                ar_start.data(),
+                ar_index.data(),
+                ar_value.data(),
+                csc,
+                col_lb.data(),
+                col_ub.data(),
+                row_lo.data(),
+                row_hi.data(),
+                integrality.data(),
+                feastol};
+    }
+};
+
+}  // namespace
+
+TEST_CASE("walksat_repair: the internal per-nnz valve bounds a walk that cannot converge (#156)",
+          "[repair-walk][walksat_repair][fpr]") {
+    // Two widths, because the valve scales with `nnz`: a single width would
+    // be satisfied by a flat constant just as well.
+    const HighsInt width = GENERATE(2, 8);
+    CAPTURE(width);
+
+    UnrepairableRowModel m(width);
+    PropEngine engine = m.make_engine();
+    std::vector<double> solution(static_cast<size_t>(width), 0.0);
+    std::vector<double> lhs_cache = {0.0};
+    WalkSatScratch scratch;
+    Rng rng(42);
+    size_t effort = 0;
+
+    const bool feasible = walksat_repair(
+        engine, solution, lhs_cache, m.col_lb.data(), m.col_ub.data(),
+        /*max_iterations=*/1000000000, /*noise=*/0.75, /*track_best=*/true, rng, effort, scratch);
+
+    REQUIRE_FALSE(feasible);
+
+    // `kWalkSatBudgetPerNnz` is file-local to `src/walksat.cpp`, so the
+    // value is spelled out here -- the same way `tests/test_prop_engine.cpp`
+    // spells `100 * nnz` for `kPropagateBudgetPerNnz`.  The gate is checked
+    // at the top of a step, and one step charges at most a row length plus
+    // the columns it scores, so the overrun past the budget is under one
+    // step -- well inside `2 * nnz`.  Without the valve this call runs 10^9
+    // steps.
+    const auto nnz = static_cast<size_t>(m.ar_start[UnrepairableRowModel::kNrow]);
+    REQUIRE(effort >= 100 * nnz);
+    REQUIRE(effort < (100 * nnz) + (2 * nnz));
 }

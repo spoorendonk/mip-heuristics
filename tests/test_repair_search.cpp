@@ -295,12 +295,11 @@ TEST_CASE("RepairSearch: SyncChanges' flip is visible in E after a full search",
     Deadline deadline;  // never expires
     size_t effort_out = 0;
 
-    bool feasible = repair_search(
-        E, solution, lhs_cache, col_lb.data(), col_ub.data(), row_lo.data(), row_hi.data(),
-        /*repair_iterations=*/50, /*repair_noise=*/0.75,
-        /*repair_track_best=*/true,
-        /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out, scratch, deadline,
-        /*stats=*/nullptr);
+    bool feasible = repair_search(E, solution, lhs_cache, col_lb.data(), col_ub.data(),
+                                  row_lo.data(), row_hi.data(),
+                                  /*repair_iterations=*/50, /*repair_noise=*/0.75,
+                                  /*repair_track_best=*/true, rng, effort_out, scratch, deadline,
+                                  /*stats=*/nullptr);
 
     REQUIRE(feasible);
     // Both rows genuinely satisfied.
@@ -364,8 +363,7 @@ TEST_CASE("RepairSearch: E and R are armed with the call's deadline", "[repair-s
 
     static_cast<void>(repair_search(E, solution, lhs_cache, col_lb.data(), col_ub.data(),
                                     row_lo.data(), row_hi.data(), /*repair_iterations=*/50,
-                                    /*repair_noise=*/0.75, /*repair_track_best=*/true,
-                                    /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
+                                    /*repair_noise=*/0.75, /*repair_track_best=*/true, rng,
                                     effort_out, scratch, deadline, /*stats=*/nullptr));
 
     CHECK(E.deadline().timer == &timer);
@@ -477,14 +475,13 @@ StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt pro
         out.feasible = repair_search(
             E, out.solution, out.lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
             m.row_hi.data(), /*repair_iterations=*/50, /*repair_noise=*/0.75,
-            /*repair_track_best=*/true, /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
-            effort_out, scratch, deadline, &out.stats);
+            /*repair_track_best=*/true, rng, effort_out, scratch, deadline, &out.stats);
     } else {
-        out.feasible = repair_search(
-            E, out.solution, out.lhs_cache, m.col_lb.data(), m.col_ub.data(), m.row_lo.data(),
-            m.row_hi.data(), /*repair_iterations=*/50, /*repair_noise=*/0.75,
-            /*repair_track_best=*/true, /*max_effort=*/std::numeric_limits<size_t>::max(), rng,
-            effort_out, scratch, deadline, &out.stats, progress_threshold);
+        out.feasible = repair_search(E, out.solution, out.lhs_cache, m.col_lb.data(),
+                                     m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
+                                     /*repair_iterations=*/50, /*repair_noise=*/0.75,
+                                     /*repair_track_best=*/true, rng, effort_out, scratch, deadline,
+                                     &out.stats, progress_threshold);
     }
     return out;
 }
@@ -779,12 +776,11 @@ OneIntRun run_one_int(const OneIntModel& m, PropEngine& e_engine, const CscMatri
     Rng rng(42);
     Deadline deadline;  // never expires
     size_t effort_out = 0;
-    out.feasible = repair_search(e_engine, out.solution, out.lhs_cache, m.col_lb.data(),
-                                 m.col_ub.data(), m.row_lo.data(), m.row_hi.data(),
-                                 /*repair_iterations=*/50, /*repair_noise=*/0.75,
-                                 /*repair_track_best=*/true,
-                                 /*max_effort=*/std::numeric_limits<size_t>::max(), rng, effort_out,
-                                 scratch, deadline, &out.stats);
+    out.feasible =
+        repair_search(e_engine, out.solution, out.lhs_cache, m.col_lb.data(), m.col_ub.data(),
+                      m.row_lo.data(), m.row_hi.data(),
+                      /*repair_iterations=*/50, /*repair_noise=*/0.75,
+                      /*repair_track_best=*/true, rng, effort_out, scratch, deadline, &out.stats);
     return out;
 }
 

@@ -56,10 +56,31 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
 // `scratch` holds reusable buffers — walksat_repair clears them at entry so
 // any existing contents are discarded.  Pass the same scratch across calls
 // to avoid per-call allocations.
+//
+// `max_iterations` is the paper's per-call step limit; the effort valve is
+// *internal* (`kWalkSatBudgetPerNnz`, see its definition in walksat.cpp)
+// rather than a caller argument, for the reason `repair_walk` documents at
+// length (issue #156, the same defect one call site later): every effort
+// number `fpr_core.cpp` could derive here is either the per-call DFS slice,
+// already spent by the time the leaf is reached, or the attempt budget
+// (`FprConfig::max_effort`), which is not an upper bound on
+// `PropEngine::effort()` at all — the DFS gate is the slice and an attempt
+// spans calls, so past the crossing the cap arrives as 0 and Phase 3 becomes
+// a no-op that still pays its entry scan, on precisely the long attempts on
+// the hard models the repair exists for.
+//
+// `effort` is in-out: the caller's running total is added to, so the valve
+// gates the *delta* this call charges rather than the absolute value it was
+// handed.  No caller passes a nonzero total today -- `fpr_core.cpp` is the
+// only one and passes 0, and `repair_search` reuses `walksat_select_move`
+// rather than this function -- so the two forms are behaviourally identical
+// as things stand.  The delta form is what keeps the valve per call for a
+// caller that does accumulate, which is the property #156 wanted to make
+// un-reintroducible.
 bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
                     std::vector<double>& lhs_cache, const double* col_lb, const double* col_ub,
-                    HighsInt max_iterations, double noise, bool track_best, size_t max_effort,
-                    Rng& rng, size_t& effort, WalkSatScratch& scratch);
+                    HighsInt max_iterations, double noise, bool track_best, Rng& rng,
+                    size_t& effort, WalkSatScratch& scratch);
 
 // Greedy 1-opt: shift each integer variable by ±1 toward better objective
 // if the shift maintains feasibility. Modifies solution/lhs_cache in place.

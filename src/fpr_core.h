@@ -122,39 +122,34 @@ struct FprScratch {
 };
 
 struct FprConfig {
-    // Effort budget (coefficient accesses).
+    // Effort budget (coefficient accesses) for the **one-shot**
+    // `fpr_attempt` wrapper's single DFS, and for nothing else.
     //
-    // Semantics depend on the API surface the caller drives:
-    //
-    // - One-shot `fpr_attempt`: caps the entire begin → step → finish
-    //   run end-to-end.  Used as the DFS gate (one shot, gated by
-    //   `cfg.max_effort - already_used` inside the wrapper) AND as the
-    //   Phase 3 cap (`cfg.max_effort - total_prop_work` inside
-    //   `fpr_attempt_finish`).  Different one-shot callers pass
-    //   different slice sizes here:
+    // The wrapper gates its one `fpr_attempt_step` call on
+    // `cfg.max_effort - already_used`.  Different one-shot callers pass
+    // different slice sizes:
     //     • `scylla_worker.cpp` — per-pump-iter remainder of the
     //       current attempt slice.
     //     • `fpr_lp.cpp` — full attempt budget.
-    //   None is a normalised wall-clock-equivalent quantity; each is
-    //   simply whatever cap the caller wants on this single DFS.
-    //   Phase 3 (repair_search / walksat) self-throttles via
-    //   `repair_iterations` and `walksat_iterations`; `max_effort` is
-    //   the additional effort cap on top.
+    // None is a normalised wall-clock-equivalent quantity; each is
+    // simply whatever cap the caller wants on this single DFS.
     //
-    // - Lifecycle (`fpr_attempt_begin/step/finish` from `FprWorker`):
-    //   caps the *attempt* across all begin → step → ... → step →
-    //   finish calls that may span multiple `run_attempt` invocations,
-    //   NOT the per-call slice.  See the `cfg.max_effort =
-    //   std::max<size_t>(attempt_budget_, 1)` line in
-    //   `FprWorker::run_attempt` and its rationale comment.  The per-call
-    //   DFS gate is the `effort_remaining` argument passed explicitly
-    //   to `fpr_attempt_step`.
+    // It is **not** a Phase 3 cap, on either API surface (issue #156).
+    // Phase 3 is governed by `repair_iterations` (each RepairSearch
+    // node's two propagation fixpoints already answer to
+    // `kPropagateBudgetPerNnz`) and by `walksat_iterations` plus
+    // `walksat.cpp`'s own internal `kWalkSatBudgetPerNnz` valve — the
+    // shape `repair_walk` has used since #124.  Deriving a Phase 3 cap
+    // from this field is what #156 removed: under the lifecycle API it
+    // does not bound `PropEngine::effort()` at all, so the subtraction
+    // reached 0 and the repair became a no-op that still paid its entry
+    // scan, on precisely the long attempts on hard models it exists for.
     //
-    // Mixing the two conventions is a footgun: passing a slice-scale
-    // `cfg.max_effort` to the lifecycle API silently disables Phase 3
-    // repair on long attempts; passing an attempt-scale value to
-    // `fpr_attempt` lets a single DFS run far longer than the caller's
-    // slice budget intended.
+    // Under the lifecycle API (`fpr_attempt_begin/step/finish` from
+    // `FprWorker`) this field is read by nothing: the DFS gate is the
+    // `effort_remaining` argument passed explicitly to
+    // `fpr_attempt_step`, and `FprWorker::run_attempt` accordingly leaves
+    // this at `SIZE_MAX`.
     size_t max_effort;
     // Fallback values for zero-cost continuous vars (length ncol)
     const double* cont_fallback;
@@ -214,8 +209,11 @@ struct FprConfig {
     // reduction of that value.)  50 is ours, chosen because RepairSearch
     // runs two PropEngine fixpoints per node, which dominates cost on
     // tight instances (each ~760k coef accesses on 9k-nnz LPs), so 200
-    // nodes can burn ~1.4 s regardless of max_effort (see
-    // `bench/FPR_REPAIR_SEARCH_LOCKS.md` for the ticino profile).
+    // nodes can burn ~1.4 s (see `bench/FPR_REPAIR_SEARCH_LOCKS.md` for
+    // the ticino profile).  This node limit *is* RepairSearch's effort
+    // governor: the call takes no effort cap at all (issue #156), and
+    // each node's two halves answer to `kPropagateBudgetPerNnz`
+    // individually.
     HighsInt repair_iterations = 50;
 
     // Step limit for flat WalkSAT repair (kDfsrep / kDive / kDiveprop arms).
@@ -348,10 +346,10 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
 // per-call effort budget is exhausted (returns `kBudgetGate`) or the DFS
 // terminates (returns `kVerdictReady`, caller calls `finish`).
 //
-// `effort_remaining` is the per-call slice; the attempt's overall cap is
-// `cfg.max_effort` (which the worker typically sets very high so the slice
-// is the only effective gate).  Calling `step` when
-// `state.phase != kDfs` is a programming error.
+// `effort_remaining` is the per-call slice and is the only effort gate
+// this loop has: `cfg.max_effort` is the one-shot wrapper's cap and is
+// unread here (issue #156).  Calling `step` when `state.phase != kDfs` is
+// a programming error.
 FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver,
                                const FprConfig& cfg, Rng& rng, size_t effort_remaining);
 

@@ -230,26 +230,40 @@ a trajectory the solver measured rather than one reconstructed offline, on a
 binary whose setup paths are bounded and whose barren dispatches are honestly
 labelled. The whole point of the exercise is the second thing.
 
-Precondition, concretely: **not satisfied as of 2026-09-04 — two open
-correctness defects meet the bar.**
+Precondition, concretely: **not satisfied as of 2026-09-04 — one open
+correctness defect meets the bar.**
 That is the bar, and it is worth stating rather than leaving implicit: what
 blocks this window is a defect that makes a dispatch measure something other
 than what the probe thinks it measures, not any open issue touching Scylla.
 #116, #117, #119 and #118 are all landed, and #152 — which arrived after them
 and struck the clock-bound property directly — is fixed: a clock-bound Scylla
 dispatch now spends its whole limit, pinned by "deadline: a clock-bound Scylla
-dispatch spends its whole limit" in `tests/test_deadline.cpp`. **But #156 and #158,
-filed after that line was written, meet the same bar and are open.** #156: Phase 3's
-effort cap is derived from a number that does not bound the counter, so the leaf-time
-repair silently no-ops past the crossing — and #124 made the crossing common, on exactly
-the long attempts this probe's tail is made of. #158: `backtrack_best_open` breaks the
-mark-ordering invariant `backtrack_to` relies on, which can corrupt engine state on the
-`kRepairSearch` arm (1 of 8, FPR only; caught by the point re-check, so it wastes work
-rather than emitting anything invalid). #155 is borderline and #154 is test-quality only;
-all five are triaged in the campaign epic. Land #156 and #158 before the window. (That fix also
+dispatch spends its whole limit" in `tests/test_deadline.cpp`. **#156 is now
+fixed too**: Phase 3's effort cap was derived from `FprConfig::max_effort`,
+which does not bound `PropEngine::effort()` under the lifecycle API, so the
+leaf-time repair silently no-oped past the crossing — and #124 had made the
+crossing common, on exactly the long attempts this probe's tail is made of.
+Both Phase 3 repairs now follow the #124 pattern: `repair_search` is governed
+by its node limit and `walksat_repair` by its step limit plus an internal
+`kWalkSatBudgetPerNnz` valve, neither taking a cap from its caller. **#158
+remains open and meets the bar**: `backtrack_best_open` breaks the
+mark-ordering invariant `backtrack_to` relies on, which can corrupt engine
+state on the `kRepairSearch` arm (1 of 8, FPR only; caught by the point
+re-check, so it wastes work rather than emitting anything invalid). #155 is
+borderline and #154 is test-quality only; all five are triaged in the campaign
+epic. Land #158 before the window. (#152's fix also
 uncovered #154 — the deadline suite's effort constants are 80x stale, so
 several of its cases pass without discriminating. It is a test-quality
 issue, not a solver one, and does not bear on the probe.)
+
+**#156 is itself an input change**, and a third one beside the two below: every
+`mode_repairs` leaf walk — FPR, two of Scylla's four chains, six of `fpr_lp`'s ten arms — is
+now bounded by `walksat_iterations` steps and the per-nnz valve rather than by
+whatever remained of the pump or attempt budget, and the `kRepairSearch` arm's
+Phase 3 loosens from "roughly `total >> 2` minus the effort already spent, or
+nothing past the crossing" to its 50-node limit. Charged effort per unit of
+real work therefore rises again on the FPR, Scylla and `fpr_lp` arms — the same
+axis #124 moved, and the axis the four effort defaults are quantiles on.
 
 Two *input changes* remain known and unfixed, and neither blocks — they change
 what the re-run will measure, so read its Scylla arm against them rather than

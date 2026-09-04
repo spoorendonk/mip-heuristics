@@ -11,6 +11,27 @@
 #include <utility>
 #include <vector>
 
+namespace {
+
+// Per-call effort valve, in coefficient accesses per nonzero of the model.
+//
+// The leaf-time twin of `kRepairWalkBudgetPerNnz` in `repair_walk.cpp`
+// (issue #156), at the same value and for the same reason: the two walks
+// have the same step shape — pick a violated row, score its columns, apply
+// one move — and one step is O(row degree x column degree), which a dense
+// row makes arbitrarily large.  The paper's own bound on a repair call is
+// the step limit (`walksat_iterations`, 200); this is the safety valve
+// underneath it, the same kind of constant as `kPropagateBudgetPerNnz` in
+// `prop_engine.cpp`, at the same scale and deliberately independent of
+// both.
+//
+// It is deliberately *not* a caller argument — see the comment on
+// `walksat_repair` in walksat.h for why every number `fpr_core.cpp` could
+// have passed is the wrong one.
+constexpr size_t kWalkSatBudgetPerNnz = 100;
+
+}  // namespace
+
 // Cognitive complexity 31 (threshold 25).  Kept whole: WalkSAT move selection: the noise / greedy /
 // tabu case analysis. Decomposing it would move work across a worker's inner loop, and the closeout
 // takes no unmeasured performance risk; the standards also rank fidelity to the reference algorithm
@@ -161,8 +182,8 @@ WalkSatMove walksat_select_move(HighsInt row, const double* solution, const doub
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
                     std::vector<double>& lhs_cache, const double* col_lb, const double* col_ub,
-                    HighsInt max_iterations, double noise, bool track_best, size_t max_effort,
-                    Rng& rng, size_t& effort, WalkSatScratch& scratch) {
+                    HighsInt max_iterations, double noise, bool track_best, Rng& rng,
+                    size_t& effort, WalkSatScratch& scratch) {
     const HighsInt nrow = data.nrow();
     const double feastol = data.feastol();
     const double* row_lo = data.row_lo();
@@ -170,6 +191,13 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
     const HighsInt* csc_start = data.csc_start();
     const HighsInt* csc_row = data.csc_row();
     const double* csc_val = data.csc_val();
+
+    // The internal effort valve (issue #156).  `effort` is the caller's
+    // running total, so the budget is measured against the delta this call
+    // charges -- which is what keeps the valve per call whatever a caller
+    // hands in.
+    const size_t effort_at_entry = effort;
+    const size_t effort_budget = kWalkSatBudgetPerNnz * static_cast<size_t>(data.ar_start()[nrow]);
 
     // Reuse scratch's violated / violated_pos / sol_undo / lhs_undo to avoid
     // per-call heap allocations.  clear() retains capacity; violated_pos must
@@ -232,7 +260,7 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
     HighsInt best_lhs_mark = 0;
 
     for (HighsInt step = 0; step < max_iterations && !violated.empty(); ++step) {
-        if (effort >= max_effort) {
+        if (effort - effort_at_entry >= effort_budget) {
             break;
         }
 

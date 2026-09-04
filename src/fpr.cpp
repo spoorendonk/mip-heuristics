@@ -83,7 +83,7 @@ public:
     // issue #99); it must outlive the worker.
     FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
               const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx, uint32_t seed,
-              size_t attempt_budget, size_t stale_budget);
+              size_t stale_budget);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
@@ -112,7 +112,6 @@ private:
     const uint8_t* binary_;
 
     int worker_idx_;
-    size_t attempt_budget_;  // hint for cfg.max_effort per attempt
 
     int strat_idx_ = 0;
     FrameworkMode mode_ = FrameworkMode::kDfs;
@@ -233,7 +232,7 @@ bool precompute_var_orders(HighsMipSolver& mipsolver, const Deadline& deadline,
 
 FprWorker::FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
                      const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx,
-                     uint32_t seed, size_t attempt_budget, size_t stale_budget)
+                     uint32_t seed, size_t stale_budget)
     : exec_(exec),
       mipsolver_(exec.mipsolver),
       csc_(csc),
@@ -241,7 +240,6 @@ FprWorker::FprWorker(const ExecutionContext& exec, const CscMatrix& csc, Incumbe
       var_orders_(var_orders),
       binary_(binary),
       worker_idx_(worker_idx),
-      attempt_budget_(attempt_budget),
       trace_(WorkerTrace{worker_idx, 0}),
       rng_(seed) {
     base_.total_budget = std::numeric_limits<size_t>::max();
@@ -416,24 +414,10 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         const auto& strat = kFprStrategies[strat_idx_];
         const auto& var_order = var_orders_[strat_idx_];
         FprConfig cfg{};
-        // `cfg.max_effort` is the attempt-wide cap consumed by Phase 3 sub-
-        // budgets (`cfg.max_effort - total_prop_work` for repair_search /
-        // walksat).  Sized at the worker's `attempt_budget_`, which is
-        // `HeuristicBudget::total >> 2` — a quarter of the dispatch
-        // allowance.  It used to be spelled `HeuristicBudget::stale`
-        // because the two were the same number; issue #111 made `stale`
-        // an absolute instance-scaled ceiling, so this is now written out
-        // at the construction site (`fpr::run`) and the two have parted
-        // company.  Not the per-call
-        // `attempt_budget`: when an attempt spans multiple `run_attempt` calls,
-        // the cumulative `total_prop_work` arriving at Phase 3 already
-        // exceeds any single slice, so a slice-sized cap clamps the repair
-        // budget to 0 (review R1 CF-1).  The DFS gate inside
-        // `fpr_attempt_step` uses `effort_remaining` (the per-call slice)
-        // and is unaffected by this size — Phase 3's iteration counts
-        // (`cfg.repair_iterations`, `cfg.walksat_iterations`) self-throttle
-        // even when the effort budget is large.
-        cfg.max_effort = std::max<size_t>(attempt_budget_, 1);
+        // Unread by the lifecycle API (issue #156): the DFS gate is the
+        // per-call `effort_remaining` slice below, and Phase 3 takes no
+        // effort cap from its caller at all.
+        cfg.max_effort = std::numeric_limits<size_t>::max();
         cfg.cont_fallback = nullptr;
         cfg.csc = &csc_;
         cfg.mode = mode_;
@@ -537,16 +521,15 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     workers.reserve(exec.num_workers);
     for (size_t w = 0; w < exec.num_workers; ++w) {
         uint32_t seed = exec.worker_seed(static_cast<int>(w));
-        // `budget.total >> 2` is the *attempt-wide* `cfg.max_effort` hint,
-        // not a patience threshold: it sizes Phase 3's repair/WalkSAT
-        // sub-budgets and used to be spelled `budget.stale` only because
-        // the two happened to be the same number.  Issue #111 made
-        // `budget.stale` absolute, so the hint is written out here rather
-        // than silently following it.  `budget.worker_stale` is this
-        // worker's share of the dispatch's absolute patience ceiling.
-        workers.push_back(std::make_unique<FprWorker>(
-            exec, *problem.csc, sink, var_orders, problem.binary.data(), static_cast<int>(w), seed,
-            budget.total >> 2, budget.worker_stale));
+        // `budget.worker_stale` is this worker's share of the dispatch's
+        // absolute patience ceiling.  There is no attempt-wide effort hint
+        // beside it any more: the `budget.total >> 2` that used to sit here
+        // sized Phase 3's repair/WalkSAT sub-budgets, and issue #156
+        // removed those — an attempt spans calls, so `PropEngine::effort()`
+        // outgrows any such number and the cap it produced arrived as 0.
+        workers.push_back(std::make_unique<FprWorker>(exec, *problem.csc, sink, var_orders,
+                                                      problem.binary.data(), static_cast<int>(w),
+                                                      seed, budget.worker_stale));
     }
 
     struct FprOppState {
