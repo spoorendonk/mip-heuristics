@@ -14,10 +14,12 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 // ===================================================================
@@ -892,11 +894,12 @@ TEST_CASE("FPR dive: a dive refuted at its own leaf still runs Phase 2.5 and Pha
     const size_t dive_effort = state.effort_consumed;
     const HeuristicResult result = fpr_attempt_finish(state, *mipsolver, cfg, rng);
 
-    // This model has no feasible solution, so the verdict is `failed`
-    // either way; what distinguishes the two is whether `finish` did any
-    // work before saying so.  Its `!found_complete` shortcut returns
-    // `E.effort()` untouched, while the normal path charges at least the
-    // row-activity rebuild Phase 2.5 needs.
+    // This model has no feasible solution, so the verdict is infeasible
+    // either way; what distinguishes the two is whether `finish` did the
+    // leaf's work before saying so.  Since #155 the `!found_complete`
+    // path fills and rebuilds too, so what this pins is narrower than it
+    // once was -- `found_complete` here buys Phase 3 on top of that, and
+    // the `dive` case's leaf-time WalkSAT is the only repair `dive` has.
     REQUIRE_FALSE(result.found_feasible);
     REQUIRE(result.effort > dive_effort);
 }
@@ -1344,4 +1347,174 @@ TEST_CASE("walksat_repair: the internal per-nnz valve bounds a walk that cannot 
     const auto nnz = static_cast<size_t>(m.ar_start[UnrepairableRowModel::kNrow]);
     REQUIRE(effort >= 100 * nnz);
     REQUIRE(effort < (100 * nnz) + (2 * nnz));
+}
+
+// ===================================================================
+// A failed attempt hands back its point (issue #155).
+//
+// Mexi, Besancon, Bolusani, Chmiela, Hoen, Gleixner, *Scylla: a
+// matrix-free fix-propagate-and-project heuristic*, arXiv 2307.03466v2,
+// Sect. 2.3: "This is repeated until all such variables are fixed or
+// infeasibility is detected by some domain becoming empty. In the latter
+// case, fix-and-propagate continues in order to produce an integer vector
+// by ignoring any constraint that would lead to empty domains. At the end
+// of the propagation, all remaining unfixed variables are fixed to their
+// values in the fractional reference solution or its projection on to
+// their domain. The procedure always produces an integer-feasible, but
+// not necessarily LP-feasible, solution."
+//
+// Algorithm 1.1 then spends that vector on lines 14-16 -- cycling /
+// perturb, the alpha_K decay, the objective blend -- with no branch that
+// discards an infeasible rounding.  `fpr_attempt` could not express one,
+// so `ScyllaWorker` skipped the whole round and re-solved a byte-identical
+// LP; `tests/test_scylla.cpp` pins that half.  This one pins the contract
+// underneath it.
+// ===================================================================
+
+namespace {
+
+// `2*x0 + 2*x1 = 1`, both binary: LP-feasible (x0 = 0.5) and
+// integer-infeasible, so no rounding of it can ever succeed and every
+// `fpr_attempt_finish` failure path is reachable on the same model.  The
+// equality gives both columns an up-lock and a down-lock apiece, so Phase
+// 1's trivially-roundable pass leaves both to the DFS.
+void build_parity_mip(Highs& highs) {
+    highs.addVar(0.0, 1.0);
+    highs.addVar(0.0, 1.0);
+    highs.changeColIntegrality(0, HighsVarType::kInteger);
+    highs.changeColIntegrality(1, HighsVarType::kInteger);
+    const auto idx = std::to_array<HighsInt>({0, 1});
+    const auto val = std::to_array<double>({2.0, 2.0});
+    highs.addRow(1.0, 1.0, 2, idx.data(), val.data());
+}
+
+struct ParityHarness {
+    Highs highs;
+    HighsCallback cb{&highs};
+    std::unique_ptr<HighsMipSolver> mipsolver;
+    CscMatrix csc;
+    ProblemView problem;
+    FprScratch scratch;
+    FprConfig cfg{};
+    FprAttemptState state;
+
+    explicit ParityHarness(FrameworkMode mode) {
+        highs::parallel::initialize_scheduler();
+        highs.setOptionValue("output_flag", false);
+        mipsolver = bare_mipsolver_on(highs, cb, build_parity_mip);
+        problem = make_problem(*mipsolver, csc);
+        cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
+        cfg.csc = &csc;
+        cfg.mode = mode;
+        cfg.strategy = &kForcedUpLr;
+        cfg.binary_mask = problem.binary.data();
+        cfg.scratch = &scratch;
+    }
+};
+
+// The whole of criterion 2: a failed result still carries a complete
+// integer point inside the structural bounds.  Asserted on the *result*,
+// not on the engine, because that is what a caller sees.
+void require_complete_integer_point(const HeuristicResult& result, const ProblemView& problem) {
+    REQUIRE_FALSE(result.found_feasible);
+    REQUIRE(std::cmp_equal(result.solution.size(), problem.ncol));
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        const auto idx = static_cast<size_t>(j);
+        CAPTURE(j, result.solution[idx]);
+        REQUIRE(result.solution[idx] >= problem.model->col_lower_[idx]);
+        REQUIRE(result.solution[idx] <= problem.model->col_upper_[idx]);
+        if (is_integer(problem.model->integrality_, j)) {
+            REQUIRE(result.solution[idx] ==
+                    Catch::Approx(std::round(result.solution[idx])).margin(1e-9));
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("fpr_attempt hands back a complete integer point on a failed rounding (#155)",
+          "[fpr][repair-walk][fpr-core]") {
+    SECTION("the DFS was cut by the per-call budget") {
+        // Shape (i), and the *common* one on Scylla: three of the four
+        // `kFprConfigs` entries backtrack, and a single attempt routinely
+        // does not finish inside the `ncol + 1` node budget (see the #121
+        // case in tests/test_scylla.cpp).  A fix that produced the point
+        // only for a completed dive would leave most Scylla rounds still
+        // skipping, which is why this shape is pinned first.
+        ParityHarness h(FrameworkMode::kDfs);
+        Rng rng(5);
+        fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+        REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
+
+        // A one-unit slice admits exactly one node: the gate is a delta
+        // from this call's start.
+        const FprStepResult outcome =
+            fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, /*effort_remaining=*/1);
+        REQUIRE(outcome == FprStepResult::kBudgetGate);
+        REQUIRE_FALSE(h.state.found_complete);
+
+        // What the one-shot `fpr_attempt` wrapper does with a paused
+        // attempt, reproduced here so `finish` sees the same state it
+        // sees in production.
+        h.state.phase = FprAttemptState::Phase::kReadyToFinish;
+        const size_t effort_before = h.state.effort_consumed;
+        const auto nnz = static_cast<size_t>(h.problem.mipdata->ARindex_.size());
+
+        const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+        require_complete_integer_point(result, h.problem);
+
+        // The `!found_complete` path used to return `E.effort()`
+        // untouched.  It now fills Phase 2.5 and rebuilds the row
+        // activities, and every gate in the solve reads this number, so
+        // the work has to be charged: a fill that reported nothing would
+        // be search no budget can see.
+        REQUIRE(result.effort >= effort_before + nnz);
+        REQUIRE(h.state.effort_consumed == result.effort);
+    }
+
+    SECTION("the backtracking stack was exhausted") {
+        // Shape (ii): `kDfs` propagates and backtracks, and propagation
+        // refutes both branches of the first decision, so the DFS runs out
+        // of stack rather than out of budget or nodes.  `kDfsrep` reaches
+        // the same `!found_complete` verdict here but does it at the node
+        // limit, because its in-tree repair rescues the first branch and
+        // buys the dive a third node.
+        ParityHarness h(FrameworkMode::kDfs);
+        Rng rng(6);
+        fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+        int guard = 0;
+        while (h.state.phase == FprAttemptState::Phase::kDfs && guard++ < 100) {
+            static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng,
+                                               std::numeric_limits<size_t>::max() / 4));
+        }
+        REQUIRE(guard < 100);
+        REQUIRE(h.state.phase == FprAttemptState::Phase::kReadyToFinish);
+        REQUIRE_FALSE(h.state.found_complete);
+        // Not the node limit: the stack really did empty.
+        REQUIRE(h.state.nodes_visited < h.problem.ncol + 1);
+
+        const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+        require_complete_integer_point(result, h.problem);
+    }
+
+    SECTION("the leaf was reached and Phase 3 failed") {
+        // Shape (iii): `kDive` never backtracks, so it reaches a leaf with
+        // every integer fixed, the row re-check rejects it, and the
+        // leaf-time WalkSAT cannot repair a parity violation.  This is the
+        // `!feasible` return *after* Phase 3, and what it hands back is
+        // `scratch.solution` as Phase 3 left it.
+        ParityHarness h(FrameworkMode::kDive);
+        Rng rng(7);
+        fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+        int guard = 0;
+        while (h.state.phase == FprAttemptState::Phase::kDfs && guard++ < 100) {
+            static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng,
+                                               std::numeric_limits<size_t>::max() / 4));
+        }
+        REQUIRE(guard < 100);
+        REQUIRE(h.state.found_complete);
+
+        const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+        require_complete_integer_point(result, h.problem);
+    }
 }

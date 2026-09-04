@@ -470,6 +470,19 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             attempt.found_improvement = true;
         }
 
+        // Degenerate guard only (issue #155).  A *failed* rounding now
+        // carries its point — `fpr_attempt` hands back the complete
+        // integer assignment Sect. 2.3 says fix-and-propagate always
+        // produces — and skipping the round on it is exactly what stopped
+        // this chain advancing: Algorithm 1.1 runs lines 14-16 (cycling /
+        // perturb, the alpha_K decay, the objective blend, ++K) on
+        // `x_hat` with no branch that discards an infeasible one, and a
+        // feasibility pump is *defined* by being pulled toward the rounded
+        // point whether or not it is feasible.  Without that, the next
+        // round re-solved a byte-identical LP from the same warm start.
+        // What is left here is the `ncol == 0 || nrow == 0` short-circuit
+        // in `fpr_attempt`, which `x_hat`'s unguarded column reads below
+        // would otherwise walk off.
         if (rounded.solution.empty()) {
             continue;
         }

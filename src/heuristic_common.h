@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 // Variable state used during fix-and-propagate.
@@ -17,6 +18,19 @@ struct VarState {
     bool fixed;
 };
 
+// `solution` is meaningful whenever it is non-empty, and `found_feasible`
+// says only whether it satisfies every row -- the two are independent
+// since issue #155.  `objective` is meaningful *only* when
+// `found_feasible`; an infeasible point leaves it at infinity, because a
+// cost evaluated on a violated assignment is not this heuristic's answer
+// to anything and no caller may treat it as one.
+//
+// The infeasible-but-populated shape exists for Mexi et al.'s Algorithm
+// 1.1 line 12 (`x_hat = fix-and-propagate(x_bar)`): the feasibility pump
+// is *defined* by being pulled toward the rounded point whether or not it
+// is feasible, so `fpr_attempt` has to be able to hand one back.  See
+// `fpr_attempt_finish` in fpr_core.cpp for what the point is on each of
+// its failure paths.
 struct HeuristicResult {
     bool found_feasible = false;
     std::vector<double> solution;
@@ -25,6 +39,24 @@ struct HeuristicResult {
 
     static HeuristicResult failed(size_t e = 0) {
         HeuristicResult r;
+        r.effort = e;
+        return r;
+    }
+
+    // A complete integer assignment that violates at least one row.
+    // `found_feasible` stays false, so every offer site — all of which
+    // gate on it — is unaffected; what changes is that a caller which
+    // wants the *direction* the rounding pointed in can now read it.
+    // `objective` is left at its default and is *not* the cost of `point`:
+    // a cost on an assignment that violates rows is not an answer, and
+    // leaving it there means no caller can mistake it for one.  Every
+    // *decision* site reads it only under `found_feasible`.  One place
+    // reads it regardless — `fpr_lp`'s `kVerbose` trace line, which
+    // printed `inf` for a failed attempt before this existed too — so the
+    // rule is "no caller acts on it otherwise", not "no caller reads it".
+    static HeuristicResult infeasible_point(std::vector<double> point, size_t e) {
+        HeuristicResult r;
+        r.solution = std::move(point);
         r.effort = e;
         return r;
     }

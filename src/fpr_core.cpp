@@ -697,12 +697,25 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
 
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
 
-    if (!state.found_complete) {
-        state.phase = FprAttemptState::Phase::kIdle;
-        return HeuristicResult::failed(E.effort());
-    }
-
     // Phase 2.5: fix remaining unfixed variables (continuous + residual integers).
+    //
+    // This runs whether or not the DFS reached a leaf (issue #155).  Sect.
+    // 2.3 of Mexi et al. is explicit that fix-and-propagate produces an
+    // integer point even when it ran into an infeasibility: "In the latter
+    // case, fix-and-propagate continues in order to produce an integer
+    // vector by ignoring any constraint that would lead to empty domains.
+    // At the end of the propagation, all remaining unfixed variables are
+    // fixed to their values in the fractional reference solution or its
+    // projection on to their domain.  The procedure always produces an
+    // integer-feasible, but not necessarily LP-feasible, solution."  That
+    // sentence is what makes the `!found_complete` case determined rather
+    // than a guess: the fill is the same fill, and the columns the DFS
+    // never decided are exactly the "remaining unfixed variables".
+    //
+    // A `!found_complete` attempt is still a *failed* one and returns
+    // below without ever reaching Phase 3 — whose precondition has always
+    // been a leaf with every integer fixed — but it returns carrying the
+    // point, which is what Algorithm 1.1 line 12 hands to lines 14-16.
     for (HighsInt j = 0; j < c.ncol; ++j) {
         if (E.var(j).fixed) {
             continue;
@@ -738,6 +751,26 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
             lhs += c.ar_value[k] * solution[c.ar_index[k]];
         }
         lhs_cache[i] = lhs;
+    }
+
+    // The DFS never reached a leaf: no Phase 3, no verdict, but the point
+    // the fill just completed goes back to the caller (issue #155).  It is
+    // charged the fill plus the row rebuild rather than the untouched
+    // `E.effort()` the old shortcut returned, because that is what it now
+    // costs — the whole-dispatch and per-attempt gates read this number.
+    //
+    // Worth knowing when sizing that charge: of the two halves only the
+    // fill buys anything here.  `lhs_cache` is rebuilt above and then
+    // discarded on this path, an O(nnz) charge for nothing, and this is
+    // now the *common* Scylla round — three of four `kFprConfigs` are
+    // backtracking modes that routinely exhaust the `ncol + 1` node
+    // budget.  It stays on the shared path deliberately: one code path is
+    // harder to break than a second fill-only branch, and splitting it
+    // would put the two effort charges out of each other's sight.
+    if (!state.found_complete) {
+        state.phase = FprAttemptState::Phase::kIdle;
+        state.effort_consumed = total_prop_work;
+        return HeuristicResult::infeasible_point(std::move(solution), total_prop_work);
     }
 
     bool feasible = true;
@@ -795,17 +828,39 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
         total_prop_work += walk_effort;
     }
 
+    // Both failure returns below hand back the point too (issue #155).
+    // What the point *is* on these two paths is whatever `scratch.solution`
+    // holds at the failing return: `walksat_repair` and `repair_search`
+    // mutate it in place and, under `repair_track_best`, restore their own
+    // best state into it before returning.  So it is the leaf as Phase 3
+    // left it, not the pre-repair leaf — a distinction with no consumer
+    // (the pump wants a direction, and Phase 3's best-known point is at
+    // least as good a one), but not one to misdescribe.
     if (!feasible) {
         state.phase = FprAttemptState::Phase::kIdle;
         state.effort_consumed = total_prop_work;
-        return HeuristicResult::failed(total_prop_work);
+        return HeuristicResult::infeasible_point(std::move(solution), total_prop_work);
     }
 
     for (HighsInt i = 0; i < c.nrow; ++i) {
         if (is_row_violated_in_ctx(i, lhs_cache[i], c)) {
+            // Phase 3 reported success but a row disagrees.  This is the
+            // one verdict site (see `fpr_attempt_step`), so it overrides;
+            // the point still goes back.
+            //
+            // Unpinned by any test, and the honest reason is narrower than
+            // "unreachable".  `walksat_repair` returns `violated.empty()`
+            // on the same `lhs_cache` this loop reads, so for that half it
+            // really is a bug-or-nothing.  `repair_search` maintains its
+            // `lhs_cache` incrementally through `apply_move`, while this
+            // loop recomputes activity from `solution` -- a drift between
+            // the two is exactly what this re-check exists to catch, so
+            // for that half it is unreachable-as-far-as-we-know rather
+            // than unreachable.  The return is a line-for-line copy of the
+            // one above.
             state.phase = FprAttemptState::Phase::kIdle;
             state.effort_consumed = total_prop_work;
-            return HeuristicResult::failed(total_prop_work);
+            return HeuristicResult::infeasible_point(std::move(solution), total_prop_work);
         }
     }
 

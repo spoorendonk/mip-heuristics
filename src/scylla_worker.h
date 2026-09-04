@@ -127,6 +127,15 @@ public:
     // solve (held the mutex) vs rounded against a stale snapshot.
     [[nodiscard]] uint64_t fresh_solves() const { return fresh_solves_; }
     [[nodiscard]] uint64_t stale_rounds() const { return stale_rounds_; }
+    // Test hook (#155): the cycling half of Algorithm 1.1 line 14 has to
+    // see a *failed* rounding too -- Sect. 2.3's fix-and-propagate
+    // "always produces an integer-feasible, but not necessarily
+    // LP-feasible, solution", and line 13 is the only branch between the
+    // rounding and lines 14-16.  A test on the modified cost alone cannot
+    // tell the objective blend from the cycling record, so this exposes
+    // the one the blend does not move.  Dispatching-thread-only, like the
+    // two above.
+    [[nodiscard]] size_t cycle_history_size_for_test() const { return cycle_history_.size(); }
 
 private:
     // Shared handling of a completed PDLP solve result used by both the

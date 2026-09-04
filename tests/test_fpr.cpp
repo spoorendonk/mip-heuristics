@@ -318,10 +318,13 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
 // This drives the lifecycle API directly (begin -> step-to-verdict) rather
 // than the one-shot `fpr_attempt` wrapper: on these small bundled
 // instances a single DFS attempt frequently does not complete within the
-// tight `ncol+1` node budget (`fpr_attempt_finish` then short-circuits to
-// an empty `failed()` result before ever extracting a solution), which
-// would make an assertion on `fpr_attempt(...).solution` vacuous either
-// way. Comparing PropEngine's per-column state after `step()` sidesteps
+// tight `ncol+1` node budget, and `fpr_attempt_finish` then reports
+// `found_feasible == false`. Since #155 that result does carry a point,
+// but it is Phase 2.5's fill talking for every column the DFS never
+// reached rather than the value strategy under test, so an assertion on
+// `fpr_attempt(...).solution` would characterize the wrong thing (before
+// #155 it was vacuous, the solution being empty). Comparing PropEngine's
+// per-column state after `step()` sidesteps
 // that: it is what the search actually decided, independent of whether
 // the attempt as a whole verdicts complete.
 
