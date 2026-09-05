@@ -37,6 +37,10 @@ std::atomic<int64_t> g_pool_count{0};
 std::atomic<int64_t> g_incumbent_count{0};
 std::atomic<int64_t> g_construction_count{0};
 
+// The wall-clock poll counters (#162).  Same contract as the three above.
+std::atomic<int64_t> g_deadline_polls{0};
+std::atomic<int64_t> g_deadline_poll_effort{0};
+
 }  // namespace
 
 void reset_warm_start_counters() {
@@ -44,6 +48,37 @@ void reset_warm_start_counters() {
         g_pool_count.store(0, std::memory_order_relaxed);
         g_incumbent_count.store(0, std::memory_order_relaxed);
         g_construction_count.store(0, std::memory_order_relaxed);
+    }
+}
+
+void reset_deadline_poll_counters() {
+    if constexpr (kInstrumented) {
+        g_deadline_polls.store(0, std::memory_order_relaxed);
+        g_deadline_poll_effort.store(0, std::memory_order_relaxed);
+    }
+}
+
+DeadlinePollCounters deadline_poll_counters() {
+    if constexpr (kInstrumented) {
+        return {g_deadline_polls.load(std::memory_order_relaxed),
+                g_deadline_poll_effort.load(std::memory_order_relaxed)};
+    }
+    return {0, 0};
+}
+
+// The invariant is about the whole attempt: the poll count has to cover
+// the effort the attempt charged, including whatever it spent after its
+// last poll.  Hence two calls rather than one — a poll, and an attempt's
+// closing charge.
+void note_deadline_poll() {
+    if constexpr (kInstrumented) {
+        g_deadline_polls.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void note_attempt_effort(int64_t effort_charged) {
+    if constexpr (kInstrumented) {
+        g_deadline_poll_effort.fetch_add(effort_charged, std::memory_order_relaxed);
     }
 }
 

@@ -59,7 +59,7 @@ public:
 
 private:
     HighsMipSolver& mipsolver_;
-    // Read only for `past_deadline()`, every `kTermCheckInterval` steps of
+    // Read only for `past_deadline()`, every `kTermCheckWork` counted units of
     // the search loop: one attempt at a large effort option runs far past
     // the solve's `time_limit` otherwise (issue #114).
     const ExecutionContext& exec_;

@@ -2,6 +2,7 @@
 
 #include "heuristic_common.h"
 #include "incumbent_sink.h"
+#include "local_mip.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
 #include "lp_data/HConst.h"
@@ -153,23 +154,38 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     // one attempt is `attempt_cap` = `total / (10N)`, which scales with
     // `mip_heuristic_local_mip_effort`, so the overshoot grows with the
     // option (issue #114).  Poll the deadline here too, every
-    // `kTermCheckInterval` steps — the cadence this constant has
-    // documented since it was introduced, and which it now actually
-    // controls.
+    // `kTermCheckWork` counted units of `WorkerCtx::effort`.
     //
     // The cadence is the point.  A clock_gettime per iteration was
     // measured at ~3% of total instruction refs on small instances, which
-    // is why this loop had no deadline check at all; at 1-in-1000 it is
-    // not measurable, and `past_deadline()` is the write-free half of
+    // is why this loop had no deadline check at all; paced, it is not
+    // measurable, and `past_deadline()` is the write-free half of
     // `ExecutionContext::terminated()`, so it needs no poller seat.
+    //
+    // It is paced on *work* and not on steps (#162).  A step is not a unit
+    // of bounded size: in feasible mode every `kFeasibleRecheckPeriod`-th
+    // step calls `WorkerCtx::full_recheck`, which charges one `nnz`, so a
+    // fixed step count buys a wall-clock interval that grows with the
+    // model.  On a 1.4M-nonzero model one 1000-step batch ran for tens of
+    // seconds and the dispatch overran a 15 s limit by ~46 s while polling
+    // 49 times, every poll landing before the deadline and the batch
+    // between the last two spanning it.  This is #151's argument about
+    // `PropEngine::propagate` one heuristic over, and it has the same
+    // answer: the residual becomes one step plus a constant of charged
+    // work, instead of one constant of steps whose cost the model sets.
     auto spent = [&]() { return ctx_.effort - effort_start; };
+    size_t next_deadline_poll = 0;
     while (spent() < attempt_budget && !base_.exhausted(spent())) {
         if (base_.stale(spent())) {
             base_.finished = true;
             break;
         }
-        if (step_ % kTermCheckInterval == 0 && exec_.past_deadline()) {
-            break;
+        if (spent() >= next_deadline_poll) {
+            local_mip::note_deadline_poll();
+            if (exec_.past_deadline()) {
+                break;
+            }
+            next_deadline_poll = spent() + kTermCheckWork;
         }
 
         bool feasible_mode = ctx_.violated.empty();
@@ -426,6 +442,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     }
 
     size_t attempt_effort = ctx_.effort - effort_start;
+    local_mip::note_attempt_effort(static_cast<int64_t>(attempt_effort));
     base_.total_effort += attempt_effort;
     // Only add effort consumed since the last improvement within this
     // attempt (avoid double-counting when improvement resets the counter).

@@ -4,6 +4,8 @@
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "local_mip.h"
+#include "local_mip_caches.h"
 #include "parallel/HighsParallel.h"
 #include "rng.h"
 #include "test_common.h"
@@ -479,12 +481,55 @@ TEST_CASE("deadline: FJ stops at the time limit, not at its effort budget", "[de
 
 // LocalMIP had the identical hole and was never reported, because nothing
 // had swept its effort option to where the hole opens.
-// `kTermCheckInterval` had documented a termination-check cadence for this
-// loop since it was introduced while being referenced nowhere in the tree;
-// it is now what paces the check.
+// `kTermCheckWork` (`kTermCheckInterval` until #162) had documented a
+// termination-check cadence for this loop since it was introduced while
+// being referenced nowhere in the tree; it is now what paces the check.
 TEST_CASE("deadline: LocalMIP stops at the time limit, not at its effort budget",
           "[deadline][serial]") {
     require_stopped_mid_attempt("local_mip");
+}
+
+// #162: LocalMIP's poll cadence has to be denominated in *work*, not steps.
+//
+// The case above cannot see this, and neither can any whole-solve
+// assertion on a bundled instance.  What sets the wall-clock interval
+// between two polls is the cost of a local-search step, and that is a
+// property of the model: in feasible mode every `kFeasibleRecheckPeriod`-th
+// step calls `WorkerCtx::full_recheck`, which charges one `nnz`.  So a
+// cadence of 1000 *steps* buys an interval that grows with the matrix
+// while the constant stays put.  Measured on `savsched1` (1.4M nonzeros,
+// MIPLIB, not bundled): the dispatch polled 49 times, every poll landed
+// before the deadline, the batch between the last two spanned it, and a
+// 15 s limit was overrun by ~46 s — the same ~46 s at a 30 s limit, which
+// is the signature of a residual no shorter limit can shrink.
+//
+// This pins the mechanism rather than the overrun, and deliberately reads
+// no clock (CLAUDE.md's rule 2, not rule 3).  The cadence is denominated
+// in charged work, so the invariant is that a poll happens at least once
+// every `kTermCheckWork` units: `polls * kTermCheckWork >= effort`.  The
+// retired cadence tied the poll rate to `step_` and to nothing the model
+// scales, so it violates this on any instance whose average step charges
+// more than `kTermCheckWork / 1000` units — `gesa2` charges far more than
+// that, which is why a small bundled instance suffices here where it did
+// not for the wall-clock form.  Being clock-free, it is also immune to the
+// load that would make a timing assertion flaky.
+TEST_CASE("deadline: LocalMIP polls the clock on a work cadence, not a step count", "[deadline]") {
+    if constexpr (!local_mip::kInstrumented) {
+        SUCCEED("counters compiled out");
+        return;
+    }
+    local_mip::reset_deadline_poll_counters();
+    const std::string line = alone_at_limit("local_mip", kUnbindableEffort);
+    const auto counters = local_mip::deadline_poll_counters();
+
+    INFO(line);
+    INFO("polls=" << counters.polls << " effort=" << counters.effort
+                  << " kTermCheckWork=" << local_mip_detail::kTermCheckWork);
+    // The dispatch has to have done something, or the invariant is vacuous.
+    REQUIRE(counters.effort > 0);
+    REQUIRE(counters.polls > 0);
+    CHECK(counters.polls * static_cast<int64_t>(local_mip_detail::kTermCheckWork) >=
+          counters.effort);
 }
 
 // FPR already polled the deadline per inner attempt — via `terminated()`,

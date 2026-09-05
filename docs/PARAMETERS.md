@@ -489,23 +489,45 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 
 ---
 
-### `kTermCheckInterval` — termination check period
+### `kTermCheckWork` — termination check cadence
 
 - **File**: `src/local_mip_caches.h`
-- **Default**: `1000`
-- **Meaning**: Interval (in steps) between checks of the solve's
-  wall-clock deadline (`ExecutionContext::past_deadline()`) in
+- **Default**: `65536`
+- **Meaning**: Counted units of `WorkerCtx::effort` between checks of the
+  solve's wall-clock deadline (`ExecutionContext::past_deadline()`) in
   `LocalMipWorker::run_attempt`'s search loop. Finer values add a
   `clock_gettime` per interval but bound the overshoot more tightly.
-- **Suggested range**: 100–10000.
-- **Note**: until #114 this constant was defined, documented here, and
+- **Suggested range**: 4096–1048576.
+- **Note**: until #114 this cadence was defined, documented here, and
   referenced nowhere — LocalMIP had no sub-attempt deadline check at all,
   and the `docs_parameter_references` gate passed because it verifies that
   a documented symbol *exists*, not that anything uses it. The cadence is
   the reason the check is affordable: a clock read per inner iteration was
   measured at ~3% of total instruction refs on small instances, which is
-  why the check was originally declined; at 1-in-1000 it is not
-  measurable.
+  why the check was originally declined.
+- **Note**: it was `kTermCheckInterval`, **1000 local-search steps**, until
+  #162, and that spelling is what made it not a bound. A step is not a unit
+  of bounded size: in feasible mode every `kFeasibleRecheckPeriod`-th step
+  calls `WorkerCtx::full_recheck`, which charges one `nnz`, so the wall
+  time a fixed step count buys grows with the model while the constant does
+  not. Measured on `savsched1` (1.4M nonzeros), a presolve-only LocalMIP
+  dispatch overran a 15 s limit by **46.1 s** and a 30 s limit by **46.4 s**
+  — the same residual at both, which is the signature of a bound the limit
+  cannot shorten — while polling 49 times, every poll landing before the
+  deadline and the batch between the last two spanning it. On the work
+  cadence the same runs end 0.11 s and 0.14 s past their limits. This is
+  the argument #151 made about `PropEngine::propagate` one heuristic over,
+  and it has the same answer: pace the poll on charged work, so a cheap
+  step on a small model still polls rarely while an expensive one polls
+  after essentially every step, and the residual is one step plus this
+  constant whatever the model looks like. Pinned by "deadline: LocalMIP
+  polls the clock on a work cadence, not a step count" in
+  `tests/test_deadline.cpp`, which asserts
+  `polls * kTermCheckWork >= effort` off the `local_mip::
+  deadline_poll_counters()` seam and reads **no clock** — the overrun it
+  prevents is wall-clock, but a timing assertion on a bundled instance
+  could neither see the defect (all of them are three orders of magnitude
+  too small) nor survive `ctest -j$(nproc)`.
 
 ---
 
@@ -1595,7 +1617,7 @@ What each heuristic's coarsest unit is, after #117 and #118:
 | heuristic | unit the deadline is polled between | bounded by |
 |---|---|---|
 | FJ | one upstream callback, `CALLBACK_EFFORT` = 500000 effort units | constant |
-| LocalMIP | `kTermCheckInterval` = 1000 local-search steps | constant |
+| LocalMIP | one local-search step, plus `kTermCheckWork` = 65536 counted units | one step's charge |
 | FPR | one propagating DFS node, 16 non-propagating ones (`kDeadlinePollNodes`), one RepairSearch node, or one RepairWalk step | `kPropagateDeadlinePollWork` of propagation |
 | FPR | one RepairWalk step is a row scan plus one column's damage evaluation, and every `kSoftRestartPeriod`-th step also a rescan of the columns undone since the best state | one row's degree x one column's degree |
 | Scylla | one pump round: one PDLP solve, then one FPR rounding (which polls as above) | one PDLP solve |

@@ -77,6 +77,34 @@ struct WarmStartCounters {
 
 void reset_warm_start_counters();
 WarmStartCounters warm_start_counters();
+
+// Test-only introspection on the search loop's wall-clock poll (#162).
+// `polls` counts how many times `LocalMipWorker::run_attempt` asked
+// `ExecutionContext::past_deadline()`; `effort` is the effort those
+// attempts charged.
+//
+// The pair is the *mechanism* the fix has to be pinned on, and it is what
+// a whole-solve assertion cannot see: the cadence is denominated in
+// charged work, so the invariant is "a poll happens at least every
+// `kTermCheckWork` units", i.e. `polls * kTermCheckWork >= effort`.  Under
+// the retired step cadence the poll rate was tied to `step_` and to
+// nothing the model could scale, so on any instance whose average step
+// charges more than `kTermCheckWork / 1000` units the same run polls too
+// rarely and the inequality fails.  Reading it needs no clock, which is
+// what makes the check load-safe — the wall-clock overrun it prevents is
+// not something `ctest -j$(nproc)` can be trusted to reproduce.
+struct DeadlinePollCounters {
+    int64_t polls;
+    int64_t effort;
+};
+
+void reset_deadline_poll_counters();
+DeadlinePollCounters deadline_poll_counters();
+
+// Called by `LocalMipWorker::run_attempt`: once per wall-clock poll, and
+// once at the end of each attempt with the effort that attempt charged.
+void note_deadline_poll();
+void note_attempt_effort(int64_t effort_charged);
 // Runs N continuous `parallel::for_each` workers with per-worker
 // self-termination.  Worker 0 starts from the unperturbed incumbent;
 // workers 1..N-1 start from perturbed incumbents.  Stalled workers are

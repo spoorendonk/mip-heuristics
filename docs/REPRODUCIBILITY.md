@@ -78,7 +78,7 @@ The *wall-clock* limit is a separate axis and is bounded at every worker count,
 including `threads=1` (#114). Each of the four presolve heuristics polls
 `ExecutionContext::past_deadline()` from inside its own inner loop, on a cadence
 of its own — FeasibilityJump per upstream callback (every 500 000 effort units),
-LocalMIP every `kTermCheckInterval` steps, FPR per inner attempt, Scylla per
+LocalMIP every `kTermCheckWork` counted units, FPR per inner attempt, Scylla per
 pump iteration — and the runner polls it unconditionally on every iteration.
 The overshoot is therefore one polling interval, not one *attempt*, and it no
 longer grows with the effort option. Scylla keeps a documented floor of one

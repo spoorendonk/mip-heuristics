@@ -62,7 +62,22 @@ inline constexpr double kScoreTol = 5e-7;
 // them independently.
 inline constexpr double kViolDeltaTol = 5e-7;
 inline constexpr HighsInt kRestartInterval = 200000;
-inline constexpr HighsInt kTermCheckInterval = 1000;
+// Counted units of `WorkerCtx::effort` between wall-clock polls in
+// `LocalMipWorker::run_attempt`'s search loop (#162).  This was a *step*
+// count until then, and a step is not a unit of bounded size: a feasible-
+// mode step runs `WorkerCtx::full_recheck` every `kFeasibleRecheckPeriod`
+// steps, which charges one `nnz` per call, so the wall time between two
+// polls scales with the model where the constant does not.  Measured on a
+// 1.4M-nonzero model, one 1000-step batch took tens of seconds and the
+// dispatch overran a 15 s limit by ~46 s.
+//
+// The same argument #151 applied to `PropEngine::propagate`, and the same
+// answer: pace the poll on the work actually charged, so a cheap step on a
+// small model still polls rarely (the ~3% instruction-ref cost that made a
+// per-iteration read unaffordable is what the cadence exists to avoid)
+// while an expensive one polls after essentially every step.  The residual
+// is one step plus this constant, whatever the model looks like.
+inline constexpr size_t kTermCheckWork = 65536;
 inline constexpr HighsInt kActivityPeriod = 100000;
 inline constexpr double kSmoothProb = 3e-4;
 inline constexpr HighsInt kBmsConstraints = 12;
