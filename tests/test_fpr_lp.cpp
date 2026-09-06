@@ -1,5 +1,6 @@
 #include "fpr_lp.h"
 #include "fpr_lp_arms.h"
+#include "heuristic_common.h"
 #include "Highs.h"
 #include "test_common.h"
 
@@ -315,8 +316,9 @@ TEST_CASE("fpr_lp: select_ref returns the pointer its LpRefClass names", "[fpr_l
 // Asserted on non-zero effort via `heuristic_reported_effort`, so a
 // regression that makes the ledger call conditional on `worker_effort >
 // 0` — or drops it entirely — fails here rather than silently removing
-// the observability.  `suite=fpr` because that is the narrowest value
-// that still enables fpr_lp (see `heuristics::effective_flags`).
+// the observability.  `suite=fpr_lp` because that is the narrowest value
+// that enables fpr_lp — since #164 it has its own token, and `fpr` selects
+// presolve FPR alone (see `heuristics::effective_flags`).
 TEST_CASE("fpr_lp: emits a [Sequential] line for its dive-time spend",
           "[fpr_lp][mode-matrix][observability]") {
     fpr_lp::reset_dispatch_counts();
@@ -328,4 +330,122 @@ TEST_CASE("fpr_lp: emits a [Sequential] line for its dive-time spend",
     // Guard against a vacuous pass: no dispatch means nothing to report.
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
     REQUIRE(heuristic_reported_effort(lines, "fpr_lp"));
+}
+
+// ── The effort share actually scales the budget (#164) ──
+//
+// A cold review of #164 deleted `* share` from the budget expression,
+// rebuilt, and the whole suite passed: every test then touching the option
+// used `0.0` (which the early return at the top of `run` catches) or `1.0`
+// (a no-op factor), so nothing pinned the arithmetic in between.  The
+// failure that would have escaped is not a crash — #165 sweeps this share,
+// every point would run at the same budget, and the experiment would
+// conclude the budget does not matter, from a green suite.
+//
+// Two cases, because either alone is passable by a wrong implementation.
+// This one pins the arithmetic through `dive_budget`; the one below pins
+// that a real dispatch still reads it, which a pure function nothing calls
+// would not.
+TEST_CASE("fpr_lp: the effort share scales the whole per-call budget",
+          "[fpr_lp][budget][regression]") {
+    // `nnz` and `mip_heuristic_effort` fix the cap; the headroom is then
+    // chosen on either side of it, because the two sides fail differently
+    // under the mutation this exists for.
+    constexpr size_t kNnz = 4096;
+    constexpr double kVanillaEffort = 0.05;
+    const auto cap = static_cast<double>(vanilla_effort_budget(kNnz, kVanillaEffort));
+    REQUIRE(cap > 0.0);
+
+    SECTION("a headroom-bound call scales with the share") {
+        // Headroom well under the cap, so the `min` picks it.
+        const double headroom_iters = cap / static_cast<double>(kNnz) / 4.0;
+        const double slice = headroom_iters * static_cast<double>(kNnz);
+        REQUIRE(slice < cap);
+        CHECK(fpr_lp::dive_budget(headroom_iters, kNnz, kVanillaEffort, 1.0) ==
+              static_cast<size_t>(slice));
+        CHECK(fpr_lp::dive_budget(headroom_iters, kNnz, kVanillaEffort, 0.5) ==
+              static_cast<size_t>(0.5 * slice));
+    }
+
+    SECTION("a cap-bound call scales with the share too") {
+        // Headroom far above the cap, so the `min` picks the cap.  This is
+        // the half that dies under `min(headroom * share, cap)`, #164's
+        // first spelling: there the cap is reached at every share >= 1 and
+        // is *never* exceeded, so a search over the share sees one budget
+        // on exactly the calls a large share was meant to deepen.
+        const double headroom_iters = 1e6 * cap / static_cast<double>(kNnz);
+        REQUIRE(headroom_iters * static_cast<double>(kNnz) > cap);
+        CHECK(fpr_lp::dive_budget(headroom_iters, kNnz, kVanillaEffort, 1.0) ==
+              static_cast<size_t>(cap));
+        CHECK(fpr_lp::dive_budget(headroom_iters, kNnz, kVanillaEffort, 0.5) ==
+              static_cast<size_t>(0.5 * cap));
+        // Above 1.0 the budget grows without bound, which is what lets a
+        // calibration hand fpr_lp a budget that cannot bind — the reason
+        // the option's ceiling is 1e6, exactly as for the four presolve
+        // effort options.  Overdrawing is self-correcting: the charge-back
+        // depletes the counters the headroom is computed from.
+        CHECK(fpr_lp::dive_budget(headroom_iters, kNnz, kVanillaEffort, 4.0) ==
+              static_cast<size_t>(4.0 * cap));
+    }
+
+    SECTION("share 1.0 is the budget the call took before the option existed") {
+        // The hard requirement of #164: the shipped default must not move.
+        // `share * min(h, c)` and the pre-#164 `min(h, c)` are the same
+        // number at 1.0, on both sides of the `min`.
+        for (const double headroom_iters :
+             {cap / static_cast<double>(kNnz) / 4.0, 1e6 * cap / static_cast<double>(kNnz)}) {
+            INFO("headroom_iters " << headroom_iters);
+            const double before = std::min(headroom_iters * static_cast<double>(kNnz), cap);
+            CHECK(fpr_lp::dive_budget(headroom_iters, kNnz, kVanillaEffort, 1.0) ==
+                  static_cast<size_t>(before));
+        }
+    }
+
+    SECTION("the degenerate inputs yield no budget") {
+        const double headroom_iters = cap / static_cast<double>(kNnz) / 4.0;
+        CHECK(fpr_lp::dive_budget(headroom_iters, kNnz, kVanillaEffort, 0.0) == 0);
+        CHECK(fpr_lp::dive_budget(0.0, kNnz, kVanillaEffort, 1.0) == 0);
+        CHECK(fpr_lp::dive_budget(-1.0, kNnz, kVanillaEffort, 1.0) == 0);
+        CHECK(fpr_lp::dive_budget(headroom_iters, 0, kVanillaEffort, 1.0) == 0);
+    }
+
+    SECTION("the product saturates instead of wrapping") {
+        // Every factor is user-supplied — the share's ceiling is 1e6 and
+        // `nnz` is whatever model was loaded — and `double -> size_t` is
+        // undefined out of range.  A wrapped product would be a *small*
+        // budget, which reads as "this parameter value is terrible" to
+        // whatever is searching the space.
+        constexpr size_t kHugeNnz = size_t{1} << 40;
+        CHECK(fpr_lp::dive_budget(1e18, kHugeNnz, 1.0, 1e6) == SIZE_MAX);
+    }
+}
+
+// The other half: the call site still reads the option.
+//
+// `dive_budget` above could be arithmetically perfect and unreferenced —
+// which is the `select_ref` lesson from #128, where a correct table and an
+// untested mapping onto it left the original bug in place.  So this asserts
+// on a real solve, through the one observable that does not depend on how
+// much work the dive then chooses to do: a share small enough that the
+// derived budget falls under `run`'s own `nnz << 8` floor makes the
+// dispatch not happen at all, while the shipped share dispatches on the
+// same instance.  Under the deleted-`* share` mutation the small share
+// yields the full budget and the dispatch happens, failing here.
+TEST_CASE("fpr_lp: a small effort share suppresses the dispatch the default makes",
+          "[fpr_lp][budget][regression]") {
+    const auto dispatches_at = [](double share) {
+        fpr_lp::reset_dispatch_counts();
+        Highs h;
+        h.setOptionValue("output_flag", false);
+        set_suite(h, "fpr_lp");
+        require_option(h, "mip_heuristic_fpr_lp_effort", share);
+        REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+        REQUIRE(h.run() == HighsStatus::kOk);
+        return fpr_lp::dispatch_counts().dispatches;
+    };
+
+    // Guard against a vacuous pass: the default share must dispatch, or
+    // the zero below says nothing.
+    REQUIRE(dispatches_at(1.0) >= 1);
+    REQUIRE(dispatches_at(1e-4) == 0);
 }

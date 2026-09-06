@@ -2147,23 +2147,43 @@ options documented above):
   above** (#164). `fpr_lp` draws from upstream's RENS/RINS LP-iteration
   envelope and charges back what it spends, so its budget is zero-sum
   against those two heuristics rather than an independent allowance; the
-  option is therefore its **share of the remaining headroom** of that
-  envelope, not a multiple of `nnz << 10`. `src/fpr_lp.cpp` sizes a call at
-  `min(headroom_units x share, cap_units)`, where the cap is the unchanged
-  `vanilla_effort_budget(nnz, mip_heuristic_effort)`. The default `1.0` is
-  the whole headroom — exactly what the call took before the option existed,
-  which is what keeps a default-options binary unmoved by #164 — and is a
+  option is therefore its **share of that envelope**, not a multiple of
+  `nnz << 10`. `fpr_lp::dive_budget` sizes a call at
+  `share x min(headroom_units, cap_units)`, where the cap is the unchanged
+  `vanilla_effort_budget(nnz, mip_heuristic_effort)`. The default `1.0`
+  takes that whole slice — exactly what the call took before the option
+  existed, which is what keeps a default-options binary unmoved by #164, and
+  was checked instance by instance against the previous build — and is a
   starting point rather than a measurement: #113's probe calibrated the four
   presolve heuristics and never touched this one. `0` disables `fpr_lp`, and
   does so above every read and write of `heuristic_lp_iterations` /
   `total_lp_iterations`, the counters `moreHeuristicsAllowed()` reads to
   decide whether RENS and RINS run — a disable that charged even one
   iteration back would move those two heuristics, and an `fpr_lp` ablation
-  would then be measuring them as well. One property it does **not** share
-  with the four above: it cannot on its own express a budget that never
-  binds, because the share scales the headroom term and the per-call cap is
-  left alone; the `1e6` ceiling is shared for uniformity of the surface and
-  here buys taking the whole headroom in one call.
+  would then be measuring them as well.
+
+  **The share multiplies the whole `min`, not the headroom term inside it**,
+  and that is the one place this deviates from #164's body, which writes
+  `min(headroom x share, cap)`. That spelling shipped first and leaves the
+  per-call cap binding however large the share is, so the option could not
+  express a budget that never binds — the property the `1e6` ceiling exists
+  for on all six effort options, and the one thing this option was added to
+  make possible. Scaling the `min` is identical at `share == 1.0`, grows
+  without bound above it, and below it throttles both terms proportionally,
+  which is a truer reading of "share" than throttling one. Overdrawing the
+  envelope at a large share is self-correcting rather than a leak: the
+  charge-back depletes the same counters the headroom is computed from, so
+  the next call sees no headroom and skips — a share above `1.0` buys a
+  deeper dive-time call, paid for out of later ones.
+
+  The arithmetic lives in `fpr_lp::dive_budget` rather than inline in
+  `fpr_lp::run`, and has its own test, for the reason `select_ref` does: no
+  assertion on a whole solve separates "the share scaled the budget" from
+  "the budget happened to land there". A cold review of #164 deleted the
+  `* share` from the inline expression and the entire suite stayed green.
+  `tests/test_fpr_lp.cpp` now fails on that mutation on both sides of the
+  `min`, and a second case pins that a real dispatch still reads the option
+  — a pure function nothing called would pass either way.
 - `mip_heuristic_suite` — which heuristics run (default `"all"`).
   The value is either one of the two whole-value aliases `off` (no
   heuristic) and `all` (every one), or a **comma-separated list** of the

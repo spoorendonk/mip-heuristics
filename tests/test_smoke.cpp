@@ -74,9 +74,10 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         // which is the same `[0, 1e6]`, and not for its unit: it is a share
         // of the RENS/RINS LP-iteration headroom rather than a multiple of
         // `nnz << 10`, so it is the one default here that is neither
-        // measured nor comparable with its neighbours.  `1.0` is the whole
-        // headroom — exactly what `fpr_lp` took before the option existed,
-        // which is what keeps a default-options binary unmoved by #164.
+        // measured nor comparable with its neighbours.  `1.0` takes the
+        // whole slice `min(headroom, cap)` — exactly what `fpr_lp` took
+        // before the option existed, which is what keeps a default-options
+        // binary unmoved by #164.
         {"mip_heuristic_fpr_lp_effort", 1.0},
     });
     for (const auto& [name, expected] : effort_defaults) {
@@ -89,6 +90,15 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         // — with the patience gate off as well, the wall clock is then the
         // single stopping rule and the trace measures the heuristic rather
         // than the setting being derived from it.
+        //
+        // That reason covers the fifth entry as well, which is why it is in
+        // this loop.  `mip_heuristic_fpr_lp_effort` scales the *whole* of
+        // `min(headroom, cap)` rather than the headroom term inside it
+        // (`fpr_lp::dive_budget`), so a share above 1.0 grows the per-call
+        // budget without bound exactly as an unbindable presolve effort
+        // does.  It did not when #164 first landed — the cap still bound at
+        // every share — and that was the one thing the option was added for
+        // that it could not then do.
         REQUIRE(highs.setOptionValue(name, 0.0) == HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, 1.0) == HighsStatus::kOk);
         REQUIRE(highs.setOptionValue(name, 1e6) == HighsStatus::kOk);

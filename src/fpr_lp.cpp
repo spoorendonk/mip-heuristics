@@ -109,6 +109,51 @@ const double* select_ref(LpRefClass ref_class, const double* ac, const double* z
     return nullptr;
 }
 
+// See the declaration in fpr_lp.h for the semantics.  A free function and
+// not four lines inlined into `run` for the reason `select_ref` above is
+// one: the arithmetic is the whole of what `mip_heuristic_fpr_lp_effort`
+// does, and no assertion on a solve can separate "the share scaled the
+// budget" from "the budget happened to come out there".  It was inlined
+// when #164 landed and a cold review deleted the `* share` from it with the
+// entire suite still green, which is exactly the mutation
+// `tests/test_fpr_lp.cpp` now fails on.
+//
+// **The share multiplies the whole `min`, not the headroom term inside
+// it.**  #164's body writes `min(headroom * share, cap)`, and that spelling
+// was shipped first; it makes the per-call cap bind however large the share
+// is, so the option could not express a budget that never binds — the very
+// property the `1e6` ceiling exists for, and the reason #165 Stage 2 needs
+// one arm where the wall clock is the single stopping rule.  Scaling the
+// `min` is identical at `share == 1.0` (`min(h, c)` either way, so the
+// shipped binary does not move), grows without bound above it, and below it
+// throttles both terms proportionally — which is a truer reading of "share"
+// than throttling one of them.
+//
+// Overdrawing the envelope at a large share is deliberate and
+// self-correcting rather than a leak: the charge-back depletes the same
+// `heuristic_lp_iterations` the headroom is computed from, so the next call
+// sees `headroom_iters <= 0` and skips.  A share above 1.0 buys a *deeper*
+// dive-time call, paid for out of later ones.
+//
+// Saturating on the way to `size_t`, like `heuristic_effort_budget`: every
+// factor is user-supplied (the option's ceiling is `1e6` and `nnz` is
+// whatever model was loaded), `double -> size_t` is undefined out of range,
+// and a wrapped product would be a *small* budget — the failure mode that
+// reads as "this parameter value is terrible" to whatever is searching the
+// space.
+size_t dive_budget(double headroom_iters, size_t nnz, double heuristic_effort, double share) {
+    if (share <= 0.0 || headroom_iters <= 0.0 || nnz == 0) {
+        return 0;
+    }
+    const double headroom_units = headroom_iters * static_cast<double>(nnz);
+    const auto cap_units = static_cast<double>(vanilla_effort_budget(nnz, heuristic_effort));
+    const double budget = share * std::min(headroom_units, cap_units);
+    if (!(budget < static_cast<double>(SIZE_MAX))) {
+        return SIZE_MAX;
+    }
+    return static_cast<size_t>(budget);
+}
+
 namespace {
 
 // Test hook counters; see fpr_lp.h.  std::atomic so concurrent entry
@@ -563,9 +608,11 @@ void run(HighsMipSolver& mipsolver) {
     // charge-back still depletes the real counters the gate reads).
     // Size each call to the remaining headroom of that envelope, converted
     // at nnz effort-units per LP iteration (a simplex iteration touches
-    // O(nnz) coefficients), and cap it at vanilla_effort_budget(nnz,
+    // O(nnz) coefficients), capped at vanilla_effort_budget(nnz,
     // mip_heuristic_effort) — exactly nnz<<12 at the vanilla default 0.05
-    // — so one call cannot drain a large late-search envelope in one go.
+    // — so one call at the default share cannot drain a large late-search
+    // envelope in one go, and scaled by `mip_heuristic_fpr_lp_effort`.  See
+    // `dive_budget` above for what that share multiplies and why.
     // The charge-back below depletes the same envelope RENS/RINS draw
     // from; that is the point: fpr_lp competes for the vanilla heuristic
     // budget instead of consuming unaccounted work (and the budget scales
@@ -578,27 +625,8 @@ void run(HighsMipSolver& mipsolver) {
         return;
     }
 
-    // `mip_heuristic_fpr_lp_effort` is fpr_lp's **share of that headroom**
-    // (#164), not a second absolute multiplier like the four presolve
-    // options: the quantity that matters here is zero-sum against RENS/RINS,
-    // so a share is what a calibration should range over.  The default 1.0
-    // is the whole headroom, which is what this call took before the option
-    // existed, so the shipped binary is unmoved.
-    //
-    // It scales the headroom term and not the per-call cap, which is the
-    // formula #164 specifies.  One consequence worth stating rather than
-    // discovering: the cap therefore still binds at
-    // `vanilla_effort_budget(nnz, mip_heuristic_effort)` however large the
-    // share is, so unlike the four presolve options this one cannot on its
-    // own express a budget that never binds — raising `mip_heuristic_effort`
-    // raises the cap and the headroom together.  The `1e6` ceiling is the
-    // same as theirs for uniformity; what it buys here is the ability to
-    // take the whole headroom in one call at a small `mip_heuristic_effort`,
-    // not an unbindable budget.
-    const double headroom_units = headroom_iters * static_cast<double>(nnz) * effort_share;
-    const auto cap_units =
-        static_cast<double>(vanilla_effort_budget(nnz, mipdata->heuristic_effort));
-    const auto max_effort = static_cast<size_t>(std::min(headroom_units, cap_units));
+    const size_t max_effort =
+        dive_budget(headroom_iters, nnz, mipdata->heuristic_effort, effort_share);
 
     // Below ~256 LP-iteration equivalents the CSC build / var-order /
     // worker-spawn overhead dominates any useful DFS work; skip the call

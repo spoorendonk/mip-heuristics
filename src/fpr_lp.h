@@ -18,14 +18,14 @@ namespace fpr_lp {
 //  - and iff mip_heuristic_fpr_lp_effort > 0, which is the same "0 means
 //    the heuristic does not run" the four presolve effort options carry.
 //    Both gates return from the same place, above every counter read;
-//  - per-call effort budget = mip_heuristic_fpr_lp_effort times the
-//    remaining LP-iteration headroom of the moreHeuristicsAllowed()
+//  - per-call effort budget = mip_heuristic_fpr_lp_effort times the lesser
+//    of the remaining LP-iteration headroom of the moreHeuristicsAllowed()
 //    envelope (total_lp_iterations * mip_heuristic_effort + 10000 -
 //    heuristic_lp_iterations), converted at nnz effort-units per LP
-//    iteration and capped at heuristic_effort_budget(nnz,
-//    mip_heuristic_effort).  The option is a *share* of that headroom
-//    rather than an absolute multiplier, because the quantity is zero-sum
-//    against RENS/RINS; the cap is not scaled by it;
+//    iteration, and heuristic_effort_budget(nnz, mip_heuristic_effort).
+//    The option is a *share* of that slice rather than an absolute
+//    multiplier, because the quantity is zero-sum against RENS/RINS.  See
+//    `dive_budget` below;
 //  - all consumed work — the reference-LP solves in setup plus worker
 //    effort / nnz — is charged back to heuristic_lp_iterations and
 //    total_lp_iterations, mirroring how RENS/RINS book their sub-MIP LP
@@ -83,4 +83,32 @@ struct SetupProbe {
 // a bare solver, on one thread, whose LP relaxation stops the setup before
 // either — but do not call this from a solve, and never from a worker.
 SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort);
+
+// The per-call effort budget `run` derives, as a pure function of the four
+// numbers it derives it from: the remaining envelope headroom in LP
+// iterations, the model's nnz, upstream's mip_heuristic_effort, and this
+// heuristic's own mip_heuristic_fpr_lp_effort share.
+//
+//   share * min(headroom_iters * nnz, vanilla_effort_budget(nnz, effort))
+//
+// saturating at SIZE_MAX, and 0 when the share, the headroom or nnz is
+// non-positive.
+//
+// **The share multiplies the whole `min`.**  At `share == 1.0` that is
+// `min(headroom, cap)` — what the call took before the option existed, so
+// the shipped default is unmoved.  Above 1.0 it grows without bound, which
+// is what lets a calibration hand fpr_lp a budget that cannot bind (the
+// reason the option's ceiling is 1e6, as for the four presolve ones);
+// below it, both terms throttle together.
+//
+// Declared here rather than left inline in `run` so a test can pin the
+// arithmetic: no assertion on a whole solve separates "the share scaled the
+// budget" from "the budget happened to land there", and the first version
+// of #164 shipped with that gap — deleting the share from the expression
+// left the entire suite green.  This is not a test hook; `run` is its
+// production caller, and `tests/test_fpr_lp.cpp` asserts on both halves
+// (this function's arithmetic, and that a share still moves what a real
+// dispatch does) because a pure function nothing calls would pass either
+// way.
+size_t dive_budget(double headroom_iters, size_t nnz, double heuristic_effort, double share);
 }  // namespace fpr_lp

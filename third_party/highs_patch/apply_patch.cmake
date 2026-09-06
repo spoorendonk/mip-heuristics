@@ -135,7 +135,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # objective score positively.  The marker speaks for the tree, so a version-16
 # tree is rejected even though HighsOptions.h itself is unchanged, because its
 # `feasibilityjump.hh` would silently lack both.
-set(PATCH_VERSION "19")
+set(PATCH_VERSION "20")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -378,14 +378,27 @@ endif()
 # upstream's own RENS/RINS LP-iteration envelope, charging back what it
 # spends, so its budget is zero-sum against those two heuristics rather than
 # an independent allowance.  What a calibration should range over there is
-# therefore a **share of the remaining headroom**, which is what this option
-# is: `src/fpr_lp.cpp` sizes a call at
-# `min(headroom_units x share, cap_units)`, where the cap is the unchanged
+# therefore a **share of the envelope**, which is what this option is:
+# `fpr_lp::dive_budget` sizes a call at
+# `share x min(headroom_units, cap_units)`, where the cap is the unchanged
 # `vanilla_effort_budget(nnz, mip_heuristic_effort)`.
+#
+# The share multiplies the **whole `min`**, not the headroom term inside it.
+# #164's body writes `min(headroom x share, cap)` and that spelling shipped
+# first; it leaves the per-call cap binding however large the share is, so
+# the option could not express a budget that never binds — which is the one
+# thing it was added to make possible.  Scaling the `min` is identical at
+# `share == 1.0` (`min(h, c)` either way, so the shipped binary does not
+# move — checked instance by instance against the previous build), grows
+# without bound above it, and below it throttles both terms proportionally,
+# which is a truer reading of "share" than throttling one of them.
+# Overdrawing the envelope at a large share is self-correcting rather than a
+# leak: the charge-back depletes the same counters the headroom is computed
+# from, so the next call sees no headroom and skips.
 #
 # **The default 1.0 is not measured and does not claim to be.**  It is the
 # value that reproduces exactly what this call took before the option
-# existed — the whole headroom — so a default-options binary is unmoved by
+# existed — the whole slice — so a default-options binary is unmoved by
 # #164, which is the constraint that issue's comment puts above everything
 # else.  It is the starting point of an `fpr_lp` calibration, not the result
 # of one; #113's probe measured the four presolve heuristics and never
@@ -398,11 +411,10 @@ endif()
 # disable that charged even one iteration back would silently move those two
 # heuristics, which would make an `fpr_lp` ablation measure something else.
 #
-# One property it does **not** have, unlike the four above: it cannot on its
-# own express a budget that never binds, because the share scales only the
-# headroom term and the per-call cap is left alone.  The `1e6` ceiling is
-# shared with the other eight for uniformity of the surface; here it buys
-# taking the whole headroom in one call, not an unbindable budget.
+# The `1e6` ceiling is shared with the other eight and is there for the same
+# reason: above `1.0` this share grows the per-call budget without bound, so
+# a calibration arm can hand `fpr_lp` a budget that cannot bind and leave
+# the wall clock as the single stopping rule.
 
 # All three insertions of every option anchor on *upstream's*
 # mip_heuristic_run_shifting text, like the suite block above.  Anchoring
@@ -501,7 +513,7 @@ set(_patch_options
     "mip_heuristic_fpr_effort:double:12.2559:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
     "mip_heuristic_local_mip_effort:double:13.9607:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
     "mip_heuristic_scylla_effort:double:3.068:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
-    "mip_heuristic_fpr_lp_effort:double:1.0:${kEffortMax}:Share of the remaining RENS/RINS LP-iteration headroom the dive-time fpr_lp heuristic may take per call, capped as before at heuristic_effort_budget(nnz, mip_heuristic_effort) (0 disables fpr_lp)"
+    "mip_heuristic_fpr_lp_effort:double:1.0:${kEffortMax}:Effort budget multiplier for the dive-time fpr_lp heuristic, as a share of the lesser of the remaining RENS/RINS LP-iteration headroom and heuristic_effort_budget(nnz, mip_heuristic_effort). 1.0 takes that whole slice and larger values take more (0 disables fpr_lp)"
     "mip_heuristic_fj_patience:double:0.141625:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_fpr_patience:double:3.063975:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_local_mip_patience:double:3.490175:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
