@@ -39,6 +39,11 @@ from pathlib import Path
 
 HEURISTICS = ("fj", "fpr", "local_mip", "scylla")
 
+
+class NotFinished(RuntimeError):
+    """The search has not completed an iteration, so it has no elites yet."""
+
+
 # The pre-registered lambda sweep, in the order the launcher runs them.
 LAMBDA_TAGS = ("1_1200", "1_600", "1_300")
 
@@ -141,8 +146,20 @@ def read_elites(rdata: Path) -> list[dict]:
         ["Rscript", "-e", _R_READ_ELITES % rdata],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if out.returncode != 0:
+        # `getFinalElites` indexes the last entry of `allElites`, which is
+        # empty until the first iteration finishes, so this is what an
+        # in-progress search looks like rather than a broken one.  Worth
+        # distinguishing: the state file exists and grows from the first
+        # experiment, so "the file is there" is not evidence of a result.
+        if "less than one element" in out.stderr:
+            raise NotFinished(
+                f"{rdata}: no iteration has completed yet, so irace has "
+                "selected no elites"
+            )
+        raise RuntimeError(f"reading {rdata} failed:\n{out.stderr.strip()}")
     reader = csv.DictReader(io.StringIO(out.stdout))
     return [dict(row) for row in reader]
 
@@ -236,7 +253,11 @@ def main(argv: list[str] | None = None) -> int:
         if not rdata.exists():
             print(f"skipping {tag}: no irace.Rdata yet", file=sys.stderr)
             continue
-        survivors = [collapse(row) for row in read_elites(rdata)]
+        try:
+            survivors = [collapse(row) for row in read_elites(rdata)]
+        except NotFinished as exc:
+            print(f"skipping {tag}: {exc}", file=sys.stderr)
+            continue
         results.append(select(survivors, tag))
 
     if not results:

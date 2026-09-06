@@ -12,12 +12,16 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from analyze_irace import (
     Configuration,
     LambdaResult,
+    NotFinished,
     collapse,
+    read_elites,
     select,
     stability,
 )
@@ -128,3 +132,34 @@ def test_instability_is_reported_not_resolved():
     assert not ok
     assert "UNSTABLE" in message
     assert "1_600" in message
+
+
+def test_an_in_progress_search_is_reported_not_crashed(tmp_path, monkeypatch):
+    """`getFinalElites` indexes the last entry of `allElites`, which is empty
+    until an iteration completes, so an in-progress search errors in R.
+
+    The state file exists and grows from the first experiment, so "the file
+    is there" is not evidence of a result — this has to be distinguishable
+    from a broken run, since the analysis gets pointed at partial state while
+    a search is still going.
+    """
+
+    class _Out:
+        returncode = 1
+        stdout = ""
+        stderr = "Error in x[[length(x)]] : attempt to select less than one element"
+
+    monkeypatch.setattr("analyze_irace.subprocess.run", lambda *a, **k: _Out())
+    with pytest.raises(NotFinished, match="no iteration has completed"):
+        read_elites(tmp_path / "irace.Rdata")
+
+
+def test_other_r_failures_are_not_swallowed(tmp_path, monkeypatch):
+    class _Out:
+        returncode = 1
+        stdout = ""
+        stderr = "Error: cannot open file"
+
+    monkeypatch.setattr("analyze_irace.subprocess.run", lambda *a, **k: _Out())
+    with pytest.raises(RuntimeError, match="cannot open file"):
+        read_elites(tmp_path / "irace.Rdata")

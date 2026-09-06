@@ -74,10 +74,15 @@ run_one() {
 		return 0
 	fi
 
+	# Resume: irace refuses when --log-file and --recovery-file name the same
+	# path, so the state is copied aside and recovered from the copy while the
+	# live log keeps its usual name.  The copy is overwritten on each resume,
+	# so it is always the state this attempt started from.
 	local recover=()
 	if [ -s "$dir/irace.Rdata" ]; then
 		echo "== lambda=$lambda ($tag): resuming from irace.Rdata"
-		recover=(--recovery-file "$dir/irace.Rdata")
+		cp -f "$dir/irace.Rdata" "$dir/irace-recover.Rdata"
+		recover=(--recovery-file "$dir/irace-recover.Rdata")
 	fi
 
 	echo "================================================================"
