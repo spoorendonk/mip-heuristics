@@ -135,7 +135,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # objective score positively.  The marker speaks for the tree, so a version-16
 # tree is rejected even though HighsOptions.h itself is unchanged, because its
 # `feasibilityjump.hh` would silently lack both.
-set(PATCH_VERSION "17")
+set(PATCH_VERSION "18")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -254,40 +254,120 @@ endif()
 # shared envelope means raising one heuristic's budget no longer lowers
 # the others', which is what makes a per-heuristic calibration possible.
 #
-# The defaults are derived from what the shared envelope handed each
-# heuristic before the split:
-#   * fj 0.0125 -> `nnz << 10` per worker, exactly vanilla HiGHS's
-#     hardcoded single-thread FJ limit, which is what our N workers each
-#     ran on before.  FJ's option is a *per-worker* allowance; the other
-#     three size a whole dispatch (see mode_dispatch.cpp).
-#   * fpr / local_mip / scylla: 0.30 * w/sum(w) for the retired weights
-#     2.99 / 6.16 / 1.00, i.e. the 29.5% / 60.7% / 9.9% split of the 0.30
-#     envelope they had at suite=all.
+# ── Where the four effort and four patience defaults come from ──
 #
-# How close that is, stated once and referenced from CLAUDE.md and
-# docs/PARAMETERS.md:
+# **They are measured.**  Source: the #113 presolve calibration probe,
+# re-run 2026-09-05/06 on a 16-worker machine.  Artifacts, and the command
+# that regenerates every one of them from the logs, are tracked in
+# `bench/ablation_effort/` (README.md, defaults.json, report.txt).  Nothing
+# below is carried by hand: `bench/derive_from_probe.sh` writes the JSON and
+# these numbers are transcribed from it.
 #
-#   These four defaults are the closest scalar approximation to the
-#   retired scheme, not an exact reproduction of it, and no scalar can be
-#   exact.  The old envelope handed a heuristic
-#   `budget × max(1 − N/(80e), ¼) × w/Σw_enabled`, which depends on two
-#   runtime facts a constant here cannot see: the worker count `N`, and
-#   which *other* heuristics the suite enabled.  These reproduce the
-#   `suite=all` share with the worker-count term dropped, so they are
-#   exact at neither end.  At `suite=all` they run 1.04x the old budget
-#   at `N=1`, 1.33x at `N=6`, 2x at `N=12` and 4x from `N=18`, where the
-#   old quarter-floor capped the FJ deduction; at a single-heuristic
-#   suite — which used to hand the sole enabled heuristic the entire
-#   envelope — they run 0.29x / 0.61x / 0.10x for fpr / local_mip /
-#   scylla.  FJ is the one exact case, at every `N` and every suite.  The
-#   anchor is a choice, not a constraint: the deviation is smallest at
-#   the low worker counts the test suite actually runs at (1–2 on CI,
-#   `(hardware_concurrency()+1)/2` locally), and erring high is the cheap
-#   direction once patience is absolute (#111) — an over-large
-#   budget is truncated by a gate that fires, an under-large one is a
-#   hard cap nothing recovers.  Treat all four as the starting point of
-#   #106's calibration, not the result of one.
+# THE MEASUREMENT.  Each heuristic ran **alone** (`mip_heuristic_suite=<one>`),
+# presolve-only, over all 233 PLATO mipfeas instances at one seed, capped at
+# 30 s, with its effort option at the `1e6` ceiling and its patience at 0.
+# Both of those are deliberate: at 1e6 no budget can bind, at 0 there is no
+# patience gate, so **the wall clock is the single stopping rule, identical
+# for every heuristic on every instance**.  That is the property the whole
+# design rests on, and it is checked rather than assumed — 932/932 runs
+# presolve-only and patched, 881/881 traced dispatches clock-bound and none
+# budget-bound.  Running each alone matters because `run_sequential` is
+# sequential: at an unbindable budget the first heuristic would take the
+# entire cap and the other three would report having produced nothing.
 #
+# EFFORT = the p50 of the *yield knee*.  Every `[HeurSol]` line stamps an
+# accepted solution with the charged effort at which it arrived, so one
+# clock-bound dispatch is a whole cumulative-yield curve.  That dispatch's
+# knee is the effort at its **last incumbent improvement** — spend beyond it
+# bought nothing on that instance.  The default is the median knee over the
+# dispatches that *finished* improving.  Three exclusions, each with a
+# reason: a **barren** dispatch has no knee at all (it is a cost question,
+# answered by patience below, not a budget question); a dispatch **still
+# improving** when the cap fired is right-censored, since its true knee is
+# larger than what it was seen to spend; and the median rather than a tail
+# quantile, because the p90 is driven by the still-improving dispatches and
+# therefore measures the cap rather than the heuristic.
+#
+# PATIENCE = `min(p95 of the inter-improvement effort gaps, effort / 4)`.
+# The p95 is a **retention** claim: at most 5% of the improvements that
+# would ever arrive are cut off by giving up this early.  The clamp is a
+# **cost** claim: a barren dispatch spends exactly the patience and nothing
+# else, and 29-40% of dispatches are barren, so it has to stay well under
+# the ceiling.  `kPatienceCeilingDivisor` = 4 is FJ's own historical shape.
+# **The clamp binds on all four** — the raw p95 waits are fj 2.46, fpr
+# 5649.87, local_mip 4.93, scylla 18.96 — so every shipped patience is
+# exactly `0.25 x` the effort beside it, and the honest reading of the
+# measurement is "for three of these four, wait longer than your entire
+# budget".  Raising the divisor is the one knob here worth an ablation arm.
+#
+# THE NUMBERS, and what each rests on:
+#
+#   heuristic   effort   patience   dispatches finished / still / barren
+#   fj          0.5665   0.141625   144 / 2 / 74
+#   fpr        12.2559   3.063975   139 / 1 / 80
+#   local_mip  13.9607   3.490175   158 / 0 / 63
+#   scylla      3.0680   0.767      130 / 2 / 88
+#
+# Each patience is written as the *exact* quarter of the effort beside it,
+# not as a rounded value: the clamp binds on all four, so the pair has to
+# satisfy `patience == effort / 4` exactly or `tests/test_smoke.cpp`'s
+# "Options: patience defaults" — which pins that invariant — fails.
+#
+# THE UNITS ARE NOT COMPARABLE ACROSS HEURISTICS.  Both options are a
+# multiple of `nnz << 10` — vanilla HiGHS's own hardcoded single-thread FJ
+# limit — so `effort = 1.0` is one vanilla FJ budget and `patience < effort`
+# is legible without arithmetic (#116).  But what each heuristic's effort
+# *counter* counts differs: FJ step units, FPR and LocalMIP coefficient
+# accesses, Scylla PDLP iterations x nnz.  So `local_mip 13.96` against
+# `scylla 3.07` says nothing about which searches harder.  Scope differs
+# too: FJ's pair sizes **one worker's** allowance, the other three size a
+# whole dispatch which `make_budget` then divides by N.
+#
+# VALID AT 16 WORKERS.  Because of that scope split, changing the worker
+# count *reallocates* budget between heuristics rather than rescaling it.
+#
+# WHAT MOVED, AGAINST THE PREVIOUS MEASUREMENT (fj 2.84 / 0.71, fpr 7.672 /
+# 1.918, local_mip 29.232 / 7.308, scylla 1.136 / 0.284, taken 2026-08-27).
+# Every one of the four moved for a reason that is a *fixed defect*, not
+# noise, which is why the re-run was held until they had all landed:
+#   * **fj 2.84 -> 0.5665**, a factor of 5 *down*.  The old number rested on
+#     **1** finished dispatch of 220; this one rests on 144.  #163: FjWorker
+#     offered once per attempt, after `solver.solve()` returned, and at this
+#     probe's configuration one attempt is the whole 30 s dispatch — so all
+#     16 workers published within a millisecond of the cap, the first
+#     improvement appeared at a median of 29.7 s of 30 s, and the knee was
+#     forced to be the entire spend.  It now offers on each improving
+#     solution: first improvement at a median of 30 ms, 10 improvements per
+#     instance against 2.  FJ converges *fastest* of the four; it could not
+#     previously say so.
+#   * **local_mip 29.232 -> 13.9607**, halved.  #162: the deadline poll was
+#     paced in local-search *steps*, and a feasible-mode step charges one
+#     `nnz` every `kFeasibleRecheckPeriod` steps, so on a large model a
+#     dispatch ran far past its limit (measured +46 s on a 1.4M-nonzero
+#     model, at both a 15 s and a 30 s limit).  The knee is now measured
+#     against the wall clock the dispatch was actually given.
+#   * **scylla 1.136 -> 3.0680**, roughly tripled.  #152: every clock-bound
+#     Scylla dispatch used to retire at ~half its limit, so its arm of the
+#     previous run measured a ~15 s cap where the others had 30 s.  #153 and
+#     #140 additionally moved its charged effort per pump round.
+#   * **fpr 7.672 -> 12.2559**.  #124, #156, #130, #131 and #158 all raise
+#     charged effort per unit of real work on FPR's kernel.
+#
+# HISTORY, kept because the previous rationale is referenced elsewhere.
+# Before #113 these four were *inherited* rather than measured, from what
+# the retired shared envelope handed each heuristic at the #110 split:
+# fj 0.0125 (= `nnz << 10` per worker, exactly vanilla HiGHS's hardcoded
+# single-thread FJ limit), and fpr / local_mip / scylla at
+# `0.30 * w/sum(w)` for the retired weights 2.99 / 6.16 / 1.00.  That
+# scheme handed a heuristic
+# `budget x max(1 - N/(80e), 1/4) x w/sum(w_enabled)`, which depends on two
+# runtime facts a constant cannot see — the worker count and which *other*
+# heuristics the suite enabled — so no scalar could reproduce it and these
+# never tried to.  The inherited values landed within a factor of two of
+# the first measurement on all four; against *this* one, fj is off by 22x
+# and the rest by 2-12x.
+#
+
 # All three insertions of every option anchor on *upstream's*
 # mip_heuristic_run_shifting text, like the suite block above.  Anchoring
 # on our own inserted text is what made the older option blocks a chain,
@@ -381,14 +461,14 @@ set(kEffortMax "1e6")
 # (bool); it sits *before* the description because the description is the
 # one field allowed to contain anything, so it has to be last.
 set(_patch_options
-    "mip_heuristic_fj_effort:double:2.84:${kEffortMax}:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
-    "mip_heuristic_fpr_effort:double:7.672:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
-    "mip_heuristic_local_mip_effort:double:29.232:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
-    "mip_heuristic_scylla_effort:double:1.136:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
-    "mip_heuristic_fj_patience:double:0.71:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
-    "mip_heuristic_fpr_patience:double:1.918:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
-    "mip_heuristic_local_mip_patience:double:7.308:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
-    "mip_heuristic_scylla_patience:double:0.284:${kEffortMax}:Patience for the Scylla presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_fj_effort:double:0.5665:${kEffortMax}:Per-worker effort budget multiplier for the FeasibilityJump presolve heuristic"
+    "mip_heuristic_fpr_effort:double:12.2559:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
+    "mip_heuristic_local_mip_effort:double:13.9607:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
+    "mip_heuristic_scylla_effort:double:3.068:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
+    "mip_heuristic_fj_patience:double:0.141625:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_fpr_patience:double:3.063975:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_local_mip_patience:double:3.490175:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_scylla_patience:double:0.767:${kEffortMax}:Patience for the Scylla presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
 
 # The upstream record block all four record insertions anchor on, spelled

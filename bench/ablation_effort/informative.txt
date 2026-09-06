@@ -19,8 +19,8 @@
 #                    count either.  The rule reads display rows, which every log
 #                    level prints, so a --dev-log run and a plain one of the same
 #                    solve yield the same set.
-#   informative      183 of 233 analysed
-#   hard_tier        50 excluded, kept and scored apart
+#   informative      191 of 233 analysed
+#   hard_tier        42 excluded, kept and scored apart
 #
 # Regenerate with:
 #   bench/analyze_presolve_probe.py bench/results/probe/preprobe --instances /home/simon/code/my/mip-heuristics/bench/instances_plato.txt --informative-output bench/ablation_effort/informative.txt --hard-tier-output bench/ablation_effort/hard_tier.txt
@@ -62,6 +62,7 @@ fhnw-binpack4-48
 fiball
 gen-ip002
 gen-ip054
+germanrr
 glass-sc
 glass4
 gmu-35-40
@@ -77,7 +78,6 @@ istanbul-no-cutoff
 lectsched-5-obj
 leo1
 leo2
-lotsize
 mad
 map10
 map16715-04
@@ -97,6 +97,7 @@ n5-3
 neos-1122047
 neos-1171448
 neos-1171737
+neos-1354092
 neos-1445765
 neos-1456979
 neos-1582420
@@ -107,6 +108,7 @@ neos-3004026-krka
 neos-3024952-loue
 neos-3046615-murg
 neos-3083819-nubu
+neos-3216931-puriri
 neos-3381206-awhea
 neos-3402294-bobin
 neos-3555904-turama
@@ -124,6 +126,7 @@ neos-4763324-toguru
 neos-4954672-berkel
 neos-5049753-cuanza
 neos-5052403-cygnet
+neos-5104907-jarama
 neos-5107597-kakapo
 neos-5114902-kasavu
 neos-5188808-nattai
@@ -150,6 +153,7 @@ ns1208400
 ns1644855
 ns1830653
 nu25-pr12
+nursesched-medium-hint03
 nursesched-sprint02
 opm2-z10-s4
 p200x1188c
@@ -173,6 +177,8 @@ rococoB10-011000
 rococoC10-001000
 roi2alpha3n4
 roi5alpha10n8
+roll3000
+s250r10
 satellites2-40
 satellites2-60-fs
 savsched1
@@ -189,7 +195,6 @@ splice1k1
 supportcase10
 supportcase12
 supportcase18
-supportcase19
 supportcase26
 supportcase33
 supportcase40
@@ -200,11 +205,14 @@ swath1
 swath3
 tbfp-network
 thor50dday
+timtab1
 tr12-30
+traininstance2
 traininstance6
 trento1
 uccase12
 uccase9
 uct-subprob
+unitcal_7
 var-smallemery-m6j6
 wachplan

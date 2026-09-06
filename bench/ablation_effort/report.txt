@@ -4,21 +4,20 @@ Presolve probe: bench/results/probe/preprobe
   analysed       233 instances
   probe check    932/932 presolve-only, 932/932 patched
   trace source   parse_highs_log
-  budget check   773/857 traced dispatch(es) clock-bound, 0 unrecorded
-  signals        heursol=520, heur=343, source=69
-  NOTE: on 10 instance(s) (15 run(s)) the pool accepted a chain solution that never became the incumbent, so [Heur] found=1 and the display disagree.  The verdict follows the display; see produced-not-improved.
-  WARNING: 84 of 857 traced dispatch(es) reached 95% of their effort budget, so the budget and not the clock stopped them and their yield curves are truncated: fpr on markshare_4_0 (5090%), local_mip on markshare_4_0 (3328%), local_mip on gen-ip054 (2484%), fpr on markshare2 (1665%), local_mip on neos5 (1445%), local_mip on markshare2 (1371%), fpr on gen-ip054 (1254%), fpr on neos-3046615-murg (1179%), local_mip on gen-ip002 (1040%), local_mip on pk1 (1000%), local_mip on mas76 (986%), local_mip on neos-3046615-murg (974%), local_mip on mas74 (972%), local_mip on neos-3754480-nidda (867%), fpr on enlight_hard (848%), fpr on pk1 (820%), fpr on gen-ip002 (717%), local_mip on enlight_hard (641%), local_mip on sp150x300d (618%), fpr on sp150x300d (616%)
+  budget check   881/881 traced dispatch(es) clock-bound, 0 unrecorded
+  signals        heursol=579, heur=302, source=51
+  NOTE: on 4 instance(s) (8 run(s)) the pool accepted a chain solution that never became the incumbent, so [Heur] found=1 and the display disagree.  The verdict follows the display; see produced-not-improved.
 
-Informative set: 183 of 233 (78.5%)
+Informative set: 191 of 233 (82.0%)
 
-Excluded (hard tier): 50
-  no-acceptance          49
+Excluded (hard tier): 42
+  no-acceptance          41
   trivial-only           1
   produced-not-improved  0
   unreached              0
   30n20b8                      no-acceptance: 4 run(s), none produced a solution
   bab2                         no-acceptance: 4 run(s), none produced a solution
-  bab6                         no-acceptance: 1 of 4 run(s) killed
+  bab6                         no-acceptance: 4 run(s), none produced a solution
   bnatt400                     no-acceptance: 4 run(s), none produced a solution
   cmflsp50-24-8-8              no-acceptance: 4 run(s), none produced a solution
   co-100                       no-acceptance: 4 run(s), none produced a solution
@@ -30,79 +29,67 @@ Excluded (hard tier): 50
   dws008-01                    no-acceptance: 4 run(s), none produced a solution
   eilA101-2                    no-acceptance: 4 run(s), none produced a solution
   ex9                          trivial-only: 4 of 4 run(s) found a solution, none from the chain (HiGHS's own trivial heuristics)
-  germanrr                     no-acceptance: 4 run(s), none produced a solution
   gfd-schedulen180f7d50m30k18  no-acceptance: 4 run(s), none produced a solution
   icir97_tension               no-acceptance: 4 run(s), none produced a solution
   irish-electricity            no-acceptance: 4 run(s), none produced a solution
   k1mushroom                   no-acceptance: 4 run(s), none produced a solution
+  lotsize                      no-acceptance: 4 run(s), none produced a solution
   milo-v12-6-r2-40-1           no-acceptance: 4 run(s), none produced a solution
   momentum1                    no-acceptance: 4 run(s), none produced a solution
-  neos-1354092                 no-acceptance: 4 run(s), none produced a solution
   neos-2746589-doon            no-acceptance: 4 run(s), none produced a solution
-  neos-3216931-puriri          no-acceptance: 4 run(s), none produced a solution
   neos-4722843-widden          no-acceptance: 4 run(s), none produced a solution
   neos-5093327-huahum          no-acceptance: 4 run(s), none produced a solution
-  neos-5104907-jarama          no-acceptance: 2 of 4 run(s) killed
   neos-631710                  no-acceptance: 4 run(s), none produced a solution
   ns1760995                    no-acceptance: 4 run(s), none produced a solution
   ns1952667                    no-acceptance: 4 run(s), none produced a solution
-  nursesched-medium-hint03     no-acceptance: 4 run(s), none produced a solution
   nw04                         no-acceptance: 4 run(s), none produced a solution
   peg-solitaire-a3             no-acceptance: 4 run(s), none produced a solution
   physiciansched3-3            no-acceptance: 4 run(s), none produced a solution
   piperout-27                  no-acceptance: 4 run(s), none produced a solution
-  rail01                       no-acceptance: 1 of 4 run(s) killed
-  rail02                       no-acceptance: 2 of 4 run(s) killed
+  rail01                       no-acceptance: 4 run(s), none produced a solution
+  rail02                       no-acceptance: 4 run(s), none produced a solution
   rd-rplusc-21                 no-acceptance: 4 run(s), none produced a solution
   rocI-4-11                    no-acceptance: 4 run(s), none produced a solution
-  roll3000                     no-acceptance: 4 run(s), none produced a solution
   s100                         no-acceptance: 4 run(s), none produced a solution
-  s250r10                      no-acceptance: 4 run(s), none produced a solution
-  snp-02-004-104               no-acceptance: 2 of 4 run(s) killed
+  snp-02-004-104               no-acceptance: 4 run(s), none produced a solution
   square41                     no-acceptance: 4 run(s), none produced a solution
   square47                     no-acceptance: 4 run(s), none produced a solution
+  supportcase19                no-acceptance: 4 run(s), none produced a solution
   supportcase22                no-acceptance: 4 run(s), none produced a solution
-  timtab1                      no-acceptance: 4 run(s), none produced a solution
-  traininstance2               no-acceptance: 4 run(s), none produced a solution
   triptim1                     no-acceptance: 4 run(s), none produced a solution
-  unitcal_7                    no-acceptance: 4 run(s), none produced a solution
 
-Effort trajectories (857 run(s) traced, 6 dispatch(es) skipped, 16 worker(s))
+Effort trajectories (881 run(s) traced, 0 dispatch(es) skipped, 16 worker(s))
   effort columns are raw charged units and are NOT comparable across
   heuristics; gap columns are per matrix nonzero per worker series.
-  stall_lo is the events-only p95 -- a lower bound, since a dispatch
-  that stopped producing contributes no completed gap.  stall_hi adds
+  patience_lo is the events-only p95 -- a lower bound, since a dispatch
+  that stopped producing contributes no completed gap.  patience_hi adds
   those censored intervals back with Kaplan-Meier, per-instance
   equally weighted; 'unbnd' means no constant bounds this heuristic.
   NOTE: 34 improving offer(s) came from worker -1 (off any slot, e.g. LocalMIP's cold-start publish); they count for the informative set and are excluded from the gap distribution.
 
-  heur        disp improve  productive       stale  stale%  gaps       p50       p75       p90       p95       p99  cens  stall_lo  stall_hi
-  fj           220     297     2.1e+12    1.91e+13    90.1   297  122634.6  773263.9 3266536.9 4553262.915743518.9  35204446.54578754532848597.12188770325
-  fpr          207     590    2.15e+11    1.19e+13    98.2   590     430.3   10498.7  128992.1  520429.3 2082951.4  33128131.707042859877     unbnd
-  local_mip    220   24598    7.66e+11    1.22e+13    94.1 24598       1.0       1.2       2.4     543.7   53140.8  35208.495372637475729     unbnd
-  scylla       210     374    3.46e+10    3.59e+12    99.0   374     650.6    4462.0   24561.6   64830.5  380063.0  336063.311041182322384     unbnd
+  heur        disp improve  productive       stale  stale%  gaps       p50       p75       p90       p95       p99  censpatience_lopatience_hi
+  fj           220    8141    3.68e+11     1.6e+13    97.8  8141       1.0      10.1     323.3    2518.9  134337.8  35202.4598184234907796     unbnd
+  fpr          220     730    2.82e+11    1.82e+13    98.5   730     472.3   11028.0   85883.1  361591.7 1895348.5  35205649.870638410116     unbnd
+  local_mip    221   23936    3.31e+11    1.02e+13    96.9 23936       1.0       1.9      61.5     315.6    6317.4  35364.930768976888951     unbnd
+  scylla       220     612    8.48e+10    3.86e+12    97.8   612     184.9    1210.9    6443.4   19413.5   95449.3  352018.958472542290167     unbnd
 
-Solution quality against best known (184 instance(s) with a usable reference):
+Solution quality against best known (192 instance(s) with a usable reference):
   heur        scored  median gap  mean gap  exact  best-of
-  fj             124      1.0000    0.7788      9       51
-  fpr            118      0.6651    0.5965      7       59
-  local_mip      161      0.4368    0.5168     14      127
-  scylla         117      0.9763    0.6718      5       55
+  fj             147      0.1102    0.3398     23       96
+  fpr            138      0.6679    0.6045     10       37
+  local_mip      162      0.2015    0.4140     21       88
+  scylla         130      0.4060    0.4955     14       46
   21 instance(s) have |reference| <= 1, where the capped gap saturates and the objective ranks on cost alone
 
-Proposed stall ranges for #107 (per nnz, at 16 worker(s)):
-  mip_heuristic_fj_stall           4447 .. 4.86e+04  (per-worker scope)
-  mip_heuristic_fpr_stall          8132 .. unbounded (censoring never reaches 5%)  (x 16 workers)
-  mip_heuristic_local_mip_stall    8.495 .. unbounded (censoring never reaches 5%)  (x 16 workers)
-  mip_heuristic_scylla_stall       63.31 .. unbounded (censoring never reaches 5%)  (per-worker scope)
+Proposed patience ranges for #107 (at 16 worker(s)):
+  mip_heuristic_fj_patience        2.46 .. unbounded (censoring never reaches 5%)  (per-worker scope)
+  mip_heuristic_fpr_patience       5650 .. unbounded (censoring never reaches 5%)  (x 16 workers)
+  mip_heuristic_local_mip_patience 4.931 .. unbounded (censoring never reaches 5%)  (x 16 workers)
+  mip_heuristic_scylla_patience    18.96 .. unbounded (censoring never reaches 5%)  (per-worker scope)
 
 Proposed effort vector for #107 (p50% yield knee, at 16 worker(s)):
-  mip_heuristic_fj_effort              2.8401 .. unbnd      (shipped 2.8400; p50 2.8401; 8 finished, 115 still improving, 97 barren)
-  mip_heuristic_fpr_effort             7.6724 .. 409.4455   (shipped 7.6720; p50 7.6724; 116 finished, 0 still improving, 91 barren)
-  mip_heuristic_local_mip_effort      29.2322 .. 109.3060   (shipped 29.2320; p50 29.2322; 153 finished, 1 still improving, 66 barren)
-  mip_heuristic_scylla_effort          1.1373 .. 115.3750   (shipped 1.1360; p50 1.1373; 112 finished, 2 still improving, 96 barren)
+  mip_heuristic_fj_effort              0.5665 .. 6.6125     (shipped 2.8400; p50 0.5665; 144 finished, 2 still improving, 74 barren)
+  mip_heuristic_fpr_effort            12.2559 .. 93.7124    (shipped 7.6720; p50 12.2559; 139 finished, 1 still improving, 80 barren)
+  mip_heuristic_local_mip_effort      13.9607 .. 50.8226    (shipped 29.2320; p50 13.9607; 158 finished, 0 still improving, 63 barren)
+  mip_heuristic_scylla_effort          3.0680 .. 17.8144    (shipped 1.1360; p50 3.0680; 130 finished, 2 still improving, 88 barren)
   low: the budget that reaches the last improvement on 50% of the dispatches that *finished* improving.  high: the same quantile with the rest carried as right-censored -- a dispatch still improving when the cap fired, and a barren one, both have a knee larger than what they were seen to spend.
-
-Trajectory diagnostics:
-       3x  fpr dispatch 1 has no nonzero count (the [Heur] line carries none and no model header was printed)
-       3x  scylla dispatch 1 has no nonzero count (the [Heur] line carries none and no model header was printed)

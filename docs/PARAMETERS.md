@@ -1200,7 +1200,9 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_fj_effort` — FeasibilityJump budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `2.84` (measured, #113; `0.0355` before the unit change, #116)
+- **Default**: `0.5665` (measured, #113 re-run 2026-09-06; was `2.84` from the
+  2026-08-27 run, whose FJ knee rested on 1 finished dispatch of 220 before
+  #163 — see `bench/ablation_effort/README.md`)
 - **Meaning**: Sizes one *worker's* allowance rather than the whole
   dispatch — the only entry that does, flagged `per_worker` in `kChain`.
   At the default it is exactly `nnz << 10` steps per worker, which is
@@ -1231,7 +1233,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_fpr_effort` — FPR budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `7.672` (measured, #113; `0.0959` before the unit change, #116)
+- **Default**: `12.2559` (measured, #113 re-run 2026-09-06; was `7.672`)
 - **Meaning**: Whole-dispatch budget for the presolve FPR chain, divided
   across the workers by `make_budget`. The default is `0.30 x 2.99/10.15`
   — FPR's 29.5% share of the retired shared envelope at its 0.30 default.
@@ -1243,7 +1245,8 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_local_mip_effort` — LocalMIP budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `29.232` (measured, #113; `0.3654` before the unit change, #116)
+- **Default**: `13.9607` (measured, #113 re-run 2026-09-06; was `29.232`,
+  halved once #162 stopped LocalMIP overrunning its wall-clock limit)
 - **Meaning**: Whole-dispatch budget for LocalMIP. The default is
   `0.30 x 6.16/10.15`, its 60.7% share of the retired envelope — the
   largest of the three because the retired weights were proportional to
@@ -1257,7 +1260,8 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_scylla_effort` — Scylla budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `1.136` (measured, #113; `0.0142` before the unit change, #116)
+- **Default**: `3.068` (measured, #113 re-run 2026-09-06; was `1.136`, tripled
+  once #152 stopped Scylla retiring at half its limit)
 - **Meaning**: Whole-dispatch budget for Scylla. The default is
   `0.30 x 1.00/10.15`, its 9.9% share of the retired envelope. Scylla's
   effort is measured in PDLP iters x nnz, a different unit from the other
@@ -1772,7 +1776,9 @@ effort-gap distribution).
 ### `mip_heuristic_fj_patience` — FeasibilityJump patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.71` (measured, #113; `727` before the unit change, #116)
+- **Default**: `0.141625` (measured, #113 re-run 2026-09-06; was `0.71`). It is
+  the clamp, `0.25 x` the effort option beside it, not the raw p95 wait of
+  `2.46` — see the clamp note below.
 - **Meaning**: Step units per worker without an incumbent improvement, as
   a multiple of `nnz << 10`. Scope is **per worker**, matching
   `mip_heuristic_fj_effort` — the only one of the four with that scope, so
@@ -1794,7 +1800,8 @@ effort-gap distribution).
 ### `mip_heuristic_fpr_patience` — FPR patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `1.918` (measured, #113; `1964` before the unit change, #116)
+- **Default**: `3.063975` (measured, #113 re-run 2026-09-06; was `1.918`). The
+  clamp, `0.25 x` effort; the raw p95 wait is `5649.87`.
 - **Meaning**: Coefficient accesses without an incumbent improvement, as a
   multiple of `nnz << 10`, **whole dispatch**. FPR had no worker-level
   gate at all before #111 (`FprWorker::finished()` returned false
@@ -1814,7 +1821,9 @@ effort-gap distribution).
 ### `mip_heuristic_local_mip_patience` — LocalMIP patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `7.308` (measured, #113; `7484` before the unit change, #116)
+- **Default**: `3.490175` (measured, #113 re-run 2026-09-06; was `7.308`). The
+  clamp, `0.25 x` effort; the raw p95 wait is `4.93` — the only one of the
+  four whose measured wait is near its own ceiling fraction.
 - **Meaning**: Coefficient accesses without an incumbent improvement, as a
   multiple of `nnz << 10`, **whole dispatch**. The only one of the four
   whose *measured* p95 (8.50) is within reach of its ceiling fraction
@@ -1861,7 +1870,8 @@ effort-gap distribution).
 ### `mip_heuristic_scylla_patience` — Scylla patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.284` (measured, #113; `291` before the unit change, #116)
+- **Default**: `0.767` (measured, #113 re-run 2026-09-06; was `0.284`). The
+  clamp, `0.25 x` effort; the raw p95 wait is `18.96`.
 - **Meaning**: PDLP-iteration x nnz units without an incumbent
   improvement, as a multiple of `nnz << 10`, **whole dispatch**. Small in
   absolute terms because one PDLP solve charges `iters x nnz`, so this is
@@ -1956,9 +1966,13 @@ node** and re-runs the whole walk from scratch — the tabu list starts
 empty each call and `restore_best` returns to that call's own starting
 point, so nothing carries over except the domains. The per-attempt bound
 is `ncol × (kRepairWalkBudgetPerNnz × nnz + nrow)`. That can dwarf the
-0.13–0.60x #140 moved Scylla's axis by, which means `fpr_effort = 7.672`
-buys materially fewer *real* DFS nodes than the number was calibrated to
-buy.
+0.13–0.60x #140 moved Scylla's axis by. That was the argument for
+re-measuring, and it has now been acted on: the #113 re-run of 2026-09-06
+was taken on a binary carrying all of these changes, and `fpr_effort` moved
+`7.672` -> `12.2559` accordingly — a *rise*, which is the direction a higher
+charge per unit of real work predicts. The shipped number is calibrated
+against today's kernel; it is the pre-re-run value that no longer describes
+anything.
 
 ### `kRepairWalkBudgetPerNnz` — per-call effort valve
 

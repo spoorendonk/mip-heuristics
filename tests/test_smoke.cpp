@@ -66,10 +66,10 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         double value;
     };
     const auto presolve_efforts = std::to_array<EffortDefault>({
-        {"mip_heuristic_fj_effort", 2.84},
-        {"mip_heuristic_fpr_effort", 7.672},
-        {"mip_heuristic_local_mip_effort", 29.232},
-        {"mip_heuristic_scylla_effort", 1.136},
+        {"mip_heuristic_fj_effort", 0.5665},
+        {"mip_heuristic_fpr_effort", 12.2559},
+        {"mip_heuristic_local_mip_effort", 13.9607},
+        {"mip_heuristic_scylla_effort", 3.068},
     });
     for (const auto& [name, expected] : presolve_efforts) {
         double value = -1.0;
@@ -122,10 +122,10 @@ TEST_CASE("Options: patience defaults", "[options][patience]") {
     // #113 derivation produced and what `patience_threshold` now enforces
     // for any value.
     const auto patiences = std::to_array<PatienceDefault>({
-        {"mip_heuristic_fj_patience", 0.71, 2.84},
-        {"mip_heuristic_fpr_patience", 1.918, 7.672},
-        {"mip_heuristic_local_mip_patience", 7.308, 29.232},
-        {"mip_heuristic_scylla_patience", 0.284, 1.136},
+        {"mip_heuristic_fj_patience", 0.141625, 0.5665},
+        {"mip_heuristic_fpr_patience", 3.063975, 12.2559},
+        {"mip_heuristic_local_mip_patience", 3.490175, 13.9607},
+        {"mip_heuristic_scylla_patience", 0.767, 3.068},
     });
     for (const auto& [name, expected, effort] : patiences) {
         double value = -1.0;

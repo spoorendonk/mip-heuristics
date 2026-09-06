@@ -14,8 +14,8 @@
 #                    pool acceptance that never became the incumbent does not count:
 #                    the tuning objective scores the presolve-exit primal bound, so
 #                    such an instance is a constant for every candidate.
-#   excluded         50 of 233 analysed
-#   retained         50
+#   excluded         42 of 233 analysed
+#   retained         42
 #
 #   scoring          scored on a different question from the tuning
 #                    set: *did any configuration crack it*, i.e. the
@@ -41,7 +41,7 @@
 
 30n20b8                      # no-acceptance: 4 run(s), none produced a solution
 bab2                         # no-acceptance: 4 run(s), none produced a solution
-bab6                         # no-acceptance: 1 of 4 run(s) killed
+bab6                         # no-acceptance: 4 run(s), none produced a solution
 bnatt400                     # no-acceptance: 4 run(s), none produced a solution
 cmflsp50-24-8-8              # no-acceptance: 4 run(s), none produced a solution
 co-100                       # no-acceptance: 4 run(s), none produced a solution
@@ -53,39 +53,31 @@ dano3_5                      # no-acceptance: 4 run(s), none produced a solution
 dws008-01                    # no-acceptance: 4 run(s), none produced a solution
 eilA101-2                    # no-acceptance: 4 run(s), none produced a solution
 ex9                          # trivial-only: 4 of 4 run(s) found a solution, none from the chain (HiGHS's own trivial heuristics)
-germanrr                     # no-acceptance: 4 run(s), none produced a solution
 gfd-schedulen180f7d50m30k18  # no-acceptance: 4 run(s), none produced a solution
 icir97_tension               # no-acceptance: 4 run(s), none produced a solution
 irish-electricity            # no-acceptance: 4 run(s), none produced a solution
 k1mushroom                   # no-acceptance: 4 run(s), none produced a solution
+lotsize                      # no-acceptance: 4 run(s), none produced a solution
 milo-v12-6-r2-40-1           # no-acceptance: 4 run(s), none produced a solution
 momentum1                    # no-acceptance: 4 run(s), none produced a solution
-neos-1354092                 # no-acceptance: 4 run(s), none produced a solution
 neos-2746589-doon            # no-acceptance: 4 run(s), none produced a solution
-neos-3216931-puriri          # no-acceptance: 4 run(s), none produced a solution
 neos-4722843-widden          # no-acceptance: 4 run(s), none produced a solution
 neos-5093327-huahum          # no-acceptance: 4 run(s), none produced a solution
-neos-5104907-jarama          # no-acceptance: 2 of 4 run(s) killed
 neos-631710                  # no-acceptance: 4 run(s), none produced a solution
 ns1760995                    # no-acceptance: 4 run(s), none produced a solution
 ns1952667                    # no-acceptance: 4 run(s), none produced a solution
-nursesched-medium-hint03     # no-acceptance: 4 run(s), none produced a solution
 nw04                         # no-acceptance: 4 run(s), none produced a solution
 peg-solitaire-a3             # no-acceptance: 4 run(s), none produced a solution
 physiciansched3-3            # no-acceptance: 4 run(s), none produced a solution
 piperout-27                  # no-acceptance: 4 run(s), none produced a solution
-rail01                       # no-acceptance: 1 of 4 run(s) killed
-rail02                       # no-acceptance: 2 of 4 run(s) killed
+rail01                       # no-acceptance: 4 run(s), none produced a solution
+rail02                       # no-acceptance: 4 run(s), none produced a solution
 rd-rplusc-21                 # no-acceptance: 4 run(s), none produced a solution
 rocI-4-11                    # no-acceptance: 4 run(s), none produced a solution
-roll3000                     # no-acceptance: 4 run(s), none produced a solution
 s100                         # no-acceptance: 4 run(s), none produced a solution
-s250r10                      # no-acceptance: 4 run(s), none produced a solution
-snp-02-004-104               # no-acceptance: 2 of 4 run(s) killed
+snp-02-004-104               # no-acceptance: 4 run(s), none produced a solution
 square41                     # no-acceptance: 4 run(s), none produced a solution
 square47                     # no-acceptance: 4 run(s), none produced a solution
+supportcase19                # no-acceptance: 4 run(s), none produced a solution
 supportcase22                # no-acceptance: 4 run(s), none produced a solution
-timtab1                      # no-acceptance: 4 run(s), none produced a solution
-traininstance2               # no-acceptance: 4 run(s), none produced a solution
 triptim1                     # no-acceptance: 4 run(s), none produced a solution
-unitcal_7                    # no-acceptance: 4 run(s), none produced a solution
