@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -209,6 +210,49 @@ std::vector<std::string> traced_fixture(const Fixture& fixture) {
     });
 }
 
+// A traced solve under a wall-clock limit.
+//
+// `solve_capturing_log` cannot be used for one: it `REQUIRE`s
+// `run() == kOk`, and a time-limited solve returns `kWarning` (every limit
+// status maps to it in `highsStatusFromHighsModelStatus`).  Same workaround
+// `test_deadline.cpp` and `test_presolve_only.cpp` document, kept local for
+// the one case that needs it.
+template <typename Configure>
+std::vector<std::string> traced_time_limited(const char* inst, double limit,
+                                             Configure&& configure) {
+    struct LogCapture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+    };
+    LogCapture capture;
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    auto log_cb = [](int callback_type, const std::string& message,
+                     const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                     void* user_data) {
+        if (callback_type != kCallbackLogging) {
+            return;
+        }
+        auto* cap = static_cast<LogCapture*>(user_data);
+        std::scoped_lock lock(cap->mtx);
+        cap->lines.emplace_back(message);
+    };
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    require_option(h, "log_dev_level", 3);
+    std::forward<Configure>(configure)(h);
+    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
+    // After the read: the free-format MPS reader takes `time_limit` as a
+    // parse budget too (see `test_deadline.cpp` for the measurement).
+    require_option(h, "time_limit", limit);
+    static_cast<void>(h.run());
+
+    std::scoped_lock lock(capture.mtx);
+    return capture.lines;
+}
+
 // Every heuristic that can offer a solution, so the fixture set can be
 // checked for coverage rather than assumed to have it.
 const std::set<std::string> kTracedNames = {"fj", "fpr", "local_mip", "scylla", "fpr_lp"};
@@ -384,6 +428,58 @@ TEST_CASE("heursol: an accepted offer is what [Heur] reports as found", "[heurso
 // cost a run nothing below `log_dev_level=3`.  Level 2 as well as the
 // default, because `kDetailed` is the level immediately below and is the
 // one a "turn on some tracing" run would reach for.
+// #163: FJ publishes on improvement, not once per attempt.
+//
+// `FjWorker::run_attempt` used to accumulate a best solution inside upstream
+// FJ's callback and offer it once, after `solver.solve()` returned.  That
+// made FJ the only one of the four whose publication cadence depends on a
+// *gate* rather than on its own search — LocalMIP offers from inside its
+// step loop, Scylla from inside its pump loop, and FPR's inner attempts end
+// on their own node limit whatever the budget is.  With every effort gate
+// disabled, one FJ attempt is the entire dispatch, so all N workers
+// published within a millisecond of the deadline: on #113's re-run the
+// first incumbent improvement arrived at a median of 29.7 s of a 30 s
+// dispatch, and only 1 of 220 dispatches could be classified as having
+// finished improving.
+//
+// The configuration here is that pathology on purpose: the effort ceiling
+// and `patience = 0` leave `attempt_budget`, `total_budget` and the stall
+// gate all unreachable, so nothing but the clock can end the attempt.  The
+// assertion is that offers still arrive at *many distinct* points on the
+// worker's own effort axis, which is the mechanism and reads no clock — the
+// retired code produced at most one offer per worker slot, all of them at
+// that slot's final effort.  A count would need a threshold; distinct
+// `effort_at` values per slot cannot be produced at all by a once-per-
+// attempt offer.
+TEST_CASE("heursol: FJ offers as solutions arrive, not once per attempt", "[heursol]") {
+    const auto parsed = offers(traced_time_limited("egout.mps", 0.5, [](Highs& h) {
+        set_suite(h, "fj");
+        // The ceiling, and no stall gate: exactly #113's probe.
+        require_option(h, "mip_heuristic_fj_effort", 1e6);
+        require_option(h, "mip_heuristic_fj_patience", 0);
+    }));
+
+    // Keyed by the `Offer` field's own type, so no narrowing at the insert.
+    std::map<long long, std::set<size_t>> effort_points;  // worker slot -> effort_at
+    for (const auto& offer : parsed) {
+        if (offer.name == "fj") {
+            effort_points[offer.worker].insert(offer.effort_at);
+        }
+    }
+    REQUIRE(!effort_points.empty());
+
+    size_t most = 0;
+    for (const auto& [worker, points] : effort_points) {
+        most = std::max(most, points.size());
+    }
+    INFO("fj slots offering: " << effort_points.size()
+                               << ", most distinct effort_at on one slot: " << most);
+    // Once-per-attempt offering gives every slot exactly one point, and the
+    // attempt cannot end early here, so >1 on any slot is only reachable by
+    // offering during the search.
+    CHECK(most > 1);
+}
+
 TEST_CASE("heursol: absent below log_dev_level 3", "[heursol]") {
     CHECK(count_tagged(traced_solve(0)) == 0);
     CHECK(count_tagged(traced_solve(1)) == 0);

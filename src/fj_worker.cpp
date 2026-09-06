@@ -143,17 +143,42 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     // Capture state for the callback closure.
     const bool resume = first_solve_done_;
     size_t attempt_effort_consumed = 0;
-    bool found_solution = false;
-    double best_obj = 0.0;
+    bool improved_incumbent = false;
     std::vector<double> best_sol;
 
     auto callback = [&](FJStatus status) -> CallbackControlFlow {
         attempt_effort_consumed = status.totalEffort - base_.total_effort;
 
+        // Publish as the solution arrives, not once the attempt ends (#163).
+        //
+        // Upstream FJ's callback carries a solution exactly when it has
+        // strictly improved on its own best, so this offers on improvement
+        // and not on the callback's `CALLBACK_EFFORT` cadence.  It used to
+        // overwrite a `best_sol` here and offer it once, after
+        // `solver.solve` returned — which made FJ the only worker of the
+        // four whose publication cadence depends on a *gate* rather than on
+        // its own search: LocalMIP offers from inside its step loop and
+        // Scylla from inside its pump loop, while FPR's inner attempts end
+        // on their own node limit regardless of budget.
+        //
+        // Two consequences, and the second is the reason this is a fix
+        // rather than a tidy-up. It made FJ's own finds invisible to its
+        // peers and to `fj::run`'s staleness rebuild (which seeds from the
+        // pool) for the length of an attempt. And it made FJ's yield curve
+        // unmeasurable whenever an attempt is long: #113's probe disables
+        // every effort gate on purpose, so one attempt is the whole 30 s
+        // dispatch, all 16 workers published within a millisecond of the
+        // cap, and only 1 of 220 dispatches could be classified as having
+        // finished improving. `status.totalEffort` is this worker's
+        // cumulative charge, which is exactly what the trailing offer used
+        // to reconstruct as `base_.total_effort + attempt_effort_consumed`.
         if (status.solution != nullptr) {
-            found_solution = true;
             best_sol.assign(status.solution, status.solution + status.numVars);
-            best_obj = model->offset_ + (sense_multiplier * status.solutionObjectiveValue);
+            const double obj = model->offset_ + (sense_multiplier * status.solutionObjectiveValue);
+            if (sink_.offer(obj, best_sol, trace_, trace_.at(status.totalEffort))
+                    .improved_incumbent) {
+                improved_incumbent = true;
+            }
         }
 
         // The solve's wall-clock deadline (issue #114).  Every other gate
@@ -205,15 +230,13 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     // when upstream FJ hands back any solution at all, and not when the
     // pool merely kept one (#116) — FJ's own `effortSinceLastImprovement`
     // tracks the first, inside the solver, and that is the counter its
-    // callback gate reads.  This one is the dispatch's.
-    // `effort_at`: this worker's cumulative charge *including* the attempt
-    // that just produced the solution — `base_` is charged below, after the
-    // offer, so it does not yet contain it.
-    const bool improved =
-        found_solution && sink_
-                              .offer(best_obj, best_sol, trace_,
-                                     trace_.at(base_.total_effort + attempt_effort_consumed))
-                              .improved_incumbent;
+    // callback gate reads.  This one is the dispatch's, and since #163 it
+    // is the disjunction over the offers the callback made: an attempt was
+    // productive if *any* of its solutions moved the incumbent.  Every
+    // solution reaches the sink through the callback — the discarded
+    // return of `solver.solve` carries none — so there is nothing left to
+    // offer here.
+    const bool improved = improved_incumbent;
     if (improved) {
         result.found_improvement = true;
         base_.charge_improvement(attempt_effort_consumed);
