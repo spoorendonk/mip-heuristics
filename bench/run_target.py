@@ -814,15 +814,38 @@ def check_run_usable(
     * HiGHS's own warning that it ignored the suite value and failed open to
       all four heuristics.
 
-    A killed run (`returncode is None`) is not a failure: it is a truncated but
-    real measurement, and it is scored.
+    A killed run is not a failure: it is a truncated but real measurement, and
+    it is scored.  That covers two kills, and the distinction between them is
+    only *who* pulled the trigger:
+
+    * `returncode is None` — this runner's own wall-clock kill, because HiGHS
+      checks its clock between work units and can pass its limit without
+      returning to look;
+    * `returncode < 0` — death by signal from outside, in practice the OOM
+      killer.  A configuration with a large effort and no patience gate can
+      spike a big model's memory, and one such run used to abort the whole
+      search: irace halts on a non-zero target-runner exit, so a single
+      SIGKILL threw away a 3000-experiment budget partway through.  Scoring
+      it as the no-solution outcome is both survivable and *correct* — a
+      configuration whose memory the machine could not satisfy did not solve
+      the instance, and the penalty is what that outcome is worth.
+
+    Neither weakens the misconfiguration check below.  An unknown or
+    out-of-range option makes HiGHS exit 255 *immediately*, before printing
+    anything, so the patch-marker test still refuses it: the run has to have
+    got far enough to emit a patched binary's banner to be scored at all.
 
     `log_path` is named in each message because the log is already on disk by
     the time this runs, and it is gzipped — the diagnosis is a `zcat` away only
     if the message says where.
     """
     where = f"; see {log_path}" if log_path else ""
-    if returncode is not None and returncode not in (0, 1):
+    if returncode is not None and returncode < 0:
+        # Died by signal.  Fall through: the patch-marker check below decides
+        # whether this was a real run that got killed or a binary that never
+        # ran at all.
+        pass
+    elif returncode is not None and returncode not in (0, 1):
         raise Refusal(
             f"{name}: solver exited {returncode} without solving; an unknown or "
             "out-of-range option in the options file is the usual cause — check "

@@ -547,6 +547,34 @@ def test_unpatched_binary_is_refused():
         check_run_usable(solver_log(marker=False), 0, "good")
 
 
+def test_a_signal_killed_run_is_scored_not_refused():
+    """An externally SIGKILLed run is a truncated measurement, not a
+    misconfiguration.
+
+    irace halts the whole search on a non-zero target-runner exit, so one
+    OOM-killed experiment used to throw away a 3000-experiment budget
+    partway through. A configuration whose memory the machine could not
+    satisfy did not solve the instance; the no-solution penalty is what that
+    outcome is worth, and the search continues.
+    """
+    check_run_usable(solver_log(), -9, "oom-killed")
+
+
+def test_a_signal_killed_run_still_has_to_be_a_patched_binary():
+    """The escape hatch must not swallow the misconfiguration it sits next
+    to: a run that produced no patched-binary banner never ran at all,
+    whatever killed it."""
+    with pytest.raises(Refusal, match="not a patched build"):
+        check_run_usable(solver_log(marker=False), -9, "oom-killed")
+
+
+def test_a_nonzero_exit_is_still_refused():
+    """255 is what an unknown or out-of-range option gives, and it must stay
+    a hard refusal rather than being scored as a bad configuration."""
+    with pytest.raises(Refusal, match="without solving"):
+        check_run_usable(solver_log(), 255, "bad-option")
+
+
 def test_ignored_suite_value_is_refused():
     """HiGHS accepts an unknown suite *value* and fails open to all four."""
     log = solver_log() + "Unknown mip_heuristic_suite value 'fj,of'\n"
