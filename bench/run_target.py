@@ -634,6 +634,17 @@ def invoke_solver(
         output = proc.stdout
         if proc.stderr:
             output += "\n--- stderr ---\n" + proc.stderr
+        if proc.returncode < 0:
+            # Death by signal, in practice the OOM killer.  Mark it the same
+            # way the wall-clock kill is marked so everything downstream sees
+            # a *killed* run rather than a complete one that mysteriously
+            # stopped logging: without this the truncated log has no [Heur]
+            # line and the trace check warns about a missing trace, which is
+            # true but not the point and not actionable.
+            output += (
+                f"\n--- runner ---\nTIMEOUT: process killed by signal "
+                f"{-proc.returncode}\n"
+            )
         return output, proc.returncode
     except subprocess.TimeoutExpired as exc:
         partial = exc.stdout or ""

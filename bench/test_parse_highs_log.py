@@ -769,3 +769,20 @@ def test_presolve_only_log_shape_parses_its_traces():
     ]
     # And the calibration quantity is reachable, which is the whole point.
     assert result.dispatch_traces()[0].normalized_gaps() == [2.0]
+
+
+def test_a_signal_kill_is_recognised_as_killed():
+    """Two killers, one marker shape.  `by signal N` is a kill from outside —
+    in practice the OOM killer — and a log cut short that way is just as
+    truncated as one the harness stopped on its own clock.  `killed_after` is
+    None because no limit was reached: nobody set the bound that stopped it.
+    """
+    result = parse_log("TIMEOUT: process killed by signal 9\n")
+    assert result.killed is True
+    assert result.killed_after is None
+
+
+def test_a_wall_clock_kill_still_records_its_bound():
+    result = parse_log("TIMEOUT: process killed after 90.0s\n")
+    assert result.killed is True
+    assert result.killed_after == 90.0

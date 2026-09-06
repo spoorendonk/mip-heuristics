@@ -602,7 +602,13 @@ _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 # column 0 so it cannot collide with HiGHS's own indented report lines.  Logs
 # written before the runner kept partial output consist of this single line and
 # nothing else; both shapes parse.
-_KILLED_RE = re.compile(r"^TIMEOUT: process killed after ([\d.]+)s")
+# Two shapes, because there are two killers.  `after <N>s` is the harness's
+# own wall-clock kill; `by signal <N>` is a kill from outside, in practice the
+# OOM killer, which `run_target.py` marks the same way so a truncated log is
+# recognisable as truncated however it was cut short.  `killed_after` is the
+# seconds figure and is None for a signal kill, where no such figure exists —
+# the run was not stopped by a limit anyone set.
+_KILLED_RE = re.compile(r"^TIMEOUT: process killed (?:after ([\d.]+)s|by signal (\d+))")
 
 # [Sequential] per-heuristic effort line emitted from
 # src/effort_ledger.cpp `EffortLedger::book` (issue #71):
@@ -839,7 +845,7 @@ def parse_log(log_text: str) -> SolveResult:
         m = _KILLED_RE.match(line)
         if m:
             result.killed = True
-            result.killed_after = float(m.group(1))
+            result.killed_after = float(m.group(1)) if m.group(1) else None
             continue
 
         # Solving report lines

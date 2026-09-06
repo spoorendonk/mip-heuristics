@@ -79,6 +79,17 @@ case "$1" in
         ;;
 esac
 
+# irace invokes this with `2>&1`, so anything on stderr lands in what it
+# parses as the cost and it refuses with "output ... should not be more than
+# two numbers".  A single warning line — a truncated log, a missing trace —
+# therefore used to abort the whole search, which is a spectacularly
+# disproportionate failure for a diagnostic.  So stderr goes to a file
+# instead of the pipe: only the number reaches irace, and the diagnosis is
+# kept rather than discarded.
+mkdir -p "$RUN_TARGET_RUN_DIR"
+diag="$RUN_TARGET_RUN_DIR/target-runner.stderr.log"
+
+exec 2>>"$diag"
 exec "$RUN_TARGET_PYTHON" "$run_target" \
     --instance "$instance" \
     --seed "$seed" \
