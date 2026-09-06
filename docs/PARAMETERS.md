@@ -2135,10 +2135,10 @@ per-heuristic options below.
 The custom patch-added options are exactly six (plus the four patience
 options documented above):
 
-- `mip_heuristic_fj_effort` (default `0.0125`),
-  `mip_heuristic_fpr_effort` (`0.0884`),
-  `mip_heuristic_local_mip_effort` (`0.1821`),
-  `mip_heuristic_scylla_effort` (`0.0296`) — one effort budget multiplier
+- `mip_heuristic_fj_effort` (default `0.5665`),
+  `mip_heuristic_fpr_effort` (`12.2559`),
+  `mip_heuristic_local_mip_effort` (`13.9607`),
+  `mip_heuristic_scylla_effort` (`3.068`) — one effort budget multiplier
   per presolve heuristic, each a double in `[0.0, 1e6]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the other three are per dispatch.
