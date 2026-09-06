@@ -116,9 +116,11 @@ in a benchmark options file. Let HiGHS use its default.
 The recorded PLATO mipfeas table (233 MIPLIB 2017 instances, 600 s) is in
 `README.md`, together with the provenance caveat that matters most: **it cannot
 be reproduced on `HEAD`.** It was measured at `mip_heuristic_preset=all_opp` —
-FJ + FPR + LocalMIP with Scylla deliberately excluded. That composition is
-expressible again as `mip_heuristic_suite = fj,fpr,local_mip` (#112), having
-been unnameable while the option took a single value, but the binary is gone:
+FJ + FPR + LocalMIP + `fpr_lp` with Scylla deliberately excluded — `fpr_lp`
+because it followed the FPR bit at the time. That composition is expressible
+again as `mip_heuristic_suite = fj,fpr,local_mip,fpr_lp` (#112, re-spelled by
+#164 once `fpr_lp` gained its own token), having been unnameable while the
+option took a single value, but the binary is gone:
 the numbers predate the runner cleanup. Treat the row as the last full-campaign
 result, not as a claim about `HEAD`.
 
@@ -197,7 +199,7 @@ run, pass `run_benchmark.py --extra-options mip_heuristic_<name>_effort=<V>`.
 
 ```bash
 # the headline: the selected configuration at three seeds, against vanilla
-PLATO_CONFIGS="fj+fpr+local_mip vanilla" PLATO_SEEDS="0 1 2" \
+PLATO_CONFIGS="fj+fpr+local_mip+fpr_lp vanilla" PLATO_SEEDS="0 1 2" \
   bench/run_plato.sh next 10
 ```
 

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,7 @@ double solve_fpr_lp(const char* inst, int threads = 0) {
     const ScopedThreadPin pin;
     Highs h;
     h.setOptionValue("output_flag", false);
-    set_suite(h, "fpr");
+    set_suite(h, "fpr_lp");
     // bell5, the instance both callers use, is the one bundled instance
     // whose solve can stop on HiGHS's default `mip_rel_gap` (1e-4) short
     // of the optimum.  Require a proven-optimal solve so the objective
@@ -52,14 +53,19 @@ TEST_CASE("fpr_lp: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]")
 
 // Regression tests for suite-aware gating: fpr_lp derives its enable flag
 // via heuristics::effective_flags, so it runs only at a `mip_heuristic_suite`
-// value naming fpr — `fpr`, `all`, `fj,fpr` — and at no other.  Before that
-// gate existed, the "vanilla" benchmark config left fpr_lp running during
-// the B&B dive and wasn't vanilla.
+// value naming fpr_lp — `fpr_lp`, `all`, `fj,fpr_lp` — and at no other.
+// Before that gate existed, the "vanilla" benchmark config left fpr_lp
+// running during the B&B dive and wasn't vanilla.
 //
 // `suite=local_mip` and `suite=scylla` disabling the dive-time heuristic is
 // the deliberate consequence documented in README.md and docs/PARAMETERS.md:
 // per-heuristic attribution has to cover fpr_lp too.  Both are pinned here
 // so the property cannot regress silently.
+//
+// `suite=fpr` joined them in #164, and that one is the issue's single
+// intended behaviour change rather than a property that always held: the
+// dive-time heuristic used to follow presolve FPR's token, so "presolve FPR
+// without fpr_lp" — the row the ablation needs — had no spelling at all.
 
 namespace {
 void require_no_fpr_lp_dispatch(const char* suite) {
@@ -99,7 +105,7 @@ TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
     fpr_lp::reset_dispatch_counts();
     Highs h;
     h.setOptionValue("output_flag", false);
-    set_suite(h, "fpr");
+    set_suite(h, "fpr_lp");
     h.setOptionValue("mip_heuristic_run_rens", false);
     h.setOptionValue("mip_heuristic_run_rins", false);
     h.setOptionValue("mip_heuristic_run_root_reduced_cost", false);
@@ -111,6 +117,94 @@ TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
 
 TEST_CASE("fpr_lp: suite=scylla disables fpr_lp dispatch", "[fpr_lp][mode-matrix][suite]") {
     require_no_fpr_lp_dispatch("scylla");
+}
+
+// #164's intended behaviour change, asserted on the dispatch itself rather
+// than on the flag: presolve FPR alone no longer drags the dive-time variant
+// along with it.
+TEST_CASE("fpr_lp: suite=fpr alone disables fpr_lp dispatch", "[fpr_lp][mode-matrix][suite]") {
+    require_no_fpr_lp_dispatch("fpr");
+}
+
+// The other half of the same change, and the guard against a vacuous pass
+// above: naming both tokens dispatches it, so the four cells of #164's
+// matrix are all reachable.
+TEST_CASE("fpr_lp: suite=fpr,fpr_lp dispatches it beside presolve FPR",
+          "[fpr_lp][mode-matrix][suite]") {
+    fpr_lp::reset_dispatch_counts();
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    set_suite(h, "fpr,fpr_lp");
+    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+    REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
+}
+
+// The effort option's zero, which is the *other* way to disable fpr_lp and
+// has to be indistinguishable from omitting the token (#164).
+//
+// It matters where the two return from, not just that they return: the
+// suite gate sits above every read and write of `heuristic_lp_iterations` /
+// `total_lp_iterations`, the counters `moreHeuristicsAllowed()` uses to
+// decide whether RENS and RINS run, and a zero-effort disable that read or
+// charged them would silently move those two heuristics — so an fpr_lp
+// ablation would be measuring RENS/RINS as well.  The two spellings are
+// therefore compared as whole solves below, not merely as dispatch counts.
+TEST_CASE("fpr_lp: effort 0 disables the dispatch", "[fpr_lp][mode-matrix][budget]") {
+    fpr_lp::reset_dispatch_counts();
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    set_suite(h, "fpr_lp");
+    require_option(h, "mip_heuristic_fpr_lp_effort", 0.0);
+    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+    REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
+}
+
+// The full equivalence #164 makes true for the first time: disabling fpr_lp
+// by zeroing its effort and disabling it by leaving its token out of the
+// suite are the same solve, RENS/RINS included.
+//
+// Compared on the solver's own counters rather than on a log: the primal
+// bound says whether the search ended anywhere else, and the node and
+// LP-iteration totals say whether it *got* there differently.  Those two
+// are what a disabled fpr_lp that had already charged the shared envelope
+// would move — `moreHeuristicsAllowed()` reads
+// `heuristic_lp_iterations` against `total_lp_iterations`, so a charge
+// changes which dives run RENS and RINS, and the node count changes with
+// it.  `mip_rel_gap = 0` so both sides run to a proven optimum instead of
+// stopping at two different incumbents.
+TEST_CASE("fpr_lp: effort 0 is equivalent to omitting fpr_lp from the suite",
+          "[fpr_lp][mode-matrix][budget][regression]") {
+    struct Outcome {
+        double objective = 0.0;
+        int64_t nodes = 0;
+        HighsInt lp_iterations = 0;
+    };
+    const auto solve = [](const char* suite, double fpr_lp_effort) {
+        const ScopedThreadPin pin;
+        Highs h;
+        h.setOptionValue("output_flag", false);
+        set_suite(h, suite);
+        require_option(h, "mip_rel_gap", 0.0);
+        require_option(h, "threads", 1);
+        require_option(h, "random_seed", 1);
+        require_option(h, "mip_heuristic_fpr_lp_effort", fpr_lp_effort);
+        REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+        REQUIRE(h.run() == HighsStatus::kOk);
+        Outcome out;
+        h.getInfoValue("objective_function_value", out.objective);
+        h.getInfoValue("mip_node_count", out.nodes);
+        h.getInfoValue("simplex_iteration_count", out.lp_iterations);
+        return out;
+    };
+
+    // Both disable fpr_lp; everything else about the two runs is identical.
+    const Outcome zeroed = solve("all", 0.0);
+    const Outcome omitted = solve("fj,fpr,local_mip,scylla", 1.0);
+    CHECK(zeroed.objective == omitted.objective);
+    CHECK(zeroed.nodes == omitted.nodes);
+    CHECK(zeroed.lp_iterations == omitted.lp_iterations);
 }
 
 // `run_workers` spawns `num_threads` workers with arm = w % kNumLpArms
@@ -229,7 +323,7 @@ TEST_CASE("fpr_lp: emits a [Sequential] line for its dive-time spend",
     const std::vector<std::string> lines = solve_capturing_log("bell5.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
         h.setOptionValue("mip_rel_gap", 0.0);
-        set_suite(h, "fpr");
+        set_suite(h, "fpr_lp");
     });
     // Guard against a vacuous pass: no dispatch means nothing to report.
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);

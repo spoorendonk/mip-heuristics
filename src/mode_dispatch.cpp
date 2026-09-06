@@ -245,14 +245,17 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
 // and `all` (every one) — or a comma-separated list of heuristic names,
 // unioned: `fj,fpr` runs those two and nothing else.  Order is irrelevant,
 // whitespace around a token is ignored, and repeating a name is harmless.
-// Fifteen non-empty subsets exist and the six single values could express
-// five of them (#112), which left the FJ+FPR+LocalMIP composition the
-// recorded benchmark table was measured at inexpressible.
+// Thirty-one non-empty subsets exist and the seven single values could
+// express six of them (#112, #164), which left the FJ+FPR+LocalMIP
+// composition the recorded benchmark table was measured at inexpressible.
 //
-// The legal names are `kChain`'s own `name` field rather than a second
-// table, so they cannot drift from the `[Heur] name=<n>` traces those same
-// strings produce: the name a user reads in the log is the name they select
-// with, and a fifth heuristic stays a single table edit.
+// The legal names of the four presolve entries are `kChain`'s own `name`
+// field rather than a second table, so they cannot drift from the `[Heur]
+// name=<n>` traces those same strings produce: the name a user reads in the
+// log is the name they select with, and a fifth *chain* heuristic stays a
+// single table edit.  `fpr_lp` is the one token outside that table, because
+// it is not a chain entry; `kFprLpName` gives it the same one-spelling
+// property (#164).
 //
 // `off` is an alias only as the *whole* value, never as a token in a list.
 // It is not merely "the empty set": the patched HiGHS tree tests
@@ -294,6 +297,17 @@ bool HeuristicFlags::* suite_flag(std::string_view token) {
             return h.flag;
         }
     }
+    // The one legal token that is not a chain entry (#164).  `fpr_lp` runs
+    // during the B&B dive rather than in presolve, so it has no
+    // `HeuristicConfig` to take its name from; `kFprLpName` is the single
+    // spelling instead, shared with the `[Heur] name=` tag `fpr_lp.cpp`
+    // books under, so the two cannot drift.  It is checked after the chain
+    // and not before: `fpr` is a proper prefix of `fpr_lp` only under a
+    // prefix match, and both comparisons here are whole-token equality, so
+    // the order is documentation rather than disambiguation.
+    if (token == kFprLpName) {
+        return &HeuristicFlags::fpr_lp;
+    }
     return nullptr;
 }
 
@@ -303,7 +317,7 @@ bool HeuristicFlags::* suite_flag(std::string_view token) {
 // a bare `mip_heuristic_suite=` is an unrecognised value and not a silent
 // `off` — as is the empty token a stray trailing comma leaves behind.
 HeuristicFlags parse_suite_list(std::string_view suite, std::vector<std::string_view>& unknown) {
-    HeuristicFlags flags{false, false, false, false};
+    HeuristicFlags flags{false, false, false, false, false};
     for (size_t pos = 0;;) {
         const size_t comma = suite.find(',', pos);
         const size_t count = comma == std::string_view::npos ? comma : comma - pos;
@@ -341,9 +355,9 @@ HeuristicFlags effective_flags(const HighsOptions& options, SuiteDiagnosis* diag
     const std::string& suite = options.mip_heuristic_suite;
 
     std::vector<std::string_view> unknown;
-    HeuristicFlags flags{true, true, true, true};
+    HeuristicFlags flags{true, true, true, true, true};
     if (suite == "off") {
-        flags = {false, false, false, false};
+        flags = {false, false, false, false, false};
     } else if (suite != "all") {
         flags = parse_suite_list(suite, unknown);
         // Fail open on an unrecognised token: running everything is the same
@@ -353,7 +367,7 @@ HeuristicFlags effective_flags(const HighsOptions& options, SuiteDiagnosis* diag
         // tree named `fj+fpr` would hold runs of `fj`.  The caller warns and
         // names the token.
         if (!unknown.empty()) {
-            flags = {true, true, true, true};
+            flags = {true, true, true, true, true};
         }
     }
 
@@ -396,7 +410,7 @@ bool run_presolve(HighsMipSolver& mipsolver) {
                      options.mip_heuristic_suite.c_str(),
                      diagnosis.unknown_count == 1 ? "token" : "tokens",
                      diagnosis.unknown_tokens.c_str());
-    } else if (!flags.fj && !flags.fpr && !flags.local_mip && !flags.scylla &&
+    } else if (!flags.fj && !flags.fpr && !flags.local_mip && !flags.scylla && !flags.fpr_lp &&
                options.mip_heuristic_suite != "off") {
         // Only reachable from a value naming FJ and nothing else (`fj`, or a
         // list whose tokens are all `fj`) with mip_heuristic_run_feasibility_jump
@@ -404,6 +418,14 @@ bool run_presolve(HighsMipSolver& mipsolver) {
         // heuristic-free without being `off`, so it also loses the native FJ
         // call site — a benchmark row labelled "FJ isolated" would silently
         // run no FeasibilityJump at all.  Say so rather than leave it silent.
+        //
+        // `fpr_lp` is in the condition for the same reason the other four
+        // are (#164): it is a heuristic of ours, so a value naming it is not
+        // a heuristic-free run and must not be warned about.  Without that
+        // term `mip_heuristic_suite=fpr_lp` — a perfectly good ablation, and
+        // the one the whole issue exists to make expressible — would print a
+        // warning about FeasibilityJump that `run_benchmark.py` does not
+        // grep for but a reader would rightly not believe.
         highsLogUser(options.log_options, HighsLogType::kWarning,
                      "mip_heuristic_suite=\"%s\" selects only FeasibilityJump, which "
                      "mip_heuristic_run_feasibility_jump=false disables; no heuristic will "

@@ -235,15 +235,15 @@ struct HeuristicBudget {
     // this alongside `ProblemView::degenerate()` and returns before any
     // setup.
     //
-    // For the *presolve chain* that makes the two indistinguishable.  It
-    // does not extend to the whole solve for `fpr`: omitting `fpr` from
-    // `mip_heuristic_suite` also disables the dive-time `fpr_lp`, through
-    // `heuristics::effective_flags`, while a zero presolve effort does not
-    // — `fpr_lp` draws from upstream's `mip_heuristic_effort` envelope and
-    // never reads this option.  That is a property of the two option
-    // surfaces, not something this check could repair; #107's target runner
-    // derives the suite value from the zero-pattern, which is where they
-    // are reconciled.  `run_opportunistic_loop` already declined a zero total,
+    // For the *presolve chain* that makes the two indistinguishable, and
+    // since #164 it extends to the whole solve.  It did not for `fpr`:
+    // omitting `fpr` from `mip_heuristic_suite` also disabled the dive-time
+    // `fpr_lp`, through `heuristics::effective_flags`, while a zero presolve
+    // effort did not — `fpr_lp` draws from upstream's `mip_heuristic_effort`
+    // envelope and has never read this option.  `fpr_lp` now has a suite
+    // token and an effort option of its own, both of which return from the
+    // same place in `fpr_lp::run`, so the zeroing and the omission agree
+    // there too.  `run_opportunistic_loop` already declined a zero total,
     // but three of the four heuristics do real work before they reach it —
     // Scylla builds a `ContestedPdlp` (a whole `Highs` LP copy), the
     // per-config variable orders and N workers; FPR precomputes its

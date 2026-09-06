@@ -18,18 +18,25 @@ non-negative double in the same unit as the effort beside it -- both are
 multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump
 limit, so `effort = 1.0` is one vanilla FJ budget and `patience < effort` reads
 on its face (#116).  **Effort 0 means the
-heuristic does not run**, so the fifteen non-empty heuristic subsets plus `off`
-are exactly the zero-patterns of the four efforts; inclusion is not a separate
-dimension.  `suite_value` performs that reduction, naming in `mip_heuristic_suite`
+heuristic does not run**, so the fifteen non-empty subsets of the presolve chain
+plus `off` are exactly the zero-patterns of the four efforts; inclusion is not a
+separate dimension.  `suite_value` performs that reduction, naming in `mip_heuristic_suite`
 exactly the heuristics whose effort is strictly positive and emitting `off` when
-none is.  **That mapping is the only place the reduction is true**, and not
-merely for tidiness: `mip_heuristic_fpr_effort = 0` is *not* equivalent to
-omitting `fpr` from the suite, because the suite value is what gates the
-dive-time `fpr_lp` (through `heuristics::effective_flags`) while the effort
-option is never read by `fpr_lp` at all — it draws from the separate
-`mip_heuristic_effort` LP-iteration envelope.  A presolve-only screen cannot see
-that difference; #107's full-limit confirmation of the same configuration can,
-and would be measuring a heuristic the parameter vector said was off.
+none is.
+
+**It names only these four, so a target run leaves the dive-time `fpr_lp`
+off.**  That is a change of meaning from before #164 and is deliberate rather
+than incidental.  The coupling it replaces was worse: `fpr_lp` used to follow
+the `fpr` token, so a vector with `fpr` positive silently enabled a second
+FPR variant that no parameter in this vector sized, and one with
+`mip_heuristic_fpr_effort = 0` still left it running.  `fpr_lp` now has its
+own token and its own `mip_heuristic_fpr_lp_effort` (a share of the RENS/RINS
+LP-iteration envelope, not a multiple of `nnz << 10`), so the two are
+independent — and this vector, which #107 defines over the presolve chain,
+simply does not name it.  A presolve-only screen cannot tell the difference
+either way, since the dive is never reached; #107's full-limit confirmation
+can, so whether to add `fpr_lp` as a ninth dimension or pin it on is that
+issue's decision to make, not one to take by accident here.
 
 A patience of 0 means "no staleness gate at all", not "give up immediately",
 and any patience at or above a quarter of its own effort is clamped to that
@@ -301,13 +308,13 @@ def suite_value(params: Parameters) -> str:
     """The `mip_heuristic_suite` value implied by the zero-pattern.
 
     This is where "effort 0 means the heuristic does not run" becomes true in
-    the sense #107 assumes, and it exists because the effort option alone does
-    not make it true: `mip_heuristic_fpr_effort = 0` still leaves `fpr` named in
-    the suite, and the suite value — not the effort — is what
-    `heuristics::effective_flags` reads to gate the dive-time `fpr_lp`, which
-    draws from the separate `mip_heuristic_effort` envelope and never reads the
-    presolve effort at all.  Screening presolve-only hides that; the full-limit
-    confirmation in #107 does not.
+    the sense #107 assumes, and it exists because the effort option alone did
+    not make it true: `mip_heuristic_fpr_effort = 0` still leaves `fpr` named
+    in the suite, and the suite value — not the effort — is what
+    `heuristics::effective_flags` reads.  Since #164 the dive-time `fpr_lp`
+    has its own token and its own effort option, so it is not named by any
+    value this builds and does not run in a target solve; see the module
+    docstring for why that is left as #107's call.
 
     `off` when no effort is positive, and that exact string is not cosmetic: the
     patch compares `mip_heuristic_suite == "off"` verbatim in two places, so a

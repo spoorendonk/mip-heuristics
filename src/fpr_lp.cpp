@@ -519,13 +519,31 @@ void run(HighsMipSolver& mipsolver) {
         return;
     }
 
-    // Suite gating: fpr_lp runs only at a mip_heuristic_suite value naming fpr.
+    const HighsOptions& options = *mipsolver.options_mip_;
+
+    // Suite gating: fpr_lp runs only at a mip_heuristic_suite value naming
+    // `fpr_lp`.  Its own token since #164 — it followed presolve FPR's bit
+    // before, which made "presolve FPR without fpr_lp" inexpressible, so
+    // neither half's contribution could be measured on the shipped binary.
     // suite=off must disable it so an off run has nothing of ours running at
     // dive time either — this return sits above every read and write of
     // heuristic_lp_iterations / total_lp_iterations below, which feed
     // moreHeuristicsAllowed() and therefore decide whether RENS and RINS
     // run.  Do not move it down.
-    if (!heuristics::effective_flags(*mipsolver.options_mip_).fpr) {
+    if (!heuristics::effective_flags(options).fpr_lp) {
+        return;
+    }
+
+    // The second disable, and it must return from exactly the same place as
+    // the first, for exactly the same reason (#164).  `0` means the
+    // heuristic does not run — the same thing it means for the four
+    // presolve effort options — and a disabled fpr_lp that had already
+    // read, let alone charged, the shared envelope would change whether
+    // RENS and RINS run, which is precisely what an ablation of fpr_lp must
+    // not do.  So this sits above the counters too, and above `nnz`: there
+    // is nothing to compute for a heuristic that will not run.
+    const double effort_share = options.mip_heuristic_fpr_lp_effort;
+    if (effort_share <= 0.0) {
         return;
     }
 
@@ -559,7 +577,25 @@ void run(HighsMipSolver& mipsolver) {
     if (headroom_iters <= 0.0) {
         return;
     }
-    const double headroom_units = headroom_iters * static_cast<double>(nnz);
+
+    // `mip_heuristic_fpr_lp_effort` is fpr_lp's **share of that headroom**
+    // (#164), not a second absolute multiplier like the four presolve
+    // options: the quantity that matters here is zero-sum against RENS/RINS,
+    // so a share is what a calibration should range over.  The default 1.0
+    // is the whole headroom, which is what this call took before the option
+    // existed, so the shipped binary is unmoved.
+    //
+    // It scales the headroom term and not the per-call cap, which is the
+    // formula #164 specifies.  One consequence worth stating rather than
+    // discovering: the cap therefore still binds at
+    // `vanilla_effort_budget(nnz, mip_heuristic_effort)` however large the
+    // share is, so unlike the four presolve options this one cannot on its
+    // own express a budget that never binds — raising `mip_heuristic_effort`
+    // raises the cap and the headroom together.  The `1e6` ceiling is the
+    // same as theirs for uniformity; what it buys here is the ability to
+    // take the whole headroom in one call at a small `mip_heuristic_effort`,
+    // not an unbindable budget.
+    const double headroom_units = headroom_iters * static_cast<double>(nnz) * effort_share;
     const auto cap_units =
         static_cast<double>(vanilla_effort_budget(nnz, mipdata->heuristic_effort));
     const auto max_effort = static_cast<size_t>(std::min(headroom_units, cap_units));
@@ -604,7 +640,8 @@ void run(HighsMipSolver& mipsolver) {
         // reach the same field from here as it does from the presolve
         // chain.
         if (built.deadline_bail) {
-            ledger.charge_dive("fpr_lp", 0, false, built.lp_iterations, nnz, t0_s, ledger.now_s(),
+            ledger.charge_dive(heuristics::kFprLpName, 0, false, built.lp_iterations, nnz, t0_s,
+                               ledger.now_s(),
                                /*abandoned_setup=*/true);
         }
         return;
@@ -659,7 +696,7 @@ void run(HighsMipSolver& mipsolver) {
     // barren in the sense the probe bins — which is the fact the bail path
     // above denies about itself.  Both answers are spelled out at both
     // sites (#119).
-    ledger.charge_dive("fpr_lp", worker_effort, found, built.lp_iterations, nnz, t0_s,
+    ledger.charge_dive(heuristics::kFprLpName, worker_effort, found, built.lp_iterations, nnz, t0_s,
                        ledger.now_s(), /*abandoned_setup=*/false);
 }
 

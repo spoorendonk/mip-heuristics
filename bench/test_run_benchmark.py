@@ -92,16 +92,36 @@ def test_vanilla_does_not_leak_into_other_configs():
     assert config_options("fpr") == {"mip_heuristic_suite": "fpr"}
 
 
-# The four heuristics of the presolve chain, in chain order.
+# The four heuristics of the presolve chain, in chain order, then the
+# dive-time `fpr_lp` — the order `CONFIG_SUITES` spells a subset in.
 CHAIN = ("fj", "fpr", "local_mip", "scylla")
+SELECTION_ORDER = (*CHAIN, "fpr_lp")
 
 
 def test_every_subset_of_the_chain_is_a_config():
-    """#107 sweeps all fifteen non-empty subsets plus `off`."""
+    """#107 sweeps all fifteen non-empty subsets of the chain plus `off`.
+
+    The chain's full subset is spelled out since #164: `all` is now the
+    five-element selection, `fpr_lp` included.
+    """
     expected = set()
     for mask in range(1, 1 << len(CHAIN)):
         members = [name for bit, name in enumerate(CHAIN) if mask & (1 << bit)]
-        expected.add("all" if len(members) == len(CHAIN) else "+".join(members))
+        expected.add("+".join(members))
+    assert expected <= set(CONFIG_SUITES)
+
+
+def test_every_subset_of_all_five_heuristics_is_a_config():
+    """#164: `fpr_lp` is a suite token, so 31 subsets must be nameable."""
+    expected = set()
+    for mask in range(1, 1 << len(SELECTION_ORDER)):
+        members = [
+            name for bit, name in enumerate(SELECTION_ORDER) if mask & (1 << bit)
+        ]
+        expected.add(
+            "all" if len(members) == len(SELECTION_ORDER) else "+".join(members)
+        )
+    assert len(expected) == 31
     assert expected <= set(CONFIG_SUITES)
 
 

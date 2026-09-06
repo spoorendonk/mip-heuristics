@@ -2132,7 +2132,8 @@ to `0.30` and overloaded as the presolve budget — that overload was split
 out into a presolve-only option, which in turn became the four
 per-heuristic options below.
 
-The custom patch-added options are exactly five:
+The custom patch-added options are exactly six (plus the four patience
+options documented above):
 
 - `mip_heuristic_fj_effort` (default `0.0125`),
   `mip_heuristic_fpr_effort` (`0.0884`),
@@ -2141,11 +2142,34 @@ The custom patch-added options are exactly five:
   per presolve heuristic, each a double in `[0.0, 1e6]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the other three are per dispatch.
+- `mip_heuristic_fpr_lp_effort` (default `1.0`) — the dive-time `fpr_lp`'s
+  budget, a double in `[0.0, 1e6]` and **not in the same unit as the four
+  above** (#164). `fpr_lp` draws from upstream's RENS/RINS LP-iteration
+  envelope and charges back what it spends, so its budget is zero-sum
+  against those two heuristics rather than an independent allowance; the
+  option is therefore its **share of the remaining headroom** of that
+  envelope, not a multiple of `nnz << 10`. `src/fpr_lp.cpp` sizes a call at
+  `min(headroom_units x share, cap_units)`, where the cap is the unchanged
+  `vanilla_effort_budget(nnz, mip_heuristic_effort)`. The default `1.0` is
+  the whole headroom — exactly what the call took before the option existed,
+  which is what keeps a default-options binary unmoved by #164 — and is a
+  starting point rather than a measurement: #113's probe calibrated the four
+  presolve heuristics and never touched this one. `0` disables `fpr_lp`, and
+  does so above every read and write of `heuristic_lp_iterations` /
+  `total_lp_iterations`, the counters `moreHeuristicsAllowed()` reads to
+  decide whether RENS and RINS run — a disable that charged even one
+  iteration back would move those two heuristics, and an `fpr_lp` ablation
+  would then be measuring them as well. One property it does **not** share
+  with the four above: it cannot on its own express a budget that never
+  binds, because the share scales the headroom term and the per-call cap is
+  left alone; the `1e6` ceiling is shared for uniformity of the surface and
+  here buys taking the whole headroom in one call.
 - `mip_heuristic_suite` — which heuristics run (default `"all"`).
   The value is either one of the two whole-value aliases `off` (no
   heuristic) and `all` (every one), or a **comma-separated list** of the
-  heuristic names `fj`, `fpr`, `local_mip`, `scylla` — so all fifteen
-  non-empty subsets are expressible, e.g. `fj,fpr,local_mip` (#112).
+  heuristic names `fj`, `fpr`, `local_mip`, `scylla`, `fpr_lp` — so all
+  thirty-one non-empty subsets are expressible, e.g.
+  `fj,fpr,local_mip,fpr_lp` (#112, #164).
   Order is irrelevant, whitespace around a name is ignored and repeats
   are harmless. `off` is an alias for the whole value only, never a token
   in a list: the patched HiGHS tree compares this option to `"off"`
@@ -2155,16 +2179,23 @@ The custom patch-added options are exactly five:
   not validate string option values, so an unrecognised one is accepted
   by `setOptionValue` and caught at solve time: the dispatcher warns —
   naming the offending token, which is what makes a typo inside a list
-  diagnosable — and falls back to running all four. The single place the
-  string becomes four booleans is `heuristics::effective_flags` in
-  `src/mode_dispatch.cpp`; the legal names are the presolve chain table's
-  own, so they cannot drift from the `[Heur] name=<n>` traces.
+  diagnosable — and falls back to running every heuristic. The single
+  place the string becomes five booleans is
+  `heuristics::effective_flags` in `src/mode_dispatch.cpp`; the four
+  presolve names are the chain table's own, so they cannot drift from the
+  `[Heur] name=<n>` traces, and the fifth is `heuristics::kFprLpName`,
+  which `fpr_lp.cpp` also books its dispatch under for the same reason.
 
-`mip_heuristic_suite` also gates the B&B-dive `fpr_lp`, on the same bit
-as presolve FPR. It therefore runs at any value naming `fpr` — `fpr`,
-`all`, `fj,fpr`, and an unrecognised value, which fails open to all four
-— while `off` and every subset that omits `fpr` disable it. That is
-deliberate (a
-per-heuristic attribution run must not leave a second FPR variant
-running at dive time), but it means a dive-time result measured under
-`suite=local_mip` or `suite=scylla` says nothing about `fpr_lp`.
+`mip_heuristic_suite` also gates the B&B-dive `fpr_lp`, and **since #164
+it does so on a token of its own** rather than on presolve FPR's bit. It
+therefore runs at any value naming `fpr_lp` — `fpr_lp`, `all`,
+`fj,fpr_lp`, and an unrecognised value, which fails open to everything —
+while `off`, `fpr`, and every subset that omits `fpr_lp` disable it. **A
+configuration spelled `fpr` no longer implies `fpr_lp`**; the pair is
+`fpr,fpr_lp`. What that buys is the row that had no spelling before —
+presolve FPR with the dive-time variant off — so the contribution of
+either half can be measured on the shipped binary; the coupling it
+replaces meant a per-heuristic attribution run naming `fpr` left a second
+FPR variant running at dive time that no option of that run sized. A
+dive-time result measured under `suite=local_mip` or `suite=scylla` still
+says nothing about `fpr_lp`, and now neither does one under `suite=fpr`.

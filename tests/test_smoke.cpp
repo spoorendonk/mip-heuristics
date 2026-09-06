@@ -48,7 +48,7 @@ TEST_CASE("Options: effort split defaults", "[options]") {
     // patched binary at default options must match vanilla's B&B heuristic
     // budget exactly.
     //
-    // The four defaults are pinned here because they are registered in
+    // The five defaults are pinned here because they are registered in
     // third_party/highs_patch/apply_patch.cmake, which nothing else compiles
     // or checks — a typo there is otherwise silent.  They are derived from
     // what the retired shared envelope handed each heuristic (FJ's
@@ -65,13 +65,21 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         const char* name;
         double value;
     };
-    const auto presolve_efforts = std::to_array<EffortDefault>({
+    const auto effort_defaults = std::to_array<EffortDefault>({
         {"mip_heuristic_fj_effort", 0.5665},
         {"mip_heuristic_fpr_effort", 12.2559},
         {"mip_heuristic_local_mip_effort", 13.9607},
         {"mip_heuristic_scylla_effort", 3.068},
+        // The dive-time entry (#164).  It is in this loop for its *range*,
+        // which is the same `[0, 1e6]`, and not for its unit: it is a share
+        // of the RENS/RINS LP-iteration headroom rather than a multiple of
+        // `nnz << 10`, so it is the one default here that is neither
+        // measured nor comparable with its neighbours.  `1.0` is the whole
+        // headroom — exactly what `fpr_lp` took before the option existed,
+        // which is what keeps a default-options binary unmoved by #164.
+        {"mip_heuristic_fpr_lp_effort", 1.0},
     });
-    for (const auto& [name, expected] : presolve_efforts) {
+    for (const auto& [name, expected] : effort_defaults) {
         double value = -1.0;
         REQUIRE(highs.getOptionValue(name, value) == HighsStatus::kOk);
         REQUIRE(value == expected);
@@ -190,8 +198,8 @@ TEST_CASE("Options: suite defaults to all and accepts every value", "[options][s
     // the option exists under this exact name; the dispatcher is what
     // distinguishes a known value from an unknown one, and what the
     // comma-separated list form means (see test_suite_option.cpp).
-    for (const char* value :
-         {"off", "fj", "fpr", "local_mip", "scylla", "all", "fj,fpr", "fj,fpr,local_mip"}) {
+    for (const char* value : {"off", "fj", "fpr", "local_mip", "scylla", "fpr_lp", "all", "fj,fpr",
+                              "fj,fpr,local_mip", "fj,fpr,local_mip,scylla,fpr_lp"}) {
         REQUIRE(highs.setOptionValue("mip_heuristic_suite", std::string(value)) ==
                 HighsStatus::kOk);
     }

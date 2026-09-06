@@ -135,7 +135,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # objective score positively.  The marker speaks for the tree, so a version-16
 # tree is rejected even though HighsOptions.h itself is unchanged, because its
 # `feasibilityjump.hh` would silently lack both.
-set(PATCH_VERSION "18")
+set(PATCH_VERSION "19")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -150,9 +150,11 @@ endif()
 
 # ── Add the mip_heuristic_suite string option ──
 # One option selects which custom heuristics run: the alias "off" (none) or
-# "all" (every one), or a comma-separated list of fj, fpr, local_mip, scylla
-# (default "all").  It replaced the three mip_heuristic_run_* bools and
-# mip_heuristic_preset in #93; the list form arrived in #112.
+# "all" (every one), or a comma-separated list of fj, fpr, local_mip, scylla,
+# fpr_lp (default "all").  It replaced the three mip_heuristic_run_* bools and
+# mip_heuristic_preset in #93; the list form arrived in #112, and the
+# dive-time fpr_lp became its own token in #164 (it followed `fpr`'s before,
+# so "presolve FPR without fpr_lp" was inexpressible).
 #
 # The value is interpreted in `heuristics::effective_flags`, not here — HiGHS
 # does not validate string option *values*, so this registration only has to
@@ -194,7 +196,7 @@ if(_suite_found EQUAL -1)
     # Record registration: insert after the mip_heuristic_run_shifting record block
     string(REPLACE
       "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_suite\",\n                                          \"Custom MIP heuristic suite: comma-separated list of \\\"fj\\\", \\\"fpr\\\", \\\"local_mip\\\", \\\"scylla\\\", or the alias \\\"off\\\" (none) or \\\"all\\\" (every one)\", advanced,\n                                          &mip_heuristic_suite, \"all\");\n    records.push_back(record_string);"
+      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_suite\",\n                                          \"Custom MIP heuristic suite: comma-separated list of \\\"fj\\\", \\\"fpr\\\", \\\"local_mip\\\", \\\"scylla\\\", \\\"fpr_lp\\\", or the alias \\\"off\\\" (none) or \\\"all\\\" (every one)\", advanced,\n                                          &mip_heuristic_suite, \"all\");\n    records.push_back(record_string);"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
     # Sanity checks: all three insertions must land.  The failure mode is
@@ -248,7 +250,8 @@ endif()
 # ── Add the per-heuristic calibration options ──
 # One effort-budget multiplier per presolve heuristic (#110), replacing the
 # single shared mip_heuristic_presolve_effort and the kWeight* constants
-# that split it.  `src/mode_dispatch.cpp` reads each one and sizes that
+# that split it, plus — since #164 — one for the dive-time fpr_lp, which is
+# **not** in the same unit: see its own paragraph below.  `src/mode_dispatch.cpp` reads each one and sizes that
 # heuristic's dispatch with `heuristic_effort_budget(nnz, value)`:
 # `nnz << 12` effort units at the anchor 0.05, linear in the value.  No
 # shared envelope means raising one heuristic's budget no longer lowers
@@ -368,6 +371,39 @@ endif()
 # and the rest by 2-12x.
 #
 
+# ── mip_heuristic_fpr_lp_effort: a share, and why its default is 1.0 ──
+#
+# The ninth option is **not** in the unit of the eight above and is not a
+# multiple of `nnz << 10`.  `fpr_lp` runs during the B&B dive and draws from
+# upstream's own RENS/RINS LP-iteration envelope, charging back what it
+# spends, so its budget is zero-sum against those two heuristics rather than
+# an independent allowance.  What a calibration should range over there is
+# therefore a **share of the remaining headroom**, which is what this option
+# is: `src/fpr_lp.cpp` sizes a call at
+# `min(headroom_units x share, cap_units)`, where the cap is the unchanged
+# `vanilla_effort_budget(nnz, mip_heuristic_effort)`.
+#
+# **The default 1.0 is not measured and does not claim to be.**  It is the
+# value that reproduces exactly what this call took before the option
+# existed — the whole headroom — so a default-options binary is unmoved by
+# #164, which is the constraint that issue's comment puts above everything
+# else.  It is the starting point of an `fpr_lp` calibration, not the result
+# of one; #113's probe measured the four presolve heuristics and never
+# touched the dive-time one.
+#
+# `0` disables `fpr_lp`, the same way `0` disables each of the four presolve
+# heuristics, and it disables it *above* every read and write of
+# `heuristic_lp_iterations` / `total_lp_iterations` — the counters
+# `moreHeuristicsAllowed()` reads to decide whether RENS and RINS run.  A
+# disable that charged even one iteration back would silently move those two
+# heuristics, which would make an `fpr_lp` ablation measure something else.
+#
+# One property it does **not** have, unlike the four above: it cannot on its
+# own express a budget that never binds, because the share scales only the
+# headroom term and the per-call cap is left alone.  The `1e6` ceiling is
+# shared with the other eight for uniformity of the surface; here it buys
+# taking the whole headroom in one call, not an unbindable budget.
+
 # All three insertions of every option anchor on *upstream's*
 # mip_heuristic_run_shifting text, like the suite block above.  Anchoring
 # on our own inserted text is what made the older option blocks a chain,
@@ -465,6 +501,7 @@ set(_patch_options
     "mip_heuristic_fpr_effort:double:12.2559:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
     "mip_heuristic_local_mip_effort:double:13.9607:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
     "mip_heuristic_scylla_effort:double:3.068:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
+    "mip_heuristic_fpr_lp_effort:double:1.0:${kEffortMax}:Share of the remaining RENS/RINS LP-iteration headroom the dive-time fpr_lp heuristic may take per call, capped as before at heuristic_effort_budget(nnz, mip_heuristic_effort) (0 disables fpr_lp)"
     "mip_heuristic_fj_patience:double:0.141625:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_fpr_patience:double:3.063975:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_local_mip_patience:double:3.490175:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"

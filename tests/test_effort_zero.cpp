@@ -35,14 +35,21 @@
 // entry points, alongside `ProblemView::degenerate()`, and `make_budget`
 // returns an all-zero budget at a zero total.
 //
-// One asymmetry is deliberate and is *not* fixed here: omitting `fpr` from
-// `mip_heuristic_suite` also disables the dive-time `fpr_lp`, via
-// `heuristics::effective_flags`, while `mip_heuristic_fpr_effort = 0` does
+// One asymmetry used to be deliberate and is now gone.  Omitting `fpr` from
+// `mip_heuristic_suite` also disabled the dive-time `fpr_lp`, via
+// `heuristics::effective_flags`, while `mip_heuristic_fpr_effort = 0` did
 // not — `fpr_lp` draws from upstream's `mip_heuristic_effort` envelope and
-// never reads the presolve option.  That is a real property of the option,
-// not a limitation of these tests, so every comparison below is scoped to
-// `phase=presolve`.  The tuning target runner derives the suite value from
-// the zero-pattern, which is where the two are reconciled.
+// never reads the presolve option.  #164 split the two: `fpr_lp` has its own
+// suite token and its own `mip_heuristic_fpr_lp_effort`, so zeroing an
+// effort and dropping the matching token now agree for all five.
+//
+// The comparisons below are still scoped to `phase=presolve`, and the four
+// `kCases` are still the presolve chain.  That scoping is what the name of
+// the equivalence case at the foot of this file records: it checks the
+// presolve chain, on `flugpl`, which never reaches a dive, so it could never
+// have said anything about `fpr_lp` in either direction.  `fpr_lp`'s own
+// equivalence is asserted where it can be seen — on the dispatch and on the
+// whole solve, in `tests/test_fpr_lp.cpp`.
 // ===================================================================
 
 namespace {
@@ -156,8 +163,15 @@ std::vector<std::string> omitted(const char* inst, const char* suite) {
     return trace_solve(inst, [&](Highs& h) { set_suite(h, suite); });
 }
 
-// `all` minus one, in chain order — the spelling `mip_heuristic_suite`
-// requires (`run_benchmark.py` names the same subsets with `+`).
+// `all` minus one presolve heuristic, in chain order — the spelling
+// `mip_heuristic_suite` requires (`run_benchmark.py` names the same subsets
+// with `+`).
+//
+// Every complement keeps `fpr_lp`, because the other side of each
+// comparison is `suite=all`, which enables it (#164).  Dropping it here
+// would put a second difference into a comparison that exists to isolate
+// one — inert on `flugpl`, which never reaches a B&B dive, but only by
+// accident of the instance.
 struct Case {
     const char* name;
     const char* complement;
@@ -165,10 +179,10 @@ struct Case {
 };
 
 constexpr std::array<Case, 4> kCases = {{
-    {"fj", "fpr,local_mip,scylla", 'J'},
-    {"fpr", "fj,local_mip,scylla", 'A'},
-    {"local_mip", "fj,fpr,scylla", 'M'},
-    {"scylla", "fj,fpr,local_mip", 'G'},
+    {"fj", "fpr,local_mip,scylla,fpr_lp", 'J'},
+    {"fpr", "fj,local_mip,scylla,fpr_lp", 'A'},
+    {"local_mip", "fj,fpr,scylla,fpr_lp", 'M'},
+    {"scylla", "fj,fpr,local_mip,fpr_lp", 'G'},
 }};
 
 }  // namespace
@@ -279,6 +293,15 @@ TEST_CASE("effort-zero: a zeroed heuristic runs no setup either", "[effort-zero]
 // heuristic's effort leaves the rest of the presolve chain doing exactly
 // what omitting it from the suite would.
 //
+// **The presolve chain, and only that** — which is what this case is named
+// for since #164.  It runs on `flugpl`, which never reaches a B&B dive, and
+// it filters to `phase=presolve`, so a dive-time difference is outside its
+// reach by construction.  Under the old name ("equivalent to omitting the
+// heuristic from the suite") it read as the general claim, and for `fpr`
+// that claim was false: zeroing `mip_heuristic_fpr_effort` left `fpr_lp`
+// running where dropping the `fpr` token killed it.  That is exactly the
+// misreading #164 was filed against, so the name now says the scope.
+//
 // Compared as traces, not just objectives: two configurations can agree on
 // the final objective while spending completely different budgets, and it
 // is the budgets a calibration search reads.  The zeroed heuristic's own
@@ -287,7 +310,8 @@ TEST_CASE("effort-zero: a zeroed heuristic runs no setup either", "[effort-zero]
 // effort=0 found=0` is emitted where omission emits nothing at all.  That
 // is a log difference and not a behavioural one; asserting on solver state
 // rather than log identity is what keeps it out of the way.
-TEST_CASE("effort-zero: equivalent to omitting the heuristic from the suite", "[effort-zero]") {
+TEST_CASE("effort-zero: the rest of the presolve chain is unchanged by either spelling",
+          "[effort-zero]") {
     for (const Case& c : kCases) {
         INFO("heuristic " << c.name);
         const auto zero_lines = zeroed("flugpl.mps", c.name);

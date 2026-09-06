@@ -60,21 +60,24 @@ One caveat for library embedders (not CLI users): HiGHS's task executor is a pro
 |--------|-----------|-------|
 | `off` | none of ours | the ablation: HiGHS's own pipeline, native FeasibilityJump included |
 | `fj` | FJ | isolate FeasibilityJump |
-| `fpr` | FPR (+ `fpr_lp`) | isolate FPR for ablation |
+| `fpr` | presolve FPR | isolate FPR for ablation — no longer implies `fpr_lp` |
 | `local_mip` | LocalMIP | isolate LocalMIP |
 | `scylla` | Scylla | PDLP pump only |
-| `fj,fpr` | FJ+FPR (+ `fpr_lp`) | any comma-separated subset — all fifteen are expressible |
-| `all` | FJ+FPR+LocalMIP+Scylla (+ `fpr_lp`) | **default** |
+| `fpr_lp` | `fpr_lp` | the dive-time LP-guided FPR, on its own |
+| `fj,fpr` | FJ + presolve FPR | any comma-separated subset — all thirty-one are expressible |
+| `all` | FJ+FPR+LocalMIP+Scylla+`fpr_lp` | **default** |
 
 Order within a list is irrelevant (`fpr,fj` is `fj,fpr`), whitespace around a name is ignored, and repeating a name is harmless. `off` and `all` are aliases for the whole value, not names inside a list: `fj,off` is rejected, because `off` means "none of ours, HiGHS's own FeasibilityJump call site handed back" rather than merely "no heuristic".
 
-An unrecognised value warns and falls back to `all` rather than silently disabling everything. The warning names the offending token, since one typo inside an otherwise valid list quietly promotes the run to all four heuristics; `bench/run_benchmark.py` greps for that warning and discards the run rather than filing it under the configuration it did not honour.
+An unrecognised value warns and falls back to `all` rather than silently disabling everything. The warning names the offending token, since one typo inside an otherwise valid list quietly promotes the run to every heuristic; `bench/run_benchmark.py` greps for that warning and discards the run rather than filing it under the configuration it did not honour.
 
 **`suite=off` is an ablation, not a vanilla baseline.** It disables our four presolve heuristics and `fpr_lp`, and hands HiGHS's standalone FeasibilityJump call site back — but the binary around it is still the patched one, including our copy of FeasibilityJump. Use it to measure what the chain contributes on this binary; a vanilla comparison needs a separately built unpatched HiGHS (`bench/run_benchmark.py --vanilla-binary`, which refuses a binary carrying the patch marker).
 
 Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside `mip_heuristic_suite = off` for the pure patch-overhead configuration, with no heuristic at all. That is the configuration `bench/check_vanilla_equivalence.py` compares against an unpatched binary with FeasibilityJump likewise disabled, and it *requires* the two to agree: same objective, same node count, same total and heuristic LP iterations, and an empty log diff once wall-clock content is normalized away (the timing block, the P-D integral, the profiling seconds, the git-hash width, the options-file echo and the `mip-heuristics patch active` marker). It is a gate, not a recorded result — it needs a second binary, so it cannot run in CI and every release re-runs it (`docs/RELEASE.md`). What it establishes when green is that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP path — not that any setting of ours reproduces vanilla.
 
-**`fpr_lp` follows the FPR bit.** It runs at B&B dive time on the same continuous workers, and is gated on the same flag as presolve FPR — so it runs at `suite=fpr` and `suite=all`, and is *disabled* at `suite=local_mip` and `suite=scylla` as well as at `off`. That is deliberate: a per-heuristic attribution run must not leave a second FPR variant running at dive time. It does mean a dive-time result under `suite=local_mip` cannot be attributed to `fpr_lp`.
+**`fpr_lp` has its own token and its own budget.** It runs at B&B dive time on the same continuous workers, and since #164 it is selected by the `fpr_lp` token rather than by `fpr`'s — so it runs at `suite=fpr_lp` and `suite=all`, and is *disabled* at `suite=fpr`, `suite=local_mip`, `suite=scylla` and `off`. **`suite=fpr` therefore no longer implies `fpr_lp`**; a configuration spelled that way means presolve FPR alone, and the pair is `fpr,fpr_lp`. It used to follow the `fpr` bit, which made "presolve FPR without `fpr_lp`" inexpressible and so left the contribution of either one unmeasurable on the shipped binary.
+
+Its budget is `mip_heuristic_fpr_lp_effort` (default `1.0`), which is **not** in the same unit as the four presolve effort options: `fpr_lp` draws from upstream's RENS/RINS LP-iteration envelope and charges back what it spends, so its option is a *share of the remaining headroom* of that envelope rather than a multiple of `nnz << 10`. `1.0` is the whole headroom, which is exactly what the call took before the option existed, so a default-options binary is unchanged. `0` disables the heuristic, and it does so above every read and write of the shared LP-iteration counters, so an `fpr_lp` ablation leaves RENS and RINS doing what they did.
 
 `mip_heuristic_run_feasibility_jump` is upstream's own option and keeps its meaning: setting it false disables FeasibilityJump at every suite value, ours and HiGHS's alike.
 
@@ -82,7 +85,7 @@ Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside `
 
 ### PLATO mipfeas — 233 instances, 600s time limit
 
-Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Configuration: the then-current `mip_heuristic_preset=all_opp` — FJ + FPR + LocalMIP, Scylla deliberately excluded.
+Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Configuration: the then-current `mip_heuristic_preset=all_opp` — FJ + FPR + LocalMIP + `fpr_lp`, Scylla deliberately excluded. (`fpr_lp` ran because it followed the FPR bit at the time; today it is its own token, so the configuration is spelled `fj,fpr,local_mip,fpr_lp` — config name `fj+fpr+local_mip+fpr_lp`.)
 
 | Metric | Patched (`all_opp`) | Vanilla HiGHS |
 |---|---|---|
@@ -94,7 +97,7 @@ Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, syst
 | SGM P-D Integral | 26.3 | **23.9** |
 | PLATO headline SGM (s=0.001) | **26.0** | 26.8 |
 
-> **Provenance.** This row cannot be reproduced on `HEAD`, by design. The configuration is expressible again — `all_opp` was FJ + FPR + LocalMIP without Scylla, which the single-valued `mip_heuristic_suite` (#93) could not name and `mip_heuristic_suite = fj,fpr,local_mip` (#112) now does — but the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the then-shared presolve envelope is floored, and two of the three budget weights were rescaled (that envelope and its weights have since been replaced by a per-heuristic effort option each, #110). Since then #124 has replaced FPR's repair kernel outright — repair now runs inside the fix-and-propagate tree rather than only at the leaf, which changes what `dive`, `diveprop` and `dfsrep` search *and* what a DFS node costs — so the FPR contribution to this row was measured on a kernel that no longer exists. The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
+> **Provenance.** This row cannot be reproduced on `HEAD`, by design. The configuration is expressible again — `all_opp` was FJ + FPR + LocalMIP without Scylla, which the single-valued `mip_heuristic_suite` (#93) could not name and `mip_heuristic_suite = fj,fpr,local_mip,fpr_lp` (#112, re-spelled by #164 once `fpr_lp` stopped following the `fpr` token) now does — but the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the then-shared presolve envelope is floored, and two of the three budget weights were rescaled (that envelope and its weights have since been replaced by a per-heuristic effort option each, #110). Since then #124 has replaced FPR's repair kernel outright — repair now runs inside the fix-and-propagate tree rather than only at the leaf, which changes what `dive`, `diveprop` and `dfsrep` search *and* what a DFS node costs — so the FPR contribution to this row was measured on a kernel that no longer exists. The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
 
 #### Findings
 
@@ -148,7 +151,7 @@ This does not replace `bench/instances_small.txt`, which is stratified on *optim
 
 ### Per-heuristic ablation and budget sweep
 
-`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value and no aliases: `off`, `all`, the four singletons, and the ten pairs and triples between them (`fj+fpr`, `fj+fpr+local_mip`, …), plus `vanilla`, which is not a suite value at all but the separately built unpatched binary that `--vanilla-binary` names. Config names join with `+` where the option value uses `,`, because the name is a results-tree directory and a table label; they list heuristics in chain order, so one subset has exactly one spelling.
+`bench/run_benchmark.py` has one config per `mip_heuristic_suite` value and no aliases: `off`, `all`, the five singletons, and every subset between them (`fj+fpr`, `fj+fpr+local_mip+fpr_lp`, …) — thirty-one non-empty subsets in all — plus `vanilla`, which is not a suite value at all but the separately built unpatched binary that `--vanilla-binary` names. Config names join with `+` where the option value uses `,`, because the name is a results-tree directory and a table label; they list heuristics in selection order — the presolve chain in dispatch order, then `fpr_lp` — so one subset has exactly one spelling.
 
 ```bash
 bash bench/download_miplib.sh                       # once per machine; see above

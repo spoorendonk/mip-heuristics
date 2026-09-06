@@ -9,15 +9,23 @@ namespace fpr_lp {
 // Gating and budget are derived internally so fpr_lp participates in the
 // same B&B heuristic budget as RENS/RINS (issue: pre-split it drew an
 // unaccounted nnz-based budget per call):
-//  - enabled iff heuristics::effective_flags(options).fpr — i.e. only at a
-//    mip_heuristic_suite value naming fpr, so suite=off really disables it
-//    (and so does every subset that omits fpr, deliberately: per-heuristic
-//    attribution has to cover the dive-time heuristic too);
-//  - per-call effort budget = the remaining LP-iteration headroom of the
-//    moreHeuristicsAllowed() envelope (total_lp_iterations *
-//    mip_heuristic_effort + 10000 - heuristic_lp_iterations), converted
-//    at nnz effort-units per LP iteration and capped at
-//    heuristic_effort_budget(nnz, mip_heuristic_effort);
+//  - enabled iff heuristics::effective_flags(options).fpr_lp — i.e. only at
+//    a mip_heuristic_suite value naming fpr_lp, so suite=off really
+//    disables it (and so does every subset that omits fpr_lp, deliberately:
+//    per-heuristic attribution has to cover the dive-time heuristic too).
+//    Its own token since #164: it followed presolve FPR's bit before, so
+//    "presolve FPR without fpr_lp" had no spelling at all;
+//  - and iff mip_heuristic_fpr_lp_effort > 0, which is the same "0 means
+//    the heuristic does not run" the four presolve effort options carry.
+//    Both gates return from the same place, above every counter read;
+//  - per-call effort budget = mip_heuristic_fpr_lp_effort times the
+//    remaining LP-iteration headroom of the moreHeuristicsAllowed()
+//    envelope (total_lp_iterations * mip_heuristic_effort + 10000 -
+//    heuristic_lp_iterations), converted at nnz effort-units per LP
+//    iteration and capped at heuristic_effort_budget(nnz,
+//    mip_heuristic_effort).  The option is a *share* of that headroom
+//    rather than an absolute multiplier, because the quantity is zero-sum
+//    against RENS/RINS; the cap is not scaled by it;
 //  - all consumed work — the reference-LP solves in setup plus worker
 //    effort / nnz — is charged back to heuristic_lp_iterations and
 //    total_lp_iterations, mirroring how RENS/RINS book their sub-MIP LP

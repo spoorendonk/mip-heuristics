@@ -8,16 +8,41 @@ class HighsOptions;
 
 namespace heuristics {
 
+// The `mip_heuristic_suite` token that selects the dive-time `fpr_lp`, and
+// the `[Heur] name=` tag it books its dispatch under.  One spelling for
+// both, for the reason the four presolve tokens take theirs from `kChain`'s
+// own `name` field: the name a user selects with is the name they read in
+// the trace.  `fpr_lp` cannot take it from that table because it is not a
+// chain entry — it runs during the B&B dive, not in presolve — so the
+// constant is the binding instead, and `fpr_lp.cpp` charges under it.
+//
+// A plain `constexpr const char*` rather than an `inline constexpr
+// std::string_view`: this header is inserted into HiGHS's own
+// `HighsMipSolver.cpp` by `apply_patch.cmake` and compiled at HiGHS's
+// `CMAKE_CXX_STANDARD 11`, so nothing here may use a C++17 spelling and
+// nothing it includes may either.  See the same note in `fpr_lp.h`.  A
+// pointer and not an array because `modernize-avoid-c-arrays` rejects the
+// array form and `std::array<char, 7>` would spell a name as a length.
+constexpr const char* kFprLpName = "fpr_lp";
+
 // The effective per-heuristic enable flags selected by
 // mip_heuristic_suite, which is either one of the two whole-value aliases
 // `off` (no heuristic) and `all` (every one), or a comma-separated list of
-// the heuristic names `fj`, `fpr`, `local_mip`, `scylla` — so `fj,fpr`
-// enables exactly those two.
+// the heuristic names `fj`, `fpr`, `local_mip`, `scylla`, `fpr_lp` — so
+// `fj,fpr` enables exactly those two.
+//
+// The first four are the presolve chain, in dispatch order; `fpr_lp` is the
+// dive-time LP-based FPR and is last for the same reason it is last in a
+// config name — it is the only entry that does not run in presolve.  It has
+// been its own token since #164: it used to follow `fpr`'s bit, which made
+// "presolve FPR without fpr_lp" inexpressible and so left the contribution
+// of either one unmeasurable.
 struct HeuristicFlags {
     bool fj;
     bool fpr;
     bool local_mip;
     bool scylla;
+    bool fpr_lp;
 };
 
 // What parsing mip_heuristic_suite rejected, for the warning run_presolve
@@ -43,8 +68,8 @@ struct SuiteDiagnosis {
 // honour the same suite semantics — in particular `suite=off` disables
 // fpr_lp too, which is what makes `off` an ablation of every heuristic of
 // ours rather than of the presolve chain alone, and so does any value that
-// does not name `fpr`.
-// A value carrying an unrecognised token fails open (all four on) and
+// does not name `fpr_lp`.
+// A value carrying an unrecognised token fails open (all five on) and
 // reports the offending tokens through `*diagnosis` if non-null; the caller
 // decides whether to warn, because this helper is called once per B&B dive
 // and must not log.

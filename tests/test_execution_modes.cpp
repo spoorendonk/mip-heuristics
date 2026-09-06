@@ -279,10 +279,14 @@ TEST_CASE("instrumentation: the dive-time fpr_lp dispatch is reported too",
           "[mode-matrix][observability]") {
     // fpr_lp used to do real work and report nothing.  bell5 is the
     // instance whose dive reliably dispatches it (see test_fpr_lp.cpp).
+    //
+    // `suite=fpr_lp`, which since #164 is the narrowest value that enables
+    // the dive-time heuristic: it has its own token now, so `fpr` selects
+    // presolve FPR alone and would dispatch nothing here.
     const auto lines = solve_capturing_log("bell5.mps", [](Highs& h) {
         require_option(h, "log_dev_level", 3);
         require_option(h, "mip_rel_gap", 0.0);
-        set_suite(h, "fpr");
+        set_suite(h, "fpr_lp");
     });
     REQUIRE(log_contains(lines, "[Heur] name=fpr_lp phase=dive "));
 }

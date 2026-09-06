@@ -171,11 +171,14 @@ std::vector<std::string> traced_solve(int dev_level) {
 //
 // So: `egout` at defaults for FJ / FPR / LocalMIP, `gt2` with Scylla's
 // effort raised (25 offers against 1 at the default), and `bell5` at
-// `suite=fpr` for the dive-time `fpr_lp` — the recipe `test_fpr_lp.cpp`
+// `suite=fpr_lp` for the dive-time `fpr_lp` — the recipe `test_fpr_lp.cpp`
 // already uses, and the reason it is not `bell5` at defaults: with the
 // whole chain enabled the presolve heuristics usually solve bell5 before
 // the dive needs `fpr_lp`, and the offer count came out 0, 0, 520, 0 over
-// four runs.  At `suite=fpr` it was 360-457 over six.
+// four runs.  At `suite=fpr` it was 360-457 over six; that value was the
+// narrowest one enabling the dive-time heuristic until #164 gave it its own
+// token, and `suite=fpr_lp` — which now leaves the presolve chain off
+// entirely — is the same recipe with even less competition for the dive.
 //
 // `kTracedNames` below is asserted against the union of the three, so the
 // coverage cannot silently lapse again if a default moves.  That assertion
@@ -197,7 +200,7 @@ constexpr std::array<Fixture, 3> kFixtures = {{
     // Running it alone leaves the pool empty at its first offer, which
     // `SolutionPool::try_add` admits unconditionally while filling.
     {"gt2.mps", "scylla", 80.0},
-    {"bell5.mps", "fpr", -1.0},
+    {"bell5.mps", "fpr_lp", -1.0},
 }};
 
 std::vector<std::string> traced_fixture(const Fixture& fixture) {

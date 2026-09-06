@@ -36,6 +36,7 @@ so a stage is an environment rather than a separate launcher.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -64,9 +65,14 @@ MAKE_TUNING_SET = BENCH / "make_tuning_set.py"
 RUN_PLATO = BENCH / "run_plato.sh"
 APPLY_PATCH = REPO / "third_party" / "highs_patch" / "apply_patch.cmake"
 
-# The chain, in dispatch order.  `CONFIG_SUITES` keys spell subsets with `+`
-# in this order, so the sixteen mix-selection configs of #107 are exactly
-# `off` plus the fifteen non-empty subsets.
+# The presolve chain, in dispatch order.  `CONFIG_SUITES` keys spell subsets
+# with `+` in this order, so the sixteen mix-selection configs of #107 are
+# exactly `off` plus the fifteen non-empty subsets.
+#
+# That table has carried a fifth token since #164 — the dive-time `fpr_lp`,
+# spelled last — so it is no longer only those sixteen: it is `off` plus all
+# thirty-one non-empty subsets of five.  #107's stage is still the chain's
+# sixteen, which `MIX_CONFIGS` selects back out of it.
 CHAIN = ("fj", "fpr", "local_mip", "scylla")
 
 # A stand-in HiGHS.  It writes one JSON line per invocation to
@@ -138,7 +144,7 @@ for i, arg in enumerate(argv):
 # about the missing filename and exits.  Recording it would file a run with an
 # empty instance and config name.
 if model is None:
-    # The unpatched stand-in has none of the ten options the patch adds, and
+    # The unpatched stand-in has none of the eleven options the patch adds, and
     # says so the way HiGHS does.  `mip_heuristic_effort` and the six
     # `mip_heuristic_run_*` switches are upstream's own and stay legal on both.
     if opts_path and "unpatched" in os.path.basename(sys.argv[0]):
@@ -737,8 +743,16 @@ def test_the_baseline_profile_counts_every_instance_including_never_feasible(tmp
 # `off` plus the fifteen non-empty subsets of the chain: the sixteen
 # configurations #107 compares.  `vanilla` is not among them and cannot be:
 # it is a separate unpatched binary, not a suite value (#147).
+# Selected by *membership*, not by taking the whole table: since #164 that
+# table also holds every subset naming the dive-time `fpr_lp`, which is not
+# part of #107's stage — that stage sweeps the presolve chain, whose budgets
+# #113 measured.  The chain's own full subset is now spelled
+# `fj+fpr+local_mip+scylla`; `all` is the five-element one, so it is not a
+# chain mix any more.
 MIX_CONFIGS = ["off"] + [
-    name for name, suite in CONFIG_SUITES.items() if suite != "off"
+    name
+    for name in CONFIG_SUITES
+    if name not in ("off", "all") and set(name.split("+")) <= set(CHAIN)
 ]
 
 
@@ -752,6 +766,38 @@ def test_all_sixteen_mixes_are_expressible_and_distinct():
         # A subset name lists its heuristics in chain order, so one subset has
         # exactly one spelling and one results directory.
         assert name.split("+") == CONFIG_SUITES[name].split(",")
+
+
+def test_every_non_empty_subset_of_the_five_heuristics_has_a_config():
+    """#164: `fpr_lp` is a suite token, so all 31 subsets must be nameable.
+
+    Including the two cells of the issue's matrix that had no spelling at
+    all before: presolve FPR without the dive-time variant (`fpr`), and the
+    dive-time variant alone (`fpr_lp`).
+    """
+    heuristics = (*CHAIN, "fpr_lp")
+    subsets = {
+        subset
+        for size in range(1, len(heuristics) + 1)
+        for subset in itertools.combinations(heuristics, size)
+    }
+    assert len(subsets) == 31
+    # Every subset is reachable as a suite *value*, whatever the config
+    # carrying it is called: the full one is spelled `all`.
+    named = {
+        tuple(h for h in heuristics if h in suite.split(","))
+        for name, suite in CONFIG_SUITES.items()
+        if name not in ("off", "all")
+    }
+    named.add(heuristics)
+    assert named == subsets
+    assert CONFIG_SUITES["fpr"] == "fpr"
+    assert CONFIG_SUITES["fpr_lp"] == "fpr_lp"
+    assert CONFIG_SUITES["fpr+fpr_lp"] == "fpr,fpr_lp"
+    # The re-spelling the issue calls for: the recorded PLATO configuration
+    # ran `fj,fpr,local_mip`, which enabled `fpr_lp` as a side effect of the
+    # `fpr` token, so the config that means the same thing today names it.
+    assert CONFIG_SUITES["fj+fpr+local_mip+fpr_lp"] == "fj,fpr,local_mip,fpr_lp"
 
 
 @pytest.fixture(scope="module")
@@ -846,7 +892,7 @@ def headline_tree(tmp_path_factory):
         "--output",
         str(tree),
         "--configs",
-        "fj+fpr+local_mip",
+        "fj+fpr+local_mip+fpr_lp",
         "vanilla",
         "--seeds",
         "0",
@@ -865,7 +911,8 @@ def test_a_headline_pass_runs_three_seeds_against_a_separate_vanilla_binary(
     tree, _, names, _ = headline_tree
     for seed in (0, 1, 2):
         assert (
-            sorted(p.stem for p in logs_under(tree, "fj+fpr+local_mip", seed)) == names
+            sorted(p.stem for p in logs_under(tree, "fj+fpr+local_mip+fpr_lp", seed))
+            == names
         )
     assert sorted(p.stem for p in logs_under(tree, "vanilla", 0)) == names
 
@@ -879,7 +926,7 @@ def test_which_binary_produced_a_config_is_readable_off_the_logs(headline_tree):
     tree, _, _, _ = headline_tree
     assert all(
         "mip-heuristics patch active" in log.read_text()
-        for log in logs_under(tree, "fj+fpr+local_mip")
+        for log in logs_under(tree, "fj+fpr+local_mip+fpr_lp")
     )
     assert not any(
         "mip-heuristics patch active" in log.read_text()
@@ -893,7 +940,7 @@ def test_every_run_records_the_worker_count_it_ran_at(headline_tree):
     # prints it per solve, `parse_highs_log` reads it, and `make_archive.py`
     # carries it into MANIFEST.json / PROVENANCE.md as `workers_observed`.
     tree, _, _, _ = headline_tree
-    for config in ("fj+fpr+local_mip", "vanilla"):
+    for config in ("fj+fpr+local_mip+fpr_lp", "vanilla"):
         for log in logs_under(tree, config):
             parsed = parse_log(log.read_text())
             assert parsed.thread_count == 16
@@ -905,7 +952,7 @@ def test_the_headline_reports_the_plato_metric_against_the_baseline(headline_tre
     out = analyze(
         str(tree),
         "--configs",
-        "fj+fpr+local_mip",
+        "fj+fpr+local_mip+fpr_lp",
         "vanilla",
         "--time-limit",
         "600",
@@ -926,7 +973,7 @@ def test_the_held_out_complement_is_the_same_tree_with_two_filters(headline_tree
     full = analyze(
         str(tree),
         "--configs",
-        "fj+fpr+local_mip",
+        "fj+fpr+local_mip+fpr_lp",
         "vanilla",
         "--time-limit",
         "600",
@@ -938,7 +985,7 @@ def test_the_held_out_complement_is_the_same_tree_with_two_filters(headline_tree
     complement = analyze(
         str(tree),
         "--configs",
-        "fj+fpr+local_mip",
+        "fj+fpr+local_mip+fpr_lp",
         "vanilla",
         "--time-limit",
         "600",
@@ -961,7 +1008,7 @@ def test_attribution_needs_no_developer_logging(headline_tree):
     out = analyze(
         str(tree),
         "--configs",
-        "fj+fpr+local_mip",
+        "fj+fpr+local_mip+fpr_lp",
         "vanilla",
         "--time-limit",
         "600",
@@ -1069,14 +1116,14 @@ def test_run_plato_runs_every_config_at_every_seed_and_reports_completion(tmp_pa
             "MIPLIB_DIR": str(miplib_dir(tmp_path, names)),
             "PLATO_INSTANCES": str(listing),
             "PLATO_OUTPUT": str(tree),
-            "PLATO_CONFIGS": "fj+fpr+local_mip vanilla",
+            "PLATO_CONFIGS": "fj+fpr+local_mip+fpr_lp vanilla",
             "PLATO_SEEDS": "0 1 2",
             "PLATO_BINARY": str(binary),
             "PLATO_VANILLA_BINARY": str(fake_highs(tmp_path, "highs-unpatched")),
         },
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    for config in ("fj+fpr+local_mip", "vanilla"):
+    for config in ("fj+fpr+local_mip+fpr_lp", "vanilla"):
         for seed in (0, 1, 2):
             assert sorted(p.stem for p in logs_under(tree, config, seed)) == names
     assert "STATUS  : COMPLETE" in result.stdout

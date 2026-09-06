@@ -36,14 +36,14 @@
 #   PLATO_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
 #                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_patience=0"
 #                        These apply to *every* config, and the vanilla one is
-#                        an unpatched binary that has none of the ten options
-#                        the patch adds — so pair a patched-only option with a
+#                        an unpatched binary that has none of the eleven
+#                        options the patch adds — so pair a patched-only option with a
 #                        PLATO_CONFIGS that omits `vanilla`.  The runner probes
 #                        every binary it will use for each key and refuses
 #                        before the first solve, rather than failing every
 #                        instance of the affected arm at solve time; that
 #                        covers a typo on the patched arm too.  (Seven of the
-#                        seventeen mip_heuristic_* names are upstream's own —
+#                        eighteen mip_heuristic_* names are upstream's own —
 #                        mip_heuristic_effort and the six mip_heuristic_run_*
 #                        switches — and are legal on both binaries.)
 #   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
@@ -62,7 +62,7 @@
 #
 # So the #105 baseline is the default, and the #108 headline is
 #
-#   PLATO_CONFIGS="fj+fpr+local_mip vanilla" PLATO_SEEDS="0 1 2" \
+#   PLATO_CONFIGS="fj+fpr+local_mip+fpr_lp vanilla" PLATO_SEEDS="0 1 2" \
 #     bench/run_plato.sh next 10
 #
 # The #113 probe is the same script with the generous presolve-only

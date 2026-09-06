@@ -17,6 +17,7 @@ exits without solving.
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import re
 import subprocess
@@ -42,39 +43,44 @@ from dataclasses import dataclass
 # reverted `mip_heuristic_effort` to upstream's 0.05 default (vanilla
 # semantics), so a patched run's B&B heuristic budget already matches.
 #
-# The ten subset configs are the pairs and triples the mix-selection stage
-# (#107) sweeps alongside the four singletons, `all` and `off` — sixteen
-# rows, one per subset of the chain.  They exist because `mip_heuristic_suite`
-# takes a comma-separated list (#112); the config *name* joins with `+`
-# instead, because the name is a results-tree directory and a column label in
-# generated LaTeX, and a comma in either is a needless escaping problem.
+# The subset configs are every non-empty selection of the five heuristics,
+# which is what the mix-selection stage (#107) sweeps alongside `all` and
+# `off`.  They exist because `mip_heuristic_suite` takes a comma-separated
+# list (#112); the config *name* joins with `+` instead, because the name is
+# a results-tree directory and a column label in generated LaTeX, and a comma
+# in either is a needless escaping problem.
 #
-# Names list heuristics in chain order (FJ -> FPR -> LocalMIP -> Scylla) so
-# one subset has one spelling; `fpr+fj` is not a config even though the suite
-# value it would map to is legal.
+# Names list heuristics in **selection order** — the presolve chain first, in
+# dispatch order (FJ -> FPR -> LocalMIP -> Scylla), then the dive-time
+# `fpr_lp` — so one subset has one spelling; `fpr+fj` is not a config even
+# though the suite value it would map to is legal, and neither is
+# `fpr_lp+fj`.
 #
-# The recorded PLATO table in README.md was measured at `all_opp` — FJ + FPR
-# + LocalMIP with Scylla deliberately excluded, because PDLP solves are
-# expensive enough to hurt wall-clock on general instances.  That is
-# `fj+fpr+local_mip` below.  Expressible is not reproducible: the binary
-# those numbers came from predates the runner cleanup, so do not compare a
-# fresh run against the recorded `all_opp` row.
+# `fpr_lp` became its own token in #164; before that it followed `fpr`'s, so
+# a config naming `fpr` also ran the dive-time heuristic and "presolve FPR
+# without fpr_lp" had no name.  **That re-spells the recorded PLATO
+# configuration**: the table in README.md was measured at `fj,fpr,local_mip`,
+# which enabled `fpr_lp` as a side effect, and the config that means the same
+# thing today is `fj+fpr+local_mip+fpr_lp`.  Expressible is not reproducible:
+# the binary those numbers came from predates the runner cleanup, so do not
+# compare a fresh run against the recorded row either way.
+#
+# Generated rather than written out.  Thirty-one hand-typed pairs of a name
+# and a suite value are thirty-one chances to transpose one, and the two
+# properties that matter — chain-order spelling, and the name being the suite
+# value with `+` for `,` — hold by construction here where a literal table
+# would only be checked for them afterwards (`bench/test_campaign_readiness.py`
+# checks them anyway).  The full five-element subset is spelled `all`, the
+# alias it has always had, so it appears once rather than twice.
+SUITE_ORDER: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla", "fpr_lp")
+
 CONFIG_SUITES: dict[str, str] = {
     "off": "off",
-    "fj": "fj",
-    "fpr": "fpr",
-    "local_mip": "local_mip",
-    "scylla": "scylla",
-    "fj+fpr": "fj,fpr",
-    "fj+local_mip": "fj,local_mip",
-    "fj+scylla": "fj,scylla",
-    "fpr+local_mip": "fpr,local_mip",
-    "fpr+scylla": "fpr,scylla",
-    "local_mip+scylla": "local_mip,scylla",
-    "fj+fpr+local_mip": "fj,fpr,local_mip",
-    "fj+fpr+scylla": "fj,fpr,scylla",
-    "fj+local_mip+scylla": "fj,local_mip,scylla",
-    "fpr+local_mip+scylla": "fpr,local_mip,scylla",
+    **{
+        "+".join(subset): ",".join(subset)
+        for size in range(1, len(SUITE_ORDER))
+        for subset in itertools.combinations(SUITE_ORDER, size)
+    },
     "all": "all",
 }
 
@@ -412,18 +418,18 @@ def check_known_options(path: str, options: dict[str, str], *, unpatched: bool) 
     A typo (`mip_heuristic_fpr_effrot`) breaks the *patched* arm, which is
     usually the larger one.  A patched-only option breaks the *vanilla* arm,
     which since #147 is always a separately built unpatched binary with none
-    of the ten options the patch adds — and that is the documented sweep
+    of the eleven options the patch adds — and that is the documented sweep
     invocation (`--extra-options mip_heuristic_fpr_effort=1.0` over the
     default `vanilla all` config pair).  `unpatched` only picks which of the
     two the message explains.
 
     The question is asked of the binary rather than answered from a list
-    here.  Of the seventeen `mip_heuristic_*` names a patched build carries,
+    here.  Of the eighteen `mip_heuristic_*` names a patched build carries,
     **seven are upstream's own** and legal on both binaries —
     `mip_heuristic_effort` and the six `mip_heuristic_run_*` switches
     (`feasibility_jump`, `rens`, `rins`, `root_reduced_cost`, `shifting`,
     `zi_round`) — so a prefix rule would refuse a valid sweep, and a
-    hardcoded list of the other ten would need editing on every option change
+    hardcoded list of the other eleven would need editing on every option change
     and would be wrong silently when it wasn't.  The binary already knows.
 
     Not the same check as `check_binary`: that one identifies the
