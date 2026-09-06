@@ -116,11 +116,25 @@ run_one() {
 
 	# The elites irace selected, extracted from its own state so the record
 	# and the report cannot disagree.
-	Rscript -e "suppressMessages(library(irace));
-	            l <- read_logfile('$dir/irace.Rdata');
-	            print(removeConfigurationsMetaData(getFinalElites(l)))" \
-		> "$dir/best.txt" 2>&1 || true
-	echo "Wrote $dir/best.txt"
+	#
+	# Written only on success, and that matters more than it looks: `best.txt`
+	# being non-empty is what `run_one` and `status` read as "this lambda is
+	# done".  Capturing stderr into it with `|| true` — as this did — turns a
+	# failed extraction into a file full of R's error text, which is non-empty,
+	# so a lambda that produced nothing would be reported COMPLETE and skipped
+	# by every later run.  `getFinalElites` fails on a search that has not
+	# finished an iteration, so this is reachable, not hypothetical.
+	local elites
+	if elites=$(Rscript -e "suppressMessages(library(irace));
+	                        l <- read_logfile('$dir/irace.Rdata');
+	                        print(removeConfigurationsMetaData(getFinalElites(l)))" 2>"$dir/best.err"); then
+		printf '%s\n' "$elites" > "$dir/best.txt"
+		rm -f "$dir/best.err"
+		echo "Wrote $dir/best.txt"
+	else
+		echo "WARNING: could not extract elites for $tag; see $dir/best.err" >&2
+		echo "         $tag is NOT marked complete and will be re-run." >&2
+	fi
 }
 
 cmd_status() {
