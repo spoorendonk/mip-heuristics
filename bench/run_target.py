@@ -988,6 +988,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "sample inclusion as a discrete dimension and make its effort "
             "conditional on it; the semantics are still effort 0 = off",
         )
+    for name in HEURISTICS:
+        switch = name.replace("_", "-")
+        parser.add_argument(
+            f"--{switch}-gated",
+            type=int,
+            choices=(0, 1),
+            default=None,
+            metavar="B",
+            help=f"0 forces {name}'s patience to 0, i.e. no staleness gate at "
+            "all.  The counterpart of --<h>-enabled for the patience axis, and "
+            "for the same reason: a log-sampled real cannot reach 0, and 'no "
+            "gate' is a distinct configuration rather than a corner case -- "
+            "#113 measured the p95 wait above the clamp on three of the four "
+            "heuristics, so it is a serious candidate",
+        )
     parser.add_argument(
         "--lambda",
         dest="cost_weight",
@@ -1057,12 +1072,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def parameters_from_args(args: argparse.Namespace) -> Parameters:
     """The eight numbers, with `--<h>-enabled 0` applied as effort 0.
 
-    The enable switches are sampling machinery, not a second semantics: a
-    configurator needs a discrete dimension to reach "off" at all, because a
-    continuous effort sampled in [0,1] essentially never lands exactly on 0.
-    They collapse into the effort vector here, so everything downstream — the
-    suite value, the options file, the recorded vector — sees only the eight
-    numbers.
+    The enable and gate switches are sampling machinery, not a second
+    semantics: a configurator needs a discrete dimension to reach "off" at
+    all, because a log-sampled real essentially never lands exactly on 0.
+    `--<h>-enabled 0` is that switch for effort ("this heuristic does not
+    run") and `--<h>-gated 0` is the same for patience ("no staleness gate
+    at all", which is not the same as a very small one). Both collapse into
+    the eight numbers here, so everything downstream — the suite value, the
+    options file, the recorded vector — sees only those.
     """
     efforts: dict[str, float] = {}
     patiences: dict[str, float] = {}
@@ -1070,7 +1087,8 @@ def parameters_from_args(args: argparse.Namespace) -> Parameters:
         effort = getattr(args, f"{name}_effort")
         enabled = getattr(args, f"{name}_enabled")
         efforts[name] = 0.0 if enabled == 0 else effort
-        patiences[name] = getattr(args, f"{name}_patience")
+        gated = getattr(args, f"{name}_gated")
+        patiences[name] = 0.0 if gated == 0 else getattr(args, f"{name}_patience")
     return Parameters(efforts=efforts, patiences=patiences)
 
 

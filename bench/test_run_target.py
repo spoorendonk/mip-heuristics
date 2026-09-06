@@ -763,6 +763,54 @@ def test_enabled_switch_forces_effort_zero():
     assert suite_value(parameters_from_args(args)) == "off"
 
 
+def test_gated_switch_forces_patience_zero():
+    """`--<h>-gated 0` is the patience-axis counterpart of `--<h>-enabled 0`.
+
+    A log-sampled real cannot reach 0, and patience 0 means *no staleness gate
+    at all* rather than "give up immediately" — a distinct configuration #113
+    found to be a serious candidate, since the measured p95 wait exceeds the
+    clamp on three of the four heuristics. So a configurator needs a discrete
+    switch to reach it, and it collapses here.
+    """
+    args = build_arg_parser().parse_args(
+        [
+            "--instance",
+            "x",
+            "--seed",
+            "1",
+            "--fj-effort",
+            "0.5",
+            "--fj-patience",
+            "0.1",
+            "--fj-gated",
+            "0",
+        ]
+    )
+    params = parameters_from_args(args)
+    assert params.patiences["fj"] == 0.0
+    # The gate switch touches patience only: fj still runs.
+    assert params.efforts["fj"] == 0.5
+    assert suite_value(params) == "fj"
+
+
+def test_gated_one_keeps_the_sampled_patience():
+    args = build_arg_parser().parse_args(
+        [
+            "--instance",
+            "x",
+            "--seed",
+            "1",
+            "--fj-effort",
+            "0.5",
+            "--fj-patience",
+            "0.1",
+            "--fj-gated",
+            "1",
+        ]
+    )
+    assert parameters_from_args(args).patiences["fj"] == pytest.approx(0.1)
+
+
 def test_omitted_effort_defaults_to_off():
     args = build_arg_parser().parse_args(["--instance", "x", "--seed", "1"])
     assert suite_value(parameters_from_args(args)) == "off"
@@ -795,10 +843,18 @@ def parsed_parameter_file() -> list[tuple[str, str, str, str, str]]:
     return entries
 
 
-def test_parameter_file_covers_all_eight_dimensions_plus_inclusion():
+def test_parameter_file_covers_all_eight_dimensions_plus_sampling_switches():
+    """Eight real dimensions, plus two discrete switches per heuristic.
+
+    The switches are sampling machinery: `<h>` reaches effort 0 ("does not
+    run") and `<h>_gated` reaches patience 0 ("no staleness gate at all"),
+    neither of which a log-sampled real can land on. `run_target.py` collapses
+    both into the eight numbers, so the recorded configuration is still 8-D.
+    """
     names = {e[0] for e in parsed_parameter_file()}
     assert names == (
         set(HEURISTICS)
+        | {f"{h}_gated" for h in HEURISTICS}
         | {f"{h}_effort" for h in HEURISTICS}
         | {f"{h}_patience" for h in HEURISTICS}
     )
@@ -816,44 +872,122 @@ def test_every_irace_switch_is_a_runner_switch():
 
 def test_effort_and_patience_are_conditional_on_inclusion():
     """A parameter with no effect is one irace's model should not have to
-    learn."""
+    learn.
+
+    Two levels of gating.  Effort and the gate switch hang off the
+    heuristic's inclusion; patience hangs off the *gate* switch, because
+    `--<h>-gated 0` selects patience 0 (no staleness gate at all), which a
+    log-sampled real cannot reach.
+    """
     for name, _switch, _type, _domain, cond in parsed_parameter_file():
         if name in HEURISTICS:
             assert cond.strip() == ""
+        elif name.endswith("_patience"):
+            heuristic = name.rsplit("_", 1)[0]
+            assert cond.strip() == f'| {heuristic}_gated == "1"'
         else:
             heuristic = name.rsplit("_", 1)[0]
             assert cond.strip() == f'| {heuristic} == "1"'
 
 
+def test_every_heuristic_has_a_gate_switch():
+    """`--<h>-gated` is what makes patience 0 reachable; without it the
+    "no staleness gate" configuration is outside the searched space."""
+    names = {name for name, _s, _t, _d, _c in parsed_parameter_file()}
+    for heuristic in HEURISTICS:
+        assert f"{heuristic}_gated" in names
+
+
 def test_patience_range_reaches_the_clamp():
-    """`patience_threshold` clamps to a quarter of the budget, so any
-    `patience >= effort / 4` gives the same (loosest firing) gate; the top of
-    the range has to reach that at the top of the effort range."""
+    """`patience_threshold` clamps to a quarter of that heuristic's own
+    budget, so any `patience >= effort / 4` gives the same (loosest firing)
+    gate; the top of each range has to reach that at the top of the *same
+    heuristic's* effort range, or a configuration sampling a large effort
+    could not express the loosest gate at all.
+
+    Per-heuristic since the domains were re-centred on #113's measured knees:
+    the four efforts are not comparable with each other, so neither are the
+    four patiences.
+    """
     domains = dict(
         (name, domain) for name, _s, _t, domain, _c in parsed_parameter_file()
     )
-    effort_high = max(
-        float(d.split(",")[1]) for n, d in domains.items() if n.endswith("_effort")
-    )
-    for name, domain in domains.items():
-        if name.endswith("_patience"):
-            low, high = (float(v) for v in domain.split(","))
-            assert low > 0  # log sampling needs a positive lower bound
-            assert high >= effort_high / 4
+    for heuristic in HEURISTICS:
+        _elo, ehigh = (float(v) for v in domains[f"{heuristic}_effort"].split(","))
+        low, high = (float(v) for v in domains[f"{heuristic}_patience"].split(","))
+        assert low > 0  # log sampling needs a positive lower bound
+        assert high >= ehigh / 4
 
 
 def test_effort_range_clears_fjs_granularity_floor():
     """FJ's charged effort moves in steps of CALLBACK_EFFORT = 500000, and the
     budget is `(nnz << 10) * value`, so its option is a no-op whenever
-    `nnz * value < 488`.  Both bounds are in the `nnz << 10` unit (#116);
-    `1.0` is one vanilla FJ budget and the top of the range is 80 of them,
-    which is the same span this file has always searched."""
+    `nnz * value < 488`; `0.08` is the documented floor that clears it.  All
+    bounds are in the `nnz << 10` unit (#116), where `1.0` is one vanilla FJ
+    budget."""
     for name, _switch, type_, domain, _cond in parsed_parameter_file():
         if name.endswith("_effort"):
-            low, high = (float(v) for v in domain.split(","))
+            low, _high = (float(v) for v in domain.split(","))
             assert type_ == "r,log"
             assert low >= 0.08
-            assert high == 80.0
+
+
+# The #113 knees the domains are centred on, from
+# `bench/ablation_effort/defaults.json`.  Kept here rather than read from the
+# JSON so that moving a domain away from the measurement is a visible edit to
+# this file, not a silent consequence of regenerating an artifact.
+_MEASURED_KNEE = {
+    "fj": 0.5665,
+    "fpr": 12.2559,
+    "local_mip": 13.9607,
+    "scylla": 3.068,
+}
+
+
+def test_effort_domains_bracket_the_measured_knee():
+    """The search is centred on what #113 measured, not on a range chosen
+    before those numbers existed.
+
+    This is the invariant worth protecting: a domain that no longer contains
+    its heuristic's measured yield knee is searching somewhere the evidence
+    does not point, and the previous shared `(0.08, 80)` did exactly that at
+    the top — FPR's censored upper bracket is 93.7, outside it.
+    """
+    domains = dict(
+        (name, domain) for name, _s, _t, domain, _c in parsed_parameter_file()
+    )
+    for heuristic, knee in _MEASURED_KNEE.items():
+        low, high = (float(v) for v in domains[f"{heuristic}_effort"].split(","))
+        assert low < knee < high, f"{heuristic}: {knee} outside ({low}, {high})"
+
+
+def test_scenario_digits_can_represent_every_domain_bound():
+    """irace rejects a domain bound it cannot represent at the scenario's
+    `digits`, and it does so at *startup* — after the machine has been
+    committed, before any run.
+
+    `readParameters` defaults to `digits = 4`, and the re-centred domains
+    include bounds like `0.00221` that need 5. The scenario sets 6. This
+    pins the coupling, because the two files are edited independently and
+    the failure is a hard error rather than a degraded search.
+    """
+    with open(os.path.join(IRACE_DIR, "scenario.txt")) as f:
+        text = f.read()
+    match = re.search(r"^\s*digits\s*=\s*(\d+)", text, re.MULTILINE)
+    assert match, "scenario.txt does not set `digits`"
+    digits = int(match.group(1))
+
+    needed = 0
+    for name, _s, type_, domain, _c in parsed_parameter_file():
+        if not type_.startswith("r"):
+            continue
+        for bound in domain.split(","):
+            bound = bound.strip()
+            frac = bound.split(".")[1] if "." in bound else ""
+            needed = max(needed, len(frac.rstrip("0")))
+    assert digits >= needed, (
+        f"scenario digits={digits} cannot represent a bound needing {needed}"
+    )
 
 
 def test_scenario_points_at_the_tracked_files():
