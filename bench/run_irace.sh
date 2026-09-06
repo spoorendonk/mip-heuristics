@@ -74,15 +74,28 @@ run_one() {
 		return 0
 	fi
 
-	# Resume: irace refuses when --log-file and --recovery-file name the same
-	# path, so the state is copied aside and recovered from the copy while the
-	# live log keeps its usual name.  The copy is overwritten on each resume,
-	# so it is always the state this attempt started from.
+	# Resume is **opt-in** (IRACE_RESUME=1), and that is a scar rather than a
+	# preference.  irace refuses when --log-file and --recovery-file name the
+	# same path, so the state has to be copied aside first; but it also
+	# *overwrites* irace.Rdata as it runs, so a run that halts early replaces
+	# the good state with a less complete one.  Resuming then recovers from
+	# that, finds its own experiment records missing, and dies with "Cannot
+	# find the following in recovery info" — each attempt leaving the state
+	# worse than it found it.
+	#
+	# Automatic resume therefore turns one crash into an unrecoverable
+	# directory, silently.  Opt-in means the default is a clean, self-
+	# consistent search whose provenance is one run, and recovering a long
+	# search is a deliberate act by someone who has looked at the state.
 	local recover=()
-	if [ -s "$dir/irace.Rdata" ]; then
-		echo "== lambda=$lambda ($tag): resuming from irace.Rdata"
+	if [ "${IRACE_RESUME:-0}" = "1" ] && [ -s "$dir/irace.Rdata" ]; then
+		echo "== lambda=$lambda ($tag): resuming from irace.Rdata (IRACE_RESUME=1)"
 		cp -f "$dir/irace.Rdata" "$dir/irace-recover.Rdata"
 		recover=(--recovery-file "$dir/irace-recover.Rdata")
+	elif [ -s "$dir/irace.Rdata" ]; then
+		echo "== lambda=$lambda ($tag): existing state found; starting fresh." \
+			"Set IRACE_RESUME=1 to recover from it instead."
+		rm -f "$dir/irace.Rdata"
 	fi
 
 	echo "================================================================"
