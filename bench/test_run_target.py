@@ -961,33 +961,39 @@ def test_effort_domains_bracket_the_measured_knee():
         assert low < knee < high, f"{heuristic}: {knee} outside ({low}, {high})"
 
 
-def test_scenario_digits_can_represent_every_domain_bound():
-    """irace rejects a domain bound it cannot represent at the scenario's
-    `digits`, and it does so at *startup* — after the machine has been
-    committed, before any run.
+def test_domain_bounds_are_representable_at_iraces_default_digits():
+    """irace rejects a domain bound it cannot represent, at *startup* — after
+    the machine has been committed and before any run.
 
-    `readParameters` defaults to `digits = 4`, and the re-centred domains
-    include bounds like `0.00221` that need 5. The scenario sets 6. This
-    pins the coupling, because the two files are edited independently and
-    the failure is a hard error rather than a degraded search.
+    `readParameters` rounds to `digits`, which defaults to 4 and which irace
+    4.x gives no way to raise from a scenario file: `digits` was a scenario
+    variable in 3.x and 4.4.3 refuses to start on a scenario that sets it
+    ("contains unknown variables: digits"). So every real bound here has to
+    fit in four decimal places. Found by smoke-running the real irace, not by
+    reading the docs.
     """
-    with open(os.path.join(IRACE_DIR, "scenario.txt")) as f:
-        text = f.read()
-    match = re.search(r"^\s*digits\s*=\s*(\d+)", text, re.MULTILINE)
-    assert match, "scenario.txt does not set `digits`"
-    digits = int(match.group(1))
-
-    needed = 0
     for name, _s, type_, domain, _c in parsed_parameter_file():
         if not type_.startswith("r"):
             continue
         for bound in domain.split(","):
             bound = bound.strip()
             frac = bound.split(".")[1] if "." in bound else ""
-            needed = max(needed, len(frac.rstrip("0")))
-    assert digits >= needed, (
-        f"scenario digits={digits} cannot represent a bound needing {needed}"
-    )
+            assert len(frac.rstrip("0")) <= 4, (
+                f"{name}: bound {bound} needs more than irace's default digits=4"
+            )
+
+
+def test_scenario_does_not_set_digits():
+    """The counterpart: a scenario that sets `digits` is refused outright by
+    irace 4.x, so this is not a stylistic preference."""
+    with open(os.path.join(IRACE_DIR, "scenario.txt")) as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert not stripped.startswith("digits"), (
+                "irace 4.x rejects `digits` as a scenario variable"
+            )
 
 
 def test_scenario_points_at_the_tracked_files():

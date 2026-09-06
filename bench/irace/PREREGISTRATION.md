@@ -1,13 +1,15 @@
 # #107 joint search — pre-registration
 
-**Status: DRAFT, awaiting sign-off. Nothing has been run against it.**
+**Status: SIGNED OFF 2026-09-06. In effect for every run recorded against it.**
 
 #107 requires the objective to be fixed *before* the first run, because the
 tables report several quantities and choosing among them afterwards is
 post-hoc selection. This file is that commitment. It is tracked, so the
 version that was in effect when a search ran is recoverable from git.
 
-Sign-off: _(unsigned)_ — date: _(none)_ — commit at sign-off: _(none)_
+Sign-off: **Simon Spoorendonk, 2026-09-06** — commit at sign-off: `01780d0`
+
+Reviewed and accepted as written, before the first experiment ran.
 
 ---
 

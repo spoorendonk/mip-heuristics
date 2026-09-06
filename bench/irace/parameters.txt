@@ -50,6 +50,13 @@
 # The previous shared domain predated the re-run and was chosen before any of
 # these numbers existed.
 #
+# All bounds are written to at most **four decimal places**, because that is
+# `irace::readParameters`' default `digits` and irace 4.x offers no scenario
+# option to raise it — `digits` was a scenario variable in 3.x and is now
+# rejected as unknown, which stops the run at startup.  FJ's patience floor is
+# `0.0022` rather than the exact `knee/256 = 0.002213`; the rounding is 0.6%
+# on a log-sampled bound whose purpose is to be far below the clamp.
+#
 # Patience domain: `[knee/256, effort_hi/4]`.  The top is the **clamp**:
 # `patience_threshold` caps a patience at a quarter of that heuristic's own
 # budget, so the top of the domain has to reach `effort_hi / 4` or a
@@ -93,7 +100,7 @@ local_mip_gated     "--local-mip-gated "    c     (0, 1)           | local_mip =
 scylla_gated        "--scylla-gated "       c     (0, 1)           | scylla == "1"
 
 # --- patience: below the clamp, which is a quarter of that heuristic's effort -
-fj_patience         "--fj-patience "        r,log (0.00221, 2.48) | fj_gated == "1"
+fj_patience         "--fj-patience "        r,log (0.0022, 2.48) | fj_gated == "1"
 fpr_patience        "--fpr-patience "       r,log (0.0479, 35.3)   | fpr_gated == "1"
 local_mip_patience  "--local-mip-patience " r,log (0.0545, 28.0)   | local_mip_gated == "1"
 scylla_patience     "--scylla-patience "    r,log (0.012, 6.68)   | scylla_gated == "1"

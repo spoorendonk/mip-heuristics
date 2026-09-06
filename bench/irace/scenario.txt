@@ -86,7 +86,11 @@ maxExperiments = 3000
 
 ## Enough decimals that the log-sampled efforts keep their resolution at the
 ## bottom of the range (0.001) rather than collapsing onto a handful of values.
-digits = 6
+# `digits` was a scenario variable in irace 3.x and is **not** one in 4.x:
+# it is an argument of `readParameters`, defaulting to 4, and irace 4.4.3
+# refuses to start on a scenario file that sets it ("contains unknown
+# variables: digits").  The domains in parameters.txt are therefore written
+# to four decimal places instead, which `bench/test_run_target.py` pins.
 
 ## Fixed so the search is re-derivable rather than re-run.  Record it, the
 ## instance list and the binary alongside the results tree.
