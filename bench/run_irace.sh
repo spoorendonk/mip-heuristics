@@ -38,7 +38,19 @@ RESULTS="${IRACE_RESULTS:-$REPO/bench/results/irace}"
 # The three pre-registered cost weights: the derived g(0)/T at the campaign's
 # 600 s limit, and one octave either side.  The *family* of resulting
 # configurations is the deliverable, not the middle one alone.
-LAMBDAS=("1_1200:0.00083333333" "1_600:0.0016666667" "1_300:0.0033333333")
+# Ordered with the **derived** value first, not ascending.  `1_600` is
+# `g(0)/T` at the campaign's 600 s limit — the value the pre-registration
+# derives rather than brackets — so if a window ends before all three finish,
+# the completed one is the one that matters.  The other two sit an octave
+# either side and answer a different question (is the selection sensitive to
+# the cost weight), which needs the centre to compare against.
+#
+# Safe to reorder and safe to interrupt: each lambda is an independent,
+# self-contained search, and irace resumes an unfinished one from its own
+# `irace.Rdata` rather than restarting it.  That is why a deadline is not a
+# reason to shrink `maxExperiments` — a partial run is not wasted work, and a
+# search shortened to fit a window is a weaker search for good.
+LAMBDAS=("1_600:0.0016666667" "1_1200:0.00083333333" "1_300:0.0033333333")
 
 IRACE_BIN="${IRACE_BIN:-$HOME/R/x86_64-pc-linux-gnu-library/4.3/irace/bin/irace}"
 export R_LIBS_USER="${R_LIBS_USER:-$HOME/R/x86_64-pc-linux-gnu-library/4.3}"
