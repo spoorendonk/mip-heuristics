@@ -256,11 +256,16 @@ TEST_CASE("suite: an empty value or a stray comma is not a silent off", "[option
 // Adding a fifth token and a fifth effort option touches the code path that
 // decides what the presolve chain does, and that chain's budgets were
 // measured in #113 against the binary as it shipped.  So this asserts what
-// a user gets with nothing configured: all five heuristics enabled, and the
-// four presolve ones dispatched.
+// a user gets with nothing configured: all five *tokens* enabled by the
+// `all` default, the four presolve heuristics dispatched, and `fpr_lp` held
+// off by its effort gate.
 //
 // The fifth is pinned on its **gating** rather than on a dispatch, and that
 // is a deliberate limit rather than a weaker version of the same check.
+// Since the effort default moved to 0 it is pinned *shut*: `all` names the
+// token, so the suite bit is set, while the effort gate keeps it from
+// running.  Both halves are asserted, because either one alone would be
+// satisfied by the wrong configuration.
 // Both of `fpr_lp`'s gates are asserted here — the suite bit and
 // `mip_heuristic_fpr_lp_effort > 0`, which are the two returns at the top of
 // `fpr_lp::run` — so nothing about #164 can disable it at defaults without
@@ -271,7 +276,7 @@ TEST_CASE("suite: an empty value or a stray comma is not a silent off", "[option
 // offers over four runs), so a dispatch assertion here would be a flake.
 // `tests/test_fpr_lp.cpp` pins the dispatch at the values that make it
 // deterministic.
-TEST_CASE("suite: the default configuration enables all five heuristics",
+TEST_CASE("suite: the default configuration runs the four presolve heuristics, fpr_lp off",
           "[options][suite][regression]") {
     Highs h;
     h.setOptionValue("output_flag", false);
@@ -280,11 +285,16 @@ TEST_CASE("suite: the default configuration enables all five heuristics",
     REQUIRE(enabled_names(heuristics::effective_flags(h.getOptions())) == kAll);
     double fpr_lp_effort = -1.0;
     REQUIRE(h.getOptionValue("mip_heuristic_fpr_lp_effort", fpr_lp_effort) == HighsStatus::kOk);
-    // The second of `fpr_lp`'s two gates: a zero here would disable it just
-    // as surely as an absent token.  The value itself is pinned in
-    // `tests/test_smoke.cpp`; what matters here is only that it does not
-    // disable.
-    REQUIRE(fpr_lp_effort > 0.0);
+    // The second of `fpr_lp`'s two gates, and at defaults it is **shut**:
+    // the effort ships at 0, so `fpr_lp` does not run even though `all`
+    // names its token.  That is deliberate — it is the one heuristic of the
+    // five that has never been calibrated, it draws on upstream's RENS/RINS
+    // envelope rather than an allowance of its own, and it stays off until
+    // #165 shows it earns that share.  The value is pinned in
+    // `tests/test_smoke.cpp`; what matters here is that the shipped default
+    // disables it, so a change to the default has to come through this case
+    // rather than through a silent edit of the cmake record.
+    REQUIRE(fpr_lp_effort == 0.0);
 
     // And the presolve chain really dispatches all four, unconfigured.
     const std::vector<std::string> lines = solve_capturing_log(

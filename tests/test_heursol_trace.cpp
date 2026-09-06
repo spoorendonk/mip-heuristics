@@ -10,6 +10,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // ===================================================================
@@ -209,6 +210,12 @@ std::vector<std::string> traced_fixture(const Fixture& fixture) {
         set_suite(h, fixture.suite);
         if (fixture.scylla_effort >= 0.0) {
             require_option(h, "mip_heuristic_scylla_effort", fixture.scylla_effort);
+        }
+        // `fpr_lp` ships off (effort default 0), so naming its token is not
+        // enough to make it offer; a fixture that selects it has to open the
+        // second gate too.
+        if (std::string_view(fixture.suite).contains("fpr_lp")) {
+            require_option(h, "mip_heuristic_fpr_lp_effort", 1.0);
         }
     });
 }

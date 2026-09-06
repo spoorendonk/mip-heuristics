@@ -78,7 +78,7 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         // whole slice `min(headroom, cap)` — exactly what `fpr_lp` took
         // before the option existed, which is what keeps a default-options
         // binary unmoved by #164.
-        {"mip_heuristic_fpr_lp_effort", 1.0},
+        {"mip_heuristic_fpr_lp_effort", 0.0},
     });
     for (const auto& [name, expected] : effort_defaults) {
         double value = -1.0;

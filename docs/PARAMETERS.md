@@ -2142,7 +2142,7 @@ options documented above):
   per presolve heuristic, each a double in `[0.0, 1e6]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the other three are per dispatch.
-- `mip_heuristic_fpr_lp_effort` (default `1.0`) — the dive-time `fpr_lp`'s
+- `mip_heuristic_fpr_lp_effort` (default `0.0`, i.e. `fpr_lp` ships **off**) — the dive-time `fpr_lp`'s
   budget, a double in `[0.0, 1e6]` and **not in the same unit as the four
   above** (#164). `fpr_lp` draws from upstream's RENS/RINS LP-iteration
   envelope and charges back what it spends, so its budget is zero-sum

@@ -205,6 +205,11 @@ std::vector<std::string> solver_lines(const char* instance, double time_limit, A
     highs.setOptionValue("output_flag", true);
     highs.setOptionValue("log_to_console", false);
     require_option(highs, "log_dev_level", 3);
+    // `fpr_lp` ships off (effort default 0) and its share gate returns
+    // *above* the setup-bail path, so the cases below that drive
+    // `fpr_lp::run` directly would observe nothing at all without this.
+    // Inert for the presolve cases, which never read the option.
+    require_option(highs, "mip_heuristic_fpr_lp_effort", 1.0);
 
     auto log_cb = [](int callback_type, const std::string& message,
                      const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,

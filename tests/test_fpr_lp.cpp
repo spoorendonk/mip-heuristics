@@ -30,6 +30,10 @@ double solve_fpr_lp(const char* inst, int threads = 0) {
     Highs h;
     h.setOptionValue("output_flag", false);
     set_suite(h, "fpr_lp");
+    h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
+    // `fpr_lp` ships off (effort default 0), so a fixture that wants it to
+    // dispatch has to turn it on as well as name its token.
+    h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
     // bell5, the instance both callers use, is the one bundled instance
     // whose solve can stop on HiGHS's default `mip_rel_gap` (1e-4) short
     // of the optimum.  Require a proven-optimal solve so the objective
@@ -107,6 +111,7 @@ TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
     Highs h;
     h.setOptionValue("output_flag", false);
     set_suite(h, "fpr_lp");
+    h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
     h.setOptionValue("mip_heuristic_run_rens", false);
     h.setOptionValue("mip_heuristic_run_rins", false);
     h.setOptionValue("mip_heuristic_run_root_reduced_cost", false);
@@ -136,6 +141,10 @@ TEST_CASE("fpr_lp: suite=fpr,fpr_lp dispatches it beside presolve FPR",
     Highs h;
     h.setOptionValue("output_flag", false);
     set_suite(h, "fpr,fpr_lp");
+    h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
+    // `fpr_lp` ships off (effort default 0), so a fixture that wants it to
+    // dispatch has to turn it on as well as name its token.
+    h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
     REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
@@ -156,6 +165,7 @@ TEST_CASE("fpr_lp: effort 0 disables the dispatch", "[fpr_lp][mode-matrix][budge
     Highs h;
     h.setOptionValue("output_flag", false);
     set_suite(h, "fpr_lp");
+    h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
     require_option(h, "mip_heuristic_fpr_lp_effort", 0.0);
     REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
@@ -326,6 +336,7 @@ TEST_CASE("fpr_lp: emits a [Sequential] line for its dive-time spend",
         h.setOptionValue("log_dev_level", 3);
         h.setOptionValue("mip_rel_gap", 0.0);
         set_suite(h, "fpr_lp");
+        h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
     });
     // Guard against a vacuous pass: no dispatch means nothing to report.
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
@@ -438,6 +449,7 @@ TEST_CASE("fpr_lp: a small effort share suppresses the dispatch the default make
         Highs h;
         h.setOptionValue("output_flag", false);
         set_suite(h, "fpr_lp");
+        h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
         require_option(h, "mip_heuristic_fpr_lp_effort", share);
         REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
         REQUIRE(h.run() == HighsStatus::kOk);

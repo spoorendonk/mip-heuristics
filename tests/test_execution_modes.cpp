@@ -287,6 +287,7 @@ TEST_CASE("instrumentation: the dive-time fpr_lp dispatch is reported too",
         require_option(h, "log_dev_level", 3);
         require_option(h, "mip_rel_gap", 0.0);
         set_suite(h, "fpr_lp");
+        require_option(h, "mip_heuristic_fpr_lp_effort", 1.0);
     });
     REQUIRE(log_contains(lines, "[Heur] name=fpr_lp phase=dive "));
 }
