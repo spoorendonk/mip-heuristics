@@ -163,3 +163,24 @@ def test_other_r_failures_are_not_swallowed(tmp_path, monkeypatch):
     monkeypatch.setattr("analyze_irace.subprocess.run", lambda *a, **k: _Out())
     with pytest.raises(RuntimeError, match="cannot open file"):
         read_elites(tmp_path / "irace.Rdata")
+
+
+def test_one_lambda_is_not_reported_as_stable():
+    """A single completed search cannot be stable or unstable.
+
+    Saying "stable" there would be a claim about a sweep that has not
+    happened, and the family across cost weights is a pre-registered
+    deliverable rather than a nicety — so the honest answer is that stability
+    was not assessed.
+    """
+    only = collapse(_row())
+    ok, message = stability([_result("1_600", only)])
+    assert not ok
+    assert "NOT assessed" in message
+    assert "1_600" in message
+
+
+def test_no_results_does_not_claim_stability():
+    ok, message = stability([])
+    assert not ok
+    assert "NOT assessed" in message

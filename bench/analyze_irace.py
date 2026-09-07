@@ -205,6 +205,17 @@ def stability(results: list[LambdaResult]) -> tuple[bool, str]:
     disagree, that instability is what gets reported, not resolved by picking
     the middle one.
     """
+    if len(results) < 2:
+        # One lambda cannot be stable or unstable; saying "stable" here would
+        # be a claim about a sweep that has not happened, and the sweep is a
+        # pre-registered deliverable rather than a nicety.
+        only = results[0].tag if results else "none"
+        return False, (
+            f"stability NOT assessed: only one lambda ({only}) has completed. "
+            "The pre-registration's deliverable is the family across "
+            f"{len(LAMBDA_TAGS)} cost weights; a single search cannot show "
+            "whether the selection is sensitive to it."
+        )
     suites = {r.selected.suite for r in results}
     if len(suites) == 1:
         return True, f"stable: every lambda selects the same mix ({suites.pop()})"
@@ -228,7 +239,7 @@ def report(results: list[LambdaResult]) -> str:
         lines.append("")
     ok, message = stability(results)
     lines.append(message)
-    if not ok:
+    if not ok and len(results) >= 2:
         lines.append(
             "  The pre-registration treats this as the result: report the "
             "family, do not pick one and call it stable."
