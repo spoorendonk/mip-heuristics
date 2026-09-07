@@ -71,6 +71,12 @@ for h, v in f["efforts"].items():
     out.append(f"mip_heuristic_{h}_effort={v}")
 for h, v in f["patiences"].items():
     out.append(f"mip_heuristic_{h}_patience={v}")
+# `extra_options` is for a finalist that differs from the eight numbers in some
+# other way -- #165's arm, which is the incumbent plus `fpr_lp`. It is spelled
+# out rather than derived because `fpr_lp` is not one of the eight: it draws
+# from upstream's RENS/RINS LP-iteration envelope, not from `nnz << 10`, so it
+# has no effort entry to read.
+out.extend(f.get("extra_options", []))
 print(" ".join(out))
 PY
 }
@@ -86,6 +92,12 @@ config_for() {
 	python3 - "$1" <<'CFG'
 import json, sys
 f = json.load(open("bench/finalists.json"))["finalists"][sys.argv[1]]
+# An explicit suite in extra_options wins: it is the only way to name a
+# heuristic that is not one of the four efforts, which is what #165's arm needs.
+for opt in f.get("extra_options", []):
+    if opt.startswith("mip_heuristic_suite="):
+        print(opt.split("=", 1)[1].replace(",", "+"))
+        raise SystemExit
 on = [h for h, v in f["efforts"].items() if v > 0]
 print("+".join(on) if len(on) < 4 else "all")
 CFG
