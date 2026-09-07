@@ -54,7 +54,11 @@ RESULTS="${FINALISTS_RESULTS:-$REPO/bench/results/finalists}"
 # delete it out from under a running campaign (CLAUDE.md).
 BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/irace/bin/highs}"
 
-names() { python3 -c "import json;print(' '.join(json.load(open('$FINALISTS'))['finalists']))"; }
+# Arms to run.  `confirm: false` in finalists.json records a selection that
+# is kept for the record but not run -- see its `excluded_because`.
+names() {
+	python3 -c "import json;print(' '.join(k for k,v in json.load(open('$FINALISTS'))['finalists'].items() if v.get('confirm', True)))"
+}
 
 # The `mip_heuristic_*` options one finalist is, as --extra-options arguments.
 opts_for() {

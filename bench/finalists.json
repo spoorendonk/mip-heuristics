@@ -1,25 +1,70 @@
 {
-  "_comment": "The #107 finalists, per PREREGISTRATION.md section 4: the scalarised winners across the lambda sweep, one clearly cheaper, and the incumbent. Efforts and patiences are the eight numbers a configuration is; `scylla` is 0 in every searched finalist because it is absent from all 14 survivors at all three cost weights.",
+  "_comment": "The #107 finalists, per PREREGISTRATION.md section 4: the scalarised winners across the lambda sweep, one clearly cheaper, and the incumbent. Efforts and patiences are the eight numbers a configuration is; `scylla` is 0 in every searched finalist because it is absent from all 14 survivors at all three cost weights. `confirm: false` marks a selection that is recorded but not run in the confirmation stage; see its `excluded_because`.",
   "finalists": {
     "A-fj-only": {
       "source": "lambda 1/600 selection (simplicity tie-break over 6 survivors); the clearly cheaper arm, total effort 0.16",
-      "efforts":   {"fj": 0.1619, "fpr": 0.0,    "local_mip": 0.0,    "scylla": 0.0},
-      "patiences": {"fj": 0.0,    "fpr": 0.0,    "local_mip": 0.0,    "scylla": 0.0}
+      "efforts": {
+        "fj": 0.1619,
+        "fpr": 0.0,
+        "local_mip": 0.0,
+        "scylla": 0.0
+      },
+      "patiences": {
+        "fj": 0.0,
+        "fpr": 0.0,
+        "local_mip": 0.0,
+        "scylla": 0.0
+      },
+      "confirm": true
     },
     "B-mix-lambda300": {
       "source": "lambda 1/300 selection (simplicity tie-break over 6 survivors), total effort 10.78",
-      "efforts":   {"fj": 4.0271, "fpr": 2.6604, "local_mip": 4.0884, "scylla": 0.0},
-      "patiences": {"fj": 0.0346, "fpr": 0.0882, "local_mip": 0.0,    "scylla": 0.0}
+      "efforts": {
+        "fj": 4.0271,
+        "fpr": 2.6604,
+        "local_mip": 4.0884,
+        "scylla": 0.0
+      },
+      "patiences": {
+        "fj": 0.0346,
+        "fpr": 0.0882,
+        "local_mip": 0.0,
+        "scylla": 0.0
+      },
+      "confirm": true
     },
     "C-mix-lambda1200": {
       "source": "lambda 1/1200 selection (simplicity tie-break over 2 survivors), total effort 12.06",
-      "efforts":   {"fj": 1.4596, "fpr": 5.0607, "local_mip": 5.5433, "scylla": 0.0},
-      "patiences": {"fj": 0.1625, "fpr": 0.3604, "local_mip": 0.0,    "scylla": 0.0}
+      "efforts": {
+        "fj": 1.4596,
+        "fpr": 5.0607,
+        "local_mip": 5.5433,
+        "scylla": 0.0
+      },
+      "patiences": {
+        "fj": 0.1625,
+        "fpr": 0.3604,
+        "local_mip": 0.0,
+        "scylla": 0.0
+      },
+      "confirm": false,
+      "excluded_because": "Same suite as B-mix-lambda300 at nearly the same total effort (12.06 vs 10.78), so it is a near-duplicate on the axis the confirmation tests -- it differs only in how that effort splits between the three heuristics. B is kept over it because it has more support (6 surviving configurations at its lambda against C's 2) and less total effort, which is the direction the selection rule's tie-break already prefers. The pre-registration asks for 3-5 finalists spanning cheaper / winner / more generous; A, B and D are exactly that shape, so running C as a fourth was an addition rather than a requirement. Kept here because it is a real search result and the record of what each lambda selected should not be edited to match what was run."
     },
     "D-shipped": {
       "source": "the incumbent: #113's measured defaults, shipped in b212155. Not a search output. It is both the baseline every finalist has to beat and the `clearly more generous` arm -- total effort 29.8, and the only finalist running Scylla at all.",
-      "efforts":   {"fj": 0.5665, "fpr": 12.2559, "local_mip": 13.9607, "scylla": 3.068},
-      "patiences": {"fj": 0.141625, "fpr": 3.063975, "local_mip": 3.490175, "scylla": 0.767}
+      "efforts": {
+        "fj": 0.5665,
+        "fpr": 12.2559,
+        "local_mip": 13.9607,
+        "scylla": 3.068
+      },
+      "patiences": {
+        "fj": 0.141625,
+        "fpr": 3.063975,
+        "local_mip": 3.490175,
+        "scylla": 0.767
+      },
+      "confirm": true
     }
   }
 }
