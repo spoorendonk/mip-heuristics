@@ -22,8 +22,17 @@
 # is directly comparable with the search and cheap: 143 instances at seconds
 # each.
 #
-# `confirm` answers a different question, and no amount of screening can
-# answer it. The screen scores presolve-exit gap; the campaign scores primal
+# `confirm` runs on `bench/instances_confirm.txt` -- a stratified 20-instance
+# subset of the tuning set, not the whole of it.  That is a deviation from the
+# pre-registration and is recorded there as a dated amendment, signed before
+# any confirmation run: the full stage costs ~9.7 h per finalist (measured),
+# the design is paired so instance difficulty cancels, and reduced power
+# resolves into the "indistinguishable -> simpler" clause the selection rule
+# already carries.  n=20 is a starter; extend with CONFIRM_INSTANCES and
+# record the extension in the amendment.
+#
+# `confirm` answers a different question from `heldout`, and no amount of
+# screening can answer it. The screen scores presolve-exit gap; the campaign scores primal
 # integral over 600 s. A configuration that spends more presolve time to exit
 # with a better incumbent can still lose, because that time comes out of the
 # B&B search which is where most of the integral is earned. Measured cost:
@@ -117,7 +126,7 @@ cmd_confirm() {
 		echo "=== $name (config $config, full limit) : $opts"
 		PLATO_CONFIGS="$config" \
 		PLATO_OUTPUT="$RESULTS/confirm/$name" \
-		PLATO_INSTANCES="$REPO/bench/instances_tuning.txt" \
+		PLATO_INSTANCES="${CONFIRM_INSTANCES:-$REPO/bench/instances_confirm.txt}" \
 		PLATO_TIME_LIMIT=600 \
 		PLATO_BINARY="$BINARY" \
 		PLATO_ANALYZE=0 \

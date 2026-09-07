@@ -106,6 +106,52 @@ configuration cracked in #113).
    600 s limit on the tuning set. Ranking stability is recorded either way,
    including if the ranking flips.
 
+### Amendment, 2026-09-07: the confirmation runs on a stratified subset
+
+**Signed off before any confirmation run.** Commit at amendment: `16ddd1b`.
+
+The confirmation as written costs **~9.7 h per finalist** over the 90-instance
+tuning set — measured from the #105 vanilla tree, where the median solve hits
+the 600 s cap and the mean is 394 s — so four finalists is ~39 h. It runs
+instead on a **stratified subset of 20 instances**, `bench/instances_confirm.txt`,
+drawn by `bench/make_tuning_set.py` from the same vanilla tree with `--seed 0`
+and therefore reproducible from tree plus seed. ~8.8 h.
+
+Three things make this sound, and one makes it honest.
+
+* **The design is paired.** Every finalist runs the *same* instances, so
+  instance difficulty — the dominant variance component in cross-instance MIP
+  benchmarking, spanning orders of magnitude — cancels in the per-instance
+  difference. A subset costs precision on the margin between arms, not
+  correctness of the comparison. The subset is drawn **once** and shared: this
+  registration already forbids resampling per configuration, which would break
+  pairing and inject instance-selection variance into every estimate.
+* **The stage's job is coarse.** It asks whether the presolve-exit ranking
+  survives a 600 s primal integral. A ranking flip is a large effect; a margin
+  too small for 20 paired observations to see is not the thing this stage
+  exists to catch. **#108 is the headline** — full 233 instances, three seeds —
+  and no part of the shipped claim rests on this subset's precision.
+* **Reduced power degrades into an outcome already specified.** Rule 2 above
+  says that configurations which cannot be separated are reported as such and
+  the simpler one is chosen. Less power means resolving to that clause more
+  often, which is a pre-registered result rather than an ambiguity.
+* **What is given up, stated rather than discovered:** the power to resolve
+  close rankings. With four arms there are six pairwise comparisons, so at
+  n = 20 a *clear* flip is believable and a *narrow* ordering is not, and the
+  report must not present one as the other.
+
+Stratified rather than randomly sampled, deliberately: the effect under test is
+plausibly difficulty-dependent — a heavy presolve chain should cost most on
+instances B&B would have cracked quickly — so a simple random draw could
+over-weight the 50 of 89 instances that hit the cap and hide exactly that.
+The draw preserves the tuning set's own strata, with `--min-per-stratum`
+reserving seats for the small ones, which mildly over-weights the hard end.
+
+**Sequential by design.** n = 20 is a starter. If the top arms land inside
+noise the subset is extended rather than the verdict forced; the harness
+resumes per `(config, instance, seed)`, so nothing already spent is repeated.
+Any extension is recorded here with its size and the reason.
+
 ## 5. Known limitations — stated now, not discovered later
 
 * **Only the root dispatch is screened.** The presolve chain is re-entered for
