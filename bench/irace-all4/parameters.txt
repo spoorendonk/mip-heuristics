@@ -1,0 +1,46 @@
+###############################################################################
+# Constrained irace space: the SHIPPED SHAPE, effort-tuned.
+#
+# All four presolve heuristics are forced ON; only the eight effort and
+# patience values are searched.  The inclusion switches of the free search are
+# gone, so `off` and every proper subset are outside this space by
+# construction.
+#
+# **Why this experiment exists.**  D-shipped's eight values come from #113,
+# where each heuristic was measured **alone** at a budget that could not bind.
+# The four have never been tuned *together*.  The free search (#107) never
+# proposed a four-heuristic configuration to fill that gap either: Scylla is
+# absent from all 14 survivors at all three cost weights, so `all` was never a
+# surviving shape and its efforts were never optimised.  That absence is a
+# selection made on the presolve-exit screen, and the held-out stage then
+# showed the screen's selections do not generalise — so "the search dropped
+# Scylla" is not evidence that a tuned four-heuristic configuration is bad.
+# Nobody has asked whether D's vector is any good.  This asks.
+#
+# Domains are the free search's, unchanged, so the two searches are directly
+# comparable on any shape they share.
+###############################################################################
+
+# --- inclusion: the zero-pattern of the four efforts -------------------------
+# inclusion switches removed: all four are forced on (see header)
+
+# --- effort: per-heuristic, centred on the #113 knee --------------------------
+fj_effort           "--fj-effort "          r,log (0.08, 9.92)  
+fpr_effort          "--fpr-effort "         r,log (1.53, 141.0)   
+local_mip_effort    "--local-mip-effort "   r,log (1.75, 112.0)   
+scylla_effort       "--scylla-effort "      r,log (0.384, 26.7)   
+
+# --- whether the staleness gate is armed at all ------------------------------
+# 0 selects patience 0, i.e. no gate; the heuristic then runs to its budget or
+# the clock.  #113 found the measured wait above the clamp on three of four, so
+# "no gate" is a serious candidate rather than a corner case.
+fj_gated            "--fj-gated "           c     (0, 1)          
+fpr_gated           "--fpr-gated "          c     (0, 1)          
+local_mip_gated     "--local-mip-gated "    c     (0, 1)          
+scylla_gated        "--scylla-gated "       c     (0, 1)          
+
+# --- patience: below the clamp, which is a quarter of that heuristic's effort -
+fj_patience         "--fj-patience "        r,log (0.0022, 2.48) | fj_gated == "1"
+fpr_patience        "--fpr-patience "       r,log (0.0479, 35.3)   | fpr_gated == "1"
+local_mip_patience  "--local-mip-patience " r,log (0.0545, 28.0)   | local_mip_gated == "1"
+scylla_patience     "--scylla-patience "    r,log (0.012, 6.68)   | scylla_gated == "1"

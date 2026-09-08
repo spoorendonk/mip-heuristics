@@ -32,7 +32,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-IRACE_DIR="$HERE/irace"
+# IRACE_SCENARIO selects the space.  Default is the free search (#107);
+# bench/irace-all4/scenario.txt is the constrained one that forces all four
+# heuristics on and tunes only the eight values -- the shipped shape, which
+# has never been effort-tuned as a shape.
+IRACE_DIR="${IRACE_DIR:-$HERE/irace}"
 RESULTS="${IRACE_RESULTS:-$REPO/bench/results/irace}"
 
 # The three pre-registered cost weights: the derived g(0)/T at the campaign's
@@ -109,7 +113,7 @@ run_one() {
 	RUN_TARGET_LAMBDA="$lambda" \
 	RUN_TARGET_RUN_DIR="$dir/target-runs" \
 		"$IRACE_BIN" \
-		--scenario "$IRACE_DIR/scenario.txt" \
+		--scenario "${IRACE_SCENARIO:-$IRACE_DIR/scenario.txt}" \
 		--exec-dir "$dir" \
 		--log-file "$dir/irace.Rdata" \
 		"${recover[@]}" 2>&1 | tee "$dir/irace.log"

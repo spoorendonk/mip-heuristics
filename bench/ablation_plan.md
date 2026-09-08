@@ -21,28 +21,44 @@ SGM headline implies, which is carried by a few instances.
 | 10% | 174 |
 | 5%  | 664 |
 
-### B+ steps
+### B+ steps, in dependency order
 
-1. **Extend the confirmation to n=48**, full solves at **600 s**, reusing the
-   20 already done (+28 instances), arms **A, B, D**. ~9 h/arm-set at the
-   measured rate; chunked and resumable. Stop rule fixed in advance: if the
-   top two are within the n=48 detectable margin, extend to **n=81** rather
+0. **Effort-tune the shipped shape first, because it feeds step 1.**
+   `bench/irace-all4/` forces all four heuristics on and searches only the
+   eight effort/patience values; 12 irace parameters, 3000 experiments,
+   lambda = 1/600, the 90 tuning instances, presolve-only at 60 s. Running
+   2026-09-08. Its winner **replaces** D-shipped as the four-heuristic arm,
+   because D's values were measured one heuristic at a time and never tuned
+   together — so if the tuned vector differs, the 20 completed D runs are
+   superseded and re-run with it.
+1. **Extend the confirmation to n=49**, full solves at **600 s**, arms
+   **A, B, D'** (D' = step 0's winner). `bench/instances_confirm48.txt` is
+   the stratified 48-draw **union** the original 20, so the n=20 result nests
+   inside the extension and no completed run is discarded; the union is 49
+   rather than 48 because largest-remainder allocation at a different size
+   shifts which instances a stratum picks (the 48-draw shares 19 of the
+   original 20). 29 new runs per arm. Stop rule fixed in advance: if the top
+   two are within the detectable margin at n=49, extend to **n=81** rather
    than declare a winner.
-2. **Held-out at the campaign metric.** Repeat on held-out instances at
-   **600 s full solves**, not presolve-only — a stratified subset of the 143,
-   sized the same way. This is the only stage that can say whether a ranking
-   generalises on the metric #108 scores.
-3. **Effort-tune the shipped shape (new).** D's eight values come from
-   Ablation A, where each heuristic was measured **alone** at an unbindable
-   budget; the four have never been tuned *together*. The free search never
-   proposed a 4-heuristic configuration because it always dropped Scylla —
-   a selection made on the screen metric that we now know overfits. So run a
-   **constrained irace**: `fj`, `fpr`, `local_mip`, `scylla` all forced on,
-   searching only the eight effort/patience values. Smaller space than the
-   free search, and it answers the question nobody has asked: *is D's vector
-   any good?* Add the winner as a fourth confirmation arm.
-4. **Two seeds minimum** in the confirmation from here on. Everything above is
-   one seed, and run-to-run variation is inside the margins being compared.
+2. **Held-out at the campaign metric — still required, but only for the top
+   two.** Extending step 1 fixes *power*; it does not fix *selection
+   optimism*, because every arm was selected on tuning-set data and the
+   extension draws more tuning-set instances. Those are different failure
+   modes and the first cannot cure the second. The evidence that it matters
+   here is direct: the presolve-only held-out stage already **reversed** the
+   confirmation's ranking once. So after step 1 names a winner, run **winner
+   vs incumbent only** on a stratified subset of the 143 held-out instances,
+   at **600 s full solves** — not presolve-only at 60 s, which is what made
+   the first attempt unable to speak to a campaign-metric ranking. Two arms,
+   same stepwise sizing.
+3. **One seed, deliberately.** Two seeds would be the statistically sound
+   choice and would roughly halve the margin that can be resolved, but the
+   compute is better spent on instances than on replicates at this stage:
+   n enters the standard error the same way and also broadens coverage.
+   Seeds are for the final run (#108), which is scored on three. The cost is
+   recorded rather than hidden: run-to-run variation sits inside some of the
+   margins being compared here, so a narrow ordering at any n in this stage
+   is not a result.
 
 ### Not worth separate arms
 

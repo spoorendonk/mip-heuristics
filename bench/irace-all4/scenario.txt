@@ -1,0 +1,124 @@
+###############################################################################
+# irace scenario for issue #107: joint search over heuristic mix, effort and
+# patience, screened presolve-only.
+#
+# Run it from this directory:
+#
+#     cd bench/irace
+#     MIP_HEURISTICS_BINARY=/abs/path/to/build/bin/highs \
+#     MIPLIB_DIR=$HOME/data/miplib \
+#     RUN_TARGET_LAMBDA=0.0016666667 \
+#         irace --scenario scenario.txt
+#
+# Before launching, run one evaluation by hand with `--require-trace`.  It is
+# the pre-flight for the one failure this whole scenario cannot survive: if the
+# `[Heur]` line is missing — unpatched binary, `log_dev_level` that did not
+# take, a HiGHS bump that moved the line — every configuration scores zero cost
+# on the time axis, the search silently becomes quality-only, and nothing in
+# the output says so.
+#
+#     ../run_target.py --instance mad --seed 1 --require-trace \
+#         --fj-effort 2.84 --fj-patience 0.71 --binary ../../build/bin/highs
+#
+# The instance has to be one with a published reference objective — a
+# tuning-set instance, not a HiGHS `check/instances` model.  An earlier version
+# of this line named `egout`, which is absent from `bench/miplib2017-v36.solu`,
+# so the command exited 2 inside `reference_objective` *before* invoking the
+# solver: the documented guard against the one failure this scenario cannot
+# survive verified nothing at all.  `mad` is in the tuning set and runs in 0.1 s.
+#
+# #107 asks for the search to be repeated at two or three values of lambda
+# around g(0)/T ~ 1/600 per second, keeping the resulting family of
+# configurations rather than a single point.  Lambda is not in this file: it is
+# `RUN_TARGET_LAMBDA` in the target runner's environment, so each lambda is a
+# separate irace run into its own `logFile` and `execDir`.
+###############################################################################
+
+## The parameter space and the program under configuration.
+parameterFile = "./parameters.txt"
+targetRunner = "./target-runner"
+
+## Instances.  `trainInstancesDir` is empty so each line reaches the target
+## runner verbatim; `run_target.py` resolves a bare MIPLIB name through the
+## same search path as `run_benchmark.py` (--data-dir, then $MIPLIB_DIR, then
+## ~/data/miplib, then /tmp/miplib).
+##
+## The file carries a `#` header block and a trailing `# <time-to-first-
+## feasible>` on every instance line.  **Our side tolerates that regardless of
+## what irace does with it**: `target-runner` and `run_target.py` both drop
+## everything from the first `#` and then trim, and both refuse loudly on a
+## token that is empty or comment-only.  irace's own documentation describes it
+## as ignoring comments in the instance file, and it very likely does — but that
+## has not been executed here (irace is not installed on this machine), and it
+## is the highest-blast-radius assumption in the stage: if it were false, every
+## instance name would become its own timing comment and all thousands of
+## evaluations would refuse, discovered at the end of a ten-hour run.  So
+## nothing depends on it.  That is also why the scenario names the generated
+## list directly rather than a comment-free copy, which could drift from it.
+##
+## This points at the tuning subset.  #113 replaces that file with a 75-100
+## instance set sampled from the instances a presolve-only screen can see at
+## all; the point of naming the file rather than a copy is that the scenario
+## follows it.
+trainInstancesDir = ""
+trainInstancesFile = "../instances_tuning.txt"
+
+## The runs are not deterministic — the heuristics run on parallel workers, so
+## the same seed on the same instance is not the same run.  Telling irace so is
+## what lets it evaluate an instance more than once with different seeds
+## instead of caching one result forever.
+##
+## This setting is load-bearing, and the size of what it is covering is
+## measured: five consecutive presolve-only runs of flugpl from one identical
+## options file at `random_seed = 0` produced objectives spanning 3.2%, purely
+## from which worker won the race to the solution pool.  That variance is a
+## property of the multi-worker chain being configured, not of the harness, so
+## it is sampled rather than suppressed — see the "what is *not* reproducible"
+## section of `bench/run_target.py` for why the answer is not `threads = 1`.
+## The lever against it is more instances and seeds, which is what #113's
+## 75-100 instance tuning set buys.
+deterministic = 0
+
+## Budget.  A presolve-only run costs roughly 8 s mean (2 s median, long tail
+## from HiGHS's own presolve, which `--time-limit` caps), so 3000 experiments
+## is on the order of 7 h and explores hundreds of configurations.
+maxExperiments = 3000
+
+## Enough decimals that the log-sampled efforts keep their resolution at the
+## bottom of the range (0.001) rather than collapsing onto a handful of values.
+# `digits` was a scenario variable in irace 3.x and is **not** one in 4.x:
+# it is an argument of `readParameters`, defaulting to 4, and irace 4.4.3
+# refuses to start on a scenario file that sets it ("contains unknown
+# variables: digits").  The domains in parameters.txt are therefore written
+# to four decimal places instead, which `bench/test_run_target.py` pins.
+
+## Fixed so the search is re-derivable rather than re-run.  Record it, the
+## instance list and the binary alongside the results tree.
+seed = 1
+
+## Racing: elitist irace with the default Friedman test.  The output is the
+## surviving *set*, which #107 requires reported rather than only its argmax.
+##
+## Note what that means, because it is easy to assume otherwise: irace
+## eliminates on **per-instance Friedman ranks of the scalar**, not on #107's
+## pre-registered shifted geometric mean of it.  The two can disagree — ranks
+## are insensitive to the size of a win, an SGM is not — so irace narrows the
+## field but does not itself optimise the pre-registered objective.  Selection
+## *among the survivors* is where the SGM governs, re-aggregated at the #107
+## stage from the per-run `.json` records this runner leaves behind (each
+## carries `gap`, `tau_s` and `cost`, so it is recoverable without re-running).
+elitist = 1
+firstTest = 5
+
+## Capping (`maxTime` / `boundMax`) is deliberately not enabled: it would
+## prepend a bound argument to the target runner's arguments, and the cost axis
+## here is the heuristics' own `[Heur] wall_ms`, not the wall time of the
+## process irace would be capping.  Per-run time is bounded by the solver's own
+## `--time-limit` instead.
+
+## Uncomment to evaluate configurations concurrently.  Each evaluation writes
+## its own `<tag>.opts` / `.log` / `.json`, so parallel runs do not collide —
+## but they do share the machine with the parallel workers inside each solve,
+## which is what the measurement is about.  Leave it at 1 unless the effective
+## worker count is pinned and recorded.
+# parallel = 1
