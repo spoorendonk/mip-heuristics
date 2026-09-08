@@ -15,8 +15,8 @@
         "local_mip": 0.0,
         "scylla": 0.0
       },
-      "confirm": false,
-      "excluded_because": "Dropped after the n=20 confirmation and the 143-instance held-out stage, on evidence rather than economy: worst on the confirmation (SGM 15.67 against B 12.52 and D 14.83), worst on held-out by 51% (35.99 against D's 23.87), and feasible on 71 of 143 instances against D's 87 -- 16 fewer. Re-confirming a settled loss would cost 29 runs per stage."
+      "confirm": true,
+      "excluded_because": "REINSTATED 2026-09-08. It was dropped on 'worst on both stages', which over-claimed: the held-out stage ran presolve-only at 60 s (the wrong metric for a 600 s ranking) and the n=20 confirmation is underpowered by the measured variance. The strongest-sounding argument -- feasible on 71 of 143 against D's 87 -- came from presolve-only runs where 'feasible' means the chain produced something before exit; at the full 600 s limit on n=20 every arm was feasible on the same 18/20, so that deficit does not transfer to the metric being scored. A is also the only arm that is irace's own answer: the selection at the derived lambda and the pooled-rule pick over all 14 free-search survivors. Confirming without it would never test what the search concluded."
     },
     "B-mix-lambda300": {
       "source": "lambda 1/300 selection (simplicity tie-break over 6 survivors), total effort 10.78",
