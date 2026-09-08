@@ -15,7 +15,8 @@
         "local_mip": 0.0,
         "scylla": 0.0
       },
-      "confirm": true
+      "confirm": false,
+      "excluded_because": "Dropped after the n=20 confirmation and the 143-instance held-out stage, on evidence rather than economy: worst on the confirmation (SGM 15.67 against B 12.52 and D 14.83), worst on held-out by 51% (35.99 against D's 23.87), and feasible on 71 of 143 instances against D's 87 -- 16 fewer. Re-confirming a settled loss would cost 29 runs per stage."
     },
     "B-mix-lambda300": {
       "source": "lambda 1/300 selection (simplicity tie-break over 6 survivors), total effort 10.78",
@@ -68,7 +69,7 @@
     },
     "E-shipped-plus-fprlp": {
       "source": "#165's minimum version: D-shipped with fpr_lp enabled at effort 1.0 and nothing else changed. Paired against D-shipped on the identical 20 instances, so the difference between the two arms is fpr_lp and nothing else -- which is exactly the ablation #165 asks for, at the cost of one arm rather than a five-stage campaign. It also answers #165's gating Stage 0 for free: the [Heur] name=fpr_lp phase=dive lines in these logs say how often the dive executes at all, which could not be measured before because the suite token gated presolve FPR and fpr_lp together. The suite is left at the config's own `all`, which names all five tokens; only the effort has to be set, because fpr_lp ships at 0.",
-      "confirm": true,
+      "confirm": false,
       "efforts": {
         "fj": 0.5665,
         "fpr": 12.2559,
@@ -84,6 +85,22 @@
       "extra_options": [
         "mip_heuristic_fpr_lp_effort=1.0"
       ]
+    },
+    "D'-tuned-all4": {
+      "source": "Winner of the constrained irace (bench/irace-all4): all four presolve heuristics forced on, only the eight effort/patience values searched, lambda=1/600, 3000 experiments over the 90 tuning instances. Selected from 5 survivors by the pre-registered tie-break. A new candidate, NOT a replacement for D-shipped: D is the incumbent and the comparison against what actually ships is what licenses changing a default, so both are arms. Every effort is lower than D's -- total 10.55 against 29.85 -- and Scylla falls hardest, 3.068 -> 0.4907. Scylla lands in 0.49-0.55 in all five survivors, so that is a concentrated result rather than one draw.",
+      "confirm": true,
+      "efforts": {
+        "fj": 0.3047,
+        "fpr": 2.89,
+        "local_mip": 6.8688,
+        "scylla": 0.4907
+      },
+      "patiences": {
+        "fj": 0.0,
+        "fpr": 0.2291,
+        "local_mip": 0.0,
+        "scylla": 0.5986
+      }
     }
   }
 }

@@ -108,9 +108,17 @@ def collapse(row: dict) -> Configuration:
     efforts: dict[str, float] = {}
     patiences: dict[str, float] = {}
     for h in HEURISTICS:
-        on = number(row.get(h))
+        # An *absent* switch column is not the same as a switch set to 0.  The
+        # constrained space (bench/irace-all4) has no inclusion switches at
+        # all, because all four heuristics are forced on, so reading a missing
+        # column as 0 zeroed every effort and reported `suite=off` for
+        # configurations whose efforts were plainly positive -- a plausible,
+        # entirely wrong answer.  Absent means "not a dimension here", i.e.
+        # enabled; present means read it.
+        on = number(row[h]) if h in row else 1.0
         efforts[h] = 0.0 if on == 0 else number(row.get(f"{h}_effort"))
-        gated = number(row.get(f"{h}_gated"))
+        gate_key = f"{h}_gated"
+        gated = number(row[gate_key]) if gate_key in row else 1.0
         patiences[h] = 0.0 if gated == 0 else number(row.get(f"{h}_patience"))
     ident = row.get("irace_id")
     return Configuration(

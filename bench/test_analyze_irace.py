@@ -184,3 +184,38 @@ def test_no_results_does_not_claim_stability():
     ok, message = stability([])
     assert not ok
     assert "NOT assessed" in message
+
+
+def test_absent_switch_means_enabled_not_disabled():
+    """A constrained space has no inclusion switches -- all heuristics are
+    forced on -- and a missing column must not read as "off".
+
+    Reading absent as 0 zeroed every effort and reported `suite=off` for
+    configurations whose efforts were plainly positive: a plausible and
+    entirely wrong answer, produced silently.
+    """
+    row = {
+        "fj_effort": "0.3047",
+        "fpr_effort": "2.89",
+        "local_mip_effort": "6.8688",
+        "scylla_effort": "0.4907",
+        "fj_gated": "0",
+        "fpr_gated": "1",
+        "local_mip_gated": "0",
+        "scylla_gated": "1",
+        "fpr_patience": "0.2291",
+        "scylla_patience": "0.5986",
+        "irace_id": "288",
+    }
+    c = collapse(row)
+    assert c.suite == "fj,fpr,local_mip,scylla"
+    assert c.efforts["fj"] == 0.3047
+    assert c.efforts["scylla"] == 0.4907
+    # the gate switches are present here and must still be honoured
+    assert c.patiences["fj"] == 0.0
+    assert c.patiences["fpr"] == 0.2291
+
+
+def test_present_switch_set_to_zero_still_disables():
+    row = _row(fj="0", fj_effort="0.5")
+    assert collapse(row).efforts["fj"] == 0.0
