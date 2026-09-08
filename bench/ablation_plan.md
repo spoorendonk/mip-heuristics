@@ -32,7 +32,16 @@ SGM headline implies, which is carried by a few instances.
    together — so if the tuned vector differs, the 20 completed D runs are
    superseded and re-run with it.
 1. **Extend the confirmation to n=49**, full solves at **600 s**, arms
-   **A, B, D'** (D' = step 0's winner). `bench/instances_confirm48.txt` is
+   **B, D, D'** — the mix from the free search, the shipped incumbent, and
+   step 0's tuned four-heuristic vector.
+
+   **A-fj-only is dropped, on evidence rather than for economy.** It was
+   worst on the confirmation (15.67 against B 12.52 and D 14.83), worst on
+   held-out by 51% (35.99 against D 23.87), and found solutions on **71 of
+   143 instances against D's 87** — 16 fewer. Re-confirming a settled loss
+   would cost 29 runs.
+
+   New runs: B +29, D +29, D' +49 = 107, about 12 h. `bench/instances_confirm48.txt` is
    the stratified 48-draw **union** the original 20, so the n=20 result nests
    inside the extension and no completed run is discarded; the union is 49
    rather than 48 because largest-remainder allocation at a different size
