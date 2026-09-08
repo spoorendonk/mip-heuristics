@@ -68,7 +68,7 @@
     },
     "E-shipped-plus-fprlp": {
       "source": "#165's minimum version: D-shipped with fpr_lp enabled at effort 1.0 and nothing else changed. Paired against D-shipped on the identical 20 instances, so the difference between the two arms is fpr_lp and nothing else -- which is exactly the ablation #165 asks for, at the cost of one arm rather than a five-stage campaign. It also answers #165's gating Stage 0 for free: the [Heur] name=fpr_lp phase=dive lines in these logs say how often the dive executes at all, which could not be measured before because the suite token gated presolve FPR and fpr_lp together. The suite is left at the config's own `all`, which names all five tokens; only the effort has to be set, because fpr_lp ships at 0.",
-      "confirm": false,
+      "confirm": true,
       "efforts": {
         "fj": 0.5665,
         "fpr": 12.2559,
