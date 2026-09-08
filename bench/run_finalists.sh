@@ -142,7 +142,7 @@ cmd_confirm() {
 		echo "=== $name (config $config, full limit) : $opts"
 		PLATO_CONFIGS="$config" \
 		PLATO_OUTPUT="$RESULTS/confirm/$name" \
-		PLATO_INSTANCES="${CONFIRM_INSTANCES:-$REPO/bench/instances_confirm.txt}" \
+		PLATO_INSTANCES="${CONFIRM_INSTANCES:-$REPO/bench/instances_confirm48.txt}" \
 		PLATO_TIME_LIMIT=600 \
 		PLATO_BINARY="$BINARY" \
 		PLATO_ANALYZE=0 \

@@ -101,6 +101,22 @@
         "local_mip": 0.0,
         "scylla": 0.5986
       }
+    },
+    "B'-mix-cheapest": {
+      "source": "id 337 from the free search at lambda=1/600: the cheapest of the ELEVEN fj,fpr,local_mip survivors across the whole sweep, total effort 6.78. B-mix-lambda300 (id 351, total 10.78) was picked by applying the tie-break per lambda and then arbitrarily taking lambda=1/300's mix -- pooled over all eleven, the same rule selects this one instead. irace cannot rank survivors: within a lambda they are statistically indistinguishable by construction, and across lambdas they come from different objectives, so 'best mix' is not readable from the search output -- this is what the pre-registered rule picks, not a measured winner. Worth running beside B because the mix is poorly pinned: across the eleven, fpr spans 2.11-32.87 (16x) and local_mip 1.98-13.45 (7x), so two well-separated points say more than one.",
+      "confirm": true,
+      "efforts": {
+        "fj": 0.3317,
+        "fpr": 3.161,
+        "local_mip": 3.2865,
+        "scylla": 0.0
+      },
+      "patiences": {
+        "fj": 0.0,
+        "fpr": 0.3372,
+        "local_mip": 3.1943,
+        "scylla": 0.0
+      }
     }
   }
 }
