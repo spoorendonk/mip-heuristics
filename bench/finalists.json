@@ -15,8 +15,8 @@
         "local_mip": 0.0,
         "scylla": 0.0
       },
-      "confirm": true,
-      "excluded_because": "REINSTATED 2026-09-08. It was dropped on 'worst on both stages', which over-claimed: the held-out stage ran presolve-only at 60 s (the wrong metric for a 600 s ranking) and the n=20 confirmation is underpowered by the measured variance. The strongest-sounding argument -- feasible on 71 of 143 against D's 87 -- came from presolve-only runs where 'feasible' means the chain produced something before exit; at the full 600 s limit on n=20 every arm was feasible on the same 18/20, so that deficit does not transfer to the metric being scored. A is also the only arm that is irace's own answer: the selection at the derived lambda and the pooled-rule pick over all 14 free-search survivors. Confirming without it would never test what the search concluded."
+      "confirm": false,
+      "excluded_because": "Separated and worst on every analysis set (SGM ~30% behind, on the union 49, the clean 48 and the 29 pilot-free instances alike), and by far the most erratic per instance (paired sd 1.745 against ~0.46 for the others). Nothing further to learn."
     },
     "B-mix-lambda300": {
       "source": "lambda 1/300 selection (simplicity tie-break over 6 survivors), total effort 10.78",
@@ -84,11 +84,12 @@
       },
       "extra_options": [
         "mip_heuristic_fpr_lp_effort=1.0"
-      ]
+      ],
+      "excluded_because": "Ablation C, postponed. Its method is recorded in bench/ablation_plan.md."
     },
     "D'-tuned-all4": {
       "source": "Winner of the constrained irace (bench/irace-all4): all four presolve heuristics forced on, only the eight effort/patience values searched, lambda=1/600, 3000 experiments over the 90 tuning instances. Selected from 5 survivors by the pre-registered tie-break. A new candidate, NOT a replacement for D-shipped: D is the incumbent and the comparison against what actually ships is what licenses changing a default, so both are arms. Every effort is lower than D's -- total 10.55 against 29.85 -- and Scylla falls hardest, 3.068 -> 0.4907. Scylla lands in 0.49-0.55 in all five survivors, so that is a concentrated result rather than one draw.",
-      "confirm": true,
+      "confirm": false,
       "efforts": {
         "fj": 0.3047,
         "fpr": 2.89,
@@ -100,11 +101,12 @@
         "fpr": 0.2291,
         "local_mip": 0.0,
         "scylla": 0.5986
-      }
+      },
+      "excluded_because": "Indistinguishable from D-shipped, i.e. joint calibration of the four is not detectably better than the per-heuristic calibration of #113. That is the answer to the question it was built to ask; running it again on unseen data cannot sharpen a null at this power."
     },
     "B'-mix-cheapest": {
       "source": "id 337 from the free search at lambda=1/600: the cheapest of the ELEVEN fj,fpr,local_mip survivors across the whole sweep, total effort 6.78. B-mix-lambda300 (id 351, total 10.78) was picked by applying the tie-break per lambda and then arbitrarily taking lambda=1/300's mix -- pooled over all eleven, the same rule selects this one instead. irace cannot rank survivors: within a lambda they are statistically indistinguishable by construction, and across lambdas they come from different objectives, so 'best mix' is not readable from the search output -- this is what the pre-registered rule picks, not a measured winner. Worth running beside B because the mix is poorly pinned: across the eleven, fpr spans 2.11-32.87 (16x) and local_mip 1.98-13.45 (7x), so two well-separated points say more than one.",
-      "confirm": true,
+      "confirm": false,
       "efforts": {
         "fj": 0.3317,
         "fpr": 3.161,
@@ -116,7 +118,8 @@
         "fpr": 0.3372,
         "local_mip": 3.1943,
         "scylla": 0.0
-      }
+      },
+      "excluded_because": "Indistinguishable from B-mix-lambda300 at the achieved power despite 37% less total effort, so the mix's effort level between 6.8 and 10.8 does not measurably matter. Carrying both into held-out would spend compute re-confirming a null."
     }
   }
 }

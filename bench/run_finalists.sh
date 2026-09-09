@@ -105,15 +105,14 @@ CFG
 
 cmd_heldout() {
 	local count=${1:-0}
-	local list="$RESULTS/heldout-instances.txt"
+	# A stratified 48 drawn from the 143 held-out instances -- the same size as
+	# the confirmation's analysis set, deliberately.  Different n would mean
+	# different power, and "detected on tuning but not on held-out" would then
+	# be confounded with "less power on held-out", which is precisely the
+	# comparison this stage exists to make cleanly.
+	local list="${HELDOUT_INSTANCES:-$REPO/bench/instances_heldout48.txt}"
 	mkdir -p "$RESULTS"
-	# PLATO minus the tuning set, derived rather than stored: a third tracked
-	# list would drift from the two it is defined by.
-	comm -23 \
-		<(awk 'NF && $1 !~ /^#/ {print $1}' "$REPO/bench/instances_plato.txt" | sort) \
-		<(awk 'NF && $1 !~ /^#/ {print $1}' "$REPO/bench/instances_tuning.txt" | sort) \
-		> "$list"
-	echo "held-out instances: $(wc -l < "$list")"
+	echo "held-out instances: $(grep -c '^[^#]' "$list")"
 
 	local name opts config
 	for name in $(names); do
@@ -124,11 +123,11 @@ cmd_heldout() {
 		PLATO_CONFIGS="$config" \
 		PLATO_OUTPUT="$RESULTS/heldout/$name" \
 		PLATO_INSTANCES="$list" \
-		PLATO_TIME_LIMIT=60 \
+		PLATO_TIME_LIMIT=600 \
 		PLATO_BINARY="$BINARY" \
 		PLATO_DEV_LOG=1 \
 		PLATO_ANALYZE=0 \
-		PLATO_EXTRA_OPTIONS="$opts mip_heuristic_presolve_only=true" \
+		PLATO_EXTRA_OPTIONS="$opts" \
 			"$REPO/bench/run_plato.sh" next 6
 	done
 }
