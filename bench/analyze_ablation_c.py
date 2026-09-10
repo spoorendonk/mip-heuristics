@@ -32,19 +32,32 @@ A **killed** run is excluded from the fire rate rather than counted as a zero:
 the harness SIGKILLs a solve that overran its limit, so the log stops
 mid-solve and its dispatch count is a lower bound, not an observation.
 
+The second half of the ablation is the paired contribution: the same
+configuration with and without `fpr_lp`, on identical instances, scored on the
+campaign metric.  It lives here rather than in `analyze_results.py` because it
+needs C0's labels -- and because the labels are what make it readable.  The
+fire rate is bimodal, so a mean over all instances mixes a real effect with the
+instances where the heuristic never ran; **the instances where C0 saw no
+dispatch are the null control**, and their ratio is the check that the pairing
+is tight enough for anything else here to mean something.
+
 Usage:
-    bench/analyze_ablation_c.py bench/results/ablation_c/capability/fpr_lp/seed0
+    bench/analyze_ablation_c.py capability <seed-dir>
+    bench/analyze_ablation_c.py contribution <control-dir> <arm-dir> [--labels <c0-dir>]
 """
 
 from __future__ import annotations
 
 import argparse
+import math
+import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from analyze_results import build_best_known, load_results, parse_solu_file
 from parse_highs_log import parse_log
 
 # `kSolutionSourceFprLp` prints as `D` (third_party/highs_patch/apply_patch.cmake
@@ -180,19 +193,194 @@ def report(rows: list[InstanceCounts], out=sys.stdout) -> None:
         print("VERDICT: unreadable -- no traced runs.", file=out)
 
 
+# The campaign's own limit; the primal integral is defined against it.
+TIME_LIMIT = 600.0
+# Below this many instances a subgroup's interval is too wide to print as
+# anything but a count.
+MIN_SUBGROUP = 3
+# Matches `analyze_results.py`'s SGM shift, so an instance solved before the
+# first display row keeps a finite ratio.
+SHIFT = 1e-3
+
+
+@dataclass
+class Paired:
+    """Two arms compared on the log of the primal-integral ratio.
+
+    Log-ratio rather than difference because the integral spans orders of
+    magnitude across instances.  Paired because instance difficulty is the
+    dominant variance component in cross-instance MIP benchmarking, and it
+    cancels exactly when both arms run the same instance.
+    """
+
+    n: int
+    ratio: float
+    lo: float
+    hi: float
+    t: float
+    sd: float
+
+    @property
+    def separated(self) -> bool:
+        """Whether the 95% interval excludes no-effect."""
+        return not (self.lo <= 1.0 <= self.hi)
+
+    def detectable(self) -> float:
+        """Smallest difference this n resolves at 80% power."""
+        return math.exp(math.sqrt(8 * self.sd**2 / self.n)) - 1
+
+    def n_for(self, ratio: float) -> int:
+        """The n that would resolve `ratio` at 80% power."""
+        return math.ceil(8 * self.sd**2 / math.log(ratio) ** 2)
+
+
+def paired(values: list[float]) -> Paired | None:
+    if len(values) < 2:
+        return None
+    n = len(values)
+    mean = statistics.mean(values)
+    sd = statistics.stdev(values)
+    half = 1.96 * sd / math.sqrt(n)
+    # A zero-variance sample is a legitimate input -- every instance moved by
+    # the same factor, or none moved at all -- and it has no finite t.  The
+    # sign carries the direction so `separated` still reads correctly: a
+    # degenerate sample away from 1.0 has an interval of zero width that
+    # excludes it.
+    if sd == 0.0:
+        t = math.copysign(math.inf, mean) if mean else 0.0
+    else:
+        t = mean / (sd / math.sqrt(n))
+    return Paired(
+        n=n,
+        ratio=math.exp(mean),
+        lo=math.exp(mean - half),
+        hi=math.exp(mean + half),
+        t=t,
+        sd=sd,
+    )
+
+
+def log_ratios(control, arm, refs, instances: list[str]) -> list[float]:
+    return [
+        math.log(
+            (arm[i].primal_integral(TIME_LIMIT, refs[i]) + SHIFT)
+            / (control[i].primal_integral(TIME_LIMIT, refs[i]) + SHIFT)
+        )
+        for i in instances
+    ]
+
+
+def contribution(
+    control_dir: Path, arm_dir: Path, labels_dir: Path | None, out=sys.stdout
+) -> int:
+    dirs = {"control": str(control_dir), "arm": str(arm_dir)}
+    results = load_results(str(control_dir.parent), list(dirs), config_dirs=dirs)
+    if "control" not in results or "arm" not in results:
+        print("both directories must hold a seed0/ of logs", file=sys.stderr)
+        return 2
+    shared = sorted(set(results["control"][0]) & set(results["arm"][0]))
+    if not shared:
+        print("no instances in common", file=sys.stderr)
+        return 2
+    refs = build_best_known(
+        results, list(dirs), shared, parse_solu_file("bench/miplib2017-v36.solu")
+    )
+    control, arm = results["control"][0], results["arm"][0]
+
+    def row(label: str, instances: list[str]) -> Paired | None:
+        p = paired(log_ratios(control, arm, refs, instances))
+        if p is None or p.n < MIN_SUBGROUP:
+            print(f"{label:32s} n={len(instances):3d}  (too few)", file=out)
+            return None
+        mark = "  *" if p.separated else ""
+        print(
+            f"{label:32s} n={p.n:3d}  ratio={p.ratio:.3f}  "
+            f"CI=[{p.lo:.2f}, {p.hi:.2f}]  t={p.t:+.2f}{mark}",
+            file=out,
+        )
+        return p
+
+    print(
+        f"{len(shared)} paired instance(s), arm over control (lower is better)\n",
+        file=out,
+    )
+    overall = row("overall", shared)
+
+    if labels_dir is not None:
+        counts = {
+            r.instance: r for r in (count_one(f) for f in labels_dir.glob("*.log"))
+        }
+        # Partitioned by an *independent* run rather than by the outcome being
+        # measured, so this is not outcome selection -- but the labels come
+        # from C0's configuration and not from these runs, so they are a proxy
+        # for "an instance where fpr_lp engages", and the split is post-hoc.
+        # Read it as a mechanism, not as a second headline.
+        known = [
+            i
+            for i in shared
+            if i in counts and counts[i].traced and not counts[i].killed
+        ]
+        print(
+            "\nby Stage C0 label (proxy: C0's configuration, not these runs)", file=out
+        )
+        row("  C0 yielded", [i for i in known if counts[i].yields > 0])
+        row(
+            "  C0 fired, never yielded",
+            [i for i in known if counts[i].dispatches > 0 and counts[i].yields == 0],
+        )
+        null = row(
+            "  C0 never fired (null control)",
+            [i for i in known if counts[i].dispatches == 0],
+        )
+        if null is not None and null.separated:
+            print(
+                "\nWARNING: the null control is separated. The arms differ where "
+                "the heuristic never ran, so something other than fpr_lp moved -- "
+                "do not read the other subgroups until that is explained.",
+                file=out,
+            )
+
+    if overall is not None:
+        print(
+            f"\npower: n={overall.n} resolves {overall.detectable():.1%}; "
+            f"the observed {abs(overall.ratio - 1):.1%} would need "
+            f"n={overall.n_for(overall.ratio)}",
+            file=out,
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("results_dir", type=Path, help="a seed directory of .log files")
+    sub = p.add_subparsers(dest="stage", required=True)
+
+    cap = sub.add_parser("capability", help="stage C0: does fpr_lp fire, and yield?")
+    cap.add_argument("results_dir", type=Path, help="a seed directory of .log files")
+
+    con = sub.add_parser("contribution", help="stage C1: the paired campaign metric")
+    con.add_argument(
+        "control_dir", type=Path, help="the arm without fpr_lp, up to seed0/"
+    )
+    con.add_argument("arm_dir", type=Path, help="the arm with it, up to seed0/")
+    con.add_argument(
+        "--labels",
+        type=Path,
+        default=None,
+        help="a stage C0 seed directory, to partition by fire/yield",
+    )
+
     args = p.parse_args(argv)
 
-    logs = sorted(args.results_dir.glob("*.log"))
-    if not logs:
-        print(f"no .log files under {args.results_dir}", file=sys.stderr)
-        return 2
-    report([count_one(f) for f in logs])
-    return 0
+    if args.stage == "capability":
+        logs = sorted(args.results_dir.glob("*.log"))
+        if not logs:
+            print(f"no .log files under {args.results_dir}", file=sys.stderr)
+            return 2
+        report([count_one(f) for f in logs])
+        return 0
+    return contribution(args.control_dir, args.arm_dir, args.labels)
 
 
 if __name__ == "__main__":

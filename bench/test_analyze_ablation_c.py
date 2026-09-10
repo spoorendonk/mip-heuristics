@@ -1,10 +1,17 @@
 """Ablation C's reader (#165) — the verdict, which is the part that decides."""
 
 import io
+import math
 from pathlib import Path
 
 import pytest
-from analyze_ablation_c import MIN_DISPATCHES_FOR_A_NULL, count_one, report
+from analyze_ablation_c import (
+    MIN_DISPATCHES_FOR_A_NULL,
+    Paired,
+    count_one,
+    paired,
+    report,
+)
 
 # A `[Heur]` dive line and an incumbent line, in the shapes the parser wants.
 HEUR = (
@@ -141,3 +148,44 @@ def test_yields_are_readable_without_tracing(tmp_path, src):
     c = count_one(write_log(tmp_path, "i0", INCUMBENT.format(src=src), dev_log=False))
     assert c.traced is False
     assert c.yields == (1 if src == "D" else 0)
+
+
+# ── the paired contribution half ────────────────────────────────────────────
+
+
+def test_paired_is_a_log_ratio_of_the_arm_over_the_control():
+    """An arm twice the control's integral on every instance reads as 2.0.
+
+    Zero variance is a legitimate input rather than a crash: every instance
+    moved by the same factor.  It has no finite t, and the interval has zero
+    width, so it still reads as separated.
+    """
+    p = paired([math.log(2.0)] * 5)
+    assert p is not None
+    assert p.ratio == pytest.approx(2.0)
+    assert p.t == math.inf
+    assert p.separated
+
+
+def test_separated_means_the_interval_excludes_no_effect():
+    tight = paired([math.log(1.3)] * 20 + [math.log(1.31)] * 20)
+    wide = paired([math.log(0.4), math.log(3.0)] * 10)
+    assert tight is not None and wide is not None
+    assert tight.separated
+    assert not wide.separated  # same centre, interval spans 1.0
+
+
+def test_power_arithmetic_matches_the_pre_registered_formula():
+    """n = 8 sd^2 / ln(1+delta)^2, the formula Ablation B's write-up uses."""
+    p = paired([math.log(1.1), math.log(0.9)] * 25)
+    assert p is not None
+    n = p.n_for(1.2)
+    assert n == math.ceil(8 * p.sd**2 / math.log(1.2) ** 2)
+    # Round trip: `n_for` ceils, so that n resolves *at least* what was asked.
+    assert Paired(n, 1.2, 1.0, 1.4, 0.0, p.sd).detectable() <= 0.2
+    assert Paired(n - 1, 1.2, 1.0, 1.4, 0.0, p.sd).detectable() > 0.2
+
+
+def test_a_single_instance_yields_no_interval():
+    """One paired observation has no spread, so it must not be summarised."""
+    assert paired([math.log(1.5)]) is None
