@@ -102,6 +102,51 @@ the method, and it is the main thing to carry into a write-up: *within the
 tested range, the presolve configuration does not measurably move the campaign
 metric.*
 
+## What the searches said about patience
+
+Ablation A set patience to the *cost bound* (`effort/4`), because on three of
+four heuristics the measured p95 wait was orders of magnitude above it. B
+searched all four patiences jointly, so it is the only evidence about the axis
+that comes from tuning rather than from a clamp.
+
+Across all 19 survivors of both searches, counting only those running the
+heuristic in question:
+
+| heuristic | gate off (patience 0) | below its clamp | at/above its clamp |
+|---|---|---|---|
+| fj | 13 of 19 | 6 | 0 |
+| fpr | **0 of 16** | 13 | 3 |
+| local_mip | 8 of 16 | 1 | 7 |
+| scylla | **0 of 5** | 0 | 5 |
+
+* **FPR is the one heuristic that always wants a real gate** — never off, and
+  13 of 16 values sit strictly below the clamp, so they are doing work rather
+  than being clamped to it.
+* **FJ mostly wants no gate at all**, and when it has one the value is tiny
+  (0.03-0.16). That agrees with Ablation A, whose probe ran FJ ungated.
+* **Scylla's shipped patience is corroborated**: survivors span 0.337-0.9695
+  and the shipped 0.767 sits mid-range. Worth contrasting with Scylla's
+  *effort*, which is the one place the searches disagree sharply with what
+  ships (0.49-0.55 against 3.068).
+
+**A quarter of the patience axis was degenerate, and that qualifies the null.**
+`patience_threshold` clamps to `effort/4`, so any sampled value at or above its
+own clamp is behaviourally identical to every other such value. 15 of the 56
+survivor-parameters land there — **all 5 for Scylla and 7 of 16 for
+LocalMIP**. For those two the patience dimension was effectively unsearched.
+The domains were set knowing this could happen (`bench/irace/parameters.txt`
+records the reasoning: the top of each patience range has to reach `effort/4`
+at the *top* of the effort range, or a configuration sampling a large effort
+could not express the loosest gate at all), and the trade was accepted as
+costing resolution rather than correctness. That is still the right reading —
+clamped values map onto one real configuration, they are not nonsense — but
+"patience is not separable" partly reflects a space where many samples were
+equivalent by construction, not only a flat landscape.
+
+Fixing it properly means searching the *ratio* `patience/effort` in (0, 0.25],
+which `run_target.py`'s CLI does not express today. Worth doing if the patience
+axis is ever revisited.
+
 ## Two answers the searches did give
 
 * **Joint calibration is not better than per-heuristic calibration.** D' tuned
