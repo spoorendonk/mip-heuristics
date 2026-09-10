@@ -246,8 +246,16 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
 // so an honest value read off improvement counts would leave FJ running
 // to its budget on every instance while looking like a tuned parameter.
 //
-// A quarter is the shape FeasibilityJump has always shipped (`nnz << 8`
-// against a `nnz << 10` budget), and where all four shipped defaults
+// A quarter is **upstream's own ratio**, not a number chosen here:
+// `highs/mip/HighsFeasibilityJump.cpp` pairs
+// `kMaxTotalEffort = (size_t)nnz << 10` with
+// `kMaxEffortSinceLastImprovement = (size_t)nnz << 8`, and `nnz << 10` is
+// the same constant our effort options are denominated in (#116).  So this
+// adopts the reference implementation's shape rather than inventing one,
+// which is why it is fixed rather than searched: #107 tuned patience
+// throughout `[0, effort/4]` and could not separate anything in it, so
+// there is no evidence pointing at the range's edge.  It is also where all
+// four shipped defaults
 // already sit — 21-28% of their ceilings before this clamp existed, and
 // exactly 25% since #113's vector — so applying it moves no default and
 // bounds every future one.

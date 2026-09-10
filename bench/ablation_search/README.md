@@ -147,6 +147,19 @@ Fixing it properly means searching the *ratio* `patience/effort` in (0, 0.25],
 which `run_target.py`'s CLI does not express today. Worth doing if the patience
 axis is ever revisited.
 
+**The ceiling divisor itself was fixed at 4 throughout, and that is a decision
+rather than an omission.** It is `kPatienceCeilingDivisor`, a `constexpr`, so
+no search could reach it -- but it is also upstream's own ratio rather than one
+this project chose: HiGHS's FeasibilityJump pairs `kMaxTotalEffort = nnz << 10`
+with `kMaxEffortSinceLastImprovement = nnz << 8`, exactly a quarter, and
+`nnz << 10` is the same constant our effort options are denominated in.
+Adopting the reference implementation's ratio needs less justification than
+deviating from it would. It also moved no default -- all four sat at 21-28% of
+their ceilings before the clamp existed -- and B's null spans the whole
+reachable range `[0, effort/4]`, including 21 of 56 survivor-parameters with
+the gate entirely off, so a landscape that flat inside the range gives no
+reason to expect its edge to matter.
+
 ## Two answers the searches did give
 
 * **Joint calibration is not better than per-heuristic calibration.** D' tuned

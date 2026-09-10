@@ -112,8 +112,29 @@ which is FJ's own historical shape.
 So every shipped patience is `0.25 x` the effort beside it, and the honest
 reading is *"for three of these four, the measurement says wait longer than
 your entire budget"*. LocalMIP is the only one whose measured wait is within
-striking distance of its own ceiling fraction. **Raising the divisor is the one
-knob here worth an ablation arm.**
+striking distance of its own ceiling fraction.
+
+**The divisor is upstream's, and is deliberately not tuned.** It is not a
+number this project picked: HiGHS's own FeasibilityJump pairs
+`kMaxTotalEffort = nnz << 10` with `kMaxEffortSinceLastImprovement = nnz << 8`
+(`highs/mip/HighsFeasibilityJump.cpp`), a ratio of exactly 1/4 -- and the
+`nnz << 10` base our effort options are denominated in is that same upstream
+constant. `kPatienceCeilingDivisor = 4` adopts the reference implementation's
+shape rather than inventing one.
+
+Three reasons it stays fixed rather than becoming a searched parameter:
+
+* **Provenance.** Deviating from the reference ratio would need evidence;
+  keeping it does not.
+* **It moved nothing.** All four #113 defaults already sat at 21-28% of their
+  ceilings *before* this clamp existed, and at exactly 25% after. The constant
+  bounds future values; it did not change current ones.
+* **Ablation B's null covers the reachable range.** Within `[0, effort/4]` the
+  searches placed patience everywhere from 0 (gate off, 21 of 56
+  survivor-parameters) up to the clamp, and n=48 could not separate any of it
+  at 20.6% resolution. A landscape that flat *inside* the range gives no reason
+  to expect its edge to matter -- and the divisor is `constexpr`, so testing it
+  would cost a rebuild per point rather than a sweep.
 
 Note the direction of that finding. The p95 is a *retention* statement and the
 clamp is a *cost* statement, and on three of four heuristics they disagree by
