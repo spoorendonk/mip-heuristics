@@ -104,16 +104,49 @@ which is FJ's own historical shape.
 
 | heuristic | measured p95 wait | ceiling (effort/4) | shipped |
 |---|---|---|---|
-| fj | 2.46 | 0.141625 | **0.141625** |
-| fpr | 5649.87 | 3.063975 | **3.063975** |
-| local_mip | 4.93 | 3.490175 | **3.490175** |
-| scylla | 18.96 | 0.7670 | **0.7670** |
+| fj | 2.46 | 0.141625 | **0.1416** |
+| fpr | 5649.87 | 3.063975 | **3.0640** |
+| local_mip | 4.93 | 3.490175 | **3.4902** |
+| scylla | 18.96 | 0.767 | **0.7670** |
 
-So every shipped patience is exactly `0.25 x` the effort beside it, and the
-honest reading is *"for three of these four, the measurement says wait longer
-than your entire budget"*. LocalMIP is the only one whose measured wait is
-within striking distance of its own ceiling fraction. **Raising the divisor is
-the one knob here worth an ablation arm.**
+So every shipped patience is `0.25 x` the effort beside it, and the honest
+reading is *"for three of these four, the measurement says wait longer than
+your entire budget"*. LocalMIP is the only one whose measured wait is within
+striking distance of its own ceiling fraction. **Raising the divisor is the one
+knob here worth an ablation arm.**
+
+Note the direction of that finding. The p95 is a *retention* statement and the
+clamp is a *cost* statement, and on three of four heuristics they disagree by
+orders of magnitude — FPR's measured wait is 5650 against a ceiling of 3.06,
+a factor of 1800. So on those three the shipped value is **not** the
+measurement: it is the cost bound, and the measurement only tells us the
+retention loss from applying it is larger than 5%. Anyone reading these as
+"the calibrated patience" is reading them wrong. What is calibrated is the
+*effort*; the patience is a quarter of it, and #113's contribution on that
+axis is the negative result that the honest p95 is unaffordable.
+
+### Why both columns ship at four decimal places
+
+The patience is the quarter **to rounding**, not exactly: `0.5665 / 4 =
+0.141625`, shipped as `0.1416`.
+
+Four decimals is the precision the measurement supports. Each effort is a
+median over 130-160 dispatches whose per-instance spread is several percent,
+so a fifth or sixth digit asserts accuracy that is not there — which matters
+because these numbers are quoted in a write-up.
+
+An earlier revision shipped the patience column as the *exact* quotient
+(`0.141625`), so the two columns disagreed in precision. That existed only so
+`tests/test_smoke.cpp` could assert `patience == effort / 4` with `==` —
+values bent to satisfy an assertion rather than the reverse. The assertion was
+also wrong in principle: `patience_threshold` computes
+`min(p95, effort/4)`, and that equals the quarter **here** only because every
+measured p95 came out above the ceiling. A future calibration finding a p95
+*below* it would legitimately ship a smaller patience, and an exact test would
+then fail on correct values. The test now checks the relation to within 0.1%,
+which still catches what it guards: an effort default moved without its
+patience (a 4x error), or a divisor typo. Fixed in `addd29c`,
+`PATCH_VERSION` 22; behaviourally nil at 0.02% against ~5% measurement noise.
 
 ### The units are not comparable across heuristics
 
