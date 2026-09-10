@@ -1,0 +1,59 @@
+# #107 — confirmation and held-out, scored tables
+
+Regenerate with: bench/compare_finalists.sh {confirm,heldout} --time-limit 600
+The results trees under bench/results/ are gitignored; these are their outputs.
+
+## Confirmation (600 s, full solves, tuning-set instances)
+
+### Clean stratified 48 — THE REPORTABLE ANALYSIS SET
+## PLATO Headline Metrics (48 instances, 600s, SGM shift=0.001)
+
+Config               SGM(PrimalIntegral)     #Feasible   #Instances
+--------------------------------------------------------------------
+A-fj-only            15.815187                      45           48
+B-mix-lambda300      12.090698                      45           48
+B'-mix-cheapest      12.991079                      45           48
+D-shipped            11.943603                      45           48
+D'-tuned-all4        12.834441                      45           48
+
+SGM ratio A-fj-only/B-mix-lambda300: 1.3080  (lower is better; winner: B-mix-lambda300)
+Feasible delta A-fj-only-B-mix-lambda300: +0  (A-fj-only=45, B-mix-lambda300=45)
+
+### The 29 instances not used in the pilot — sensitivity check
+## PLATO Headline Metrics (29 instances, 600s, SGM shift=0.001)
+
+Config               SGM(PrimalIntegral)     #Feasible   #Instances
+--------------------------------------------------------------------
+A-fj-only            15.261751                      28           29
+B-mix-lambda300      11.465071                      28           29
+B'-mix-cheapest      12.893785                      28           29
+D-shipped            10.550159                      28           29
+D'-tuned-all4        11.646072                      28           29
+
+SGM ratio A-fj-only/B-mix-lambda300: 1.3312  (lower is better; winner: B-mix-lambda300)
+Feasible delta A-fj-only-B-mix-lambda300: +0  (A-fj-only=28, B-mix-lambda300=28)
+
+### Union 49 — compute-reuse set, NOT the reportable one
+## PLATO Headline Metrics (49 instances, 600s, SGM shift=0.001)
+
+Config               SGM(PrimalIntegral)     #Feasible   #Instances
+--------------------------------------------------------------------
+A-fj-only            15.428717                      46           49
+B-mix-lambda300      11.885879                      46           49
+B'-mix-cheapest      12.788071                      46           49
+D-shipped            12.121688                      46           49
+D'-tuned-all4        12.797571                      46           49
+
+SGM ratio A-fj-only/B-mix-lambda300: 1.2981  (lower is better; winner: B-mix-lambda300)
+Feasible delta A-fj-only-B-mix-lambda300: +0  (A-fj-only=46, B-mix-lambda300=46)
+
+## Held-out (600 s, full solves, 48 unseen instances)
+## PLATO Headline Metrics (48 instances, 600s, SGM shift=0.001)
+
+Config               SGM(PrimalIntegral)     #Feasible   #Instances
+--------------------------------------------------------------------
+B-mix-lambda300      18.479235                      42           48
+D-shipped            19.580432                      41           48
+
+SGM ratio B-mix-lambda300/D-shipped: 0.9438  (lower is better; winner: B-mix-lambda300)
+Feasible delta B-mix-lambda300-D-shipped: +1  (B-mix-lambda300=42, D-shipped=41)

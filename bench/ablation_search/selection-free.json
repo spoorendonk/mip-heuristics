@@ -1,0 +1,295 @@
+{
+  "lambdas": [
+    {
+      "tag": "1_1200",
+      "survivors": [
+        {
+          "irace_id": 308,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 1.4596,
+            "fpr": 5.0607,
+            "local_mip": 5.5433,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.1625,
+            "fpr": 0.3604,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 324,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 0.1895,
+            "fpr": 32.8688,
+            "local_mip": 6.8924,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 1.8488,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        }
+      ],
+      "selected": {
+        "irace_id": 308,
+        "suite": "fj,fpr,local_mip",
+        "efforts": {
+          "fj": 1.4596,
+          "fpr": 5.0607,
+          "local_mip": 5.5433,
+          "scylla": 0.0
+        },
+        "patiences": {
+          "fj": 0.1625,
+          "fpr": 0.3604,
+          "local_mip": 0.0,
+          "scylla": 0.0
+        }
+      },
+      "tie": true
+    },
+    {
+      "tag": "1_600",
+      "survivors": [
+        {
+          "irace_id": 248,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 0.3325,
+            "fpr": 6.7302,
+            "local_mip": 9.0446,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 3.1746,
+            "local_mip": 2.7273,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 295,
+          "suite": "fj",
+          "efforts": {
+            "fj": 0.1952,
+            "fpr": 0.0,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.0,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 304,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 0.1343,
+            "fpr": 23.7315,
+            "local_mip": 1.98,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.156,
+            "local_mip": 1.4632,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 326,
+          "suite": "fj",
+          "efforts": {
+            "fj": 0.2765,
+            "fpr": 0.0,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.0,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 335,
+          "suite": "fj",
+          "efforts": {
+            "fj": 0.1619,
+            "fpr": 0.0,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.0,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 337,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 0.3317,
+            "fpr": 3.161,
+            "local_mip": 3.2865,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.3372,
+            "local_mip": 3.1943,
+            "scylla": 0.0
+          }
+        }
+      ],
+      "selected": {
+        "irace_id": 335,
+        "suite": "fj",
+        "efforts": {
+          "fj": 0.1619,
+          "fpr": 0.0,
+          "local_mip": 0.0,
+          "scylla": 0.0
+        },
+        "patiences": {
+          "fj": 0.0,
+          "fpr": 0.0,
+          "local_mip": 0.0,
+          "scylla": 0.0
+        }
+      },
+      "tie": true
+    },
+    {
+      "tag": "1_300",
+      "survivors": [
+        {
+          "irace_id": 320,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 5.5358,
+            "fpr": 4.4931,
+            "local_mip": 7.4528,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.1027,
+            "fpr": 0.1017,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 321,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 0.3281,
+            "fpr": 2.1122,
+            "local_mip": 13.4481,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.21,
+            "local_mip": 19.8238,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 326,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 0.4077,
+            "fpr": 31.1614,
+            "local_mip": 4.2361,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0915,
+            "fpr": 1.0087,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 350,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 1.2687,
+            "fpr": 6.9431,
+            "local_mip": 6.2525,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0848,
+            "fpr": 0.4221,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 351,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 4.0271,
+            "fpr": 2.6604,
+            "local_mip": 4.0884,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.0346,
+            "fpr": 0.0882,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        },
+        {
+          "irace_id": 354,
+          "suite": "fj,fpr,local_mip",
+          "efforts": {
+            "fj": 1.6316,
+            "fpr": 13.2848,
+            "local_mip": 6.9973,
+            "scylla": 0.0
+          },
+          "patiences": {
+            "fj": 0.1282,
+            "fpr": 0.2917,
+            "local_mip": 0.0,
+            "scylla": 0.0
+          }
+        }
+      ],
+      "selected": {
+        "irace_id": 351,
+        "suite": "fj,fpr,local_mip",
+        "efforts": {
+          "fj": 4.0271,
+          "fpr": 2.6604,
+          "local_mip": 4.0884,
+          "scylla": 0.0
+        },
+        "patiences": {
+          "fj": 0.0346,
+          "fpr": 0.0882,
+          "local_mip": 0.0,
+          "scylla": 0.0
+        }
+      },
+      "tie": true
+    }
+  ],
+  "stable": false
+}

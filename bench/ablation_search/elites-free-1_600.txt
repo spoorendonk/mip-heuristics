@@ -1,0 +1,21 @@
+    fj fpr local_mip scylla fj_effort fpr_effort local_mip_effort scylla_effort
+248  1   1         1      0    0.3325     6.7302           9.0446            NA
+295  1   0         0      0    0.1952         NA               NA            NA
+304  1   1         1      0    0.1343    23.7315           1.9800            NA
+326  1   0         0      0    0.2765         NA               NA            NA
+335  1   0         0      0    0.1619         NA               NA            NA
+337  1   1         1      0    0.3317     3.1610           3.2865            NA
+    fj_gated fpr_gated local_mip_gated scylla_gated fj_patience fpr_patience
+248        0         1               1         <NA>          NA       3.1746
+295        0      <NA>            <NA>         <NA>          NA           NA
+304        0         1               1         <NA>          NA       0.1560
+326        0      <NA>            <NA>         <NA>          NA           NA
+335        0      <NA>            <NA>         <NA>          NA           NA
+337        0         1               1         <NA>          NA       0.3372
+    local_mip_patience scylla_patience
+248             2.7273              NA
+295                 NA              NA
+304             1.4632              NA
+326                 NA              NA
+335                 NA              NA
+337             3.1943              NA

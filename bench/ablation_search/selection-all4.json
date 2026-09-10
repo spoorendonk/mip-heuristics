@@ -1,0 +1,107 @@
+{
+  "lambdas": [
+    {
+      "tag": "1_600",
+      "survivors": [
+        {
+          "irace_id": 288,
+          "suite": "fj,fpr,local_mip,scylla",
+          "efforts": {
+            "fj": 0.3047,
+            "fpr": 2.89,
+            "local_mip": 6.8688,
+            "scylla": 0.4907
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.2291,
+            "local_mip": 0.0,
+            "scylla": 0.5986
+          }
+        },
+        {
+          "irace_id": 327,
+          "suite": "fj,fpr,local_mip,scylla",
+          "efforts": {
+            "fj": 0.6737,
+            "fpr": 4.7889,
+            "local_mip": 29.8188,
+            "scylla": 0.5484
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.0657,
+            "local_mip": 12.8365,
+            "scylla": 0.337
+          }
+        },
+        {
+          "irace_id": 343,
+          "suite": "fj,fpr,local_mip,scylla",
+          "efforts": {
+            "fj": 0.3122,
+            "fpr": 13.0755,
+            "local_mip": 8.1812,
+            "scylla": 0.5198
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 0.2598,
+            "local_mip": 8.3315,
+            "scylla": 0.9586
+          }
+        },
+        {
+          "irace_id": 355,
+          "suite": "fj,fpr,local_mip,scylla",
+          "efforts": {
+            "fj": 0.2009,
+            "fpr": 5.0851,
+            "local_mip": 56.0002,
+            "scylla": 0.5401
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 20.9089,
+            "local_mip": 7.6779,
+            "scylla": 0.5112
+          }
+        },
+        {
+          "irace_id": 388,
+          "suite": "fj,fpr,local_mip,scylla",
+          "efforts": {
+            "fj": 0.3468,
+            "fpr": 6.1579,
+            "local_mip": 31.2954,
+            "scylla": 0.4983
+          },
+          "patiences": {
+            "fj": 0.0,
+            "fpr": 2.4791,
+            "local_mip": 24.5057,
+            "scylla": 0.9695
+          }
+        }
+      ],
+      "selected": {
+        "irace_id": 288,
+        "suite": "fj,fpr,local_mip,scylla",
+        "efforts": {
+          "fj": 0.3047,
+          "fpr": 2.89,
+          "local_mip": 6.8688,
+          "scylla": 0.4907
+        },
+        "patiences": {
+          "fj": 0.0,
+          "fpr": 0.2291,
+          "local_mip": 0.0,
+          "scylla": 0.5986
+        }
+      },
+      "tie": true
+    }
+  ],
+  "stable": false
+}
