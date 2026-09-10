@@ -306,10 +306,10 @@ endif()
 # THE NUMBERS, and what each rests on:
 #
 #   heuristic   effort   patience   dispatches finished / still / barren
-#   fj          0.5665   0.141625   144 / 2 / 74
-#   fpr        12.2559   3.063975   139 / 1 / 80
-#   local_mip  13.9607   3.490175   158 / 0 / 63
-#   scylla      3.0680   0.767      130 / 2 / 88
+#   fj          0.5665   0.1416     144 / 2 / 74
+#   fpr        12.2559   3.0640     139 / 1 / 80
+#   local_mip  13.9607   3.4902     158 / 0 / 63
+#   scylla      3.0680   0.7670     130 / 2 / 88
 #
 # Both columns are written to **four decimal places**.  That is the honest
 # precision: each number is a median over 130-160 dispatches with several

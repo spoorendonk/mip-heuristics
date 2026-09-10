@@ -54,9 +54,9 @@ Cost: 932 runs in **8.0 h**, plus a 233-run FJ re-run in **2.0 h** after #163
 
 | heuristic | effort | patience | scope | knee rests on |
 |---|---|---|---|---|
-| fj | **0.5665** | **0.141625** | per worker | 144 finished |
-| fpr | **12.2559** | **3.063975** | per dispatch | 139 finished |
-| local_mip | **13.9607** | **3.490175** | per dispatch | 158 finished |
+| fj | **0.5665** | **0.1416** | per worker | 144 finished |
+| fpr | **12.2559** | **3.0640** | per dispatch | 139 finished |
+| local_mip | **13.9607** | **3.4902** | per dispatch | 158 finished |
 | scylla | **3.0680** | **0.7670** | per dispatch | 130 finished |
 
 ### effort = the p50 of the yield knee
