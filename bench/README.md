@@ -17,6 +17,7 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | `run_plato.sh` | the chunked launcher every campaign stage uses. A stage is an *environment*, not a separate script — configs, seeds, instance list, output tree, extra options |
 | `run_presolve_probe.sh` | `run_plato.sh` with the calibration probe's environment (issue #113). Modes: `preprobe`, `budget`, `serial` |
 | `run_finalists.sh` | the #107 finalists at the campaign limit — `heldout`, `confirm`. `FINALISTS_ONLY` names one arm for a stage that owns one rather than the set |
+| `run_headline.sh` | #108's headline: the selected configuration over the full 233 at 600 s, three seeds, against #105's vanilla arm in the same tree. `until 08:00` bounds a window by wall-clock time; `report` prints the three pre-registered tables |
 | `run_ablation_c.sh` | `fpr_lp`'s two stages (#165): `capability` (does it fire, and yield, given every advantage) then `contribution` (the paired campaign metric) |
 | `run_target.py` | scores **one parameter vector** on one instance set — the inner loop of the #107 tuning search |
 | `download_miplib.sh` | fetches MIPLIB2017 once per machine (3.5 GB, outside every checkout) |
