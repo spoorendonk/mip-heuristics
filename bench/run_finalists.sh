@@ -56,8 +56,28 @@ BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/irace/bin/highs}"
 
 # Arms to run.  `confirm: false` in finalists.json records a selection that
 # is kept for the record but not run -- see its `excluded_because`.
+#
+# `FINALISTS_ONLY` names arms explicitly and overrides that flag.  It exists
+# for a stage that owns one arm rather than the finalist set: Ablation C
+# (#165) runs `E-shipped-plus-fprlp` against a `D-shipped` already on disk,
+# and flipping `confirm` in the tracked JSON to do that would mean editing the
+# record of what Ablation B selected in order to run something that is not one
+# of its finalists.  Named arms are validated against the JSON, so a typo is
+# an error rather than a silently empty run.
 names() {
-	python3 -c "import json;print(' '.join(k for k,v in json.load(open('$FINALISTS'))['finalists'].items() if v.get('confirm', True)))"
+	python3 - "$FINALISTS" "${FINALISTS_ONLY:-}" <<'NAMES'
+import json, sys
+
+finalists = json.load(open(sys.argv[1]))["finalists"]
+only = sys.argv[2].split()
+if only:
+    missing = [n for n in only if n not in finalists]
+    if missing:
+        sys.exit("unknown finalist(s): " + " ".join(missing))
+    print(" ".join(only))
+else:
+    print(" ".join(k for k, v in finalists.items() if v.get("confirm", True)))
+NAMES
 }
 
 # The `mip_heuristic_*` options one finalist is, as --extra-options arguments.
@@ -114,8 +134,11 @@ cmd_heldout() {
 	mkdir -p "$RESULTS"
 	echo "held-out instances: $(grep -c '^[^#]' "$list")"
 
-	local name opts config
-	for name in $(names); do
+	local name opts config arms
+	# Assign before looping: `for x in $(f)` discards f's exit status, so an
+	# unknown FINALISTS_ONLY name would run zero arms and report success.
+	arms=$(names)
+	for name in $arms; do
 		opts=$(opts_for "$name")
 		config=$(config_for "$name")
 		echo "=== $name (config $config) : $opts"
@@ -134,8 +157,11 @@ cmd_heldout() {
 
 cmd_confirm() {
 	local hours=${1:?usage: confirm <hours>}
-	local name opts config
-	for name in $(names); do
+	local name opts config arms
+	# Assign before looping: `for x in $(f)` discards f's exit status, so an
+	# unknown FINALISTS_ONLY name would run zero arms and report success.
+	arms=$(names)
+	for name in $arms; do
 		opts=$(opts_for "$name")
 		config=$(config_for "$name")
 		echo "=== $name (config $config, full limit) : $opts"
@@ -151,10 +177,11 @@ cmd_confirm() {
 }
 
 cmd_status() {
-	local name stage
+	local name stage arms
+	arms=$(names)
 	for stage in heldout confirm; do
 		echo "$stage  ($RESULTS/$stage)"
-		for name in $(names); do
+		for name in $arms; do
 			printf '  %-18s %s runs\n' "$name" \
 				"$(ls "$RESULTS/$stage/$name"/*/seed0/*.log 2>/dev/null | wc -l)"
 		done
