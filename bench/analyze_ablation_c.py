@@ -4,11 +4,17 @@
 Two counts per instance, and they answer different questions:
 
 * **dispatches** — `[Heur] name=fpr_lp phase=dive` lines, one per dive-time
-  dispatch.  Emitted at `log_dev_level=3` only, so a tree without
-  `PLATO_DEV_LOG=1` reports zero and says so rather than reading it as "the
-  dive never ran".  `abandoned_setup=1` marks a dispatch that gave up in
-  setup against the wall clock without searching, which is a third thing
-  distinct from both "ran and found nothing" and "never ran" (#119).
+  dispatch.  Emitted at `log_dev_level=3` only.  Whether a run was traced is
+  read from its sibling `.opts`, **not** from whether it produced any such
+  line: this stage runs `suite=fpr_lp`, so the only heuristic that can emit a
+  `[Heur]` line at all is the one being measured, and zero lines is therefore
+  *data* — it says the dive never dispatched.  Inferring "untraced" from it
+  would silently discard the instances where the answer is no.  (The first
+  version of this file did exactly that and reported 11 of 49 runs as
+  unreadable when every one of them carried `log_dev_level = 3`.)
+  `abandoned_setup=1` marks a dispatch that gave up in setup against the wall
+  clock without searching, which is a third thing distinct from both "ran and
+  found nothing" and "never ran" (#119).
 * **yields** — incumbent lines carrying the `D` solution-source character,
   which is `kSolutionSourceFprLp`.  These are in the *ordinary* log at any
   level, because HiGHS prints the source of every incumbent it accepts.  A
@@ -21,6 +27,10 @@ is a count of zero at any n.  **Few dispatches is not a null at all**: it says
 the run was too short for B&B to reach dive nodes, and the answer is to raise
 the limit rather than to conclude.  The report states which of the two it is
 instead of leaving the reader to infer it.
+
+A **killed** run is excluded from the fire rate rather than counted as a zero:
+the harness SIGKILLs a solve that overran its limit, so the log stops
+mid-solve and its dispatch count is a lower bound, not an observation.
 
 Usage:
     bench/analyze_ablation_c.py bench/results/ablation_c/capability/fpr_lp/seed0
@@ -55,6 +65,29 @@ class InstanceCounts:
     abandoned: int
     yields: int
     traced: bool
+    killed: bool
+
+
+def was_traced(log: Path, result) -> bool:
+    """Whether this run requested `log_dev_level >= 3`.
+
+    From the `.opts` the run was given, because that is the *request* rather
+    than a consequence of it -- `make_archive.py` records instrumentation both
+    ways for the same reason.  The observed fallback is only for a log with no
+    `.opts` beside it, and it is one-directional: `[Heur]` lines prove
+    tracing, their absence proves nothing.
+    """
+    opts = log.with_suffix(".opts")
+    if opts.exists():
+        for line in opts.read_text(errors="replace").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "log_dev_level":
+                try:
+                    return int(value.strip()) >= 3
+                except ValueError:
+                    return False
+        return False
+    return bool(result.heuristic_samples)
 
 
 def count_one(path: Path) -> InstanceCounts:
@@ -69,27 +102,38 @@ def count_one(path: Path) -> InstanceCounts:
         # the same as False; count only what is known to be a bail.
         abandoned=sum(1 for s in dive if s.abandoned_setup),
         yields=sum(1 for inc in result.incumbents if inc.source == FPR_LP_SOURCE),
-        # Any `[Heur]` line at all means the tree was traced; a tree with none
-        # cannot be read for dispatches, whatever the dive actually did.
-        traced=bool(result.heuristic_samples),
+        traced=was_traced(path, result),
+        # The harness kills a solve that overran its limit, so the log stops
+        # mid-solve: this run's counts are lower bounds, not observations.
+        killed=result.killed,
     )
 
 
 def report(rows: list[InstanceCounts], out=sys.stdout) -> None:
     traced = [r for r in rows if r.traced]
+    killed = [r for r in rows if r.killed]
+    # The fire rate's denominator: traced, and not cut short mid-solve.
+    observable = [r for r in traced if not r.killed]
     total_d = sum(r.dispatches for r in rows)
     total_a = sum(r.abandoned for r in rows)
     total_y = sum(r.yields for r in rows)
-    fired = [r for r in rows if r.dispatches > 0]
+    fired = [r for r in observable if r.dispatches > 0]
     yielded = [r for r in rows if r.yields > 0]
 
-    print(f"{len(rows)} run(s), {len(traced)} traced\n", file=out)
+    print(
+        f"{len(rows)} run(s), {len(traced)} traced, {len(killed)} killed\n",
+        file=out,
+    )
     print(f"{'instance':34s} {'dispatch':>8s} {'bailed':>7s} {'yield':>6s}", file=out)
     print("-" * 59, file=out)
     # Most dispatches first: the instances that exercise the heuristic hardest
     # are the ones a zero yield has to be read against.
     for r in sorted(rows, key=lambda r: (-r.dispatches, r.instance)):
-        note = "" if r.traced else "  (untraced)"
+        note = ""
+        if not r.traced:
+            note = "  (untraced)"
+        elif r.killed:
+            note = "  (killed -- lower bound)"
         print(
             f"{r.instance:34s} {r.dispatches:8d} {r.abandoned:7d} {r.yields:6d}{note}",
             file=out,
@@ -97,10 +141,10 @@ def report(rows: list[InstanceCounts], out=sys.stdout) -> None:
     print("-" * 59, file=out)
     print(f"{'total':34s} {total_d:8d} {total_a:7d} {total_y:6d}\n", file=out)
 
-    if traced:
+    if observable:
         print(
-            f"fired on {len(fired)}/{len(traced)} traced instances; "
-            f"yielded on {len(yielded)}/{len(rows)}",
+            f"fired on {len(fired)}/{len(observable)} observable instances "
+            f"(traced, not killed); yielded on {len(yielded)}/{len(rows)}",
             file=out,
         )
     if len(traced) < len(rows):
