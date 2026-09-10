@@ -135,7 +135,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # objective score positively.  The marker speaks for the tree, so a version-16
 # tree is rejected even though HighsOptions.h itself is unchanged, because its
 # `feasibilityjump.hh` would silently lack both.
-set(PATCH_VERSION "21")
+set(PATCH_VERSION "22")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -311,10 +311,22 @@ endif()
 #   local_mip  13.9607   3.490175   158 / 0 / 63
 #   scylla      3.0680   0.767      130 / 2 / 88
 #
-# Each patience is written as the *exact* quarter of the effort beside it,
-# not as a rounded value: the clamp binds on all four, so the pair has to
-# satisfy `patience == effort / 4` exactly or `tests/test_smoke.cpp`'s
-# "Options: patience defaults" — which pins that invariant — fails.
+# Both columns are written to **four decimal places**.  That is the honest
+# precision: each number is a median over 130-160 dispatches with several
+# percent of sampling error, so more digits would claim accuracy the
+# measurement does not have.
+#
+# A patience is therefore the quarter of its effort only *to rounding*
+# (0.5665 / 4 = 0.141625, shipped as 0.1416).  An earlier revision shipped
+# the exact quotient instead, purely so a test could assert equality — which
+# was backwards twice over.  The clamp binding is a *fact about these
+# values*, not a law: `patience_threshold` computes `min(p95, effort/4)`,
+# and it equals the quarter here only because #113 measured the p95 wait
+# above the ceiling on all four heuristics.  A future calibration finding a
+# p95 *below* it would legitimately ship a smaller patience, and an exact
+# test would then be wrong rather than protective.  The test now checks the
+# relation to within rounding, which still catches the mistake it exists for
+# -- an effort moved without its patience.
 #
 # THE UNITS ARE NOT COMPARABLE ACROSS HEURISTICS.  Both options are a
 # multiple of `nnz << 10` — vanilla HiGHS's own hardcoded single-thread FJ
@@ -533,9 +545,9 @@ set(_patch_options
     "mip_heuristic_local_mip_effort:double:13.9607:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
     "mip_heuristic_scylla_effort:double:3.068:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
     "mip_heuristic_fpr_lp_effort:double:0.0:${kEffortMax}:Effort budget multiplier for the dive-time fpr_lp heuristic, as a share of the lesser of the remaining RENS/RINS LP-iteration headroom and heuristic_effort_budget(nnz, mip_heuristic_effort). The default 0 disables fpr_lp, which is unmeasured and ships off until an ablation shows it earns its share of that envelope. 1.0 takes the whole slice and larger values take more"
-    "mip_heuristic_fj_patience:double:0.141625:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
-    "mip_heuristic_fpr_patience:double:3.063975:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
-    "mip_heuristic_local_mip_patience:double:3.490175:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_fj_patience:double:0.1416:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_fpr_patience:double:3.064:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_local_mip_patience:double:3.4902:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_scylla_patience:double:0.767:${kEffortMax}:Patience for the Scylla presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
 

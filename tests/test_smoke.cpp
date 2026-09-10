@@ -140,9 +140,9 @@ TEST_CASE("Options: patience defaults", "[options][patience]") {
     // #113 derivation produced and what `patience_threshold` now enforces
     // for any value.
     const auto patiences = std::to_array<PatienceDefault>({
-        {"mip_heuristic_fj_patience", 0.141625, 0.5665},
-        {"mip_heuristic_fpr_patience", 3.063975, 12.2559},
-        {"mip_heuristic_local_mip_patience", 3.490175, 13.9607},
+        {"mip_heuristic_fj_patience", 0.1416, 0.5665},
+        {"mip_heuristic_fpr_patience", 3.064, 12.2559},
+        {"mip_heuristic_local_mip_patience", 3.4902, 13.9607},
         {"mip_heuristic_scylla_patience", 0.767, 3.068},
     });
     for (const auto& [name, expected, effort] : patiences) {
@@ -153,7 +153,16 @@ TEST_CASE("Options: patience defaults", "[options][patience]") {
         // quarter of it, in fact, which is where `kPatienceCeilingDivisor`
         // would clamp anything larger.
         REQUIRE(value < effort);
-        REQUIRE(value == effort / 4.0);
+        // A quarter of its own effort **to rounding**, not exactly: both
+        // columns ship at four decimal places, so 0.5665 / 4 = 0.141625 is
+        // shipped as 0.1416.  Asserting equality would force the patience
+        // column to carry digits the measurement does not support, purely to
+        // satisfy a test -- and would be wrong in principle anyway, since
+        // `patience_threshold` computes `min(p95, effort/4)` and equals the
+        // quarter here only because #113 measured every p95 above the
+        // ceiling.  0.1% still catches what this guards: an effort default
+        // moved without its patience (a 4x error), or a divisor typo.
+        REQUIRE(value == Catch::Approx(effort / 4.0).epsilon(0.001));
         // 0 is legal and means "no patience gate at all" — load-bearing
         // for the patience-axis search, which needs a point where the gate
         // provably never fires.  If the registered lower bound ever moved

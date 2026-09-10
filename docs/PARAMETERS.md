@@ -1776,8 +1776,8 @@ effort-gap distribution).
 ### `mip_heuristic_fj_patience` — FeasibilityJump patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.141625` (measured, #113 re-run 2026-09-06; was `0.71`). It is
-  the clamp, `0.25 x` the effort option beside it, not the raw p95 wait of
+- **Default**: `0.1416` (measured, #113 re-run 2026-09-06; was `0.71`). It is
+  the clamp to rounding, `0.25 x` the effort option beside it, not the raw p95 wait of
   `2.46` — see the clamp note below.
 - **Meaning**: Step units per worker without an incumbent improvement, as
   a multiple of `nnz << 10`. Scope is **per worker**, matching
@@ -1800,7 +1800,7 @@ effort-gap distribution).
 ### `mip_heuristic_fpr_patience` — FPR patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `3.063975` (measured, #113 re-run 2026-09-06; was `1.918`). The
+- **Default**: `3.064` (measured, #113 re-run 2026-09-06; was `1.918`). The
   clamp, `0.25 x` effort; the raw p95 wait is `5649.87`.
 - **Meaning**: Coefficient accesses without an incumbent improvement, as a
   multiple of `nnz << 10`, **whole dispatch**. FPR had no worker-level
@@ -1821,7 +1821,7 @@ effort-gap distribution).
 ### `mip_heuristic_local_mip_patience` — LocalMIP patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `3.490175` (measured, #113 re-run 2026-09-06; was `7.308`). The
+- **Default**: `3.4902` (measured, #113 re-run 2026-09-06; was `7.308`). The
   clamp, `0.25 x` effort; the raw p95 wait is `4.93` — the only one of the
   four whose measured wait is near its own ceiling fraction.
 - **Meaning**: Coefficient accesses without an incumbent improvement, as a
