@@ -2,7 +2,8 @@
 
 What was run, what it found, and what a paper can and cannot claim from it.
 Companion to `bench/ablation_effort/` (Ablation A, which produced the shipped
-defaults) and `bench/ablation_plan.md` (the plan, including Ablation C).
+defaults).  The plans live in the issues that own the work: the B+ design in
+#107, Ablation C's method in #165.
 
 **Headline: the shipped defaults are kept, on evidence rather than by
 default.** No searched configuration is distinguishable from them, and the one

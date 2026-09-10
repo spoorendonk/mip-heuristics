@@ -85,7 +85,7 @@
       "extra_options": [
         "mip_heuristic_fpr_lp_effort=1.0"
       ],
-      "excluded_because": "Ablation C, postponed. Its method is recorded in bench/ablation_plan.md."
+      "excluded_because": "Ablation C, postponed. Its method is recorded in issue #165."
     },
     "D'-tuned-all4": {
       "source": "Winner of the constrained irace (bench/irace-all4): all four presolve heuristics forced on, only the eight effort/patience values searched, lambda=1/600, 3000 experiments over the 90 tuning instances. Selected from 5 survivors by the pre-registered tie-break. A new candidate, NOT a replacement for D-shipped: D is the incumbent and the comparison against what actually ships is what licenses changing a default, so both are arms. Every effort is lower than D's -- total 10.55 against 29.85 -- and Scylla falls hardest, 3.068 -> 0.4907. Scylla lands in 0.49-0.55 in all five survivors, so that is a concentrated result rather than one draw.",
