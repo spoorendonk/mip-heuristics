@@ -160,6 +160,31 @@ reachable range `[0, effort/4]`, including 21 of 56 survivor-parameters with
 the gate entirely off, so a landscape that flat inside the range gives no
 reason to expect its edge to matter.
 
+### Verdict on the patience axis: closed
+
+**No further work is warranted on patience, and this is the argument rather
+than a shrug.**
+
+What makes the null trustworthy is *where* the search had coverage. For the two
+heuristics that genuinely explored below the clamp — **FJ** (13 gates off, 6
+below the clamp, 0 clamped) and **FPR** (13 below, 3 clamped) — the axis was
+well sampled and still nothing separated. The degeneracy is concentrated in
+**Scylla** (all 5 clamped) and **LocalMIP** (7 of 16), so the coverage gap sits
+where the evidence is weakest rather than where the conclusion rests.
+
+The one concentrated signal points *toward* the current setting: **FPR never
+wants its gate off (0 of 16 survivors)**, and FPR ships with a gate.
+
+**Scope of the claim, stated precisely.** This is a null at 20.6% resolution:
+*no evidence that any reachable patience beats `effort/4`* — not *`effort/4` is
+optimal*. From the power table above, no affordable experiment upgrades that;
+even the whole #108 campaign resolves only ~5%.
+
+**Method note if the axis is ever reopened**: search the *ratio*
+`patience/effort` in (0, 0.25] rather than the absolute value, so samples
+cannot clamp onto each other. That is a note for a future experiment, not an
+open item on this one.
+
 ## Two answers the searches did give
 
 * **Joint calibration is not better than per-heuristic calibration.** D' tuned
