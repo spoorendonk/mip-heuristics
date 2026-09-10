@@ -16,6 +16,8 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | `run_benchmark.py` | runs instances × configs × seeds into a results tree. Resumes with `--skip-existing`; bounds a chunk by hours (`--wall-time-budget`) or by pending work (`--count`). The `vanilla` config is a second, unpatched binary (`--vanilla-binary`, required and probed) — not a setting on the patched one |
 | `run_plato.sh` | the chunked launcher every campaign stage uses. A stage is an *environment*, not a separate script — configs, seeds, instance list, output tree, extra options |
 | `run_presolve_probe.sh` | `run_plato.sh` with the calibration probe's environment (issue #113). Modes: `preprobe`, `budget`, `serial` |
+| `run_finalists.sh` | the #107 finalists at the campaign limit — `heldout`, `confirm`. `FINALISTS_ONLY` names one arm for a stage that owns one rather than the set |
+| `run_ablation_c.sh` | `fpr_lp`'s two stages (#165): `capability` (does it fire, and yield, given every advantage) then `contribution` (the paired campaign metric) |
 | `run_target.py` | scores **one parameter vector** on one instance set — the inner loop of the #107 tuning search |
 | `download_miplib.sh` | fetches MIPLIB2017 once per machine (3.5 GB, outside every checkout) |
 
@@ -28,6 +30,8 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | `analyze_presolve_probe.py` | the calibration probe: informative set, hard tier, effort trajectories, gap to best known, and the derived parameter vector |
 | `make_tuning_set.py` | a stratified tuning subset, sampled from a results tree on time-to-first-feasible |
 | `derive_from_probe.sh` | **probe tree → every artifact, one command** (see below), written into `ablation_effort/` |
+| `compare_finalists.sh` | assembles the per-arm trees into the view `analyze_results.py` wants, then scores them |
+| `analyze_ablation_c.py` | `fpr_lp`'s two readings: `capability` (dispatches, setup bails, accepted yields, and which of three verdicts) and `contribution` (the paired log-ratio, partitioned by the capability run's labels, with the never-fired instances as a null control) |
 | `check_vanilla_equivalence.py` | proves the patch does not perturb HiGHS: `suite=off` plus FeasibilityJump disabled, against a separately built unpatched binary with FeasibilityJump disabled |
 | `make_archive.py` | the release archive, with derived provenance |
 | `check_docs_refs.py` | fails the suite if `docs/PARAMETERS.md` names a constant that no longer exists |

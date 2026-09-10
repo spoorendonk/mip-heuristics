@@ -1,0 +1,59 @@
+49 run(s), 49 traced, 1 killed
+
+instance                           dispatch  bailed  yield
+-----------------------------------------------------------
+markshare2                                9       0     20
+neos-3046615-murg                         8       0      0
+assign1-5-8                               7       0      0
+graphdraw-domain                          5       0     15
+sct2                                      5       0      0
+bppc4-08                                  4       0      1
+neos-3004026-krka                         4       0      1
+supportcase18                             4       0      3
+timtab1                                   4       0      0
+mas76                                     3       0      0
+neos-873061                               3       0      0
+b1c1s1                                    2       0      0
+cost266-UUE                               2       0      0
+neos-1456979                              2       0      0
+uct-subprob                               2       0      1
+CMS750_4                                  1       0      0
+atlanta-ip                                1       0      0
+beasleyC3                                 1       0      0
+cbs-cta                                   1       0      0
+cvs16r128-89                              1       0      8
+h80x6320d                                 1       0      0
+istanbul-no-cutoff                        1       0      0
+map16715-04                               1       0      0
+mik-250-20-75-4                           1       0      0
+mushroom-best                             1       0      0
+neos-1582420                              1       0      5
+neos-3083819-nubu                         1       0      0
+neos-3216931-puriri                       1       0      0
+neos-5188808-nattai                       1       0      0
+neos-787933                               1       0      0
+neos-933966                               1       0      0
+neos-960392                               1       0      1
+ns1208400                                 1       0      0
+proteindesign122trx11p8                   1       0      0
+rail507                                   1       0      0
+rmatr200-p5                               1       0      0
+sorrell3                                  1       0      0
+var-smallemery-m6j6                       1       0      5
+germanrr                                  0       0      0  (killed -- lower bound)
+neos-1171448                              0       0      0
+neos-5104907-jarama                       0       0      0
+netdiversion                              0       0      0
+ns1116954                                 0       0      0
+ns1644855                                 0       0      0
+nursesched-medium-hint03                  0       0      0
+nursesched-sprint02                       0       0      0
+proteindesign121hz512p9                   0       0      0
+savsched1                                 0       0      0
+uccase12                                  0       0      0
+-----------------------------------------------------------
+total                                    87       0     60
+
+fired on 38/48 observable instances (traced, not killed); yielded on 10/49
+
+VERDICT: fpr_lp yielded 60 accepted incumbent(s) on 10 instance(s). Not a null -- proceed to the paired contribution stage.

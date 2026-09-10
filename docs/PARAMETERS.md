@@ -2150,12 +2150,30 @@ options documented above):
   option is therefore its **share of that envelope**, not a multiple of
   `nnz << 10`. `fpr_lp::dive_budget` sizes a call at
   `share x min(headroom_units, cap_units)`, where the cap is the unchanged
-  `vanilla_effort_budget(nnz, mip_heuristic_effort)`. The default `1.0`
+  `vanilla_effort_budget(nnz, mip_heuristic_effort)`. A share of `1.0`
   takes that whole slice — exactly what the call took before the option
-  existed, which is what keeps a default-options binary unmoved by #164, and
-  was checked instance by instance against the previous build — and is a
-  starting point rather than a measurement: #113's probe calibrated the four
-  presolve heuristics and never touched this one. `0` disables `fpr_lp`, and
+  existed, which is what kept a default-options binary unmoved by #164, and
+  was checked instance by instance against the previous build.
+
+  **The shipped `0` is measured, not cautious** (#165, Ablation C, derived in
+  `bench/ablation_fprlp/`). Given every advantage — alone, RENS/RINS disabled
+  so it owns the envelope, a per-call budget that cannot bind — `fpr_lp`
+  reaches dive nodes on 79% of a 49-instance set and produces accepted
+  incumbents on 20% of it, so it is capable. In the shipped chain at
+  `share = 1.0`, paired against the same configuration without it, it costs
+  **27%** of the primal integral on the 57% of instances where it engages and
+  finds nothing (CI [1.07, 1.51]), pays nothing back where it does find
+  something (0.95, wide), and is exactly neutral where the dive never reaches
+  (1.007, CI [0.99, 1.02] — the null control that makes the rest readable).
+  The aggregate over all three is 1.137 with CI [0.99, 1.31], and resolving
+  that would need n=128 against a 97-instance pool, so the *conditional*
+  effect is what the verdict rests on. The mechanism is that `fpr_lp` is
+  **dominated by RENS/RINS inside the shared envelope** — it finds solutions
+  when nothing competes for the LP iterations and none when they do, while
+  spending wall clock either way. That is also why no share fixes it, and why
+  Ablation C records a decision not to sweep rather than a deferral; the lever
+  the data points at is a *gate* (do not dispatch where it will not yield),
+  which is a code change and not this option. `0` disables `fpr_lp`, and
   does so above every read and write of `heuristic_lp_iterations` /
   `total_lp_iterations`, the counters `moreHeuristicsAllowed()` reads to
   decide whether RENS and RINS run — a disable that charged even one

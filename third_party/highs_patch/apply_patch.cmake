@@ -135,7 +135,7 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # objective score positively.  The marker speaks for the tree, so a version-16
 # tree is rejected even though HighsOptions.h itself is unchanged, because its
 # `feasibilityjump.hh` would silently lack both.
-set(PATCH_VERSION "22")
+set(PATCH_VERSION "23")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -408,25 +408,40 @@ endif()
 # leak: the charge-back depletes the same counters the headroom is computed
 # from, so the next call sees no headroom and skips.
 #
-# **The default is 0, i.e. `fpr_lp` ships off.**  This reverses the value
-# #164 landed with, and the reason is that the heuristic has never been
-# measured: #113's probe calibrated the four presolve heuristics and never
-# touched this one, so `1.0` was only ever "whatever the call happened to
-# take before the option existed" — a status quo, not a result.  Shipping
-# an unmeasured heuristic that draws on upstream's RENS/RINS envelope is
-# not neutral: every LP iteration it takes is one those two do not get, so
-# if it is not earning its share it is actively costing.  During #113's
-# write-up it emitted no dive line at all on four instances at 60-120 s at
-# either thread count, which is consistent with it contributing little in
-# the shipped regime — `parallelLockActive()` skips it outright under
-# parallel B&B.
+# **The default is 0, i.e. `fpr_lp` ships off, and it is measured** — #165,
+# Ablation C, derived in `bench/ablation_fprlp/`.  #164 landed at `1.0`,
+# which was only ever "whatever the call happened to take before the option
+# existed": a status quo, since #113's probe is presolve-only and `fpr_lp`
+# is a dive-time heuristic, so it calibrated the other four and never
+# touched this one.
 #
-# It ships off **until #165 shows it earns its share**, and #165 is that
-# measurement.  Turning it on is one option and needs no rebuild.  A
-# pleasant consequence: #107's search leaves `fpr_lp` off, and now so do
-# the shipped binary and #108's headline arm, so all three agree instead
-# of the search optimising a configuration that differs from what ships by
-# a whole heuristic.
+# What the measurement found, in two stages.  Given every advantage —
+# running alone, RENS/RINS disabled so it owns the envelope, and a per-call
+# budget that cannot bind — `fpr_lp` reaches dive nodes on 79% of a
+# 49-instance set and produces accepted incumbents on 20% of it.  So it is
+# capable.  In the shipped chain at `share = 1.0`, paired against the same
+# configuration without it, it costs **27%** of the primal integral on the
+# 57% of instances where it engages and finds nothing, pays nothing back on
+# the instances where it does find something, and is exactly neutral (ratio
+# 1.007, CI [0.99, 1.02]) where the dive never reaches — which is the null
+# control that says the other numbers are an effect rather than run-to-run
+# noise.
+#
+# The mechanism is that it is **dominated by RENS/RINS inside the shared
+# envelope**, not that it is a bad heuristic: it finds solutions when
+# nothing competes for the LP iterations and none when they do, while
+# spending wall clock either way.  That is also why no share fixes it —
+# raising the share feeds a heuristic that already fires and mostly finds
+# nothing, lowering it shrinks cost and yield together — so Ablation C
+# records a decision not to sweep rather than a deferral.  The lever the
+# data points at is a *gate* (do not dispatch where it will not yield),
+# which is a code change and is not in this option.
+#
+# Turning it on is still one option and needs no rebuild.  A pleasant
+# consequence: #107's search leaves `fpr_lp` off, and so do the shipped
+# binary and #108's headline arm, so all three agree instead of the search
+# optimising a configuration that differs from what ships by a whole
+# heuristic.
 #
 # For the record, `1.0` is the value that reproduces what this call took before the option
 # existed — the whole slice — so a default-options binary is unmoved by
@@ -544,7 +559,7 @@ set(_patch_options
     "mip_heuristic_fpr_effort:double:12.2559:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
     "mip_heuristic_local_mip_effort:double:13.9607:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
     "mip_heuristic_scylla_effort:double:3.068:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic"
-    "mip_heuristic_fpr_lp_effort:double:0.0:${kEffortMax}:Effort budget multiplier for the dive-time fpr_lp heuristic, as a share of the lesser of the remaining RENS/RINS LP-iteration headroom and heuristic_effort_budget(nnz, mip_heuristic_effort). The default 0 disables fpr_lp, which is unmeasured and ships off until an ablation shows it earns its share of that envelope. 1.0 takes the whole slice and larger values take more"
+    "mip_heuristic_fpr_lp_effort:double:0.0:${kEffortMax}:Effort budget multiplier for the dive-time fpr_lp heuristic, as a share of the lesser of the remaining RENS/RINS LP-iteration headroom and heuristic_effort_budget(nnz, mip_heuristic_effort). The default 0 disables fpr_lp, which ships off because Ablation C measured it: it is dominated by RENS/RINS inside the shared envelope, costing primal integral on the instances where it engages without producing a solution. 1.0 takes the whole slice and larger values take more"
     "mip_heuristic_fj_patience:double:0.1416:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_fpr_patience:double:3.064:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_local_mip_patience:double:3.4902:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"

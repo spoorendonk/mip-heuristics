@@ -1,0 +1,10 @@
+49 paired instance(s), arm over control (lower is better)
+
+overall                          n= 49  ratio=1.137  CI=[0.99, 1.31]  t=+1.75
+
+by Stage C0 label (proxy: C0's configuration, not these runs)
+  C0 yielded                     n= 10  ratio=0.952  CI=[0.58, 1.55]  t=-0.20
+  C0 fired, never yielded        n= 28  ratio=1.270  CI=[1.07, 1.51]  t=+2.66  *
+  C0 never fired (null control)  n= 10  ratio=1.007  CI=[0.99, 1.02]  t=+1.02
+
+power: n=49 resolves 22.9%; the observed 13.7% would need n=128
