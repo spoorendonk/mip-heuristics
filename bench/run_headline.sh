@@ -52,9 +52,23 @@ REPO="$(cd "$HERE/.." && pwd)"
 # suite token; `fpr_lp` among them runs only if its effort is non-zero, and
 # its shipped default is 0 (#165).
 CONFIG="${HEADLINE_CONFIG:-all}"
-# Three seeds: the execution mode is opportunistic parallel and therefore
-# non-deterministic, so a point estimate would hide run-to-run spread.
-SEEDS="${HEADLINE_SEEDS:-0 1 2}"
+# **One seed by default, and three is the deliverable rather than the gate.**
+# #108 requires at least three, because the execution mode is opportunistic
+# parallel and a point estimate would hide run-to-run spread -- that stands
+# for the reported result.  It does not have to be paid up front: seed 0 over
+# all 233 is one full pass (~24 h) and already resolves ~9% against vanilla at
+# this benchmark's paired sd, which is enough to decide whether there is an
+# effect worth spending two more passes on.  It is also *symmetric* with the
+# baseline, which #105 ran at one seed.
+#
+# The order matters as much as the count.  `run_benchmark.py` iterates
+# instance -> seed -> config, so a three-seed window buys all three seeds on a
+# prefix of instances rather than one seed across many: at a fixed number of
+# hours, three seeds covers a third of the instances.  A gate wants breadth.
+#
+# `HEADLINE_SEEDS="0 1 2"` after the gate passes; resume is per
+# (config, instance, seed), so nothing already run is repeated.
+SEEDS="${HEADLINE_SEEDS:-0}"
 
 # A binary outside build/, because `pre-push` runs `rm -rf build` and would
 # delete it out from under a multi-day campaign (CLAUDE.md).  Staged by hand
