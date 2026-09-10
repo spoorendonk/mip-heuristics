@@ -80,10 +80,21 @@ cmd_next() {
 	# config sets, so every run would exit 255 and the tree would fill with
 	# .log.err.  run_benchmark.py probes this too; failing here is faster and
 	# names the binary.
-	if ! "$BINARY" /dev/null 2>&1 | grep -q "mip-heuristics patch active"; then
+	#
+	# Invoked with no arguments, the way `check_vanilla_binary` does it: HiGHS
+	# prints its banner and then complains about the missing model, so the
+	# marker is on stdout and the exit status is non-zero.  Captured rather
+	# than piped into grep, because `set -o pipefail` would then report the
+	# binary's own exit status and every patched build would look unpatched.
+	local banner
+	banner=$("$BINARY" 2>&1 || true)
+	case "$banner" in
+	*"mip-heuristics patch active"*) ;;
+	*)
 		echo "ERROR: $BINARY is not a patched build" >&2
 		exit 1
-	fi
+		;;
+	esac
 	plato next "$hours"
 }
 
