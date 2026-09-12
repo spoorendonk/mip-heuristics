@@ -5,10 +5,21 @@ Companion to `bench/ablation_effort/` (Ablation A, which produced the shipped
 defaults).  The plans live in the issues that own the work: the B+ design in
 #107, Ablation C's method in #165.
 
-**Headline: the shipped defaults are kept, on evidence rather than by
-default.** No searched configuration is distinguishable from them, and the one
-configuration that *is* distinguishable — irace's own selection at the derived
-cost weight — is the worst of those tested.
+**Headline: the search's cheapest three-heuristic survivor is adopted, and
+Scylla is disabled.** `B'-mix-cheapest` — fj 0.3317, fpr 3.161, local_mip
+3.2865, scylla 0 — is 12.6% better than the previously-shipped four-heuristic
+vector on the 48 held-out instances (CI [0.782, 0.977]), the only arm shown
+*separated* from it at the campaign metric. Scylla goes to 0 because it
+produced **zero accepted incumbents in ~380 runs** while dispatching on every
+solve.
+
+**This reverses an earlier conclusion of this same ablation, and the reversal
+is the most instructive thing in it — see "What the first reading got wrong"
+below.** The first write-up kept the previous defaults on the grounds that
+nothing was distinguishable from them. Two things were wrong with that: the
+pre-registered tie-break says ties go to the *simpler* configuration, and this
+ablation never computed per-heuristic attribution, which is what shows one of
+the four heuristics contributes nothing at all.
 
 ## Reproducing
 
@@ -19,6 +30,8 @@ cost weight — is the worst of those tested.
 | apply the selection rule | `bench/analyze_irace.py <results dir>` | `selection*.json` here |
 | confirmation, 600 s | `bench/run_finalists.sh confirm <hours>` | `bench/results/finalists/confirm/` |
 | held-out, 600 s | `bench/run_finalists.sh heldout` | `bench/results/finalists/heldout/` |
+| held-out, one named arm | `FINALISTS_ONLY="B'-mix-cheapest" bench/run_finalists.sh heldout` | same tree |
+| attribution, any tree | `bench/analyze_results.py <tree> --configs <arms> --attribution` | the tables below |
 | score either | `bench/compare_finalists.sh {confirm,heldout} --time-limit 600` | `tables.txt` here |
 
 Results trees are gitignored (they are ~3 GB); every derived artifact needed to
@@ -185,6 +198,110 @@ even the whole #108 campaign resolves only ~5%.
 `patience/effort` in (0, 0.25] rather than the absolute value, so samples
 cannot clamp onto each other. That is a note for a future experiment, not an
 open item on this one.
+
+## What the first reading got wrong
+
+Both defects were found while running #108, from data already on disk, and both
+point the same way. Recorded here rather than quietly corrected, because the
+reversal is a methodological result in its own right.
+
+### 1. Attribution was never computed
+
+The search objective was `gap + lambda * tau` at presolve exit; the
+confirmation was primal-integral SGM at 600 s. Both are **outcomes**. Neither
+asks *which heuristic produced the solution*, so nothing here ever looked —
+even though the solution-source character is in every ordinary log and needs no
+developer logging to read.
+
+Reading it now:
+
+| tree | runs | FJ | FPR | LocalMIP | **Scylla** |
+|---|---|---|---|---|---|
+| confirm, `D-shipped` | 49 | 1756 | 19 | 1521 | **0** |
+| held-out, `D-shipped` | 48 | 301 | 27 | 195 | **0** |
+| confirm, `D'-tuned-all4` (scylla 0.4907) | 49 | 1616 | 14 | 1622 | **0** |
+| #108 full PLATO, four heuristics | 233 | 24763 | 139 | 4651 | **0** |
+
+Scylla is neither disabled nor skipped in those runs: a traced solve emits
+`[Heur] name=scylla phase=presolve` every time, and on `50v-10` reports
+`found=0` after spending **220.7 ms of a 342 ms chain** at the worst throughput
+of the four. The criterion is **incumbent improvements**, this project's own
+definition of productive since #116, not pool acceptances — the two differ by
+five orders of magnitude.
+
+This is what the search had been saying all along in a form nobody connected:
+**Scylla is absent from all 14 free-search survivors at every cost weight**,
+and the constrained search that forced it on put it at 0.4907 against the
+3.068 then shipping.
+
+### 2. The pre-registered tie-break was not applied to the finalists
+
+Rule 2 of `bench/irace/PREREGISTRATION.md`: among statistically
+indistinguishable configurations the **simpler** one is chosen — fewer
+heuristics enabled, then lower total effort, because "fewer heuristics is less
+to defend and a tie is a legitimate result".
+
+B, B', D and D' came out indistinguishable. D had 4 heuristics and 29.85 total
+effort; the mix arms had 3 and 6.78 / 10.78. The rule selects a mix arm; the
+write-up kept D.
+
+The defence offered was that D is the *incumbent* rather than a search
+survivor, and a shipped default should not move on a null. **That premise was
+false: nothing had shipped** — no tags, no releases. D was what #113's
+measurement happened to leave in `apply_patch.cmake`, and #113 measured each
+heuristic **alone**, which is precisely the regime the attribution above shows
+does not transfer. Calling it an incumbent granted it a status it never had,
+and that status is what defeated the tie-break.
+
+### Re-applying the rule
+
+Rule 2 governs the indistinguishable set, and confirmation removed a member
+from it: `A-fj-only` was separated and ~30% worse on every analysis set. That
+leaves the **eleven three-heuristic survivors**, all tied on the first clause,
+so the second decides — lowest total effort, which is `B'-mix-cheapest` at
+6.78.
+
+`B'` had no held-out data at that point, and selecting the one arm lacking an
+out-of-sample check would have been indefensible, so it was run (n=48, the same
+set and the same binary as the other two):
+
+| arm | heuristics | total effort | held-out SGM |
+|---|---|---|---|
+| **B'-mix-cheapest** | 3 | **6.78** | **17.12** |
+| B-mix-lambda300 | 3 | 10.78 | 18.48 |
+| D-shipped | 4 | 29.85 | 19.58 |
+
+Paired, n=48:
+
+| comparison | ratio | 95% CI | t | win / tie / loss |
+|---|---|---|---|---|
+| **B' / D** | **0.874** | **[0.782, 0.977]** | **-2.37** | 31 / 7 / 10 |
+| B' / B | 0.926 | [0.850, 1.009] | -1.76 | 29 / 9 / 10 |
+| B / D | 0.944 | [0.837, 1.064] | -0.95 | 28 / 7 / 13 |
+
+So B' is not only the rule's pick: it is **separated from D**, which no arm was
+on the tuning-set confirmation. The held-out ordering is monotone in total
+effort — 6.78 -> 17.12, 10.78 -> 18.48, 29.85 -> 19.58 — and the paired sd is
+0.30-0.42 rather than the 1.22 of patched-vs-vanilla, which is why n=48 can
+separate a 12.6% effect at all.
+
+**One honest observation for a write-up:** B' was nominally *worse* than B on
+the tuning-set confirmation (12.99 vs 12.09) and nominally *better* out of
+sample. That is the direction selection bias predicts, and it is an argument
+for trusting the held-out ordering over the tuning-set one.
+
+### What this says about method, which is the transferable part
+
+* **An objective that scores outcomes cannot retire a component.** Every stage
+  here measured how well a configuration did, never what each part of it
+  contributed. A heuristic that does nothing is invisible to that, and stays
+  invisible however much compute is spent — attribution was a `grep` away the
+  whole time.
+* **"Keep the incumbent on a null" needs an incumbent.** The phrase carried the
+  decision without anyone checking that the thing it named existed. Before a
+  release, every configuration is a candidate.
+* **A pre-registered tie-break is only worth having if it is applied when it
+  bites.** It bit here, and was talked around.
 
 ## Two answers the searches did give
 

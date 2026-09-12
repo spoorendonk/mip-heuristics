@@ -1,0 +1,105 @@
+arms: B'-mix-cheapest B-mix-lambda300 D-shipped
+  B'-mix-cheapest    48 runs
+  B-mix-lambda300    48 runs
+  D-shipped          48 runs
+
+
+## Per-instance comparison: B'-mix-cheapest vs B-mix-lambda300 (48 instances)
+
+Instance                  T1st(B'-mix-cheapest) T1st(B-mix-lambda300) Gap@10(B'-)  Gap@10(B-m)  Gap@60(B'-)  Gap@60(B-m)  Gap@600(B'-) Gap@600(B-m) PD(B'-)      PD(B-m)      Status(B'-)     Status(B-m)    
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+binkar10_1                         0          0     0.000798     0.000122     0.000122     0.000122     0.000122     0.000122       0.1720       0.1652 Optimal         Optimal        
+bnatt400                      571.50     572.90            -            -            -            -            0            0      28.5057      27.0785 Time limit reached Time limit reached
+cryptanalysiskb128n5obj16          -          -            -            -            -            -            -            -            0            0 Time limit reached Time limit reached
+csched008                      20.00      20.60            -            -     0.028902     0.028902            0            0       3.7107       3.7610 Optimal         Optimal        
+dano3_3                        19.80      20.80            -            -            0            0            0            0       0.0095       0.0097 Optimal         Optimal        
+drayage-25-23                   0.10       0.10            0            0            0            0            0            0       0.6452       0.4508 Optimal         Optimal        
+dws008-01                      43.90      43.90            -            -     0.522361     0.522361     0.204466     0.355851     389.0140     390.1530 Time limit reached Time limit reached
+eilA101-2                      85.50      86.60            -            -            -            -            0            0      73.3150     127.6534 Time limit reached Time limit reached
+exp-1-500-5-5                   0.20       0.20            0            0            0            0            0            0       0.7402       0.7856 Optimal         Optimal        
+gen-ip002                          0          0     0.003926     0.005033     0.002690     0.004028     0.001160     0.001899       6.0511       6.0826 Time limit reached Time limit reached
+hypothyroid-k1                  2.20       2.30     0.055770     0.055770            0            0            0            0       1.2720       1.2710 Optimal         Optimal        
+icir97_tension                  5.60       5.80     0.014275     0.014275     0.002196     0.002196     0.002196     0.001882       2.4222       2.2751 Time limit reached Time limit reached
+k1mushroom                    194.80     198.20            -            -            -            -            0            0    1929.1638    1684.6312 Optimal         Optimal        
+markshare_4_0                      0          0     1.000000     1.000000            0     1.000000            0            0     189.4819     156.5238 Optimal         Optimal        
+mzzv11                         24.00      24.10            -            -     0.000921     0.000921            0            0      30.3733      26.7152 Optimal         Optimal        
+n2seq36q                        1.30       1.30     1.000000     1.000000     0.042146     0.042146            0            0      11.5726      11.3310 Optimal         Optimal        
+n3div36                         0.60       0.60     0.342508     0.298165     0.027523     0.036697     0.001529     0.001529      50.4479      54.4409 Time limit reached Time limit reached
+n5-3                            0.10       0.10     0.067242     0.067242            0            0            0            0       4.2461       4.4196 Optimal         Optimal        
+neos-2746589-doon                  -          -            -            -            -            -            -            -            0            0 Time limit reached Time limit reached
+neos-2978193-inde               0.10       0.10            0            0            0            0            0            0       2.2816       2.4394 Optimal         Optimal        
+neos-3024952-loue             556.60       0.10            -     1.000000            -     1.000000     0.040327     0.024593       2.9847     510.7090 Time limit reached Time limit reached
+neos-4387871-tavua              8.70       8.60     0.102269     0.047500     0.072315     0.047500     0.035093     0.029954     169.9612     166.5964 Time limit reached Time limit reached
+neos-4413714-turia             62.50      68.30            -            -            -            -            0            0       1.6595       1.3651 Optimal         Optimal        
+neos-4722843-widden            22.50      21.20            -            -     0.003999     0.003999     0.000000     0.000000      46.6499      48.2035 Optimal         Optimal        
+neos-631710                    36.00      36.20            -            -            0            0            0            0      83.4753      83.4405 Time limit reached Time limit reached
+neos-662469                     1.10       1.20     1.000000     1.000000     1.000000     1.000000     0.000146     0.000155      97.1891     102.4434 Time limit reached Time limit reached
+neos-827175                     0.50       0.50     0.000002     0.000002     0.000002     0.000002     0.000002     0.000002       1.5109       1.5344 Optimal         Optimal        
+neos-950242                     0.30       0.30            0            0            0            0            0            0       9.6622       9.6397 Optimal         Optimal        
+neos17                             0          0            0            0            0            0            0            0       0.8567       0.8748 Optimal         Optimal        
+neos5                              0          0     0.000000     0.000000     0.000000     0.000000     0.000000     0.000000       5.5823       6.1371 Optimal         Optimal        
+nexp-150-20-8-5                 0.10       0.10     0.324675     0.419913     0.324675     0.419913            0            0      53.1726      62.0874 Optimal         Optimal        
+ns1760995                          -          -            -            -            -            -            -            -            0            0 Time limit reached Time limit reached
+opm2-z10-s4                     3.10       3.10     0.741261     0.695873     0.741261     0.695873     0.050588     0.036130    2208.4835    1978.7051 Time limit reached Time limit reached
+peg-solitaire-a3                   -          -            -            -            -            -            -            -            0            0 Time limit reached Time limit reached
+physiciansched6-2               1.40       1.40            0     0.008130            0            0            0            0       0.5989       0.5516 Optimal         Optimal        
+radiationm18-12-05              0.30       0.30     1.000000     1.000000     0.242856     1.000000     0.000114     0.018900      54.6458     132.9816 Time limit reached Time limit reached
+rail01                             -          -            -            -            -            -            -            -            0            0 Time limit reached Time limit reached
+rail02                             -          -            -            -            -            -            -            -            0            0 Time limit reached Time limit reached
+rococoB10-011000                0.10       0.10     0.422233     0.422233     0.220423     0.098103     0.066122     0.024423     240.5829     235.5237 Time limit reached Time limit reached
+roll3000                        2.90       3.00     0.010318     0.010008            0            0            0            0       1.0410       1.0051 Optimal         Optimal        
+s100                           76.50      76.60            -            -            -            -     0.019232     0.019232     219.9235     228.5735 Time limit reached Time limit reached
+satellites2-60-fs               3.10       3.10     1.000000     1.000000     1.000000     1.000000            0            0     240.3519     269.4096 Optimal         Optimal        
+seymour1                           0          0     0.004577     0.004577            0            0            0            0       1.3374       1.3449 Optimal         Optimal        
+sing326                         8.70       7.90     1.000000     1.000000     1.000000     1.000000     0.187296     0.187296     214.2043     214.7010 Time limit reached Time limit reached
+snp-02-004-104                 21.10      22.10            -            -     1.000000     1.000000     0.000040     0.000040      39.9241      39.5899 Optimal         Optimal        
+sp150x300d                         0          0            0            0            0            0            0            0       0.0056       0.0055 Optimal         Optimal        
+supportcase6                    6.70       6.90     1.000000     1.000000     1.000000     0.788651     0.000005     0.000299     106.6777     101.2151 Time limit reached Time limit reached
+unitcal_7                       4.00       4.10     0.051475     0.051475     0.000302     0.000302     0.000004     0.000004       0.8902       0.9223 Optimal         Optimal        
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+## Summary: B'-mix-cheapest vs B-mix-lambda300 (48 instances)
+
+Coverage: 42 both solved  |  0 B'-mix-cheapest-only  |  0 B-mix-lambda300-only  |  6 neither
+
+Metric                    B'-mix-cheapest wins B-mix-lambda300 wins Ties     SGM(B'-)     SGM(B-m)    
+--------------------------------------------------------------------------------
+Time to 1st feasible      16           4            22             4.7981       4.0317
+Gap @ 10s                 3            5            22           0.032635     0.034024
+Gap @ 60s                 5            4            28           0.010674     0.013355
+Gap @ 600s                5            5            32           0.001158     0.001260
+P-D integral              22           20           6             11.3643      12.9869
+
+## Paper Metrics (48 instances, 1 seed(s))
+
+#Feas                     B'-mix-cheapest B-mix-lambda300 D-shipped   
+----------------------------------------------------------------
+  seed 0                   42           42           41          
+
+#Win (best obj)           5            3            1           
+#First (fastest T1st)     19.7         12.7         9.7         
+
+SGM T1st (s=1)                  4.7981       4.0317       4.6373
+SGM Tbest (s=1)                59.8823      66.8628      62.1668
+SGM Gap@600s (s=0.001)        0.003648     0.003842     0.004688
+SGM Primal Integral            26.8879      28.9995      30.6300
+SGM P-D Integral               11.3643      12.9869      10.8781
+
+### Category breakdown (#Feas / #Win) (48 instances)
+
+Category  #Inst   Feas(B'-m)   Win(B'-m)   Feas(B-mi)   Win(B-mi)   Feas(D-sh)   Win(D-sh)
+------------------------------------------------------------------------------------------
+?            48           42           5           42           3           41           1
+
+(reference objective available for 48/48 instances)
+
+## PLATO Headline Metrics (48 instances, 600s, SGM shift=0.001)
+
+Config               SGM(PrimalIntegral)     #Feasible   #Instances
+--------------------------------------------------------------------
+B'-mix-cheapest      17.115471                      42           48
+B-mix-lambda300      18.479235                      42           48
+D-shipped            19.580432                      41           48
+
+SGM ratio B'-mix-cheapest/B-mix-lambda300: 0.9262  (lower is better; winner: B'-mix-cheapest)
+Feasible delta B'-mix-cheapest-B-mix-lambda300: +0  (B'-mix-cheapest=42, B-mix-lambda300=42)
