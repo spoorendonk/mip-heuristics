@@ -48,6 +48,13 @@ std::vector<std::string> gt2_log_for(const char* suite) {
     return solve_capturing_log("gt2.mps", [&](Highs& h) {
         require_option(h, "log_dev_level", 3);
         set_suite(h, suite);
+        // Unconditional, including on the suites that exclude Scylla: the
+        // suite value still decides what runs, so this only restores the
+        // ability of the `scylla` case to run its subject at all now that
+        // the shipped effort is 0.  Setting it on every case keeps the four
+        // arms differing in exactly one thing -- the suite -- which is what
+        // the negative cases below rely on.
+        enable_scylla(h);
     });
 }
 

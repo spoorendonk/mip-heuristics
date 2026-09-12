@@ -190,12 +190,21 @@ constexpr double kMaxGrowth = 8.0;
 constexpr double kLowEffort = 4.0;
 constexpr double kHighEffort = 80.0;
 
-void check_gate_binds(const char* inst, const char* heur, const char* option, int threads = 1) {
+// `patience` is passed through to `effort_at`, negative meaning "leave it at
+// the shipped default".  It has to be given explicitly for any heuristic
+// whose shipped patience is **0**, because 0 means *no gate at all* and this
+// function's whole subject is a gate that binds: FJ ships ungated since #107
+// (13 of 19 search survivors wanted that), and Scylla ships disabled so its
+// patience is moot.  Passing the previously-shipped value keeps the case
+// testing the mechanism rather than the current default.
+void check_gate_binds(const char* inst, const char* heur, const char* option, int threads = 1,
+                      double patience = -1.0) {
     // Held across both solves so they share one pinned worker count.
     const ScopedThreadPin pin;
-    INFO("instance=" << inst << " heuristic=" << heur << " threads=" << threads);
-    const size_t low = effort_at(inst, heur, option, kLowEffort, threads);
-    const size_t high = effort_at(inst, heur, option, kHighEffort, threads);
+    INFO("instance=" << inst << " heuristic=" << heur << " threads=" << threads
+                     << " patience=" << patience);
+    const size_t low = effort_at(inst, heur, option, kLowEffort, threads, patience);
+    const size_t high = effort_at(inst, heur, option, kHighEffort, threads, patience);
     // A zero here means the heuristic never ran, which would make the
     // ratio below vacuously true.
     REQUIRE(low > 0);
@@ -212,13 +221,17 @@ TEST_CASE("patience gate: FPR exits on staleness rather than spending 20x", "[pa
     check_gate_binds("p0548.mps", "fpr", "mip_heuristic_fpr_effort");
 }
 
+// FJ and Scylla both ship with patience 0 since #107, i.e. with no gate, so
+// each is given the patience it last shipped with -- 0.1416 and 0.767, from
+// #113's derivation.  Without that these two cases would assert that an
+// absent gate bounds the spend, which it does not.
 TEST_CASE("patience gate: FeasibilityJump exits on staleness rather than spending 20x",
           "[patience]") {
-    check_gate_binds("p0548.mps", "fj", "mip_heuristic_fj_effort");
+    check_gate_binds("p0548.mps", "fj", "mip_heuristic_fj_effort", 1, 0.1416);
 }
 
 TEST_CASE("patience gate: Scylla exits on staleness rather than spending 20x", "[patience]") {
-    check_gate_binds("flugpl.mps", "scylla", "mip_heuristic_scylla_effort");
+    check_gate_binds("flugpl.mps", "scylla", "mip_heuristic_scylla_effort", 1, 0.767);
 }
 
 // The case that needs *both* halves of the fix, and the reason the

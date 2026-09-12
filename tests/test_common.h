@@ -214,6 +214,21 @@ inline void set_suite(Highs& h, const char* suite) {
     require_option(h, "mip_heuristic_suite", std::string(suite));
 }
 
+// **Scylla ships disabled** (effort 0, #107: zero accepted incumbents in
+// ~380 runs), so a test whose subject *is* Scylla has to enable it.  The
+// value is the previously-shipped default rather than an arbitrary one: it
+// is #113's measured yield knee, so a mechanism test exercises Scylla in
+// the regime it was last calibrated for instead of one invented here.
+//
+// Naming the suite is not enough and deliberately so — `run_sequential`
+// filters `kChain` on the flag *and* a non-zero effort, which is the
+// property `test_effort_zero.cpp` pins.
+inline constexpr double kScyllaMeasuredEffort = 3.068;
+
+inline void enable_scylla(Highs& h, double effort = kScyllaMeasuredEffort) {
+    require_option(h, "mip_heuristic_scylla_effort", effort);
+}
+
 // Solve `inst` with `suite` selected and return the final objective.
 inline double solve_suite(const char* inst, const char* suite) {
     Highs h;

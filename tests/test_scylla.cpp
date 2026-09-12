@@ -77,6 +77,7 @@ TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][s
     const std::vector<std::string> lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
         set_suite(h, "scylla");
+        enable_scylla(h);
     });
 
     // Parse out the fresh / stale counts from the [ScyllaOverlap] line

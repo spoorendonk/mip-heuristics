@@ -1200,7 +1200,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_fj_effort` — FeasibilityJump budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.5665` (measured, #113 re-run 2026-09-06; was `2.84` from the
+- **Default**: `0.3317` (selected, #107's `B'-mix-cheapest`, held-out validated; #113's per-heuristic measurement of `0.5665` is the previous default and is retained in `bench/ablation_effort/`; was `2.84` from the
   2026-08-27 run, whose FJ knee rested on 1 finished dispatch of 220 before
   #163 — see `bench/ablation_effort/README.md`)
 - **Meaning**: Sizes one *worker's* allowance rather than the whole
@@ -1233,7 +1233,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_fpr_effort` — FPR budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `12.2559` (measured, #113 re-run 2026-09-06; was `7.672`)
+- **Default**: `3.161` (selected, #107's `B'-mix-cheapest`, held-out validated; #113's per-heuristic measurement of `12.2559` is the previous default and is retained in `bench/ablation_effort/`)
 - **Meaning**: Whole-dispatch budget for the presolve FPR chain, divided
   across the workers by `make_budget`. The default is `0.30 x 2.99/10.15`
   — FPR's 29.5% share of the retired shared envelope at its 0.30 default.
@@ -1245,7 +1245,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_local_mip_effort` — LocalMIP budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `13.9607` (measured, #113 re-run 2026-09-06; was `29.232`,
+- **Default**: `3.2865` (selected, #107's `B'-mix-cheapest`, held-out validated; #113's per-heuristic measurement of `13.9607` is the previous default and is retained in `bench/ablation_effort/`; was `29.232`,
   halved once #162 stopped LocalMIP overrunning its wall-clock limit)
 - **Meaning**: Whole-dispatch budget for LocalMIP. The default is
   `0.30 x 6.16/10.15`, its 60.7% share of the retired envelope — the
@@ -1260,7 +1260,7 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_scylla_effort` — Scylla budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `3.068` (measured, #113 re-run 2026-09-06; was `1.136`, tripled
+- **Default**: `0.0` — **Scylla ships disabled** (#107: zero accepted incumbents in ~380 runs while dispatching on every solve, and absent from all 14 search survivors). #113's per-heuristic measurement was `3.068`; was `1.136`, tripled
   once #152 stopped Scylla retiring at half its limit)
 - **Meaning**: Whole-dispatch budget for Scylla. The default is
   `0.30 x 1.00/10.15`, its 9.9% share of the retired envelope. Scylla's
@@ -1776,7 +1776,7 @@ effort-gap distribution).
 ### `mip_heuristic_fj_patience` — FeasibilityJump patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.1416` (measured, #113 re-run 2026-09-06; was `0.71`). It is
+- **Default**: `0.0` — **no gate** (searched, #107; 13 of 19 survivors wanted FJ ungated). #113's derived value was `0.1416`; was `0.71`. It is
   the clamp to rounding, `0.25 x` the effort option beside it, not the raw p95 wait of
   `2.46` — see the clamp note below.
 - **Meaning**: Step units per worker without an incumbent improvement, as
@@ -1821,7 +1821,7 @@ effort-gap distribution).
 ### `mip_heuristic_local_mip_patience` — LocalMIP patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `3.4902` (measured, #113 re-run 2026-09-06; was `7.308`). The
+- **Default**: `3.1943` (searched, #107). It sampled *above* its own clamp, so `patience_threshold` applies `effort / 4` = `0.8216` — the loosest live gate, and a known degeneracy of the searched domain rather than a measured value. #113's derived value was `3.4902`; was `7.308`. The
   clamp, `0.25 x` effort; the raw p95 wait is `4.93` — the only one of the
   four whose measured wait is near its own ceiling fraction.
 - **Meaning**: Coefficient accesses without an incumbent improvement, as a
@@ -1870,7 +1870,7 @@ effort-gap distribution).
 ### `mip_heuristic_scylla_patience` — Scylla patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.767` (measured, #113 re-run 2026-09-06; was `0.284`). The
+- **Default**: `0.0` — Scylla ships disabled, so its gate is moot (#107). #113's derived value was `0.767`; was `0.284`. The
   clamp, `0.25 x` effort; the raw p95 wait is `18.96`.
 - **Meaning**: PDLP-iteration x nnz units without an incumbent
   improvement, as a multiple of `nnz << 10`, **whole dispatch**. Small in
@@ -2135,10 +2135,10 @@ per-heuristic options below.
 The custom patch-added options are exactly six (plus the four patience
 options documented above):
 
-- `mip_heuristic_fj_effort` (default `0.5665`),
-  `mip_heuristic_fpr_effort` (`12.2559`),
-  `mip_heuristic_local_mip_effort` (`13.9607`),
-  `mip_heuristic_scylla_effort` (`3.068`) — one effort budget multiplier
+- `mip_heuristic_fj_effort` (default `0.3317`),
+  `mip_heuristic_fpr_effort` (`3.161`),
+  `mip_heuristic_local_mip_effort` (`3.2865`),
+  `mip_heuristic_scylla_effort` (`0.0`, i.e. disabled) — one effort budget multiplier
   per presolve heuristic, each a double in `[0.0, 1e6]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the other three are per dispatch.

@@ -220,7 +220,13 @@ TEST_CASE("effort-zero: a zeroed heuristic charges nothing and offers nothing", 
 // none of that setup ran.  It is also exactly what omitting Scylla from the suite produces, which
 // is the point.
 TEST_CASE("effort-zero: scylla builds no PDLP wrapper at effort 0", "[effort-zero]") {
-    CHECK(log_contains(trace_solve("flugpl.mps", [](Highs& h) { set_suite(h, "all"); }),
+    CHECK(log_contains(trace_solve("flugpl.mps",
+                                   [](Highs& h) {
+                                       set_suite(h, "all");
+                                       // The control arm has to actually run Scylla,
+                                       // and since #107 the shipped effort is 0.
+                                       enable_scylla(h);
+                                   }),
                        "[ScyllaOverlap]"));
     CHECK(!log_contains(zeroed("flugpl.mps", "scylla"), "[ScyllaOverlap]"));
     CHECK(!log_contains(omitted("flugpl.mps", "fj,fpr,local_mip"), "[ScyllaOverlap]"));
