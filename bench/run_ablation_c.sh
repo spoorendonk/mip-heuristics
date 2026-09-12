@@ -115,26 +115,53 @@ cmd_capability() {
 
 cmd_contribution() {
 	local hours=${1:?usage: contribution <hours>}
-	# Not a second definition of the arm: it is `finalists.json`'s
-	# E-shipped-plus-fprlp, run by the launcher that owns it, into the tree its
-	# 20 existing runs are already in.  `run_plato.sh` resumes per
-	# (config, instance, seed), so this adds the missing 29 and repeats none.
-	echo "=== C1 contribution: completing E-shipped-plus-fprlp against D-shipped"
+	# Not a second definition of the arm: it is a `finalists.json` entry, run
+	# by the launcher that owns it.  `run_plato.sh` resumes per
+	# (config, instance, seed), so a repeated call adds what is missing and
+	# repeats nothing.
+	#
+	# The arm is `F-selected-plus-fprlp` -- the configuration #107 selected,
+	# plus `fpr_lp`.  Its control is that configuration's own 49 confirmation
+	# runs, already on disk, so this stage costs one arm.
+	#
+	# `E-shipped-plus-fprlp` is C1's first run, complete at n=49 and kept as
+	# the record of what `fpr_lp` did against the *previous* four-heuristic
+	# vector.  That background was retired by #107, so the contrast had to be
+	# remeasured rather than carried over -- the arm is superseded, not wrong.
+	#
+	# **Deliberately on the same binary as the control**
+	# (`run_finalists.sh`'s own default, `bench/results/irace/bin/highs`),
+	# not on the freshly built one.  Both arms pass all nine options
+	# explicitly, so the binary's *defaults* are not read by either, and
+	# using the control's binary removes the build as a variable.  The
+	# PATCH_VERSION bumps between that binary and today's changed defaults,
+	# help strings and comments only.
+	local arm="${ABLATION_C_ARM:-F-selected-plus-fprlp}"
+	echo "=== C1 contribution: $arm against its fpr_lp-free control"
 	CONFIRM_INSTANCES="$INSTANCES" \
 	FINALISTS_RESULTS="$FINALISTS" \
-	MIP_HEURISTICS_BINARY="$BINARY" \
-	FINALISTS_ONLY="E-shipped-plus-fprlp" \
+	FINALISTS_ONLY="$arm" \
 		"$REPO/bench/run_finalists.sh" confirm "$hours"
 }
 
+# `set -o pipefail` is on, and a glob that matches nothing makes `ls` exit
+# non-zero, which would abort the whole status report on the first arm not yet
+# run.  Counting through a subshell that swallows that is the point.
+count_logs() {
+	{ ls "$@" 2>/dev/null || true; } | wc -l
+}
+
 cmd_status() {
-	local n
-	n=$(ls "$RESULTS/capability/fpr_lp/seed0"/*.log 2>/dev/null | wc -l)
-	printf 'C0 capability    %s / %s runs\n' "$n" "$(grep -c '^[^#]' "$INSTANCES")"
-	n=$(ls "$FINALISTS/confirm/E-shipped-plus-fprlp/all/seed0"/*.log 2>/dev/null | wc -l)
-	printf 'C1 contribution  %s / %s runs (E-shipped-plus-fprlp)\n' "$n" "$(grep -c '^[^#]' "$INSTANCES")"
-	n=$(ls "$FINALISTS/confirm/D-shipped/all/seed0"/*.log 2>/dev/null | wc -l)
-	printf 'C1 control       %s / %s runs (D-shipped, already on disk)\n' "$n" "$(grep -c '^[^#]' "$INSTANCES")"
+	local total
+	total=$(grep -c '^[^#]' "$INSTANCES")
+	printf 'C0 capability    %s / %s runs\n' \
+		"$(count_logs "$RESULTS/capability/fpr_lp/seed0"/*.log)" "$total"
+	printf 'C1 contribution  %s / %s runs (F-selected-plus-fprlp)\n' \
+		"$(count_logs "$FINALISTS/confirm/F-selected-plus-fprlp"/*/seed0/*.log)" "$total"
+	printf "C1 control       %s / %s runs (B'-mix-cheapest, already on disk)\n" \
+		"$(count_logs "$FINALISTS/confirm/B'-mix-cheapest"/*/seed0/*.log)" "$total"
+	printf 'C1 superseded    %s / %s runs (E-shipped-plus-fprlp, previous background)\n' \
+		"$(count_logs "$FINALISTS/confirm/E-shipped-plus-fprlp"/*/seed0/*.log)" "$total"
 }
 
 case "${1:-status}" in
