@@ -5,20 +5,14 @@ the four presolve effort and patience defaults) and `bench/ablation_search/`
 (Ablation B, the joint search over the presolve mix).
 
 **Headline: `fpr_lp` keeps its shipped default of `0` — disabled — on evidence
-rather than on caution.** It is capable of producing accepted incumbents when
-it owns the LP-iteration envelope, and produces **none** when RENS and RINS
-compete for it: zero accepted incumbents across ~100 paired runs on two
-different presolve backgrounds.
+rather than on caution.** Given the whole LP-iteration envelope to itself it
+*can* produce accepted incumbents. In the shipped chain it produces **none**:
+zero accepted incumbents across 49 paired runs, with nothing separating in
+either direction on the campaign metric.
 
-**Stage C1 was measured twice, and the second reading is the one that counts.**
-The first was taken against the four-heuristic vector that shipped at the time,
-where `fpr_lp` cost a separated 27% on the instances where it engaged without
-producing anything. #107 then retired that vector, and against the
-three-heuristic configuration that actually ships the cost is gone — 0.955
-overall, CI [0.87, 1.05]. So the harm was an interaction with a heavier
-presolve chain, not a property of `fpr_lp`. The conclusion is unchanged and its
-reasoning is weaker: not "it costs" but **"it does nothing, in either
-direction"**.
+The verdict rests on that zero, not on the metric. At n=49 the observed 4.5%
+difference would need n=403 to resolve, so the campaign metric settles nothing
+here on its own.
 
 ## Reproducing
 
@@ -28,7 +22,6 @@ direction"**.
 | read it | `bench/analyze_ablation_c.py capability <tree>/fpr_lp/seed0` | `capability.txt` here |
 | C1, contribution | `bench/run_ablation_c.sh contribution 6` | `bench/results/finalists/confirm/F-selected-plus-fprlp/` |
 | read it | `bench/analyze_ablation_c.py contribution <control>/<suite> <arm>/<suite> --labels <C0>/fpr_lp/seed0` | `contribution.txt` here |
-| the superseded reading | `ABLATION_C_ARM=E-shipped-plus-fprlp bench/run_ablation_c.sh contribution 6` | `.../E-shipped-plus-fprlp/` (already complete) |
 
 Results trees are gitignored (`bench/results*`); every derived artifact needed
 to read the result is in this directory.
@@ -104,16 +97,16 @@ on four instances in five and produces accepted incumbents on one in five;
 one RENS or RINS would have found from the same envelope. C0 answers "can it",
 which is what a gate is for.
 
-## Stage C1 — contribution at the campaign metric, measured twice
+## Stage C1 — contribution at the campaign metric
 
 The shipped configuration with and without `fpr_lp`, paired on identical
-instances at the 600 s campaign limit. Both arms differ in exactly one option,
-so configuration cancels along with instance difficulty — which is why n=49
-resolves 14% here against the 20.6% of #107's arm-vs-arm comparisons.
+instances at the 600 s campaign limit — `B'-mix-cheapest` against the same
+vector plus `mip_heuristic_fpr_lp_effort=1.0`. The arms differ in exactly one
+option, so configuration cancels along with instance difficulty, which is why
+n=49 resolves 14% here against the 20.6% of the arm-vs-arm comparisons in
+`bench/ablation_search/`.
 
-Full output of the current reading in `contribution.txt`.
-
-### The reading that counts: against `B'-mix-cheapest`, the shipped vector
+Full output in `contribution.txt`.
 
 | subgroup | n | ratio | 95% CI | t |
 |---|---|---|---|---|
@@ -126,77 +119,52 @@ Full output of the current reading in `contribution.txt`.
 direction. The null control is tight to within 0.4%, which is what says these
 are real nulls rather than a measurement too noisy to see anything.
 
-Resolving the observed 4.5% would need **n=403** against a 49-instance set, so
-this is unresolvable rather than merely unresolved — the same shape as #107's
-finding and #108's held-out interval.
+Subgroups are labelled by C0's independent run, so the partition is fixed by
+something other than the metric being compared — but the labels come from C0's
+configuration rather than from these runs, so they are a proxy for "an instance
+where `fpr_lp` engages", and the split is post-hoc. Read it as a mechanism, not
+as a second headline.
 
-### The superseded reading: against the previous four-heuristic vector
+### Measured against what ships, because the background turned out to matter
 
-Kept because the contrast between the two is the informative part, and because
-the arm (`E-shipped-plus-fprlp`, 49 runs) is on disk.
+An earlier reading of this stage was taken against a different presolve
+configuration and reached a different conclusion about the *cost*. The yield
+was zero there too.
 
-| subgroup | n | ratio | 95% CI | t |
-|---|---|---|---|---|
-| overall | 49 | 1.137 | [0.99, 1.31] | +1.75 |
-| C0 yielded | 10 | 0.952 | [0.58, 1.55] | −0.20 |
-| **C0 fired, never yielded** | **28** | **1.270** | **[1.07, 1.51]** | **+2.66** |
-| C0 never fired (null control) | 10 | 1.007 | [0.99, 1.02] | +1.02 |
+The mechanism is wall clock: that chain spent **3259 ms** of median presolve
+time against the shipped one's **438 ms**, so the dive starts later, from a
+different incumbent, with the envelope in a different state.
 
-Also zero accepted incumbents, across its own 49 runs.
-
-### What moved, and why it was worth re-running
-
-The 27% cost was **separated** on the old background and is **gone** on the
-new one. `fpr_lp` draws from upstream's RENS/RINS envelope at dive time and
-none of that involves the presolve chain, so the prior was that the verdict
-would carry over unchanged. It did not, in the one respect that mattered.
-
-The mechanism is the one #107 measured: the previous chain spent **3259 ms**
-of median presolve wall clock against the shipped one's **438 ms**. On that
-heavier background the dive starts later, from a different incumbent, with the
-envelope in a different state — and adding a heuristic that produces nothing
-was measurably harmful. On the cheaper chain it is merely inert.
-
-**This is the case against closing a measurement on a mechanism argument.**
-The argument was sound and the prediction was wrong, and 3.2 h of machine time
-is what separated the two.
-
-### A pilot, recorded rather than discarded
-
-The first reading's arm began as 20 runs taken before this ablation had a
-design (`dfa90d2` enabled it, `abe1043` disabled it again). At n=20 it showed
-1.179, CI [1.055, 1.317] — separated. At n=49 the same arm gives 1.137, CI
-[0.99, 1.31] — not separated, with the paired sd more than doubling. The 20
-were the quiet instances. Reported separately at the time, and the reason to
-keep doing so.
+**The transferable point is that a sound mechanism argument is not a
+measurement.** `fpr_lp` draws from upstream's dive-time envelope and none of
+that involves the presolve chain, so the prediction was that the verdict would
+carry over unchanged. It did not, and 3.2 h of machine time is what separated
+the argument from the answer.
 
 ## Verdict
 
 **`fpr_lp` is dominated by RENS/RINS inside the shared envelope.** It produces
 accepted incumbents when nothing competes for the LP iterations (C0: 60, on 10
-of 49 instances) and **none** when they do: zero across ~100 paired runs, on
-two different presolve backgrounds and at five times the wall clock.
+of 49 instances) and **none** when they do — zero across 49 paired runs at the
+campaign limit, five times C0's wall clock.
 
-The *cost* is background-dependent and the *yield* is not. Against the
-four-heuristic vector it cost a separated 27% where it engaged without
-producing anything; against the configuration that ships, nothing separates in
-either direction (0.955, CI [0.87, 1.05]). What carries the verdict is
-therefore the zero yield, not the campaign metric — at n=49 the observed 4.5%
-would need n=403 to resolve.
+What carries the verdict is that zero, not the campaign metric: nothing
+separates in either direction (0.955, CI [0.87, 1.05]), and resolving the
+observed 4.5% would need n=403 against a 49-instance set.
 
 **Shipped setting: `mip_heuristic_fpr_lp_effort = 0`.** The value does not
 move; its justification does, from "unmeasured, so off" to **"measured, and off
 because it does nothing"** — a weaker case than the first reading suggested,
-and the honest one. A heuristic that produces no accepted solution in ~100
-paired runs across two backgrounds, and moves the campaign metric by 4.5% ±
-noise, has not earned a share of upstream's RENS/RINS envelope.
+and the honest one. A heuristic that produces no accepted solution in 49
+paired runs at the campaign limit, and moves the metric by 4.5% ± noise, has
+not earned a share of upstream's RENS/RINS envelope.
 
-**No share sweep, and this is a decision rather than a deferral.** Raising the
-share hands more of the envelope to a heuristic that already fires on 79% of
-instances and yields on 20%, which by this mechanism makes the 1.270 worse;
-lowering it shrinks cost and yield together. There is no share at which "costs
-27% on 28 instances, level on 10" becomes a win, and one dimension gives a
-search nothing to navigate while costing >= 504 experiments (~85 h at 600 s).
+**No share sweep, and this is a decision rather than a deferral.** The lever
+changes how much of the envelope `fpr_lp` takes from RENS and RINS, and it
+produces nothing to show for what it already takes — so a larger share buys
+more of nothing at their expense, and a smaller one converges on the shipped
+`0`. One dimension also gives a search nothing to navigate, at >= 504
+experiments (~85 h at 600 s).
 
 **The lever the data points at is a gate, not a budget** — do not dispatch the
 dive where it will not yield. That is a code change, out of scope for a
@@ -211,11 +179,12 @@ method rather than about `fpr_lp`.
    C0 cost 1.3 h and would have closed the whole campaign had it come back
    zero. It needs no power calculation because its output is a count. Ablation
    B spent ~30 h establishing a null it could have predicted.
-2. **An untuned subgroup with an independent label beats a mean.** The
-   aggregate says nothing (1.137, CI spanning 1); the partition says 1.270 with
-   a null control at [0.99, 1.02]. A heuristic that fires on some instances and
-   not others cannot be summarised by its mean effect, and the instances where
-   it cannot fire are a free control that validates the pairing.
+2. **The instances a heuristic cannot reach are a free control.** The ten
+   where the dive never fires come back at 0.996, CI [0.99, 1.00], and that is
+   what licenses reading the other subgroups at all — without it, "nothing
+   separates" is indistinguishable from "the measurement is too noisy to see
+   anything". `analyze_ablation_c.py` refuses to print the subgroups if that
+   control ever separates.
 3. **A zero-sum budget makes "does it help" the wrong question.** `fpr_lp`
    competes with RENS/RINS for one envelope, so the finding is not "it is a bad
    heuristic" but "it is worse than what it displaces". That distinction is

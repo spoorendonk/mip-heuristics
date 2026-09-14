@@ -2169,14 +2169,13 @@ options documented above):
   is what says those are real nulls rather than a measurement too noisy to see
   anything.
 
-  Measured once more against the *previous* four-heuristic vector, `fpr_lp`
-  cost a separated 27% on the instances where it engaged without producing
-  anything (1.270, CI [1.07, 1.51]). That cost is gone on the configuration
-  that ships, so it was an interaction with a heavier presolve chain — 3259 ms
-  of median presolve wall clock against 438 ms — rather than a property of
-  `fpr_lp`. Recorded because it is the reason the contrast was re-measured
-  rather than carried over on the mechanism argument, which predicted it would
-  transfer unchanged and was wrong. The mechanism is that `fpr_lp` is
+  The contrast is measured against the configuration that **ships**, not
+  against an earlier one: an earlier reading on a heavier presolve chain — 3259
+  ms of median presolve wall clock against 438 ms — reached a different
+  conclusion about the cost, though the yield was zero there too. The mechanism
+  argument said the verdict could not depend on the presolve chain, since
+  `fpr_lp` draws from upstream's dive-time envelope; it was wrong, which is why
+  the contrast is re-measured whenever the background moves. The mechanism is that `fpr_lp` is
   **dominated by RENS/RINS inside the shared envelope** — it finds solutions
   when nothing competes for the LP iterations and none when they do, while
   spending wall clock either way. That is also why no share fixes it, and why
