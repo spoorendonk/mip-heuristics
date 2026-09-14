@@ -174,8 +174,15 @@ keep doing so.
 
 **`fpr_lp` is dominated by RENS/RINS inside the shared envelope.** It produces
 accepted incumbents when nothing competes for the LP iterations (C0: 60, on 10
-of 49 instances) and none when they do (the pilot: 0 across 20 instances at 600
-s, five times the wall clock) — while costing 27% wherever it engages.
+of 49 instances) and **none** when they do: zero across ~100 paired runs, on
+two different presolve backgrounds and at five times the wall clock.
+
+The *cost* is background-dependent and the *yield* is not. Against the
+four-heuristic vector it cost a separated 27% where it engaged without
+producing anything; against the configuration that ships, nothing separates in
+either direction (0.955, CI [0.87, 1.05]). What carries the verdict is
+therefore the zero yield, not the campaign metric — at n=49 the observed 4.5%
+would need n=403 to resolve.
 
 **Shipped setting: `mip_heuristic_fpr_lp_effort = 0`.** The value does not
 move; its justification does, from "unmeasured, so off" to **"measured, and off

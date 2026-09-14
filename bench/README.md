@@ -17,7 +17,7 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | `run_plato.sh` | the chunked launcher every campaign stage uses. A stage is an *environment*, not a separate script — configs, seeds, instance list, output tree, extra options |
 | `run_presolve_probe.sh` | `run_plato.sh` with the calibration probe's environment (issue #113). Modes: `preprobe`, `budget`, `serial` |
 | `run_finalists.sh` | the #107 finalists at the campaign limit — `heldout`, `confirm`. `FINALISTS_ONLY` names one arm for a stage that owns one rather than the set |
-| `run_headline.sh` | #108's headline: the selected configuration over the full 233 at 600 s, three seeds, against #105's vanilla arm in the same tree. `until 08:00` bounds a window by wall-clock time; `report` prints the three pre-registered tables |
+| `run_headline.sh` | the headline: the shipped configuration at **default options** over the full 233 at 600 s, against the vanilla arm in the same tree. One seed by default -- three is what the stage asks for and is the deliverable, one is the gate, and the script says why. `until 08:00` bounds a window by wall-clock time; `report` prints the three pre-registered tables |
 | `run_ablation_c.sh` | `fpr_lp`'s two stages (#165): `capability` (does it fire, and yield, given every advantage) then `contribution` (the paired campaign metric) |
 | `run_target.py` | scores **one parameter vector** on one instance set — the inner loop of the #107 tuning search |
 | `download_miplib.sh` | fetches MIPLIB2017 once per machine (3.5 GB, outside every checkout) |
@@ -61,9 +61,33 @@ byte for byte.
 
 They land in **`bench/ablation_effort/`**, which is tracked — `bench/results*`
 is not, and the numbers behind a shipped default should not live only on the
-machine that ran the probe. That directory's README carries the findings: what
-the shipped effort and patience defaults are, how they were derived, and the
-caveats that travel with them.
+machine that ran the probe.
+
+## Where the results live
+
+Four tracked directories, one per stage of the closeout campaign. Each carries
+its own README with the findings, the caveats, and the commands that regenerate
+every file in it from a results tree.
+
+| directory | what it settles |
+|---|---|
+| `ablation_effort/` | per-heuristic effort and patience, measured with each heuristic **alone** |
+| `ablation_search/` | the joint search over mix, effort and patience — and the reversal that corrected its first reading |
+| `ablation_fprlp/` | whether `fpr_lp` earns a share of upstream's RENS/RINS envelope (it does not) |
+| `headline/` | the shipped configuration against vanilla over the full 233, plus the generated provenance record |
+
+**The results trees themselves are not published** — `bench/results*` is
+gitignored and runs to several GB. Every number in those four READMEs is
+readable without them, and regenerable from them. The runs are 16-worker and
+non-deterministic by design, so a re-run reproduces the *result*, never the
+logs; `docs/REPRODUCIBILITY.md` states that contract and the stage-by-stage
+recipe.
+
+`make_archive.py` packages a results tree with its provenance and a
+`REGENERATE.sh` that re-derives every table from the archived logs and diffs
+it. That is run as a release step — proving the tables come from the logs is a
+check on our own arithmetic — but the archive stays in the gitignored `dist/`
+and is not deposited. See `docs/RELEASE.md`.
 
 ## Things that will bite you
 

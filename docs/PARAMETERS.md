@@ -2159,15 +2159,24 @@ options documented above):
   `bench/ablation_fprlp/`). Given every advantage — alone, RENS/RINS disabled
   so it owns the envelope, a per-call budget that cannot bind — `fpr_lp`
   reaches dive nodes on 79% of a 49-instance set and produces accepted
-  incumbents on 20% of it, so it is capable. In the shipped chain at
-  `share = 1.0`, paired against the same configuration without it, it costs
-  **27%** of the primal integral on the 57% of instances where it engages and
-  finds nothing (CI [1.07, 1.51]), pays nothing back where it does find
-  something (0.95, wide), and is exactly neutral where the dive never reaches
-  (1.007, CI [0.99, 1.02] — the null control that makes the rest readable).
-  The aggregate over all three is 1.137 with CI [0.99, 1.31], and resolving
-  that would need n=128 against a 97-instance pool, so the *conditional*
-  effect is what the verdict rests on. The mechanism is that `fpr_lp` is
+  incumbents on 20% of it, so it is capable. In the shipped chain it produced
+  **zero accepted incumbents across ~100 paired runs**, on two different
+  presolve backgrounds — which is what the verdict rests on, because the
+  campaign metric cannot settle it: paired against the same configuration
+  without `fpr_lp`, the effect is 0.955 with CI [0.87, 1.05], and resolving the
+  observed 4.5% would need n=403 against a 49-instance set. The null control —
+  instances where the dive never fires — sits at 0.996, CI [0.99, 1.00], which
+  is what says those are real nulls rather than a measurement too noisy to see
+  anything.
+
+  Measured once more against the *previous* four-heuristic vector, `fpr_lp`
+  cost a separated 27% on the instances where it engaged without producing
+  anything (1.270, CI [1.07, 1.51]). That cost is gone on the configuration
+  that ships, so it was an interaction with a heavier presolve chain — 3259 ms
+  of median presolve wall clock against 438 ms — rather than a property of
+  `fpr_lp`. Recorded because it is the reason the contrast was re-measured
+  rather than carried over on the mechanism argument, which predicted it would
+  transfer unchanged and was wrong. The mechanism is that `fpr_lp` is
   **dominated by RENS/RINS inside the shared envelope** — it finds solutions
   when nothing competes for the LP iterations and none when they do, while
   spending wall clock either way. That is also why no share fixes it, and why

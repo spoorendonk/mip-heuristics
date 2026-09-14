@@ -50,6 +50,25 @@ Reference PDFs are in `docs/`.
 
 The heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla, each with its own effort budget (`mip_heuristic_fj_effort`, `mip_heuristic_fpr_effort`, `mip_heuristic_local_mip_effort`, `mip_heuristic_scylla_effort`) and its own patience (`mip_heuristic_<name>_patience`, the improvement-free effort it tolerates before giving up) so one can be tuned without moving the others. Both are multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so `effort = 1.0` is one vanilla FJ budget and `patience < effort` reads on its face. Each heuristic parallelises the same way: continuous workers that self-terminate, with no epoch barrier and no bit-identical guarantee across runs.
 
+**What actually ships is three of the five.** The defaults are the configuration
+selected by the closeout campaign ([`bench/ablation_search/`](bench/ablation_search/)):
+
+| heuristic | effort | patience | |
+|---|---|---|---|
+| `fj` | 0.3317 | 0.0 | no staleness gate — `0` means no gate at all, not "give up at once" |
+| `fpr` | 3.1610 | 0.3372 | |
+| `local_mip` | 3.2865 | 3.1943 | above its own ceiling, so `effort/4` = 0.8216 applies |
+| `scylla` | **0.0** | 0.0 | **disabled** |
+| `fpr_lp` | **0.0** | — | **disabled** (a share of a different envelope — see below) |
+
+**Scylla ships disabled**, and that is a measurement rather than a preference:
+it produced **zero accepted incumbents across ~380 runs** on 233 instances
+while dispatching on every solve, and it is absent from all 14 survivors of the
+configuration search. Effort `0` is the tested spelling of "off" — the chain
+filters on a non-zero budget as well as on the suite token — so raising it
+re-enables the heuristic with no rebuild. The implementation is maintained and
+tested; it is the *budget* that is zero.
+
 For a reproducible run, set `threads=1` together with a fixed `random_seed`. That is the project's reproducibility contract — a single worker per heuristic, deterministic within one binary. It is not a separate mode and needs no extra option. It is also *not* the benchmark configuration: one worker per heuristic removes the contention Scylla is built around. [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) has the full contract, including what is deliberately not reproducible and why.
 
 One caveat for library embedders (not CLI users): HiGHS's task executor is a process-global singleton, initialised by the first `run()` in the process. A later solve that asks for a *different* thread count fails outright rather than silently using the old one, so pinning `threads=1` on a second `Highs` instance returns an error unless you first call `Highs::resetGlobalScheduler(true)`.
@@ -65,7 +84,7 @@ One caveat for library embedders (not CLI users): HiGHS's task executor is a pro
 | `scylla` | Scylla | PDLP pump only |
 | `fpr_lp` | `fpr_lp` | the dive-time LP-guided FPR, on its own |
 | `fj,fpr` | FJ + presolve FPR | any comma-separated subset — all thirty-one are expressible |
-| `all` | FJ+FPR+LocalMIP+Scylla+`fpr_lp` | **default** |
+| `all` | names all five | **default** — but `scylla` and `fpr_lp` ship at effort `0`, so three run |
 
 Order within a list is irrelevant (`fpr,fj` is `fj,fpr`), whitespace around a name is ignored, and repeating a name is harmless. `off` and `all` are aliases for the whole value, not names inside a list: `fj,off` is rejected, because `off` means "none of ours, HiGHS's own FeasibilityJump call site handed back" rather than merely "no heuristic".
 
@@ -77,39 +96,98 @@ Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside `
 
 **`fpr_lp` has its own token and its own budget.** It runs at B&B dive time on the same continuous workers, and since #164 it is selected by the `fpr_lp` token rather than by `fpr`'s — so it runs at `suite=fpr_lp` and `suite=all`, and is *disabled* at `suite=fpr`, `suite=local_mip`, `suite=scylla` and `off`. **`suite=fpr` therefore no longer implies `fpr_lp`**; a configuration spelled that way means presolve FPR alone, and the pair is `fpr,fpr_lp`. It used to follow the `fpr` bit, which made "presolve FPR without `fpr_lp`" inexpressible and so left the contribution of either one unmeasurable on the shipped binary.
 
-Its budget is `mip_heuristic_fpr_lp_effort` (default `0.0` — `fpr_lp` ships **off**, see below), which is **not** in the same unit as the four presolve effort options: `fpr_lp` draws from upstream's RENS/RINS LP-iteration envelope and charges back what it spends, so its option is a *share of that envelope* rather than a multiple of `nnz << 10`. A call is sized at `share × min(remaining headroom, per-call cap)`, so `1.0` takes that whole slice — exactly what the call took before the option existed — while a share above `1.0` grows the budget without bound, which is what lets a calibration hand `fpr_lp` a budget that cannot bind. Overdrawing is self-correcting: the charge-back depletes the counters the headroom is read from, so the next call finds none and skips. `0` disables the heuristic, and it does so above every read and write of the shared LP-iteration counters, so an `fpr_lp` ablation leaves RENS and RINS doing what they did. **It ships at `0`, and that is a measurement** (#165, derived in [`bench/ablation_fprlp/`](bench/ablation_fprlp/)): `fpr_lp` is capable — given the whole envelope with RENS/RINS disabled it reaches dive nodes on 79% of a 49-instance set and produces accepted incumbents on 20% — but in the shipped chain it is dominated by the two heuristics it draws that envelope from, costing 27% of the primal integral on the instances where it engages and finds nothing while paying nothing back where it does.
+Its budget is `mip_heuristic_fpr_lp_effort` (default `0.0` — `fpr_lp` ships **off**, see below), which is **not** in the same unit as the four presolve effort options: `fpr_lp` draws from upstream's RENS/RINS LP-iteration envelope and charges back what it spends, so its option is a *share of that envelope* rather than a multiple of `nnz << 10`. A call is sized at `share × min(remaining headroom, per-call cap)`, so `1.0` takes that whole slice — exactly what the call took before the option existed — while a share above `1.0` grows the budget without bound, which is what lets a calibration hand `fpr_lp` a budget that cannot bind. Overdrawing is self-correcting: the charge-back depletes the counters the headroom is read from, so the next call finds none and skips. `0` disables the heuristic, and it does so above every read and write of the shared LP-iteration counters, so an `fpr_lp` ablation leaves RENS and RINS doing what they did. **It ships at `0`, and that is a measurement** (derived in [`bench/ablation_fprlp/`](bench/ablation_fprlp/)): `fpr_lp` is capable — given the whole envelope with RENS/RINS disabled it reaches dive nodes on 79% of a 49-instance set and produces accepted incumbents on 20% — but in the shipped chain it produced **zero accepted incumbents across ~100 paired runs on two different presolve configurations**, and moved the campaign metric by 4.5% ± noise. It is not that it costs, but that it does nothing, while drawing on an envelope that is zero-sum against two upstream heuristics which do produce solutions.
 
 `mip_heuristic_run_feasibility_jump` is upstream's own option and keeps its meaning: setting it false disables FeasibilityJump at every suite value, ours and HiGHS's alike.
 
 ## Benchmarks
 
-### PLATO mipfeas — 233 instances, 600s time limit
+### PLATO mipfeas — 233 instances, 600 s, shipped defaults vs vanilla HiGHS
 
-Full PLATO mipfeas benchmark (233 MIPLIB 2017 instances, 600s per instance, system HiGHS as vanilla baseline). Configuration: the then-current `mip_heuristic_preset=all_opp` — FJ + FPR + LocalMIP + `fpr_lp`, Scylla deliberately excluded. (`fpr_lp` ran because it followed the FPR bit at the time; today it is its own token, so the configuration is spelled `fj,fpr,local_mip,fpr_lp` — config name `fj+fpr+local_mip+fpr_lp`.)
+The closeout campaign (#109), measured on the final tree. The patched arm is
+**the shipped binary at default options** — no extra options at all — against a
+separately built unpatched HiGHS of the same tag. One seed, 16 workers, CPU
+build. Full write-up and the paired statistics:
+[`bench/headline/`](bench/headline/).
 
-| Metric | Patched (`all_opp`) | Vanilla HiGHS |
+| Metric | Patched | Vanilla |
 |---|---|---|
-| #Feasible | **213** | 208 |
-| #Win (strict, best primal obj at 600s) | **59** | 41 |
-| SGM Time-to-first-feasible (s=1) | **3.6s** | 3.8s |
-| SGM Gap@600s (s=0.001) | 0.00699 | **0.00638** |
-| SGM Primal Integral (s=1) | **33.25** | 33.57 |
-| SGM P-D Integral | 26.3 | **23.9** |
-| PLATO headline SGM (s=0.001) | **26.0** | 26.8 |
+| **SGM primal integral, all 233** | **19.18** | 26.57 |
+| **SGM primal integral, held-out 143** | **22.89** | 27.36 |
+| #Feasible | **214** | 211 |
 
-> **Provenance.** This row cannot be reproduced on `HEAD`, by design. The configuration is expressible again — `all_opp` was FJ + FPR + LocalMIP without Scylla, which the single-valued `mip_heuristic_suite` (#93) could not name and `mip_heuristic_suite = fj,fpr,local_mip,fpr_lp` (#112, re-spelled by #164 once `fpr_lp` stopped following the `fpr` token) now does — but the binary is gone: the numbers predate the #92 runner cleanup, which altered several things they depend on — workers no longer stop their peers on retiring, LocalMIP's cold start is primed once per dispatch rather than per worker, FJ's charge against the then-shared presolve envelope is floored, and two of the three budget weights were rescaled (that envelope and its weights have since been replaced by a per-heuristic effort option each, #110). Since then #124 has replaced FPR's repair kernel outright — repair now runs inside the fix-and-propagate tree rather than only at the leaf, which changes what `dive`, `diveprop` and `dfsrep` search *and* what a DFS node costs — so the FPR contribution to this row was measured on a kernel that no longer exists. The closeout benchmark campaign re-measures on the final tree; treat the row as the last full-campaign result, not as a claim about `HEAD`.
+Paired per instance, on the log-ratio of the primal integral:
 
-#### Findings
+| set | n | ratio | 95% CI | p | better / tied / worse |
+|---|---|---|---|---|---|
+| all 233 | 233 | 0.722 | [0.633, 0.823] | <0.001 | 107 / 32 / 94 |
+| **held-out 143** | **143** | **0.836** | **[0.732, 0.956]** | **0.009** | 57 / 25 / 61 |
+| tuning 90 | 90 | 0.572 | [0.441, 0.741] | <0.001 | 50 / 7 / 33 |
 
-**PLATO headline (SGM primal integral, lower is better): 26.0 vs 26.8 — patched wins** (ratio 0.970). Patched also finds more feasible solutions (213 vs 208) and wins more head-to-head matchups by final objective (59 vs 41 strict wins).
+**The held-out number is the result: 16.4% better on instances never used for
+tuning.** The tuning set shows 43% — the selection bias the split exists to
+quantify, and a factor of nearly three. Reporting the tuning figure as the
+headline would overstate the effect by that much.
 
-**SGM T1st**: patched 3.6s vs vanilla 3.8s — patched finds its first feasible solution faster on average, despite heuristics running after presolve via our dispatch infrastructure. Vanilla finds a first solution sooner on more individual instances (#First 117.5 vs 97.5) because HiGHS's trivial heuristics fire before the LP; patched wins the SGM average because our heuristics find solutions on harder instances where vanilla fails.
+#### Three qualifications that belong with it
 
-**SGM Gap@600s** (0.00699 vs 0.00638) and **P-D Integral** (26.3 vs 23.9) favour vanilla — vanilla spends more time in B&B, tightening the dual bound, while our presolve heuristics consume budget before the root LP.
+**The win is magnitude, not frequency.** 57 better against 61 worse on
+held-out; a sign test finds nothing (p = 0.71). The heuristics do not win more
+often — they win *bigger*: `comp07-2idx` 600 → 7.8 and `sorrell3` 162 → 2.3,
+against `fast0507` 14.4 → 248.
 
-**SGM Primal Integral** (33.25 vs 33.57) favours patched narrowly. All SGM computations treat instances with no solution as gap=1.0 / PI=time-limit across the full 233-instance set.
+**Final solution quality is level.** Paired final primal gap at 600 s: better
+on 45, tied on 130, worse on 34. HiGHS's own machinery still holds **188 of
+214** final answers. The claim is that HiGHS reaches a good solution *sooner*,
+not that it reaches a better one — which is what the primal integral measures
+and what a feasibility heuristic should claim.
 
-**Summary**: patched wins the PLATO headline metric (−3%), finds more feasible solutions (+5), and wins more decisive head-to-head matchups. Vanilla is better on dual-bound-weighted metrics due to more B&B time.
+**Low power with significance implies overstatement.** At the measured paired
+sd the held-out n=143 resolves about 21%, and the observed effect is 16.4%.
+Quote the interval, not the point.
+
+#### Where it comes from
+
+Partitioning the 233 instances by which heuristic produced the patched arm's
+*first* incumbent:
+
+| first incumbent from | n | ratio vs vanilla | 95% CI |
+|---|---|---|---|
+| **FeasibilityJump** | **112** | **0.563** | **[0.451, 0.702]** |
+| FPR | 25 | 0.732 | [0.409, 1.309] |
+| HiGHS/other | 68 | 0.956 | [0.722, 1.267] |
+| **no incumbent found** | **20** | **1.005** | **[0.995, 1.014]** |
+
+The effect is concentrated where FeasibilityJump gets there first and is absent
+everywhere else, with the 20 instances where nothing is found acting as an
+internal control: the two arms are identical to within 1%, so the pairing is
+tight and 0.563 is an effect rather than noise.
+
+That does **not** make this a result about parallelism. Our FJ differs from
+vanilla's in three confounded ways — 16 opportunistic workers against one call,
+a per-worker budget totalling ~5× vanilla's single allowance, and two corrected
+upstream defects ([#159](https://github.com/spoorendonk/mip-heuristics/issues/159),
+[#160](https://github.com/spoorendonk/mip-heuristics/issues/160)) — and vanilla
+runs its own FJ, so the comparison already includes FJ-vs-FJ.
+
+#### Attribution
+
+| | patched #First | #Best | vanilla #First | #Best |
+|---|---|---|---|---|
+| FJ | 114 | 20 | 97 | 10 |
+| FPR | 16 | 2 | — | — |
+| LocalMIP | 5 | 4 | — | — |
+| HiGHS/other | 79 | **188** | 114 | **201** |
+
+Ours find the first feasible solution on 135 of 214 instances against vanilla's
+97 of 211, and hold the final best on 26 against 10.
+
+> **Reproducing.** [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) has the
+> stage-by-stage recipe. The runs are 16-worker and therefore non-deterministic
+> by design, so a re-run reproduces the *result*, not the logs. The campaign's
+> logs are not published; the aggregated tables, the paired statistics and the
+> generated provenance record are tracked in
+> [`bench/headline/`](bench/headline/).
 
 **To reproduce:**
 
