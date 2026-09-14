@@ -11,8 +11,10 @@ zero accepted incumbents across 49 paired runs, with nothing separating in
 either direction on the campaign metric.
 
 The verdict rests on that zero, not on the metric. At n=49 the observed 4.5%
-difference would need n=403 to resolve, so the campaign metric settles nothing
-here on its own.
+decrease would need n=403 to resolve — this n resolves a 12.4% decrease at 80%
+power — so the campaign metric settles nothing here on its own. (Both figures
+are read on the same side of the ratio; see `bench/headline/README.md` for why
+that matters.)
 
 ## Reproducing
 

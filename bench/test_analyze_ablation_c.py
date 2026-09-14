@@ -189,3 +189,37 @@ def test_power_arithmetic_matches_the_pre_registered_formula():
 def test_a_single_instance_yields_no_interval():
     """One paired observation has no spread, so it must not be summarised."""
     assert paired([math.log(1.5)]) is None
+
+
+def test_detectable_is_read_on_the_same_side_as_the_observed_effect():
+    """A log effect has two percentage readings and they are not equal.
+
+    `exp(d) - 1` is how much bigger the control is than the arm; `1 - exp(-d)`
+    how much smaller the arm is than the control. Printing the increase beside
+    an observed decrease compares two baselines and flatters the margin --
+    which is exactly what this file's first version did.
+    """
+    improving = paired([math.log(0.84)] * 60 + [math.log(0.83)] * 83)
+    worsening = paired([math.log(1.19)] * 60 + [math.log(1.20)] * 83)
+    assert improving is not None and worsening is not None
+    assert improving.improves and not worsening.improves
+
+    d = math.sqrt(8 * improving.sd**2 / improving.n)
+    assert improving.detectable() == pytest.approx(1 - math.exp(-d))
+    # ...and the other side is strictly larger, which is the trap.
+    assert improving.detectable() < math.exp(d) - 1
+
+    d = math.sqrt(8 * worsening.sd**2 / worsening.n)
+    assert worsening.detectable() == pytest.approx(math.exp(d) - 1)
+
+
+def test_the_report_names_the_side_it_read(tmp_path):
+    """Both percentages on one line must be the same kind of percentage."""
+    rows = [
+        count_one(write_log(tmp_path, f"i{i}", *[HEUR.format(found=0, bail=0)] * 5))
+        for i in range(MIN_DISPATCHES_FOR_A_NULL)
+    ]
+    out = verdict(rows)
+    # The capability report carries no power line; the contribution one does.
+    # Guard the wording that makes the reading unambiguous.
+    assert "power" not in out or "same side of the ratio" in out

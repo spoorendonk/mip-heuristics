@@ -225,9 +225,30 @@ class Paired:
         """Whether the 95% interval excludes no-effect."""
         return not (self.lo <= 1.0 <= self.hi)
 
+    @property
+    def improves(self) -> bool:
+        """Whether the arm beats the control, i.e. the ratio is a decrease."""
+        return self.ratio < 1.0
+
     def detectable(self) -> float:
-        """Smallest difference this n resolves at 80% power."""
-        return math.exp(math.sqrt(8 * self.sd**2 / self.n)) - 1
+        """Smallest effect this n resolves at 80% power, **on the same side as
+        the observed one**.
+
+        The power formula gives a minimum detectable *log* effect
+        `d = sqrt(8 sd^2 / n)`, and a log effect has two percentage readings
+        that are not equal: `exp(d) - 1` is how much bigger the control is
+        than the arm, `1 - exp(-d)` how much smaller the arm is than the
+        control. At d = 0.19 those are 21.3% and 17.5%.
+
+        Reporting the increase beside an observed *decrease* compares two
+        baselines and flatters the margin -- it read as "we can resolve 21%,
+        we saw 16.4%, comfortably inside the noise" when like for like it is
+        17.5% against 16.4%, i.e. right at the edge. So this returns the
+        reading that matches `ratio`'s own direction, and every caller prints
+        which direction that is.
+        """
+        d = math.sqrt(8 * self.sd**2 / self.n)
+        return 1 - math.exp(-d) if self.improves else math.exp(d) - 1
 
     def n_for(self, ratio: float) -> int:
         """The n that would resolve `ratio` at 80% power."""
@@ -235,6 +256,16 @@ class Paired:
 
 
 def paired(values: list[float]) -> Paired | None:
+    """Summarise paired log-ratios.
+
+    Two conventions worth stating rather than inheriting silently, because
+    both have a textbook alternative that gives different numbers:
+
+    * the interval is **normal**, `exp(mean +- 1.96 * se)`, not Student-t. At
+      n in the tens the difference is small but not zero.
+    * where a sign test is reported alongside, it is the **normal
+      approximation without continuity correction**.
+    """
     if len(values) < 2:
         return None
     n = len(values)
@@ -341,10 +372,12 @@ def contribution(
             )
 
     if overall is not None:
+        side = "decrease" if overall.improves else "increase"
         print(
-            f"\npower: n={overall.n} resolves {overall.detectable():.1%}; "
-            f"the observed {abs(overall.ratio - 1):.1%} would need "
-            f"n={overall.n_for(overall.ratio)}",
+            f"\npower: n={overall.n} resolves a {overall.detectable():.1%} "
+            f"{side} at 80% power; the observed {abs(overall.ratio - 1):.1%} "
+            f"{side} would need n={overall.n_for(overall.ratio)}. Both "
+            f"percentages are read on the same side of the ratio.",
             file=out,
         )
     return 0

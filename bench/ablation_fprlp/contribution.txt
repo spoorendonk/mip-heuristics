@@ -7,4 +7,4 @@ by Stage C0 label (proxy: C0's configuration, not these runs)
   C0 fired, never yielded        n= 28  ratio=0.905  CI=[0.78, 1.05]  t=-1.33
   C0 never fired (null control)  n= 10  ratio=0.996  CI=[0.99, 1.00]  t=-1.73
 
-power: n=49 resolves 14.1%; the observed 4.5% would need n=403
+power: n=49 resolves a 12.4% decrease at 80% power; the observed 4.5% decrease would need n=403. Both percentages are read on the same side of the ratio.

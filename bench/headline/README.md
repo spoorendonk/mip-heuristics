@@ -72,9 +72,36 @@ tied on 130, worse on 34, and vanilla nominally leads on `#Win`. HiGHS's own
 machinery holds **188 of 214** final answers. The claim is that HiGHS reaches a
 good solution sooner, not that it reaches a better one.
 
-**3. Low power with significance implies the effect is overstated.** At
-sd 0.815 the held-out n=143 resolves ~21% at 80% power, and the observed effect
-is 16.4%. Quote the interval, not the point.
+**3. The effect sits at the edge of what 143 instances can resolve.** At
+sd 0.815 the held-out n=143 resolves a **17.5% decrease** at 80% power, and the
+observed effect is a **16.4% decrease** — a margin of about one point. Quote
+the interval, not the point: significance at this power implies the point
+estimate is likely overstated.
+
+*Both percentages are read on the same side of the ratio, and that is not a
+pedantic detail.* A minimum detectable log effect `d = sqrt(8 sd^2 / n)` has
+two percentage readings — `exp(d) - 1 = 21.3%`, how much bigger vanilla is than
+patched, and `1 - exp(-d) = 17.5%`, how much smaller patched is than vanilla.
+An earlier revision of this file quoted the 21.3% beside an observed 16.4%
+*decrease*, which compares two different baselines and made the margin look
+like five points rather than one. The direction of the conclusion is unchanged
+and arguably strengthened.
+
+## Statistical conventions, stated rather than inherited
+
+Each has a textbook alternative that gives different numbers, so which one
+produced a figure is part of the figure.
+
+* **Paired on the log-ratio** of the primal integral, `log((arm + s) / (control
+  + s))` with the SGM shift `s = 1e-3`. The integral spans orders of magnitude
+  across instances, and pairing cancels instance difficulty — the dominant
+  variance component in cross-instance MIP benchmarking.
+* **Intervals are normal**, `exp(mean +- 1.96 * se)`, not Student-t.
+* **The sign test is the normal approximation**, without continuity
+  correction.
+* **Minimum detectable effect** is `1 - exp(-sqrt(8 sd^2 / n))` for an
+  improvement and `exp(sqrt(8 sd^2 / n)) - 1` for a regression — always read on
+  the same side of the ratio as the effect it is compared with.
 
 ## Where the gain comes from
 

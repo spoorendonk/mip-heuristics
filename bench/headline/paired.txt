@@ -1,6 +1,12 @@
 Paired per-instance log-ratio of the primal integral at 600 s, one seed.
 Lower is better; the first named arm is the numerator.
 
+Conventions: intervals are normal, exp(mean +- 1.96*se), not Student-t; the
+sign test is the normal approximation without continuity correction.  A
+minimum detectable effect, where quoted, is read on the same side of the
+ratio as the observed one -- 1 - exp(-d) for an improvement, exp(d) - 1 for a
+regression, which are not the same number.
+
 B'(shipped)/vanilla, all 233         n=233 ratio=0.722 CI=[0.633,0.823] t=-4.87 p=0.0000 sd=1.022 | better/tied/worse 107/32/94 sign p=0.36
 B'(shipped)/vanilla, held-out 143    n=143 ratio=0.836 CI=[0.732,0.956] t=-2.62 p=0.0087 sd=0.815 | better/tied/worse 57/25/61 sign p=0.71
 B'(shipped)/vanilla, tuning 90       n= 90 ratio=0.572 CI=[0.441,0.741] t=-4.23 p=0.0000 sd=1.254 | better/tied/worse 50/7/33 sign p=0.062
