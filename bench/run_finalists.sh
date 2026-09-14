@@ -131,6 +131,29 @@ cmd_heldout() {
 	# be confounded with "less power on held-out", which is precisely the
 	# comparison this stage exists to make cleanly.
 	local list="${HELDOUT_INSTANCES:-$REPO/bench/instances_heldout48.txt}"
+	# ── why this stage traces and `confirm` does not ────────────────────
+	#
+	# `PLATO_DEV_LOG=1` below turns on `log_dev_level=3`, which is what makes
+	# `[Heur]`/`[HeurSol]` visible.  It is set here and deliberately not in
+	# `cmd_confirm`, so the two full-limit stages are **not on the same
+	# clock** and their wall times must not be compared across stages.  Their
+	# *objectives* are comparable, which is what both stages are scored on.
+	#
+	# What it buys: this is the only full-limit tree carrying per-heuristic
+	# wall times, and that is what measured why the selected vector wins —
+	# a 438 ms median presolve chain against the previous vector's 3259 ms
+	# (`bench/ablation_search/README.md`).  Attribution itself does **not**
+	# need it: the solution-source character is in the ordinary log at any
+	# level, which is why `cmd_confirm` can stay untraced and still be read
+	# with `--attribution`.
+	#
+	# What it costs is small but not nil, and the retired figure is not the
+	# one to reach for: `log_dev_level=3` used to cost 1.1-4.4x the wall
+	# time, almost all of it FeasibilityJump's per-bump `Reached a local
+	# minimum.` line, which the patch has dropped since #113.  What remains
+	# is FJ's periodic table plus our own two lines.  Level 3 is still not
+	# the same run — `run_headline.sh` leaves it off for exactly that reason,
+	# and the headline's timings are the ones that must not move.
 	mkdir -p "$RESULTS"
 	echo "held-out instances: $(grep -c '^[^#]' "$list")"
 

@@ -466,10 +466,18 @@ The per-heuristic instrumentation needs `log_dev_level=3`, which
 `bench/run_benchmark.py` exposes as `--dev-log` and leaves off by default.
 **It is not free and it is not neutral:** HiGHS's own FeasibilityJump logs one
 line per weight bump at exactly that level, from every parallel FJ worker, each
-with an `fflush`. Measured on five bundled instances at a 10 s limit that is
-97–750x the log volume (bell5: 16 KB → 3.5 MB) and 1.1–4.4x the total solve
-wall time (egout: 0.048 s → 0.212 s), concentrated in the FJ phase — which is
-the very window the attribution numbers report.
+with an `fflush` — 99.8% of a traced run's volume, and enough that a clock-bound
+traced FJ dispatch was not the same heuristic as an untraced one. **The patch
+drops that line**, so what remains at level 3 is FJ's periodic table plus our
+own two lines: a few per cent of wall time at campaign limits, and
+proportionally more on very short solves, where a fixed logging cost dominates
+the solve it is timing.
+
+No ratio has been measured at a campaign time limit. The figure this paragraph
+used to quote — 97-750x the log volume and 1.1-4.4x the wall time — is retired
+twice over: it predates the fix, and it was taken on five bundled instances at
+a **10 s** limit, where `egout` went 0.048 s → 0.212 s against a 48 ms solve.
+A fixed cost against a 48 ms solve says nothing about a 600 s one.
 
 **Attribution runs and headline-timing runs are therefore different runs.** Do
 not read a timing number off a `--dev-log` tree, and do not expect attribution

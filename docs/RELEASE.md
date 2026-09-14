@@ -222,12 +222,16 @@ produces an archive that looks complete and cannot be interpreted:
   presolve chain contributes on that binary and nothing about vanilla HiGHS —
   and the manifest says exactly that rather than offering the reader a weaker
   version of the vanilla claim.
-- **Instrumentation.** `--dev-log` costs 97–750x the log volume and 1.1–4.4x
-  the wall time, concentrated in the FeasibilityJump phase, so an attribution
-  run and a headline-timing run are *different runs* whose timings are not
-  comparable. Both the requested and the observed state are recorded, and a
-  disagreement — the failure mode where `--extra-options log_dev_level=1`
-  cancels the flag — is a warning rather than a silent mis-label.
+- **Instrumentation.** `--dev-log` turns on `log_dev_level=3`, which costs a
+  few per cent of wall time at campaign limits — more on very short solves,
+  where a fixed logging cost dominates — concentrated in the FeasibilityJump
+  phase. An attribution run and a headline-timing run are therefore still
+  *different runs* whose timings should not be compared, even though the
+  margin is now small: the line that made it large, FJ's per-bump `Reached a
+  local minimum.`, is dropped by the patch. Both the requested and the
+  observed state are recorded, and a disagreement — the failure mode where
+  `--extra-options log_dev_level=1` cancels the flag — is a warning rather
+  than a silent mis-label.
 - **Thread count.** Throughput ratios here do not cancel across worker counts:
   the same binary on the same instances gives `local_mip:scylla = 4.68` at 16
   workers and `2.81` at 6. The harness deliberately does not set `threads`, so

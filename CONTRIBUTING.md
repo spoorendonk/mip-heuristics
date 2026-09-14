@@ -188,11 +188,16 @@ Three rules that are easy to get wrong:
   `threads=1` collapses every heuristic to a single worker: it is the right
   setting for reproducibility and the wrong one for a throughput benchmark, and
   it is not what the recorded numbers were measured at.
-- **`--dev-log` is a different run, not a free extra.** Turning on
-  `log_dev_level=3` costs 97–750x the log volume and 1.1–4.4x the wall time,
-  concentrated in the FeasibilityJump phase — which is exactly the window the
-  attribution numbers measure. Use it for attribution runs and leave it off for
-  headline timings.
+- **`--dev-log` is a different run, not a free extra.** The line that made it
+  ruinous — FeasibilityJump's per-bump `Reached a local minimum.`, 99.8% of a
+  traced run's volume — is dropped by the patch. What remains at
+  `log_dev_level=3` is FJ's periodic table plus our own two lines: a few per
+  cent at campaign time limits, more on very short solves where a fixed
+  logging cost dominates. That is small, not nil, and it lands in the
+  FeasibilityJump phase, which is the window the attribution numbers measure.
+  Use it for attribution runs and leave it off for headline timings. The
+  retired 1.1–4.4x figure was taken at a 10 s limit and does not describe a
+  campaign run.
 
 ## Python (`bench/`)
 

@@ -32,12 +32,23 @@ Provenance this derives from the tree rather than taking on trust:
   ablation of our heuristics, not a vanilla measurement, and the manifest says
   so rather than dressing it up as a weaker version of the same claim.  The
   marker line is what tells the two apart.
-* **Instrumentation state.** `log_dev_level=3` costs 97-750x the log volume and
-  1.1-4.4x the wall time, concentrated in the FeasibilityJump phase, so
-  attribution runs and headline-timing runs are different runs.  Both the
-  requested state (the options file) and the observed state (the `[Heur]` /
-  `[Heur]` / `[Sequential]` tags in the log) are recorded, and a disagreement is a
-  warning rather than a silent mis-labelling.
+* **Instrumentation state.** `log_dev_level=3` costs a few per cent of wall
+  time at campaign limits — more on very short solves, where a fixed logging
+  cost dominates the solve it is timing — concentrated in the FeasibilityJump
+  phase, so attribution runs and headline-timing runs are different runs even
+  though the margin is now small.  Both the requested state (the options file)
+  and the observed state (the `[Heur]` / `[Sequential]` tags in the log) are
+  recorded, and a disagreement is a warning rather than a silent
+  mis-labelling.
+
+  **Do not put a ratio in the rendered provenance.**  This text ships inside
+  every archive the script builds, so a stale figure there is asserted as fact
+  to every future reader.  The 1.1-4.4x this used to quote survived the fix
+  that retired it (the patch drops FeasibilityJump's per-bump `Reached a local
+  minimum.` line, which was 99.8% of a traced run's volume) and was never
+  general anyway: it came from five bundled instances at a **10 s** limit,
+  where a fixed logging cost is most of the measurement.  If a number is
+  wanted, measure it at the campaign's own time limit and say which limit.
 * **Thread count.** Several ratios in this project are strongly
   thread-count-dependent — the same binary on the same instances gives
   `local_mip:scylla = 4.68` at 16 workers and `2.81` at 6 — so a tree with no
@@ -770,10 +781,12 @@ def render_provenance(manifest: Manifest) -> str:
         ),
         "",
         (
-            "Instrumentation state is equally load-bearing. `log_dev_level=3` costs "
-            "97-750x the log volume and 1.1-4.4x the wall time, concentrated in the "
-            "FeasibilityJump phase, so an attribution run and a headline-timing run "
-            "are different runs and their timings are not comparable."
+            "Instrumentation state is equally load-bearing. `log_dev_level=3` adds a "
+            "few per cent of wall time at campaign time limits -- proportionally "
+            "more on very short solves, where a fixed logging cost dominates the "
+            "solve it is timing -- concentrated in the FeasibilityJump phase. So an "
+            "attribution run and a headline-timing run are different runs and their "
+            "timings should not be compared, even though the margin is small."
         ),
         "",
         "## Baseline",
