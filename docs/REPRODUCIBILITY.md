@@ -367,9 +367,14 @@ launcher checks by refusing a binary without the patch marker.
 ### What the campaign did not do, and why
 
 * **One seed**, not the three the headline stage asks for. Extra seeds shrink
-  only the within-instance variance, and the between-instance component is what
-  the paired sd is made of; the baseline is also single-seed, so averaging
-  patched seeds removes at most half the seed noise. The full argument is in
+  only the within-instance variance, the between-instance component is what the
+  paired sd is mostly made of, and the baseline is also single-seed, so
+  averaging patched seeds removes at most half the seed noise. That bounds the
+  gain but does not eliminate it: at the held-out sd, three seeds would resolve
+  16.1-16.8% against the observed 16.4%, so they *might* have sharpened this —
+  and with one seed the seed-noise share cannot be estimated to say. The
+  decision stands on the effect already being separated at p = 0.009 rather
+  than on the extra seeds being useless. Full arithmetic in
   `bench/headline/README.md`.
 * **No `off` patch-overhead arm at scale**, no additional vanilla seeds, no
   offline best-of row. None would change what ships or what is claimed.

@@ -162,13 +162,39 @@ amounts too small to move an SGM.
 ## Deviations from the pre-registration, stated
 
 **One seed, not the three this issue asks for.** Seed 0 was run as a gate and
-the campaign stopped there, deliberately. Seeds shrink only the within-instance
-variance; the between-instance component — which is what sd = 0.815 is made of
-— does not move, because the instances are the same 143. The vanilla arm is
-also a single seed, so averaging patched seeds removes at most *half* the seed
-noise. Best case, assuming seed noise were the entire variance (impossible),
-three seeds would take held-out resolution from 25% to 14%; the realistic floor
-is 22-24%. What would resolve it is more instances, and PLATO has no more.
+the campaign stopped there.
+
+Seeds shrink only the within-instance variance component. The between-instance
+component does not move, because the instances are the same 143 — and the
+baseline is *also* a single seed, so averaging `k` patched seeds removes at
+most half the seed noise even as `k` grows. Writing `f` for the share of
+variance that is seed noise, and assuming it splits evenly between the two
+arms, `Var(k) = sd^2 * [1 - f/2 + f/(2k)]`. At the held-out sd of 0.815 and
+n = 143, on the decrease side:
+
+| `f` | k=1 | k=2 | **k=3** | k=∞ |
+|---|---|---|---|---|
+| 25% | 17.5% | 17.0% | **16.8%** | 16.5% |
+| 50% | 17.5% | 16.5% | **16.1%** | 15.4% |
+| 100% (not attainable) | 17.5% | 15.4% | **14.6%** | 12.7% |
+
+**Three seeds reach the observed 16.4% once `f` is above roughly 40%** — so
+the honest statement is that extra seeds *might* have resolved this, not that
+they could not. With one seed `f` is unestimable: there are no replicates, so
+the table is bracketing rather than measurement.
+
+What that makes the stopping decision is a judgement rather than an
+impossibility argument. It stands on what a tighter interval would have bought:
+the held-out effect is already separated at p = 0.009, nothing about what ships
+turns on the width, and two further passes (~48 h) would at best have moved a
+16.4% point estimate inside a slightly narrower band. Two seeds would have been
+the informative spend — that is the smallest `k` from which `f` can be
+estimated at all — and it was not made.
+
+An earlier revision of this section asserted the opposite, that the floor was
+22-24% and "never reaches" the observed effect. That was wrong twice: it used
+the sd of a different arm (0.958, whose observed effect was 15.1%) and read the
+detectable effect on the increase side while comparing it with a decrease.
 
 **Two binaries, one overwritten.** `all-prev-vector` was produced by the
 PATCH_VERSION 23 build; `all` by PATCH_VERSION 24. They differ in the default
