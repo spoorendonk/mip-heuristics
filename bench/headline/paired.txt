@@ -1,0 +1,15 @@
+Paired per-instance log-ratio of the primal integral at 600 s, one seed.
+Lower is better; the first named arm is the numerator.
+
+B'(shipped)/vanilla, all 233         n=233 ratio=0.722 CI=[0.633,0.823] t=-4.87 p=0.0000 sd=1.022 | better/tied/worse 107/32/94 sign p=0.36
+B'(shipped)/vanilla, held-out 143    n=143 ratio=0.836 CI=[0.732,0.956] t=-2.62 p=0.0087 sd=0.815 | better/tied/worse 57/25/61 sign p=0.71
+B'(shipped)/vanilla, tuning 90       n= 90 ratio=0.572 CI=[0.441,0.741] t=-4.23 p=0.0000 sd=1.254 | better/tied/worse 50/7/33 sign p=0.062
+
+prev-4-heuristic/vanilla, all 233    n=233 ratio=0.743 CI=[0.636,0.869] t=-3.72 p=0.0002 sd=1.217 | better/tied/worse 103/27/103 sign p=1
+prev-4-heuristic/vanilla, held-out 143 n=143 ratio=0.849 CI=[0.726,0.993] t=-2.04 p=0.0409 sd=0.958 | better/tied/worse 60/20/63 sign p=0.79
+prev-4-heuristic/vanilla, tuning 90  n= 90 ratio=0.602 CI=[0.439,0.824] t=-3.17 p=0.0015 sd=1.523 | better/tied/worse 43/7/40 sign p=0.74
+
+B'/prev-4-heuristic, all 233         n=233 ratio=0.972 CI=[0.898,1.052] t=-0.71 p=0.4750 sd=0.617 | better/tied/worse 133/33/67 sign p=3.1e-06
+
+Final primal gap at 600 s, paired over all 233:
+  B' better 44, tied 132, vanilla better 34

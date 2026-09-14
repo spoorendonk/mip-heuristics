@@ -1,0 +1,166 @@
+# The headline: the shipped configuration against vanilla HiGHS (#108)
+
+PLATO `mipfeas`, all 233 instances, 600 s, one seed, 16 workers, CPU build.
+Companion to `bench/ablation_effort/` (A), `bench/ablation_search/` (B) and
+`bench/ablation_fprlp/` (C), which chose the configuration this measures.
+
+**Headline: 16.4% better on the primal-integral SGM over instances never used
+for tuning** — ratio 0.836, 95% CI [0.732, 0.956], p = 0.009 — and a first
+feasible solution on 3 more instances. **Final solution quality is a wash.**
+The contribution is *sooner*, not *better*, which is what PLATO's metric
+measures and what a feasibility heuristic should claim.
+
+## Reproducing
+
+| step | command |
+|---|---|
+| run | `bench/run_headline.sh until 08:00` (or `next <hours>`), repeat until `status` shows 233/233 |
+| the three tables | `bench/run_headline.sh report` -> `tables.txt` |
+| paired statistics | the script embedded in the commit that added `paired.txt` |
+
+Results trees are gitignored; everything needed to read the result is here.
+
+## Configuration
+
+The arm is the **shipped binary at default options**. Its `.opts` carries only
+`mip_heuristic_suite = all` and `random_seed = 0` — no `--extra-options` at
+all, so this measures what a user gets rather than a hand-assembled vector.
+The defaults are `B'-mix-cheapest` (#107): fj 0.3317, fpr 3.161, local_mip
+3.2865, **scylla 0 (disabled)**, patiences 0 / 0.3372 / 3.1943 / 0, with
+`mip_heuristic_fpr_lp_effort = 0` (#165).
+
+`mip_heuristic_effort` is at upstream's own default of 0.05 and is asserted at
+configure time, so the B&B dive-heuristic budget — what RENS and RINS draw
+from — is bit-identical to vanilla's. The only difference between the arms is
+what runs during presolve.
+
+**The baseline is a separately built unpatched binary** of the same tag (#105),
+not a setting on the patched one.
+
+## Result
+
+| | patched (B') | vanilla |
+|---|---|---|
+| SGM primal integral, 233 | **19.18** | 26.57 |
+| SGM primal integral, held-out 143 | **22.89** | 27.36 |
+| #Feasible | **214** | 211 |
+
+Paired per instance (full output in `paired.txt`):
+
+| set | n | ratio | 95% CI | t | p | better/tied/worse |
+|---|---|---|---|---|---|---|
+| all 233 | 233 | 0.722 | [0.633, 0.823] | −4.87 | <0.001 | 107/32/94 |
+| **held-out 143** | **143** | **0.836** | **[0.732, 0.956]** | **−2.62** | **0.009** | 57/25/61 |
+| tuning 90 | 90 | 0.572 | [0.441, 0.741] | −4.23 | <0.001 | 50/7/33 |
+
+**The held-out number is the result.** The tuning set is 43% better and the
+held-out 16% — the selection bias this split exists to quantify, and it is
+large. Reporting the tuning figure as the headline would overstate the effect
+by a factor of nearly three.
+
+## Three qualifications that travel with it
+
+**1. The win is in magnitude, not frequency.** 57 better against 61 worse on
+held-out; 107/94 over all 233. A sign test finds nothing (p = 0.71 and 0.36).
+The heuristics do not win more often — they win *bigger*: `comp07-2idx` 600 ->
+7.8 and `sorrell3` 162 -> 2.3 against `fast0507` 14.4 -> 248. Both measures
+belong in any write-up; quoting the SGM alone would misrepresent the shape of
+the result.
+
+**2. Final quality is level.** Paired final primal gap at 600 s: better on 45,
+tied on 130, worse on 34, and vanilla nominally leads on `#Win`. HiGHS's own
+machinery holds **188 of 214** final answers. The claim is that HiGHS reaches a
+good solution sooner, not that it reaches a better one.
+
+**3. Low power with significance implies the effect is overstated.** At
+sd 0.815 the held-out n=143 resolves ~21% at 80% power, and the observed effect
+is 16.4%. Quote the interval, not the point.
+
+## Where the gain comes from
+
+Partitioning the 233 instances by which heuristic produced the patched arm's
+*first* incumbent:
+
+| first incumbent from | n | ratio vs vanilla | 95% CI | t |
+|---|---|---|---|---|
+| **FJ** | **112** | **0.563** | **[0.451, 0.702]** | **−5.08** |
+| FPR | 25 | 0.732 | [0.409, 1.309] | −1.05 |
+| HiGHS/other | 68 | 0.956 | [0.722, 1.267] | −0.31 |
+| **no incumbent** | **20** | **1.005** | **[0.995, 1.014]** | +1.00 |
+| LocalMIP | 8 | 2.114 | [0.794, 5.630] | +1.50 |
+
+(Computed on the previous vector's 233-run tree, which has the same shape.)
+
+The effect is concentrated where FeasibilityJump gets there first, and the
+"no incumbent" row is a clean internal control: where nothing is found, the two
+arms are identical to within 1%, so the pairing is tight and the 0.563 is an
+effect rather than noise.
+
+**That does not make this a paper about parallelism.** Our FJ differs from
+vanilla's in three confounded ways: 16 opportunistic workers against one call,
+a per-worker budget that totals ~5x vanilla's single FJ allowance, and two
+corrected upstream defects (#139 — the negative-coefficient jump value and the
+sign of the objective term in the move score). Vanilla runs its own FJ, so the
+comparison already includes FJ-vs-FJ; separating the three is not attempted.
+
+## Attribution
+
+| | patched #First | #Best | vanilla #First | #Best |
+|---|---|---|---|---|
+| FJ | 114 | 20 | 97 | 10 |
+| FPR | 16 | 2 | — | — |
+| LocalMIP | 5 | 4 | — | — |
+| HiGHS/other | 79 | **188** | 114 | **201** |
+
+Ours find the first feasible solution on 135 of 214 instances against vanilla's
+97 of 211, and hold the final best on 26 against 10.
+
+## The second arm: does the simplification cost anything?
+
+`all-prev-vector` is the four-heuristic vector that shipped before #107,
+measured over the same 233 against the same baseline — so this is a
+233-instance paired comparison of the two patched configurations, at ~10%
+resolution against the 20.6% at which #107's n=49 comparison returned a null.
+
+```
+B' / prev-4-heuristic   n=233  ratio 0.972  CI [0.898, 1.052]  t=-0.71  p=0.48
+                               better 133 / tied 33 / worse 67   sign p=8e-7
+```
+
+**The two measures disagree, and both are reported.** B′ is not separated on
+magnitude, but wins twice as often. The reading: dropping Scylla and cutting
+total effort from 29.85 to 6.78 costs nothing and helps slightly and often, by
+amounts too small to move an SGM.
+
+## Deviations from the pre-registration, stated
+
+**One seed, not the three this issue asks for.** Seed 0 was run as a gate and
+the campaign stopped there, deliberately. Seeds shrink only the within-instance
+variance; the between-instance component — which is what sd = 0.815 is made of
+— does not move, because the instances are the same 143. The vanilla arm is
+also a single seed, so averaging patched seeds removes at most *half* the seed
+noise. Best case, assuming seed noise were the entire variance (impossible),
+three seeds would take held-out resolution from 25% to 14%; the realistic floor
+is 22-24%. What would resolve it is more instances, and PLATO has no more.
+
+**Two binaries, one overwritten.** `all-prev-vector` was produced by the
+PATCH_VERSION 23 build; `all` by PATCH_VERSION 24. They differ in the default
+option values (and comments), which is the thing under comparison. The
+PATCH_VERSION 23 binary itself was not retained — its configuration is
+recoverable from commit `7056a0f` and its logs carry the patch marker.
+
+**Both patched arms ran at default options**, so their `.opts` files are
+byte-identical and the directory name is the only thing distinguishing them.
+That is why the previous arm is `all-prev-vector` rather than `all`.
+
+**Killed runs.** One per arm (`germanrr` patched, `neos-5114902-kasavu`
+vanilla), kept as truncated logs. They score correctly: T1st and the primal
+integral read incumbent lines, not the final report.
+
+## Comparability
+
+Adopting PLATO's instance list, time limit and metric makes this
+*definitionally* the same benchmark as PLATO `mipfeas`. It does **not** make
+the absolute numbers comparable with the rankings published on the PLATO site,
+which are measured on different hardware. The defensible claim is patched
+versus vanilla on one machine under PLATO's definition.
