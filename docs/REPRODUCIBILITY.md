@@ -321,6 +321,62 @@ exactly reproduce one taken at 0.1, and the two are compared over the effort
 range they share.
 
 
+## Reproducing the campaign, stage by stage
+
+Every stage is a tracked launcher plus a tracked reader, and every stage's
+derived artifacts are committed even though its results tree is not
+(`bench/results*` is gitignored, ~5 GB). So the numbers in each write-up are
+readable without the logs, and regenerable from them.
+
+| stage | launcher | reader | write-up |
+|---|---|---|---|
+| vanilla baseline (#105) | `bench/run_plato.sh next <hours>` | `bench/analyze_results.py` | — |
+| presolve probe (#113) | `bench/run_presolve_probe.sh preprobe next <hours>` | `bench/derive_from_probe.sh` | `bench/ablation_effort/` |
+| joint search (#107) | `bench/run_irace.sh all` | `bench/analyze_irace.py` | `bench/ablation_search/` |
+| finalist confirmation (#107) | `bench/run_finalists.sh confirm <hours>` | `bench/compare_finalists.sh confirm` | `bench/ablation_search/` |
+| held-out validation (#107) | `bench/run_finalists.sh heldout` | `bench/compare_finalists.sh heldout` | `bench/ablation_search/` |
+| `fpr_lp` capability (#165) | `bench/run_ablation_c.sh capability <hours>` | `bench/analyze_ablation_c.py capability` | `bench/ablation_fprlp/` |
+| `fpr_lp` contribution (#165) | `bench/run_ablation_c.sh contribution <hours>` | `bench/analyze_ablation_c.py contribution` | `bench/ablation_fprlp/` |
+| headline (#108) | `bench/run_headline.sh until <HH:MM>` | `bench/run_headline.sh report` | `bench/headline/` |
+| archive | `bench/make_archive.py build <tree> --output <dir>` | the archive's own `REGENERATE.sh` | — |
+
+`FINALISTS_ONLY` names one arm of `run_finalists.sh` for a stage that owns one
+rather than the whole finalist set — which is how Ablation C's contribution arm
+and the late-added `B'-mix-cheapest` held-out row were run without editing the
+record of what the search selected.
+
+### Two things a re-runner must know before starting
+
+**A configuration's `.opts` does not identify it.** Both the headline arm and
+its predecessor ran at *default options*, so their `.opts` files are
+byte-identical — `mip_heuristic_suite = all` plus the seed — and what differed
+was the binary's built-in defaults. The results *directory* is the only record
+of which configuration a run used, which is why `bench/results/plato/` carries
+`all` and `all-prev-vector` rather than two trees both called `all`. If you
+re-run a stage after changing a default, give it a new directory or the
+harness's `--skip-existing` will report the old runs as done.
+
+**The headline arm passes no `--extra-options` at all**, deliberately. Passing
+the eight effort and patience values explicitly would measure a vector that may
+differ from the shipped defaults in the last decimal, so the headline would
+describe a configuration nobody gets. `bench/run_headline.sh` therefore sets
+only the config name and the seed, and the correctness of the measurement
+depends on the binary being the one whose defaults are under test — which the
+launcher checks by refusing a binary without the patch marker.
+
+### What the campaign did not do, and why
+
+* **One seed**, not the three the headline stage asks for. Extra seeds shrink
+  only the within-instance variance, and the between-instance component is what
+  the paired sd is made of; the baseline is also single-seed, so averaging
+  patched seeds removes at most half the seed noise. The full argument is in
+  `bench/headline/README.md`.
+* **No `off` patch-overhead arm at scale**, no additional vanilla seeds, no
+  offline best-of row. None would change what ships or what is claimed.
+* **No share sweep for `fpr_lp`** — it produced zero accepted incumbents in
+  ~100 paired runs across two presolve backgrounds, so there is no share at
+  which it earns its slice of upstream's RENS/RINS envelope.
+
 ## `suite=off` is an ablation, not a vanilla baseline
 
 `mip_heuristic_suite=off` disables our four presolve heuristics and the
