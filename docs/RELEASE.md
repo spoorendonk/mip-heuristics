@@ -158,8 +158,10 @@ rebuilt — or doctored — archive verifies clean too. Two things close that ga
 and neither is automatic:
 
 - The deposit's own checksum on the tarball pins a download to the published
-  release. That is why the dataset record below is not optional, and why
-  `--tar` prints the tarball's sha256 for the release notes.
+  release. That is why a *published* archive needs the dataset record below
+  rather than a GitHub release asset, and why `--tar` prints the tarball's
+  sha256 for the release notes. (v0.1.0 publishes no archive — see the
+  decision under "The archive is not covered by the software DOI".)
 - For an archive you did not build, the analysis code is the part to check
   independently: compare `<archive>/bench/*.py` against the repository at the
   manifest's `source.commit`, which the manifest records for exactly this
@@ -316,6 +318,26 @@ Zenodo's GitHub integration archives **the repository source zipball only**.
 Assets attached to a GitHub release are not deposited. The artifact archive is
 therefore not in the software record, and attaching it to the GitHub release
 does not make it citable.
+
+**Decision for v0.1.0: the artifact archive is not deposited.** One record,
+the automatic software one, and no dataset DOI. What that costs is stated
+rather than hidden: a reader can re-run the campaign from the tracked scripts
+and check whether they get something similar, but cannot recompute our numbers
+from our logs. That is a materially weaker claim, and it is weaker *because*
+the runs are 16-worker and non-deterministic — re-running never reproduces a
+log, only a result.
+
+What stands in for it: `bench/headline/` carries the aggregated tables, the
+paired statistics and `PROVENANCE.md` (the generated provenance — machine,
+commit, patch version, per-config binary and observed worker count), and
+`docs/REPRODUCIBILITY.md` carries the stage-by-stage recipe. The archive is
+still **built and verified** as a release step, because `REGENERATE.sh` proving
+that every table re-derives from the logs is a check on our own arithmetic
+whether or not anyone else sees it. It just stays local.
+
+Revisit if a reviewer asks for the data. The instructions below are what to do
+then, and nothing about deferring it forecloses doing it later — a dataset
+record can be deposited against any past release.
 
 Deposit it as its own Zenodo record:
 

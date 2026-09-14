@@ -11,8 +11,3 @@ Highs.log
 # matter are tracked: .githooks/ (git hooks) and cmake/Lint.cmake (ctest).
 .claude/
 .codex/
-
-# Release archives are build products of a results tree (18 MB+ of logs);
-# `bench/make_archive.py build` regenerates one, and `verify` re-derives its
-# tables from the archived logs.  The reader-facing summary is bench/headline/.
-bench/archives/
