@@ -11,3 +11,9 @@ Highs.log
 # matter are tracked: .githooks/ (git hooks) and cmake/Lint.cmake (ctest).
 .claude/
 .codex/
+
+# `run_target.py`'s per-experiment record directory.  Its default is the
+# relative `target-runs`, so running the bench tests from inside bench/ writes
+# one there; a real search points it at the results tree with
+# RUN_TARGET_RUN_DIR.
+bench/target-runs/
