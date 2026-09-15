@@ -1,4 +1,4 @@
-# Tuning subset of the mipfeas set, stratified on vanilla
+# Tuning subset of the PLATO mipfeas set, stratified on vanilla
 # time-to-first-feasible (issue #103) — the axis the primal integral
 # responds to, unlike the optimality solve time that
 # bench/instances_small.txt was selected on.
