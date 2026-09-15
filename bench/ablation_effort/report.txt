@@ -10,7 +10,7 @@ Presolve probe: bench/results/probe/preprobe
 
 Informative set: 191 of 233 (82.0%)
 
-Excluded (hard tier): 42
+Excluded (no chain incumbent): 42
   no-acceptance          41
   trivial-only           1
   produced-not-improved  0

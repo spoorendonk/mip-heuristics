@@ -1326,14 +1326,13 @@ A log written before #119 carries no such field, which the parser reads as
 `None` — unobservable, not known-absent — and which every consumer that
 only asks "did this dispatch search" treats as `False`. So a pre-#119 tree
 classifies exactly as it did before, and that is checked rather than
-assumed: re-deriving all four artifacts from the #113 tree (932 logs, 857
-carrying `[Heur]`, none carrying the field) reproduced `defaults.json`,
-`informative.txt`, `hard_tier.txt` and `report.txt` byte for byte. That check
-was run against the tool as it stood; the `--hard-tier-*` flags have since
-been removed, so `hard_tier.txt` is gone and the `Regenerate with:` line
-recorded in the surviving artifacts names a flag the tool no longer accepts —
-re-derive with the current flags rather than replaying that line. The
-numbers below therefore stand as measured — and stand as the *reason* the
+assumed: re-deriving the artifacts from the #113 tree (932 logs, 857 carrying
+`[Heur]`, none carrying the field) reproduces `defaults.json`,
+`informative.txt` and `report.txt` — every name and every number identical.
+The committed three were last re-derived after the `--hard-tier-*` flags were
+removed, so each one's `Regenerate with:` line is replayable as written; the
+only body text that moved in that pass is `report.txt`'s exclusion label,
+which no longer names a tier. The numbers below therefore stand as measured — and stand as the *reason* the
 probe re-run waits for this, since its tree will be the first that can
 tell the two apart.
 

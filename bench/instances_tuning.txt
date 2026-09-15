@@ -1,4 +1,4 @@
-# Tuning subset of the PLATO mipfeas set, stratified on vanilla
+# Tuning subset of the mipfeas set, stratified on vanilla
 # time-to-first-feasible (issue #103) — the axis the primal integral
 # responds to, unlike the optimality solve time that
 # bench/instances_small.txt was selected on.
@@ -7,15 +7,15 @@
 # derived, reproducible input: the same tree and --seed regenerate it
 # byte for byte, which is why it carries no generation date.
 #
-#   source_tree      bench/results/plato/vanilla
+#   source_tree      bench/results/mipfeas/vanilla
 #   config           vanilla
 #   config_seeds     0
-#   reference_list   /home/simon/code/my/mip-heuristics/bench/instances_plato.txt (233 instances)
-#   informative_set  bench/ablation_effort/informative.txt (191 names, sha256:ad57129a56a1)
+#   reference_list   bench/instances_mipfeas.txt (233 instances)
+#   informative_set  bench/ablation_effort/informative.txt (191 names, sha256:9c27dcb8aed8)
 #   candidate_pool   191 stratifiable instance(s) after intersecting it with the tree
 #   pool_rule        instances a presolve-only probe produced an accepted solution
 #                    on in ANY configuration (issue #113).  The rest are not
-#                    discarded: they are scored as a separate hard tier.
+#                    discarded: they carry no ranking signal, so they are excluded.
 #   sample_seed      0
 #   sample_size      90
 #   boundaries_s     1, 10, 100, 600
@@ -33,7 +33,7 @@
 #   TOTAL          191  100.0%      90   100.0%    90.0
 #
 # Regenerate with:
-#   bench/make_tuning_set.py bench/results/plato/vanilla --config vanilla --instances /home/simon/code/my/mip-heuristics/bench/instances_plato.txt --informative-instances bench/ablation_effort/informative.txt --size 90 --seed 0
+#   bench/make_tuning_set.py bench/results/mipfeas/vanilla --config vanilla --instances bench/instances_mipfeas.txt --informative-instances bench/ablation_effort/informative.txt --size 90 --seed 0
 
 # <1s (42 of 92)
 CMS750_4                  # 0.20s
