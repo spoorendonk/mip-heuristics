@@ -164,8 +164,8 @@ def test_latex_ablation_table_escapes_and_rows():
 
 def test_load_results_config_dir_override(tmp_path: Path):
     # A config can be loaded from an explicit directory (used to pull the
-    # ablation anchors from bench/results/plato).  Build a tiny seed0 tree.
-    real_log = Path(__file__).with_name("results") / "plato" / "patched" / "seed0"
+    # ablation anchors from bench/results/mipfeas).  Build a tiny seed0 tree.
+    real_log = Path(__file__).with_name("results") / "mipfeas" / "patched" / "seed0"
     seed_dir = tmp_path / "anchor" / "seed0"
     seed_dir.mkdir(parents=True)
     sample = next(real_log.glob("*.log"), None)
@@ -310,7 +310,7 @@ def test_exclude_list_removes_named_instances(tmp_path: Path):
 def test_include_then_exclude_expresses_the_held_out_complement(tmp_path: Path):
     """The whole point of having both: the complement needs no third file.
 
-    `--instances plato --exclude-instances tuning` is the held-out set, and it
+    `--instances mipfeas --exclude-instances tuning` is the held-out set, and it
     cannot drift out of sync with the tuning list the way a materialised
     complement file would.
     """
@@ -543,7 +543,7 @@ def test_bundled_mipfeas_set_has_a_usable_reference_for_every_instance():
     silently changes meaning, so the agreement is asserted rather than assumed.
     """
     bench = os.path.dirname(os.path.abspath(__file__))
-    instances = read_instance_list(os.path.join(bench, "instances_plato.txt"))
+    instances = read_instance_list(os.path.join(bench, "instances_mipfeas.txt"))
     assert len(instances) == 233
 
     solu = parse_solu_file(os.path.join(bench, "miplib2017-v36.solu"))

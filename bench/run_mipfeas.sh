@@ -5,7 +5,7 @@
 #   bench/run_mipfeas.sh next [hours]    Run within a HOURS window (default 1). Resume safely.
 #   bench/run_mipfeas.sh status          Show progress and estimated time remaining.
 #
-# Results go to bench/results/plato (persistent across sessions).  Instances
+# Results go to bench/results/mipfeas (persistent across sessions).  Instances
 # run interleaved (every config per instance) so partial results are always
 # paired and comparable.
 #
@@ -21,8 +21,8 @@
 #
 #   MIPFEAS_CONFIGS    configs to run       (default "vanilla all")
 #   MIPFEAS_SEEDS      seeds per config     (default "0")
-#   MIPFEAS_INSTANCES  instance list        (default bench/instances_plato.txt)
-#   MIPFEAS_OUTPUT     results tree         (default bench/results/plato)
+#   MIPFEAS_INSTANCES  instance list        (default bench/instances_mipfeas.txt)
+#   MIPFEAS_OUTPUT     results tree         (default bench/results/mipfeas)
 #   MIPFEAS_TIME_LIMIT seconds per solve    (default 600, the benchmark's limit)
 #   MIPFEAS_BINARY / MIPFEAS_VANILLA_BINARY   the two binaries.  The vanilla one
 #                        must be a separately built UNPATCHED HiGHS of the
@@ -77,12 +77,12 @@
 set -euo pipefail
 shopt -s nullglob
 
-INSTANCES="${MIPFEAS_INSTANCES:-bench/instances_plato.txt}"
+INSTANCES="${MIPFEAS_INSTANCES:-bench/instances_mipfeas.txt}"
 # 600 s is the benchmark's limit and the headline stages' limit.  The tuning stages
 # run at a reduced one; the budget arithmetic below reads this, so a chunk
 # stays sized correctly either way.
 TIME_LIMIT="${MIPFEAS_TIME_LIMIT:-600}"
-OUTPUT="${MIPFEAS_OUTPUT:-bench/results/plato}"
+OUTPUT="${MIPFEAS_OUTPUT:-bench/results/mipfeas}"
 BINARY="${MIPFEAS_BINARY:-./build/bin/highs}"
 # Vanilla binary: exactly what MIPFEAS_VANILLA_BINARY says, or nothing.  No PATH
 # search and no fallback to $BINARY — a baseline whose binary was discovered

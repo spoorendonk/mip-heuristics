@@ -4,7 +4,7 @@
 # Usage:
 #   bench/derive_from_probe.sh [probe-tree] [vanilla-tree]
 #
-# Defaults: bench/results/probe/preprobe and bench/results/plato/vanilla.
+# Defaults: bench/results/probe/preprobe and bench/results/mipfeas/vanilla.
 #
 # The probe is a results tree of presolve-only runs (bench/run_presolve_probe.sh).
 # Everything below is derived *from those logs* — nothing is carried by hand
@@ -56,7 +56,7 @@
 set -euo pipefail
 
 PROBE="${1:-bench/results/probe/preprobe}"
-VANILLA="${2:-bench/results/plato/vanilla}"
+VANILLA="${2:-bench/results/mipfeas/vanilla}"
 # Tracked, not beside the tree: `bench/results*` is gitignored, so artifacts
 # written there vanish from the repository and the numbers behind a shipped
 # default would live only on the machine that ran the probe.

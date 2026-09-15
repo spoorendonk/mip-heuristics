@@ -74,13 +74,13 @@ SEEDS="${HEADLINE_SEEDS:-0}"
 # delete it out from under a multi-day campaign (CLAUDE.md).  Staged by hand
 # rather than built here: which binary produced the headline is the one fact
 # the whole comparison rests on, so it is named, not discovered.
-BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/plato/bin/highs}"
+BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/mipfeas/bin/highs}"
 
 mipfeas() {
 	MIPFEAS_CONFIGS="$CONFIG" \
 	MIPFEAS_SEEDS="$SEEDS" \
-	MIPFEAS_INSTANCES="$REPO/bench/instances_plato.txt" \
-	MIPFEAS_OUTPUT="$REPO/bench/results/plato" \
+	MIPFEAS_INSTANCES="$REPO/bench/instances_mipfeas.txt" \
+	MIPFEAS_OUTPUT="$REPO/bench/results/mipfeas" \
 	MIPFEAS_TIME_LIMIT=600 \
 	MIPFEAS_BINARY="$BINARY" \
 	MIPFEAS_ANALYZE=0 \
@@ -139,7 +139,7 @@ PY
 }
 
 cmd_report() {
-	local out="$REPO/bench/results/plato"
+	local out="$REPO/bench/results/mipfeas"
 	echo "=== headline: all 233, paired against vanilla"
 	python3 "$REPO/bench/analyze_results.py" "$out" --configs "$CONFIG" vanilla \
 		--time-limit 600 --baseline --summary
@@ -147,7 +147,7 @@ cmd_report() {
 	echo "=== secondary: the held-out complement of the tuning set"
 	python3 "$REPO/bench/analyze_results.py" "$out" --configs "$CONFIG" vanilla \
 		--time-limit 600 --baseline --summary \
-		--instances "$REPO/bench/instances_plato.txt" \
+		--instances "$REPO/bench/instances_mipfeas.txt" \
 		--exclude-instances "$REPO/bench/instances_tuning.txt"
 	echo
 	echo "=== per-heuristic attribution of accepted incumbents"

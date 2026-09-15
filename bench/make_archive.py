@@ -59,7 +59,7 @@ Provenance this derives from the tree rather than taking on trust:
 
 Usage::
 
-    bench/make_archive.py build bench/results/plato --output dist/v1.0-archive \\
+    bench/make_archive.py build bench/results/mipfeas --output dist/v1.0-archive \\
         --time-limit 600 --configs off all --tar
     bench/make_archive.py verify dist/v1.0-archive
 """
@@ -1211,7 +1211,7 @@ def _add_build_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "build", help="package a results tree as a verifiable release archive"
     )
-    p.add_argument("results", help="results tree, e.g. bench/results/plato")
+    p.add_argument("results", help="results tree, e.g. bench/results/mipfeas")
     p.add_argument("--output", required=True, help="archive directory to create")
     p.add_argument(
         "--configs",

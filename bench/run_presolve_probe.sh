@@ -140,7 +140,7 @@ case "$MODE" in
 preprobe)
 	export MIPFEAS_OUTPUT="$PROBE_OUTPUT_ROOT/preprobe"
 	export MIPFEAS_SEEDS="$PROBE_SEEDS"
-	export MIPFEAS_INSTANCES="${MIPFEAS_INSTANCES:-bench/instances_plato.txt}"
+	export MIPFEAS_INSTANCES="${MIPFEAS_INSTANCES:-bench/instances_mipfeas.txt}"
 	MIPFEAS_EXTRA_OPTIONS="$(probe_options "$PROBE_EFFORT")"
 	;;
 budget)

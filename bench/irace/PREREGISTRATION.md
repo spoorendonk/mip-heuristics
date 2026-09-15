@@ -100,7 +100,7 @@ configuration cracked in #113).
    effort. Fewer heuristics is less to defend and a tie is a legitimate
    result.
 3. Finalists are validated on **held-out instances**: the mipfeas list minus the
-   tuning set, via `--instances plato --exclude-instances tuning`.
+   tuning set, via `--instances mipfeas --exclude-instances tuning`.
 4. 3–5 finalists — the scalarised winner, one clearly cheaper, one clearly
    more generous — are confirmed by **full timed solves** at the campaign's
    600 s limit on the tuning set. Ranking stability is recorded either way,

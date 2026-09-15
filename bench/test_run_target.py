@@ -306,7 +306,7 @@ def test_mipfeas_list_carries_no_refusal():
     from run_benchmark import load_instances
 
     refs = parse_solu_file(os.path.join(BENCH_DIR, "miplib2017-v36.solu"))
-    for inst in load_instances(os.path.join(BENCH_DIR, "instances_plato.txt")):
+    for inst in load_instances(os.path.join(BENCH_DIR, "instances_mipfeas.txt")):
         assert reference_objective(inst, refs) is not None
 
 

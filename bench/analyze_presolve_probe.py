@@ -106,7 +106,7 @@ from run_target import presolve_objective, primal_gap
 
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DEFAULT_INSTANCES = os.path.join(BENCH_DIR, "instances_plato.txt")
+DEFAULT_INSTANCES = os.path.join(BENCH_DIR, "instances_mipfeas.txt")
 
 # The presolve chain, in `kChain` order.  `fpr_lp` is deliberately absent: it
 # is the dive-time heuristic, it runs on the far side of the root LP that a

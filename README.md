@@ -29,7 +29,7 @@ bash bench/download_miplib.sh
 export MIPFEAS_VANILLA_BINARY=/path/to/unpatched/highs   # not the patched build
 bench/run_mipfeas.sh next 24    # run in chunks; resumes safely
 bench/run_mipfeas.sh status     # check progress
-python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline
+python3 bench/analyze_results.py bench/results/mipfeas --configs all vanilla --time-limit 600 --baseline
 ```
 
 ## Heuristics
@@ -205,10 +205,10 @@ Ours find the first feasible solution on 135 of 214 instances against vanilla's
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 bash bench/download_miplib.sh
 bench/run_mipfeas.sh next 24   # run in chunks; resumes safely — repeat until 233/233
-python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline --summary
+python3 bench/analyze_results.py bench/results/mipfeas --configs all vanilla --time-limit 600 --baseline --summary
 ```
 
-Results land in `bench/results/plato/`. The vanilla binary has no default and is never searched for on PATH: set `MIPFEAS_VANILLA_BINARY=/path/to/unpatched/highs`, or drop `vanilla` from `MIPFEAS_CONFIGS`. What a chunked run does is environment, not a second launcher — `MIPFEAS_CONFIGS`, `MIPFEAS_SEEDS`, `MIPFEAS_INSTANCES` and `MIPFEAS_OUTPUT` — see `docs/REPRODUCIBILITY.md`.
+Results land in `bench/results/mipfeas/`. The vanilla binary has no default and is never searched for on PATH: set `MIPFEAS_VANILLA_BINARY=/path/to/unpatched/highs`, or drop `vanilla` from `MIPFEAS_CONFIGS`. What a chunked run does is environment, not a second launcher — `MIPFEAS_CONFIGS`, `MIPFEAS_SEEDS`, `MIPFEAS_INSTANCES` and `MIPFEAS_OUTPUT` — see `docs/REPRODUCIBILITY.md`.
 
 ### Where the MIPLIB collection lives
 
@@ -226,8 +226,8 @@ The first directory holding more than 200 `.mps.gz` files wins. Only when none d
 Tuning on the hard instances alone would over-allocate: presolve effort buys feasibility where feasibility is hard and is pure overhead where branch-and-bound has an incumbent in the first second, and that overhead delays the root LP. `bench/make_tuning_set.py` derives a subset that spans the spectrum instead, stratified on **vanilla time-to-first-feasible** — the axis the primal integral responds to — read out of an existing vanilla results tree:
 
 ```bash
-python3 bench/make_tuning_set.py bench/results/plato --config vanilla \
-    --instances bench/instances_plato.txt --size 40 --seed 0 \
+python3 bench/make_tuning_set.py bench/results/mipfeas --config vanilla \
+    --instances bench/instances_mipfeas.txt --size 40 --seed 0 \
     --output bench/instances_tuning.txt
 ```
 
@@ -269,13 +269,13 @@ Any report restricts to an instance list, or excludes one, without re-running a 
 
 ```bash
 # headline over the full mipfeas set
-python3 bench/analyze_results.py bench/results/plato --configs all vanilla \
+python3 bench/analyze_results.py bench/results/mipfeas --configs all vanilla \
     --time-limit 600 --summary
 
 # the same comparison over the held-out complement of the tuning set
-python3 bench/analyze_results.py bench/results/plato --configs all vanilla \
+python3 bench/analyze_results.py bench/results/mipfeas --configs all vanilla \
     --time-limit 600 --summary \
-    --instances bench/instances_plato.txt --exclude-instances bench/instances_small.txt
+    --instances bench/instances_mipfeas.txt --exclude-instances bench/instances_small.txt
 ```
 
 `bench/instances_small.txt` is the 25-instance tuning list and is entirely inside the mipfeas 233, so that second command is the held-out complement: exactly 208 instances.

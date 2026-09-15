@@ -133,7 +133,7 @@ What *is* reproducible is the protocol.
 upstream MIPLIB 2017's current solution file
 (<https://miplib.zib.de/downloads/miplib2017-v36.solu>, retrieved 2026-08-20).
 It replaced a bundled `v22` copy that marked `supportcase22` `=inf=` while
-`bench/instances_plato.txt` counted it among the 233 feasible instances —
+`bench/instances_mipfeas.txt` counted it among the 233 feasible instances —
 upstream has since recorded it feasible at `=best= 110.0`. Over the 233 mipfeas
 instances the refresh moves exactly three entries: `supportcase22`, plus
 corrected optima for `neos-3754480-nidda` (12941.738 → 12939.754) and
@@ -188,8 +188,8 @@ environment rather than a hand-written `run_benchmark.py` command line:
 |---|---|
 | `MIPFEAS_CONFIGS` | configs to run (default `vanilla all`) |
 | `MIPFEAS_SEEDS` | seeds per config (default `0`) |
-| `MIPFEAS_INSTANCES` | instance list (default `bench/instances_plato.txt`) |
-| `MIPFEAS_OUTPUT` | results tree (default `bench/results/plato`) |
+| `MIPFEAS_INSTANCES` | instance list (default `bench/instances_mipfeas.txt`) |
+| `MIPFEAS_OUTPUT` | results tree (default `bench/results/mipfeas`) |
 | `MIPFEAS_TIME_LIMIT` | seconds per solve (default 600, the benchmark's limit) |
 | `MIPFEAS_BINARY` / `MIPFEAS_VANILLA_BINARY` | the two binaries |
 
@@ -224,11 +224,11 @@ resumed run never redoes completed instances. The subtraction is not
 cosmetic: the budget stops new instances being *launched*, and the one already
 running still gets its full 600 s, so a chunk sized at the whole window
 overruns it by up to ten minutes. Results accumulate in
-`bench/results/plato/`. When `status` reports `COMPLETE` the analysis runs
+`bench/results/mipfeas/`. When `status` reports `COMPLETE` the analysis runs
 automatically; to run it by hand:
 
 ```bash
-python3 bench/analyze_results.py bench/results/plato \
+python3 bench/analyze_results.py bench/results/mipfeas \
     --configs all vanilla --time-limit 600 --baseline --summary
 ```
 
@@ -351,7 +351,7 @@ record of what the search selected.
 its predecessor ran at *default options*, so their `.opts` files are
 byte-identical — `mip_heuristic_suite = all` plus the seed — and what differed
 was the binary's built-in defaults. The results *directory* is the only record
-of which configuration a run used, which is why `bench/results/plato/` carries
+of which configuration a run used, which is why `bench/results/mipfeas/` carries
 `all` and `all-prev-vector` rather than two trees both called `all`. If you
 re-run a stage after changing a default, give it a new directory or the
 harness's `--skip-existing` will report the old runs as done.

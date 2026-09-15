@@ -4,7 +4,7 @@
 #
 # The full collection (collection.zip) covers all 240 MIPLIB2017 benchmark
 # instances including all 233 needed for the mipfeas benchmark.
-# See bench/instances_plato.txt and bench/run_mipfeas.sh for the mipfeas workflow.
+# See bench/instances_mipfeas.txt and bench/run_mipfeas.sh for the mipfeas workflow.
 #
 # A 3.5 GB download is worth going out of its way to avoid, so an existing
 # copy is *searched for* rather than assumed at one path: the candidates below

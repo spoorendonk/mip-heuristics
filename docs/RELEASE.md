@@ -134,7 +134,7 @@ state produced each row.
 # It *is* echoed in every log as `Set option time_limit to N`, and the tool
 # does not cross-check the two — a wrong value mislabels the archive and
 # shifts the gap@cutoff metric in every generated table.
-bench/make_archive.py build bench/results/plato \
+bench/make_archive.py build bench/results/mipfeas \
     --output dist/mip-heuristics-v0.1.0-archive \
     --time-limit 600 \
     --machine-note "16-core benchmark host, Xeon ..., 64 GB, otherwise idle" \

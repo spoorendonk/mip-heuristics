@@ -9,7 +9,7 @@
 # nobody can tell afterwards which set produced what.
 #
 # (Provenance, not a measured effect: on the one comparison available here
-# this set and a 24-instance sample of instances_plato.txt differed by 9%
+# this set and a 24-instance sample of instances_mipfeas.txt differed by 9%
 # on local_mip:scylla, which is *less* than the 11% seed-to-seed spread on
 # this set alone.  Use the recorded set because it is the recorded set, not
 # because a different one is known to shift the answer.)

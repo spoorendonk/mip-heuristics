@@ -638,7 +638,7 @@ def test_a_run_that_ignored_its_suite_value_is_not_recorded_as_a_result(tmp_path
 def test_the_mipfeas_list_is_the_full_233_instance_benchmark():
     from run_benchmark import load_instances
 
-    names = load_instances(str(BENCH / "instances_plato.txt"))
+    names = load_instances(str(BENCH / "instances_mipfeas.txt"))
     assert len(names) == 233
     assert len(set(names)) == 233
 
@@ -966,7 +966,7 @@ def test_the_headline_reports_the_mipfeas_metric_against_the_baseline(headline_t
 
 def test_the_held_out_complement_is_the_same_tree_with_two_filters(headline_tree):
     # #108's secondary comparison: the 208 instances not used for tuning, as
-    # `--instances plato --exclude-instances tuning` rather than a third list
+    # `--instances mipfeas --exclude-instances tuning` rather than a third list
     # that can drift out of step with the other two.
     tree, _, names, listing = headline_tree
     tuning = instance_list(tree.parent / "tuning.txt", names[:3])

@@ -85,7 +85,7 @@ NEVER_LABEL = "never"
 
 DEFAULT_SIZE = 40
 DEFAULT_MIN_PER_STRATUM = 1
-DEFAULT_INSTANCES = os.path.join(BENCH_DIR, "instances_plato.txt")
+DEFAULT_INSTANCES = os.path.join(BENCH_DIR, "instances_mipfeas.txt")
 
 # How many names a refusal message spells out before summarising the rest.
 MAX_LISTED = 20

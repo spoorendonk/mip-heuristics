@@ -447,7 +447,7 @@ def reference_objective(name: str, solu_refs: dict[str, tuple[str, float | None]
       build a virtual best from, so `resolve_reference` would hand back this
       run's own primal and every configuration would score gap 0.
 
-    Neither is reachable from `bench/instances_plato.txt`: all 233 entries carry
+    Neither is reachable from `bench/instances_mipfeas.txt`: all 233 entries carry
     a published objective in the bundled solution file.  The refusals exist so
     that an instance list which grows past it fails loudly at the first
     evaluation rather than quietly contributing a constant.

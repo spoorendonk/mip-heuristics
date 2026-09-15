@@ -120,9 +120,9 @@ def build_best_known(
 # exactly like a real one.
 #
 # This is not hypothetical.  Until 2026-08 the bundled solution file marked
-# `supportcase22` `=inf=` while `bench/instances_plato.txt` counted it among the
+# `supportcase22` `=inf=` while `bench/instances_mipfeas.txt` counted it among the
 # 233 feasible mipfeas instances; upstream had since found it feasible.  The data
-# is fixed (see the note in `bench/instances_plato.txt`), but the class of bug
+# is fixed (see the note in `bench/instances_mipfeas.txt`), but the class of bug
 # must not be able to recur silently, so the contradiction is now detected
 # rather than averaged in.
 CONTRADICTED_REFERENCE_TAGS: tuple[str, ...] = ("=inf=", "=unbd=")
@@ -249,7 +249,7 @@ def load_results(
 def read_instance_list(path: str) -> list[str]:
     """Read an instance-name list file into a de-duplicated, ordered list.
 
-    Same format as `bench/instances_plato.txt` and `bench/instances_small.txt`:
+    Same format as `bench/instances_mipfeas.txt` and `bench/instances_small.txt`:
     one bare instance name per line, `#` comments and blank lines ignored.  A
     name is the log stem, i.e. the `.mps.gz` basename without suffixes.
     """
@@ -301,7 +301,7 @@ def filter_results(
     count without needing to know a filter was applied.
 
     Include runs first, then exclude, which is what makes a held-out
-    complement expressible as `--instances plato --exclude-instances tuning`
+    complement expressible as `--instances mipfeas --exclude-instances tuning`
     without materialising the complement as a third file that can drift out of
     sync with the tuning set it is defined against.
     """
@@ -1630,7 +1630,7 @@ def main() -> None:
         help="Configs to compare (default: all vanilla). An entry of the "
         "form NAME=DIR loads that config from an explicit directory instead "
         "of results_dir/NAME (used to pull ablation anchors from "
-        "bench/results/plato).",
+        "bench/results/mipfeas).",
     )
     parser.add_argument(
         "--plot",
@@ -1702,7 +1702,7 @@ def main() -> None:
         help=(
             "Restrict every report to the instance names listed in FILE (one "
             "per line, '#' comments ignored — the format of "
-            "bench/instances_plato.txt). Applied to the loaded tree before "
+            "bench/instances_mipfeas.txt). Applied to the loaded tree before "
             "aggregation, so every table covers and reports the restricted "
             "count."
         ),
@@ -1714,7 +1714,7 @@ def main() -> None:
         help=(
             "Remove the instance names listed in FILE from every report. "
             "Applied after --instances, so the held-out complement of a "
-            "tuning set is '--instances instances_plato.txt "
+            "tuning set is '--instances instances_mipfeas.txt "
             "--exclude-instances <tuning>' with no third file to drift."
         ),
     )
