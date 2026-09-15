@@ -106,7 +106,7 @@ sd = 0.464:
 |---|---|
 | 48 (this stage) | 20.6% |
 | 90 (whole tuning set) | 14.8% |
-| 233 (full PLATO, one seed) | 9.0% |
+| 233 (full mipfeas, one seed) | 9.0% |
 | 699 (233 x 3 seeds = the entire #108 campaign) | **5.1%** |
 
 The observed differences among B/B'/D/D' are **0-8%**. So they are not merely
@@ -220,7 +220,7 @@ Reading it now:
 | confirm, `D-shipped` | 49 | 1756 | 19 | 1521 | **0** |
 | held-out, `D-shipped` | 48 | 301 | 27 | 195 | **0** |
 | confirm, `D'-tuned-all4` (scylla 0.4907) | 49 | 1616 | 14 | 1622 | **0** |
-| #108 full PLATO, four heuristics | 233 | 24763 | 139 | 4651 | **0** |
+| #108 full mipfeas, four heuristics | 233 | 24763 | 139 | 4651 | **0** |
 
 Scylla is neither disabled nor skipped in those runs: a traced solve emits
 `[Heur] name=scylla phase=presolve` every time, and on `50v-10` reports
@@ -335,5 +335,5 @@ anyone revisits the defaults; it is not established by anything here.
   instances reproduces every conclusion, so the dependency is demonstrated
   immaterial rather than assumed to be. Note internal-pilot bias inflates
   *false positives*, and the finding here is a null.
-* **Only the root dispatch is screened**, and ~18% of PLATO is invisible to a
+* **Only the root dispatch is screened**, and ~18% of mipfeas is invisible to a
   presolve-only screen (Ablation A's informative set is 191 of 233).

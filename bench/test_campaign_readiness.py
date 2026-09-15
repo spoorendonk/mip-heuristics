@@ -29,7 +29,7 @@ options the campaign sets and emits the lines the parsers read.  It skips
 when `build/bin/highs` is absent, which is the state of the Python-only CI
 job.
 
-`run_plato.sh` is covered as the chunked launcher all four stages use: it
+`run_mipfeas.sh` is covered as the chunked launcher all four stages use: it
 takes its configs, seeds, instance list and output tree from the environment,
 so a stage is an environment rather than a separate launcher.
 """
@@ -62,7 +62,7 @@ REPO = BENCH.parent
 RUN_BENCHMARK = BENCH / "run_benchmark.py"
 ANALYZE_RESULTS = BENCH / "analyze_results.py"
 MAKE_TUNING_SET = BENCH / "make_tuning_set.py"
-RUN_PLATO = BENCH / "run_plato.sh"
+RUN_MIPFEAS = BENCH / "run_mipfeas.sh"
 APPLY_PATCH = REPO / "third_party" / "highs_patch" / "apply_patch.cmake"
 
 # The presolve chain, in dispatch order.  `CONFIG_SUITES` keys spell subsets
@@ -635,7 +635,7 @@ def test_a_run_that_ignored_its_suite_value_is_not_recorded_as_a_result(tmp_path
 # ---------------------------------------------------------------------------
 
 
-def test_the_plato_list_is_the_full_233_instance_benchmark():
+def test_the_mipfeas_list_is_the_full_233_instance_benchmark():
     from run_benchmark import load_instances
 
     names = load_instances(str(BENCH / "instances_plato.txt"))
@@ -794,7 +794,7 @@ def test_every_non_empty_subset_of_the_five_heuristics_has_a_config():
     assert CONFIG_SUITES["fpr"] == "fpr"
     assert CONFIG_SUITES["fpr_lp"] == "fpr_lp"
     assert CONFIG_SUITES["fpr+fpr_lp"] == "fpr,fpr_lp"
-    # The re-spelling the issue calls for: the recorded PLATO configuration
+    # The re-spelling the issue calls for: the recorded mipfeas configuration
     # ran `fj,fpr,local_mip`, which enabled `fpr_lp` as a side effect of the
     # `fpr` token, so the config that means the same thing today names it.
     assert CONFIG_SUITES["fj+fpr+local_mip+fpr_lp"] == "fj,fpr,local_mip,fpr_lp"
@@ -839,12 +839,12 @@ def test_every_mix_runs_at_two_seeds_and_is_handed_its_own_suite_value(mix_tree)
 
 def test_the_mix_table_ranks_every_configuration_on_the_pre_registered_metric(mix_tree):
     # Pre-registered: primal-integral SGM at the run's time limit, which is
-    # the `PLATO SGM` column of the ablation table.
+    # the `mipfeas SGM` column of the ablation table.
     tree, _, _ = mix_tree
     out = analyze(
         str(tree), "--ablation", "--configs", *MIX_CONFIGS, "--time-limit", "60"
     ).stdout
-    assert "PLATO SGM" in out
+    assert "mipfeas SGM" in out
     rows = {line.split()[0] for line in out.splitlines() if line.split()}
     assert set(MIX_CONFIGS) <= rows
 
@@ -947,7 +947,7 @@ def test_every_run_records_the_worker_count_it_ran_at(headline_tree):
             assert parsed.hardware_threads == 32
 
 
-def test_the_headline_reports_the_plato_metric_against_the_baseline(headline_tree):
+def test_the_headline_reports_the_mipfeas_metric_against_the_baseline(headline_tree):
     tree, _, names, _ = headline_tree
     out = analyze(
         str(tree),
@@ -959,7 +959,7 @@ def test_the_headline_reports_the_plato_metric_against_the_baseline(headline_tre
         "--baseline",
         "--summary",
     ).stdout
-    assert "## PLATO Headline Metrics" in out
+    assert "## mipfeas Headline Metrics" in out
     assert "SGM ratio" in out
     assert f"({len(names)} instances" in out
 
@@ -996,8 +996,8 @@ def test_the_held_out_complement_is_the_same_tree_with_two_filters(headline_tree
         "--exclude-instances",
         str(tuning),
     ).stdout
-    assert f"## PLATO Headline Metrics ({len(names)} instances" in full
-    assert f"## PLATO Headline Metrics ({len(names) - 3} instances" in complement
+    assert f"## mipfeas Headline Metrics ({len(names)} instances" in full
+    assert f"## mipfeas Headline Metrics ({len(names) - 3} instances" in complement
 
 
 def test_attribution_needs_no_developer_logging(headline_tree):
@@ -1032,35 +1032,35 @@ def test_the_attribution_labels_match_the_source_codes_the_patch_defines():
 
 
 # ---------------------------------------------------------------------------
-# run_plato.sh — the chunked launcher #105 uses
+# run_mipfeas.sh — the chunked launcher #105 uses
 # ---------------------------------------------------------------------------
 
 
-def plato_python_flags() -> set[str]:
-    """The long flags run_plato.sh hands to run_benchmark.py."""
-    text = RUN_PLATO.read_text()
+def mipfeas_python_flags() -> set[str]:
+    """The long flags run_mipfeas.sh hands to run_benchmark.py."""
+    text = RUN_MIPFEAS.read_text()
     invocation = text[text.index("python3 bench/run_benchmark.py") :]
     invocation = invocation[: invocation.index("\n\n")]
     return set(re.findall(r"(--[a-z-]+)", invocation))
 
 
-def test_run_plato_passes_only_flags_the_runner_defines():
+def test_run_mipfeas_passes_only_flags_the_runner_defines():
     defined = {
         option
         for action in build_arg_parser()._actions
         for option in action.option_strings
     }
-    assert plato_python_flags() <= defined
+    assert mipfeas_python_flags() <= defined
 
 
-def test_run_plato_resumes_and_does_not_pin_threads():
-    flags = plato_python_flags()
+def test_run_mipfeas_resumes_and_does_not_pin_threads():
+    flags = mipfeas_python_flags()
     assert {"--skip-existing", "--wall-time-budget"} <= flags
     assert "--threads" not in flags
     assert "--dev-log" not in flags
 
 
-def test_run_plato_leaves_the_machine_idle_by_the_end_of_its_window(tmp_path):
+def test_run_mipfeas_leaves_the_machine_idle_by_the_end_of_its_window(tmp_path):
     # `--wall-time-budget` stops *launching*; the instance already running
     # still gets its full limit.  So a chunk sized at the whole window can
     # overrun it by one time limit, which is 10 minutes of a morning at the
@@ -1075,7 +1075,7 @@ def test_run_plato_leaves_the_machine_idle_by_the_end_of_its_window(tmp_path):
     shim.chmod(0o755)
     binary = fake_highs(tmp_path)
     result = subprocess.run(
-        ["bash", str(RUN_PLATO), "next", "2"],
+        ["bash", str(RUN_MIPFEAS), "next", "2"],
         capture_output=True,
         text=True,
         check=False,
@@ -1083,8 +1083,8 @@ def test_run_plato_leaves_the_machine_idle_by_the_end_of_its_window(tmp_path):
         env={
             **os.environ,
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "PLATO_BINARY": str(binary),
-            "PLATO_VANILLA_BINARY": str(binary),
+            "MIPFEAS_BINARY": str(binary),
+            "MIPFEAS_VANILLA_BINARY": str(binary),
         },
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1094,18 +1094,18 @@ def test_run_plato_leaves_the_machine_idle_by_the_end_of_its_window(tmp_path):
     assert "--time-limit 600" in invocation
 
 
-def test_run_plato_runs_every_config_at_every_seed_and_reports_completion(tmp_path):
+def test_run_mipfeas_runs_every_config_at_every_seed_and_reports_completion(tmp_path):
     # #106-#108 need more than the #105 shape, and they get it from the
     # environment rather than from a second launcher: configs, seeds, instance
     # list and output tree are all overridable, and `count_done` counts an
     # instance only once *every* seed has it.
     names = [f"inst{i:02d}" for i in range(3)]
-    # Through `$MIPLIB_DIR`, not `--data-dir`: run_plato.sh does not pass one,
+    # Through `$MIPLIB_DIR`, not `--data-dir`: run_mipfeas.sh does not pass one,
     # so this exercises the resolution a campaign machine actually uses.
     _, listing, binary, record = make_run(tmp_path, names)
-    tree = tmp_path / "plato"
+    tree = tmp_path / "mipfeas"
     result = subprocess.run(
-        ["bash", str(RUN_PLATO), "next", "1"],
+        ["bash", str(RUN_MIPFEAS), "next", "1"],
         capture_output=True,
         text=True,
         check=False,
@@ -1114,12 +1114,12 @@ def test_run_plato_runs_every_config_at_every_seed_and_reports_completion(tmp_pa
             **os.environ,
             "FAKE_HIGHS_RECORD": str(record),
             "MIPLIB_DIR": str(miplib_dir(tmp_path, names)),
-            "PLATO_INSTANCES": str(listing),
-            "PLATO_OUTPUT": str(tree),
-            "PLATO_CONFIGS": "fj+fpr+local_mip+fpr_lp vanilla",
-            "PLATO_SEEDS": "0 1 2",
-            "PLATO_BINARY": str(binary),
-            "PLATO_VANILLA_BINARY": str(fake_highs(tmp_path, "highs-unpatched")),
+            "MIPFEAS_INSTANCES": str(listing),
+            "MIPFEAS_OUTPUT": str(tree),
+            "MIPFEAS_CONFIGS": "fj+fpr+local_mip+fpr_lp vanilla",
+            "MIPFEAS_SEEDS": "0 1 2",
+            "MIPFEAS_BINARY": str(binary),
+            "MIPFEAS_VANILLA_BINARY": str(fake_highs(tmp_path, "highs-unpatched")),
         },
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1131,7 +1131,7 @@ def test_run_plato_runs_every_config_at_every_seed_and_reports_completion(tmp_pa
     assert f"paired  : {len(names)} / {len(names)}" in result.stdout
 
 
-def test_run_plato_sizes_its_chunk_from_the_reduced_limit_too(tmp_path):
+def test_run_mipfeas_sizes_its_chunk_from_the_reduced_limit_too(tmp_path):
     # The tuning stages run at a reduced limit, and the budget rule is
     # relative to it: 2h window at a 60s limit launches for 7140s, not 6600.
     shim = tmp_path / "python3"
@@ -1140,7 +1140,7 @@ def test_run_plato_sizes_its_chunk_from_the_reduced_limit_too(tmp_path):
     shim.chmod(0o755)
     binary = fake_highs(tmp_path)
     result = subprocess.run(
-        ["bash", str(RUN_PLATO), "next", "2"],
+        ["bash", str(RUN_MIPFEAS), "next", "2"],
         capture_output=True,
         text=True,
         check=False,
@@ -1148,9 +1148,9 @@ def test_run_plato_sizes_its_chunk_from_the_reduced_limit_too(tmp_path):
         env={
             **os.environ,
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "PLATO_BINARY": str(binary),
-            "PLATO_VANILLA_BINARY": str(binary),
-            "PLATO_TIME_LIMIT": "60",
+            "MIPFEAS_BINARY": str(binary),
+            "MIPFEAS_VANILLA_BINARY": str(binary),
+            "MIPFEAS_TIME_LIMIT": "60",
         },
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1159,23 +1159,23 @@ def test_run_plato_sizes_its_chunk_from_the_reduced_limit_too(tmp_path):
     assert "--wall-time-budget 7140" in invocation
 
 
-def test_run_plato_status_reads_a_tree_without_running_anything():
+def test_run_mipfeas_status_reads_a_tree_without_running_anything():
     result = subprocess.run(
-        ["bash", str(RUN_PLATO), "status"],
+        ["bash", str(RUN_MIPFEAS), "status"],
         capture_output=True,
         text=True,
         check=False,
         cwd=str(REPO),
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "PLATO mipfeas progress" in result.stdout
+    assert "mipfeas progress" in result.stdout
 
 
 # ---------------------------------------------------------------------------
 # the #113 presolve probe: the launcher *is* the configuration
 # ---------------------------------------------------------------------------
 #
-# The probe is `run_plato.sh` with an environment, so what has to be pinned is
+# The probe is `run_mipfeas.sh` with an environment, so what has to be pinned is
 # the environment: every heuristic at the top of its effort range with its
 # patience gate off, the presolve-only exit, and the union-over-singles config
 # set the informative filter is taken on.  Getting any of those wrong is not
@@ -1199,10 +1199,10 @@ def probe_run(tmp_path: Path, mode: str, names: list[str], **env: str):
             **os.environ,
             "FAKE_HIGHS_RECORD": str(record),
             "MIPLIB_DIR": str(miplib_dir(tmp_path, names)),
-            "PLATO_INSTANCES": str(listing),
+            "MIPFEAS_INSTANCES": str(listing),
             "PROBE_OUTPUT_ROOT": str(tree),
-            "PLATO_BINARY": str(binary),
-            "PLATO_VANILLA_BINARY": str(binary),
+            "MIPFEAS_BINARY": str(binary),
+            "MIPFEAS_VANILLA_BINARY": str(binary),
             **env,
         },
     )
@@ -1268,7 +1268,7 @@ def test_the_budget_control_moves_the_budget_and_nothing_else(tmp_path):
     names = ["inst00"]
     listing = instance_list(tmp_path / "subset.txt", names)
     _, _, free = probe_run(
-        tmp_path / "free", "preprobe", names, PLATO_INSTANCES=str(listing)
+        tmp_path / "free", "preprobe", names, MIPFEAS_INSTANCES=str(listing)
     )
     _, _, bounded = probe_run(
         tmp_path / "bounded",
@@ -1299,7 +1299,7 @@ def test_the_serial_control_pins_one_worker_and_nothing_else(tmp_path):
     names = ["inst00"]
     listing = instance_list(tmp_path / "subset.txt", names)
     _, _, free = probe_run(
-        tmp_path / "free", "preprobe", names, PLATO_INSTANCES=str(listing)
+        tmp_path / "free", "preprobe", names, MIPFEAS_INSTANCES=str(listing)
     )
     _, _, serial = probe_run(
         tmp_path / "serial",
@@ -1353,11 +1353,11 @@ def test_a_count_bounded_chunk_advances_instead_of_re_skipping(tmp_path):
     assert done == set(names[:6])
 
 
-def test_run_plato_forwards_the_probe_environment_to_flags_the_runner_defines():
+def test_run_mipfeas_forwards_the_probe_environment_to_flags_the_runner_defines():
     # The four probe knobs are passed through an array rather than spelled
     # into the invocation, because each is absent by default — which puts them
-    # outside the reach of `plato_python_flags`.
-    text = RUN_PLATO.read_text()
+    # outside the reach of `mipfeas_python_flags`.
+    text = RUN_MIPFEAS.read_text()
     body = text[text.index("local extra_args=()") :]
     body = body[: body.index("python3 bench/run_benchmark.py")]
     forwarded = set(re.findall(r"(--[a-z-]+)", body))

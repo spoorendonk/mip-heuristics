@@ -78,7 +78,7 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         // "off".  It is not a tuning choice: reading the solution-source
         // characters in the logs shows Scylla produced zero accepted
         // incumbents in ~380 runs across #107's trees and #108's
-        // full-PLATO run, while dispatching on every solve.
+        // full-mipfeas run, while dispatching on every solve.
         {"mip_heuristic_scylla_effort", 0.0},
         // The dive-time entry (#164).  It is in this loop for its *range*,
         // which is the same `[0, 1e6]`, and not for its unit: it is a share

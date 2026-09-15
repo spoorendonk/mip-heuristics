@@ -299,7 +299,7 @@ def test_absent_instance_is_refused():
         reference_objective("nowhere", _REFS)
 
 
-def test_plato_list_carries_no_refusal():
+def test_mipfeas_list_carries_no_refusal():
     """The refusals above are unreachable from the campaign's own instance list;
     they exist for a list that grows past it."""
     from analyze_results import parse_solu_file

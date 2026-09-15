@@ -14,8 +14,8 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | script | what it does |
 |---|---|
 | `run_benchmark.py` | runs instances × configs × seeds into a results tree. Resumes with `--skip-existing`; bounds a chunk by hours (`--wall-time-budget`) or by pending work (`--count`). The `vanilla` config is a second, unpatched binary (`--vanilla-binary`, required and probed) — not a setting on the patched one |
-| `run_plato.sh` | the chunked launcher every campaign stage uses. A stage is an *environment*, not a separate script — configs, seeds, instance list, output tree, extra options |
-| `run_presolve_probe.sh` | `run_plato.sh` with the calibration probe's environment (issue #113). Modes: `preprobe`, `budget`, `serial` |
+| `run_mipfeas.sh` | the chunked launcher every campaign stage uses. A stage is an *environment*, not a separate script — configs, seeds, instance list, output tree, extra options |
+| `run_presolve_probe.sh` | `run_mipfeas.sh` with the calibration probe's environment (issue #113). Modes: `preprobe`, `budget`, `serial` |
 | `run_finalists.sh` | the #107 finalists at the campaign limit — `heldout`, `confirm`. `FINALISTS_ONLY` names one arm for a stage that owns one rather than the set |
 | `run_headline.sh` | the headline: the shipped configuration at **default options** over the full 233 at 600 s, against the vanilla arm in the same tree. One seed by default -- three is what the stage asks for and is the deliverable, one is the gate, and the script says why. `until 08:00` bounds a window by wall-clock time; `report` prints the three pre-registered tables |
 | `run_ablation_c.sh` | `fpr_lp`'s two stages (#165): `capability` (does it fire, and yield, given every advantage) then `contribution` (the paired campaign metric) |

@@ -1,4 +1,4 @@
-# Retained hard tier of the PLATO mipfeas set (issue #113): instances
+# Retained hard tier of the mipfeas set (issue #113): instances
 # the presolve chain produced nothing on at the generous probe
 # configuration.  Kept, not discarded.
 #

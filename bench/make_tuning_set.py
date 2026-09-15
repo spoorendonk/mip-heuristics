@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Derive a stratified tuning subset from a vanilla PLATO results tree.
+"""Derive a stratified tuning subset from a vanilla mipfeas results tree.
 
 Issue #103.  The campaign needs a tuning/dev subset that is representative of
-what the benchmark *measures*.  PLATO `mipfeas` scores the primal integral,
+what the benchmark *measures*.  `mipfeas` scores the primal integral,
 which responds to how hard it is to **find a feasible solution** — so the
 stratification variable here is vanilla's time to first feasible solution, not
 the time to prove optimality that `bench/instances_small.txt` was selected on.
@@ -657,7 +657,7 @@ def render_list(sel: Selection, results_dir: str) -> str:
     scan = sel.scan
     seeds = ", ".join(str(s) for s in scan.seeds) or "(none)"
     lines = [
-        "# Tuning subset of the PLATO mipfeas set, stratified on vanilla",
+        "# Tuning subset of the mipfeas set, stratified on vanilla",
         "# time-to-first-feasible (issue #103) — the axis the primal integral",
         "# responds to, unlike the optimality solve time that",
         "# bench/instances_small.txt was selected on.",
@@ -792,7 +792,7 @@ def coverage_errors(scan: TreeScan, allow_incomplete: bool) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Derive a stratified tuning subset from a vanilla PLATO results "
+            "Derive a stratified tuning subset from a vanilla mipfeas results "
             "tree, stratifying on time to first feasible solution."
         ),
         epilog=(

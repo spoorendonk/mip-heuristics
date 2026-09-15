@@ -246,7 +246,7 @@ DEFAULT_NO_SOLUTION_PENALTY = 2.0
 DEFAULT_LAMBDA = 1.0 / 600.0
 
 # Per-run solver time limit.  A cap is mandatory rather than advisory: HiGHS's
-# own presolve is unbounded on some models, and one PLATO instance spends an
+# own presolve is unbounded on some models, and one mipfeas instance spends an
 # entire 60 s limit inside it, so an uncapped screen spends its budget on
 # something no parameter here controls.
 DEFAULT_TIME_LIMIT = 60.0

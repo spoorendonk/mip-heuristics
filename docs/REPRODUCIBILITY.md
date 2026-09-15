@@ -111,9 +111,9 @@ determinism test and for debugging, and the wrong one for measuring anything:
 Do not pass `--threads` to `bench/run_benchmark.py`, and do not put `threads=`
 in a benchmark options file. Let HiGHS use its default.
 
-## Exact PLATO reproduction
+## Exact mipfeas reproduction
 
-The recorded PLATO mipfeas table (233 MIPLIB 2017 instances, 600 s) is in
+The recorded mipfeas table (233 MIPLIB 2017 instances, 600 s) is in
 `README.md`, together with the provenance caveat that matters most: **it cannot
 be reproduced on `HEAD`.** It was measured at `mip_heuristic_preset=all_opp` —
 FJ + FPR + LocalMIP + `fpr_lp` with Scylla deliberately excluded — `fpr_lp`
@@ -134,7 +134,7 @@ upstream MIPLIB 2017's current solution file
 (<https://miplib.zib.de/downloads/miplib2017-v36.solu>, retrieved 2026-08-20).
 It replaced a bundled `v22` copy that marked `supportcase22` `=inf=` while
 `bench/instances_plato.txt` counted it among the 233 feasible instances —
-upstream has since recorded it feasible at `=best= 110.0`. Over the 233 PLATO
+upstream has since recorded it feasible at `=best= 110.0`. Over the 233 mipfeas
 instances the refresh moves exactly three entries: `supportcase22`, plus
 corrected optima for `neos-3754480-nidda` (12941.738 → 12939.754) and
 `binkar10_1` (6742.200 → 6741.380). The recorded README table predates the
@@ -165,13 +165,13 @@ mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heu
 Check for that line before trusting any results tree's provenance.
 
 **Vanilla-binary provenance.** The baseline binary is always named, never
-discovered. `bench/run_plato.sh` has no default for it — no PATH search and no
+discovered. `bench/run_mipfeas.sh` has no default for it — no PATH search and no
 fallback to the patched build — so a config list naming `vanilla` without
-`PLATO_VANILLA_BINARY` fails with a message rather than running whichever
+`MIPFEAS_VANILLA_BINARY` fails with a message rather than running whichever
 `highs` happens to be installed. Set it:
 
 ```bash
-export PLATO_VANILLA_BINARY=/path/to/unpatched/highs
+export MIPFEAS_VANILLA_BINARY=/path/to/unpatched/highs
 ```
 
 It must be an unpatched build of the **same tag**; a different version makes the
@@ -181,17 +181,17 @@ one that prints the patch marker or a different version — but check them
 yourself too if the tree came from elsewhere.
 
 **What a stage is.** The four campaign stages differ in what they run, not in
-how they are launched, so each one is `run_plato.sh` with a different
+how they are launched, so each one is `run_mipfeas.sh` with a different
 environment rather than a hand-written `run_benchmark.py` command line:
 
 | | |
 |---|---|
-| `PLATO_CONFIGS` | configs to run (default `vanilla all`) |
-| `PLATO_SEEDS` | seeds per config (default `0`) |
-| `PLATO_INSTANCES` | instance list (default `bench/instances_plato.txt`) |
-| `PLATO_OUTPUT` | results tree (default `bench/results/plato`) |
-| `PLATO_TIME_LIMIT` | seconds per solve (default 600, the PLATO limit) |
-| `PLATO_BINARY` / `PLATO_VANILLA_BINARY` | the two binaries |
+| `MIPFEAS_CONFIGS` | configs to run (default `vanilla all`) |
+| `MIPFEAS_SEEDS` | seeds per config (default `0`) |
+| `MIPFEAS_INSTANCES` | instance list (default `bench/instances_plato.txt`) |
+| `MIPFEAS_OUTPUT` | results tree (default `bench/results/plato`) |
+| `MIPFEAS_TIME_LIMIT` | seconds per solve (default 600, the benchmark's limit) |
+| `MIPFEAS_BINARY` / `MIPFEAS_VANILLA_BINARY` | the two binaries |
 
 A config name is exactly a `mip_heuristic_suite` value and carries no budget
 of its own; every heuristic runs at its shipped default. To move one for a
@@ -199,8 +199,8 @@ run, pass `run_benchmark.py --extra-options mip_heuristic_<name>_effort=<V>`.
 
 ```bash
 # the headline: the selected configuration at three seeds, against vanilla
-PLATO_CONFIGS="fj+fpr+local_mip+fpr_lp vanilla" PLATO_SEEDS="0 1 2" \
-  bench/run_plato.sh next 10
+MIPFEAS_CONFIGS="fj+fpr+local_mip+fpr_lp vanilla" MIPFEAS_SEEDS="0 1 2" \
+  bench/run_mipfeas.sh next 10
 ```
 
 `status` counts an instance as done for a config only once *every* seed has
@@ -209,13 +209,13 @@ it, and the campaign as done at the least complete config — resume is per
 
 **The chunking protocol.** A full campaign is roughly 77 hours (233 instances ×
 600 s × 2 configs, run interleaved so partial results are always paired and
-comparable). `bench/run_plato.sh` is built to be stopped and resumed:
+comparable). `bench/run_mipfeas.sh` is built to be stopped and resumed:
 
 ```bash
 bash bench/download_miplib.sh      # once per machine; stores to ~/data/miplib
-bench/run_plato.sh next 8          # run for up to 8 hours, then stop
-bench/run_plato.sh status          # progress and estimated time remaining
-bench/run_plato.sh next 8          # resume; repeat until status shows 233/233
+bench/run_mipfeas.sh next 8          # run for up to 8 hours, then stop
+bench/run_mipfeas.sh status          # progress and estimated time remaining
+bench/run_mipfeas.sh next 8          # resume; repeat until status shows 233/233
 ```
 
 `next` takes a *window* in hours (default 1) and hands the runner
@@ -287,7 +287,7 @@ with each generated file recording its own `Regenerate with:` line.
 
 ### Running the probe
 
-`bench/run_presolve_probe.sh` is `run_plato.sh` with the probe environment, so
+`bench/run_presolve_probe.sh` is `run_mipfeas.sh` with the probe environment, so
 it chunks and resumes the same way — `next <hours>` overnight, `status` to check
 in. The launcher *is* the configuration: every heuristic at an effort that
 cannot bind with its patience gate at 0 (which means no gate),
@@ -330,7 +330,7 @@ readable without the logs, and regenerable from them.
 
 | stage | launcher | reader | write-up |
 |---|---|---|---|
-| vanilla baseline (#105) | `bench/run_plato.sh next <hours>` | `bench/analyze_results.py` | — |
+| vanilla baseline (#105) | `bench/run_mipfeas.sh next <hours>` | `bench/analyze_results.py` | — |
 | presolve probe (#113) | `bench/run_presolve_probe.sh preprobe next <hours>` | `bench/derive_from_probe.sh` | `bench/ablation_effort/` |
 | joint search (#107) | `bench/run_irace.sh all` | `bench/analyze_irace.py` | `bench/ablation_search/` |
 | finalist confirmation (#107) | `bench/run_finalists.sh confirm <hours>` | `bench/compare_finalists.sh confirm` | `bench/ablation_search/` |

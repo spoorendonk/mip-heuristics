@@ -9,3 +9,18 @@ The PDFs in this directory are the source papers that each custom heuristic is b
 | **LocalMIP** | [`An Efficient Local Search Solver for Mixed Integer Programming.pdf`](./An%20Efficient%20Local%20Search%20Solver%20for%20Mixed%20Integer%20Programming.pdf) | `src/local_mip.cpp` (dispatch), `src/local_mip_core.cpp`, `src/local_mip_search.cpp`, `src/local_mip_worker.cpp`, `src/local_mip_caches.h` (incremental structures), `src/local_mip_construction.cpp` (cold-start sweep) | Lin, Zou, Cai, *Proc. CP 2024*, Article 19. [doi:10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19) |
 | **Scylla** (feasibility pump with PDLP) | [`Scylla: a matrix-free fix-propagate-and-project heuristic for mixed-integer optimization.pdf`](./Scylla%3A%20a%20matrix-free%20fix-propagate-and-project%20heuristic%20for%20mixed-integer%20optimization.pdf) | `src/scylla.cpp`, `src/scylla_worker.cpp`, `src/pump_common.h`, `src/contested_pdlp.cpp` | Mexi, Besançon, Bolusani, Chmiela, Hoen, Gleixner, *OR Proceedings 2023*, 57–63. [doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9) |
 | **FeasibilityJump** | [`Feasibility Jump_ an LP-free Lagrangian MIP heuristic.pdf`](./Feasibility%20Jump_%20an%20LP-free%20Lagrangian%20MIP%20heuristic.pdf) | `src/fj.cpp`, `src/fj_worker.cpp` (dispatch and workers around HiGHS's own FJ); `third_party/highs_patch/apply_patch.cmake` corrects two upstream defects in HiGHS's `feasibilityjump.hh` (#139) — the negative-coefficient jump value of eq. (5)/(6) and Algorithm 1's pre-bound slope, and the sign of Sect. 2.6's objective term — so the FJ that runs is HiGHS's implementation made faithful to this paper, not HiGHS's unmodified | Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023. [doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8) |
+
+## Benchmark
+
+The end-to-end evaluation uses the **`mipfeas`** benchmark: 233 instances
+selected from the MIPLIB 2017 benchmark collection with the known-infeasible
+ones excluded, scored by the primal integral.
+
+| | Source |
+|---|---|
+| **`mipfeas`** (instance set and metric) | Bussieck, Dirkse (GAMS), [*Expanding the Focus: Introducing the mipfeas Benchmark*](https://www.gams.com/blog/2026/03/expanding-the-focus-introducing-the-mipfeas-benchmark/), 17 March 2026. A collaboration including Mittelmann, ZIB and NVIDIA. |
+| Published results | Hans Mittelmann's benchmark server at Arizona State, [plato.asu.edu](https://plato.asu.edu/bench.html). |
+
+`PLATO` is the hostname of that server, not a name for the benchmark and not an
+acronym; it names the place results are posted, nothing else. Use `mipfeas` for
+the benchmark, its instance list, its metric and its protocol.

@@ -1333,7 +1333,7 @@ numbers below therefore stand as measured — and stand as the *reason* the
 probe re-run waits for this, since its tree will be the first that can
 tell the two apart.
 
-Measured over the 233-instance PLATO list, presolve-only, 30 s, 16 workers,
+Measured over the 233-instance mipfeas list, presolve-only, 30 s, 16 workers,
 the p50 knee lands within a factor of two of every shipped value and within
 8 % for FPR — so the inherited numbers were roughly right, and now there is
 evidence. The directional result is **double LocalMIP, halve Scylla, hold

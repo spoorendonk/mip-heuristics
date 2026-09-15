@@ -130,7 +130,7 @@ TEST_CASE("suite: the singletons and aliases mean what they always did", "[optio
 TEST_CASE("suite: a list enables exactly the heuristics it names", "[options][suite]") {
     REQUIRE(enabled_for("fj,fpr") == "fj+fpr");
     REQUIRE(enabled_for("fpr,scylla") == "fpr+scylla");
-    // The composition the recorded PLATO table was measured at, which the
+    // The composition the recorded mipfeas table was measured at, which the
     // single-valued option could not express.
     REQUIRE(enabled_for("fj,fpr,local_mip") == "fj+fpr+local_mip");
     REQUIRE(enabled_for("fj,fpr,local_mip,scylla,fpr_lp") == kAll);

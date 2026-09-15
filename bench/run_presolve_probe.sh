@@ -12,7 +12,7 @@
 #     Use it to borrow the machine for a bounded amount of work rather than
 #     for a whole tree; every chunk resumes exactly where the last stopped.
 #
-# This is bench/run_plato.sh with the probe environment, so the chunking,
+# This is bench/run_mipfeas.sh with the probe environment, so the chunking,
 # resume and progress accounting are that script's and a stage is an
 # environment rather than a launcher (#109).
 #
@@ -138,42 +138,42 @@ MODE="${1:-}"
 shift || true
 case "$MODE" in
 preprobe)
-	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/preprobe"
-	export PLATO_SEEDS="$PROBE_SEEDS"
-	export PLATO_INSTANCES="${PLATO_INSTANCES:-bench/instances_plato.txt}"
-	PLATO_EXTRA_OPTIONS="$(probe_options "$PROBE_EFFORT")"
+	export MIPFEAS_OUTPUT="$PROBE_OUTPUT_ROOT/preprobe"
+	export MIPFEAS_SEEDS="$PROBE_SEEDS"
+	export MIPFEAS_INSTANCES="${MIPFEAS_INSTANCES:-bench/instances_plato.txt}"
+	MIPFEAS_EXTRA_OPTIONS="$(probe_options "$PROBE_EFFORT")"
 	;;
 budget)
-	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/control-budget"
-	export PLATO_SEEDS="$PROBE_CONTROL_SEEDS"
-	export PLATO_INSTANCES="${PLATO_INSTANCES:-$PROBE_CONTROL_INSTANCES}"
-	PLATO_EXTRA_OPTIONS="$(probe_options "$PROBE_BUDGET_EFFORT")"
+	export MIPFEAS_OUTPUT="$PROBE_OUTPUT_ROOT/control-budget"
+	export MIPFEAS_SEEDS="$PROBE_CONTROL_SEEDS"
+	export MIPFEAS_INSTANCES="${MIPFEAS_INSTANCES:-$PROBE_CONTROL_INSTANCES}"
+	MIPFEAS_EXTRA_OPTIONS="$(probe_options "$PROBE_BUDGET_EFFORT")"
 	;;
 serial)
-	export PLATO_OUTPUT="$PROBE_OUTPUT_ROOT/control-serial"
-	export PLATO_SEEDS="$PROBE_CONTROL_SEEDS"
-	export PLATO_INSTANCES="${PLATO_INSTANCES:-$PROBE_CONTROL_INSTANCES}"
-	PLATO_EXTRA_OPTIONS="$(probe_options "$PROBE_EFFORT")"
-	export PLATO_THREADS=1
+	export MIPFEAS_OUTPUT="$PROBE_OUTPUT_ROOT/control-serial"
+	export MIPFEAS_SEEDS="$PROBE_CONTROL_SEEDS"
+	export MIPFEAS_INSTANCES="${MIPFEAS_INSTANCES:-$PROBE_CONTROL_INSTANCES}"
+	MIPFEAS_EXTRA_OPTIONS="$(probe_options "$PROBE_EFFORT")"
+	export MIPFEAS_THREADS=1
 	;;
 *)
 	echo "Usage: bench/run_presolve_probe.sh {preprobe|budget|serial} next [hours] | status" >&2
 	exit 1
 	;;
 esac
-export PLATO_EXTRA_OPTIONS
+export MIPFEAS_EXTRA_OPTIONS
 
-export PLATO_CONFIGS="$PROBE_CONFIGS"
-export PLATO_TIME_LIMIT="$PROBE_TIME_LIMIT"
+export MIPFEAS_CONFIGS="$PROBE_CONFIGS"
+export MIPFEAS_TIME_LIMIT="$PROBE_TIME_LIMIT"
 # Every pass is a trace: the yield curve, the gap quantiles and the effort
 # rate all come off [HeurSol], and membership is instrumentation-independent
 # by construction (it reads display rows), so there is no reason to run a
 # pass that cannot answer the calibration questions.
-export PLATO_DEV_LOG=1
+export MIPFEAS_DEV_LOG=1
 # A presolve-only tree has no dual side; analyze_presolve_probe.py reads it.
-export PLATO_ANALYZE=0
+export MIPFEAS_ANALYZE=0
 if [ -n "${PROBE_COUNT:-}" ]; then
-	export PLATO_COUNT="$PROBE_COUNT"
+	export MIPFEAS_COUNT="$PROBE_COUNT"
 fi
 
-exec "$HERE/run_plato.sh" "$@"
+exec "$HERE/run_mipfeas.sh" "$@"

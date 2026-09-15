@@ -229,7 +229,7 @@ def inspect_log(path: Path) -> LogFacts:
     """Read one log for everything the provenance is derived from.
 
     Streams rather than slurping: a `--dev-log` tree runs to megabytes per log
-    and a PLATO campaign has hundreds of them.  The banner is on the first
+    and a mipfeas campaign has hundreds of them.  The banner is on the first
     line, so the loop stops as soon as every question is settled.
     """
     facts = LogFacts()
@@ -569,7 +569,7 @@ def classify_baseline(configs: list[ConfigProvenance]) -> dict[str, object]:
 def default_table_specs(configs: list[str], time_limit: float) -> list[TableSpec]:
     """The table set a tree of this shape supports.
 
-    Two configs is the pairwise/PLATO shape; three or more is the ablation
+    Two configs is the pairwise/mipfeas shape; three or more is the ablation
     shape, the same split `bench/run_benchmark.py` prints at the end of a run.
     """
     base = ["--configs", *configs, "--time-limit", f"{time_limit:g}"]

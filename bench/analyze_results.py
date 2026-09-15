@@ -121,7 +121,7 @@ def build_best_known(
 #
 # This is not hypothetical.  Until 2026-08 the bundled solution file marked
 # `supportcase22` `=inf=` while `bench/instances_plato.txt` counted it among the
-# 233 feasible PLATO instances; upstream had since found it feasible.  The data
+# 233 feasible mipfeas instances; upstream had since found it feasible.  The data
 # is fixed (see the note in `bench/instances_plato.txt`), but the class of bug
 # must not be able to recur silently, so the contradiction is now detected
 # rather than averaged in.
@@ -146,7 +146,7 @@ def classify_reference_status(
     or a tag with no value).  That is *not* an error: it is the ordinary case
     the virtual-best fallback in `resolve_reference` exists to cover, and when
     no config found anything either, every config scores gap 1.0 on it, which
-    is PLATO's own convention rather than a distortion.
+    is the benchmark's own convention rather than a distortion.
     """
     status: dict[str, str] = {}
     for inst in instances:
@@ -1240,9 +1240,9 @@ def print_paper_metrics(
         print(f" {format_float(shifted_geomean(tbest, 1.0), 12, 4)}", end="")
     print()
 
-    # --- SGM of primal gap at cutoff (shift=0.001, matching PLATO) ---
+    # --- SGM of primal gap at cutoff (shift=0.001, matching mipfeas) ---
     # Infeasible instances contribute gap=1.0 so all instances are counted
-    # (matching Mittelmann's PLATO methodology).
+    # (matching Mittelmann's published benchmark methodology).
     print(f"{'SGM Gap@' + str(int(time_limit)) + 's (s=0.001)':<25}", end="")
     for c in configs:
         gaps = []
@@ -1376,16 +1376,16 @@ def generate_survival_plot(
     print(f"Survival plot saved to {output_path}")
 
 
-def print_plato_summary(
+def print_mipfeas_summary(
     results: dict[str, dict[int, dict[str, SolveResult]]],
     agg_results: dict[str, dict[str, SolveResult]],
     configs: list[str],
     time_limit: float,
     best_known: dict[str, float | None] | None,
 ) -> None:
-    """Print PLATO-style headline metrics: primal-integral SGM ratio and feasibility counts.
+    """Print the mipfeas headline metrics: primal-integral SGM ratio and feasibility counts.
 
-    The PLATO benchmark uses primal integral (area under primal-gap curve, 600s
+    The mipfeas benchmark uses primal integral (area under primal-gap curve, 600s
     window, shift=0.001) as the primary metric with shifted geometric mean across
     all 233 instances, and counts the number of instances where a feasible solution
     was found within the time limit.
@@ -1394,11 +1394,11 @@ def print_plato_summary(
     if not instances:
         return
 
-    # PLATO shift matches Mittelmann's published methodology (sh=0.001)
-    plato_shift = 0.001
+    # The mipfeas shift matches Mittelmann's published methodology (sh=0.001)
+    mipfeas_shift = 0.001
 
     print(
-        f"\n## PLATO Headline Metrics ({len(instances)} instances, {time_limit:.0f}s, SGM shift={plato_shift})\n"
+        f"\n## mipfeas Headline Metrics ({len(instances)} instances, {time_limit:.0f}s, SGM shift={mipfeas_shift})\n"
     )
 
     pi_per_config: dict[str, list[float]] = {}
@@ -1423,15 +1423,15 @@ def print_plato_summary(
     )
     print("-" * 68)
     for c in configs:
-        sgm = shifted_geomean(pi_per_config[c], plato_shift)
+        sgm = shifted_geomean(pi_per_config[c], mipfeas_shift)
         print(f"{c:<20} {sgm:<22.6f} {feas_per_config[c]:>10} {len(instances):>12}")
 
     # Print pairwise ratios
     if len(configs) >= 2:
         print()
         c1, c2 = configs[0], configs[1]
-        sgm1 = shifted_geomean(pi_per_config[c1], plato_shift)
-        sgm2 = shifted_geomean(pi_per_config[c2], plato_shift)
+        sgm1 = shifted_geomean(pi_per_config[c1], mipfeas_shift)
+        sgm2 = shifted_geomean(pi_per_config[c2], mipfeas_shift)
         if sgm2 > 0 and math.isfinite(sgm2) and math.isfinite(sgm1):
             ratio = sgm1 / sgm2
             winner = c1 if ratio < 1.0 else c2
@@ -1456,7 +1456,7 @@ def _config_metrics(
 
     Returns #Feasible (any seed) plus shifted-geometric-mean of T1st (shift=1),
     primal gap @time_limit (shift=0.001), primal integral (shift=1), and the
-    PLATO headline (primal integral, shift=0.001).  All reuse the same helpers
+    mipfeas headline (primal integral, shift=0.001).  All reuse the same helpers
     as the headline tables so an ablation row at a horizon T is directly
     comparable to the anchors analyzed at the same T.
     """
@@ -1479,7 +1479,7 @@ def _config_metrics(
         "sgm_t1st": shifted_geomean(t1st, 1.0),
         "sgm_gap": shifted_geomean(gaps, 0.001),
         "sgm_pi": shifted_geomean(pis, 1.0),
-        "plato_sgm": shifted_geomean(pis, 0.001),
+        "mipfeas_sgm": shifted_geomean(pis, 0.001),
     }
 
 
@@ -1548,7 +1548,7 @@ def print_ablation_summary(
     )
     header = (
         f"{'Config':<22} {'#Feas':>6} {'SGM T1st':>10} "
-        f"{'SGM Gap':>10} {'SGM PI':>10} {'PLATO SGM':>11}"
+        f"{'SGM Gap':>10} {'SGM PI':>10} {'mipfeas SGM':>13}"
     )
     print(header)
     print("-" * len(header))
@@ -1556,7 +1556,7 @@ def print_ablation_summary(
         m = metrics[c]
         print(
             f"{c:<22} {int(m['feasible']):>6} {m['sgm_t1st']:>10.4f} "
-            f"{m['sgm_gap']:>10.6f} {m['sgm_pi']:>10.4f} {m['plato_sgm']:>11.4f}"
+            f"{m['sgm_gap']:>10.6f} {m['sgm_pi']:>10.4f} {m['mipfeas_sgm']:>13.4f}"
         )
 
     if latex_path:
@@ -1597,22 +1597,22 @@ def latex_ablation_table(
         r"\begin{table}[htbp]",
         r"\centering",
         (
-            rf"\caption{{Per-component ablation on {n_instances} PLATO instances "
+            rf"\caption{{Per-component ablation on {n_instances} mipfeas instances "
             rf"at a {time_limit:.0f}\,s horizon (single seed). SGM = shifted "
-            r"geometric mean; PI = primal integral; PLATO SGM is the headline "
+            r"geometric mean; PI = primal integral; mipfeas SGM is the headline "
             r"primal-integral SGM (shift $0.001$). Lower is better except \#Feas.}"
         ),
         r"\label{tbl:ablation}",
         r"\begin{tabular}{lrrrrr}",
         r"\toprule",
-        r"Config & \#Feas & SGM T1st & SGM Gap & SGM PI & PLATO SGM \\",
+        r"Config & \#Feas & SGM T1st & SGM Gap & SGM PI & mipfeas SGM \\",
         r"\midrule",
     ]
     for c in configs:
         m = metrics[c]
         lines.append(
             f"{esc(c)} & {int(m['feasible'])} & {m['sgm_t1st']:.4f} & "
-            f"{m['sgm_gap']:.6f} & {m['sgm_pi']:.4f} & {m['plato_sgm']:.4f} \\\\"
+            f"{m['sgm_gap']:.6f} & {m['sgm_pi']:.4f} & {m['mipfeas_sgm']:.4f} \\\\"
         )
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
     return "\n".join(lines)
@@ -1658,7 +1658,7 @@ def main() -> None:
         "--baseline",
         action="store_true",
         help=(
-            "Print PLATO headline metrics: primal-integral SGM (shift=0.001, "
+            "Print mipfeas headline metrics: primal-integral SGM (shift=0.001, "
             "matching Mittelmann's published methodology) and feasibility counts. "
             "Appended after the standard paper metrics table."
         ),
@@ -1667,7 +1667,7 @@ def main() -> None:
         "--summary",
         action="store_true",
         help=(
-            "Print only the SGM/paper-metrics summary and PLATO headline; "
+            "Print only the SGM/paper-metrics summary and mipfeas headline; "
             "skip the per-instance comparison table. Implies --baseline."
         ),
     )
@@ -1889,7 +1889,7 @@ def main() -> None:
         print_attribution(results, agg_results, active_configs)
 
     if args.baseline or args.summary:
-        print_plato_summary(
+        print_mipfeas_summary(
             results, agg_results, active_configs, args.time_limit, best_known
         )
 

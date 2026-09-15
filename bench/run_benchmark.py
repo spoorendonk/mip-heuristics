@@ -58,7 +58,7 @@ from dataclasses import dataclass
 #
 # `fpr_lp` became its own token in #164; before that it followed `fpr`'s, so
 # a config naming `fpr` also ran the dive-time heuristic and "presolve FPR
-# without fpr_lp" had no name.  **That re-spells the recorded PLATO
+# without fpr_lp" had no name.  **That re-spells the recorded mipfeas
 # configuration**: the table in README.md was measured at `fj,fpr,local_mip`,
 # which enabled `fpr_lp` as a side effect, and the config that means the same
 # thing today is `fj+fpr+local_mip+fpr_lp`.  Expressible is not reproducible:
@@ -411,7 +411,7 @@ def check_known_options(path: str, options: dict[str, str], *, unpatched: bool) 
     HiGHS exits 255 without solving on an unknown option name, so an
     `--extra-options` key the binary lacks fails *every instance of every
     config that runs it*: each lands in `<inst>.log.err`, that arm never
-    advances, and `run_plato.sh next` relaunches a campaign that cannot
+    advances, and `run_mipfeas.sh next` relaunches a campaign that cannot
     finish.  Loud, but only per instance and only once the run is under way.
 
     Two ways in, and both are checked because both cost the same campaign.
@@ -1199,10 +1199,10 @@ def main() -> None:
     )
     # The config names are the directory names, so the analysis command is
     # mechanical — print it rather than making the reader reconstruct it.
-    # Two configs is the pairwise/PLATO shape README.md and run_plato.sh
+    # Two configs is the pairwise/mipfeas shape README.md and run_mipfeas.sh
     # document; three or more is the one-row-per-config ablation a sweep
     # produces.  Suggesting --ablation for a `patched vanilla` run would
-    # contradict the command run_plato.sh prints seconds later.
+    # contradict the command run_mipfeas.sh prints seconds later.
     if done:
         # A presolve-only tree has no dual side at all — `Dual bound -inf`,
         # zero nodes, zero LP iterations — so every gap and primal-integral

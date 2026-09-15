@@ -7,7 +7,7 @@
 #   bench/run_ablation_c.sh contribution [hours]  stage C1 — the paired arm
 #   bench/run_ablation_c.sh status
 #
-# Like every other campaign stage this is `run_plato.sh` with a different
+# Like every other campaign stage this is `run_mipfeas.sh` with a different
 # environment rather than a different runner (#109), so the tree, the `.opts`
 # record and the log shapes match and `analyze_results.py` reads them without
 # special cases.  Read the tree with `bench/analyze_ablation_c.py`.
@@ -53,7 +53,7 @@
 # `Thread count 16 (of 32 threads). Using 1 max workers. Parallel search off`.
 # Pinning it would have measured a regime nothing ships in.
 #
-# `PLATO_DEV_LOG=1` on C0 and **not** on C1, which is not an oversight in
+# `MIPFEAS_DEV_LOG=1` on C0 and **not** on C1, which is not an oversight in
 # either direction.  C0 needs the `[Heur] name=fpr_lp phase=dive` lines: they
 # are the dispatch count, and they are emitted at `log_dev_level=3` only.  C1
 # must not have them, because its 20 existing runs are untraced and its
@@ -102,21 +102,21 @@ cmd_capability() {
 		"mip_heuristic_effort=1.0"
 	)
 	echo "=== C0 capability: fpr_lp alone, unbounded, ${C0_TIME_LIMIT}s, $(grep -c '^[^#]' "$INSTANCES") instances"
-	PLATO_CONFIGS="fpr_lp" \
-	PLATO_OUTPUT="$RESULTS/capability" \
-	PLATO_INSTANCES="$INSTANCES" \
-	PLATO_TIME_LIMIT="$C0_TIME_LIMIT" \
-	PLATO_BINARY="$BINARY" \
-	PLATO_DEV_LOG=1 \
-	PLATO_ANALYZE=0 \
-	PLATO_EXTRA_OPTIONS="${opts[*]}" \
-		"$REPO/bench/run_plato.sh" next "$hours"
+	MIPFEAS_CONFIGS="fpr_lp" \
+	MIPFEAS_OUTPUT="$RESULTS/capability" \
+	MIPFEAS_INSTANCES="$INSTANCES" \
+	MIPFEAS_TIME_LIMIT="$C0_TIME_LIMIT" \
+	MIPFEAS_BINARY="$BINARY" \
+	MIPFEAS_DEV_LOG=1 \
+	MIPFEAS_ANALYZE=0 \
+	MIPFEAS_EXTRA_OPTIONS="${opts[*]}" \
+		"$REPO/bench/run_mipfeas.sh" next "$hours"
 }
 
 cmd_contribution() {
 	local hours=${1:?usage: contribution <hours>}
 	# Not a second definition of the arm: it is a `finalists.json` entry, run
-	# by the launcher that owns it.  `run_plato.sh` resumes per
+	# by the launcher that owns it.  `run_mipfeas.sh` resumes per
 	# (config, instance, seed), so a repeated call adds what is missing and
 	# repeats nothing.
 	#

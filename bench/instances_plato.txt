@@ -1,11 +1,11 @@
-# PLATO mipfeas benchmark: 233 feasible MIPLIB2017 instances
+# mipfeas benchmark: 233 feasible MIPLIB2017 instances
 # Source: https://plato.asu.edu/ftp/mipfeas.html
-# The PLATO benchmark uses all 240 MIPLIB2017 benchmark instances
+# The mipfeas benchmark uses all 240 MIPLIB2017 benchmark instances
 # minus the 7 infeasible ones:
 #   bnatt500, cryptanalysiskb128n5obj14, fhnw-binpack4-4,
 #   neos-2075418-temuka, neos-3402454-bohle, neos-3988577-wolgan, neos859080
 # Time limit: 600s. Metric: primal integral (area under primal-gap curve).
-# See bench/run_plato.sh for the comparison workflow.
+# See bench/run_mipfeas.sh for the comparison workflow.
 #
 # supportcase22 — this list is right, do not re-litigate it (issue #104).
 # It reads as an anomaly because the bundled solution file used to mark it

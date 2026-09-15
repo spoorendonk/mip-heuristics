@@ -108,7 +108,7 @@ def test_an_untraced_tree_is_unreadable_rather_than_null(tmp_path):
     ]
     out = verdict(rows)
     assert "unreadable" in out
-    assert "PLATO_DEV_LOG=1" in out
+    assert "MIPFEAS_DEV_LOG=1" in out
     assert "Decisive null" not in out
 
 

@@ -24,7 +24,7 @@ Taken **2026-09-05/06** on a 16-core / 32-thread machine (HiGHS defaults its
 worker count to half the hardware threads, so **16 workers**), CPU build.
 
 Each heuristic ran **alone** — `mip_heuristic_suite=<one>`, not the chain —
-presolve-only, over all 233 PLATO `mipfeas` instances at one seed, capped at
+presolve-only, over all 233 `mipfeas` instances at one seed, capped at
 30 s, with its effort option at the `1e6` ceiling and its patience at `0`.
 Those two settings are the whole design:
 

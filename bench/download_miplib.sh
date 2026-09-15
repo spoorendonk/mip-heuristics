@@ -3,8 +3,8 @@
 # Source: https://miplib.zib.de/
 #
 # The full collection (collection.zip) covers all 240 MIPLIB2017 benchmark
-# instances including all 233 needed for the PLATO mipfeas benchmark.
-# See bench/instances_plato.txt and bench/run_plato.sh for the PLATO workflow.
+# instances including all 233 needed for the mipfeas benchmark.
+# See bench/instances_plato.txt and bench/run_mipfeas.sh for the mipfeas workflow.
 #
 # A 3.5 GB download is worth going out of its way to avoid, so an existing
 # copy is *searched for* rather than assumed at one path: the candidates below
@@ -128,19 +128,19 @@ rm -f "$ZIP"
 FINAL_COUNT=$(count_instances "$DEST")
 echo "Done: $FINAL_COUNT instances in $DEST" >&2
 
-# Sanity-check a few PLATO instances that were missing from instances_bench.txt
-# before the PLATO list was added. All 233 PLATO instances should be present.
+# Sanity-check a few mipfeas instances that were missing from instances_bench.txt
+# before the mipfeas list was added. All 233 mipfeas instances should be present.
 MISSING=0
 for inst in assign1-5-8 bab2 binkar10_1 chromaticindex512-7 eil33-2 \
 	istanbul-no-cutoff leo1 map10 neos-631710 ns1644855 \
 	pg5_34 rmatr200-p5 satellites2-40 snp-02-004-104 supportcase40; do
 	if [ ! -f "$DEST/${inst}.mps.gz" ] && [ ! -f "$DEST/${inst}.mps" ]; then
-		echo "WARNING: PLATO instance not found after download: $inst" >&2
+		echo "WARNING: mipfeas instance not found after download: $inst" >&2
 		MISSING=$((MISSING + 1))
 	fi
 done
 if [ "$MISSING" -gt 0 ]; then
-	echo "WARNING: $MISSING PLATO instances missing — the collection.zip may be incomplete." >&2
+	echo "WARNING: $MISSING mipfeas instances missing — the collection.zip may be incomplete." >&2
 	echo "Visit https://miplib.zib.de/ for individual instance downloads." >&2
 fi
 

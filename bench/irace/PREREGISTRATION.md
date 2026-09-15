@@ -99,7 +99,7 @@ configuration cracked in #113).
    **simpler** one is chosen — fewer heuristics enabled, then lower total
    effort. Fewer heuristics is less to defend and a tie is a legitimate
    result.
-3. Finalists are validated on **held-out instances**: the PLATO list minus the
+3. Finalists are validated on **held-out instances**: the mipfeas list minus the
    tuning set, via `--instances plato --exclude-instances tuning`.
 4. 3–5 finalists — the scalarised winner, one clearly cheaper, one clearly
    more generous — are confirmed by **full timed solves** at the campaign's
@@ -156,7 +156,7 @@ Any extension is recorded here with its size and the reason.
 
 * **Only the root dispatch is screened.** The presolve chain is re-entered for
   sub-MIPs during a full solve; a presolve-only run sees the first dispatch.
-* **18% of the PLATO set is invisible** to a presolve screen. #113's
+* **18% of the mipfeas set is invisible** to a presolve screen. #113's
   informative set is 191 of 233; the other 42 are the separately scored hard
   tier.
 * **Selection optimism remains.** The winner of a search over `n`

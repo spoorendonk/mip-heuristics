@@ -133,7 +133,7 @@ cmd_heldout() {
 	local list="${HELDOUT_INSTANCES:-$REPO/bench/instances_heldout48.txt}"
 	# ── why this stage traces and `confirm` does not ────────────────────
 	#
-	# `PLATO_DEV_LOG=1` below turns on `log_dev_level=3`, which is what makes
+	# `MIPFEAS_DEV_LOG=1` below turns on `log_dev_level=3`, which is what makes
 	# `[Heur]`/`[HeurSol]` visible.  It is set here and deliberately not in
 	# `cmd_confirm`, so the two full-limit stages are **not on the same
 	# clock** and their wall times must not be compared across stages.  Their
@@ -165,16 +165,16 @@ cmd_heldout() {
 		opts=$(opts_for "$name")
 		config=$(config_for "$name")
 		echo "=== $name (config $config) : $opts"
-		if [ "$count" != "0" ]; then export PLATO_COUNT="$count"; else unset PLATO_COUNT || true; fi
-		PLATO_CONFIGS="$config" \
-		PLATO_OUTPUT="$RESULTS/heldout/$name" \
-		PLATO_INSTANCES="$list" \
-		PLATO_TIME_LIMIT=600 \
-		PLATO_BINARY="$BINARY" \
-		PLATO_DEV_LOG=1 \
-		PLATO_ANALYZE=0 \
-		PLATO_EXTRA_OPTIONS="$opts" \
-			"$REPO/bench/run_plato.sh" next 6
+		if [ "$count" != "0" ]; then export MIPFEAS_COUNT="$count"; else unset MIPFEAS_COUNT || true; fi
+		MIPFEAS_CONFIGS="$config" \
+		MIPFEAS_OUTPUT="$RESULTS/heldout/$name" \
+		MIPFEAS_INSTANCES="$list" \
+		MIPFEAS_TIME_LIMIT=600 \
+		MIPFEAS_BINARY="$BINARY" \
+		MIPFEAS_DEV_LOG=1 \
+		MIPFEAS_ANALYZE=0 \
+		MIPFEAS_EXTRA_OPTIONS="$opts" \
+			"$REPO/bench/run_mipfeas.sh" next 6
 	done
 }
 
@@ -188,14 +188,14 @@ cmd_confirm() {
 		opts=$(opts_for "$name")
 		config=$(config_for "$name")
 		echo "=== $name (config $config, full limit) : $opts"
-		PLATO_CONFIGS="$config" \
-		PLATO_OUTPUT="$RESULTS/confirm/$name" \
-		PLATO_INSTANCES="${CONFIRM_INSTANCES:-$REPO/bench/instances_confirm48.txt}" \
-		PLATO_TIME_LIMIT=600 \
-		PLATO_BINARY="$BINARY" \
-		PLATO_ANALYZE=0 \
-		PLATO_EXTRA_OPTIONS="$opts" \
-			"$REPO/bench/run_plato.sh" next "$hours"
+		MIPFEAS_CONFIGS="$config" \
+		MIPFEAS_OUTPUT="$RESULTS/confirm/$name" \
+		MIPFEAS_INSTANCES="${CONFIRM_INSTANCES:-$REPO/bench/instances_confirm48.txt}" \
+		MIPFEAS_TIME_LIMIT=600 \
+		MIPFEAS_BINARY="$BINARY" \
+		MIPFEAS_ANALYZE=0 \
+		MIPFEAS_EXTRA_OPTIONS="$opts" \
+			"$REPO/bench/run_mipfeas.sh" next "$hours"
 	done
 }
 

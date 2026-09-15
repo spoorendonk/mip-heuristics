@@ -292,7 +292,7 @@ endif()
 # from all 14 survivors at every cost weight -- but because reading the
 # solution-source characters in the logs shows it produced **zero accepted
 # incumbents in ~380 runs**: 49 + 48 + 49 runs across #107's own trees and
-# 233 in #108's full-PLATO run.  It is neither disabled nor skipped in those
+# 233 in #108's full-mipfeas run.  It is neither disabled nor skipped in those
 # runs; a traced solve emits `[Heur] name=scylla phase=presolve` every time,
 # and on `50v-10` reports `found=0` after spending 220.7 ms of a 342 ms
 # chain.  The criterion is **incumbent improvements**, which is this

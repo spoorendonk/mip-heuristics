@@ -5,7 +5,7 @@ maintainer can do v0.2.0 without reverse-engineering v0.1.0.
 
 This document is about *publishing*. It is not about reproducing a run —
 [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md) owns the reproducible recipe, what
-is deliberately not reproducible, the PLATO protocol and what `suite=off` is
+is deliberately not reproducible, the `mipfeas` protocol and what `suite=off` is
 and is not — nor about the day-to-day gates, which
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) owns. Both are referenced below rather
 than reproduced. Two things are deliberately restated: the gate commands,
@@ -138,7 +138,7 @@ bench/make_archive.py build bench/results/plato \
     --output dist/mip-heuristics-v0.1.0-archive \
     --time-limit 600 \
     --machine-note "16-core benchmark host, Xeon ..., 64 GB, otherwise idle" \
-    --note "PLATO mipfeas campaign for v0.1.0" \
+    --note "mipfeas campaign for v0.1.0" \
     --tar
 
 # Prove it regenerates.  Runs every recorded table command against the
@@ -251,7 +251,7 @@ prevent.
 ### Size
 
 A `--dev-log` tree is large — measured at 27 MB for 24 runs (4 bundled
-instances × 3 configs × 2 seeds) at a 10 s limit, and a 600 s PLATO campaign is
+instances × 3 configs × 2 seeds) at a 10 s limit, and a 600 s mipfeas campaign is
 orders of magnitude past that. Two limits bound where it can go:
 
 - A GitHub release asset must be **under 2 GiB** per file.

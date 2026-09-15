@@ -844,7 +844,7 @@ def test_an_extra_option_the_vanilla_binary_lacks_stops_the_run(
     all` pair is the documented sweep invocation, and since #147 the vanilla
     arm is always an unpatched binary that has no such option. Each instance
     would land in `<inst>.log.err`, the vanilla arm would never advance, and
-    `run_plato.sh next` would relaunch a campaign that cannot finish.
+    `run_mipfeas.sh next` would relaunch a campaign that cannot finish.
     """
     vanilla = fake_highs(
         tmp_path,
@@ -909,7 +909,7 @@ def test_main_exits_2_on_a_duplicate_config(tmp_path: Path, monkeypatch, capsys)
 def test_an_empty_vanilla_binary_counts_as_absent(tmp_path, monkeypatch, capsys):
     """`--vanilla-binary ""` is a wrapper passing an unset variable through.
 
-    `bench/run_plato.sh` spells the flag unconditionally in its invocation and
+    `bench/run_mipfeas.sh` spells the flag unconditionally in its invocation and
     lets the value be empty when no unpatched binary was found, so this is
     load-bearing in both directions: a config list without `vanilla` must run
     normally, and one with it must get the message explaining the design

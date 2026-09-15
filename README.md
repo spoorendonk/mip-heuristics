@@ -2,9 +2,9 @@
 
 A unified open-source reference implementation and empirical evaluation of four modern primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver. All four are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions. See [Heuristics](#heuristics) for algorithmic details and paper references.
 
-The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: the combined patched solver gives only a small aggregate improvement over vanilla on the PLATO `mipfeas` benchmark, and the honest end-to-end finding is that additional heuristics may not compensate for the solver progress they displace. See [Benchmarks](#benchmarks) for the numbers and their provenance.
+The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: the combined patched solver gives only a small aggregate improvement over vanilla on the [`mipfeas` benchmark](#benchmarks), and the honest end-to-end finding is that additional heuristics may not compensate for the solver progress they displace. See [Benchmarks](#benchmarks) for the numbers and their provenance.
 
-**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the PLATO protocol) · [`docs/RELEASE.md`](docs/RELEASE.md) (release process, artifact archive, DOI wiring) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`docs/README.md`](docs/README.md) (source papers).
+**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the `mipfeas` protocol) · [`docs/RELEASE.md`](docs/RELEASE.md) (release process, artifact archive, DOI wiring) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`docs/README.md`](docs/README.md) (source papers).
 
 ## Quick Start
 
@@ -22,13 +22,13 @@ printf 'mip_heuristic_suite = fpr\n' > run.opts
 ./build/bin/highs --options_file run.opts model.mps
 ```
 
-Full PLATO benchmark against vanilla HiGHS (requires MIPLIB instances and a separately built unpatched HiGHS of the same tag, ~77h total):
+Full `mipfeas` benchmark against vanilla HiGHS (requires MIPLIB instances and a separately built unpatched HiGHS of the same tag, ~77h total):
 
 ```bash
 bash bench/download_miplib.sh
-export PLATO_VANILLA_BINARY=/path/to/unpatched/highs   # not the patched build
-bench/run_plato.sh next 24    # run in chunks; resumes safely
-bench/run_plato.sh status     # check progress
+export MIPFEAS_VANILLA_BINARY=/path/to/unpatched/highs   # not the patched build
+bench/run_mipfeas.sh next 24    # run in chunks; resumes safely
+bench/run_mipfeas.sh status     # check progress
 python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline
 ```
 
@@ -102,7 +102,17 @@ Its budget is `mip_heuristic_fpr_lp_effort` (default `0.0` — `fpr_lp` ships **
 
 ## Benchmarks
 
-### PLATO mipfeas — 233 instances, 600 s, shipped defaults vs vanilla HiGHS
+**What `mipfeas` is.** A MIP feasibility benchmark: 233 instances selected from
+the MIPLIB 2017 benchmark collection with the known-infeasible ones excluded,
+scored by the primal integral. It is a broad collaboration — Bussieck and Dirkse
+(GAMS), Mittelmann, ZIB and NVIDIA — introduced in [*Expanding the Focus:
+Introducing the mipfeas Benchmark*](https://www.gams.com/blog/2026/03/expanding-the-focus-introducing-the-mipfeas-benchmark/)
+(GAMS, 17 March 2026), which is the source for the instance set and the metric
+used throughout this repository. Results are published on Hans Mittelmann's
+server at Arizona State, [plato.asu.edu](https://plato.asu.edu/bench.html) —
+*PLATO* is that host's name, not a name for the benchmark.
+
+### mipfeas — 233 instances, 600 s, shipped defaults vs vanilla HiGHS
 
 The closeout campaign (#109), measured on the final tree. The patched arm is
 **the shipped binary at default options** — no extra options at all — against a
@@ -194,11 +204,11 @@ Ours find the first feasible solution on 135 of 214 instances against vanilla's
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 bash bench/download_miplib.sh
-bench/run_plato.sh next 24   # run in chunks; resumes safely — repeat until 233/233
+bench/run_mipfeas.sh next 24   # run in chunks; resumes safely — repeat until 233/233
 python3 bench/analyze_results.py bench/results/plato --configs all vanilla --time-limit 600 --baseline --summary
 ```
 
-Results land in `bench/results/plato/`. The vanilla binary has no default and is never searched for on PATH: set `PLATO_VANILLA_BINARY=/path/to/unpatched/highs`, or drop `vanilla` from `PLATO_CONFIGS`. What a chunked run does is environment, not a second launcher — `PLATO_CONFIGS`, `PLATO_SEEDS`, `PLATO_INSTANCES` and `PLATO_OUTPUT` — see `docs/REPRODUCIBILITY.md`.
+Results land in `bench/results/plato/`. The vanilla binary has no default and is never searched for on PATH: set `MIPFEAS_VANILLA_BINARY=/path/to/unpatched/highs`, or drop `vanilla` from `MIPFEAS_CONFIGS`. What a chunked run does is environment, not a second launcher — `MIPFEAS_CONFIGS`, `MIPFEAS_SEEDS`, `MIPFEAS_INSTANCES` and `MIPFEAS_OUTPUT` — see `docs/REPRODUCIBILITY.md`.
 
 ### Where the MIPLIB collection lives
 
@@ -258,7 +268,7 @@ Two things the harness deliberately does not do by default:
 Any report restricts to an instance list, or excludes one, without re-running a solve:
 
 ```bash
-# headline over the full PLATO set
+# headline over the full mipfeas set
 python3 bench/analyze_results.py bench/results/plato --configs all vanilla \
     --time-limit 600 --summary
 
@@ -268,7 +278,7 @@ python3 bench/analyze_results.py bench/results/plato --configs all vanilla \
     --instances bench/instances_plato.txt --exclude-instances bench/instances_small.txt
 ```
 
-`bench/instances_small.txt` is the 25-instance tuning list and is entirely inside the PLATO 233, so that second command is the held-out complement: exactly 208 instances.
+`bench/instances_small.txt` is the 25-instance tuning list and is entirely inside the mipfeas 233, so that second command is the held-out complement: exactly 208 instances.
 
 `--instances` applies first, then `--exclude-instances`, so the complement never has to exist as a third file that can drift out of sync with the tuning list it is defined against. Both are applied to the loaded tree before aggregation, so **every table reports the instance count it actually covers** and a restricted run cannot be misread as a full one.
 

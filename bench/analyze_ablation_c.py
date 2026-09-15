@@ -163,7 +163,7 @@ def report(rows: list[InstanceCounts], out=sys.stdout) -> None:
     if len(traced) < len(rows):
         print(
             f"WARNING: {len(rows) - len(traced)} run(s) carry no [Heur] lines. "
-            "Dispatch counts are unreadable there -- rerun with PLATO_DEV_LOG=1. "
+            "Dispatch counts are unreadable there -- rerun with MIPFEAS_DEV_LOG=1. "
             "Yield counts are still valid: the source character is in every log.",
             file=out,
         )

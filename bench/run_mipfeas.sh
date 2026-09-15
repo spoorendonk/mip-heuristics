@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# PLATO mipfeas benchmark runner.
+# mipfeas benchmark runner.
 #
 # Usage:
-#   bench/run_plato.sh next [hours]    Run within a HOURS window (default 1). Resume safely.
-#   bench/run_plato.sh status          Show progress and estimated time remaining.
+#   bench/run_mipfeas.sh next [hours]    Run within a HOURS window (default 1). Resume safely.
+#   bench/run_mipfeas.sh status          Show progress and estimated time remaining.
 #
 # Results go to bench/results/plato (persistent across sessions).  Instances
 # run interleaved (every config per instance) so partial results are always
 # paired and comparable.
 #
 # Example workflow:
-#   bench/run_plato.sh next 8     # run overnight
-#   bench/run_plato.sh status     # check in the morning
-#   bench/run_plato.sh next 8     # run again next night
+#   bench/run_mipfeas.sh next 8     # run overnight
+#   bench/run_mipfeas.sh status     # check in the morning
+#   bench/run_mipfeas.sh next 8     # run again next night
 #   ...until status shows 233/233
 #
 # The campaign's four stages differ only in what they run, so each is this
 # script with a different environment rather than a different launcher
 # (issue #109):
 #
-#   PLATO_CONFIGS    configs to run       (default "vanilla all")
-#   PLATO_SEEDS      seeds per config     (default "0")
-#   PLATO_INSTANCES  instance list        (default bench/instances_plato.txt)
-#   PLATO_OUTPUT     results tree         (default bench/results/plato)
-#   PLATO_TIME_LIMIT seconds per solve    (default 600, the PLATO limit)
-#   PLATO_BINARY / PLATO_VANILLA_BINARY   the two binaries.  The vanilla one
+#   MIPFEAS_CONFIGS    configs to run       (default "vanilla all")
+#   MIPFEAS_SEEDS      seeds per config     (default "0")
+#   MIPFEAS_INSTANCES  instance list        (default bench/instances_plato.txt)
+#   MIPFEAS_OUTPUT     results tree         (default bench/results/plato)
+#   MIPFEAS_TIME_LIMIT seconds per solve    (default 600, the benchmark's limit)
+#   MIPFEAS_BINARY / MIPFEAS_VANILLA_BINARY   the two binaries.  The vanilla one
 #                        must be a separately built UNPATCHED HiGHS of the
 #                        same tag, and it has no default: it is named by you
 #                        or it is absent.  Neither a PATH search nor a
@@ -33,12 +33,12 @@
 #                        comparison rests on and it should not depend on what
 #                        happens to be installed.  A `vanilla` config without
 #                        it is an error, not a quietly substituted run.
-#   PLATO_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
+#   MIPFEAS_EXTRA_OPTIONS  HiGHS options    (default none), e.g.
 #                        "mip_heuristic_fpr_effort=1.0 mip_heuristic_fpr_patience=0"
 #                        These apply to *every* config, and the vanilla one is
 #                        an unpatched binary that has none of the eleven
 #                        options the patch adds — so pair a patched-only option with a
-#                        PLATO_CONFIGS that omits `vanilla`.  The runner probes
+#                        MIPFEAS_CONFIGS that omits `vanilla`.  The runner probes
 #                        every binary it will use for each key and refuses
 #                        before the first solve, rather than failing every
 #                        instance of the affected arm at solve time; that
@@ -46,13 +46,13 @@
 #                        eighteen mip_heuristic_* names are upstream's own —
 #                        mip_heuristic_effort and the six mip_heuristic_run_*
 #                        switches — and are legal on both binaries.)
-#   PLATO_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
-#   PLATO_THREADS    pin the solver thread count (default: unset — see below)
-#   PLATO_COUNT      run at most N *pending* instances, then stop.  The
+#   MIPFEAS_DEV_LOG    1 for log_dev_level=3 (default 0; attribution runs only)
+#   MIPFEAS_THREADS    pin the solver thread count (default: unset — see below)
+#   MIPFEAS_COUNT      run at most N *pending* instances, then stop.  The
 #                    count-based chunk: `next` bounds a window in hours,
 #                    this bounds it in work, and a campaign that has to give
 #                    the machine back uses whichever is easier to predict.
-#   PLATO_ANALYZE    0 to skip the end-of-tree analyze_results.py call
+#   MIPFEAS_ANALYZE    0 to skip the end-of-tree analyze_results.py call
 #                    (default 1; a presolve-only tree has no dual side, so the
 #                    probe stage turns it off and reads the tree with
 #                    bench/analyze_presolve_probe.py instead)
@@ -62,13 +62,13 @@
 #
 # So the #105 baseline is the default, and the #108 headline is
 #
-#   PLATO_CONFIGS="fj+fpr+local_mip+fpr_lp vanilla" PLATO_SEEDS="0 1 2" \
-#     bench/run_plato.sh next 10
+#   MIPFEAS_CONFIGS="fj+fpr+local_mip+fpr_lp vanilla" MIPFEAS_SEEDS="0 1 2" \
+#     bench/run_mipfeas.sh next 10
 #
 # The #113 probe is the same script with the generous presolve-only
 # environment, which bench/run_presolve_probe.sh sets.
 #
-# NOTE: Do NOT set PLATO_THREADS — HiGHS uses its default (all cores).
+# NOTE: Do NOT set MIPFEAS_THREADS — HiGHS uses its default (all cores).
 #       Forcing a thread count collapses opportunistic parallelism, and for a
 #       tuning run it *moves* the objective's distribution rather than
 #       narrowing it (docs/REPRODUCIBILITY.md).  The one legitimate use is a
@@ -77,25 +77,25 @@
 set -euo pipefail
 shopt -s nullglob
 
-INSTANCES="${PLATO_INSTANCES:-bench/instances_plato.txt}"
-# 600 s is the PLATO limit and the headline stages' limit.  The tuning stages
+INSTANCES="${MIPFEAS_INSTANCES:-bench/instances_plato.txt}"
+# 600 s is the benchmark's limit and the headline stages' limit.  The tuning stages
 # run at a reduced one; the budget arithmetic below reads this, so a chunk
 # stays sized correctly either way.
-TIME_LIMIT="${PLATO_TIME_LIMIT:-600}"
-OUTPUT="${PLATO_OUTPUT:-bench/results/plato}"
-BINARY="${PLATO_BINARY:-./build/bin/highs}"
-# Vanilla binary: exactly what PLATO_VANILLA_BINARY says, or nothing.  No PATH
+TIME_LIMIT="${MIPFEAS_TIME_LIMIT:-600}"
+OUTPUT="${MIPFEAS_OUTPUT:-bench/results/plato}"
+BINARY="${MIPFEAS_BINARY:-./build/bin/highs}"
+# Vanilla binary: exactly what MIPFEAS_VANILLA_BINARY says, or nothing.  No PATH
 # search and no fallback to $BINARY — a baseline whose binary was discovered
 # rather than named is a baseline nobody chose, and the patched build is not a
 # vanilla baseline in any configuration (#147).  An empty value is passed
 # through to the runner, which reads it as "not given"; `cmd_next` refuses
 # outright when the config list asks for `vanilla`.
-VANILLA_BINARY="${PLATO_VANILLA_BINARY:-}"
+VANILLA_BINARY="${MIPFEAS_VANILLA_BINARY:-}"
 # Word-split on purpose: both are lists.
 # shellcheck disable=SC2206
-CONFIGS=(${PLATO_CONFIGS:-vanilla all})
+CONFIGS=(${MIPFEAS_CONFIGS:-vanilla all})
 # shellcheck disable=SC2206
-SEEDS=(${PLATO_SEEDS:-0})
+SEEDS=(${MIPFEAS_SEEDS:-0})
 
 # Derived from the list rather than hardcoded: the script is pointed at the
 # tuning subset as often as at the full 233, and a stale constant would report
@@ -174,7 +174,7 @@ cmd_status() {
 	paired=$(paired_done)
 	remaining=$((TOTAL - paired)) || true
 
-	echo "PLATO mipfeas progress  ($OUTPUT)"
+	echo "mipfeas progress  ($OUTPUT)"
 	echo "  instances : $INSTANCES ($TOTAL)"
 	echo "  seeds     : ${SEEDS[*]}"
 	for config in "${CONFIGS[@]}"; do
@@ -183,7 +183,7 @@ cmd_status() {
 	echo "  paired  : $paired / $TOTAL  (every config, every seed)"
 	if [ "$paired" -ge "$TOTAL" ]; then
 		echo "  STATUS  : COMPLETE"
-		if [ "${PLATO_ANALYZE:-1}" = "1" ]; then
+		if [ "${MIPFEAS_ANALYZE:-1}" = "1" ]; then
 			echo ""
 			echo "Run analysis:"
 			echo "  python3 bench/analyze_results.py $OUTPUT --configs $(analysis_configs)--time-limit $TIME_LIMIT --baseline"
@@ -212,7 +212,7 @@ cmd_next() {
 	if [ ! -f "$BINARY" ]; then
 		echo "ERROR: binary not found: $BINARY" >&2
 		echo "Build: cmake -B build && cmake --build build -j\$(nproc)" >&2
-		echo "Or set: export PLATO_BINARY=/path/to/highs" >&2
+		echo "Or set: export MIPFEAS_BINARY=/path/to/highs" >&2
 		exit 1
 	fi
 
@@ -224,12 +224,12 @@ cmd_next() {
 	# where the message can name the fix, rather than in the runner.
 	if wants_vanilla && [ -z "$VANILLA_BINARY" ]; then
 		echo "ERROR: config 'vanilla' needs a separately built UNPATCHED HiGHS," >&2
-		echo "       and PLATO_VANILLA_BINARY does not name one.  There is no" >&2
+		echo "       and MIPFEAS_VANILLA_BINARY does not name one.  There is no" >&2
 		echo "       PATH search: the baseline binary is always named, never" >&2
 		echo "       discovered." >&2
 		echo "Build one from the same tag as cmake/FetchHiGHS.cmake and set:" >&2
-		echo "  export PLATO_VANILLA_BINARY=/path/to/unpatched/highs" >&2
-		echo "Or drop 'vanilla' from PLATO_CONFIGS — the 'off' config is the" >&2
+		echo "  export MIPFEAS_VANILLA_BINARY=/path/to/unpatched/highs" >&2
+		echo "Or drop 'vanilla' from MIPFEAS_CONFIGS — the 'off' config is the" >&2
 		echo "ablation with our heuristics disabled, on the patched binary." >&2
 		exit 1
 	fi
@@ -238,24 +238,24 @@ cmd_next() {
 	# three is absent by default, and a flag that is only sometimes passed
 	# cannot be written inline.
 	local extra_args=()
-	if [ -n "${PLATO_EXTRA_OPTIONS:-}" ]; then
+	if [ -n "${MIPFEAS_EXTRA_OPTIONS:-}" ]; then
 		# Word-split on purpose: it is a list of key=value pairs.
 		# shellcheck disable=SC2206
-		local extra_opts=(${PLATO_EXTRA_OPTIONS})
+		local extra_opts=(${MIPFEAS_EXTRA_OPTIONS})
 		extra_args+=(--extra-options "${extra_opts[@]}")
 	fi
-	if [ "${PLATO_DEV_LOG:-0}" = "1" ]; then
+	if [ "${MIPFEAS_DEV_LOG:-0}" = "1" ]; then
 		extra_args+=(--dev-log)
 	fi
-	if [ -n "${PLATO_THREADS:-}" ]; then
-		extra_args+=(--threads "$PLATO_THREADS")
+	if [ -n "${MIPFEAS_THREADS:-}" ]; then
+		extra_args+=(--threads "$MIPFEAS_THREADS")
 	fi
-	if [ -n "${PLATO_COUNT:-}" ]; then
-		extra_args+=(--count "$PLATO_COUNT")
+	if [ -n "${MIPFEAS_COUNT:-}" ]; then
+		extra_args+=(--count "$MIPFEAS_COUNT")
 	fi
 
 	echo "================================================================"
-	echo "PLATO benchmark — ${hours}h window (launching for ${budget_secs}s)"
+	echo "mipfeas benchmark — ${hours}h window (launching for ${budget_secs}s)"
 	echo "  Progress before : $(paired_done)/$TOTAL paired"
 	echo "  Configs         : ${CONFIGS[*]}  (seeds ${SEEDS[*]})"
 	echo "  Vanilla binary  : ${VANILLA_BINARY:-(none — no vanilla config requested)}"
@@ -284,7 +284,7 @@ cmd_next() {
 	echo ""
 	cmd_status
 
-	if [ "$(paired_done)" -ge "$TOTAL" ] && [ "${PLATO_ANALYZE:-1}" = "1" ]; then
+	if [ "$(paired_done)" -ge "$TOTAL" ] && [ "${MIPFEAS_ANALYZE:-1}" = "1" ]; then
 		echo ""
 		echo "All instances complete — running analysis..."
 		# shellcheck disable=SC2046
@@ -305,7 +305,7 @@ case "$CMD" in
 next) cmd_next "$@" ;;
 status) cmd_status ;;
 *)
-	echo "Usage: bench/run_plato.sh next [hours] | status" >&2
+	echo "Usage: bench/run_mipfeas.sh next [hours] | status" >&2
 	exit 1
 	;;
 esac

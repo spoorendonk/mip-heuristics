@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# #108 — the headline run: the selected configuration over the full PLATO
+# #108 — the headline run: the selected configuration over the full mipfeas
 # `mipfeas` list at 600 s, against the vanilla baseline from #105.
 #
 # Usage:
@@ -8,7 +8,7 @@
 #   bench/run_headline.sh status
 #   bench/run_headline.sh report
 #
-# `run_plato.sh` with this stage's environment, like every other campaign
+# `run_mipfeas.sh` with this stage's environment, like every other campaign
 # stage (#109).  It executes; it chooses nothing.
 #
 # ── the configuration, and why it carries no options ────────────────────────
@@ -39,7 +39,7 @@
 #
 # ── no developer logging ────────────────────────────────────────────────────
 #
-# `PLATO_DEV_LOG` is deliberately unset.  These are the headline timings and
+# `MIPFEAS_DEV_LOG` is deliberately unset.  These are the headline timings and
 # `log_dev_level=3` is not the same run; attribution comes from the
 # solution-source characters in the ordinary log, which need no tracing.
 
@@ -76,15 +76,15 @@ SEEDS="${HEADLINE_SEEDS:-0}"
 # the whole comparison rests on, so it is named, not discovered.
 BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/plato/bin/highs}"
 
-plato() {
-	PLATO_CONFIGS="$CONFIG" \
-	PLATO_SEEDS="$SEEDS" \
-	PLATO_INSTANCES="$REPO/bench/instances_plato.txt" \
-	PLATO_OUTPUT="$REPO/bench/results/plato" \
-	PLATO_TIME_LIMIT=600 \
-	PLATO_BINARY="$BINARY" \
-	PLATO_ANALYZE=0 \
-		"$REPO/bench/run_plato.sh" "$@"
+mipfeas() {
+	MIPFEAS_CONFIGS="$CONFIG" \
+	MIPFEAS_SEEDS="$SEEDS" \
+	MIPFEAS_INSTANCES="$REPO/bench/instances_plato.txt" \
+	MIPFEAS_OUTPUT="$REPO/bench/results/plato" \
+	MIPFEAS_TIME_LIMIT=600 \
+	MIPFEAS_BINARY="$BINARY" \
+	MIPFEAS_ANALYZE=0 \
+		"$REPO/bench/run_mipfeas.sh" "$@"
 }
 
 cmd_next() {
@@ -109,12 +109,12 @@ cmd_next() {
 		exit 1
 		;;
 	esac
-	plato next "$hours"
+	mipfeas next "$hours"
 }
 
 cmd_until() {
 	# The window a human actually wants: "run until 08:00 and stop".  Whole
-	# hours only, because run_plato.sh does its budget arithmetic in bash
+	# hours only, because run_mipfeas.sh does its budget arithmetic in bash
 	# integers -- rounded *down*, so the last instance launched still has its
 	# full 600 s inside the window rather than past it.
 	local target=${1:?usage: until <HH:MM>}
@@ -159,6 +159,6 @@ case "${1:-status}" in
 next) shift; cmd_next "$@" ;;
 until) shift; cmd_until "$@" ;;
 report) cmd_report ;;
-status) plato status ;;
+status) mipfeas status ;;
 *) echo "usage: $0 {next <hours>|until <HH:MM>|status|report}" >&2; exit 1 ;;
 esac

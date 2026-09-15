@@ -141,14 +141,14 @@ def test_latex_ablation_table_escapes_and_rows():
             "sgm_t1st": 3.3,
             "sgm_gap": 0.02,
             "sgm_pi": 22.0,
-            "plato_sgm": 17.3,
+            "mipfeas_sgm": 17.3,
         },
         "loo_no_fj": {
             "feasible": 200.0,
             "sgm_t1st": 4.0,
             "sgm_gap": 0.03,
             "sgm_pi": 25.0,
-            "plato_sgm": 19.0,
+            "mipfeas_sgm": 19.0,
         },
     }
     tex = latex_ablation_table(["all_opp", "loo_no_fj"], metrics, 233, 100.0)
@@ -218,7 +218,7 @@ def test_latex_ablation_table_escapes_underscores_in_config_names():
             "sgm_t1st": 1.0,
             "sgm_gap": 0.01,
             "sgm_pi": 2.0,
-            "plato_sgm": 1.5,
+            "mipfeas_sgm": 1.5,
         },
     }
     tex = latex_ablation_table(["fpr+local_mip"], metrics, 5, 60.0)
@@ -502,7 +502,7 @@ def test_reference_status_separates_contradicted_from_merely_unpublished():
     """`=inf=` is a contradiction; a missing entry is just missing.
 
     The distinction matters: an unpublished reference falls back to the
-    virtual best (or to PLATO's gap=1.0 convention) and is sound, whereas a
+    virtual best (or to the benchmark's gap=1.0 convention) and is sound, whereas a
     reference the file says cannot exist makes the gap self-referential.
     """
     solu = {
@@ -535,10 +535,10 @@ def test_no_solu_file_contradicts_nothing():
     assert contradicted_reference_instances(["a", "b"], {}) == []
 
 
-def test_bundled_plato_set_has_a_usable_reference_for_every_instance():
+def test_bundled_mipfeas_set_has_a_usable_reference_for_every_instance():
     """Regression for the supportcase22 anomaly (issue #104).
 
-    The bundled solution file and the PLATO list are two halves of one claim —
+    The bundled solution file and the mipfeas list are two halves of one claim —
     233 instances with a reference objective each.  When they disagree the SGM
     silently changes meaning, so the agreement is asserted rather than assumed.
     """
@@ -632,7 +632,7 @@ def test_cli_reports_the_instance_count_in_every_table(tmp_path: Path):
         "## Paper Metrics (3 instances",
         "### Category breakdown (#Feas / #Win) (3 instances)",
         "## Heuristic attribution (3 instances)",
-        "## PLATO Headline Metrics (3 instances",
+        "## mipfeas Headline Metrics (3 instances",
     ):
         assert heading in res.stdout, f"missing count in: {heading}"
 
@@ -660,14 +660,14 @@ def test_cli_oracle_row_appears_under_the_headline_metric(tmp_path: Path):
     # The oracle is a row of the ablation table, under the same columns, and
     # its headline SGM beats both participants — the ceiling is above them.
     ablation = res.stdout.split("## Ablation summary", 1)[1]
-    plato_sgm = {
+    mipfeas_sgm = {
         ln.split()[0]: float(ln.split()[-1])
         for ln in ablation.splitlines()
         if ln.split() and ln.split()[0] in ("fpr", "scylla", "oracle")
     }
-    assert set(plato_sgm) == {"fpr", "scylla", "oracle"}
-    assert plato_sgm["oracle"] < plato_sgm["fpr"]
-    assert plato_sgm["oracle"] < plato_sgm["scylla"]
+    assert set(mipfeas_sgm) == {"fpr", "scylla", "oracle"}
+    assert mipfeas_sgm["oracle"] < mipfeas_sgm["fpr"]
+    assert mipfeas_sgm["oracle"] < mipfeas_sgm["scylla"]
 
 
 def test_cli_oracle_states_its_seed_rule_in_its_output(tmp_path: Path):
@@ -721,14 +721,14 @@ def test_cli_refuses_to_fold_in_an_instance_with_no_valid_reference(tmp_path: Pa
     assert "Excluded: b" in res.stdout
     # ... and it really is out of the aggregates, not merely mentioned.
     assert "## Paper Metrics (2 instances" in res.stdout
-    assert "## PLATO Headline Metrics (2 instances" in res.stdout
+    assert "## mipfeas Headline Metrics (2 instances" in res.stdout
 
 
 # --- the ceiling invariant, which is what the whole feature promises --------
 
 
-def _plato_sgm_per_config(results, configs, oracle_name=None, time_limit=5.0):
-    """PLATO headline SGM per config, through the real reporting pipeline."""
+def _mipfeas_sgm_per_config(results, configs, oracle_name=None, time_limit=5.0):
+    """mipfeas headline SGM per config, through the real reporting pipeline."""
     common = get_common_instances(results, configs)
     best_known = build_best_known(results, configs, common, {})
     all_configs = list(configs)
@@ -747,13 +747,15 @@ def _plato_sgm_per_config(results, configs, oracle_name=None, time_limit=5.0):
         common = get_common_instances(results, all_configs)
     agg = aggregate_results(results, all_configs)
     return {
-        c: _config_metrics(results, agg, c, common, time_limit, best_known)["plato_sgm"]
+        c: _config_metrics(results, agg, c, common, time_limit, best_known)[
+            "mipfeas_sgm"
+        ]
         for c in all_configs
     }
 
 
 def test_oracle_is_a_ceiling_on_the_headline_metric_with_multiple_seeds(tmp_path: Path):
-    """`oracle <= min(participants)` on PLATO SGM. Two seeds, the failing shape.
+    """`oracle <= min(participants)` on mipfeas SGM. Two seeds, the failing shape.
 
     This exact tree was found by search against the first implementation,
     which selected per (instance, seed) on primal integral and then let
@@ -786,7 +788,7 @@ def test_oracle_is_a_ceiling_on_the_headline_metric_with_multiple_seeds(tmp_path
         },
     )
     results = load_results(str(tmp_path), ["A", "B"])
-    sgm = _plato_sgm_per_config(results, ["A", "B"], oracle_name="oracle")
+    sgm = _mipfeas_sgm_per_config(results, ["A", "B"], oracle_name="oracle")
 
     assert sgm["oracle"] <= min(sgm["A"], sgm["B"]) + 1e-9, sgm
 
@@ -817,7 +819,7 @@ def test_oracle_ceiling_holds_across_randomised_multi_seed_trees(tmp_path: Path)
         }
         _write_seeded_tree(root, spec)
         results = load_results(str(root), ["A", "B", "C"])
-        sgm = _plato_sgm_per_config(results, ["A", "B", "C"], oracle_name="oracle")
+        sgm = _mipfeas_sgm_per_config(results, ["A", "B", "C"], oracle_name="oracle")
         best = min(sgm[c] for c in ("A", "B", "C"))
         assert sgm["oracle"] <= best + 1e-9, (trial, sgm)
 

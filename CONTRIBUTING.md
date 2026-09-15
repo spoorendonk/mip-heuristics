@@ -174,7 +174,7 @@ than nineteen copies free to drift apart.
 
 Full detail is in `README.md` (per-heuristic ablation, budget sweep,
 instance subsets and the config oracle) and `docs/REPRODUCIBILITY.md` (the
-PLATO protocol).
+`mipfeas` protocol).
 Three rules that are easy to get wrong:
 
 - **The vanilla baseline is a second binary.** `--vanilla-binary` must point at

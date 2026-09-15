@@ -1,14 +1,14 @@
 # The headline: the shipped configuration against vanilla HiGHS (#108)
 
-PLATO `mipfeas`, all 233 instances, 600 s, one seed, 16 workers, CPU build.
+`mipfeas`, all 233 instances, 600 s, one seed, 16 workers, CPU build.
 Companion to `bench/ablation_effort/` (A), `bench/ablation_search/` (B) and
 `bench/ablation_fprlp/` (C), which chose the configuration this measures.
 
 **Headline: 16.4% better on the primal-integral SGM over instances never used
 for tuning** — ratio 0.836, 95% CI [0.732, 0.956], p = 0.009 — and a first
 feasible solution on 3 more instances. **Final solution quality is a wash.**
-The contribution is *sooner*, not *better*, which is what PLATO's metric
-measures and what a feasibility heuristic should claim.
+The contribution is *sooner*, not *better*, which is what the benchmark's
+metric measures and what a feasibility heuristic should claim.
 
 ## Reproducing
 
@@ -212,8 +212,9 @@ integral read incumbent lines, not the final report.
 
 ## Comparability
 
-Adopting PLATO's instance list, time limit and metric makes this
-*definitionally* the same benchmark as PLATO `mipfeas`. It does **not** make
-the absolute numbers comparable with the rankings published on the PLATO site,
-which are measured on different hardware. The defensible claim is patched
-versus vanilla on one machine under PLATO's definition.
+Adopting the `mipfeas` instance list, time limit and metric makes this
+*definitionally* the same benchmark. It does **not** make the absolute numbers
+comparable with the rankings published on Mittelmann's server at
+[plato.asu.edu](https://plato.asu.edu/bench.html), which are measured on
+different hardware. The defensible claim is patched versus vanilla on one
+machine under the `mipfeas` definition.
