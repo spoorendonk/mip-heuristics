@@ -1,4 +1,4 @@
-# Tuning subset of the PLATO mipfeas set, stratified on vanilla
+# Tuning subset of the mipfeas set, stratified on vanilla
 # time-to-first-feasible (issue #103) — the axis the primal integral
 # responds to, unlike the optimality solve time that
 # bench/instances_small.txt was selected on.
@@ -7,7 +7,7 @@
 # derived, reproducible input: the same tree and --seed regenerate it
 # byte for byte, which is why it carries no generation date.
 #
-#   source_tree      bench/results/plato/vanilla
+#   source_tree      bench/results/mipfeas/vanilla
 #   config           vanilla
 #   config_seeds     0
 #   reference_list   bench/instances_tuning.txt (90 instances)
@@ -28,7 +28,7 @@
 #   TOTAL           90  100.0%      20   100.0%    20.0
 #
 # Regenerate with:
-#   bench/make_tuning_set.py bench/results/plato/vanilla --config vanilla --instances bench/instances_tuning.txt --size 20 --seed 0
+#   bench/make_tuning_set.py bench/results/mipfeas/vanilla --config vanilla --instances bench/instances_tuning.txt --size 20 --seed 0
 
 # <1s (8 of 42)
 cbs-cta                   # 0.30s
