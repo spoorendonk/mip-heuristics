@@ -229,9 +229,7 @@ produced the reported incumbent, as a union over the four arms. Written to
 `no-acceptance` (no arm produced anything) and 1 `trivial-only` (`ex9`, where
 only HiGHS's own trivial heuristics produced). No configuration cracked any of
 them on this probe, which is what makes them constants for #107's search — the
-same score for every candidate, so they carry no ranking signal. They were once
-also written to a `hard_tier.txt` list, to be scored separately on *did any
-configuration crack it*; that comparison was never run and the list is gone.
+same score for every candidate, so they carry no ranking signal.
 
 **Tuning set: 90 instances**, `bench/instances_tuning.txt`, sampled from the
 informative set and stratified on **vanilla** time-to-first-feasible — not on

@@ -11,21 +11,6 @@ Sign-off: **Simon Spoorendonk, 2026-09-06** — commit at sign-off: `01780d0`
 
 Reviewed and accepted as written, before the first experiment ran.
 
-### Amendments
-
-Amendments are recorded here rather than applied silently; the pre-sign-off
-text of any clause is recoverable from git.
-
-* **2026-09-15 — the hard-tier verdict is withdrawn** from §3's secondary
-  quantities, by the author's decision. It was the only planned consumer of
-  `bench/ablation_effort/hard_tier.txt` — the list of the 42 instances no #113
-  arm produced on — and the comparison was never run, so the list, the
-  `--hard-tier-*` flags that wrote it and their tests have been removed. The
-  count itself survives in `bench/ablation_effort/report.txt`, which still
-  reports each excluded instance and its reason. **This withdraws a reported
-  quantity; it changes no selection rule**, since §3's quantities were never
-  eligible to change the choice.
-
 ---
 
 ## 1. What is being searched
@@ -101,7 +86,7 @@ that instability is the result.
 Reported for the selected configuration and its runner-up, and explicitly
 **not** eligible to change the choice: time to first accepted solution; count
 of instances with any solution; and the per-heuristic productive/stale effort
-split.  (A fourth, the hard-tier verdict, was withdrawn — see Amendments.)
+split.
 
 ## 4. Selection rule — pre-registered
 
