@@ -88,6 +88,19 @@ Reported for the selected configuration and its runner-up, and explicitly
 of instances with any solution; and the per-heuristic productive/stale effort
 split.
 
+### Amendment, 2026-09-15: one secondary quantity withdrawn
+
+Commit at amendment: `12b7e53`.
+
+As signed, this section listed a fourth quantity: a count of instances a
+candidate found any solution for, among those #113's probe found nothing on
+under any arm. It was never reported, the derived list it would have been
+scored against has been removed, and it is withdrawn.
+
+**No run recorded against this file is affected, and no selection rule
+changes** — §3's quantities were never eligible to change the choice. The
+signed text is recoverable from git, per the note at the top of this file.
+
 ## 4. Selection rule — pre-registered
 
 1. irace's own statistical elimination decides survival; the scenario's
