@@ -225,12 +225,13 @@ capped gap saturates and the ranking falls to cost alone.
 produced the reported incumbent, as a union over the four arms. Written to
 `informative.txt`.
 
-**Hard tier: 42**, in `hard_tier.txt`, each with its reason: 41
+**Excluded: 42**, listed with their reasons in `report.txt`: 41
 `no-acceptance` (no arm produced anything) and 1 `trivial-only` (`ex9`, where
-only HiGHS's own trivial heuristics produced). They are **not discarded** —
-they are scored separately on *did any configuration crack it*, so a
-breakthrough shows up without diluting the quality ranking. On this probe none
-did, which is what makes them constants for #107's search.
+only HiGHS's own trivial heuristics produced). No configuration cracked any of
+them on this probe, which is what makes them constants for #107's search — the
+same score for every candidate, so they carry no ranking signal. They were once
+also written to a `hard_tier.txt` list, to be scored separately on *did any
+configuration crack it*; that comparison was never run and the list is gone.
 
 **Tuning set: 90 instances**, `bench/instances_tuning.txt`, sampled from the
 informative set and stratified on **vanilla** time-to-first-feasible — not on
@@ -313,6 +314,5 @@ everywhere, so the barren counts that the patience side rests on are honest.
 | file | what it is |
 |---|---|
 | `defaults.json` | the derived vector with provenance: worker count, quantiles, per-heuristic dispatch counts, measured-vs-clamped patience |
-| `report.txt` | the full analysis — informative set, hard tier, trajectories, quality, proposed ranges |
+| `report.txt` | the full analysis — informative set, the excluded complement with reasons, trajectories, quality, proposed ranges |
 | `informative.txt` | instances a presolve screen can see, the union over the four arms |
-| `hard_tier.txt` | the complement, each with its reason |

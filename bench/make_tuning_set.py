@@ -21,8 +21,8 @@ probe, without touching anything else: the tree must still cover the whole
 reference list, the stratification is still vanilla time-to-first-feasible,
 and the allocation is still integer largest-remainder.  A presolve-only screen
 carries no quality signal on an instance no configuration produces a solution
-for, so such an instance is a constant in every comparison the search makes;
-it goes to that script's separately scored hard tier instead.  The emitted
+for, so such an instance is a constant in every comparison the search makes
+and is excluded.  The emitted
 header records the pool's path, its name count and a digest of its bytes, so
 the derivation is pinned rather than merely referenced.
 
@@ -691,8 +691,8 @@ def render_list(sel: Selection, results_dir: str) -> str:
                 " rest are not"
             ),
             (
-                "#                    discarded: they are scored as a separate"
-                " hard tier."
+                "#                    discarded: they carry no ranking signal,"
+                " so they are excluded."
             ),
         ]
     lines += [

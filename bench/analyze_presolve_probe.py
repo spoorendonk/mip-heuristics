@@ -5,21 +5,16 @@ presolve-only probe results tree.
 Issue #113.  The probe runs the full mipfeas list once at a deliberately
 generous configuration — all four presolve heuristics, an effort that cannot
 bind, patience gates disabled, `mip_heuristic_presolve_only` — and this script turns that
-tree into the three things the tuning stage cannot proceed without:
+tree into the two things the tuning stage cannot proceed without:
 
 1. **The informative set.**  Instances the presolve *chain* produced at least
    one accepted solution on.  An instance that produces nothing even at the
    generous configuration is a constant in every comparison the search makes,
-   so excluding it removes no signal — but the *excluded* list is a result in
-   its own right: it says how much of the mipfeas set a presolve-only screen
-   can reason about at all.
+   so excluding it removes no signal — but the *excluded* count is a result in
+   its own right, reported in `report.txt`: it says how much of the mipfeas
+   set a presolve-only screen can reason about at all.
 
-2. **The retained hard tier.**  Those excluded instances, kept and listed
-   rather than discarded, to be scored on a different question — *did any
-   configuration crack it* — reported separately so a breakthrough shows up
-   without diluting the quality ranking.
-
-3. **The effort trajectories.**  Per heuristic: productive effort (charged
+2. **The effort trajectories.**  Per heuristic: productive effort (charged
    effort at the last accepted solution), stale effort (the rest), and the
    inter-acceptance effort-gap distribution normalised by `nnz`, with its
    quantiles.  A patience is in the same unit those gaps normalise to, so a
@@ -47,14 +42,14 @@ This module decides on the **display row**, at every log level, for two
 reasons.  It is the predicate the tuning objective scores — #107 ranks
 candidates on the presolve-exit primal bound, so an instance where no
 candidate's solution can become the incumbent is a constant in every
-comparison, which is exactly what the hard tier is for.  And it is the only
+comparison, and is therefore excluded.  And it is the only
 predicate both passes can use: `[Heur]` needs `log_dev_level=3`, the
 filtering pass is prescribed to run without it and the trajectory pass with
 it, so deciding on acceptance would let the same solve classify differently
 in the two passes — a reproducibility hazard in the one artifact that gets
 pinned by digest into a tuning-set header.
 
-Acceptance is still read.  It splits the hard tier's *reason*
+Acceptance is still read.  It splits an excluded instance's *reason*
 (`produced-not-improved` — the chain works here and is never good enough,
 which is a datum about the heuristic) and it raises a diagnostic wherever
 the two signals disagree.  That refinement needs the trace; membership does
@@ -98,7 +93,6 @@ from make_tuning_set import (
     discover_configs,
     err_files_by_seed,
     looks_like_config_dir,
-    sample_stratum,
 )
 from parse_highs_log import SolveResult
 from run_benchmark import load_instances
@@ -1024,7 +1018,7 @@ def unusable_reason(result: SolveResult) -> str | None:
     that never returns from its own presolve never looks at it.
     `run_benchmark.py` keeps the partial log with a `TIMEOUT:` marker,
     `parse_highs_log` surfaces it as `killed`, and this script routes it to
-    the hard tier as *unreached* — never as a refusal.
+    the excluded set as *unreached* — never as a refusal.
     """
     if not result.status and not result.incumbents and not result.killed:
         return "no solving report, no incumbent and no TIMEOUT marker"
@@ -1251,8 +1245,8 @@ def classify_run(run: ProbeRun) -> RunVerdict:
        instances where FJ demonstrably produced the incumbent.  The probe
        *needs* that cap, so this shape is built into the data it collects.
 
-    What acceptance still buys, when it is there: it splits the hard tier's
-    *reason* (see `informative_set`) and it flags the disagreement, so a
+    What acceptance still buys, when it is there: it splits an excluded
+    instance's *reason* (see `informative_set`) and it flags the disagreement, so a
     heuristic that produces without ever improving is visible rather than
     silently filed under "found nothing".  That refinement is
     instrumentation-dependent; membership is not.
@@ -1314,7 +1308,7 @@ class InformativeScan:
 
 
 def informative_set(runs: dict[str, list[ProbeRun]]) -> InformativeScan:
-    """Split the analysed instances into informative and hard-tier.
+    """Split the analysed instances into informative and excluded.
 
     The predicate is a **union over every run in `runs`** — every config and
     every seed.  A single-config mapping is the special case, not the shape
@@ -2071,11 +2065,6 @@ def probe_command(args: argparse.Namespace) -> str:
     parts.append(f"--instances {args.instances}")
     if args.informative_output:
         parts.append(f"--informative-output {args.informative_output}")
-    if args.hard_tier_output:
-        parts.append(f"--hard-tier-output {args.hard_tier_output}")
-    if args.hard_tier_size is not None:
-        parts.append(f"--hard-tier-size {args.hard_tier_size}")
-        parts.append(f"--hard-tier-seed {args.hard_tier_seed}")
     if args.single_worker_trajectories:
         parts.append("--single-worker-trajectories")
     if args.allow_missing:
@@ -2158,79 +2147,13 @@ def render_informative_list(
         ),
         ("#                    solve yield the same set."),
         f"#   informative      {len(scan.informative)} of {scan.covered} analysed",
-        f"#   hard_tier        {len(scan.excluded)} excluded, kept and scored apart",
+        f"#   excluded         {len(scan.excluded)} of {scan.covered} analysed",
         "#",
         "# Regenerate with:",
         f"#   {probe_command(args)}",
         "",
     ]
     lines += list(scan.informative)
-    return "\n".join(lines).rstrip("\n") + "\n"
-
-
-def render_hard_tier_list(
-    tree: ProbeTree,
-    check: ProbeCheck,
-    scan: InformativeScan,
-    chosen: list[str],
-    args: argparse.Namespace,
-    reference_count: int,
-) -> str:
-    """The retained hard tier, with the rule it is scored under."""
-    width = max((len(name) for name in chosen), default=0) + 2
-    lines = [
-        "# Retained hard tier of the mipfeas set (issue #113): instances",
-        "# the presolve chain produced nothing on at the generous probe",
-        "# configuration.  Kept, not discarded.",
-        "#",
-        "# Generated by bench/analyze_presolve_probe.py; do not hand-edit.",
-        "#",
-        *_provenance(tree, check, args.instances, reference_count),
-        (
-            "#   rule             no chain-sourced incumbent in ANY run"
-            " (union over configs).  A"
-        ),
-        (
-            "#                    pool acceptance that never became the"
-            " incumbent does not count:"
-        ),
-        (
-            "#                    the tuning objective scores the"
-            " presolve-exit primal bound, so"
-        ),
-        ("#                    such an instance is a constant for every candidate."),
-        f"#   excluded         {len(scan.excluded)} of {scan.covered} analysed",
-        f"#   retained         {len(chosen)}",
-    ]
-    if len(chosen) < len(scan.excluded):
-        lines.append(f"#   sample_seed      {args.hard_tier_seed}")
-    lines += [
-        "#",
-        "#   scoring          scored on a different question from the tuning",
-        "#                    set: *did any configuration crack it*, i.e. the",
-        "#                    count of instances a candidate found any solution",
-        "#                    for.  Reported separately and never pooled into",
-        "#                    the quality ranking, so it cannot dilute the",
-        "#                    comparison but a breakthrough still shows up.",
-        "#   produced-not-improved",
-        "#                    the chain had a solution accepted and it never",
-        "#                    became the incumbent.  Needs log_dev_level=3; a",
-        "#                    tree without it reports the same instances under",
-        "#                    trivial-only or no-acceptance.  The membership is",
-        "#                    identical either way, only the label is coarser.",
-        "#   unreached        killed before the chain reported: the screen never",
-        "#                    looked at the model.",
-        "#   trivial-only     a solution was found, but by HiGHS's own pre-chain",
-        "#                    heuristics (sources l/p/u/z/X/Y), so it says",
-        "#                    nothing about any candidate configuration.",
-        "#   no-acceptance    the chain ran and produced nothing.",
-        "#",
-        "# Regenerate with:",
-        f"#   {probe_command(args)}",
-        "",
-    ]
-    for name in chosen:
-        lines.append(f"{name:<{width}}# {scan.reasons[name]}: {scan.details[name]}")
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
@@ -2250,7 +2173,7 @@ def _header_notes(
         notes.append(
             "  NOTE: no [HeurSol] trace in this tree.  The informative set is "
             "unaffected — it reads display rows, which every log level prints "
-            "— but the trajectories need one, and a hard-tier instance cannot "
+            "— but the trajectories need one, and an excluded instance cannot "
             "be told apart as produced-not-improved.  Rerun with --dev-log."
         )
     if scan.disagreements:
@@ -2277,7 +2200,6 @@ def render_report(
     tree: ProbeTree,
     check: ProbeCheck,
     scan: InformativeScan,
-    hard_tier: list[str],
     views: list[DispatchView],
     trajectories: dict[str, HeuristicTrajectory],
     diagnostics: list[str],
@@ -2321,7 +2243,7 @@ def render_report(
         "",
         f"Informative set: {len(scan.informative)} of {scan.covered} ({pct:.1f}%)",
         "",
-        f"Excluded (hard tier): {len(scan.excluded)}",
+        f"Excluded (no chain incumbent): {len(scan.excluded)}",
     ]
     by_reason: dict[str, int] = defaultdict(int)
     for name in scan.excluded:
@@ -2336,8 +2258,6 @@ def render_report(
     width = max((len(n) for n in scan.excluded), default=0) + 2
     for name in scan.excluded:
         lines.append(f"  {name:<{width}}{scan.reasons[name]}: {scan.details[name]}")
-    if len(hard_tier) < len(scan.excluded):
-        lines.append(f"  retained tier: {len(hard_tier)} sampled from the above")
 
     worker_note = "unknown" if workers is None else str(workers)
     lines += [
@@ -2456,8 +2376,8 @@ def coverage_errors(tree: ProbeTree) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Derive the informative instance set, the retained hard tier and "
-            "the per-heuristic effort trajectories from a presolve-only probe."
+            "Derive the informative instance set and the per-heuristic "
+            "effort trajectories from a presolve-only probe."
         ),
         epilog=(
             "The informative filter is a union over every config in the tree, "
@@ -2482,21 +2402,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--informative-output", default=None, help="write the informative list here"
-    )
-    parser.add_argument(
-        "--hard-tier-output", default=None, help="write the retained hard tier here"
-    )
-    parser.add_argument(
-        "--hard-tier-size",
-        type=int,
-        default=None,
-        help="retain this many excluded instances (default: all of them)",
-    )
-    parser.add_argument(
-        "--hard-tier-seed",
-        type=int,
-        default=0,
-        help="sampling seed for --hard-tier-size (default: %(default)s)",
     )
     parser.add_argument(
         "--quantiles",
@@ -2642,19 +2547,6 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
 
-    hard_tier = list(scan.excluded)
-    if args.hard_tier_size is not None:
-        if not 0 <= args.hard_tier_size <= len(scan.excluded):
-            print(
-                f"ERROR: --hard-tier-size {args.hard_tier_size} outside "
-                f"0..{len(scan.excluded)} excluded instance(s)",
-                file=sys.stderr,
-            )
-            return 1
-        hard_tier = sample_stratum(
-            scan.excluded, args.hard_tier_size, args.hard_tier_seed, "hard-tier"
-        )
-
     try:
         if args.informative_output:
             _write(
@@ -2673,18 +2565,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 + "\n",
             )
-        if args.hard_tier_output:
-            _write(
-                args.hard_tier_output,
-                render_hard_tier_list(
-                    tree, check, scan, hard_tier, args, len(reference)
-                ),
-            )
         report = render_report(
             tree,
             check,
             scan,
-            hard_tier,
             views,
             trajectories,
             diagnostics,

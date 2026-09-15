@@ -273,16 +273,16 @@ run of a patched binary**, so a list pinned by digest into a tuning-set header
 cannot silently have come from a full-solve tree. Informativeness means *the
 chain produced the incumbent* — a display row with one of the chain's own source
 codes — not merely that a solution exists: HiGHS's own trivial heuristics run
-inside `runSetup()`, before the chain, and their solutions route to the hard tier
-as `trivial-only`. The verdict deliberately follows the incumbent rather than
+inside `runSetup()`, before the chain, and their solutions are excluded as
+`trivial-only`. The verdict deliberately follows the incumbent rather than
 the pool's accept signal, for three reasons: it is the predicate the search's
 objective actually scores; it is the only one both probe passes can evaluate,
 since the filtering pass runs without `--dev-log`; and `[Heur]` is written when a
 dispatch *ends*, so a killed run — which the probe's own per-run cap produces by
 design — has incumbent rows and no ledger at all.
 
-The artifact chain is **probe tree -> informative list + hard tier -> tuning
-list**, every link byte-identical for the same inputs and carrying no timestamp,
+The artifact chain is **probe tree -> informative list -> tuning list**, every
+link byte-identical for the same inputs and carrying no timestamp,
 with each generated file recording its own `Regenerate with:` line.
 
 ### Running the probe
@@ -297,8 +297,7 @@ wall-clock kill.
 ```bash
 bench/run_presolve_probe.sh filter next 8      # the instance screen
 python3 bench/analyze_presolve_probe.py bench/results/probe/filter \
-    --informative-output bench/results/probe/informative.txt \
-    --hard-tier-output bench/results/probe/hard_tier.txt
+    --informative-output bench/results/probe/informative.txt
 bench/run_presolve_probe.sh trace next 4       # the trajectories
 bench/run_presolve_probe.sh trace-low next 4   # the same, one decade down
 ```

@@ -28,7 +28,7 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 |---|---|
 | `parse_highs_log.py` | one `SolveResult` per log: incumbents, bounds, timings, `[Heur]`/`[HeurSol]` traces. Every other reader goes through it |
 | `analyze_results.py` | the headline tables — SGM, primal integral, wins, oracle rows, instance filters |
-| `analyze_presolve_probe.py` | the calibration probe: informative set, hard tier, effort trajectories, gap to best known, and the derived parameter vector |
+| `analyze_presolve_probe.py` | the calibration probe: informative set and its excluded complement, effort trajectories, gap to best known, and the derived parameter vector |
 | `make_tuning_set.py` | a stratified tuning subset, sampled from a results tree on time-to-first-feasible |
 | `derive_from_probe.sh` | **probe tree → every artifact, one command** (see below), written into `ablation_effort/` |
 | `compare_finalists.sh` | assembles the per-arm trees into the view `analyze_results.py` wants, then scores them |
@@ -50,7 +50,6 @@ rule, the same one for every heuristic on every instance. `derive_from_probe.sh`
 then produces, all from those logs:
 
 * `informative.txt` — instances where the chain produced the reported incumbent
-* `hard_tier.txt` — the complement, each with its reason
 * `report.txt` — counts, the budget-headroom check, trajectories, quality
 * `defaults.json` — the derived per-heuristic effort and patience
 * `instances_tuning.txt` — the stratified tuning subset

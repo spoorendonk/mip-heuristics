@@ -11,6 +11,21 @@ Sign-off: **Simon Spoorendonk, 2026-09-06** — commit at sign-off: `01780d0`
 
 Reviewed and accepted as written, before the first experiment ran.
 
+### Amendments
+
+Amendments are recorded here rather than applied silently; the pre-sign-off
+text of any clause is recoverable from git.
+
+* **2026-09-15 — the hard-tier verdict is withdrawn** from §3's secondary
+  quantities, by the author's decision. It was the only planned consumer of
+  `bench/ablation_effort/hard_tier.txt` — the list of the 42 instances no #113
+  arm produced on — and the comparison was never run, so the list, the
+  `--hard-tier-*` flags that wrote it and their tests have been removed. The
+  count itself survives in `bench/ablation_effort/report.txt`, which still
+  reports each excluded instance and its reason. **This withdraws a reported
+  quantity; it changes no selection rule**, since §3's quantities were never
+  eligible to change the choice.
+
 ---
 
 ## 1. What is being searched
@@ -85,9 +100,8 @@ that instability is the result.
 
 Reported for the selected configuration and its runner-up, and explicitly
 **not** eligible to change the choice: time to first accepted solution; count
-of instances with any solution; the per-heuristic productive/stale effort
-split; and the hard-tier verdict (did any configuration crack an instance no
-configuration cracked in #113).
+of instances with any solution; and the per-heuristic productive/stale effort
+split.  (A fourth, the hard-tier verdict, was withdrawn — see Amendments.)
 
 ## 4. Selection rule — pre-registered
 
@@ -157,8 +171,9 @@ Any extension is recorded here with its size and the reason.
 * **Only the root dispatch is screened.** The presolve chain is re-entered for
   sub-MIPs during a full solve; a presolve-only run sees the first dispatch.
 * **18% of the mipfeas set is invisible** to a presolve screen. #113's
-  informative set is 191 of 233; the other 42 are the separately scored hard
-  tier.
+  informative set is 191 of 233; the other 42 produced nothing under any arm
+  and are excluded, listed with their reasons in
+  `bench/ablation_effort/report.txt`.
 * **Selection optimism remains.** The winner of a search over `n`
   configurations is biased upward by roughly `sigma * sqrt(2 ln n)` — ~3.5
   sigma at 500 candidates. The 90-instance tuning set and the held-out

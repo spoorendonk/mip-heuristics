@@ -751,7 +751,7 @@ def test_a_trivial_upper_solution_is_not_chain_evidence():
     HiGHS's trivial heuristics run inside `runSetup()`, before the chain, so
     a presolve-only run can report a solution none of our heuristics found.
     An instance solved only that way is a constant in every comparison the
-    search makes, which is what the hard tier is for.
+    search makes, which is why it is excluded.
     """
     verdict = classify_run(make_run(probe_log(rows=(("u", 70),))))
     assert verdict.evidence == "source"
@@ -1146,40 +1146,24 @@ def _tree(tmp_path):
 def test_end_to_end_splits_the_set_and_reports_trajectories(tmp_path):
     tree, ref = _tree(tmp_path)
     informative = os.path.join(str(tmp_path), "informative.txt")
-    hard = os.path.join(str(tmp_path), "hard.txt")
-    res = run(
-        tree,
-        "--instances",
-        ref,
-        "--informative-output",
-        informative,
-        "--hard-tier-output",
-        hard,
-    )
+    res = run(tree, "--instances", ref, "--informative-output", informative)
     assert res.returncode == 0, res.stdout + res.stderr
 
     assert load_instances(informative) == ["easy", "onlyb"]
-    assert load_instances(hard) == [
-        "barren",
-        "ns1760995",
-        "trivial",
-        "unimproving",
-    ]
+    # The rule the set was drawn under is stated where the set lives.
+    with open(informative) as f:
+        assert "never became the incumbent" in f.read()
 
-    with open(hard) as f:
-        hard_text = f.read()
-    assert "did any configuration crack it" in hard_text
+    # The excluded complement is reported, with each instance's reason, so the
+    # narrowing is auditable even though no list file is written for it.
+    assert "Excluded (no chain incumbent): 4" in res.stdout
     for reason in (
         "unreached",
         "trivial-only",
         "no-acceptance",
         "produced-not-improved",
     ):
-        assert reason in hard_text
-    # The rule the set was drawn under is stated where the set lives.
-    with open(informative) as f:
-        assert "never became the incumbent" in f.read()
-
+        assert reason in res.stdout
     assert "ns1760995" in res.stdout and "trivial" in res.stdout
     assert "Informative set: 2 of 6" in res.stdout
     # The two signals disagreeing is reported, not silently resolved.
@@ -1191,7 +1175,6 @@ def test_end_to_end_splits_the_set_and_reports_trajectories(tmp_path):
 def test_outputs_are_byte_identical_across_runs(tmp_path):
     tree, ref = _tree(tmp_path)
     informative = os.path.join(str(tmp_path), "informative.txt")
-    hard = os.path.join(str(tmp_path), "hard.txt")
     outputs = []
     for hash_seed in ("0", "12345"):
         res = run(
@@ -1200,33 +1183,12 @@ def test_outputs_are_byte_identical_across_runs(tmp_path):
             ref,
             "--informative-output",
             informative,
-            "--hard-tier-output",
-            hard,
-            "--hard-tier-size",
-            "1",
             hash_seed=hash_seed,
         )
         assert res.returncode == 0, res.stdout + res.stderr
         with open(informative, "rb") as f:
-            first = f.read()
-        with open(hard, "rb") as f:
-            outputs.append((first, f.read()))
+            outputs.append(f.read())
     assert outputs[0] == outputs[1]
-
-
-def test_hard_tier_size_samples_deterministically(tmp_path):
-    tree, ref = _tree(tmp_path)
-    hard = os.path.join(str(tmp_path), "hard.txt")
-    res = run(
-        tree, "--instances", ref, "--hard-tier-output", hard, "--hard-tier-size", "1"
-    )
-    assert res.returncode == 0, res.stderr
-    assert len(load_instances(hard)) == 1
-
-    bad = run(
-        tree, "--instances", ref, "--hard-tier-output", hard, "--hard-tier-size", "9"
-    )
-    assert bad.returncode == 1 and "hard-tier-size" in bad.stderr
 
 
 def test_narrowing_to_one_config_warns_about_the_union(tmp_path):

@@ -14,7 +14,6 @@
 #
 #   informative.txt  instances where the presolve chain produced the reported
 #                    incumbent, as a union over the four single-heuristic arms
-#   hard_tier.txt    its complement, each with the reason it is out
 #   report.txt       counts, the budget-headroom check, and the per-heuristic
 #                    effort trajectories
 #   defaults.json    the derived parameter vector: effort and patience per
@@ -70,7 +69,6 @@ SEED="${TUNING_SEED:-0}"
 echo "== reading the probe: $PROBE"
 python3 bench/analyze_presolve_probe.py "$PROBE" \
 	--informative-output "$OUT/informative.txt" \
-	--hard-tier-output "$OUT/hard_tier.txt" \
 	--defaults-output "$OUT/defaults.json" \
 	--report-output "$OUT/report.txt"
 
@@ -83,7 +81,7 @@ python3 bench/make_tuning_set.py "$VANILLA" \
 
 echo
 echo "Wrote:"
-for f in "$OUT/informative.txt" "$OUT/hard_tier.txt" "$OUT/defaults.json" \
+for f in "$OUT/informative.txt" "$OUT/defaults.json" \
 	"$OUT/report.txt" bench/instances_tuning.txt; do
 	printf '  %-46s %s\n' "$f" "$(wc -l <"$f") lines"
 done

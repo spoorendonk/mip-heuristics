@@ -109,7 +109,7 @@ void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, doub
                                 bool accepted) const {
     // Only accepted offers are traced (#113).  Every consumer reads
     // acceptances — the productive/stale split, the inter-acceptance gap
-    // distribution, and the hard-tier verdicts all filter to `accepted` —
+    // distribution, and the informative-set split all filter to `accepted` —
     // so a rejected offer's line fed nothing, and there are a great many of
     // them: on a 30 s clock-bound probe run of a small model FPR offers
     // ~11k/s, which was 327k lines and 36 MB from one run, 65 % of a whole

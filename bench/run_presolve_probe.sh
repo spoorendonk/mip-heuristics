@@ -43,7 +43,7 @@
 #
 # What comes off one such tree:
 #   * the informative set — instances where the chain produced the reported
-#     incumbent — and its complement, the retained hard tier;
+#     incumbent — with its excluded complement reported in report.txt;
 #   * the tuning set, stratified out of the informative set;
 #   * per-heuristic productive vs stale effort, and the inter-acceptance
 #     effort-gap quantiles that are literally the unit
