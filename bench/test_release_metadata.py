@@ -7,8 +7,9 @@ and a malformed or under-specified one fails at deposit time — after the tag i
 pushed and the release is created, which is the one point in the release
 process with no undo.
 
-This checks *shape*, not wording.  The content is owned by the documentation
-issue; see `docs/RELEASE.md` for the process around it.
+This checks *shape*, not wording.  The wording is owned by `.zenodo.json`
+itself, and the release process around it by the release issue (#166) rather
+than by any document in this repository.
 """
 
 from __future__ import annotations

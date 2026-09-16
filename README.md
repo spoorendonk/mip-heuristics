@@ -4,7 +4,7 @@ A unified open-source reference implementation and empirical evaluation of four 
 
 The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: on instances never used for tuning the patched solver improves the `mipfeas` primal-integral SGM by 16.4% — it reaches a good solution *sooner*, while final solution quality is level. See [Evaluation](#evaluation) for the numbers, the experiment that produced them, and their provenance.
 
-**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the `mipfeas` protocol) · [`docs/RELEASE.md`](docs/RELEASE.md) (release process, artifact archive, DOI wiring) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`docs/README.md`](docs/README.md) (source papers).
+**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the `mipfeas` protocol) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`docs/README.md`](docs/README.md) (source papers).
 
 ## Quick Start
 
@@ -88,7 +88,7 @@ Because `scylla` and `fpr_lp` ship at `0`, enabling either takes a positive valu
 
 **Zeroing all five is an ablation, not a vanilla baseline.** It disables our four presolve heuristics and `fpr_lp`, but the binary around it is still the patched one. It also runs **no FeasibilityJump at all**: upstream's standalone FJ call site never fires on a patched build, so FJ is ours or it is absent. Use it to measure what the chain contributes on this binary; a vanilla comparison needs a separately built unpatched HiGHS (`bench/run_benchmark.py --vanilla-binary`, which refuses a binary carrying the patch marker).
 
-Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside the five zeros for the **pure patch-overhead** configuration. That is what `bench/check_vanilla_equivalence.py` compares against an unpatched binary with FeasibilityJump likewise disabled, and it *requires* the two to agree: same objective, same node count, same total and heuristic LP iterations, and an empty log diff once wall-clock content is normalised away. It is a gate, not a recorded result — it needs a second binary, so it cannot run in CI and every release re-runs it ([`docs/RELEASE.md`](docs/RELEASE.md)). What it establishes when green is that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP path.
+Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside the five zeros for the **pure patch-overhead** configuration. That is what `bench/check_vanilla_equivalence.py` compares against an unpatched binary with FeasibilityJump likewise disabled, and it *requires* the two to agree: same objective, same node count, same total and heuristic LP iterations, and an empty log diff once wall-clock content is normalised away. It is a gate, not a recorded result — it needs a second binary, so it cannot run in CI and every release re-runs it. What it establishes when green is that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP path.
 
 ### Other options
 

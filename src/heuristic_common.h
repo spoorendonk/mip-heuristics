@@ -254,11 +254,19 @@ inline size_t heuristic_effort_budget(size_t nnz, double effort) {
 // adopts the reference implementation's shape rather than inventing one,
 // which is why it is fixed rather than searched: #107 tuned patience
 // throughout `[0, effort/4]` and could not separate anything in it, so
-// there is no evidence pointing at the range's edge.  It is also where all
-// four shipped defaults
-// already sit — 21-28% of their ceilings before this clamp existed, and
-// exactly 25% since #113's vector — so applying it moves no default and
-// bounds every future one.
+// there is no evidence pointing at the range's edge.
+//
+// **It does not follow that a shipped patience equals `effort / 4`.**  That
+// held for #113's derived vector, whose four measured p95 waits all sat
+// above the ceiling so the clamp bound every one of them.  #107's searched
+// vector does not: the four land in three regimes, each reached by a
+// different branch of `patience_threshold` — FJ at `0` (returned ahead of
+// the clamp: no gate at all), FPR at `0.3372 / 3.161 = 0.107x` (live and
+// well below the clamp, the one default this constant does not touch),
+// LocalMIP at `0.972x` (above it, so the applied threshold is
+// `effort / 4 = 0.8216`), and Scylla moot with the heuristic disabled.
+// `tests/test_smoke.cpp` pins exactly that and deliberately asserts no
+// fixed ratio; `docs/PARAMETERS.md` carries the same warning.
 inline constexpr size_t kPatienceCeilingDivisor = 4;
 
 // Absolute, instance-scaled patience: the improvement-free effort a

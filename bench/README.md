@@ -86,10 +86,10 @@ recipe.
 `REGENERATE.sh` that re-derives every table from the archived logs and diffs
 it. That is run as a release step — proving the tables come from the logs is a
 check on our own arithmetic — but the archive stays in the gitignored `dist/`
-and is not deposited. See `docs/RELEASE.md`.
+and is not deposited.
 
 ## Reader-facing docs
 
 `docs/REPRODUCIBILITY.md` (what is reproducible, and the exact protocols),
 `docs/PARAMETERS.md` (every tunable, and where its default came from),
-`docs/RELEASE.md` (cutting a release), `CONTRIBUTING.md` (build, test, lint).
+`docs/README.md` (the source papers), `CONTRIBUTING.md` (build, test, lint).

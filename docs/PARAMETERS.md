@@ -11,9 +11,12 @@ reference that carries a line number, because those drifted on essentially
 every refactor. Renaming a constant here means updating its entry in the same
 commit.
 
-For the runtime options a user actually sets (the
-four `mip_heuristic_<name>_effort` budgets, `mip_heuristic_effort`), see the
-closing section of this file and `README.md`. For what is and is not reproducible when
+For the runtime options a user actually sets (the five
+`mip_heuristic_<name>_effort` budgets, the four
+`mip_heuristic_<name>_patience` gates, `mip_heuristic_presolve_only` and
+upstream's own `mip_heuristic_effort`), see the closing section of this file
+and `README.md`. **Heuristic selection is those effort options and nothing
+else**: a value at or below zero means the heuristic does not run. For what is and is not reproducible when
 you change these, see `docs/REPRODUCIBILITY.md`.
 
 ---
@@ -1020,6 +1023,22 @@ Three things to carry forward.
 
 ---
 
+### `kMinPdlpIterCap` — floor on the shared PDLP instance's iteration limit
+
+- **File**: `src/contested_pdlp.cpp` (anonymous namespace)
+- **Default**: `100`
+- **Meaning**: `ContestedPdlp`'s constructor writes
+  `pdlp_iteration_limit` as `max(pdlp_iter_cap, kMinPdlpIterCap)`, so a
+  caller-derived cap can never starve a solve into returning nothing
+  useful. It interacts with `kMaxPdlpStalls`: a solve that returns zero
+  PDLP iterations three times in a row retires the chain, and this floor is
+  what keeps a small derived cap from manufacturing that retirement.
+- **Suggested range**: 50–500. Raising it makes a contended pump round
+  more expensive without making it more accurate — `epsilon` is the
+  accuracy knob (see "What `ε` actually controls").
+
+---
+
 ### `kMaxStaleRoundsDefault` — default stale-snapshot cap per worker
 
 - **File**: `src/scylla_worker.h`
@@ -1029,7 +1048,11 @@ Three things to carry forward.
   solve. A stale round rounds against a peer's cached LP solution
   without solving; too many stale rounds in a row risks stagnation on
   a degenerate snapshot. Scaled up by `compute_max_stale_rounds` for
-  large LPs (see `kNnzPerExtraStaleRound`).
+  large LPs (see `kNnzPerExtraStaleRound`). `kMaxStaleRounds`, in the same
+  header, is a compatibility alias at this value, kept for callers without
+  `nnz_lp_` in scope — but **no such caller exists any more**: every
+  surviving mention of it in `src/` and `tests/` is inside a comment, so it
+  is dead but for the definition.
 - **Suggested range**: 2–8 (as base; effective cap may be higher for
   large LPs).
 
@@ -1096,6 +1119,29 @@ Three things to carry forward.
 
 ---
 
+### `kImprovementObjMargin` — what counts as moving the pool's best
+
+- **File**: `src/solution_pool.h`
+- **Default**: `1e-9` (relative, with an absolute floor of the same size)
+- **Meaning**: The margin an offer must clear for
+  `IncumbentSink::OfferResult::improved_incumbent` to be true — the fact
+  every patience gate reads, decided inside `SolutionPool`'s own lock
+  against a monotone watermark of the best objective the pool has ever
+  accepted. **Deliberately not a re-use of `kDiversityObjTolerance`**,
+  which is an *admission* band: reading that one as an improvement test
+  would call a 9%-worse solution an improvement.
+- **It is the definition the shipped patience defaults were measured
+  under.** `bench/analyze_presolve_probe.py`'s `improving_offers`
+  reconstructs its improvement trajectory with the same margin on purpose,
+  so a gate resetting on a different one is not the gate those p95
+  inter-improvement gaps calibrate. Moving this invalidates the four
+  patience defaults rather than merely re-tuning them.
+- **Suggested range**: `1e-12`–`1e-6`. Below the solver's own feasibility
+  tolerance it starts counting numerical noise as progress, which resets
+  the patience gate forever — the failure #116 closed.
+
+---
+
 ### `kDiversityObjTolerance` — diversity insertion objective tolerance
 
 - **File**: `src/solution_pool.h`
@@ -1142,12 +1188,16 @@ Three things to carry forward.
 
 Each presolve heuristic has its own effort-budget multiplier option, read
 in `run_sequential` and turned into that heuristic's budget by
-`heuristic_effort_budget(nnz, value)`: `nnz << 12` effort units at the
-anchor 0.05, linear in the value, so a budget scales with model size.
-The options are registered by
+`heuristic_effort_budget(nnz, value)`: `value` multiples of `nnz << 10`,
+vanilla HiGHS's own hardcoded single-thread FeasibilityJump limit, so a
+budget scales with model size and `value = 1.0` means exactly one vanilla
+FJ budget (#116 — the earlier `nnz << 12` scaled by `value / 0.05` is
+retired; `vanilla_effort_budget` is where that anchor survives, for
+upstream's own `mip_heuristic_effort`). The options are registered by
 `third_party/highs_patch/apply_patch.cmake` — which nothing compiles, so
-`tests/test_smoke.cpp` pins all four defaults — and are documented for
-users in the closing section of this file.
+`tests/test_smoke.cpp` pins all five effort defaults and all four patience
+defaults — and are documented for users in the closing section of this
+file.
 
 They are independent by construction: there is no shared envelope, so
 raising one heuristic's budget does not lower another's.
@@ -1196,6 +1246,35 @@ calibration, not the result of one.
 `bench/run_benchmark.py --extra-options mip_heuristic_<name>_effort=<V>`
 moves one heuristic's budget off its default for a run; the calibration
 itself is driven by a tracked target runner rather than by config names.
+
+### `kBudgetBaseShift` — the base every effort and patience option multiplies
+
+- **File**: `src/heuristic_common.h`
+- **Default**: `10`, i.e. a base of `nnz << 10`
+- **Meaning**: The single base `heuristic_effort_budget` and
+  `patience_threshold` are both multipliers of. `nnz << 10` is vanilla
+  HiGHS's hardcoded single-thread FeasibilityJump limit
+  (`HighsFeasibilityJump.cpp`) — the only figure in this arithmetic that
+  upstream itself picked, which is what makes `effort = 1.0` mean "one
+  vanilla FJ budget" rather than a number that needs decoding.
+- **It is what makes `patience < effort` legible** (#116). The retired
+  scheme multiplied `nnz << 12` by `value / 0.05`, so comparing an effort
+  option against a patience threshold meant knowing that `(1 << 12) / 0.05`
+  is 81,920. Both constants were historical: the 4096 existed only so FJ's
+  default came out at `nnz << 10` anyway, and the 0.05 was upstream's own
+  `mip_heuristic_effort` default used as an anchor. That anchor survives in
+  exactly one place, `vanilla_effort_budget`, which rescales upstream's own
+  knob by `(1 << 2) / 0.05` so its meaning is unchanged.
+- **Do not tune this.** Moving it rescales **eight** options at once — the
+  four presolve effort budgets and the four patience gates — and invalidates
+  every measured default. `mip_heuristic_fpr_lp_effort` is *not* among them:
+  it is a share of upstream's RENS/RINS LP-iteration envelope, not a multiple
+  of this base. Upstream's own `mip_heuristic_effort` moves too, indirectly,
+  because `vanilla_effort_budget`'s `kBaseRatio = 4.0` is exactly
+  `(1 << 12) / (1 << 10)` and is tied to this shift. It is documented so the
+  unit is readable, not because it is a knob.
+
+---
 
 ### `mip_heuristic_fj_effort` — FeasibilityJump budget
 
@@ -1377,7 +1456,7 @@ from having no gate at all. That is not a corner case — the p95 #113
 measured exceeds the ceiling on three of the four heuristics, FJ's by 4,400x
 — so without the clamp an honestly derived value would silently mean "never
 give up". A quarter is the shape FJ has always shipped (`nnz << 8` against
-`nnz << 10`), and where all four shipped defaults already sat. Before that the effort option multiplied
+`nnz << 10`). Before that the effort option multiplied
 `nnz << 12` scaled by `value / 0.05` while the threshold was already absolute
 per nonzero, so comparing the pair meant knowing that `(1 << 12) / 0.05` is
 81,920. Both constants were historical — the 4096 existed only so FJ's
@@ -1387,16 +1466,22 @@ default came out at `nnz << 10` anyway, and the 0.05 was upstream's own
 Two consequences worth knowing. `mip_heuristic_effort` — upstream's *own* B&B
 knob, which `fpr_lp` caps itself against — is on the old scale and goes
 through `vanilla_effort_budget`, which restores the anchor so its meaning is
-unchanged. And every shipped patience default is visibly `0.25 x` its
-effort, because the clamp bound all four: the measured waits contributed
-nothing to them, which is a statement about how slowly these heuristics
-improve rather than about the calibration.
+unchanged. And **nothing may assume `patience == effort / 4`.** That held
+for the *previous*, #113-derived vector, where every measured p95 sat above
+the ceiling and the clamp therefore bound all four. #107's searched vector
+does not: the four land in three different regimes, each reached by a
+different branch of `patience_threshold` — FJ at `0` (returned ahead of the
+clamp: no gate at all), FPR at `0.3372 / 3.161 = 0.107x` (live, well below
+the clamp), LocalMIP at `0.972x` (*above* the clamp, so the applied
+threshold is `effort / 4 = 0.8216`), and Scylla moot with the heuristic
+disabled. `tests/test_smoke.cpp` pins exactly that, and deliberately does
+not assert the quarter.
 
 ---
 
 ### A budget that cannot bind
 
-All four effort records are bounded at **`1e6`**, not at `1.0`. Nothing
+All five effort records are bounded at **`1e6`**, not at `1.0`. Nothing
 ships or tunes above `1.0` — the suggested ranges above are the real
 operating range — but one measurement needs a value outside it.
 
@@ -1774,12 +1859,44 @@ Scylla PDLP iterations x nnz. Do not align them numerically; align the
 semantics (the same quantile of each heuristic's own inter-acceptance
 effort-gap distribution).
 
+### `kPatienceCeilingDivisor` — the clamp on every patience option
+
+- **File**: `src/heuristic_common.h`
+- **Default**: `4`, i.e. patience is clamped to `budget / 4`
+- **Meaning**: `patience_threshold` reduces any patience at or above a
+  quarter of the heuristic's own budget down to that quarter, so a gate
+  that exists can always fire strictly before exhaustion. Without it, an
+  honestly derived value silently means "never give up" — which is the
+  common case, since #113's measured p95 exceeds the ceiling on three of
+  the four heuristics, FJ's by orders of magnitude, and is reported
+  nowhere. (This file quotes two different multipliers for FJ — `4,400x`
+  under "One axis, a floor and a ceiling" and `1,566x` under
+  `mip_heuristic_fj_patience`. They disagree, neither reproduces from the
+  shipped numbers, and both predate #107's vector. Re-measure rather than
+  reconcile.)
+- **`0` is not clamped.** It is returned ahead of the clamp and means no
+  gate at all, which is what lets a calibration probe measure a heuristic
+  with nothing stopping it.
+- **The floor outranks it.** `max(budget / 4, 1)`: at `budget <= 2` the
+  floor pins the threshold at 1 and the gate coincides with exhaustion or
+  never fires; from `budget == 3` up it precedes exhaustion again.
+- **Fixed rather than searched**: #107 tuned patience throughout
+  `[0, effort/4]` and could not separate anything in it, so there is no
+  evidence pointing at the range's edge. Raising the quarter to a half is
+  the one knob here worth an ablation arm — it would let LocalMIP's
+  measured value stand (see its entry below) and leave the others
+  unaffected.
+
+---
+
 ### `mip_heuristic_fj_patience` — FeasibilityJump patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0` — **no gate** (searched, #107; 13 of 19 survivors wanted FJ ungated). #113's derived value was `0.1416`; was `0.71`. It is
-  the clamp to rounding, `0.25 x` the effort option beside it, not the raw p95 wait of
-  `2.46` — see the clamp note below.
+- **Default**: `0.0` — **no gate** (searched, #107; 13 of 19 survivors
+  wanted FJ ungated). `0` is returned ahead of the clamp and means the gate
+  is not armed at all, not "give up at once". #113's derived value was
+  `0.1416` — itself the clamp to rounding, `0.25 x` the effort option beside
+  it, rather than the raw p95 wait of `2.46`; before that, `0.71`.
 - **Meaning**: Step units per worker without an incumbent improvement, as
   a multiple of `nnz << 10`. Scope is **per worker**, matching
   `mip_heuristic_fj_effort` — the only one of the four with that scope, so
@@ -1791,8 +1908,9 @@ effort-gap distribution).
 - **Least trustworthy of the four.** The p50 knee behind its *effort*
   rests on 8 completed dispatches out of 220 (115 were still improving at
   the 30 s cap), and its measured p95 wait is 4,446 — 1,566x its own
-  ceiling — so this value is entirely the clamp. Read it as "FJ improves
-  too rarely for a patience to express", not as a tuned number.
+  ceiling — so #113's value was entirely the clamp. Read the shipped `0` as
+  "FJ improves too rarely for a patience to express", which is also how the
+  search read it: 13 of 19 survivors left FJ ungated.
 - **Suggested range**: 0.06–1.0, plus `0` for no gate. Values above
   `effort / 4` are clamped down to it.
 
@@ -1801,8 +1919,12 @@ effort-gap distribution).
 ### `mip_heuristic_fpr_patience` — FPR patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `3.064` (measured, #113 re-run 2026-09-06; was `1.918`). The
-  clamp, `0.25 x` effort; the raw p95 wait is `5649.87`.
+- **Default**: `0.3372` (searched, #107's `B'-mix-cheapest`, held-out
+  validated). **The only one of the four that is a live, unclamped gate**:
+  `0.3372 / 3.161 = 0.107x` its effort, well below the `0.25 x` ceiling, so
+  the registered value is the threshold the solver applies. #113's measured
+  value was `3.064` (re-run 2026-09-06, itself the clamp against a raw p95
+  wait of `5649.87`); before that, `1.918`.
 - **Meaning**: Coefficient accesses without an incumbent improvement, as a
   multiple of `nnz << 10`, **whole dispatch**. FPR had no worker-level
   gate at all before #111 (`FprWorker::finished()` returned false
@@ -1814,17 +1936,23 @@ effort-gap distribution).
   suite — 19.98x charged-effort growth over a 20x budget sweep both before
   and after #111, bounded only once the gate stopped counting
   acceptances (`tests/test_patience_gate.cpp`).
-- **Suggested range**: 0.5–8, plus `0` for no gate. Values above
-  `effort / 4` are clamped down to it.
+- **Suggested range**: 0.2–8, plus `0` for no gate — the shipped `0.3372`
+  sits near the bottom of it. Values above `effort / 4` are clamped down to
+  it.
 
 ---
 
 ### `mip_heuristic_local_mip_patience` — LocalMIP patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `3.1943` (searched, #107). It sampled *above* its own clamp, so `patience_threshold` applies `effort / 4` = `0.8216` — the loosest live gate, and a known degeneracy of the searched domain rather than a measured value. #113's derived value was `3.4902`; was `7.308`. The
-  clamp, `0.25 x` effort; the raw p95 wait is `4.93` — the only one of the
-  four whose measured wait is near its own ceiling fraction.
+- **Default**: `3.1943` (searched, #107). It sampled *above* its own clamp
+  (`0.972 x` its effort), so `patience_threshold` applies
+  `effort / 4` = `0.8216` — the loosest live gate, and a known degeneracy of
+  the searched domain rather than a measured value: any sampled patience at
+  or above its own clamp is behaviourally identical to every other such
+  value. #113's derived value was `3.4902` — the clamp, `0.25 x` effort,
+  against a raw p95 wait of `4.93`, the only one of the four whose measured
+  wait was near its own ceiling fraction; before that, `7.308`.
 - **Meaning**: Coefficient accesses without an incumbent improvement, as a
   multiple of `nnz << 10`, **whole dispatch**. The only one of the four
   whose *measured* p95 (8.50) is within reach of its ceiling fraction
@@ -1871,8 +1999,10 @@ effort-gap distribution).
 ### `mip_heuristic_scylla_patience` — Scylla patience
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0` — Scylla ships disabled, so its gate is moot (#107). #113's derived value was `0.767`; was `0.284`. The
-  clamp, `0.25 x` effort; the raw p95 wait is `18.96`.
+- **Default**: `0.0` — Scylla ships disabled (`mip_heuristic_scylla_effort`
+  is also `0`), so its gate is moot (#107). #113's derived value was `0.767`
+  — the clamp, `0.25 x` effort, against a raw p95 wait of `18.96`; before
+  that, `0.284`.
 - **Meaning**: PDLP-iteration x nnz units without an incumbent
   improvement, as a multiple of `nnz << 10`, **whole dispatch**. Small in
   absolute terms because one PDLP solve charges `iters x nnz`, so this is
@@ -2098,6 +2228,59 @@ anything.
 
 ---
 
+## Shared infrastructure (`heuristic_common.h`)
+
+### `kInfBoundShiftWindow` — perturbation window at a non-finite bound
+
+- **File**: `src/heuristic_common.h`
+- **Default**: `64.0`
+- **Meaning**: When a column's bounds are non-finite (`kHighsInf`) or
+  finite-but-huge, both perturbation paths —
+  `local_mip_detail::perturb_solution` and `pump::perturb` — clamp the
+  integer shift range to ±64 around the current value. Shared on purpose,
+  so LocalMIP's and Scylla's perturbations stay in lock-step. Wide enough
+  to actually move the variable, narrow enough that the
+  `static_cast<int64_t>(hi - lo)` driving `uniform_int_distribution` cannot
+  overflow.
+- **Suggested range**: 16–1024. Larger windows diversify more per
+  perturbation and land further from anything propagation has implied.
+
+---
+
+### `kSafeInt64DoubleRange` — when a finite range counts as unbounded
+
+- **File**: `src/heuristic_common.h`
+- **Default**: `1e18`
+- **Meaning**: `int64_t::max()` is ~9.2e18, so a model with bounds at
+  `±1e18` produces a `static_cast<int64_t>(hi - lo)` at or past that limit
+  — undefined behaviour even though `std::isfinite` is true. A range
+  *strictly above* this threshold takes the `kInfBoundShiftWindow` path
+  instead; both call sites spell it `hi - lo > kSafeInt64DoubleRange`
+  (`src/local_mip_worker.cpp`, `src/pump_common.h`), so a range of exactly
+  `1e18` still goes the normal way.
+- **Do not tune this.** It is a correctness guard on a cast, not a search
+  parameter; the only sane edits are toward a *smaller* value.
+
+---
+
+### `kBaseSeedOffset`, `kSeedStride` — deterministic per-worker seeding
+
+- **File**: `src/heuristic_common.h`
+- **Defaults**: `42` and `997`
+- **Meaning**: `heuristic_base_seed(random_seed)` is the user's
+  `random_seed` plus `kBaseSeedOffset`, which keeps the base non-zero when
+  the option is left at its default of 0. `kSeedStride` is a large prime
+  spacing adjacent workers' seeds apart in the SplitMix64 expansion so
+  their draws do not immediately correlate. Every heuristic derives its
+  per-worker seeds from these, which is what makes changing `random_seed`
+  observably change heuristic behaviour — pinned by
+  `tests/test_execution_modes.cpp`.
+- **Do not tune these.** Changing either reshuffles every RNG stream in the
+  build, so every measured number moves and nothing is comparable across
+  the change. See `docs/REPRODUCIBILITY.md`.
+
+---
+
 ## FJ Option Note
 
 `mip_heuristic_run_feasibility_jump` is a **native HiGHS option**
@@ -2136,8 +2319,10 @@ to `0.30` and overloaded as the presolve budget — that overload was split
 out into a presolve-only option, which in turn became the four
 per-heuristic options below.
 
-The custom patch-added options are exactly six (plus the four patience
-options documented above):
+The custom patch-added options are exactly ten: the five effort budgets
+below, the four `mip_heuristic_<name>_patience` gates documented above, and
+`mip_heuristic_presolve_only`. There is no eleventh — heuristic selection is
+the zero-pattern of the five effort options.
 
 - `mip_heuristic_fj_effort` (default `0.3317`),
   `mip_heuristic_fpr_effort` (`3.161`),

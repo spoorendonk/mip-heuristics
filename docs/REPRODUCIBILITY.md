@@ -5,22 +5,24 @@ reproduce the recorded results.
 
 ## The reproducible recipe
 
-Three settings together:
+Two settings, and only two:
 
 ```
 threads = 1
 random_seed = 42
-mip_heuristic_fj_effort = 0
-mip_heuristic_local_mip_effort = 0
 ```
 
 ```bash
-printf 'threads = 1\nrandom_seed = 42\nmip_heuristic_fj_effort = 0\nmip_heuristic_local_mip_effort = 0\n' > repro.opts
+printf 'threads = 1\nrandom_seed = 42\n' > repro.opts
 ./build/bin/highs --options_file repro.opts model.mps
 ```
 
 Two runs of that command on one binary produce the same objective, the same
-node count, and the same per-heuristic effort trace.
+node count, and the same per-heuristic effort trace. It holds at the shipped
+defaults, with the whole presolve chain live — the contract is not a reduced
+configuration, and `tests/test_execution_modes.cpp` pins it at exactly this
+pair of options. Zeroing a heuristic's effort narrows *what runs*; it is not
+part of what makes the run reproducible.
 
 **The custom options are not command-line flags.** HiGHS's CLI11 parser takes
 only its own fixed flag set. `--mip_heuristic_fpr_effort 3.0 model.mps` makes `3.0`
@@ -79,8 +81,12 @@ The *wall-clock* limit is a separate axis and is bounded at every worker count,
 including `threads=1` (#114). Each of the four presolve heuristics polls
 `ExecutionContext::past_deadline()` from inside its own inner loop, on a cadence
 of its own — FeasibilityJump per upstream callback (every 500 000 effort units),
-LocalMIP every `kTermCheckWork` counted units, FPR per inner attempt, Scylla per
-pump iteration — and the runner polls it unconditionally on every iteration.
+LocalMIP every `kTermCheckWork` counted units, FPR per inner attempt and then
+at four finer cadences inside one (every `kDeadlinePollNodes` DFS nodes, every
+RepairSearch node, every `repair_walk` step, and every
+`kPropagateDeadlinePollWork` counted units inside a propagation fixpoint,
+#151), Scylla per pump iteration — and the runner polls it unconditionally on
+every iteration.
 The overshoot is therefore one polling interval, not one *attempt*, and it no
 longer grows with the effort option. Scylla keeps a documented floor of one
 whole PDLP solve, which no constant can cross.
@@ -163,9 +169,11 @@ comparison meaningless. Both facts are checked for you —
 one that prints the patch marker or a different version — but check them
 yourself too if the tree came from elsewhere.
 
-**What a stage is.** The four campaign stages differ in what they run, not in
-how they are launched, so each one is `run_mipfeas.sh` with a different
-environment rather than a hand-written `run_benchmark.py` command line:
+**What a stage is.** The campaign stages differ in what they run, not in how
+they are launched: every one of them is `run_mipfeas.sh` under a different
+environment — `run_presolve_probe.sh`, `run_finalists.sh`,
+`run_ablation_c.sh` and `run_headline.sh` are each a wrapper that sets one —
+rather than a hand-written `run_benchmark.py` command line:
 
 | | |
 |---|---|

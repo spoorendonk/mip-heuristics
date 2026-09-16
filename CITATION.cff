@@ -33,9 +33,9 @@ references:
     title: "An Efficient Local Search Solver for Mixed Integer Programming"
     authors:
       - family-names: Lin
-        given-names: Jiongzhi
+        given-names: Peng
       - family-names: Zou
-        given-names: Yupeng
+        given-names: Mengchuan
       - family-names: Cai
         given-names: Shaowei
     collection-title: "Proceedings of CP 2024"

@@ -285,7 +285,9 @@ done — the pre-push hook is the final gate ([Git hooks](#git-hooks)), and
 `--no-verify` is not an option. Close any GitHub issue the work resolved.
 
 Cutting a version is a separate procedure with an ordering constraint a normal
-push does not have: see [`docs/RELEASE.md`](docs/RELEASE.md).
+push does not have — Zenodo's GitHub integration only archives releases created
+*after* it is switched on, and it does not backfill. That procedure is tracked
+in the release issue (#166), not in this repository's documentation.
 
 When something in this file or `CLAUDE.md` would have prevented a mistake you
 just made, fix it in the same commit.

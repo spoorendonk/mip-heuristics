@@ -130,7 +130,6 @@ Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solv
 - `README.md` — positioning, the heuristic table and how each one is enabled, recorded benchmark results, build options.
 - `CONTRIBUTING.md` — build/test/lint commands, the git hooks and how a checkout gets them, the clean-rebuild rule for patch-script changes, the benchmarking rules, the standing code-hygiene bar.
 - `docs/REPRODUCIBILITY.md` — what is reproducible and what is not, and the exact `mipfeas` reproduction protocol.
-- `docs/RELEASE.md` — how a version is cut and published: the gates, the artifact archive (`bench/make_archive.py`), the DOI wiring and its ordering constraint, and the release checklist.
 - `docs/PARAMETERS.md` — every tunable `constexpr`. **Verified by ctest** (`docs_parameter_references`, via `bench/check_docs_refs.py`): renaming a documented constant fails the suite. Entries name symbols, **never line numbers** — line numbers drift on essentially every refactor. Don't reintroduce them.
 
 ## Build Commands
@@ -476,4 +475,4 @@ The provenance is *derived*, not asserted: which binary produced a config comes 
 
 `--time-limit` is required because HiGHS takes it on the command line, so it is in no `.opts`. The effective worker count is recorded the same derived way: the harness deliberately does not pin `threads`, so the count appears in no `.opts` and is read from each log's `Thread count N (of M threads)` line into `run.workers_observed` (`parse_highs_log` exposes the same three numbers as `thread_count` / `hardware_threads` / `max_workers` — `thread_count` is HiGHS's pool size and therefore `ExecutionContext::num_workers`, `max_workers` is B&B's own cap, and they are different numbers). **Two distinct values across a tree means it mixes machines and its runs are not comparable**, which warns; neither pinned nor observed warns too. The machine block itself is auto-detected on the *archive* host — hence `--machine-note`.
 
-A campaign yields two archives, headline-timing and `--dev-log` attribution; they are different runs. `docs/RELEASE.md` is the process around it, including the ordering constraint that Zenodo's GitHub integration must be enabled **before** the release is created (it does not backfill) and that `.zenodo.json` makes Zenodo ignore `CITATION.cff` entirely.
+A campaign yields two archives, headline-timing and `--dev-log` attribution; they are different runs. The release process around it is tracked in the release issue (#166) rather than in this repository — including the ordering constraint that Zenodo's GitHub integration must be enabled **before** the release is created (it does not backfill) and the fact that `.zenodo.json` makes Zenodo ignore `CITATION.cff` entirely.
