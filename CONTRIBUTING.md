@@ -132,8 +132,9 @@ git config core.hooksPath .githooks
 
 `pre-push` reads the `clean` / `build` / `test` fenced blocks out of
 `CLAUDE.md`'s `## Build & Test` section, so a full push costs a from-scratch
-HiGHS build — about five to six minutes. That is deliberate: it is the same
-sequence a release runs. A docs-only or hooks-only push skips it. Edit the
+HiGHS build — about five to six minutes. That is deliberate: a half-patched
+tree produces a binary that is not the one the commit describes, and only a
+clean rebuild rules it out. A docs-only or hooks-only push skips it. Edit the
 hooks in `.githooks/`; `.git/hooks/` holds none of ours.
 
 ## The clean-rebuild rule

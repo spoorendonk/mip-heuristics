@@ -84,9 +84,9 @@ recipe.
 
 `make_archive.py` packages a results tree with its provenance and a
 `REGENERATE.sh` that re-derives every table from the archived logs and diffs
-it. That is run as a release step — proving the tables come from the logs is a
-check on our own arithmetic — but the archive stays in the gitignored `dist/`
-and is not deposited.
+it. Proving the tables come from the logs is a check on our own arithmetic, so
+it is worth running whether or not anyone else sees the result — the archive
+stays in the gitignored `dist/`.
 
 ## Reader-facing docs
 

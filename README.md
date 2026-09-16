@@ -1,5 +1,9 @@
 # mip-heuristics
 
+[![CI](https://github.com/spoorendonk/mip-heuristics/actions/workflows/ci.yml/badge.svg)](https://github.com/spoorendonk/mip-heuristics/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)
+
 A unified open-source reference implementation and empirical evaluation of four modern primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant. All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions. See [Heuristics](#heuristics) for algorithmic details and paper references.
 
 The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: on instances never used for tuning the patched solver improves the `mipfeas` primal-integral SGM by 16.4% — it reaches a good solution *sooner*, while final solution quality is level. See [Evaluation](#evaluation) for the numbers, the experiment that produced them, and their provenance.
@@ -360,6 +364,41 @@ ctest --test-dir build -R "execution-mode: flugpl objective" --output-on-failure
 Catch2 v3. Characterization tests verify known-optimal objectives against MIPLIB instances bundled with HiGHS.
 
 `clang-format` and `clang-tidy` run over `src/` and `tests/` as ctest tests labelled `lint`, adding roughly 30 s to a full run — hence `ctest -LE lint` while iterating. Without the venv above they are **not registered at all** and `ctest` reports green having linted nothing, which is what `-DMIP_HEURISTICS_REQUIRE_LINT=ON` exists to prevent. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the tool-version contract.
+
+## Citing
+
+[`CITATION.cff`](CITATION.cff) carries the citation metadata in machine-readable
+form — GitHub's "Cite this repository" button reads it.
+
+**There is no tagged release and no DOI yet**, and this repository has no paper
+of its own. Until the first release mints one
+([#166](https://github.com/spoorendonk/mip-heuristics/issues/166)), cite a commit
+rather than `main`: the benchmark tables move with the code.
+
+What there *is* to cite is the work these implementations are of — cite the
+source paper for the heuristic you are referring to, from the list below. The
+`mipfeas` benchmark, its instance set and its metric are Bussieck and Dirkse's
+([*Expanding the Focus*](https://www.gams.com/blog/2026/03/expanding-the-focus-introducing-the-mipfeas-benchmark/),
+GAMS, 2026).
+
+## References
+
+1. **Salvagnin, Roberti, Fischetti (2025)** — *A fix-propagate-repair heuristic for mixed integer programming*. Mathematical Programming Computation, 17:111–139. DOI: [10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5) — FPR and `fpr_lp`.
+
+2. **Lin, Zou, Cai (2024)** — *An Efficient Local Search Solver for Mixed Integer Programming*. Proc. CP 2024, LIPIcs vol. 307, Article 19, pp. 19:1–19:19. DOI: [10.4230/LIPIcs.CP.2024.19](https://doi.org/10.4230/LIPIcs.CP.2024.19) — LocalMIP.
+
+3. **Mexi, Besançon, Bolusani, Chmiela, Hoen, Gleixner (2023)** — *Scylla: a matrix-free fix-propagate-and-project heuristic for mixed-integer optimization*. OR Proceedings 2023, 57–63. DOI: [10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9) — Scylla.
+
+4. **Luteberget, Sartor (2023)** — *Feasibility Jump: an LP-free Lagrangian MIP heuristic*. Mathematical Programming Computation, 15:365–388. DOI: [10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8) — FeasibilityJump.
+
+All four are open access under CC BY 4.0 and the PDFs are in
+[`docs/`](docs/README.md), which maps each paper to the source files that
+implement it.
+
+## Related Projects
+
+- [**HiGHS**](https://github.com/ERGO-Code/HiGHS) — the solver these heuristics are compiled into, via a patched build of v1.15.1
+- [**cuOpt**](https://github.com/NVIDIA/cuopt) — NVIDIA's GPU solver, with variants of LocalMIP and of the Scylla pump (arXiv:2510.20499)
 
 ## License
 
