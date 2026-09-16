@@ -73,7 +73,7 @@ file in it from a results tree.
 | `ablation_effort/` | per-heuristic effort and patience, measured with each heuristic **alone** |
 | `ablation_search/` | the joint search over mix, effort and patience, and the finalist confirmation that selected the shipped vector |
 | `ablation_fprlp/` | whether `fpr_lp` earns a share of upstream's RENS/RINS envelope (it does not) |
-| `headline/` | the shipped configuration against vanilla over the full 233, plus the generated provenance record |
+| `headline/` | the shipped configuration against vanilla over the full 233 |
 
 **The results trees themselves are not published** — `bench/results*` is
 gitignored and runs to several GB. Every number in those four READMEs is
@@ -87,36 +87,6 @@ recipe.
 it. That is run as a release step — proving the tables come from the logs is a
 check on our own arithmetic — but the archive stays in the gitignored `dist/`
 and is not deposited. See `docs/RELEASE.md`.
-
-## Things that will bite you
-
-* **Never pass `--threads`** (or set `threads=` in an `.opts`) unless
-  reproducibility is the point. It collapses each heuristic to one worker, and
-  for a tuning run it *moves* the objective's distribution rather than
-  narrowing it — FJ's budget is per worker while the other three are per
-  dispatch, so changing the count reallocates budget between heuristics.
-* **`--dev-log` is a different run.** It sets `log_dev_level=3`, which is what
-  makes `[Heur]`/`[HeurSol]` visible — and what makes the log big. Attribution
-  runs and headline-timing runs are not the same runs.
-* **A killed run is evidence, not a lost run.** The harness SIGKILLs a solve
-  that outruns its limit (HiGHS checks its clock between work units), keeps the
-  partial log with a `TIMEOUT:` marker, and the parsers report it as `killed`.
-  Such logs still score: T1st and the primal integral read incumbent lines, not
-  the report the run never reached.
-* **`[Heur]` is written when a dispatch *ends*.** A killed run therefore has
-  incumbent rows and no ledger, which is why probe membership follows the
-  incumbent and never the trace.
-* **Zero effort has two causes, and the line says which.** A dispatch whose
-  sequential setup found the deadline already passed never searched, and books
-  an `effort=0 found=0` line that would otherwise be indistinguishable from one
-  that searched and produced nothing. `abandoned_setup=<0|1>` separates them,
-  so the three shapes a consumer must tell apart stay apart: no `[Heur]` line
-  is a killed run, `abandoned_setup=1` is a bail, and the field absent or `0`
-  is a dispatch that ran. Absent means a log written before the field existed —
-  `HeuristicSample.abandoned_setup` is `None` there, and
-  `analyze_presolve_probe.py` treats that as "ran".
-* **A config name carries no budget.** Every heuristic runs at its shipped
-  default; moving one for a run goes through `--extra-options`.
 
 ## Reader-facing docs
 

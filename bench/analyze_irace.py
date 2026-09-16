@@ -3,14 +3,14 @@
 
 The search produces one `irace.Rdata` per pre-registered lambda.  This module
 is the analysis that reads them and applies the **selection rule fixed in
-`bench/irace/PREREGISTRATION.md`** — it implements that rule and decides
+`bench/irace/README.md`** — it implements that rule and decides
 nothing of its own.  It is tracked tooling with tests, not a scratch script,
 because #107 requires the selection to be re-derivable from the run log rather
 than re-run.
 
 Why a separate module rather than a few lines of R
 --------------------------------------------------
-Three things the pre-registration asks for are not what `getFinalElites`
+Three things that specification asks for are not what `getFinalElites`
 returns:
 
 * **A surviving set, not an argmax.**  irace's elites are already a set, but
@@ -220,7 +220,7 @@ def stability(results: list[LambdaResult]) -> tuple[bool, str]:
         only = results[0].tag if results else "none"
         return False, (
             f"stability NOT assessed: only one lambda ({only}) has completed. "
-            "The pre-registration's deliverable is the family across "
+            "The specified deliverable is the family across "
             f"{len(LAMBDA_TAGS)} cost weights; a single search cannot show "
             "whether the selection is sensitive to it."
         )
@@ -249,7 +249,7 @@ def report(results: list[LambdaResult]) -> str:
     lines.append(message)
     if not ok and len(results) >= 2:
         lines.append(
-            "  The pre-registration treats this as the result: report the "
+            "  The specification treats this as the result: report the "
             "family, do not pick one and call it stable."
         )
     return "\n".join(lines)

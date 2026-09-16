@@ -29,8 +29,8 @@ read the result is in this directory.
 
 ## Design
 
-* **Objective, pre-registered** in `bench/irace/PREREGISTRATION.md`, signed at
-  commit `01780d0` before the first experiment: `cost = gap + lambda * tau`,
+* **Objective**, fixed in `bench/irace/README.md` ahead of the first
+  experiment: `cost = gap + lambda * tau`,
   where `gap` is the primal gap of the presolve-exit incumbent (capped at 1,
   penalty 2.0 when nothing is found) and `tau` is the heuristics' own wall time.
 * **Space:** eight real parameters — four efforts, four patiences — plus two
@@ -49,7 +49,7 @@ read the result is in this directory.
 
 ## What the searches selected
 
-| search | lambda | survivors | selection (pre-registered tie-break) |
+| search | lambda | survivors | selection (the specified tie-break) |
 |---|---|---|---|
 | free | 1/1200 | 2 | `fj,fpr,local_mip` — total effort 12.06 |
 | free | **1/600** | 6 | **`fj` alone — 0.16** |
@@ -115,7 +115,7 @@ search that forced it on placed it at 0.4907, an order of magnitude below the
 
 ## Applying the tie-break
 
-Rule 2 of `bench/irace/PREREGISTRATION.md`: among statistically
+Rule 2 of `bench/irace/README.md`: among statistically
 indistinguishable configurations the **simpler** one is chosen — fewer
 heuristics enabled, then lower total effort, because "fewer heuristics is less
 to defend and a tie is a legitimate result".
@@ -275,8 +275,8 @@ cannot clamp onto each other.
 * **"Keep the incumbent on a null" needs an incumbent.** Before a release,
   every configuration is a candidate; a default that merely happens to be in
   the tree is not an incumbent and does not defeat a tie-break.
-* **A pre-registered tie-break is only worth having if it is applied when it
-  bites.**
+* **A tie-break fixed in advance is only worth having if it is applied when
+  it bites.**
 
 ## Scope limits a paper must state
 

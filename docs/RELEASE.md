@@ -332,10 +332,12 @@ from our logs. That is a materially weaker claim, and it is weaker *because*
 the runs are 16-worker and non-deterministic — re-running never reproduces a
 log, only a result.
 
-What stands in for it: `bench/headline/` carries the aggregated tables, the
-paired statistics and `PROVENANCE.md` (the generated provenance — machine,
-commit, patch version, per-config binary and observed worker count), and
-`docs/REPRODUCIBILITY.md` carries the stage-by-stage recipe. The archive is
+What stands in for it: `bench/headline/` carries the aggregated tables and the
+paired statistics, and `docs/REPRODUCIBILITY.md` carries the stage-by-stage
+recipe. The generated provenance — machine, commit, patch version, per-config
+binary and observed worker count — lives in the archive's own `PROVENANCE.md`,
+which is built and read at release time even when the archive is not
+deposited. The archive is
 still **built and verified** as a release step, because `REGENERATE.sh` proving
 that every table re-derives from the logs is a check on our own arithmetic
 whether or not anyone else sees it. It just stays local.

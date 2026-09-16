@@ -158,7 +158,7 @@ magnitude, but wins twice as often. The reading: dropping Scylla and cutting
 total effort from 29.85 to 6.78 costs nothing and helps slightly and often, by
 amounts too small to move an SGM.
 
-## Deviations from the pre-registration, stated
+## Deviations from the specified design, stated
 
 **One seed, not the three this issue asks for.** Seed 0 was run as a gate and
 the campaign stopped there.

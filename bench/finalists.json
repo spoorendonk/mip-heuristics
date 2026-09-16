@@ -1,5 +1,5 @@
 {
-  "_comment": "The #107 finalists, per PREREGISTRATION.md section 4: the scalarised winners across the lambda sweep, one clearly cheaper, and the incumbent. Efforts and patiences are the eight numbers a configuration is; `scylla` is 0 in every searched finalist because it is absent from all 14 survivors at all three cost weights. `confirm: false` marks a selection that is recorded but not run in the confirmation stage; see its `excluded_because`.",
+  "_comment": "The finalists, per bench/irace/README.md section 4: the scalarised winners across the lambda sweep, one clearly cheaper, and the incumbent. Efforts and patiences are the eight numbers a configuration is; `scylla` is 0 in every searched finalist because it is absent from all 14 survivors at all three cost weights. `confirm: false` marks a selection that is recorded but not run in the confirmation stage; see its `excluded_because`.",
   "finalists": {
     "A-fj-only": {
       "source": "lambda 1/600 selection (simplicity tie-break over 6 survivors); the clearly cheaper arm, total effort 0.16",

@@ -7,11 +7,10 @@
 #   bench/run_irace.sh status           what has finished
 #
 # The objective, the lambda sweep, the selection rule and the limitations are
-# fixed in bench/irace/PREREGISTRATION.md and were signed off before the first
-# experiment ran.  This script only executes what that file commits to; it
-# decides nothing.  If you find yourself wanting to change a setting here,
-# change the pre-registration first and re-sign it, or the run is no longer
-# the one that was registered.
+# fixed in bench/irace/README.md, ahead of the runs.  This script only executes
+# what that file commits to; it decides nothing.  If you find yourself wanting
+# to change a setting here, change that file first — and then the search has to
+# be re-run, because its output is no longer scored by what produced it.
 #
 # Resumability: irace writes its state to `irace.Rdata` in the run's own
 # directory and `--recovery-file` resumes from it, so a killed chunk continues
@@ -43,7 +42,7 @@ RESULTS="${IRACE_RESULTS:-$REPO/bench/results/irace}"
 # 600 s limit, and one octave either side.  The *family* of resulting
 # configurations is the deliverable, not the middle one alone.
 # Ordered with the **derived** value first, not ascending.  `1_600` is
-# `g(0)/T` at the campaign's 600 s limit — the value the pre-registration
+# `g(0)/T` at the campaign's 600 s limit — the value bench/irace/README.md
 # derives rather than brackets — so if a window ends before all three finish,
 # the completed one is the one that matters.  The other two sit an octave
 # either side and answer a different question (is the selection sensitive to
@@ -62,7 +61,7 @@ export R_LIBS_USER="${R_LIBS_USER:-$HOME/R/x86_64-pc-linux-gnu-library/4.3}"
 # Deployment settings.  `threads` is deliberately NOT pinned: the four budgets
 # are not worker-count invariant (FJ's is per worker, the other three per
 # dispatch), so the search has to run at the count #108 will use, which is
-# HiGHS's own default.  See the pre-registration's limitations.
+# HiGHS's own default.  See bench/irace/README.md section 5.
 export MIP_HEURISTICS_BINARY="${MIP_HEURISTICS_BINARY:-$REPO/build/bin/highs}"
 export RUN_TARGET_TIME_LIMIT="${RUN_TARGET_TIME_LIMIT:-60}"
 export RUN_TARGET_NO_SOLUTION_PENALTY="${RUN_TARGET_NO_SOLUTION_PENALTY:-2.0}"

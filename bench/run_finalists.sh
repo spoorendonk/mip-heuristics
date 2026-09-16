@@ -10,8 +10,8 @@
 #   bench/run_finalists.sh status
 #
 # The finalists are `bench/finalists.json`, and the selection rule that
-# produced them is fixed in `bench/irace/PREREGISTRATION.md`. This script
-# executes; it chooses nothing.
+# produced them is fixed in `bench/irace/README.md`. This script executes; it
+# chooses nothing.
 #
 # ── why two stages, and why the second is not optional ──────────────────────
 #
@@ -22,14 +22,13 @@
 # is directly comparable with the search and cheap: 143 instances at seconds
 # each.
 #
-# `confirm` runs on `bench/instances_confirm.txt` -- a stratified 20-instance
-# subset of the tuning set, not the whole of it.  That is a deviation from the
-# pre-registration and is recorded there as a dated amendment, signed before
-# any confirmation run: the full stage costs ~9.7 h per finalist (measured),
-# the design is paired so instance difficulty cancels, and reduced power
-# resolves into the "indistinguishable -> simpler" clause the selection rule
-# already carries.  n=20 is a starter; extend with CONFIRM_INSTANCES and
-# record the extension in the amendment.
+# `confirm` runs on a stratified subset of the tuning set, not the whole of
+# it -- `bench/instances_confirm48.txt` by default.  The rationale is in
+# bench/irace/README.md section 4: the full stage costs ~9.7 h per finalist
+# (measured), the design is paired so instance difficulty cancels, and reduced
+# power resolves into the "indistinguishable -> simpler" clause the selection
+# rule already carries.  Extend with CONFIRM_INSTANCES and record the
+# extension there.
 #
 # `confirm` answers a different question from `heldout`, and no amount of
 # screening can answer it. The screen scores presolve-exit gap; the campaign scores primal

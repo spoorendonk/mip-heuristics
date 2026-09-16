@@ -140,9 +140,9 @@ HiGHS's default worker count (**16 workers**), CPU build, one seed.
 
   The derived vector — fj 0.5665, fpr 12.2559, local_mip 13.9607, scylla 3.0680 — is a **search centre for stage 3, not a shipped default**: 97–99% of every heuristic's effort lands after its last incumbent improvement, and the report brackets each median against a censoring-aware upper end (e.g. fpr 12.26 .. 93.71).
 
-**Stage 3 — the joint search.** irace over eight real parameters (four efforts, four patiences), plus two discrete switches per heuristic so a log-sampled real can reach exactly `0` in both senses. Domains are per-heuristic and centred on stage 2's knees. The objective is **pre-registered** in `bench/irace/PREREGISTRATION.md`: `cost = gap + lambda * tau`, where `gap` is the primal gap of the presolve-exit incumbent (capped at 1, penalty 2.0 when nothing is found) and `tau` is the heuristics' own wall time. 3000 experiments per `lambda`, `lambda` in {1/1200, 1/600, 1/300}, on the 90 tuning instances, presolve-only at 60 s, seed 1. A second, constrained search forces all four heuristics on.
+**Stage 3 — the joint search.** irace over eight real parameters (four efforts, four patiences), plus two discrete switches per heuristic so a log-sampled real can reach exactly `0` in both senses. Domains are per-heuristic and centred on stage 2's knees. The objective is fixed ahead of the runs in `bench/irace/README.md`: `cost = gap + lambda * tau`, where `gap` is the primal gap of the presolve-exit incumbent (capped at 1, penalty 2.0 when nothing is found) and `tau` is the heuristics' own wall time. 3000 experiments per `lambda`, `lambda` in {1/1200, 1/600, 1/300}, on the 90 tuning instances, presolve-only at 60 s, seed 1. A second, constrained search forces all four heuristics on.
 
-  Scylla is absent from all 14 free-search survivors at every cost weight. Five finalist arms were then scored at the campaign metric — primal-integral SGM at 600 s — on a 49-instance confirmation subset of the tuning set, and the surviving candidates on a **48-instance held-out set disjoint from the tuning 90**. The pre-registered tie-break (fewer heuristics, then lower total effort) selects `B'-mix-cheapest`: fj 0.3317, fpr 3.161, local_mip 3.2865, scylla 0. Held-out, paired against the four-heuristic vector, `B'` is **12.6% better** (ratio 0.874, 95% CI [0.782, 0.977], 31 win / 7 tie / 10 loss) at under a quarter of its total effort — 6.78 against 29.85.
+  Scylla is absent from all 14 free-search survivors at every cost weight. Five finalist arms were then scored at the campaign metric — primal-integral SGM at 600 s — on a 49-instance confirmation subset of the tuning set, and the surviving candidates on a **48-instance held-out set disjoint from the tuning 90**. The tie-break (fewer heuristics, then lower total effort) selects `B'-mix-cheapest`: fj 0.3317, fpr 3.161, local_mip 3.2865, scylla 0. Held-out, paired against the four-heuristic vector, `B'` is **12.6% better** (ratio 0.874, 95% CI [0.782, 0.977], 31 win / 7 tie / 10 loss) at under a quarter of its total effort — 6.78 against 29.85.
 
   A methodological finding travels with it. At the measured paired sd of 0.44–0.57, n=48 resolves a 20.6% difference at 80% power and the whole 233-instance campaign at three seeds would resolve 5.1%, while the differences among the mix arms on the **tuning-set** confirmation are 0–8% — not merely unresolved there but **unresolvable with this benchmark at any affordable n**. What separates `B'` is the out-of-sample comparison above, and what retires Scylla is not the metric at all but per-heuristic attribution: **zero** incumbent improvements against FJ's 24763 and LocalMIP's 4651 over a 233-instance tree. An objective that scores outcomes cannot retire a component.
 
@@ -235,9 +235,8 @@ Ours find the first feasible solution on 135 of 214 instances against vanilla's
 > **Reproducing.** [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) has the
 > stage-by-stage recipe. The runs are 16-worker and therefore non-deterministic
 > by design, so a re-run reproduces the *result*, not the logs. The campaign's
-> logs are not published; the aggregated tables, the paired statistics and the
-> generated provenance record are tracked in
-> [`bench/headline/`](bench/headline/).
+> logs are not published; the aggregated tables and the paired statistics are
+> tracked in [`bench/headline/`](bench/headline/).
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
