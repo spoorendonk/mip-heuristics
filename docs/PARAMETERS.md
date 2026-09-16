@@ -2108,13 +2108,11 @@ effort option in `heuristics::entry_enabled`, through the one
 `HeuristicConfig::enable_switch` a chain entry names, so `false` and
 `mip_heuristic_fj_effort = 0` do the same thing by two routes.
 
-It used to gate two different FJs depending on `mip_heuristic_suite`:
-at `suite=off` upstream's own standalone single-threaded call site, and
-our parallel FJ everywhere else. #167 retired both the option and that
-call site — the rationale for keeping it, that `off` should run exactly
-what an unpatched binary runs, stopped holding once #139 corrected two
-defects in the FeasibilityJump implementation both call sites share.
-A patched build now runs our FJ or none.
+Upstream's own standalone single-threaded FJ call site never fires on a
+patched build: a patched binary runs our FJ or none. Keeping that call
+site alive would mean "our heuristics disabled" ran a *different* FJ from
+every other configuration, and it would run the uncorrected one, since the
+patch's two FeasibilityJump corrections are what both call sites share.
 
 So an options file carrying all five effort options at `0` plus
 
@@ -2218,10 +2216,11 @@ options documented above):
   — a pure function nothing called would pass either way.
 **There is no separate selector option.** A heuristic runs iff its own
 `mip_heuristic_<name>_effort` is above zero, so all thirty-two subsets of
-the five are expressible as the zero-pattern of five doubles. That has
-been the encoding #107's search used since #106 made a zero budget worth
-exactly what omitting a heuristic is worth; #167 removed the second
-spelling, `mip_heuristic_suite`, a string HiGHS does not validate.
+the five are expressible as the zero-pattern of five doubles — the
+encoding the tuning search uses, and the reason a mistyped selection is an
+exit-255 refusal rather than a plausible-looking results tree: HiGHS
+name-checks and range-checks a double, where it would not validate a
+free-form string.
 
 The single place an option becomes a decision is
 `heuristics::entry_enabled` in `src/mode_dispatch.cpp`. `run_sequential`
@@ -2232,12 +2231,11 @@ the shared CSC transpose. A skipped heuristic emits **no `[Sequential]` /
 presolve heuristics rather than four. `heuristics::any_enabled` is the one
 export, for the patched `printSolutionSourceKey`.
 
-**`fpr_lp` has had its own option since #164** rather than following
-presolve FPR's selector bit, and reads it in `fpr_lp::run`. **A
-configuration running presolve FPR does not imply `fpr_lp`**: the two are
-sized and switched independently. What that buys is the row that had no
-spelling before — presolve FPR with the dive-time variant off — so the
-contribution of either half can be measured on the shipped binary; the
+**`fpr_lp` has its own option**, read in `fpr_lp::run`. **A configuration
+running presolve FPR does not imply `fpr_lp`**: the two are sized and
+switched independently, which is what makes "presolve FPR with the
+dive-time variant off" expressible and the contribution of either half
+measurable on the shipped binary; the
 coupling it replaces meant a per-heuristic attribution run of `fpr` left a
 second FPR variant running at dive time that no option of that run sized.
 A dive-time result measured with only LocalMIP or only Scylla enabled

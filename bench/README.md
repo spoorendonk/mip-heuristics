@@ -64,14 +64,14 @@ machine that ran the probe.
 
 ## Where the results live
 
-Four tracked directories, one per stage of the closeout campaign. Each carries
-its own README with the findings, the caveats, and the commands that regenerate
-every file in it from a results tree.
+Four tracked directories, one per stage of the campaign. Each carries its own
+README with the findings, the caveats, and the commands that regenerate every
+file in it from a results tree.
 
 | directory | what it settles |
 |---|---|
 | `ablation_effort/` | per-heuristic effort and patience, measured with each heuristic **alone** |
-| `ablation_search/` | the joint search over mix, effort and patience — and the reversal that corrected its first reading |
+| `ablation_search/` | the joint search over mix, effort and patience, and the finalist confirmation that selected the shipped vector |
 | `ablation_fprlp/` | whether `fpr_lp` earns a share of upstream's RENS/RINS envelope (it does not) |
 | `headline/` | the shipped configuration against vanilla over the full 233, plus the generated provenance record |
 
@@ -107,15 +107,14 @@ and is not deposited. See `docs/RELEASE.md`.
   incumbent rows and no ledger, which is why probe membership follows the
   incumbent and never the trace.
 * **Zero effort has two causes, and the line says which.** A dispatch whose
-  sequential setup found the deadline already passed never searched (#117),
-  and used to book an `effort=0 found=0` line indistinguishable from one that
-  searched and produced nothing. `abandoned_setup=<0|1>` (#119) separates
-  them, so the three shapes a consumer must tell apart stay apart: no
-  `[Heur]` line is a killed run, `abandoned_setup=1` is a bail, and the field
-  absent or `0` is a dispatch that ran. Absent means a log written before
-  #119 — `HeuristicSample.abandoned_setup` is `None` there, and
-  `analyze_presolve_probe.py` treats that as "ran", which is what makes an
-  archived tree classify exactly as it did before.
+  sequential setup found the deadline already passed never searched, and books
+  an `effort=0 found=0` line that would otherwise be indistinguishable from one
+  that searched and produced nothing. `abandoned_setup=<0|1>` separates them,
+  so the three shapes a consumer must tell apart stay apart: no `[Heur]` line
+  is a killed run, `abandoned_setup=1` is a bail, and the field absent or `0`
+  is a dispatch that ran. Absent means a log written before the field existed —
+  `HeuristicSample.abandoned_setup` is `None` there, and
+  `analyze_presolve_probe.py` treats that as "ran".
 * **A config name carries no budget.** Every heuristic runs at its shipped
   default; moving one for a run goes through `--extra-options`.
 

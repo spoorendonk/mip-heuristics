@@ -159,16 +159,16 @@ Two consequences worth internalising:
 - **Bump `PATCH_VERSION` whenever you change inserted text.** The script stamps
   `mip-heuristics patch version N` into `HighsOptions.h` and rejects any tree
   carrying our options without the current marker. That sentinel is what turns
-  a silent mis-patch into a clear configure error. There is a second probe
-  listing identifiers the script *used* to insert and no longer does, for trees
-  that predate the marker; add to it whenever the script stops inserting a name.
+  a silent mis-patch into a clear configure error. A second probe names
+  identifiers the script inserts into markerless files, for trees the marker
+  cannot speak for; keep it current when an inserted call site changes.
 - **CI's dependency cache key includes the patch script**, not just the file
   that pins the HiGHS tag, for exactly this reason. A cache entry keyed on the
   tag alone would restore a stale-layout tree that the sentinel then rejects.
 
-All nineteen of the script's failure messages now end in one shared
-`CLEAN_REBUILD` string that names this section and carries the command, rather
-than nineteen copies free to drift apart.
+Every failure message the script emits ends in one shared `CLEAN_REBUILD`
+string that names this section and carries the command. Add to that string
+rather than writing a new copy of it.
 
 ## Benchmarking
 
@@ -189,16 +189,12 @@ Three rules that are easy to get wrong:
   `threads=1` collapses every heuristic to a single worker: it is the right
   setting for reproducibility and the wrong one for a throughput benchmark, and
   it is not what the recorded numbers were measured at.
-- **`--dev-log` is a different run, not a free extra.** The line that made it
-  ruinous — FeasibilityJump's per-bump `Reached a local minimum.`, 99.8% of a
-  traced run's volume — is dropped by the patch. What remains at
-  `log_dev_level=3` is FJ's periodic table plus our own two lines: a few per
-  cent at campaign time limits, more on very short solves where a fixed
-  logging cost dominates. That is small, not nil, and it lands in the
-  FeasibilityJump phase, which is the window the attribution numbers measure.
-  Use it for attribution runs and leave it off for headline timings. The
-  retired 1.1–4.4x figure was taken at a 10 s limit and does not describe a
-  campaign run.
+- **`--dev-log` is a different run, not a free extra.** At `log_dev_level=3` a
+  run pays FJ's periodic table plus our own two lines: a few per cent at
+  campaign time limits, more on very short solves where a fixed logging cost
+  dominates. That is small, not nil, and it lands in the FeasibilityJump
+  phase, which is the window the attribution numbers measure. Use it for
+  attribution runs and leave it off for headline timings.
 
 ## Python (`bench/`)
 

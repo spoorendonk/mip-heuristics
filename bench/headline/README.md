@@ -22,16 +22,13 @@ Results trees are gitignored; everything needed to read the result is here.
 
 ## Configuration
 
-The arm is the **shipped binary at default options**. Its `.opts` carries only
-`mip_heuristic_suite = all` and `random_seed = 0` — no `--extra-options` at
-all, so this measures what a user gets rather than a hand-assembled vector.
-(That option was retired in #167; a re-run today writes a `.opts` carrying the
-seed alone, because the `all` config now sets nothing. The configuration is the
-same one — every heuristic at its shipped default — and the defaults below are
-what it means either way.)
-The defaults are `B'-mix-cheapest` (#107): fj 0.3317, fpr 3.161, local_mip
-3.2865, **scylla 0 (disabled)**, patiences 0 / 0.3372 / 3.1943 / 0, with
-`mip_heuristic_fpr_lp_effort = 0` (#165).
+The arm is the **shipped binary at default options**. Its `.opts` carries the
+seed and nothing else — the `all` config sets no option, and no
+`--extra-options` is passed — so this measures what a user gets rather than a
+hand-assembled vector. The defaults are `B'-mix-cheapest`
+(`bench/ablation_search/`): fj 0.3317, fpr 3.161, local_mip 3.2865,
+**scylla 0 (disabled)**, patiences 0 / 0.3372 / 3.1943 / 0, with
+`mip_heuristic_fpr_lp_effort = 0` (`bench/ablation_fprlp/`).
 
 `mip_heuristic_effort` is at upstream's own default of 0.05 and is asserted at
 configure time, so the B&B dive-heuristic budget — what RENS and RINS draw
@@ -86,10 +83,8 @@ estimate is likely overstated.
 pedantic detail.* A minimum detectable log effect `d = sqrt(8 sd^2 / n)` has
 two percentage readings — `exp(d) - 1 = 21.3%`, how much bigger vanilla is than
 patched, and `1 - exp(-d) = 17.5%`, how much smaller patched is than vanilla.
-An earlier revision of this file quoted the 21.3% beside an observed 16.4%
-*decrease*, which compares two different baselines and made the margin look
-like five points rather than one. The direction of the conclusion is unchanged
-and arguably strengthened.
+Quoting the 21.3% beside an observed 16.4% *decrease* compares two different
+baselines and makes the margin look like five points rather than one.
 
 ## Statistical conventions, stated rather than inherited
 
@@ -130,8 +125,8 @@ effect rather than noise.
 **That does not make this a paper about parallelism.** Our FJ differs from
 vanilla's in three confounded ways: 16 opportunistic workers against one call,
 a per-worker budget that totals ~5x vanilla's single FJ allowance, and two
-corrected upstream defects (#139 — the negative-coefficient jump value and the
-sign of the objective term in the move score). Vanilla runs its own FJ, so the
+corrected upstream defects (the negative-coefficient jump value and the sign of
+the objective term in the move score). Vanilla runs its own FJ, so the
 comparison already includes FJ-vs-FJ; separating the three is not attempted.
 
 ## Attribution
@@ -148,10 +143,10 @@ Ours find the first feasible solution on 135 of 214 instances against vanilla's
 
 ## The second arm: does the simplification cost anything?
 
-`all-prev-vector` is the four-heuristic vector that shipped before #107,
-measured over the same 233 against the same baseline — so this is a
-233-instance paired comparison of the two patched configurations, at ~10%
-resolution against the 20.6% at which #107's n=49 comparison returned a null.
+`all-prev-vector` is the four-heuristic vector Ablation B replaced, measured
+over the same 233 against the same baseline — so this is a 233-instance paired
+comparison of the two patched configurations, at ~10% resolution against the
+20.6% at which Ablation B's n=49 tuning-set comparison returned a null.
 
 ```
 B' / prev-4-heuristic   n=233  ratio 0.972  CI [0.898, 1.052]  t=-0.71  p=0.48
@@ -195,16 +190,11 @@ turns on the width, and two further passes (~48 h) would at best have moved a
 the informative spend — that is the smallest `k` from which `f` can be
 estimated at all — and it was not made.
 
-An earlier revision of this section asserted the opposite, that the floor was
-22-24% and "never reaches" the observed effect. That was wrong twice: it used
-the sd of a different arm (0.958, whose observed effect was 15.1%) and read the
-detectable effect on the increase side while comparing it with a decrease.
-
-**Two binaries, one overwritten.** `all-prev-vector` was produced by the
-PATCH_VERSION 23 build; `all` by PATCH_VERSION 24. They differ in the default
-option values (and comments), which is the thing under comparison. The
-PATCH_VERSION 23 binary itself was not retained — its configuration is
-recoverable from commit `7056a0f` and its logs carry the patch marker.
+**Two binaries.** `all-prev-vector` was produced by the PATCH_VERSION 23
+build; `all` by PATCH_VERSION 24. They differ in the default option values,
+which is the thing under comparison. The PATCH_VERSION 23 binary was not
+retained — its configuration is recoverable from commit `7056a0f`, and its logs
+carry the patch marker.
 
 **Both patched arms ran at default options**, so their `.opts` files are
 byte-identical and the directory name is the only thing distinguishing them.

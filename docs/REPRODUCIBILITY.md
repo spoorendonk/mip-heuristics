@@ -92,10 +92,6 @@ presolve chain finishes long inside any usable limit — but it does mean a
 measurement run at a large effort option must be given a limit the chain does
 not reach, or it measures the machine.
 
-A deterministic epoch-gated parallel mode used to exist and was removed in the
-closeout: it carried substantial complexity, it was not the production mode, and
-`threads=1` already provides the reproducibility contract without a new option.
-
 ## Why `threads=1` is not the benchmark configuration
 
 It collapses each heuristic to a single worker. That is the right setting for a
@@ -114,18 +110,10 @@ in a benchmark options file. Let HiGHS use its default.
 
 ## Exact mipfeas reproduction
 
-The recorded mipfeas table (233 MIPLIB 2017 instances, 600 s) is in
-`README.md`, together with the provenance caveat that matters most: **it cannot
-be reproduced on `HEAD`.** It was measured at `mip_heuristic_preset=all_opp` —
-FJ + FPR + LocalMIP + `fpr_lp` with Scylla deliberately excluded — `fpr_lp`
-because it followed the FPR bit at the time. That composition is expressible
-again as the config `fj+fpr+local_mip+fpr_lp` (#112, re-spelled by
-#164 once `fpr_lp` gained its own token), having been unnameable while the
-option took a single value, but the binary is gone:
-the numbers predate the runner cleanup. Treat the row as the last full-campaign
-result, not as a claim about `HEAD`.
-
-What *is* reproducible is the protocol.
+The recorded mipfeas result (233 MIPLIB 2017 instances, 600 s) is in
+`README.md`. The runs behind it are 16-worker and therefore non-deterministic by
+design, so what a re-run reproduces is the *result*, not the logs. What is
+reproducible exactly is the protocol.
 
 **Solver version.** HiGHS `v1.15.1`, fetched at configure time by
 `cmake/FetchHiGHS.cmake` and patched from `third_party/highs_patch/`.
@@ -133,17 +121,11 @@ What *is* reproducible is the protocol.
 **Reference objectives.** `bench/miplib2017-v36.solu`, a verbatim copy of
 upstream MIPLIB 2017's current solution file
 (<https://miplib.zib.de/downloads/miplib2017-v36.solu>, retrieved 2026-08-20).
-It replaced a bundled `v22` copy that marked `supportcase22` `=inf=` while
-`bench/instances_mipfeas.txt` counted it among the 233 feasible instances —
-upstream has since recorded it feasible at `=best= 110.0`. Over the 233 mipfeas
-instances the refresh moves exactly three entries: `supportcase22`, plus
-corrected optima for `neos-3754480-nidda` (12941.738 → 12939.754) and
-`binkar10_1` (6742.200 → 6741.380). The recorded README table predates the
-refresh, which is one more reason it is a historical row rather than a claim
-about `HEAD`. Do **not** pin an intermediate version to resolve the
-`supportcase22` question: `v20`–`v35` carry `=opt= 111.0`, which upstream
-itself retracted when a solution of 110 was submitted, and a reference worse
-than achievable yields negative primal gaps.
+Do **not** pin an intermediate version: `v20`–`v35` carry `=opt= 111.0` for
+`supportcase22`, which upstream itself retracted when a solution of 110 was
+submitted, and a reference worse than achievable yields negative primal gaps.
+`v36` records it feasible at `=best= 110.0`, which is what
+`bench/instances_mipfeas.txt` counts it as.
 
 An instance whose solution-file tag asserts no finite objective (`=inf=`,
 `=unbd=`) is excluded from every table by `bench/analyze_results.py`, with the
@@ -199,8 +181,8 @@ budget of its own, so every heuristic it names runs at its shipped default. To m
 run, pass `run_benchmark.py --extra-options mip_heuristic_<name>_effort=<V>`.
 
 ```bash
-# the headline: the selected configuration at three seeds, against vanilla
-MIPFEAS_CONFIGS="fj+fpr+local_mip+fpr_lp vanilla" MIPFEAS_SEEDS="0 1 2" \
+# the headline: the shipped configuration at three seeds, against vanilla
+MIPFEAS_CONFIGS="all vanilla" MIPFEAS_SEEDS="0 1 2" \
   bench/run_mipfeas.sh next 10
 ```
 
@@ -290,35 +272,41 @@ with each generated file recording its own `Regenerate with:` line.
 
 `bench/run_presolve_probe.sh` is `run_mipfeas.sh` with the probe environment, so
 it chunks and resumes the same way — `next <hours>` overnight, `status` to check
-in. The launcher *is* the configuration: every heuristic at an effort that
-cannot bind with its patience gate at 0 (which means no gate),
-`mip_heuristic_presolve_only`, and a 60 s per-run cap the harness enforces as a
-wall-clock kill.
+in. The launcher *is* the configuration: every heuristic at effort `1e6` (the
+option's ceiling, a budget no run inside the cap can reach), every patience gate
+at `0` (which means no gate), `mip_heuristic_presolve_only`, `log_dev_level=3`,
+and a **30 s** per-run cap the harness enforces as a wall-clock kill as well as
+through `time_limit` — HiGHS checks its clock between work units, and an
+instance that does not return from its own presolve never looks at it. With both
+retirement conditions disabled no worker ever retires, so the wall clock is the
+single stopping rule, the same one for all four heuristics on every instance.
 
 ```bash
-bench/run_presolve_probe.sh filter next 8      # the instance screen
-python3 bench/analyze_presolve_probe.py bench/results/probe/filter \
-    --informative-output bench/results/probe/informative.txt
-bench/run_presolve_probe.sh trace next 4       # the trajectories
-bench/run_presolve_probe.sh trace-low next 4   # the same, one decade down
+bench/run_presolve_probe.sh preprobe next 8    # the experiment, 233 x 4 arms
+bench/run_presolve_probe.sh preprobe status    # progress
+bench/derive_from_probe.sh                     # every artifact, one command
 ```
 
-It runs each heuristic **alone**, plus the chain: `run_sequential` is
-sequential, so a wall-clock cap truncates the chain's *tail*, and at effort 1.0
-with the gates off FJ's budget is large enough to consume the whole cap. On a
-12-instance pilot the chained run alone would have filed three instances as
-"produced nothing at a generous configuration" that a different heuristic
-cracks. The informative set is therefore the union over `(single, seed)`, and
-the chained arm is kept because it is the only one that measures the chain
-interaction.
+It runs each heuristic **alone**, and no chained arm: `run_sequential` is
+sequential, so a wall-clock cap truncates the chain's *tail*, and at a budget
+that cannot bind the first heuristic takes the entire cap on every instance — a
+chained probe would report "produced nothing" for instances where three of the
+four never executed. Membership in the informative set is the union over the
+four singles, which dominates every subset: a heuristic that cracks an instance
+inside some mix also cracks it running alone, earlier and with the whole cap to
+itself.
 
-The filter pass runs at HiGHS's own thread default, which is the regime the
-search runs in; the trace passes pin `threads=1` and `log_dev_level=3`, because
-a trajectory is an effort *timeline* and multi-worker interleaving makes it
-non-reproducible. `trace-low` exists to measure one confound: `attempt_cap` is
-derived from the total budget, so a trajectory taken at effort 1.0 does not
-exactly reproduce one taken at 0.1, and the two are compared over the effort
-range they share.
+Two controls answer questions about the experiment rather than about the
+instances, and both run over a subset:
+
+| mode | what it controls for |
+|---|---|
+| `budget` | the same probe at effort 1.0, where the budget binds on small models. `attempt_cap` is derived from the total budget, so a trace at one budget does not exactly reproduce another — and this also says whether membership moved |
+| `serial` | the same probe at `threads=1`. The multi-worker regime is the one the search runs in, so it is what the experiment uses; this says whether its quantiles are an artifact of worker interleaving |
+
+Read a finished tree with `bench/analyze_presolve_probe.py`, never with
+`analyze_results.py`: a presolve-only run computes no dual bound, so its gap is
+meaningless.
 
 
 ## Reproducing the campaign, stage by stage
@@ -396,9 +384,9 @@ live native site would double-run it.
 It is **not** a vanilla measurement and must not be used as one. The binary is
 still the patched one, and the patch modifies FeasibilityJump itself —
 visibly so already at `log_dev_level=3`, where the per-bump `Reached a local
-minimum.` line is gone, and in the search itself since #139 corrected two
-upstream FeasibilityJump defects, the negative-coefficient jump value and the
-objective term's sign. A
+minimum.` line is absent, and in the search itself, where the patch corrects
+two upstream FeasibilityJump defects — the negative-coefficient jump value and
+the objective term's sign. A
 vanilla baseline is always a **separately built unpatched binary** of the tag
 in `cmake/FetchHiGHS.cmake`, and `bench/run_benchmark.py` enforces it: the
 `vanilla` config requires `--vanilla-binary`, there is no fallback to the
@@ -435,34 +423,6 @@ quietly included it would be the false one. That HiGHS's own FeasibilityJump sti
 and still charges its effort is pinned separately, by
 `tests/test_native_fj.cpp` — presence and accounting, not bit-identity.
 
-> **Results produced with the older `mip_heuristic_preset=off` are not
-> comparable.** That value did *not* restore native FeasibilityJump, so an old
-> `preset=off` row is the ablation minus FeasibilityJump rather than the
-> ablation. Any such row has to be re-run.
-
-## The Thompson-sampling negative result
-
-The project once selected among heuristics with a Thompson-sampling portfolio.
-It is an original contribution and it **did not improve results**, so it was
-removed from the mainline rather than kept as dead weight. It is retained as a
-documented negative result.
-
-The implementation is in git history, not in a branch or an archive tag:
-
-- Last commit containing it: **`00c47c0`** (`src/thompson_sampler.cpp`,
-  `src/thompson_sampler.h`).
-- Removed by: **`d6fa834`** — *"refactor: delete the portfolio, ThompsonSampler
-  and bandit runner"*.
-
-```bash
-git show 00c47c0:src/thompson_sampler.cpp
-git checkout 00c47c0 -- src/thompson_sampler.cpp src/thompson_sampler.h  # to build against it
-```
-
-Anyone reproducing the negative result should start from `00c47c0` as a whole
-tree; the sampler does not drop into `HEAD`, whose runner contract and option
-surface both changed underneath it.
-
 ## Instrumentation caveat
 
 The per-heuristic instrumentation needs `log_dev_level=3`, which
@@ -476,11 +436,9 @@ own two lines: a few per cent of wall time at campaign limits, and
 proportionally more on very short solves, where a fixed logging cost dominates
 the solve it is timing.
 
-No ratio has been measured at a campaign time limit. The figure this paragraph
-used to quote — 97-750x the log volume and 1.1-4.4x the wall time — is retired
-twice over: it predates the fix, and it was taken on five bundled instances at
-a **10 s** limit, where `egout` went 0.048 s → 0.212 s against a 48 ms solve.
-A fixed cost against a 48 ms solve says nothing about a 600 s one.
+No ratio has been measured at a campaign time limit, and a ratio taken on a
+short solve does not transfer: a fixed logging cost against a 48 ms solve says
+nothing about a 600 s one.
 
 **Attribution runs and headline-timing runs are therefore different runs.** Do
 not read a timing number off a `--dev-log` tree, and do not expect attribution
