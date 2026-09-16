@@ -67,7 +67,7 @@ def test_normalize_log_drops_the_patch_marker_and_wall_clock():
 def test_normalize_log_drops_the_options_echo():
     """The patched run is given an option the vanilla run cannot have."""
     patched = render().replace(
-        "Solving report", 'Set option mip_heuristic_suite to "off"\nSolving report'
+        "Solving report", "Set option mip_heuristic_fpr_effort to 0\nSolving report"
     )
     assert normalize_log(patched) == normalize_log(render())
 

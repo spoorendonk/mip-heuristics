@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Evaluate one 8-parameter presolve heuristic configuration on one instance.
 
-`bench/run_benchmark.py` is config-**name** based: a name maps to one
-`mip_heuristic_suite` value and one results directory, every heuristic runs at
-its shipped default, and the output is a tree to be analysed later.  A
+`bench/run_benchmark.py` is config-**name** based: a name maps to one set of
+zeroed effort options and one results directory, every heuristic it names runs
+at its shipped default, and the output is a tree to be analysed later.  A
 configurator needs the opposite shape — a *parameter vector* in, a *single
 scalar* out, one instance at a time — so this module is that shape and nothing
 else.  It is the single definition of what a configuration means for the whole
@@ -20,9 +20,11 @@ limit, so `effort = 1.0` is one vanilla FJ budget and `patience < effort` reads
 on its face (#116).  **Effort 0 means the
 heuristic does not run**, so the fifteen non-empty subsets of the presolve chain
 plus `off` are exactly the zero-patterns of the four efforts; inclusion is not a
-separate dimension.  `suite_value` performs that reduction, naming in `mip_heuristic_suite`
-exactly the heuristics whose effort is strictly positive and emitting `off` when
-none is.
+separate dimension.  Since #167 that is not a reduction this module performs but
+the solver's own encoding: `mip_heuristic_suite` is gone and the effort option
+is both the budget and the selector, so `solver_options` writes the vector and
+nothing else.  `selection_label` builds a short name for it, for record
+filenames and diagnostics only.
 
 **It names only these four, so a target run leaves the dive-time `fpr_lp`
 off.**  That is a change of meaning from before #164 and is deliberate rather
@@ -208,9 +210,9 @@ from run_benchmark import (
     write_options_file,
 )
 
-# Chain order, as `kChain` in `src/mode_dispatch.cpp` spells it.  The suite
-# value lists heuristics in this order so one subset has exactly one spelling,
-# matching `run_benchmark.CONFIG_SUITES`.
+# Chain order, as `kChain` in `src/mode_dispatch.cpp` spells it.
+# `selection_label` lists heuristics in this order so one subset has exactly
+# one spelling, matching `run_benchmark.CONFIG_SELECTIONS`.
 HEURISTICS: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla")
 
 # The registered upper bound of all eight options, from `kEffortMax` in
@@ -304,24 +306,18 @@ class Parameters:
         return tuple(h for h in HEURISTICS if self.efforts[h] > 0.0)
 
 
-def suite_value(params: Parameters) -> str:
-    """The `mip_heuristic_suite` value implied by the zero-pattern.
+def selection_label(params: Parameters) -> str:
+    """A compact name for the zero-pattern: `fj,scylla`, or `off` for none.
 
-    This is where "effort 0 means the heuristic does not run" becomes true in
-    the sense #107 assumes, and it exists because the effort option alone did
-    not make it true: `mip_heuristic_fpr_effort = 0` still leaves `fpr` named
-    in the suite, and the suite value — not the effort — is what
-    `heuristics::effective_flags` reads.  Since #164 the dive-time `fpr_lp`
-    has its own token and its own effort option, so it is not named by any
-    value this builds and does not run in a target solve; see the module
-    docstring for why that is left as #107's call.
+    A *label*, not an option value.  Since #167 there is no selector option
+    to build — `solver_options` writes the five efforts and the solver reads
+    the zeros directly — so this exists only where a configuration needs a
+    short human-readable name: the record filename payload, and the advisory
+    message about a run that named heuristics and traced none.
 
-    `off` when no effort is positive, and that exact string is not cosmetic: the
-    patch compares `mip_heuristic_suite == "off"` verbatim in two places, so a
-    value that selected nothing without being that string would be a run with
-    no heuristic at all, HiGHS's own FJ included.  An empty value
-    or a trailing comma is worse still — an unrecognised token, which the
-    dispatcher warns about and then fails *open* to all four heuristics.
+    It names only the four presolve heuristics, so a target run leaves the
+    dive-time `fpr_lp` off; see the module docstring for why that is #107's
+    call rather than an oversight.
     """
     enabled = params.enabled
     return ",".join(enabled) if enabled else "off"
@@ -356,25 +352,25 @@ def solver_options(
     trajectory traces want it, the screen does not.  The module docstring has
     the measured cost of that choice and why it is still the right one.
     """
-    options: dict[str, str] = {"mip_heuristic_suite": suite_value(params)}
-    # Effort 0 for FJ has to disable *both* FeasibilityJump call sites, and this
-    # is the only option that reaches the other one.  At `suite=off` the patch
-    # hands HiGHS's own standalone FJ back — deliberately, so the ablation is
-    # of our heuristics alone — and that native call site emits no `[Heur]`
-    # line, because the patch's `heuristic_effort_used +=` inside HiGHS's
-    # `feasibilityJump()` logs nothing.  The all-zero vector therefore banked
-    # real FJ quality at tau = 0: free quality, zero measured cost, and `off`
-    # beating configurations that found objectives 28x better (markshare2: 375
-    # against 10512, scoring 1.000120 against 1.000000).  A search reachable
-    # from the initial uniform sample with probability 1/16 would have reported
-    # "disable all four heuristics" as its winner.
+    # No selector option beside the efforts.  #167 retired
+    # `mip_heuristic_suite`, so a zero effort *is* the exclusion and the
+    # zero-pattern #107 searches over is what the solver reads directly —
+    # the encoding this script used to have to translate into a suite string
+    # on every evaluation.
     #
-    # `false` gates the native site at `off` and ours everywhere else, so it is
-    # a no-op except at that corner — which is what keeps `off` a *scorable*
-    # point of the space rather than one that has to be excluded from it.
-    options["mip_heuristic_run_feasibility_jump"] = (
-        "true" if params.efforts["fj"] > 0.0 else "false"
-    )
+    # `mip_heuristic_run_feasibility_jump` is not written either, and its
+    # absence is the same change.  It used to be forced to `false` whenever
+    # FJ's effort was zero, because at `mip_heuristic_suite=off` the patch
+    # handed HiGHS's own standalone FJ call site back: the all-zero vector
+    # banked real FJ quality while charging no measured effort — free
+    # quality at tau = 0, with `off` beating configurations that found
+    # objectives 28x better (markshare2: 375 against 10512, scoring 1.000120
+    # against 1.000000).  A search reachable from the initial uniform sample
+    # with probability 1/16 would have reported "disable everything" as its
+    # winner.  #167 retired that call site at every configuration, so a zero
+    # FJ effort now means no FeasibilityJump on its own and the all-zero
+    # vector is an honestly scorable point of the space.
+    options: dict[str, str] = {}
     for name in HEURISTICS:
         options[f"mip_heuristic_{name}_effort"] = _format_effort(params.efforts[name])
     for name in HEURISTICS:
@@ -577,7 +573,7 @@ def run_tag(
     `--tag` to keep its own configuration and instance ids in the file names.
     """
     payload = "|".join(
-        [name, str(seed), suite_value(params)]
+        [name, str(seed), selection_label(params)]
         + [f"{h}={_format_effort(params.efforts[h])}" for h in HEURISTICS]
         + [f"{h}_patience={_format_effort(params.patiences[h])}" for h in HEURISTICS]
         # Only when it differs from the screen, so the tags a search produces
@@ -701,7 +697,7 @@ def score_result(
     wall_ms = heuristic_wall_ms(result)
     tau_s = wall_ms / 1000.0
     traced = sorted({s.name for s in result.heuristic_samples if s.phase == "presolve"})
-    suite = suite_value(params)
+    suite = selection_label(params)
     # A run that names heuristics but carries no `[Heur]` line has produced a
     # cost of zero for work it actually did, which is the cheapest possible
     # configuration and would win a race outright.  The realistic causes are an

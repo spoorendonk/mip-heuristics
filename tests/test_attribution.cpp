@@ -36,8 +36,9 @@
 namespace {
 
 // Solve gt2 with exactly one custom presolve heuristic enabled and
-// return the captured log.  `suite` is a single-heuristic
-// `mip_heuristic_suite` value.
+// return the captured log.  `selection` names that one heuristic;
+// `select_heuristics` zeroes every other heuristic's effort option, which
+// since #167 is what excluding one means.
 //
 // Both options go through `require_option`, which fails the test if the
 // name does not exist: HiGHS only returns `kError` for an unknown option,
@@ -47,14 +48,16 @@ namespace {
 std::vector<std::string> gt2_log_for(const char* suite) {
     return solve_capturing_log("gt2.mps", [&](Highs& h) {
         require_option(h, "log_dev_level", 3);
-        set_suite(h, suite);
-        // Unconditional, including on the suites that exclude Scylla: the
-        // suite value still decides what runs, so this only restores the
-        // ability of the `scylla` case to run its subject at all now that
-        // the shipped effort is 0.  Setting it on every case keeps the four
-        // arms differing in exactly one thing -- the suite -- which is what
-        // the negative cases below rely on.
+        // Order is load-bearing since #167: `select_heuristics` zeroes the
+        // effort of every heuristic the selection does not name, and the
+        // effort option is the selector, so raising Scylla's *first* lets
+        // that zeroing take it back out again on the arms that exclude it.
+        // Applied on every arm rather than only the `scylla` one so the
+        // four differ in exactly one thing — the selection — which is what
+        // the negative cases below rely on.  Scylla ships at effort 0, so
+        // without this its own arm would have no subject to run.
         enable_scylla(h);
+        select_heuristics(h, suite);
     });
 }
 
@@ -97,12 +100,11 @@ TEST_CASE("attribution: FJ-only run is credited with J", "[attribution]") {
 }
 
 // The negative direction: enabling one heuristic must not let another one
-// run.  This is what catches a suite-filter leak when the option surface
-// is collapsed to `mip_heuristic_suite` (#93) — a filter that silently
-// admits every arm still passes all four cases above.  `D` is checked
-// alongside the presolve codes because `fpr_lp` is gated on the FPR bit
-// (epic coupling E), so a leak that re-admits FPR re-admits the dive-time
-// heuristic too.
+// run.  This is what catches a leak in the selection filter — one that
+// silently admits every arm still passes all four cases above.  `D` is
+// checked alongside the presolve codes because `fpr_lp` is a heuristic of
+// ours like the other four, and a selection naming one presolve heuristic
+// must leave the dive-time one zeroed as well.
 TEST_CASE("attribution: FJ-only run emits no other custom-heuristic solution", "[attribution]") {
     const std::string codes = gt2_codes_for("fj");
     REQUIRE(codes.contains('J'));

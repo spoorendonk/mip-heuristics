@@ -138,7 +138,7 @@ TEST_CASE("presolve-only: with no heuristic enabled it reports no solution", "[p
     // looked.
     const SolveOutcome out = solve_outcome(kInstance, [](Highs& h) {
         require_option(h, "mip_heuristic_presolve_only", true);
-        set_suite(h, "off");
+        select_heuristics(h, "off");
         require_option(h, "mip_heuristic_run_feasibility_jump", false);
     });
 

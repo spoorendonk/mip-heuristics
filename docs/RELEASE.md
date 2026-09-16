@@ -5,7 +5,7 @@ maintainer can do v0.2.0 without reverse-engineering v0.1.0.
 
 This document is about *publishing*. It is not about reproducing a run —
 [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md) owns the reproducible recipe, what
-is deliberately not reproducible, the `mipfeas` protocol and what `suite=off` is
+is deliberately not reproducible, the `mipfeas` protocol and what the all-zero ablation is
 and is not — nor about the day-to-day gates, which
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) owns. Both are referenced below rather
 than reproduced. Two things are deliberately restated: the gate commands,
@@ -111,15 +111,16 @@ python3 bench/check_vanilla_equivalence.py \
     --vanilla-binary /path/to/unpatched/highs
 ```
 
-This compares the pure patch-overhead configuration — `mip_heuristic_suite=off`
-plus `mip_heuristic_run_feasibility_jump=false` on the patched binary, against
+This compares the pure patch-overhead configuration — every
+`mip_heuristic_<name>_effort` zeroed plus
+`mip_heuristic_run_feasibility_jump=false` on the patched binary, against
 an unpatched one with FeasibilityJump likewise disabled — so what it proves is
 that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP
 path. Every published row rests on that, so a release that has not re-proved it
 is publishing unverified numbers. Build the unpatched binary from the same
-HiGHS tag; see [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md#suiteoff-is-an-ablation-not-a-vanilla-baseline)
+HiGHS tag; see [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md#zeroing-every-heuristic-is-an-ablation-not-a-vanilla-baseline)
 for what the check compares, which two residual differences are accepted, and
-why `suite=off` on its own is an ablation rather than a vanilla baseline.
+why zeroing our heuristics is an ablation rather than a vanilla baseline.
 
 ## The artifact archive
 

@@ -135,7 +135,17 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # objective score positively.  The marker speaks for the tree, so a version-16
 # tree is rejected even though HighsOptions.h itself is unchanged, because its
 # `feasibilityjump.hh` would silently lack both.
-set(PATCH_VERSION "24")
+# Version 25 retires `mip_heuristic_suite` (#167).  The five
+# `mip_heuristic_<name>_effort` options are now the only selector — a value
+# at or below zero skips the heuristic — so the subset choice is the
+# zero-pattern of five continuous options rather than that plus a string
+# HiGHS does not validate.  Three pieces of inserted text move with it: the
+# option record is gone, the version marker that rode on its member
+# declaration is now its own insertion, and the two call sites that compared
+# the value verbatim are rewritten — upstream's standalone FeasibilityJump
+# no longer runs at any configuration, and `printSolutionSourceKey` asks
+# `heuristics::any_enabled` instead.
+set(PATCH_VERSION "25")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -148,87 +158,46 @@ if(_patch_version_found EQUAL -1)
     endif()
 endif()
 
-# ── Add the mip_heuristic_suite string option ──
-# One option selects which custom heuristics run: the alias "off" (none) or
-# "all" (every one), or a comma-separated list of fj, fpr, local_mip, scylla,
-# fpr_lp (default "all").  It replaced the three mip_heuristic_run_* bools and
-# mip_heuristic_preset in #93; the list form arrived in #112, and the
-# dive-time fpr_lp became its own token in #164 (it followed `fpr`'s before,
-# so "presolve FPR without fpr_lp" was inexpressible).
+# ── Stamp the patch version marker into HighsOptions.h ──
+# The marker the stale-tree probe above reads.  It is its own insertion and
+# not a comment riding on some option's member declaration, which is what it
+# used to be: it rode on `mip_heuristic_suite`, and #167 retiring that option
+# would have taken the marker with it — the one probe that can reject a
+# stale tree, removed by an edit that is exactly the kind of edit it exists
+# to catch.  Standing alone, no option retirement can move it again.
 #
-# The value is interpreted in `heuristics::effective_flags`, not here — HiGHS
-# does not validate string option *values*, so this registration only has to
-# name the option and describe it.  The description is the one part of #112
-# that is inserted text, and it is worth the PATCH_VERSION bump: it is the
-# only documentation of the legal values that ships *inside* the binary, and
-# the enumeration it carried listed six values as if they were exhaustive.
-#
-# The path that echoes it is `Highs::writeOptions(<filename>)` — an API call,
-# not a CLI flag.  Do not go looking for it in `highs --options_file`: the
-# CLI dump is `highs.writeOptions("", true)` in `app/RunHighs.cpp`, whose
-# `report_only_deviations` argument emits `Set option ... to "<value>"` lines
-# and no descriptions at all.  What makes the description reachable from the
-# full dump is an accident of *where* this record lands: `reportOptions`
-# skips every record whose `advanced` flag is set, and the insertion anchor
-# below puts ours ahead of the point where `setOptionRecords` flips its local
-# `advanced` to true, so the option registers non-advanced and survives that
-# filter.  Moving the anchor past that point would silence the description
-# without changing a character of it.
-#
-# All three insertions anchor on *upstream's* mip_heuristic_run_shifting
-# text.  Anchoring on our own inserted text is what made the previous option
-# blocks a chain: deleting one silently dropped the next from the build.
-string(FIND "${OPTIONS_CONTENT}" "mip_heuristic_suite" _suite_found)
-if(_suite_found EQUAL -1)
-    # Member variable: insert after mip_heuristic_run_shifting.  The version
-    # marker rides along on this line — it is the stale-tree probe above.
+# It anchors on *upstream's* `mip_heuristic_run_shifting` for the reason
+# every insertion in this file does: anchoring on our own inserted text is
+# what made the previous option blocks a chain, where deleting one silently
+# dropped the next from the build.  The option loop further down inserts its
+# members against the same anchor, so the marker and the ten options end up
+# adjacent in whichever order the two blocks run; nothing depends on that
+# order.
+string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _marker_found)
+if(_marker_found EQUAL -1)
     string(REPLACE
       "bool mip_heuristic_run_shifting;\n"
-      "bool mip_heuristic_run_shifting;\n  std::string mip_heuristic_suite;  // mip-heuristics patch version ${PATCH_VERSION}\n"
+      "bool mip_heuristic_run_shifting;\n  // mip-heuristics patch version ${PATCH_VERSION}\n"
       OPTIONS_CONTENT "${OPTIONS_CONTENT}")
 
-    # Constructor initializer list: insert after mip_heuristic_run_shifting(false),
-    string(REPLACE
-      "mip_heuristic_run_shifting(false),\n"
-      "mip_heuristic_run_shifting(false),\n        mip_heuristic_suite(\"all\"),\n"
-      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
-
-    # Record registration: insert after the mip_heuristic_run_shifting record block
-    string(REPLACE
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);"
-      "record_bool = new OptionRecordBool(\"mip_heuristic_run_shifting\",\n                                       \"Use the Shifting heuristic\", advanced,\n                                       &mip_heuristic_run_shifting, false);\n    records.push_back(record_bool);\n\n    record_string = new OptionRecordString(\"mip_heuristic_suite\",\n                                          \"Custom MIP heuristic suite: comma-separated list of \\\"fj\\\", \\\"fpr\\\", \\\"local_mip\\\", \\\"scylla\\\", \\\"fpr_lp\\\", or the alias \\\"off\\\" (none) or \\\"all\\\" (every one)\", advanced,\n                                          &mip_heuristic_suite, \"all\");\n    records.push_back(record_string);"
-      OPTIONS_CONTENT "${OPTIONS_CONTENT}")
-
-    # Sanity checks: all three insertions must land.  The failure mode is
-    # silent rather than loud — if only the *record registration* REPLACE
-    # misses (upstream reformats the Shifting record block it anchors on),
-    # the member and ctor init are still there, so HighsOptions.h compiles;
-    # the option is simply never registered, keeps its ctor default, and
-    # every attempt to set it fails with no diagnostic anywhere.
-    #
-    # Match the member declaration *without* its trailing semicolon: cmake
-    # splits a matched string containing `;` into list elements, which would
-    # make list(LENGTH) report 2 for a single hit.  The `std::string ` prefix
-    # is what keeps this from also matching the ctor init or the record.
-    string(REGEX MATCHALL "std::string mip_heuristic_suite" _suite_member_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _suite_member_hits _suite_member_count)
-    string(REGEX MATCHALL "mip_heuristic_suite\\(\"all\"\\)" _suite_ctor_hits "${OPTIONS_CONTENT}")
-    list(LENGTH _suite_ctor_hits _suite_ctor_count)
-    # string(FIND), not REGEX MATCHALL: the record text contains semicolons.
-    string(FIND "${OPTIONS_CONTENT}" "OptionRecordString(\"mip_heuristic_suite\"" _suite_record_idx)
-    if(NOT _suite_member_count EQUAL 1 OR NOT _suite_ctor_count EQUAL 1 OR _suite_record_idx EQUAL -1)
+    # The insertion must land exactly once.  A miss is silent and expensive:
+    # the tree builds, and every later configure reads a markerless
+    # HighsOptions.h as an unpatched one, so the stale-tree probe never
+    # fires again for this checkout.
+    string(REGEX MATCHALL "mip-heuristics patch version" _marker_hits "${OPTIONS_CONTENT}")
+    list(LENGTH _marker_hits _marker_count)
+    if(NOT _marker_count EQUAL 1)
         message(FATAL_ERROR
-            "HighsOptions.h post-patch sanity check failed for "
-            "mip_heuristic_suite (member=${_suite_member_count}, "
-            "ctor=${_suite_ctor_count}, record_idx=${_suite_record_idx}). "
-            "Upstream HiGHS likely reformatted HighsOptions.h so one of the "
-            "three mip_heuristic_run_shifting anchors no longer matches. "
+            "HighsOptions.h post-patch sanity check failed for the patch "
+            "version marker (hits=${_marker_count}). "
+            "Upstream HiGHS likely reformatted HighsOptions.h so the "
+            "mip_heuristic_run_shifting anchor no longer matches. "
             "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${LP_DATA_DIR}/HighsOptions.h" "${OPTIONS_CONTENT}")
-    message(STATUS "Applied mip_heuristic_suite option to HighsOptions.h")
+    message(STATUS "Applied mip-heuristics patch version ${PATCH_VERSION} marker to HighsOptions.h")
 else()
-    message(STATUS "mip_heuristic_suite option already applied to HighsOptions.h, skipping")
+    message(STATUS "Patch version marker already applied to HighsOptions.h, skipping")
 endif()
 
 # ── Assert mip_heuristic_effort keeps the vanilla default 0.05 ──
@@ -758,6 +727,24 @@ endif()
 # ── Patch HighsMipSolverData.cpp: add source strings + fix key display ──
 file(READ "${MIP_DIR}/HighsMipSolverData.cpp" MIPDATA_CPP)
 
+# The retired-option probe this file needs, for the reason HighsMipSolver.cpp
+# needs one (#167): it carries no version marker, so the HighsOptions.h gate
+# cannot speak for it, and its idempotency sentinel below
+# ('kSolutionSourceFprLp') is present in every layout the insert has ever
+# had.  `printSolutionSourceKey`'s inserted condition used to read
+# `mip_heuristic_suite == "off"` and now calls `heuristics::any_enabled`, so
+# a half-upgraded tree would skip this block and then fail to compile on a
+# `HighsOptionsStruct` member that no longer exists — and without the
+# `mode_dispatch.h` include this block also inserts.
+string(FIND "${MIPDATA_CPP}" "mip_heuristic_suite" _stale_suite_legend)
+if(NOT _stale_suite_legend EQUAL -1)
+    message(FATAL_ERROR
+        "HighsMipSolverData.cpp gates printSolutionSourceKey on "
+        "'mip_heuristic_suite'; that option was retired and the legend now "
+        "asks heuristics::any_enabled instead. "
+        "${CLEAN_REBUILD}")
+endif()
+
 string(FIND "${MIPDATA_CPP}" "kSolutionSourceFprLp" _src_cpp_found)
 if(_src_cpp_found EQUAL -1)
     # Add source-to-string entries before kSolutionSourceCleanup
@@ -766,30 +753,47 @@ if(_src_cpp_found EQUAL -1)
       "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceFprLp) {\n    if (code) return \"D\";\n    return \"FPR LP\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
-    # Update printSolutionSourceKey limits for the 5 new entries (one extra
-    # group), and drop that group again at mip_heuristic_suite=off.
+    # Our five solution sources need one extra group in the printed legend,
+    # and that group is dropped again when none of them can appear.
     #
-    # `off` runs none of the five custom sources, so a legend advertising
-    # FPR / FPR LP / Local MIP / Scylla / FJ there would name solution
-    # sources the run cannot produce.  Dropping the group is what keeps the
+    # The condition is `heuristics::any_enabled`, i.e. every one of the five
+    # `mip_heuristic_<name>_effort` options at or below zero (with FJ also
+    # honouring `mip_heuristic_run_feasibility_jump`).  It used to be
+    # `mip_heuristic_suite == "off"`, a verbatim string compare; #167 retired
+    # that option, and asking the dispatcher rather than re-deriving the
+    # answer here is what keeps the legend from disagreeing with it about
+    # which heuristics are live.
+    #
+    # Why the group is dropped at all: a legend advertising FPR / FPR LP /
+    # Local MIP / Scylla / FJ when the configuration can produce none of them
+    # names solution sources the run cannot emit.  Dropping it keeps the
     # printed key equal to upstream's, which is in turn what lets the
-    # patch-overhead comparison — `off` plus
+    # patch-overhead comparison — every effort zeroed plus
     # `mip_heuristic_run_feasibility_jump=false`, the configuration
     # `bench/check_vanilla_equivalence.py` diffs against an unpatched binary
-    # — compare whole logs rather than a filtered subset of them.  (`off` on
-    # its own is the ablation with our heuristics disabled, not a vanilla
+    # — compare whole logs rather than a filtered subset of them.  (Zeroing
+    # our five is the ablation with our heuristics disabled, not a vanilla
     # baseline; see docs/REPRODUCIBILITY.md.)
     #
-    # The literal {4, 9, 14, 19} is deliberate — reusing
-    # `last_enum` here would print [14, 24) and list the five custom sources
-    # in the *third* group instead.  With the literal, the printed key is
-    # byte-identical to vanilla's: same four groups over indices 0..18, same
-    # trailing-semicolon logic (limits.size() is 4 in both).  The enum values
-    # themselves stay registered — printSolutionSourceKey's group limits are
-    # positional index literals and renumbering them corrupts the legend.
+    # The literal {4, 9, 14, 19} is deliberate — reusing `last_enum` here
+    # would print [14, 24) and list the five custom sources in the *third*
+    # group instead.  With the literal, the printed key is byte-identical to
+    # vanilla's: same four groups over indices 0..18, same trailing-semicolon
+    # logic (limits.size() is 4 in both).  The enum values themselves stay
+    # registered — printSolutionSourceKey's group limits are positional index
+    # literals and renumbering them corrupts the legend.
     string(REPLACE
       "std::vector<int> limits = {4, 9, 14, last_enum};"
-      "std::vector<int> limits = {4, 9, 14, 19, last_enum};\n  if (mipsolver.options_mip_->mip_heuristic_suite == \"off\")\n    limits = {4, 9, 14, 19};  // mip-heuristics: key matches upstream"
+      "std::vector<int> limits = {4, 9, 14, 19, last_enum};\n  if (!heuristics::any_enabled(*mipsolver.options_mip_))\n    limits = {4, 9, 14, 19};  // mip-heuristics: key matches upstream"
+      MIPDATA_CPP "${MIPDATA_CPP}")
+
+    # `any_enabled` lives in our own header, which this file now needs.  It
+    # is compiled at HiGHS's CMAKE_CXX_STANDARD 11, which is why
+    # `mode_dispatch.h` declares nothing it cannot express — see the note
+    # there and the matching one in `fpr_lp.h`.
+    string(REPLACE
+      "#include \"mip/HighsMipSolverData.h\""
+      "#include \"mip/HighsMipSolverData.h\"\n#include \"mode_dispatch.h\""
       MIPDATA_CPP "${MIPDATA_CPP}")
 
     # Sanity checks: the source-to-string insert must produce exactly one
@@ -825,6 +829,18 @@ if(_src_cpp_found EQUAL -1)
             "expected exactly 1 occurrence of '{4, 9, 14, 19, last_enum}', got ${_cpp_limits_count}. "
             "Upstream HiGHS likely reformatted printSolutionSourceKey so the limits-vector "
             "REPLACE pattern no longer matches. "
+            "${CLEAN_REBUILD}")
+    endif()
+    # A missed include is a HiGHS compile error rather than a silent wrong
+    # build, but the error names our symbol inside upstream's file and says
+    # nothing about why it is there, so catch it here where the anchor is.
+    string(FIND "${MIPDATA_CPP}" "#include \"mode_dispatch.h\"" _cpp_include_idx)
+    if(_cpp_include_idx EQUAL -1)
+        message(FATAL_ERROR
+            "HighsMipSolverData.cpp post-patch sanity check failed: the "
+            "mode_dispatch.h include did not land, so the any_enabled call "
+            "in printSolutionSourceKey will not compile. Upstream HiGHS "
+            "likely reformatted its own leading include. "
             "${CLEAN_REBUILD}")
     endif()
     file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${MIPDATA_CPP}")
@@ -1232,41 +1248,12 @@ else()
     message(STATUS "Resume parameter patch already applied to feasibilityjump.hh, skipping")
 endif()
 
-# ── Patch standalone feasibilityJump() to store effort ──
-file(READ "${MIP_DIR}/HighsFeasibilityJump.cpp" FJ_CONTENT2)
-string(FIND "${FJ_CONTENT2}" "heuristic_effort_used" _fj_effort_found)
-if(_fj_effort_found EQUAL -1)
-    # Add effort capture variable to original FJ callback
-    string(REPLACE
-      "  auto fjControlCallback =\n      [=, &col_value, &found_integer_feasible_solution,\n       &objective_function_value](external_feasibilityjump::FJStatus status)\n      -> external_feasibilityjump::CallbackControlFlow {"
-      "  size_t fj_last_effort = 0;\n  auto fjControlCallback =\n      [=, &col_value, &found_integer_feasible_solution,\n       &objective_function_value, &fj_last_effort](external_feasibilityjump::FJStatus status)\n      -> external_feasibilityjump::CallbackControlFlow {\n    fj_last_effort = status.totalEffort;"
-      FJ_CONTENT2 "${FJ_CONTENT2}")
-
-    # Store effort after solve
-    string(REPLACE
-      "  solver.solve(col_value.data(), fjControlCallback);\n\n  if (found_integer_feasible_solution) {\n    // Initial assignments"
-      "  solver.solve(col_value.data(), fjControlCallback);\n  heuristic_effort_used += fj_last_effort;\n\n  if (found_integer_feasible_solution) {\n    // Initial assignments"
-      FJ_CONTENT2 "${FJ_CONTENT2}")
-
-    # Silent if it misses: the `+=` simply never appears and vanilla FJ's
-    # effort goes unaccounted forever.  That is the standalone call site
-    # Patch A now runs at `suite=off`, so a miss makes the patch-overhead
-    # row of the benchmark matrix under-report its effort.
-    string(FIND "${FJ_CONTENT2}" "heuristic_effort_used += fj_last_effort;" _fj_effort_check)
-    if(_fj_effort_check EQUAL -1)
-        message(FATAL_ERROR
-            "HighsFeasibilityJump.cpp post-patch sanity check failed: "
-            "'heuristic_effort_used += fj_last_effort;' not found after patching. "
-            "Upstream HiGHS likely reformatted the standalone feasibilityJump() "
-            "callback so an exact-string anchor no longer matches. "
-            "${CLEAN_REBUILD}")
-    endif()
-
-    file(WRITE "${MIP_DIR}/HighsFeasibilityJump.cpp" "${FJ_CONTENT2}")
-    message(STATUS "Applied effort tracking to standalone feasibilityJump()")
-else()
-    message(STATUS "Standalone FJ effort tracking already applied, skipping")
-endif()
+# Note: upstream's standalone `feasibilityJump()` is *not* patched to charge
+# `heuristic_effort_used`, and used to be.  That charge existed for the one
+# configuration where the native call site fired — `mip_heuristic_suite=off`
+# — and Patch A below retires that site at every configuration (#167), so
+# the `+=` had no reachable caller left.  `EffortLedger` is now the only
+# writer of that counter anywhere in the build.
 
 # ── Patch HighsMipSolver.cpp: insert heuristic call sites ──
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)
@@ -1290,6 +1277,23 @@ if(NOT _stale_presolve_budget EQUAL -1)
         "${CLEAN_REBUILD}")
 endif()
 
+# The second retired option, by the same contract and for the same reason
+# (#167).  Patch A's inserted condition used to read
+# `mip_heuristic_suite == "off"`, gating upstream's standalone
+# FeasibilityJump call site; that option no longer exists on
+# `HighsOptionsStruct`.  A tree whose HighsOptions.h was restored while this
+# file kept its version-24 patch passes the marker gate as fresh, skips this
+# block as already applied, and fails deep inside upstream's own file
+# referencing a member that is gone.
+string(FIND "${CONTENT}" "mip_heuristic_suite" _stale_suite_call_site)
+if(NOT _stale_suite_call_site EQUAL -1)
+    message(FATAL_ERROR
+        "HighsMipSolver.cpp gates a call site on 'mip_heuristic_suite'; that "
+        "option was retired and a heuristic is now selected by its own "
+        "'mip_heuristic_<name>_effort' being above zero. "
+        "${CLEAN_REBUILD}")
+endif()
+
 string(FIND "${CONTENT}" "heuristics::run_presolve" _found)
 if(_found EQUAL -1)
     # Add includes at top (after existing includes)
@@ -1298,19 +1302,30 @@ if(_found EQUAL -1)
       "#include \"mip/HighsMipSolver.h\"\n#include \"fpr_lp.h\"\n#include \"mode_dispatch.h\""
       CONTENT "${CONTENT}")
 
-    # Patch A: hand the standalone FJ call site over to the custom presolve
-    # block, except at mip_heuristic_suite=off.
+    # Patch A: retire upstream's standalone FeasibilityJump call site.
     #
-    # `off` is the patch-overhead / vanilla-equivalence row of the benchmark
-    # matrix, so it must run exactly what an unpatched binary runs — which
-    # includes upstream's single-threaded FeasibilityJump.  At every other
-    # suite value FJ is either off or run by our parallel infrastructure, and
-    # letting the native call site fire too would double-run it.
-    # `mip_heuristic_run_feasibility_jump` is upstream's own option and keeps
-    # its meaning: false disables FJ here and in the custom chain alike.
+    # It never fires.  Our chain owns FJ at every configuration, so leaving
+    # the native site live would double-run the heuristic, and the condition
+    # is rewritten to a literal `false` rather than deleted so the code
+    # upstream maintains stays visible and the anchor stays exact.
+    #
+    # It used to fire at `mip_heuristic_suite == "off"`, on the rationale
+    # that the patch-overhead row "must run exactly what an unpatched binary
+    # runs — which includes upstream's single-threaded FeasibilityJump".
+    # That stopped being true when #139 corrected two defects in
+    # `feasibilityjump.hh`, which both call sites share: what ran at `off`
+    # was *our* FJ at upstream's call site, so `off` was neither a vanilla
+    # baseline nor a heuristic-free run, and the one thing that did need it
+    # — `bench/check_vanilla_equivalence.py` — disables FJ on both sides
+    # anyway, precisely because the two FJ paths differ.  #167 retired the
+    # suite option and the restore with it.
+    #
+    # `mip_heuristic_run_feasibility_jump` keeps its meaning and is read in
+    # `heuristics::entry_enabled` instead: setting it false disables
+    # FeasibilityJump, the same thing `mip_heuristic_fj_effort = 0` does.
     string(REPLACE
       "if (options_mip_->mip_heuristic_run_feasibility_jump) {"
-      "if (options_mip_->mip_heuristic_suite == \"off\" &&\n        options_mip_->mip_heuristic_run_feasibility_jump) { // native FJ only at suite=off"
+      "if (false) {  // mip-heuristics: our chain owns FJ; the native call site never runs"
       CONTENT "${CONTENT}")
 
     # Patch A2: insert custom heuristics block via mode_dispatch.  The call
@@ -1371,7 +1386,7 @@ if(_found EQUAL -1)
     # misses with it — check it anyway, because it is the half whose
     # failure produces plausible numbers rather than none.
     string(FIND "${CONTENT}" "heuristics::run_presolve" _presolve_check)
-    string(FIND "${CONTENT}" "native FJ only at suite=off" _fj_off_check)
+    string(FIND "${CONTENT}" "the native call site never runs" _fj_off_check)
     string(FIND "${CONTENT}" "mip_heuristic_presolve_only" _presolve_only_check)
     if(_presolve_check EQUAL -1 OR _fj_off_check EQUAL -1 OR _presolve_only_check EQUAL -1)
         message(FATAL_ERROR
@@ -1394,7 +1409,7 @@ endif()
 # Separate idempotency block so it can be applied independently of A/A2.
 # HiGHS 1.15 moved the RENS/RINS block into a runHeuristics() lambda; the
 # anchor is the profiling stop + infeasible() return that ends the lambda.
-# The call is deliberately bare: gating (mip_heuristic_suite) and budget
+# The call is deliberately bare: gating and budget
 # derivation (shared RENS/RINS LP-iteration headroom) live inside
 # fpr_lp::run so the patch string stays minimal.
 file(READ "${MIP_DIR}/HighsMipSolver.cpp" CONTENT)

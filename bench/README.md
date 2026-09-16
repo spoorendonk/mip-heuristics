@@ -33,7 +33,7 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | `derive_from_probe.sh` | **probe tree → every artifact, one command** (see below), written into `ablation_effort/` |
 | `compare_finalists.sh` | assembles the per-arm trees into the view `analyze_results.py` wants, then scores them |
 | `analyze_ablation_c.py` | `fpr_lp`'s two readings: `capability` (dispatches, setup bails, accepted yields, and which of three verdicts) and `contribution` (the paired log-ratio, partitioned by the capability run's labels, with the never-fired instances as a null control) |
-| `check_vanilla_equivalence.py` | proves the patch does not perturb HiGHS: `suite=off` plus FeasibilityJump disabled, against a separately built unpatched binary with FeasibilityJump disabled |
+| `check_vanilla_equivalence.py` | proves the patch does not perturb HiGHS: every heuristic's effort zeroed plus FeasibilityJump disabled, against a separately built unpatched binary with FeasibilityJump disabled |
 | `make_archive.py` | the release archive, with derived provenance |
 | `check_docs_refs.py` | fails the suite if `docs/PARAMETERS.md` names a constant that no longer exists |
 

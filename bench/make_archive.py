@@ -517,8 +517,9 @@ BASELINE_CLAIMS = {
         "ablation on the patched binary — not a vanilla baseline",
         (
             "The baseline logs carry the `mip-heuristics patch active` marker, so "
-            "these rows are `mip_heuristic_suite=off` on the patched build: our "
-            "four presolve heuristics and `fpr_lp` disabled, inside a binary that "
+            "these rows have every `mip_heuristic_<name>_effort` zeroed on the "
+            "patched build: our four presolve heuristics and `fpr_lp` disabled, "
+            "inside a binary that "
             "is still patched. Rows measured against them state what the presolve "
             "chain contributes on that binary, and nothing about vanilla HiGHS. A "
             "vanilla comparison needs a separately built unpatched binary "

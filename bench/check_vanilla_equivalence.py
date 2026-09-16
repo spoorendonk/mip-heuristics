@@ -3,21 +3,25 @@
 
 The configuration compared is the **pure patch-overhead** one: FeasibilityJump
 disabled on both sides (`mip_heuristic_run_feasibility_jump=false`, upstream's
-own option), plus `mip_heuristic_suite=off` on the patched side so none of our
-four presolve heuristics and no `fpr_lp` runs.  What that proves is what is
-worth proving: the patch's call sites, its extra option records and its marker
-line do not move HiGHS's presolve, its B&B or its LP path by a single node or
-iteration.
+own option), plus every `mip_heuristic_<name>_effort` zeroed on the patched
+side so none of our four presolve heuristics and no `fpr_lp` runs.  What that
+proves is what is worth proving: the patch's call sites, its extra option
+records and its marker line do not move HiGHS's presolve, its B&B or its LP
+path by a single node or iteration.
 
-It does **not** prove that `suite=off` equals vanilla, and it is not a licence
-to use `off` as a baseline.  `off` is the "our four presolve heuristics
-disabled" ablation on the patched binary; it hands HiGHS's own standalone
-FeasibilityJump call site back, but that call site drives *our* copy of
-FeasibilityJump, which the patch modifies (the per-bump `kVerbose` log line is
-gone, and #139 corrected two upstream defects in the search itself).  FJ is therefore
-excluded from the comparison rather than compared and forgiven.  A benchmark
-baseline is always a separately built unpatched binary — that is what
+It does **not** prove that a fully zeroed patched binary equals vanilla, and it
+is not a licence to use that configuration as a baseline.  Zeroing our five is
+the "our heuristics disabled" ablation on the patched binary; FeasibilityJump
+is excluded from the comparison rather than compared and forgiven, because the
+patch modifies FJ itself (the per-bump `kVerbose` log line is gone, and #139
+corrected two upstream defects in the search).  A benchmark baseline is always
+a separately built unpatched binary — that is what
 `bench/run_benchmark.py --vanilla-binary` takes, and it refuses a patched one.
+
+Since #167 the native FeasibilityJump call site never runs on a patched build
+at all, so the FJ switch on the patched side is belt-and-braces beside the
+zeroed `mip_heuristic_fj_effort`; on the vanilla side it is the whole of what
+silences FJ, which is why it is still set on both.
 
 It is deliberately *not* a ctest: it needs an unpatched HiGHS binary at the
 pinned tag, which no build tree produces (the patch rewrites the source in
@@ -83,7 +87,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 
-from run_benchmark import PATCH_MARKER, probe_binary
+from run_benchmark import PATCH_MARKER, config_options, probe_binary
 
 # Same instance set as bench/correctness_check.py; they ship with HiGHS.
 INSTANCES = [
@@ -100,11 +104,15 @@ INSTANCES = [
 # `mip_heuristic_run_feasibility_jump` is upstream's own option, so both
 # binaries accept it and both lose FeasibilityJump — the one component the
 # patch deliberately changes, and therefore the one that cannot be part of an
-# equivalence claim.  `mip_heuristic_suite=off` exists only on the patched
-# side and takes our four presolve heuristics and `fpr_lp` out with it.  What
-# is left running is HiGHS's own solver on both sides.
+# equivalence claim.  The five effort options exist only on the patched side,
+# and zeroing them takes our four presolve heuristics and `fpr_lp` out with
+# them.  What is left running is HiGHS's own solver on both sides.
+#
+# Spelled from `run_benchmark.config_options("off")` rather than written out,
+# so a sixth heuristic cannot be added to the chain and quietly left running
+# in the one configuration that proves the patch is inert.
 PATCHED_OPTIONS = {
-    "mip_heuristic_suite": "off",
+    **config_options("off"),
     "mip_heuristic_run_feasibility_jump": "false",
 }
 VANILLA_OPTIONS = {"mip_heuristic_run_feasibility_jump": "false"}
@@ -112,7 +120,7 @@ VANILLA_OPTIONS = {"mip_heuristic_run_feasibility_jump": "false"}
 # Lines dropped before diffing: wall-clock measurements, the patch's
 # self-identification marker, HiGHS's echo of the options it was given (both
 # runs are handed `mip_heuristic_run_feasibility_jump=false`, but only the
-# patched one also gets `mip_heuristic_suite=off`, so the echo differs by
+# patched one also gets the zeroed effort options, so the echo differs by
 # construction and says nothing about solver behaviour — the mask is blanket
 # over `Set option`, so it holds however the two option sets diverge), and the
 # two once-per-solve instrumentation lines from issue #95.

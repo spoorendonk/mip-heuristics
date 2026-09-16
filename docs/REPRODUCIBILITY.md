@@ -10,11 +10,12 @@ Three settings together:
 ```
 threads = 1
 random_seed = 42
-mip_heuristic_suite = fpr
+mip_heuristic_fj_effort = 0
+mip_heuristic_local_mip_effort = 0
 ```
 
 ```bash
-printf 'threads = 1\nrandom_seed = 42\nmip_heuristic_suite = fpr\n' > repro.opts
+printf 'threads = 1\nrandom_seed = 42\nmip_heuristic_fj_effort = 0\nmip_heuristic_local_mip_effort = 0\n' > repro.opts
 ./build/bin/highs --options_file repro.opts model.mps
 ```
 
@@ -22,9 +23,9 @@ Two runs of that command on one binary produce the same objective, the same
 node count, and the same per-heuristic effort trace.
 
 **The custom options are not command-line flags.** HiGHS's CLI11 parser takes
-only its own fixed flag set. `--mip_heuristic_suite fpr model.mps` makes `fpr`
-a second positional argument and fails with `File does not exist: fpr`;
-`--mip_heuristic_suite=fpr` fails with `The following argument was not
+only its own fixed flag set. `--mip_heuristic_fpr_effort 3.0 model.mps` makes `3.0`
+a second positional argument and fails with `--model_file: File does not exist: 3.0`;
+`--mip_heuristic_fpr_effort=3.0` fails with `The following argument was not
 expected`. Both exit non-zero without solving. Anything scripted goes through
 `--options_file`.
 
@@ -118,7 +119,7 @@ The recorded mipfeas table (233 MIPLIB 2017 instances, 600 s) is in
 be reproduced on `HEAD`.** It was measured at `mip_heuristic_preset=all_opp` —
 FJ + FPR + LocalMIP + `fpr_lp` with Scylla deliberately excluded — `fpr_lp`
 because it followed the FPR bit at the time. That composition is expressible
-again as `mip_heuristic_suite = fj,fpr,local_mip,fpr_lp` (#112, re-spelled by
+again as the config `fj+fpr+local_mip+fpr_lp` (#112, re-spelled by
 #164 once `fpr_lp` gained its own token), having been unnameable while the
 option took a single value, but the binary is gone:
 the numbers predate the runner cleanup. Treat the row as the last full-campaign
@@ -193,8 +194,8 @@ environment rather than a hand-written `run_benchmark.py` command line:
 | `MIPFEAS_TIME_LIMIT` | seconds per solve (default 600, the benchmark's limit) |
 | `MIPFEAS_BINARY` / `MIPFEAS_VANILLA_BINARY` | the two binaries |
 
-A config name is exactly a `mip_heuristic_suite` value and carries no budget
-of its own; every heuristic runs at its shipped default. To move one for a
+A config name lists the heuristics to run and zeroes the rest; it carries no
+budget of its own, so every heuristic it names runs at its shipped default. To move one for a
 run, pass `run_benchmark.py --extra-options mip_heuristic_<name>_effort=<V>`.
 
 ```bash
@@ -348,7 +349,7 @@ record of what the search selected.
 
 **A configuration's `.opts` does not identify it.** Both the headline arm and
 its predecessor ran at *default options*, so their `.opts` files are
-byte-identical — `mip_heuristic_suite = all` plus the seed — and what differed
+byte-identical — the seed and nothing else, since `all` zeroes nothing — and what differed
 was the binary's built-in defaults. The results *directory* is the only record
 of which configuration a run used, which is why `bench/results/mipfeas/` carries
 `all` and `all-prev-vector` rather than two trees both called `all`. If you
@@ -381,20 +382,23 @@ launcher checks by refusing a binary without the patch marker.
   ~100 paired runs across two presolve backgrounds, so there is no share at
   which it earns its slice of upstream's RENS/RINS envelope.
 
-## `suite=off` is an ablation, not a vanilla baseline
+## Zeroing every heuristic is an ablation, not a vanilla baseline
 
-`mip_heuristic_suite=off` disables our four presolve heuristics and the
-dive-time `fpr_lp`, and hands HiGHS's standalone FeasibilityJump call site back
-(it is disabled at every other suite value, where our own parallel FJ runs
-instead). That makes it the reference row for "what does the chain contribute
-on this binary?", and that is the only thing it is.
+Setting all five `mip_heuristic_<name>_effort` options to `0` disables our four
+presolve heuristics and the dive-time `fpr_lp`. That makes it the reference row
+for "what does the chain contribute on this binary?", and that is the only
+thing it is. `bench/run_benchmark.py` spells it as the config `off`.
+
+It runs **no FeasibilityJump at all**: upstream's standalone FJ call site never
+fires on a patched build, at any configuration, because our chain owns FJ and a
+live native site would double-run it.
 
 It is **not** a vanilla measurement and must not be used as one. The binary is
-still the patched one, and the patch modifies FeasibilityJump itself, so the FJ
-running at `off` is HiGHS's call site driving our copy — visibly so already at
-`log_dev_level=3`, where the per-bump `Reached a local minimum.` line is gone,
-and in the search itself since #139 corrected two upstream FeasibilityJump
-defects — the negative-coefficient jump value and the objective term's sign. A
+still the patched one, and the patch modifies FeasibilityJump itself —
+visibly so already at `log_dev_level=3`, where the per-bump `Reached a local
+minimum.` line is gone, and in the search itself since #139 corrected two
+upstream FeasibilityJump defects, the negative-coefficient jump value and the
+objective term's sign. A
 vanilla baseline is always a **separately built unpatched binary** of the tag
 in `cmake/FetchHiGHS.cmake`, and `bench/run_benchmark.py` enforces it: the
 `vanilla` config requires `--vanilla-binary`, there is no fallback to the
@@ -413,7 +417,7 @@ python3 bench/check_vanilla_equivalence.py \
     --vanilla-binary /path/to/unpatched/highs
 ```
 
-It hands the patched binary `mip_heuristic_suite=off` plus
+It hands the patched binary every `mip_heuristic_<name>_effort` at `0` plus
 `mip_heuristic_run_feasibility_jump=false`, and the unpatched one
 `mip_heuristic_run_feasibility_jump=false` (upstream's own option), then
 compares status, primal bound, node count, and total and heuristic LP

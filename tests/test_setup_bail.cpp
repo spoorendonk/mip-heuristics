@@ -374,7 +374,12 @@ TEST_CASE("setup-bail: an fpr_lp dive that skips for want of an LP books nothing
 TEST_CASE("setup-bail: an ordinary solve reports abandoned_setup=0 throughout", "[setup-bail]") {
     const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         require_option(h, "log_dev_level", 3);
-        set_suite(h, "all");
+        select_heuristics(h, "all");
+        // Scylla ships at effort 0 and is therefore skipped outright — no
+        // dispatch, no `[Heur]` line — so the fourth presolve entry has to
+        // be turned on for "throughout" to cover the whole chain.  `all`
+        // zeroes nothing, so the order relative to it does not matter.
+        enable_scylla(h);
     });
 
     int heur_lines = 0;
@@ -386,6 +391,7 @@ TEST_CASE("setup-bail: an ordinary solve reports abandoned_setup=0 throughout", 
         INFO(line);
         CHECK(line.contains("abandoned_setup=0"));
     }
-    // The four presolve entries at minimum; `fpr_lp` adds dive-time ones.
+    // The four presolve entries.  `fpr_lp` contributes none: it ships at
+    // effort 0 and this fixture does not raise it.
     CHECK(heur_lines >= 4);
 }

@@ -9,15 +9,13 @@ namespace fpr_lp {
 // Gating and budget are derived internally so fpr_lp participates in the
 // same B&B heuristic budget as RENS/RINS (issue: pre-split it drew an
 // unaccounted nnz-based budget per call):
-//  - enabled iff heuristics::effective_flags(options).fpr_lp — i.e. only at
-//    a mip_heuristic_suite value naming fpr_lp, so suite=off really
-//    disables it (and so does every subset that omits fpr_lp, deliberately:
-//    per-heuristic attribution has to cover the dive-time heuristic too).
-//    Its own token since #164: it followed presolve FPR's bit before, so
-//    "presolve FPR without fpr_lp" had no spelling at all;
-//  - and iff mip_heuristic_fpr_lp_effort > 0, which is the same "0 means
-//    the heuristic does not run" the four presolve effort options carry.
-//    Both gates return from the same place, above every counter read;
+//  - enabled iff mip_heuristic_fpr_lp_effort > 0, which is the same "0
+//    means the heuristic does not run" the four presolve effort options
+//    carry, and is the only gate: the return sits above every counter read
+//    and write, so a disabled fpr_lp leaves the RENS/RINS envelope exactly
+//    as it found it.  Its own option since #164, when it followed presolve
+//    FPR's suite bit and "presolve FPR without fpr_lp" had no spelling at
+//    all; the only gate since #167 removed mip_heuristic_suite;
 //  - per-call effort budget = mip_heuristic_fpr_lp_effort times the lesser
 //    of the remaining LP-iteration headroom of the moreHeuristicsAllowed()
 //    envelope (total_lp_iterations * mip_heuristic_effort + 10000 -

@@ -58,7 +58,8 @@
 #                    bench/analyze_presolve_probe.py instead)
 #
 # Per-run option overrides go through run_benchmark.py's --extra-options;
-# a config name is exactly a `mip_heuristic_suite` value.
+# a config name is the `+`-joined list of the heuristics to run, and it zeroes
+# every other heuristic's `mip_heuristic_<name>_effort`.
 #
 # So the #105 baseline is the default, and the #108 headline is
 #
@@ -219,7 +220,7 @@ cmd_next() {
 	# The `vanilla` config is a second *binary*, not a setting on the first
 	# one, and there is no longer a fallback to $BINARY: that fallback used to
 	# turn a missing system HiGHS into a `vanilla/` tree holding the patched
-	# binary at mip_heuristic_suite=off, which is an ablation of our four
+	# binary with every heuristic zeroed, which is an ablation of our four
 	# presolve heuristics rather than a baseline (issue #147).  Fail here,
 	# where the message can name the fix, rather than in the runner.
 	if wants_vanilla && [ -z "$VANILLA_BINARY" ]; then

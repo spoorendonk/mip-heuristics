@@ -156,7 +156,7 @@ std::set<std::string> heur_names(const std::vector<std::string>& lines) {
 std::vector<std::string> traced_solve(int dev_level) {
     return solve_capturing_log("egout.mps", [&](Highs& h) {
         require_option(h, "log_dev_level", dev_level);
-        set_suite(h, "all");
+        select_heuristics(h, "all");
     });
 }
 
@@ -207,7 +207,7 @@ constexpr std::array<Fixture, 3> kFixtures = {{
 std::vector<std::string> traced_fixture(const Fixture& fixture) {
     return solve_capturing_log(fixture.instance, [&](Highs& h) {
         require_option(h, "log_dev_level", 3);
-        set_suite(h, fixture.suite);
+        select_heuristics(h, fixture.suite);
         if (fixture.scylla_effort >= 0.0) {
             require_option(h, "mip_heuristic_scylla_effort", fixture.scylla_effort);
         }
@@ -463,7 +463,7 @@ TEST_CASE("heursol: an accepted offer is what [Heur] reports as found", "[heurso
 // attempt offer.
 TEST_CASE("heursol: FJ offers as solutions arrive, not once per attempt", "[heursol]") {
     const auto parsed = offers(traced_time_limited("egout.mps", 0.5, [](Highs& h) {
-        set_suite(h, "fj");
+        select_heuristics(h, "fj");
         // The ceiling, and no stall gate: exactly #113's probe.
         require_option(h, "mip_heuristic_fj_effort", 1e6);
         require_option(h, "mip_heuristic_fj_patience", 0);

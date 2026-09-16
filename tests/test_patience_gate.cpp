@@ -150,7 +150,7 @@ size_t effort_at(const char* inst, const char* heur, const char* option, double 
         if (patience >= 0.0) {
             require_option(h, std::string("mip_heuristic_") + heur + "_patience", patience);
         }
-        set_suite(h, heur);
+        select_heuristics(h, heur);
     });
     return presolve_effort(lines, heur);
 }

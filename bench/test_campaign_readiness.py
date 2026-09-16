@@ -52,9 +52,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from analyze_results import CUSTOM_SOURCE_LABELS
 from parse_highs_log import parse_log
 from run_benchmark import (
-    CONFIG_SUITES,
+    CONFIG_SELECTIONS,
     MIPLIB_MIN_INSTANCES,
+    SUITE_ORDER,
     build_arg_parser,
+    config_options,
 )
 
 BENCH = Path(__file__).resolve().parent
@@ -65,11 +67,11 @@ MAKE_TUNING_SET = BENCH / "make_tuning_set.py"
 RUN_MIPFEAS = BENCH / "run_mipfeas.sh"
 APPLY_PATCH = REPO / "third_party" / "highs_patch" / "apply_patch.cmake"
 
-# The presolve chain, in dispatch order.  `CONFIG_SUITES` keys spell subsets
-# with `+` in this order, so the sixteen mix-selection configs of #107 are
-# exactly `off` plus the fifteen non-empty subsets.
+# The presolve chain, in dispatch order.  `CONFIG_SELECTIONS` keys spell
+# subsets with `+` in this order, so the sixteen mix-selection configs of #107
+# are exactly `off` plus the fifteen non-empty subsets.
 #
-# That table has carried a fifth token since #164 — the dive-time `fpr_lp`,
+# That table has carried a fifth name since #164 — the dive-time `fpr_lp`,
 # spelled last — so it is no longer only those sixteen: it is `off` plus all
 # thirty-one non-empty subsets of five.  #107's stage is still the chain's
 # sixteen, which `MIX_CONFIGS` selects back out of it.
@@ -83,7 +85,7 @@ CHAIN = ("fj", "fpr", "local_mip", "scylla")
 # log_dev_level=3, and a solving report.
 #
 # Its behaviour varies with the options it is given, so a tree is not
-# uniform: more heuristics in the suite means an earlier first solution and a
+# uniform: more heuristics enabled means an earlier first solution and a
 # better objective, and a swept effort option scales the charged effort.  A
 # ladder or a mix comparison therefore has a signal to read, which is what
 # makes the table assertions meaningful rather than shape-only.
@@ -144,15 +146,18 @@ for i, arg in enumerate(argv):
 # about the missing filename and exits.  Recording it would file a run with an
 # empty instance and config name.
 if model is None:
-    # The unpatched stand-in has none of the eleven options the patch adds, and
+    # The unpatched stand-in has none of the ten options the patch adds, and
     # says so the way HiGHS does.  `mip_heuristic_effort` and the six
     # `mip_heuristic_run_*` switches are upstream's own and stay legal on both.
     if opts_path and "unpatched" in os.path.basename(sys.argv[0]):
-        patch_added = {"mip_heuristic_suite", "mip_heuristic_presolve_only"} | {
-            f"mip_heuristic_{h}_{axis}"
-            for h in ("fj", "fpr", "local_mip", "scylla")
-            for axis in ("effort", "patience")
-        }
+        patch_added = (
+            {"mip_heuristic_presolve_only", "mip_heuristic_fpr_lp_effort"}
+            | {
+                f"mip_heuristic_{h}_{axis}"
+                for h in ("fj", "fpr", "local_mip", "scylla")
+                for axis in ("effort", "patience")
+            }
+        )
         with open(opts_path) as handle:
             for line in handle:
                 key = line.partition("=")[0].strip()
@@ -200,14 +205,32 @@ out = ["Running HiGHS 1.15.1 (git hash: 04024d701f): Copyright (c) 2026 HiGHS"]
 if "unpatched" not in os.path.basename(sys.argv[0]):
     out.append("mip-heuristics patch active (custom MIP presolve heuristics)")
 
-suite = options.get("mip_heuristic_suite", "")
-tokens = [t for t in (s.strip() for s in suite.split(",")) if t]
-if suite == "all":
-    tokens = list(CHAIN)
-if suite in ("", "off"):
-    tokens = []
+# A heuristic runs iff its effort option is above zero; an unset option means
+# the binary's shipped default, and only Scylla's is zero.  That is the whole
+# of the selection mechanism since #167 — there is no suite string.
+DEFAULT_EFFORT = {"fj": 0.3317, "fpr": 3.161, "local_mip": 3.2865, "scylla": 0.0}
+fj_switch = options.get("mip_heuristic_run_feasibility_jump", "true") != "false"
+tokens = [
+    h
+    for h in CHAIN
+    if float(options.get(f"mip_heuristic_{h}_effort", DEFAULT_EFFORT[h])) > 0.0
+    and (h != "fj" or fj_switch)
+]
+# The one warning run_benchmark.py greps for: FJ asked for through its effort
+# option and taken away through upstream's switch, with nothing else enabled.
+if not tokens and not fj_switch:
+    if float(options.get("mip_heuristic_fj_effort", DEFAULT_EFFORT["fj"])) > 0.0:
+        out.append(
+            "WARNING: mip_heuristic_fj_effort selects only FeasibilityJump, which "
+            "mip_heuristic_run_feasibility_jump=false disables; no heuristic will run."
+        )
+# A run that ignored its configuration: it prints that same warning and then
+# runs the whole chain anyway, which is the shape the harness has to discard.
 if instance in env_list("FAKE_HIGHS_IGNORE_CONFIG"):
-    out.append(f'WARNING: Unknown mip_heuristic_suite value "{suite}" - running all')
+    out.append(
+        "WARNING: mip_heuristic_fj_effort selects only FeasibilityJump, which "
+        "mip_heuristic_run_feasibility_jump=false disables; no heuristic will run."
+    )
     tokens = list(CHAIN)
 
 seed = int(options.get("random_seed", "0"))
@@ -429,14 +452,24 @@ def test_the_runner_writes_the_tree_layout_every_downstream_script_reads(basic_t
             assert not list(seed_dir.glob("*.log.err"))
 
 
-def test_every_run_is_handed_its_suite_value_and_the_seed_that_names_its_directory(
+def test_every_run_is_handed_its_selection_and_the_seed_that_names_its_directory(
     basic_tree,
 ):
     _, recorded, names = basic_tree
     assert len(recorded) == 2 * 2 * len(names)
     for record in recorded:
         options = record["options"]
-        assert options["mip_heuristic_suite"] == CONFIG_SUITES[config_of(record)]
+        # A config zeroes the effort of every heuristic it does not name, and
+        # sets nothing for the ones it does — so the options a run is handed
+        # are exactly `config_options` of its directory name.
+        selected = CONFIG_SELECTIONS[config_of(record)]
+        zeroed = {
+            f"mip_heuristic_{h}_effort": "0" for h in SUITE_ORDER if h not in selected
+        }
+        assert {k: v for k, v in options.items() if k in zeroed} == zeroed
+        assert not any(
+            options.get(f"mip_heuristic_{h}_effort") == "0" for h in selected
+        )
         # A seed pinned anywhere but --seeds would make the directory a lie.
         assert options["random_seed"] == str(seed_of(record))
 
@@ -495,9 +528,13 @@ def test_dev_log_turns_the_instrumentation_on_and_it_parses(tmp_path):
     )
     assert all(r["options"]["log_dev_level"] == "3" for r in records(record))
     parsed = parse_log((tree / "all" / "seed0" / "inst00.log").read_text())
-    assert [s.name for s in parsed.heuristic_samples] == list(CHAIN)
+    # Scylla ships at effort 0 and is therefore skipped outright — no
+    # dispatch, no `[Heur]` line — so a default-options solve traces three
+    # of the four (#167).
+    traced = [h for h in CHAIN if h != "scylla"]
+    assert [s.name for s in parsed.heuristic_samples] == traced
     assert {s.phase for s in parsed.heuristic_samples} == {"presolve"}
-    assert [s.heuristic for s in parsed.sequential_samples] == list(CHAIN)
+    assert [s.heuristic for s in parsed.sequential_samples] == traced
 
 
 def test_an_external_vanilla_binary_is_handed_no_heuristic_options(tmp_path):
@@ -600,7 +637,7 @@ def test_a_crashed_run_is_parked_beside_the_log_and_retried_on_resume(tmp_path):
     assert not (seed_dir / "inst01.log.err").exists()
 
 
-def test_a_run_that_ignored_its_suite_value_is_not_recorded_as_a_result(tmp_path):
+def test_a_run_that_ignored_its_configuration_is_not_recorded_as_a_result(tmp_path):
     # "No instance recorded as a non-solving or misconfigured run" is an
     # acceptance criterion of all four stages, and this is the case that
     # exits 0 with an ordinary-looking log.
@@ -742,7 +779,7 @@ def test_the_baseline_profile_counts_every_instance_including_never_feasible(tmp
 
 # `off` plus the fifteen non-empty subsets of the chain: the sixteen
 # configurations #107 compares.  `vanilla` is not among them and cannot be:
-# it is a separate unpatched binary, not a suite value (#147).
+# it is a separate unpatched binary, not a selection (#147).
 # Selected by *membership*, not by taking the whole table: since #164 that
 # table also holds every subset naming the dive-time `fpr_lp`, which is not
 # part of #107's stage — that stage sweeps the presolve chain, whose budgets
@@ -751,25 +788,27 @@ def test_the_baseline_profile_counts_every_instance_including_never_feasible(tmp
 # chain mix any more.
 MIX_CONFIGS = ["off"] + [
     name
-    for name in CONFIG_SUITES
+    for name in CONFIG_SELECTIONS
     if name not in ("off", "all") and set(name.split("+")) <= set(CHAIN)
 ]
 
 
 def test_all_sixteen_mixes_are_expressible_and_distinct():
     assert len(MIX_CONFIGS) == 16
-    suites = [CONFIG_SUITES[c] for c in MIX_CONFIGS]
-    assert len(set(suites)) == 16
+    selections = [CONFIG_SELECTIONS[c] for c in MIX_CONFIGS]
+    assert len({frozenset(s) for s in selections}) == 16
     for name in MIX_CONFIGS:
         if name in ("off", "all"):
             continue
         # A subset name lists its heuristics in chain order, so one subset has
         # exactly one spelling and one results directory.
-        assert name.split("+") == CONFIG_SUITES[name].split(",")
+        assert name.split("+") == [
+            h for h in SUITE_ORDER if h in CONFIG_SELECTIONS[name]
+        ]
 
 
 def test_every_non_empty_subset_of_the_five_heuristics_has_a_config():
-    """#164: `fpr_lp` is a suite token, so all 31 subsets must be nameable.
+    """#164: `fpr_lp` is selectable on its own, so all 31 subsets are nameable.
 
     Including the two cells of the issue's matrix that had no spelling at
     all before: presolve FPR without the dive-time variant (`fpr`), and the
@@ -777,27 +816,23 @@ def test_every_non_empty_subset_of_the_five_heuristics_has_a_config():
     """
     heuristics = (*CHAIN, "fpr_lp")
     subsets = {
-        subset
+        frozenset(subset)
         for size in range(1, len(heuristics) + 1)
         for subset in itertools.combinations(heuristics, size)
     }
     assert len(subsets) == 31
-    # Every subset is reachable as a suite *value*, whatever the config
-    # carrying it is called: the full one is spelled `all`.
-    named = {
-        tuple(h for h in heuristics if h in suite.split(","))
-        for name, suite in CONFIG_SUITES.items()
-        if name not in ("off", "all")
-    }
-    named.add(heuristics)
-    assert named == subsets
-    assert CONFIG_SUITES["fpr"] == "fpr"
-    assert CONFIG_SUITES["fpr_lp"] == "fpr_lp"
-    assert CONFIG_SUITES["fpr+fpr_lp"] == "fpr,fpr_lp"
+    # Every subset is reachable, whatever the config carrying it is called:
+    # the full one is spelled `all`.
+    assert {s for name, s in CONFIG_SELECTIONS.items() if name != "off"} == subsets
+    assert CONFIG_SELECTIONS["fpr"] == frozenset({"fpr"})
+    assert CONFIG_SELECTIONS["fpr_lp"] == frozenset({"fpr_lp"})
+    assert CONFIG_SELECTIONS["fpr+fpr_lp"] == frozenset({"fpr", "fpr_lp"})
     # The re-spelling the issue calls for: the recorded mipfeas configuration
     # ran `fj,fpr,local_mip`, which enabled `fpr_lp` as a side effect of the
     # `fpr` token, so the config that means the same thing today names it.
-    assert CONFIG_SUITES["fj+fpr+local_mip+fpr_lp"] == "fj,fpr,local_mip,fpr_lp"
+    assert CONFIG_SELECTIONS["fj+fpr+local_mip+fpr_lp"] == frozenset(
+        {"fj", "fpr", "local_mip", "fpr_lp"}
+    )
 
 
 @pytest.fixture(scope="module")
@@ -828,13 +863,17 @@ def mix_tree(tmp_path_factory):
     return tree, records(record), names
 
 
-def test_every_mix_runs_at_two_seeds_and_is_handed_its_own_suite_value(mix_tree):
+def test_every_mix_runs_at_two_seeds_and_is_handed_its_own_selection(mix_tree):
     tree, recorded, names = mix_tree
     for config in MIX_CONFIGS:
         for seed in (0, 1):
             assert sorted(p.stem for p in logs_under(tree, config, seed)) == names
-    delivered = {config_of(r): r["options"]["mip_heuristic_suite"] for r in recorded}
-    assert delivered == {c: CONFIG_SUITES[c] for c in MIX_CONFIGS}
+    # The zeroed efforts a config carries, read back off every run it made.
+    delivered = {
+        config_of(r): {k: v for k, v in r["options"].items() if k.endswith("_effort")}
+        for r in recorded
+    }
+    assert delivered == {c: config_options(c) for c in MIX_CONFIGS}
 
 
 def test_the_mix_table_ranks_every_configuration_on_the_pre_registered_metric(mix_tree):
@@ -1220,7 +1259,7 @@ def test_the_probe_runs_every_heuristic_alone_and_nothing_chained():
     text = (BENCH / "run_presolve_probe.sh").read_text()
     default = re.search(r"PROBE_CONFIGS:-([^}]*)\}", text).group(1).split()
     assert default == list(CHAIN)
-    assert set(default) <= set(CONFIG_SUITES)
+    assert set(default) <= set(CONFIG_SELECTIONS)
 
 
 def test_the_experiment_leaves_the_clock_as_the_only_stopping_rule(tmp_path):
@@ -1244,7 +1283,17 @@ def test_the_experiment_leaves_the_clock_as_the_only_stopping_rule(tmp_path):
             # put both options on the `nnz << 10` base, which cut the largest
             # expressible budget 80x -- enough that the #113 tree, re-read,
             # has 84 dispatches that would have been budget-bound.
-            assert float(options[f"mip_heuristic_{heur}_effort"]) == 1e6
+            #
+            # Only the heuristic this config *names* carries it: since #167
+            # a config zeroes the others, and a config option wins over an
+            # `--extra-options` pin of the same key.  That is the probe's
+            # own design either way -- one heuristic per pass -- expressed
+            # once instead of twice.
+            expected = "0" if heur != config_of(run) else None
+            if expected is None:
+                assert float(options[f"mip_heuristic_{heur}_effort"]) == 1e6
+            else:
+                assert float(options[f"mip_heuristic_{heur}_effort"]) == 0.0
             # 0 is *no gate*, not "give up immediately".
             assert options[f"mip_heuristic_{heur}_patience"] == "0"
         assert options["mip_heuristic_presolve_only"] == "true"
@@ -1282,9 +1331,17 @@ def test_the_budget_control_moves_the_budget_and_nothing_else(tmp_path):
         return {k: v for k, v in options.items() if not k.endswith("_effort")}
 
     assert without_effort(free[0]["options"]) == without_effort(bounded[0]["options"])
+    # The heuristic each pass is *about* — the others are zeroed by the config
+    # name, identically on both sides, so the budget is the only difference.
+    subject = config_of(free[0])
+    assert config_of(bounded[0]) == subject
+    assert float(free[0]["options"][f"mip_heuristic_{subject}_effort"]) == 1e6
+    assert float(bounded[0]["options"][f"mip_heuristic_{subject}_effort"]) == 1.0
     for heur in CHAIN:
-        assert float(free[0]["options"][f"mip_heuristic_{heur}_effort"]) == 1e6
-        assert float(bounded[0]["options"][f"mip_heuristic_{heur}_effort"]) == 1.0
+        if heur == subject:
+            continue
+        assert float(free[0]["options"][f"mip_heuristic_{heur}_effort"]) == 0.0
+        assert float(bounded[0]["options"][f"mip_heuristic_{heur}_effort"]) == 0.0
     # Separate trees, so neither pass resumes into the other's runs.
     assert (
         Path(free[0]["options_file"]).parents[2].name

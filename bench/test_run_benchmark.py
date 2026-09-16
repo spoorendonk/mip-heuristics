@@ -11,7 +11,7 @@ import pytest
 import run_benchmark
 from run_benchmark import (
     BANNER_RE,
-    CONFIG_SUITES,
+    CONFIG_SELECTIONS,
     HIGHS_TAG_RE,
     KNOWN_CONFIGS,
     MIPLIB_MIN_INSTANCES,
@@ -62,38 +62,47 @@ def test_unknown_config_raises_through_build_plan():
 
 
 @pytest.mark.parametrize(
-    "config,suite",
+    "config,selected",
     [
-        ("off", "off"),
-        ("fj", "fj"),
-        ("fpr", "fpr"),
-        ("local_mip", "local_mip"),
-        ("scylla", "scylla"),
-        ("all", "all"),
+        ("off", ()),
+        ("fj", ("fj",)),
+        ("fpr", ("fpr",)),
+        ("local_mip", ("local_mip",)),
+        ("scylla", ("scylla",)),
+        ("all", ("fj", "fpr", "local_mip", "scylla", "fpr_lp")),
     ],
 )
-def test_config_selects_its_suite_value(config, suite):
-    assert config_options(config) == {"mip_heuristic_suite": suite}
+def test_config_zeroes_every_heuristic_it_does_not_name(config, selected):
+    assert config_options(config) == {
+        f"mip_heuristic_{h}_effort": "0"
+        for h in ("fj", "fpr", "local_mip", "scylla", "fpr_lp")
+        if h not in selected
+    }
 
 
 def test_vanilla_is_not_a_suite_value():
-    """#147: `vanilla` names a binary, so it maps to no suite at all.
+    """#147: `vanilla` names a binary, so it maps to no selection at all.
 
     It used to map to `off`, which is what made a `vanilla` tree without
     `--vanilla-binary` an ablation on the patched binary.
     """
-    assert "vanilla" not in CONFIG_SUITES
+    assert "vanilla" not in CONFIG_SELECTIONS
     assert "vanilla" in KNOWN_CONFIGS
     # An unpatched binary has no `mip_heuristic_*` option to set.
     assert config_options("vanilla") == {}
 
 
 def test_vanilla_does_not_leak_into_other_configs():
-    assert config_options("fpr") == {"mip_heuristic_suite": "fpr"}
+    assert config_options("fpr") == {
+        "mip_heuristic_fj_effort": "0",
+        "mip_heuristic_local_mip_effort": "0",
+        "mip_heuristic_scylla_effort": "0",
+        "mip_heuristic_fpr_lp_effort": "0",
+    }
 
 
 # The four heuristics of the presolve chain, in chain order, then the
-# dive-time `fpr_lp` — the order `CONFIG_SUITES` spells a subset in.
+# dive-time `fpr_lp` — the order `CONFIG_SELECTIONS` spells a subset in.
 CHAIN = ("fj", "fpr", "local_mip", "scylla")
 SELECTION_ORDER = (*CHAIN, "fpr_lp")
 
@@ -108,11 +117,11 @@ def test_every_subset_of_the_chain_is_a_config():
     for mask in range(1, 1 << len(CHAIN)):
         members = [name for bit, name in enumerate(CHAIN) if mask & (1 << bit)]
         expected.add("+".join(members))
-    assert expected <= set(CONFIG_SUITES)
+    assert expected <= set(CONFIG_SELECTIONS)
 
 
 def test_every_subset_of_all_five_heuristics_is_a_config():
-    """#164: `fpr_lp` is a suite token, so 31 subsets must be nameable."""
+    """#164: `fpr_lp` is selectable on its own, so 31 subsets must be nameable."""
     expected = set()
     for mask in range(1, 1 << len(SELECTION_ORDER)):
         members = [
@@ -122,23 +131,35 @@ def test_every_subset_of_all_five_heuristics_is_a_config():
             "all" if len(members) == len(SELECTION_ORDER) else "+".join(members)
         )
     assert len(expected) == 31
-    assert expected <= set(CONFIG_SUITES)
+    assert expected <= set(CONFIG_SELECTIONS)
 
 
-def test_config_names_join_with_plus_and_suite_values_with_commas():
+def test_config_names_join_with_plus_and_list_their_members_in_order():
     """A comma in a config name is a results-tree path and a LaTeX label."""
-    for name, suite in CONFIG_SUITES.items():
+    for name, selection in CONFIG_SELECTIONS.items():
         assert "," not in name
         if "+" in name:
-            assert name.split("+") == suite.split(",")
-        else:
-            assert "," not in suite
+            assert name.split("+") == [h for h in SELECTION_ORDER if h in selection]
 
 
-def test_subset_configs_map_to_a_comma_separated_suite_value():
-    assert config_options("fj+fpr") == {"mip_heuristic_suite": "fj,fpr"}
+def test_a_subset_config_zeroes_exactly_the_heuristics_it_does_not_name():
+    """Since #167 the effort option is the selector: excluding is zeroing."""
+    assert config_options("fj+fpr") == {
+        "mip_heuristic_local_mip_effort": "0",
+        "mip_heuristic_scylla_effort": "0",
+        "mip_heuristic_fpr_lp_effort": "0",
+    }
     assert config_options("fj+fpr+local_mip") == {
-        "mip_heuristic_suite": "fj,fpr,local_mip"
+        "mip_heuristic_scylla_effort": "0",
+        "mip_heuristic_fpr_lp_effort": "0",
+    }
+    # A named heuristic is left unset, so it runs at the binary's shipped
+    # default — a config name carries no budget of its own.
+    assert config_options("all") == {}
+    # And `off` is every one of the five zeroed, which is the only
+    # configuration in which nothing of ours runs.
+    assert set(config_options("off")) == {
+        f"mip_heuristic_{h}_effort" for h in SELECTION_ORDER
     }
 
 
@@ -162,7 +183,7 @@ def test_vanilla_without_an_external_binary_raises():
 
 
 def test_every_other_config_takes_the_patched_binary_without_a_vanilla_one():
-    for config in CONFIG_SUITES:
+    for config in CONFIG_SELECTIONS:
         assert build_plan(config, PATCHED, None).binary == PATCHED
 
 
@@ -257,8 +278,10 @@ def test_options_file_is_written_beside_the_log(tmp_path: Path):
 
 def test_write_options_file_round_trips(tmp_path: Path):
     path = tmp_path / "o.opts"
-    write_options_file({"mip_heuristic_suite": "fpr", "random_seed": "3"}, str(path))
-    assert path.read_text() == "mip_heuristic_suite = fpr\nrandom_seed = 3\n"
+    write_options_file(
+        {"mip_heuristic_fpr_effort": "3.161", "random_seed": "3"}, str(path)
+    )
+    assert path.read_text() == "mip_heuristic_fpr_effort = 3.161\nrandom_seed = 3\n"
     assert os.path.exists(path)
 
 
@@ -279,28 +302,28 @@ def test_a_successful_retry_clears_a_stale_err(tmp_path: Path):
 # --- a run that solved but ignored its configuration -----------------------
 
 
-def test_the_fail_open_warning_is_detected():
-    """HiGHS accepts an unknown suite *value* and runs all four anyway.
+def test_the_fj_taken_away_warning_is_detected():
+    """A positive FJ effort + run_feasibility_jump=false runs no heuristic.
 
-    Verbatim text from src/mode_dispatch.cpp's run_presolve.
+    Verbatim text from src/mode_dispatch.cpp's run_presolve, and the only
+    ignored-config warning left since #167 retired `mip_heuristic_suite`:
+    an unknown *value* was that option's failure mode, and an effort option
+    is both name-checked and range-checked by HiGHS itself.
     """
     output = (
         "Running HiGHS 1.15.1\n"
-        'WARNING: Unknown mip_heuristic_suite value "of"; running all heuristics.\n'
+        "WARNING: mip_heuristic_fj_effort=0.3317 selects only FeasibilityJump, "
+        "which mip_heuristic_run_feasibility_jump=false disables; no heuristic "
+        "will run.\n"
         "  Status            Optimal\n"
     )
-    assert "Unknown mip_heuristic_suite" in find_ignored_config_warning(output)
+    assert "no heuristic will run" in find_ignored_config_warning(output)
 
 
-def test_the_fj_taken_away_warning_is_detected():
-    """`suite=fj` + run_feasibility_jump=false runs no FeasibilityJump."""
-    output = (
-        'WARNING: mip_heuristic_suite="fj" selects only FeasibilityJump, which '
-        "mip_heuristic_run_feasibility_jump=false disables; no heuristic will "
-        "run. Use mip_heuristic_suite=off to run HiGHS's own FeasibilityJump "
-        "instead.\n"
-    )
-    assert find_ignored_config_warning(output) is not None
+def test_an_ordinary_log_trips_no_ignored_config_warning():
+    """The other half: it must not fire on a good run."""
+    output = "Running HiGHS 1.15.1\n  Status            Optimal\n"
+    assert find_ignored_config_warning(output) is None
 
 
 def test_an_ordinary_log_trips_nothing():
@@ -386,8 +409,9 @@ def test_a_run_that_ignored_its_config_is_parked_as_err(tmp_path: Path, capsys):
         f"#!{sys.executable}\n"
         "import sys\n"
         "print('Running HiGHS')\n"
-        'print(\'WARNING: Unknown mip_heuristic_suite value "of"; '
-        "running all heuristics.')\n"
+        "print('WARNING: mip_heuristic_fj_effort=1 selects only "
+        "FeasibilityJump, which mip_heuristic_run_feasibility_jump=false "
+        "disables; no heuristic will run.')\n"
         "sys.exit(0)\n"
     )
     binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
@@ -963,9 +987,26 @@ def test_main_warns_when_a_config_overrides_an_extra_option(
         "--configs",
         "fpr",
         "--extra-options",
-        "mip_heuristic_suite=scylla",
+        "mip_heuristic_scylla_effort=3.068",
     )
     assert "is overridden by config 'fpr'" in capsys.readouterr().err
+
+
+def test_main_does_not_warn_when_a_config_and_an_extra_option_agree(
+    tmp_path, monkeypatch, capsys
+):
+    """#167: a config zeroes what it does not name, and a finalist sweep spells
+    the same zeros, so an agreeing collision must stay silent or the warning
+    becomes noise nobody reads."""
+    _main(
+        tmp_path,
+        monkeypatch,
+        "--configs",
+        "fpr",
+        "--extra-options",
+        "mip_heuristic_scylla_effort=0.0",
+    )
+    assert "is overridden by config" not in capsys.readouterr().err
 
 
 def test_main_warns_that_an_extra_random_seed_is_ignored(tmp_path, monkeypatch, capsys):

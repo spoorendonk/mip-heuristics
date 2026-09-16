@@ -1,20 +1,17 @@
 #pragma once
 
-#include <cstddef>
-#include <string>
-
 class HighsMipSolver;
 class HighsOptions;
 
 namespace heuristics {
 
-// The `mip_heuristic_suite` token that selects the dive-time `fpr_lp`, and
-// the `[Heur] name=` tag it books its dispatch under.  One spelling for
-// both, for the reason the four presolve tokens take theirs from `kChain`'s
-// own `name` field: the name a user selects with is the name they read in
-// the trace.  `fpr_lp` cannot take it from that table because it is not a
-// chain entry — it runs during the B&B dive, not in presolve — so the
-// constant is the binding instead, and `fpr_lp.cpp` charges under it.
+// The `[Heur] name=` tag the dive-time `fpr_lp` books its dispatch under.
+// One spelling, for the reason the four presolve heuristics take theirs
+// from `kChain`'s own `name` field: the name a user reads in the trace has
+// exactly one definition.  `fpr_lp` cannot take it from that table because
+// it is not a chain entry — it runs during the B&B dive, not in presolve —
+// so this constant is the binding instead, and `fpr_lp.cpp` charges under
+// it.
 //
 // A plain `constexpr const char*` rather than an `inline constexpr
 // std::string_view`: this header is inserted into HiGHS's own
@@ -25,69 +22,34 @@ namespace heuristics {
 // array form and `std::array<char, 7>` would spell a name as a length.
 constexpr const char* kFprLpName = "fpr_lp";
 
-// The effective per-heuristic enable flags selected by
-// mip_heuristic_suite, which is either one of the two whole-value aliases
-// `off` (no heuristic) and `all` (every one), or a comma-separated list of
-// the heuristic names `fj`, `fpr`, `local_mip`, `scylla`, `fpr_lp` — so
-// `fj,fpr` enables exactly those two.
+// Whether any heuristic of ours can produce a solution under `options` —
+// that is, whether any of the five `mip_heuristic_<name>_effort` options is
+// above zero, with FJ additionally honouring upstream's own
+// `mip_heuristic_run_feasibility_jump`.
 //
-// The first four are the presolve chain, in dispatch order; `fpr_lp` is the
-// dive-time LP-based FPR and is last for the same reason it is last in a
-// config name — it is the only entry that does not run in presolve.  It has
-// been its own token since #164: it used to follow `fpr`'s bit, which made
-// "presolve FPR without fpr_lp" inexpressible and so left the contribution
-// of either one unmeasurable.
-struct HeuristicFlags {
-    bool fj;
-    bool fpr;
-    bool local_mip;
-    bool scylla;
-    bool fpr_lp;
-};
-
-// What parsing mip_heuristic_suite rejected, for the warning run_presolve
-// emits.  Callers that only want the flags pass nothing — fpr_lp calls
-// effective_flags once per B&B dive and has nothing to log.  Every value
-// that parses cleanly allocates nothing either way; only a rejected token
-// does, first to collect it and then, if this struct is asked for, to
-// format it.
-struct SuiteDiagnosis {
-    // Every token of the value that named no heuristic, quoted and
-    // comma-joined (`"fpr2", "walksat"`).  Empty when the whole value was
-    // understood.  The warning has to name the token rather than only the
-    // value: one typo inside an otherwise valid list silently promotes the
-    // run to all four heuristics, and "unknown value" alone does not say
-    // which name to fix.
-    std::string unknown_tokens;
-    // How many of those there are, so the caller can pluralize.
-    size_t unknown_count = 0;
-};
-
-// Derive the effective flag set from `options`.  Shared by the presolve
-// dispatch (run_presolve) and the B&B-dive fpr_lp entry point so both
-// honour the same suite semantics — in particular `suite=off` disables
-// fpr_lp too, which is what makes `off` an ablation of every heuristic of
-// ours rather than of the presolve chain alone, and so does any value that
-// does not name `fpr_lp`.
-// A value carrying an unrecognised token fails open (all five on) and
-// reports the offending tokens through `*diagnosis` if non-null; the caller
-// decides whether to warn, because this helper is called once per B&B dive
-// and must not log.
-//
-// `fj` additionally honours upstream's own mip_heuristic_run_feasibility_jump:
-// setting it false disables FeasibilityJump at every suite value, matching
-// what it does to the native call site at suite=off.
-HeuristicFlags effective_flags(const HighsOptions& options, SuiteDiagnosis* diagnosis = nullptr);
+// It exists for one caller outside this translation unit: the patched
+// `printSolutionSourceKey` drops the group advertising our five solution
+// sources when none of them can appear, which is what keeps the printed
+// legend byte-identical to an unpatched binary's and so lets
+// `bench/check_vanilla_equivalence.py` diff whole logs rather than a
+// filtered subset of them.  Declared here rather than recomputed in that
+// patch string so the legend cannot disagree with the dispatcher about
+// which heuristics are live.  Being reachable from a file compiled at
+// HiGHS's `CMAKE_CXX_STANDARD 11`, it takes `HighsOptions` by reference and
+// returns `bool` and nothing more.
+bool any_enabled(const HighsOptions& options);
 
 // Top-level presolve heuristic dispatch. Reads mip_heuristic_* options
 // and runs the fixed FJ -> FPR -> LocalMIP -> Scylla chain, each on
 // continuous parallel workers.  Returns true if the model was proven
 // infeasible.
 //
-// No budget parameter: each heuristic's budget comes from its own
-// `mip_heuristic_<name>_effort` option and the model's nnz, both read here
-// (#110).  The call site is a patch string in
-// `third_party/highs_patch/apply_patch.cmake`, so keeping the arithmetic
-// out of it keeps it out of a file no compiler in this repo checks.
+// No budget parameter and no suite parameter: each heuristic's budget comes
+// from its own `mip_heuristic_<name>_effort` option and the model's nnz,
+// both read here (#110), and that same option is what selects it — a value
+// at or below zero skips the heuristic entirely (#167).  The call site is a
+// patch string in `third_party/highs_patch/apply_patch.cmake`, so keeping
+// the arithmetic out of it keeps it out of a file no compiler in this repo
+// checks.
 bool run_presolve(HighsMipSolver& mipsolver);
 }  // namespace heuristics

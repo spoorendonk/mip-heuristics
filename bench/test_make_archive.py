@@ -113,13 +113,16 @@ def write_run(
 def tree(tmp_path: Path) -> Path:
     """A two-config results tree: patched `off` baseline plus patched `all`."""
     root = tmp_path / "results"
-    for config, suite in (("off", "off"), ("all", "all")):
+    for config, fpr_effort in (("off", "0"), ("all", "3.161")):
         for seed in (0, 1):
             for instance in ("egout", "flugpl"):
                 write_run(
                     root / config / f"seed{seed}",
                     instance,
-                    options={"log_dev_level": "3", "mip_heuristic_suite": suite},
+                    options={
+                        "log_dev_level": "3",
+                        "mip_heuristic_fpr_effort": fpr_effort,
+                    },
                 )
     return root
 
@@ -170,10 +173,10 @@ def test_inspect_log_survives_a_log_without_a_worker_count(tmp_path: Path):
 
 
 def test_read_options_file_round_trips(tmp_path: Path):
-    (tmp_path / "a.opts").write_text("threads = 16\nmip_heuristic_suite = all\n")
+    (tmp_path / "a.opts").write_text("threads = 16\nmip_heuristic_fpr_effort = 3.161\n")
     assert read_options_file(tmp_path / "a.opts") == {
         "threads": "16",
-        "mip_heuristic_suite": "all",
+        "mip_heuristic_fpr_effort": "3.161",
     }
 
 
@@ -200,7 +203,7 @@ def test_collect_config_summarises_a_uniform_config(tree: Path):
     assert config.seeds == [0, 1]
     assert config.instances == ["egout", "flugpl"]
     assert config.runs == 4
-    assert config.options == {"log_dev_level": "3", "mip_heuristic_suite": "all"}
+    assert config.options == {"log_dev_level": "3", "mip_heuristic_fpr_effort": "3.161"}
     assert config.option_variants == []
     assert config.instrumentation_requested
     assert config.instrumentation_observed
@@ -208,11 +211,13 @@ def test_collect_config_summarises_a_uniform_config(tree: Path):
 
 def test_collect_config_records_disagreeing_option_sets(tmp_path: Path):
     root = tmp_path / "r"
-    write_run(root / "all" / "seed0", "egout", options={"mip_heuristic_suite": "all"})
+    write_run(
+        root / "all" / "seed0", "egout", options={"mip_heuristic_fpr_effort": "3.161"}
+    )
     write_run(
         root / "all" / "seed0",
         "flugpl",
-        options={"mip_heuristic_suite": "all", "threads": "16"},
+        options={"mip_heuristic_fpr_effort": "3.161", "threads": "16"},
     )
     config = collect_config(root, "all")
     assert config.options == {}
@@ -280,7 +285,7 @@ def test_collect_config_flags_an_instrumentation_disagreement(tmp_path: Path):
 
 
 def test_baseline_on_a_patched_binary_is_not_a_vanilla_claim(tree: Path):
-    """#147: `suite=off` on the patched build is an ablation, full stop.
+    """#147: a fully zeroed patched build is an ablation, full stop.
 
     It used to be labelled "vanilla-equivalent setting on the patched
     binary" — a weaker version of the same claim.  It is not a version of
@@ -293,7 +298,7 @@ def test_baseline_on_a_patched_binary_is_not_a_vanilla_claim(tree: Path):
         baseline["claim"] == "ablation on the patched binary — not a vanilla baseline"
     )
     evidence = str(baseline["evidence"])
-    assert "mip_heuristic_suite=off" in evidence
+    assert "mip_heuristic_<name>_effort` zeroed" in evidence
     assert "separately built unpatched binary" in evidence
     assert "vanilla-equivalent" not in evidence
 

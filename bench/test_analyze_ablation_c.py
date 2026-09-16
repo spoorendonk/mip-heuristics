@@ -32,7 +32,8 @@ def write_log(tmp_path: Path, name: str, *lines: str, dev_log: bool = True) -> P
     p.write_text("\n".join(lines) + "\n")
     # The run's own `.opts`, which is where tracing is read from.
     (d / f"{name}.opts").write_text(
-        ("log_dev_level = 3\n" if dev_log else "") + "mip_heuristic_suite = fpr_lp\n"
+        ("log_dev_level = 3\n" if dev_log else "")
+        + "mip_heuristic_fpr_lp_effort = 1.0\n"
     )
     return p
 

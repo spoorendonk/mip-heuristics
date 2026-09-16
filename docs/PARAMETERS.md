@@ -11,7 +11,7 @@ reference that carries a line number, because those drifted on essentially
 every refactor. Renaming a constant here means updating its entry in the same
 commit.
 
-For the runtime options a user actually sets (`mip_heuristic_suite`, the
+For the runtime options a user actually sets (the
 four `mip_heuristic_<name>_effort` budgets, `mip_heuristic_effort`), see the
 closing section of this file and `README.md`. For what is and is not reproducible when
 you change these, see `docs/REPRODUCIBILITY.md`.
@@ -1158,26 +1158,26 @@ The four defaults below are the closest *scalar* approximation to the
 scheme they replaced, and no scalar can be exact. The old envelope handed
 a heuristic `budget x max(1 - N/(80e), 1/4) x w/sum(w over enabled)`,
 which depends on two runtime facts a constant cannot see: the worker
-count `N`, and which *other* heuristics the suite enabled. These
-reproduce the `suite=all` share with the worker-count term dropped, so
+count `N`, and which *other* heuristics were enabled. These
+reproduce the every-heuristic-on share with the worker-count term dropped, so
 they are exact at neither end:
 
 | configuration | budget vs the retired scheme |
 |---|---|
-| `suite=all`, N=1 | 1.04x |
-| `suite=all`, N=6 | 1.33x |
-| `suite=all`, N=12 | 2x |
-| `suite=all`, N>=18 | 4x — the old quarter-floor capped the FJ deduction there |
-| `suite=fpr` alone | 0.29x |
-| `suite=local_mip` alone | 0.61x |
-| `suite=scylla` alone | 0.10x |
+| every heuristic on, N=1 | 1.04x |
+| every heuristic on, N=6 | 1.33x |
+| every heuristic on, N=12 | 2x |
+| every heuristic on, N>=18 | 4x — the old quarter-floor capped the FJ deduction there |
+| `fpr` alone | 0.29x |
+| `local_mip` alone | 0.61x |
+| `scylla` alone | 0.10x |
 
 `mip_heuristic_fj_effort` is the one exact case, at every `N` and every
-suite value.
+selection.
 
 **The single-heuristic rows are the ones a per-heuristic calibration has
 to know about.** The retired allocation divided by the weight sum over
-the *enabled* heuristics only, so a suite naming one heuristic handed it
+the *enabled* heuristics only, so a selection naming one heuristic handed it
 the entire post-FJ envelope. A sweep that runs one heuristic alone —
 which is exactly how a per-heuristic budget is measured — therefore
 starts at 0.29x / 0.61x / 0.10x of what that configuration used to spend,
@@ -2102,22 +2102,27 @@ anything.
 
 `mip_heuristic_run_feasibility_jump` is a **native HiGHS option**
 (registered by HiGHS itself, default: `true`). It is **not** one of the
-custom patch-added options. It keeps its meaning — `false` disables
-FeasibilityJump — but *which* FJ it gates depends on
-`mip_heuristic_suite`:
+custom patch-added options. It keeps its meaning — `false` disables FeasibilityJump — and what it
+gates is our parallel FJ, at every configuration. It is ANDed onto the
+effort option in `heuristics::entry_enabled`, through the one
+`HeuristicConfig::enable_switch` a chain entry names, so `false` and
+`mip_heuristic_fj_effort = 0` do the same thing by two routes.
 
-- at `suite=off` it gates HiGHS's own standalone single-threaded FJ,
-  which the patch leaves in place so that `off` ablates our heuristics
-  alone rather than also taking upstream's FJ away;
-- at every other suite value the native call site is off and this
-  option gates our parallel FJ instead.
+It used to gate two different FJs depending on `mip_heuristic_suite`:
+at `suite=off` upstream's own standalone single-threaded call site, and
+our parallel FJ everywhere else. #167 retired both the option and that
+call site — the rationale for keeping it, that `off` should run exactly
+what an unpatched binary runs, stopped holding once #139 corrected two
+defects in the FeasibilityJump implementation both call sites share.
+A patched build now runs our FJ or none.
 
-So an options file carrying both
+So an options file carrying all five effort options at `0` plus
 
-    mip_heuristic_suite = off
     mip_heuristic_run_feasibility_jump = false
 
 is the pure patch-overhead configuration: no heuristics of any kind.
+(The switch is redundant beside `mip_heuristic_fj_effort = 0`; it is set
+because the *unpatched* side of that comparison has only the switch.)
 Neither is a command-line flag — HiGHS's CLI accepts only its own fixed
 flag set and rejects an unknown `--mip_heuristic_...` *without solving*,
 so custom options are reachable only through `--options_file`.
@@ -2211,38 +2216,30 @@ options documented above):
   `tests/test_fpr_lp.cpp` now fails on that mutation on both sides of the
   `min`, and a second case pins that a real dispatch still reads the option
   — a pure function nothing called would pass either way.
-- `mip_heuristic_suite` — which heuristics run (default `"all"`).
-  The value is either one of the two whole-value aliases `off` (no
-  heuristic) and `all` (every one), or a **comma-separated list** of the
-  heuristic names `fj`, `fpr`, `local_mip`, `scylla`, `fpr_lp` — so all
-  thirty-one non-empty subsets are expressible, e.g.
-  `fj,fpr,local_mip,fpr_lp` (#112, #164).
-  Order is irrelevant, whitespace around a name is ignored and repeats
-  are harmless. `off` is an alias for the whole value only, never a token
-  in a list: the patched HiGHS tree compares this option to `"off"`
-  verbatim to hand back upstream's own FeasibilityJump call site, so a
-  value that selected nothing without being that exact string would run no
-  heuristic at all, HiGHS's own FJ included. HiGHS does
-  not validate string option values, so an unrecognised one is accepted
-  by `setOptionValue` and caught at solve time: the dispatcher warns —
-  naming the offending token, which is what makes a typo inside a list
-  diagnosable — and falls back to running every heuristic. The single
-  place the string becomes five booleans is
-  `heuristics::effective_flags` in `src/mode_dispatch.cpp`; the four
-  presolve names are the chain table's own, so they cannot drift from the
-  `[Heur] name=<n>` traces, and the fifth is `heuristics::kFprLpName`,
-  which `fpr_lp.cpp` also books its dispatch under for the same reason.
+**There is no separate selector option.** A heuristic runs iff its own
+`mip_heuristic_<name>_effort` is above zero, so all thirty-two subsets of
+the five are expressible as the zero-pattern of five doubles. That has
+been the encoding #107's search used since #106 made a zero budget worth
+exactly what omitting a heuristic is worth; #167 removed the second
+spelling, `mip_heuristic_suite`, a string HiGHS does not validate.
 
-`mip_heuristic_suite` also gates the B&B-dive `fpr_lp`, and **since #164
-it does so on a token of its own** rather than on presolve FPR's bit. It
-therefore runs at any value naming `fpr_lp` — `fpr_lp`, `all`,
-`fj,fpr_lp`, and an unrecognised value, which fails open to everything —
-while `off`, `fpr`, and every subset that omits `fpr_lp` disable it. **A
-configuration spelled `fpr` no longer implies `fpr_lp`**; the pair is
-`fpr,fpr_lp`. What that buys is the row that had no spelling before —
-presolve FPR with the dive-time variant off — so the contribution of
-either half can be measured on the shipped binary; the coupling it
-replaces meant a per-heuristic attribution run naming `fpr` left a second
-FPR variant running at dive time that no option of that run sized. A
-dive-time result measured under `suite=local_mip` or `suite=scylla` still
-says nothing about `fpr_lp`, and now neither does one under `suite=fpr`.
+The single place an option becomes a decision is
+`heuristics::entry_enabled` in `src/mode_dispatch.cpp`. `run_sequential`
+filters the chain table through it and returns before `make_problem` when
+nothing is selected, so a fully zeroed configuration does not even build
+the shared CSC transpose. A skipped heuristic emits **no `[Sequential]` /
+`[Heur]` line**, which is why a solve at the shipped defaults traces three
+presolve heuristics rather than four. `heuristics::any_enabled` is the one
+export, for the patched `printSolutionSourceKey`.
+
+**`fpr_lp` has had its own option since #164** rather than following
+presolve FPR's selector bit, and reads it in `fpr_lp::run`. **A
+configuration running presolve FPR does not imply `fpr_lp`**: the two are
+sized and switched independently. What that buys is the row that had no
+spelling before — presolve FPR with the dive-time variant off — so the
+contribution of either half can be measured on the shipped binary; the
+coupling it replaces meant a per-heuristic attribution run of `fpr` left a
+second FPR variant running at dive time that no option of that run sized.
+A dive-time result measured with only LocalMIP or only Scylla enabled
+still says nothing about `fpr_lp`, and neither does one measured with only
+presolve FPR.

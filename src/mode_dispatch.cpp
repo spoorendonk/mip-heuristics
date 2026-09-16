@@ -14,9 +14,6 @@
 
 #include <algorithm>
 #include <array>
-#include <string>
-#include <string_view>
-#include <vector>
 
 namespace heuristics {
 
@@ -46,10 +43,10 @@ namespace {
 // The defaults are the closest *scalar* approximation to what the shared
 // envelope handed each heuristic, not a reproduction of it — no scalar can
 // be, because the old share depended on the worker count and on which other
-// heuristics the suite enabled, neither of which a constant can see.  They
-// run 1.04x the old budget at N=1 and 4x from N=18 at `suite=all`, and
+// heuristics were enabled, neither of which a constant can see.  They
+// run 1.04x the old budget at N=1 and 4x from N=18 with every heuristic on, and
 // 0.29x / 0.61x / 0.10x for fpr / local_mip / scylla when that heuristic
-// runs alone.  Only FJ is exact, at every N and every suite.  The full
+// runs alone.  Only FJ is exact, at every N and every selection.  The full
 // accounting is in `third_party/highs_patch/apply_patch.cmake`, where the
 // defaults themselves live; retuning them is a separate change with its own
 // measurements (#106).
@@ -64,10 +61,17 @@ struct HeuristicConfig {
     // kSolutionSource* tag the sink attributes this heuristic's solutions
     // with, so the HiGHS log credits the right finder.
     int source_tag;
-    // Which `mip_heuristic_suite` bit enables this entry.
-    bool HeuristicFlags::* flag;
-    // This entry's effort-budget multiplier option.
+    // This entry's effort-budget multiplier option, which is also what
+    // selects it: at or below zero the heuristic does not run (#167).
     double HighsOptionsStruct::* effort;
+    // An upstream `mip_heuristic_run_*` switch that additionally has to be
+    // true, or null when the entry answers to its effort option alone.
+    // Only FJ names one: `mip_heuristic_run_feasibility_jump` is HiGHS's
+    // own switch for the heuristic ours replaces, so it keeps its meaning
+    // rather than becoming a dead option on a patched binary.  The other
+    // five upstream switches (rens, rins, root_reduced_cost, shifting,
+    // zi_round) name heuristics we do not touch.
+    const bool HighsOptionsStruct::* enable_switch;
     // Whether that option sizes one *worker's* allowance rather than the
     // whole dispatch.  Only FJ sets it: vanilla HiGHS gives its single FJ
     // thread `nnz << 10` steps, and each of our N workers matches that, so
@@ -97,17 +101,42 @@ struct HeuristicConfig {
 };
 
 constexpr auto kChain = std::to_array<HeuristicConfig>({
-    {"fj", kSolutionSourceFJ, &HeuristicFlags::fj, &HighsOptionsStruct::mip_heuristic_fj_effort,
-     true, &HighsOptionsStruct::mip_heuristic_fj_patience, &fj::run},
-    {"fpr", kSolutionSourceFPR, &HeuristicFlags::fpr, &HighsOptionsStruct::mip_heuristic_fpr_effort,
-     false, &HighsOptionsStruct::mip_heuristic_fpr_patience, &fpr::run},
-    {"local_mip", kSolutionSourceLocalMIP, &HeuristicFlags::local_mip,
-     &HighsOptionsStruct::mip_heuristic_local_mip_effort, false,
-     &HighsOptionsStruct::mip_heuristic_local_mip_patience, &local_mip::run},
-    {"scylla", kSolutionSourceScylla, &HeuristicFlags::scylla,
-     &HighsOptionsStruct::mip_heuristic_scylla_effort, false,
-     &HighsOptionsStruct::mip_heuristic_scylla_patience, &scylla::run},
+    {"fj", kSolutionSourceFJ, &HighsOptionsStruct::mip_heuristic_fj_effort,
+     &HighsOptionsStruct::mip_heuristic_run_feasibility_jump, true,
+     &HighsOptionsStruct::mip_heuristic_fj_patience, &fj::run},
+    {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
+     &HighsOptionsStruct::mip_heuristic_fpr_patience, &fpr::run},
+    {"local_mip", kSolutionSourceLocalMIP, &HighsOptionsStruct::mip_heuristic_local_mip_effort,
+     nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience, &local_mip::run},
+    {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
+     false, &HighsOptionsStruct::mip_heuristic_scylla_patience, &scylla::run},
 });
+
+// Whether `h` runs at all under `options` (#167).
+//
+// The effort option is the selector: `mip_heuristic_<name>_effort` at or
+// below zero means the heuristic does not run, which is the only way to
+// exclude one.  It replaced `mip_heuristic_suite`, a string naming the
+// heuristics to enable, and the replacement is a narrowing of two spellings
+// to one rather than a new mechanism — a zero budget already declined every
+// piece of work a heuristic does, down to `ProblemView`-sized setup, since
+// `HeuristicBudget::disabled()` reached all four entry points (#106).  What
+// the suite value added on top was the ability to say the same thing twice,
+// and a string HiGHS does not validate, so a typo inside it ran a
+// configuration nobody asked for.  What it is *not* is a loss of
+// expressiveness: every subset of the five is still selectable, as the
+// zero-pattern of five continuous options, which is the form #107's search
+// already used.
+//
+// `enable_switch`, when the entry names one, is ANDed on top: upstream's
+// own `mip_heuristic_run_feasibility_jump` still means what it says, so
+// setting it false disables FeasibilityJump exactly as a zero effort does.
+bool entry_enabled(const HighsOptions& options, const HeuristicConfig& h) {
+    if (options.*h.effort <= 0.0) {
+        return false;
+    }
+    return h.enable_switch == nullptr || options.*h.enable_switch;
+}
 
 // Each enabled heuristic runs in turn, with its own effort budget and the
 // full thread pool.
@@ -117,14 +146,20 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
 // become available as pool-restart seeds for later heuristics (FPR,
 // LocalMIP).  Each entry carries its originating heuristic's source tag
 // (see incumbent_sink.h / #73).
-bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
-    const bool any_enabled =
-        std::ranges::any_of(kChain, [&](const HeuristicConfig& h) { return flags.*h.flag; });
-    if (!any_enabled) {
+bool run_sequential(HighsMipSolver& mipsolver) {
+    const HighsOptions& options = *mipsolver.options_mip_;
+
+    // Nothing to run means nothing to *build*: returning here is what keeps
+    // a fully zeroed configuration free of the shared CSC transpose below,
+    // which is the single most expensive piece of setup in this function
+    // and is charged to no heuristic.  `fpr_lp` is deliberately not part of
+    // this test — it runs during the B&B dive, reads its own option there,
+    // and shares none of this setup.
+    const bool any_chain_enabled = std::ranges::any_of(
+        kChain, [&](const HeuristicConfig& h) { return entry_enabled(options, h); });
+    if (!any_chain_enabled) {
         return false;
     }
-
-    const HighsOptions& options = *mipsolver.options_mip_;
     ExecutionContext exec = make_exec(mipsolver);
 
     // Check out before the transpose, not only before each heuristic.  Each
@@ -198,7 +233,14 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
     // outer loop — the previous heuristic's parallel region has already
     // joined, so there is no concurrent access.
     for (const HeuristicConfig& h : kChain) {
-        if (!(flags.*h.flag) || exec.terminated()) {
+        // A skipped heuristic emits no `[Sequential]` / `[Heur]` line at
+        // all, which is what "skipped" has always meant here — the line is
+        // written by `run_and_charge` and a heuristic excluded from the
+        // configuration never reaches it.  So a zeroed heuristic is absent
+        // from the trace rather than present with `effort=0`, and at the
+        // shipped defaults, which disable Scylla and `fpr_lp`, a solve's
+        // presolve trace is three lines.
+        if (!entry_enabled(options, h) || exec.terminated()) {
             continue;
         }
         // The heuristic's own option, sized against this model: a
@@ -239,202 +281,55 @@ bool run_sequential(HighsMipSolver& mipsolver, const HeuristicFlags& flags) {
     return false;
 }
 
-// ── mip_heuristic_suite ──
-//
-// The value is either one of two whole-value aliases — `off` (no heuristic)
-// and `all` (every one) — or a comma-separated list of heuristic names,
-// unioned: `fj,fpr` runs those two and nothing else.  Order is irrelevant,
-// whitespace around a token is ignored, and repeating a name is harmless.
-// Thirty-one non-empty subsets exist and the seven single values could
-// express six of them (#112, #164), which left the FJ+FPR+LocalMIP
-// composition the recorded benchmark table was measured at inexpressible.
-//
-// The legal names of the four presolve entries are `kChain`'s own `name`
-// field rather than a second table, so they cannot drift from the `[Heur]
-// name=<n>` traces those same strings produce: the name a user reads in the
-// log is the name they select with, and a fifth *chain* heuristic stays a
-// single table edit.  `fpr_lp` is the one token outside that table, because
-// it is not a chain entry; `kFprLpName` gives it the same one-spelling
-// property (#164).
-//
-// `off` is an alias only as the *whole* value, never as a token in a list.
-// It is not merely "the empty set": the patched HiGHS tree tests
-// `mip_heuristic_suite == "off"` verbatim to hand back upstream's own
-// FeasibilityJump call site and its display key (see
-// `third_party/highs_patch/apply_patch.cmake`), so a value that selected
-// nothing without being that exact string would run no heuristic at all —
-// not even HiGHS's own FJ, which `off` deliberately keeps.  `fj,off`
-// is therefore an unrecognised token, and warns.  `setLocalOptionValue`
-// strips *spaces* — only spaces — from both ends of a string option's value
-// and lower-cases it before storing (the options-file loader strips tabs,
-// newlines and quotes first), so ` OFF ` arrives as `off` and the exact
-// comparison on both sides of the patch boundary is safe: whatever neither
-// strips fails `== "off"` identically here and in the patched tree.
-
-// `token` without surrounding ASCII whitespace.  HiGHS strips spaces around
-// the whole value but not around a separator inside it, so `fj, fpr` needs
-// this to mean the same thing as `fj,fpr`.
-std::string_view trim(std::string_view token) {
-    constexpr std::string_view kSpace = " \t\n\v\f\r";
-    const size_t first = token.find_first_not_of(kSpace);
-    if (first == std::string_view::npos) {
-        return {};
-    }
-    return token.substr(first, token.find_last_not_of(kSpace) - first + 1);
-}
-
-// The HeuristicFlags bit `token` names, or nullptr if it names no heuristic.
-//
-// A `std::ranges::find` over `kChain` would read better, but the iterator it
-// returns has nowhere portable to live: `std::array::const_iterator` is a raw
-// pointer on libstdc++ and libc++ and a class type on MSVC, so `const auto`
-// trips readability-qualified-auto while the `const auto *const` that check
-// asks for is the assumption that breaks on MSVC.  Returning the member
-// pointer sidesteps the choice.  Do not "simplify" this back.
-bool HeuristicFlags::* suite_flag(std::string_view token) {
-    for (const HeuristicConfig& h : kChain) {
-        if (token == h.name) {
-            return h.flag;
-        }
-    }
-    // The one legal token that is not a chain entry (#164).  `fpr_lp` runs
-    // during the B&B dive rather than in presolve, so it has no
-    // `HeuristicConfig` to take its name from; `kFprLpName` is the single
-    // spelling instead, shared with the `[Heur] name=` tag `fpr_lp.cpp`
-    // books under, so the two cannot drift.  It is checked after the chain
-    // and not before: `fpr` is a proper prefix of `fpr_lp` only under a
-    // prefix match, and both comparisons here are whole-token equality, so
-    // the order is documentation rather than disambiguation.
-    if (token == kFprLpName) {
-        return &HeuristicFlags::fpr_lp;
-    }
-    return nullptr;
-}
-
-// Union the heuristics named by the comma-separated `suite`, appending every
-// token that names none to `unknown` (deduplicated) for the caller's
-// warning.  The empty string is one empty token rather than zero tokens, so
-// a bare `mip_heuristic_suite=` is an unrecognised value and not a silent
-// `off` — as is the empty token a stray trailing comma leaves behind.
-HeuristicFlags parse_suite_list(std::string_view suite, std::vector<std::string_view>& unknown) {
-    HeuristicFlags flags{false, false, false, false, false};
-    for (size_t pos = 0;;) {
-        const size_t comma = suite.find(',', pos);
-        const size_t count = comma == std::string_view::npos ? comma : comma - pos;
-        const std::string_view token = trim(suite.substr(pos, count));
-        if (bool HeuristicFlags::* const flag = suite_flag(token); flag != nullptr) {
-            flags.*flag = true;
-        } else if (std::ranges::find(unknown, token) == unknown.end()) {
-            unknown.push_back(token);
-        }
-        if (comma == std::string_view::npos) {
-            return flags;
-        }
-        pos = comma + 1;
-    }
-}
-
-// `tokens` quoted and comma-joined, for a warning that has to name what it
-// rejected: {fpr2, walksat} -> `"fpr2", "walksat"`.
-std::string quote_join(const std::vector<std::string_view>& tokens) {
-    std::string joined;
-    for (const std::string_view token : tokens) {
-        if (!joined.empty()) {
-            joined += ", ";
-        }
-        joined += '"';
-        joined += token;
-        joined += '"';
-    }
-    return joined;
-}
-
 }  // namespace
 
-HeuristicFlags effective_flags(const HighsOptions& options, SuiteDiagnosis* diagnosis) {
-    const std::string& suite = options.mip_heuristic_suite;
-
-    std::vector<std::string_view> unknown;
-    HeuristicFlags flags{true, true, true, true, true};
-    if (suite == "off") {
-        flags = {false, false, false, false, false};
-    } else if (suite != "all") {
-        flags = parse_suite_list(suite, unknown);
-        // Fail open on an unrecognised token: running everything is the same
-        // thing the default does, and silently disabling heuristics because
-        // of a typo is the worse failure — inside a list it would quietly
-        // demote a two-heuristic run to a one-heuristic one, so a results
-        // tree named `fj+fpr` would hold runs of `fj`.  The caller warns and
-        // names the token.
-        if (!unknown.empty()) {
-            flags = {true, true, true, true, true};
+bool any_enabled(const HighsOptions& options) {
+    // The four presolve entries, then the one heuristic that is not a chain
+    // entry.  `fpr_lp` runs during the B&B dive and reads its own option in
+    // `fpr_lp::run`; it is included here because this predicate answers
+    // "can a solution of ours appear in this log", and an `FPR LP` display
+    // row is one of those.  It honours no `enable_switch`: upstream's FJ
+    // option has nothing to say about it.
+    for (const HeuristicConfig& h : kChain) {
+        if (entry_enabled(options, h)) {
+            return true;
         }
     }
-
-    // Upstream's own FJ switch still means what it says.  At suite=off the
-    // patch leaves it gating HiGHS's native FJ call site; everywhere else it
-    // gates ours, so `mip_heuristic_run_feasibility_jump=false` turns
-    // FeasibilityJump off in every configuration rather than only one.
-    flags.fj = flags.fj && options.mip_heuristic_run_feasibility_jump;
-
-    if (diagnosis != nullptr) {
-        diagnosis->unknown_tokens = quote_join(unknown);
-        diagnosis->unknown_count = unknown.size();
-    }
-    return flags;
+    return options.mip_heuristic_fpr_lp_effort > 0.0;
 }
 
 bool run_presolve(HighsMipSolver& mipsolver) {
     const HighsOptions& options = *mipsolver.options_mip_;
 
-    // The two warnings below are **API, not prose**.  Both describe a solve
-    // that ran something other than what its configuration asked for while
-    // still exiting cleanly with an ordinary-looking log, so they are the only
-    // signal distinguishing such a run from a good one.
-    // `bench/run_benchmark.py` greps for them (`CONFIG_IGNORED_WARNINGS`) and
-    // discards the affected result rather than recording a mislabelled tree —
-    // a benchmark directory named for one configuration holding runs of
-    // another is exactly the silent-failure mode that harness exists to
-    // prevent.  If you reword either string, update that list in the same
-    // commit; `tests/test_smoke.cpp` pins both substrings against this
-    // binary's real output and will fail until you do.
-    SuiteDiagnosis diagnosis;
-    const HeuristicFlags flags = effective_flags(options, &diagnosis);
-    if (diagnosis.unknown_count > 0) {
-        // Naming the token is what makes this usable on a list value: the
-        // value alone leaves the reader to spot which of `fj,fpr,locl_mip`
-        // is wrong, and the run it describes silently executed all four.
+    // This warning is **API, not prose**.  It describes a solve that ran
+    // something other than what its configuration asked for while still
+    // exiting cleanly with an ordinary-looking log, so it is the only signal
+    // distinguishing such a run from a good one.  `bench/run_benchmark.py`
+    // greps for it (`CONFIG_IGNORED_WARNINGS`) and discards the affected
+    // result rather than recording a mislabelled tree — a benchmark
+    // directory named for one configuration holding runs of another is
+    // exactly the silent-failure mode that harness exists to prevent.  If
+    // you reword the string, update that list in the same commit;
+    // `tests/test_smoke.cpp` pins the substring against this binary's real
+    // output and will fail until you do.
+    //
+    // The condition is a configuration that asks for FeasibilityJump
+    // through `mip_heuristic_fj_effort` and then takes it away through
+    // upstream's `mip_heuristic_run_feasibility_jump`, with nothing else
+    // enabled to take its place.  That run is heuristic-free while being
+    // spelled like an "FJ isolated" row, which is the one contradiction the
+    // five effort options can express — every other way of running nothing
+    // is spelled as running nothing.
+    if (options.mip_heuristic_fj_effort > 0.0 && !options.mip_heuristic_run_feasibility_jump &&
+        !any_enabled(options)) {
         highsLogUser(options.log_options, HighsLogType::kWarning,
-                     "Unknown mip_heuristic_suite value \"%s\": unrecognised %s %s; running all "
-                     "heuristics.\n",
-                     options.mip_heuristic_suite.c_str(),
-                     diagnosis.unknown_count == 1 ? "token" : "tokens",
-                     diagnosis.unknown_tokens.c_str());
-    } else if (!flags.fj && !flags.fpr && !flags.local_mip && !flags.scylla && !flags.fpr_lp &&
-               options.mip_heuristic_suite != "off") {
-        // Only reachable from a value naming FJ and nothing else (`fj`, or a
-        // list whose tokens are all `fj`) with mip_heuristic_run_feasibility_jump
-        // false, which asks for FJ and then takes it away.  That run is
-        // heuristic-free without being `off`, so it also loses the native FJ
-        // call site — a benchmark row labelled "FJ isolated" would silently
-        // run no FeasibilityJump at all.  Say so rather than leave it silent.
-        //
-        // `fpr_lp` is in the condition for the same reason the other four
-        // are (#164): it is a heuristic of ours, so a value naming it is not
-        // a heuristic-free run and must not be warned about.  Without that
-        // term `mip_heuristic_suite=fpr_lp` — a perfectly good ablation, and
-        // the one the whole issue exists to make expressible — would print a
-        // warning about FeasibilityJump that `run_benchmark.py` does not
-        // grep for but a reader would rightly not believe.
-        highsLogUser(options.log_options, HighsLogType::kWarning,
-                     "mip_heuristic_suite=\"%s\" selects only FeasibilityJump, which "
+                     "mip_heuristic_fj_effort=%g selects only FeasibilityJump, which "
                      "mip_heuristic_run_feasibility_jump=false disables; no heuristic will "
-                     "run. Use mip_heuristic_suite=off to run HiGHS's own "
-                     "FeasibilityJump instead.\n",
-                     options.mip_heuristic_suite.c_str());
+                     "run.\n",
+                     options.mip_heuristic_fj_effort);
     }
 
-    return run_sequential(mipsolver, flags);
+    return run_sequential(mipsolver);
 }
 
 }  // namespace heuristics

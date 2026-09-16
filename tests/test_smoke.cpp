@@ -241,93 +241,85 @@ TEST_CASE("Options: presolve-only defaults to false", "[options][presolve-only]"
     REQUIRE(highs.setOptionValue("mip_heuristic_presolve_only", true) == HighsStatus::kOk);
 }
 
-TEST_CASE("Options: suite defaults to all and accepts every value", "[options][suite]") {
-    Highs highs;
-    highs.setOptionValue("output_flag", false);
-    std::string suite;
-    REQUIRE(highs.getOptionValue("mip_heuristic_suite", suite) == HighsStatus::kOk);
-    REQUIRE(suite == "all");
-    // HiGHS does not validate string option *values*, so every one of these
-    // returns kOk — including the bogus one below.  What this asserts is that
-    // the option exists under this exact name; the dispatcher is what
-    // distinguishes a known value from an unknown one, and what the
-    // comma-separated list form means (see test_suite_option.cpp).
-    for (const char* value : {"off", "fj", "fpr", "local_mip", "scylla", "fpr_lp", "all", "fj,fpr",
-                              "fj,fpr,local_mip", "fj,fpr,local_mip,scylla,fpr_lp"}) {
-        REQUIRE(highs.setOptionValue("mip_heuristic_suite", std::string(value)) ==
-                HighsStatus::kOk);
-    }
-}
-
-// The exact substrings `bench/run_benchmark.py` greps a solve's log for, as
-// `CONFIG_IGNORED_WARNINGS`.  Both mark a run that solved cleanly — exit 0,
+// The exact substring `bench/run_benchmark.py` greps a solve's log for, as
+// `CONFIG_IGNORED_WARNINGS`.  It marks a run that solved cleanly — exit 0,
 // complete log — while ignoring the configuration it was given, so the
 // harness discards it instead of recording a results directory named for one
 // configuration and holding runs of another.
 //
-// Keeping them here, spelled out, is what makes the coupling visible from
+// Keeping it here, spelled out, is what makes the coupling visible from
 // both ends: the emitter is `run_presolve` in `src/mode_dispatch.cpp` (which
 // carries the matching note), the consumer is the bench harness, and this
 // test is the thing that fails if either side moves without the other.  A
 // substring rather than the whole line, because that is precisely what the
 // harness matches — pinning more would make this test stricter than the
 // contract it exists to protect.
+//
+// There used to be a second one, `Unknown mip_heuristic_suite value`, for a
+// typo inside that option's comma-separated value.  #167 retired the option:
+// a heuristic is selected by its own `mip_heuristic_<name>_effort`, and HiGHS
+// rejects an unknown option name outright and range-checks the value, so a
+// mistyped selection can no longer reach a solve at all.
 namespace {
-constexpr const char* kBenchWarningUnknownSuite = "Unknown mip_heuristic_suite value";
 constexpr const char* kBenchWarningNoHeuristic = "no heuristic will run";
 }  // namespace
 
-TEST_CASE("Options: the warnings the bench harness greps for are emitted verbatim",
+TEST_CASE("Options: the warning the bench harness greps for is emitted verbatim",
           "[options][suite][bench-contract]") {
-    SECTION("unknown suite value") {
-        const auto lines =
-            solve_capturing_log("flugpl.mps", [](Highs& h) { set_suite(h, "bogus"); });
-        REQUIRE(log_contains(lines, kBenchWarningUnknownSuite));
-    }
-
-    SECTION("suite=fj with FeasibilityJump switched off") {
-        // Asks for FJ and then takes it away: heuristic-free without being
-        // `off`, so it also loses the native FJ call site.  A benchmark row
-        // labelled "FJ isolated" would silently run no FeasibilityJump at all.
+    SECTION("FJ selected and FeasibilityJump switched off") {
+        // Asks for FJ through its effort option and then takes it away
+        // through upstream's switch, with nothing else enabled: a
+        // heuristic-free run spelled like an "FJ isolated" row, which is the
+        // one contradiction the five effort options can express.
         const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
-            set_suite(h, "fj");
+            select_heuristics(h, "fj");
             require_option(h, "mip_heuristic_run_feasibility_jump", false);
         });
         REQUIRE(log_contains(lines, kBenchWarningNoHeuristic));
     }
 
-    SECTION("an ordinary run trips neither") {
-        // The other half of the contract: these must not fire on a good run,
+    SECTION("an ordinary run does not trip it") {
+        // The other half of the contract: it must not fire on a good run,
         // or the harness would discard every result it collected.
-        const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) { set_suite(h, "all"); });
-        REQUIRE_FALSE(log_contains(lines, kBenchWarningUnknownSuite));
+        const auto lines =
+            solve_capturing_log("flugpl.mps", [](Highs& h) { select_heuristics(h, "all"); });
+        REQUIRE_FALSE(log_contains(lines, kBenchWarningNoHeuristic));
+    }
+
+    SECTION("switching FJ off beside another heuristic does not trip it") {
+        // The guard against the warning firing on a legitimate row: FJ off
+        // is only a contradiction when nothing else is left to run.
+        const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
+            select_heuristics(h, "fj,fpr");
+            require_option(h, "mip_heuristic_run_feasibility_jump", false);
+        });
         REQUIRE_FALSE(log_contains(lines, kBenchWarningNoHeuristic));
     }
 }
 
-TEST_CASE("Options: unknown suite value warns and runs everything", "[options][suite]") {
-    const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
-        require_option(h, "log_dev_level", 3);
-        set_suite(h, "bogus");
-    });
-    bool warned = false;
-    for (const auto& line : lines) {
-        if (line.contains("Unknown mip_heuristic_suite value \"bogus\"")) {
-            warned = true;
-        }
+// Every heuristic is selected by its own effort option, and all five are
+// registered under the names the rest of the repo spells.  `require_option`
+// would catch a rename; this catches one of the five going missing
+// entirely, which is what a half-applied `_patch_options` loop looks like.
+TEST_CASE("Options: every heuristic has an effort option", "[options][suite]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    for (const char* name : kHeuristicNames) {
+        INFO("heuristic " << name);
+        const std::string option = std::string("mip_heuristic_") + name + "_effort";
+        double value = -1.0;
+        REQUIRE(highs.getOptionValue(option, value) == HighsStatus::kOk);
+        REQUIRE(value >= 0.0);
+        REQUIRE(highs.setOptionValue(option, 0.0) == HighsStatus::kOk);
     }
-    REQUIRE(warned);
-    // Fail-open: all four heuristics are dispatched, exactly as at `all`.
-    // Asserted on the presence of the trace line rather than on non-zero
-    // effort — Scylla can legitimately report zero on an instance this
-    // small, and what is under test here is the flag set, not the search.
-    for (const char* heur : {"fj", "fpr", "local_mip", "scylla"}) {
-        const std::string tag = std::string("[Sequential] heur=") + heur + " ";
-        bool dispatched = false;
-        for (const auto& line : lines) {
-            dispatched = dispatched || line.contains(tag);
-        }
-        INFO("heuristic " << heur);
-        REQUIRE(dispatched);
-    }
+}
+
+// `mip_heuristic_suite` is gone, and nothing may quietly re-register it:
+// a binary still carrying the option would let a stale benchmark harness
+// set a value that now selects nothing, and the run would look configured.
+TEST_CASE("Options: mip_heuristic_suite no longer exists", "[options][suite]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    std::string value;
+    REQUIRE(highs.getOptionValue("mip_heuristic_suite", value) == HighsStatus::kError);
 }

@@ -106,20 +106,45 @@ PY
 # *derived* from the eight numbers rather than stored beside them -- a stored
 # suite could disagree with them, and `run_benchmark.py` raises on a name it
 # does not know, which is what keeps this honest.  The finalist name is the
-# results *tree*; the config name is the suite, because that is the harness's
-# own vocabulary.
+# results *tree*; the config name is the harness's `--configs` vocabulary,
+# which names the heuristics to run and zeroes the rest.
 config_for() {
 	python3 - "$1" <<'CFG'
 import json, sys
 f = json.load(open("bench/finalists.json"))["finalists"][sys.argv[1]]
-# An explicit suite in extra_options wins: it is the only way to name a
-# heuristic that is not one of the four efforts, which is what #165's arm needs.
+# A finalist still naming the retired `mip_heuristic_suite` is a stale record,
+# so it is refused rather than silently ignored (#167).
 for opt in f.get("extra_options", []):
     if opt.startswith("mip_heuristic_suite="):
-        print(opt.split("=", 1)[1].replace(",", "+"))
-        raise SystemExit
+        raise SystemExit(
+            "bench/finalists.json names the retired mip_heuristic_suite option in "
+            "extra_options; re-express it as mip_heuristic_<name>_effort"
+        )
 on = [h for h, v in f["efforts"].items() if v > 0]
-print("+".join(on) if len(on) < 4 else "all")
+# `fpr_lp` is not one of the four `efforts` -- it draws from upstream's
+# RENS/RINS envelope rather than from `nnz << 10` -- so an arm that wants it
+# says so in extra_options, which is where #165's arms name it.
+fpr_lp = any(
+    opt.startswith("mip_heuristic_fpr_lp_effort=") and float(opt.split("=", 1)[1]) > 0
+    for opt in f.get("extra_options", [])
+)
+# A finalist running the whole presolve chain takes the config `all`, which
+# zeroes nothing -- so the four efforts in extra_options stand, and `fpr_lp`
+# keeps whatever extra_options says (its shipped 0 when nothing says
+# otherwise).  Naming the four instead would be behaviourally identical and
+# would rename the `D-shipped` and `D'-tuned-all4` trees already on disk,
+# which `--skip-existing` would then re-run from scratch.
+#
+# A partial chain has to name `fpr_lp` when it wants it, because the config
+# zeroes every heuristic it does not list and a config option beats an
+# --extra-options pin of the same key.  That is what moves
+# `F-selected-plus-fprlp` to `fj+fpr+local_mip+fpr_lp`: under the retired
+# suite option its config disabled `fpr_lp` outright, so the tree recorded at
+# the old name does not hold what its name claims.
+if len(on) == 4:
+    print("all")
+else:
+    print("+".join(on + (["fpr_lp"] if fpr_lp else [])))
 CFG
 }
 

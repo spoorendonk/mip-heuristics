@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run patched vs vanilla HiGHS on MIPLIB instances.
 
-One config per `mip_heuristic_suite` value, so a per-heuristic ablation is a
+One config per selectable subset of the heuristics, so a per-heuristic ablation is a
 config list rather than a hand-written options file — plus `vanilla`, which is
 not a suite value at all but the separately built unpatched binary that
 `--vanilla-binary` names (required for that config, and probed before the first
@@ -26,13 +26,13 @@ import tempfile
 import time
 from dataclasses import dataclass
 
-# Benchmark configs.  Every one of them is a value of `mip_heuristic_suite`
+# Benchmark configs.  Every one of them names a subset of the heuristics
 # (#93), so the table is a name -> suite-value map rather than a bag of
 # per-config option dicts.
 #
 # `vanilla` is deliberately **not** in this table, and that absence is the
 # whole of #147.  It used to map to `off`, so a `vanilla` run without
-# `--vanilla-binary` was the patched binary at `mip_heuristic_suite=off` —
+# `--vanilla-binary` was the patched binary with every heuristic zeroed —
 # an ablation of our four presolve heuristics, filed under the name of a
 # baseline.  `off` is not a vanilla proxy: the binary around it is still the
 # patched one.  The baseline is a separately built unpatched binary, which
@@ -45,10 +45,11 @@ from dataclasses import dataclass
 #
 # The subset configs are every non-empty selection of the five heuristics,
 # which is what the mix-selection stage (#107) sweeps alongside `all` and
-# `off`.  They exist because `mip_heuristic_suite` takes a comma-separated
-# list (#112); the config *name* joins with `+` instead, because the name is
-# a results-tree directory and a column label in generated LaTeX, and a comma
-# in either is a needless escaping problem.
+# `off`.  They exist because every subset is selectable, as the zero-pattern
+# of the five effort options (#112 as a comma-separated string option, #167
+# as the zeros); the config *name* joins with `+`, because the name is a
+# results-tree directory and a column label in generated LaTeX, and neither
+# a comma nor a run of `--extra-options` is spellable there.
 #
 # Names list heuristics in **selection order** — the presolve chain first, in
 # dispatch order (FJ -> FPR -> LocalMIP -> Scylla), then the dive-time
@@ -74,24 +75,24 @@ from dataclasses import dataclass
 # alias it has always had, so it appears once rather than twice.
 SUITE_ORDER: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla", "fpr_lp")
 
-CONFIG_SUITES: dict[str, str] = {
-    "off": "off",
+CONFIG_SELECTIONS: dict[str, frozenset[str]] = {
+    "off": frozenset(),
     **{
-        "+".join(subset): ",".join(subset)
+        "+".join(subset): frozenset(subset)
         for size in range(1, len(SUITE_ORDER))
         for subset in itertools.combinations(SUITE_ORDER, size)
     },
-    "all": "all",
+    "all": frozenset(SUITE_ORDER),
 }
 
-# The one config that is a binary rather than a suite value: it runs the
+# The one config that names a binary rather than a selection: it runs the
 # separately built unpatched HiGHS named by `--vanilla-binary`, with no
 # `mip_heuristic_*` option at all.
 VANILLA_CONFIG = "vanilla"
 
-# Every legal `--configs` name.  `vanilla` is a name without a suite value,
+# Every legal `--configs` name.  `vanilla` is a name without a selection,
 # so the two have to be joined here rather than looked up in one table.
-KNOWN_CONFIGS: tuple[str, ...] = (VANILLA_CONFIG, *CONFIG_SUITES)
+KNOWN_CONFIGS: tuple[str, ...] = (VANILLA_CONFIG, *CONFIG_SELECTIONS)
 
 # Three constants this module shares with `bench/make_archive.py`, spelled out
 # in both rather than imported from one.  That duplication is deliberate and
@@ -168,6 +169,19 @@ class ConfigPlan:
         return (self.binary, tuple(normalized))
 
 
+def same_option_value(left: str, right: str) -> bool:
+    """Whether two option *spellings* name the same value.
+
+    Numeric where both sides parse as floats, so `0` and `0.0` agree, and a
+    plain string comparison otherwise.  `RunPlan.identity` normalizes the same
+    way and for the same reason: HiGHS reads the value, not the spelling.
+    """
+    try:
+        return float(left) == float(right)
+    except ValueError:
+        return left == right
+
+
 def resolve_config(config: str) -> str:
     """The config's `KNOWN_CONFIGS` name, with the unknown-name raise.
 
@@ -185,6 +199,20 @@ def resolve_config(config: str) -> str:
 def config_options(config: str) -> dict[str, str]:
     """HiGHS options for one config name.
 
+    A config *excludes* by zeroing `mip_heuristic_<name>_effort` for every
+    heuristic it does not name, which since #167 is the only way to exclude
+    one: `mip_heuristic_suite` is gone and the effort option is both the
+    budget and the selector.  A named heuristic is left unset, so it runs at
+    the binary's shipped default — a config name still carries no budget of
+    its own, and moving one for a run still goes through `--extra-options`.
+
+    Two consequences follow from that and are deliberate.  `all` sets
+    nothing at all, so it is exactly "the binary's defaults".  And naming
+    `scylla` or `fpr_lp` does not *enable* them, because both ship at zero:
+    a config that means to run either needs `--extra-options` beside it, the
+    same caveat the recorded `fj+fpr+local_mip+fpr_lp` row has always
+    carried.
+
     Raises ValueError on an unknown name (see `resolve_config`).  `vanilla`
     is the empty one: it always runs the separately built unpatched binary,
     which has no `mip_heuristic_*` options to set.
@@ -192,7 +220,12 @@ def config_options(config: str) -> dict[str, str]:
     base = resolve_config(config)
     if base == VANILLA_CONFIG:
         return {}
-    return {"mip_heuristic_suite": CONFIG_SUITES[base]}
+    selected = CONFIG_SELECTIONS[base]
+    return {
+        f"mip_heuristic_{name}_effort": "0"
+        for name in SUITE_ORDER
+        if name not in selected
+    }
 
 
 def existing_log(output: str, config: str, name: str, seed: int) -> bool:
@@ -259,7 +292,7 @@ def build_plan(
     `vanilla_binary` is `None` when `--vanilla-binary` was not given, and the
     `vanilla` config then raises rather than falling back to the patched
     binary (#147).  The fallback used to be silent: it produced a `vanilla/`
-    tree holding the patched binary at `mip_heuristic_suite=off`, which is an
+    tree holding the patched binary with every heuristic zeroed, which is an
     ablation of our four presolve heuristics and not a baseline.
     """
     base = resolve_config(config)
@@ -269,7 +302,7 @@ def build_plan(
             raise ValueError(
                 "config 'vanilla' requires --vanilla-binary pointing at a "
                 "separately built unpatched HiGHS of the same tag. There is no "
-                "fallback: mip_heuristic_suite=off on the patched binary is the "
+                "fallback: zeroing every heuristic on the patched binary is the "
                 "'our four presolve heuristics disabled' ablation, not a vanilla "
                 "baseline — use the config named 'off' if that is what you want"
             )
@@ -354,7 +387,7 @@ def check_binary(path: str, *, flag: str, expect_patched: bool) -> BinaryProbe:
     apart and either mistake mislabels a whole arm of the campaign:
 
     * `--vanilla-binary` must be **unpatched**.  Pointed at the patched build
-      it runs `mip_heuristic_suite=off`, which is the ablation of our four
+      it runs every heuristic zeroed, which is the ablation of our four
       presolve heuristics filed under the name of a baseline.
     * `--binary` must be **patched**.  Pointed at a stock HiGHS every
       `mip_heuristic_*` option is unknown, so every run exits 255 — loud, but
@@ -374,7 +407,7 @@ def check_binary(path: str, *, flag: str, expect_patched: bool) -> BinaryProbe:
         raise ValueError(
             f"{flag} {path} is a *patched* binary: it prints "
             f"'{PATCH_MARKER}'. The baseline must be a separately built "
-            "unpatched HiGHS; the patched binary at mip_heuristic_suite=off "
+            "unpatched HiGHS; the patched binary with every heuristic zeroed "
             "is an ablation of our heuristics, not vanilla"
         )
     if expect_patched and not probe.patched:
@@ -418,18 +451,18 @@ def check_known_options(path: str, options: dict[str, str], *, unpatched: bool) 
     A typo (`mip_heuristic_fpr_effrot`) breaks the *patched* arm, which is
     usually the larger one.  A patched-only option breaks the *vanilla* arm,
     which since #147 is always a separately built unpatched binary with none
-    of the eleven options the patch adds — and that is the documented sweep
+    of the ten options the patch adds — and that is the documented sweep
     invocation (`--extra-options mip_heuristic_fpr_effort=1.0` over the
     default `vanilla all` config pair).  `unpatched` only picks which of the
     two the message explains.
 
     The question is asked of the binary rather than answered from a list
-    here.  Of the eighteen `mip_heuristic_*` names a patched build carries,
+    here.  Of the seventeen `mip_heuristic_*` names a patched build carries,
     **seven are upstream's own** and legal on both binaries —
     `mip_heuristic_effort` and the six `mip_heuristic_run_*` switches
     (`feasibility_jump`, `rens`, `rins`, `root_reduced_cost`, `shifting`,
     `zi_round`) — so a prefix rule would refuse a valid sweep, and a
-    hardcoded list of the other eleven would need editing on every option change
+    hardcoded list of the other ten would need editing on every option change
     and would be wrong silently when it wasn't.  The binary already knows.
 
     Not the same check as `check_binary`: that one identifies the
@@ -574,28 +607,27 @@ def write_options_file(options: dict[str, str], path: str) -> None:
 # These exit 0 with a complete, ordinary-looking log, so nothing below the
 # runner can tell the resulting tree apart from a good one.
 #
-# The first is the important one: HiGHS validates option *names* but not
-# string option *values*, so `mip_heuristic_suite=of` is accepted by
-# `setOptionValue` and caught only at solve time, where `run_presolve`
-# deliberately fails open to all four heuristics with a `kWarning`.  An
-# `off/` directory would then hold runs that actually executed `all`.  The
-# realistic route there is not a typo but a HiGHS tag bump renaming the
-# values — silently rejected options are a recurring failure in this project
-# (see the "Bumping the HiGHS tag" note in CLAUDE.md).
-#
-# The second is the same class from the other side: `suite=fj` with
+# `mip_heuristic_fj_effort` above zero with
 # `mip_heuristic_run_feasibility_jump=false` asks for FJ and then takes it
-# away, so an "FJ isolated" row would run no FeasibilityJump at all.
+# away, so an "FJ isolated" row would run no FeasibilityJump at all — and
+# with nothing else enabled, no heuristic whatsoever.
 #
-# These strings are a contract with `run_presolve` in `src/mode_dispatch.cpp`,
+# There used to be a second, `Unknown mip_heuristic_suite value`: HiGHS
+# validates option *names* but not string option *values*, so a mistyped
+# `mip_heuristic_suite` was accepted by `setOptionValue` and caught only at
+# solve time, where `run_presolve` failed open to every heuristic.  An `off/`
+# directory could then hold runs that actually executed `all`.  #167 retired
+# the option — a heuristic is selected by zeroing the others'
+# `mip_heuristic_<name>_effort`, which HiGHS both name-checks and
+# range-checks, so that whole failure mode is now an exit-255 refusal at
+# `check_known_options` time rather than a warning to grep for.
+#
+# This string is a contract with `run_presolve` in `src/mode_dispatch.cpp`,
 # which carries the matching note.  Both ends are pinned by the
-# `[bench-contract]` case in `tests/test_smoke.cpp`, which asserts them
+# `[bench-contract]` case in `tests/test_smoke.cpp`, which asserts it
 # against the running binary's own output — so a reword there fails the C++
 # suite rather than silently switching this detection off.
-CONFIG_IGNORED_WARNINGS = (
-    "Unknown mip_heuristic_suite value",
-    "no heuristic will run",
-)
+CONFIG_IGNORED_WARNINGS = ("no heuristic will run",)
 
 
 def find_ignored_config_warning(output: str) -> str | None:
@@ -840,10 +872,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Configs to run (default: all vanilla). One of: "
             + ", ".join(sorted(KNOWN_CONFIGS))
-            + ". Each selects a mip_heuristic_suite value, with `+` in a name "
-            "standing for the `,` in that value; `vanilla` selects no suite "
-            "value at all and requires --vanilla-binary. An unknown name is "
-            "an error, not a default-option run."
+            + ". Each names the heuristics to run, joined with `+`, and zeroes "
+            "every other heuristic's mip_heuristic_<name>_effort; `vanilla` "
+            "sets no option at all and requires --vanilla-binary. An unknown "
+            "name is an error, not a default-option run."
         ),
     )
     parser.add_argument(
@@ -1107,9 +1139,23 @@ def main() -> None:
             file=sys.stderr,
         )
     # Config options win over base options, so any --extra-options pin of a key
-    # a config also sets is silently discarded on that config.
+    # a config also sets is silently discarded on that config.  That precedence
+    # is deliberate and stays: a results tree named for a config has to hold
+    # runs of that config, and an `--extra-options` pin that could re-enable a
+    # heuristic the name excludes is exactly the mislabelling this harness
+    # exists to prevent.
+    #
+    # Only a *disagreement* is worth a line, though.  Since #167 a config
+    # zeroes the effort of every heuristic it does not name, so a sweep that
+    # also spells those zeros — which `bench/run_finalists.sh` does, writing
+    # all eight numbers of a finalist including its `0.0`s — collides on a key
+    # where both sides say the same thing.  Warning there would put a
+    # stderr line per zeroed heuristic per finalist on every launch, which is
+    # how a warning stops being read.
     for plan in plans:
         for key in sorted(set(base_opts) & set(plan.options)):
+            if same_option_value(base_opts[key], plan.options[key]):
+                continue
             print(
                 f"Warning: --extra-options {key}={base_opts[key]!r} is overridden "
                 f"by config {plan.name!r} ({key}={plan.options[key]!r})",

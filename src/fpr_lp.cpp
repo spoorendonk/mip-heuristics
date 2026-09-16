@@ -566,27 +566,23 @@ void run(HighsMipSolver& mipsolver) {
 
     const HighsOptions& options = *mipsolver.options_mip_;
 
-    // Suite gating: fpr_lp runs only at a mip_heuristic_suite value naming
-    // `fpr_lp`.  Its own token since #164 — it followed presolve FPR's bit
-    // before, which made "presolve FPR without fpr_lp" inexpressible, so
-    // neither half's contribution could be measured on the shipped binary.
-    // suite=off must disable it so an off run has nothing of ours running at
-    // dive time either — this return sits above every read and write of
+    // The one gate, and where it sits is the whole of it (#164, #167).
+    // `mip_heuristic_fpr_lp_effort` at or below zero means the heuristic
+    // does not run — the same thing a zero means for the four presolve
+    // effort options — and this return is above every read *and* write of
     // heuristic_lp_iterations / total_lp_iterations below, which feed
     // moreHeuristicsAllowed() and therefore decide whether RENS and RINS
-    // run.  Do not move it down.
-    if (!heuristics::effective_flags(options).fpr_lp) {
-        return;
-    }
-
-    // The second disable, and it must return from exactly the same place as
-    // the first, for exactly the same reason (#164).  `0` means the
-    // heuristic does not run — the same thing it means for the four
-    // presolve effort options — and a disabled fpr_lp that had already
-    // read, let alone charged, the shared envelope would change whether
-    // RENS and RINS run, which is precisely what an ablation of fpr_lp must
-    // not do.  So this sits above the counters too, and above `nnz`: there
-    // is nothing to compute for a heuristic that will not run.
+    // run.  A disabled fpr_lp that had already read, let alone charged,
+    // the shared envelope would change whether those two run, which is
+    // precisely what an ablation of fpr_lp must not do.  It is above `nnz`
+    // for the lesser version of the same reason: there is nothing to
+    // compute for a heuristic that will not run.  Do not move it down.
+    //
+    // There used to be a second gate above this one, on
+    // `mip_heuristic_suite` naming `fpr_lp`, and the pair had to return
+    // from the same place for exactly this reason.  #167 removed the option
+    // and with it the second spelling; the effort option was always the
+    // load-bearing half.
     const double effort_share = options.mip_heuristic_fpr_lp_effort;
     if (effort_share <= 0.0) {
         return;

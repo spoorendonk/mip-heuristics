@@ -47,9 +47,9 @@ from run_target import (
     run_tag,
     scalar_cost,
     score_output,
+    selection_label,
     solver_options,
     strip_instance_token,
-    suite_value,
 )
 
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -117,53 +117,53 @@ def solver_log(
     return out
 
 
-# --- the zero-pattern -> suite mapping -------------------------------------
+# --- the zero-pattern -> label mapping --------------------------------------
 #
-# The orchestrator's ruling, and the reason this mapping is not cosmetic:
-# `mip_heuristic_fpr_effort=0` is not equivalent to omitting `fpr` from the
-# suite, because only the suite value gates the dive-time `fpr_lp`.
+# Since #167 the zero-pattern *is* the configuration — there is no suite
+# string to translate it into — so what is left here is a compact name for
+# it, used in record filenames and diagnostics.  It is still worth pinning:
+# a label that collided across two zero-patterns would overwrite one
+# evaluation's artifacts with another's.
 
 
-def test_all_zero_efforts_are_exactly_off():
-    """Not "", not ",,,", not "off," — the patch compares == "off" verbatim."""
-    assert suite_value(params()) == "off"
+def test_all_zero_efforts_are_labelled_off():
+    assert selection_label(params()) == "off"
 
 
 def test_zero_effort_heuristic_is_not_named():
-    value = suite_value(params(fj_effort=0.1, local_mip_effort=0.2))
+    value = selection_label(params(fj_effort=0.1, local_mip_effort=0.2))
     assert value == "fj,local_mip"
     assert "fpr" not in value and "scylla" not in value
 
 
-def test_suite_lists_in_chain_order_whatever_the_order_asked():
+def test_label_lists_in_chain_order_whatever_the_order_asked():
     """One subset, one spelling — matching run_benchmark's `+` config names."""
-    assert suite_value(params(scylla_effort=0.1, fj_effort=0.1)) == "fj,scylla"
+    assert selection_label(params(scylla_effort=0.1, fj_effort=0.1)) == "fj,scylla"
 
 
-def test_suite_has_no_empty_token():
-    """An empty value or a trailing comma fails *open* to all four heuristics."""
+def test_label_has_no_empty_token():
     for kwargs in ({}, {"fpr_effort": 0.5}, {h + "_effort": 0.5 for h in HEURISTICS}):
-        value = suite_value(params(**kwargs))
+        value = selection_label(params(**kwargs))
         assert value
         assert not value.startswith(",") and not value.endswith(",")
         assert ",," not in value
 
 
-def test_every_subset_is_expressible():
+def test_every_subset_has_its_own_label():
     """All sixteen zero-patterns, and all sixteen distinct."""
     seen = set()
     for mask in range(16):
         kwargs = {
             f"{h}_effort": 0.5 for i, h in enumerate(HEURISTICS) if mask & (1 << i)
         }
-        seen.add(suite_value(params(**kwargs)))
+        seen.add(selection_label(params(**kwargs)))
     assert len(seen) == 16
     assert "off" in seen and "fj,fpr,local_mip,scylla" in seen
 
 
 def test_tiny_positive_effort_still_counts_as_on():
     """Strictly positive, not "big enough": the cutoff is a parameter, not here."""
-    assert suite_value(params(scylla_effort=1e-9)) == "scylla"
+    assert selection_label(params(scylla_effort=1e-9)) == "scylla"
 
 
 # --- the parameter vector ---------------------------------------------------
@@ -224,20 +224,23 @@ def test_options_write_all_eight_even_when_disabled():
         assert f"mip_heuristic_{h}_patience" in options
     assert options["mip_heuristic_fpr_effort"] == "0"
     assert options["mip_heuristic_fpr_patience"] == "2"
-    assert options["mip_heuristic_suite"] == "fj"
 
 
-def test_zero_fj_effort_gates_highs_own_feasibility_jump():
-    """The other FJ call site.  At `suite=off` the patch restores HiGHS's
-    standalone FeasibilityJump, which emits no `[Heur]` line — so the all-zero
-    vector banked real FJ quality at tau = 0 and `off` outscored configurations
-    that found objectives 28x better.  Effort 0 has to reach both sites."""
-    off = solver_options(params(), seed=1)
-    assert off["mip_heuristic_run_feasibility_jump"] == "false"
-    without_fj = solver_options(params(fpr_effort=0.5), seed=1)
-    assert without_fj["mip_heuristic_run_feasibility_jump"] == "false"
-    with_fj = solver_options(params(fj_effort=0.0125), seed=1)
-    assert with_fj["mip_heuristic_run_feasibility_jump"] == "true"
+def test_options_carry_no_selector_beside_the_efforts():
+    """#167: the effort vector *is* the configuration.
+
+    `mip_heuristic_suite` is gone, and so is the forced
+    `mip_heuristic_run_feasibility_jump=false` that used to ride along with a
+    zero FJ effort — it existed because `suite=off` restored HiGHS's
+    standalone FeasibilityJump, which emits no `[Heur]` line, so the all-zero
+    vector banked real FJ quality at tau = 0 and outscored configurations that
+    found objectives 28x better.  That call site no longer runs at any
+    configuration, so a zero FJ effort is the whole of "no FeasibilityJump".
+    """
+    for vector in (params(), params(fpr_effort=0.5), params(fj_effort=0.0125)):
+        options = solver_options(vector, seed=1)
+        assert "mip_heuristic_suite" not in options
+        assert "mip_heuristic_run_feasibility_jump" not in options
 
 
 def test_options_do_not_pin_threads_by_default():
@@ -575,9 +578,17 @@ def test_a_nonzero_exit_is_still_refused():
         check_run_usable(solver_log(), 255, "bad-option")
 
 
-def test_ignored_suite_value_is_refused():
-    """HiGHS accepts an unknown suite *value* and fails open to all four."""
-    log = solver_log() + "Unknown mip_heuristic_suite value 'fj,of'\n"
+def test_ignored_configuration_is_refused():
+    """A run that solved cleanly while running something else is a refusal.
+
+    Since #167 the one shape left is FJ asked for through its effort option
+    and taken away through upstream's switch; the unknown-suite-value shape
+    went with the option.
+    """
+    log = solver_log() + (
+        "WARNING: mip_heuristic_fj_effort=1 selects only FeasibilityJump, which "
+        "mip_heuristic_run_feasibility_jump=false disables; no heuristic will run.\n"
+    )
     with pytest.raises(Refusal, match="ignored its configuration"):
         check_run_usable(log, 0, "good")
 
@@ -788,7 +799,7 @@ def test_enabled_switch_forces_effort_zero():
         ["--instance", "x", "--seed", "1", "--fj-effort", "0.5", "--fj-enabled", "0"]
     )
     assert parameters_from_args(args).efforts["fj"] == 0.0
-    assert suite_value(parameters_from_args(args)) == "off"
+    assert selection_label(parameters_from_args(args)) == "off"
 
 
 def test_gated_switch_forces_patience_zero():
@@ -818,7 +829,7 @@ def test_gated_switch_forces_patience_zero():
     assert params.patiences["fj"] == 0.0
     # The gate switch touches patience only: fj still runs.
     assert params.efforts["fj"] == 0.5
-    assert suite_value(params) == "fj"
+    assert selection_label(params) == "fj"
 
 
 def test_gated_one_keeps_the_sampled_patience():
@@ -841,7 +852,7 @@ def test_gated_one_keeps_the_sampled_patience():
 
 def test_omitted_effort_defaults_to_off():
     args = build_arg_parser().parse_args(["--instance", "x", "--seed", "1"])
-    assert suite_value(parameters_from_args(args)) == "off"
+    assert selection_label(parameters_from_args(args)) == "off"
 
 
 def test_lambda_defaults_to_the_derived_weight():
@@ -1183,7 +1194,8 @@ def test_end_to_end_keeps_opts_log_and_record(campaign):
     run_dir = campaign / "runs" / "toy"
     tag = run_tag(params(fpr_effort=0.5, fpr_patience=0.125), "toy", 5)
     opts = (run_dir / f"{tag}.opts").read_text()
-    assert "mip_heuristic_suite = fpr\n" in opts
+    assert "mip_heuristic_fpr_effort = 0.5\n" in opts
+    assert "mip_heuristic_suite" not in opts
     assert "mip_heuristic_fpr_patience = 0.125\n" in opts
     assert "mip_heuristic_presolve_only = true\n" in opts
     assert "random_seed = 5\n" in opts
@@ -1286,5 +1298,6 @@ def test_end_to_end_off_configuration_scores_the_penalty(campaign, capsys):
     opts_dir = campaign / "runs" / "toy"
     tag = run_tag(params(), "toy", 5)
     opts = (opts_dir / f"{tag}.opts").read_text()
-    assert "mip_heuristic_suite = off\n" in opts
-    assert "mip_heuristic_run_feasibility_jump = false\n" in opts
+    assert "mip_heuristic_fj_effort = 0\n" in opts
+    assert "mip_heuristic_suite" not in opts
+    assert "mip_heuristic_run_feasibility_jump" not in opts

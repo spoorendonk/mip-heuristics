@@ -12,6 +12,7 @@
 #include "mip/HighsMipSolverData.h"
 
 #include <algorithm>
+#include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
@@ -200,18 +201,63 @@ inline bool log_contains(const std::vector<std::string>& lines, const std::strin
     return std::ranges::any_of(lines, [&](const std::string& line) { return line.contains(tag); });
 }
 
-// Restrict the solve to a subset of the heuristics.  `suite` is a
-// `mip_heuristic_suite` value: the alias `off` or `all`, or a
-// comma-separated list of `fj`, `fpr`, `local_mip`, `scylla`.
+// The five heuristics, in selection order — the presolve chain in dispatch
+// order, then the dive-time `fpr_lp`.  Spelled here rather than taken from
+// `mode_dispatch.cpp`'s `kChain`, which is file-local, and matching
+// `SUITE_ORDER` in `bench/run_benchmark.py`, which spells the same list for
+// the same reason.
+inline constexpr std::array<const char*, 5> kHeuristicNames = {"fj", "fpr", "local_mip", "scylla",
+                                                               "fpr_lp"};
+
+// Restrict the solve to a subset of the heuristics.  `selection` is the
+// alias `all` or `off`, or a comma-separated list drawn from
+// `kHeuristicNames`.
 //
-// `require_option` rather than a bare set: a typo'd suite value would
-// otherwise leave the solve at the `all` default and the test would
-// measure every heuristic while claiming to isolate one.  HiGHS does not
-// validate string option *values*, so this catches a renamed option, not a
-// misspelt value — `mip_heuristic_suite` itself warns on those at solve
-// time (see the unknown-value case in test_smoke.cpp).
-inline void set_suite(Highs& h, const char* suite) {
-    require_option(h, "mip_heuristic_suite", std::string(suite));
+// It works by *zeroing* `mip_heuristic_<name>_effort` for every heuristic
+// the selection does not name, which since #167 is the only way to exclude
+// one: `mip_heuristic_suite` is gone, and the effort option is both the
+// budget and the selector.  A named heuristic is left exactly as it stands,
+// so it runs at its shipped default unless the caller says otherwise —
+// which is what the retired `mip_heuristic_suite` did, and is why every
+// call site reads the same.
+//
+// Two consequences worth knowing.  Naming `scylla` or `fpr_lp` does *not*
+// enable them, because both ship at effort 0; a test whose subject is
+// either has to raise the effort itself (`enable_scylla` below).  And
+// because this only ever writes zeros, it must be called *before* any
+// per-heuristic effort override, or it will undo one.
+//
+// `require_option` rather than a bare set, so a renamed option fails the
+// test instead of silently leaving the solve at its defaults and measuring
+// every heuristic while claiming to isolate one.  Unlike the string option
+// it replaced, a misspelt *value* cannot reach the solver at all: it is
+// caught here, by the `unknown heuristic` check, rather than by a warning
+// the binary emits at solve time.
+inline void select_heuristics(Highs& h, const char* selection) {
+    const std::string value(selection);
+    if (value == "all") {
+        return;
+    }
+    std::vector<std::string> named;
+    if (value != "off") {
+        for (size_t pos = 0;;) {
+            const size_t comma = value.find(',', pos);
+            named.push_back(value.substr(pos, comma == std::string::npos ? comma : comma - pos));
+            if (comma == std::string::npos) {
+                break;
+            }
+            pos = comma + 1;
+        }
+        for (const std::string& name : named) {
+            INFO("unknown heuristic name: " << name);
+            REQUIRE(std::ranges::find(kHeuristicNames, name) != kHeuristicNames.end());
+        }
+    }
+    for (const char* name : kHeuristicNames) {
+        if (std::ranges::find(named, std::string(name)) == named.end()) {
+            require_option(h, "mip_heuristic_" + std::string(name) + "_effort", 0.0);
+        }
+    }
 }
 
 // **Scylla ships disabled** (effort 0, #107: zero accepted incumbents in
@@ -220,20 +266,20 @@ inline void set_suite(Highs& h, const char* suite) {
 // is #113's measured yield knee, so a mechanism test exercises Scylla in
 // the regime it was last calibrated for instead of one invented here.
 //
-// Naming the suite is not enough and deliberately so — `run_sequential`
-// filters `kChain` on the flag *and* a non-zero effort, which is the
-// property `test_effort_zero.cpp` pins.
+// `select_heuristics` naming it is not enough and deliberately so: that
+// helper only ever writes zeros, and since #167 the effort option is the
+// selector, so "enabled" and "has a budget" are one fact rather than two.
 inline constexpr double kScyllaMeasuredEffort = 3.068;
 
 inline void enable_scylla(Highs& h, double effort = kScyllaMeasuredEffort) {
     require_option(h, "mip_heuristic_scylla_effort", effort);
 }
 
-// Solve `inst` with `suite` selected and return the final objective.
-inline double solve_suite(const char* inst, const char* suite) {
+// Solve `inst` with `selection` selected and return the final objective.
+inline double solve_suite(const char* inst, const char* selection) {
     Highs h;
     h.setOptionValue("output_flag", false);
-    set_suite(h, suite);
+    select_heuristics(h, selection);
     REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;

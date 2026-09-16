@@ -60,19 +60,24 @@ TEST_CASE("execution-mode: all heuristics disabled still solves", "[mode-matrix]
     REQUIRE(solve_no_heuristics() == Catch::Approx(1201500.0).epsilon(1e-6));
 }
 
-// #93's headline behaviour change, and what makes `off` an ablation of our
-// heuristics alone: `suite=off` hands HiGHS's standalone FeasibilityJump
-// call site back, where the patch used to rewrite it to `if (false)` in
-// every configuration.  A regression of Patch A in apply_patch.cmake
-// compiles, links, and leaves every other case green while silently
-// leaving `off` with no FeasibilityJump at all.  `test_native_fj.cpp`
-// covers the other half — that the restored call site charges its effort,
-// and that upstream's own switch still silences it.
+// Upstream's standalone FeasibilityJump call site never runs, at any
+// configuration (#167).  Our chain owns FJ, so a live native site would
+// double-run the heuristic; `apply_patch.cmake`'s Patch A rewrites its
+// condition to a literal `false`.
 //
-// `Feasibility Jump: starting solve` is logged once per FJ solver
-// instance, so the count separates all three states: exactly 1 at `off`
-// (upstream's single-threaded call site), 0 at a suite that excludes FJ,
-// and one per worker at `all`.
+// It used to fire at `mip_heuristic_suite == "off"`, on the rationale that
+// the patch-overhead row had to run exactly what an unpatched binary runs.
+// #139 made that false — it corrects two defects in `feasibilityjump.hh`,
+// which both call sites share, so what ran at `off` was *our* FJ at
+// upstream's call site — and #167 retired the option and the restore
+// together.  A regression that revives the native site compiles, links, and
+// leaves every other case green while silently running FJ twice on every
+// solve that enables it.
+//
+// `Feasibility Jump: starting solve` is logged once per FJ solver instance,
+// so the count separates the three states: 0 with FJ zeroed, 0 with the
+// whole chain zeroed (which is where a revived native site would show up as
+// a 1), and one per worker with FJ enabled.
 namespace {
 size_t count_fj_starts(const std::vector<std::string>& lines) {
     size_t n = 0;
@@ -82,19 +87,37 @@ size_t count_fj_starts(const std::vector<std::string>& lines) {
     return n;
 }
 
-std::vector<std::string> lseu_log_at_suite(const char* suite) {
+std::vector<std::string> lseu_log_at_suite(const char* selection) {
     return solve_capturing_log("lseu.mps", [&](Highs& h) {
         require_option(h, "log_dev_level", 3);
-        set_suite(h, suite);
+        select_heuristics(h, selection);
     });
 }
 }  // namespace
 
-TEST_CASE("execution-mode: suite=off runs HiGHS's own single-threaded FJ", "[mode-matrix]") {
-    REQUIRE(count_fj_starts(lseu_log_at_suite("off")) == 1);
-    // Not always-on, and not our parallel FJ leaking in: a suite that
-    // excludes FJ must leave the native call site silent too.
+TEST_CASE("execution-mode: the native FeasibilityJump call site never runs", "[mode-matrix]") {
+    // Every heuristic zeroed: the configuration that used to restore the
+    // native call site, and the one a revived Patch A would show up in.
+    REQUIRE(count_fj_starts(lseu_log_at_suite("off")) == 0);
+    // A selection that excludes FJ must leave it silent too.
     REQUIRE(count_fj_starts(lseu_log_at_suite("fpr")) == 0);
+    // The positive control, without which both lines above pass on a build
+    // that runs no FeasibilityJump anywhere: our chain does run it, one
+    // solver instance per worker.
+    REQUIRE(count_fj_starts(lseu_log_at_suite("fj")) >= 1);
+}
+
+// Upstream's own switch keeps its meaning on a patched binary: it now gates
+// our chain's FJ, where it used to gate the native call site at `off` and
+// ours everywhere else.  Without this, retiring that site would have left
+// `mip_heuristic_run_feasibility_jump` a dead option nothing reads.
+TEST_CASE("execution-mode: mip_heuristic_run_feasibility_jump silences our FJ", "[mode-matrix]") {
+    const auto lines = solve_capturing_log("lseu.mps", [](Highs& h) {
+        require_option(h, "log_dev_level", 3);
+        select_heuristics(h, "fj");
+        require_option(h, "mip_heuristic_run_feasibility_jump", false);
+    });
+    REQUIRE(count_fj_starts(lines) == 0);
 }
 
 // ── 3 tests: the reproducible single-worker configuration ──
@@ -212,7 +235,7 @@ namespace {
 // mode_dispatch::run_sequential with kSolutionSourceFJ preserved.
 bool lseu_emits_fj_tag() {
     const std::string codes =
-        solve_capturing_source_codes("lseu.mps", [](Highs& h) { set_suite(h, "fj"); });
+        solve_capturing_source_codes("lseu.mps", [](Highs& h) { select_heuristics(h, "fj"); });
     return codes.contains('J');
 }
 }  // namespace
@@ -255,7 +278,7 @@ TEST_CASE("execution-mode: FJ entries survive shared pool flush", "[mode-matrix]
 TEST_CASE("instrumentation: a dev-level solve emits [Heur]", "[mode-matrix][observability]") {
     const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         require_option(h, "log_dev_level", 3);
-        set_suite(h, "all");
+        select_heuristics(h, "all");
     });
     // `phase=presolve` specifically: the tag alone would still pass if the
     // ledger stopped distinguishing the presolve chain from the B&B dive.
@@ -269,7 +292,7 @@ TEST_CASE("instrumentation: no heuristic lines at suite=off", "[mode-matrix][obs
     // line there is a behavioural difference from an unpatched binary.
     const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         require_option(h, "log_dev_level", 3);
-        set_suite(h, "off");
+        select_heuristics(h, "off");
     });
     REQUIRE_FALSE(log_contains(lines, "[Heur] "));
     REQUIRE_FALSE(log_contains(lines, "[Sequential] "));
@@ -286,7 +309,7 @@ TEST_CASE("instrumentation: the dive-time fpr_lp dispatch is reported too",
     const auto lines = solve_capturing_log("bell5.mps", [](Highs& h) {
         require_option(h, "log_dev_level", 3);
         require_option(h, "mip_rel_gap", 0.0);
-        set_suite(h, "fpr_lp");
+        select_heuristics(h, "fpr_lp");
         require_option(h, "mip_heuristic_fpr_lp_effort", 1.0);
     });
     REQUIRE(log_contains(lines, "[Heur] name=fpr_lp phase=dive "));

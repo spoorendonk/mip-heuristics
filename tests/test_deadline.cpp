@@ -401,7 +401,7 @@ std::vector<std::string> presolve_heur_lines(Configure&& configure, double limit
 std::string alone_at(const std::string& heuristic, double effort, double limit) {
     const auto lines = presolve_heur_lines(
         [&](Highs& h) {
-            require_option(h, "mip_heuristic_suite", heuristic);
+            select_heuristics(h, heuristic.c_str());
             require_option(h, "mip_heuristic_" + heuristic + "_effort", effort);
             require_option(h, "mip_heuristic_" + heuristic + "_patience", 0);
         },
@@ -609,7 +609,7 @@ TEST_CASE("deadline: a clock-bound Scylla dispatch spends its whole limit",
           "[deadline][scylla][serial]") {
     const auto lines = presolve_heur_lines(
         [](Highs& h) {
-            require_option(h, "mip_heuristic_suite", std::string("scylla"));
+            select_heuristics(h, "scylla");
             require_option(h, "mip_heuristic_scylla_effort", kUnbindableEffort);
             require_option(h, "mip_heuristic_scylla_patience", 0);
         },
@@ -652,7 +652,7 @@ TEST_CASE("deadline: a clock-bound Scylla dispatch spends its whole limit",
 // "asserted on effort alone" note at the top of this file.
 TEST_CASE("deadline: no presolve heuristic outlives the limit", "[deadline][serial]") {
     const auto lines = presolve_heur_lines([](Highs& h) {
-        require_option(h, "mip_heuristic_suite", std::string("all"));
+        select_heuristics(h, "fj,fpr,local_mip,scylla");
         for (const std::string name : {"fj", "fpr", "local_mip", "scylla"}) {
             require_option(h, "mip_heuristic_" + name + "_effort", kClockBindingEffort);
             require_option(h, "mip_heuristic_" + name + "_patience", 0);

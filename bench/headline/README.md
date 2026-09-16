@@ -25,6 +25,10 @@ Results trees are gitignored; everything needed to read the result is here.
 The arm is the **shipped binary at default options**. Its `.opts` carries only
 `mip_heuristic_suite = all` and `random_seed = 0` — no `--extra-options` at
 all, so this measures what a user gets rather than a hand-assembled vector.
+(That option was retired in #167; a re-run today writes a `.opts` carrying the
+seed alone, because the `all` config now sets nothing. The configuration is the
+same one — every heuristic at its shipped default — and the defaults below are
+what it means either way.)
 The defaults are `B'-mix-cheapest` (#107): fj 0.3317, fpr 3.161, local_mip
 3.2865, **scylla 0 (disabled)**, patiences 0 / 0.3372 / 3.1943 / 0, with
 `mip_heuristic_fpr_lp_effort = 0` (#165).

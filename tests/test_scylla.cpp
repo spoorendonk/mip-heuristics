@@ -76,7 +76,7 @@ TEST_CASE("Sequential orchestrator: egout all arms", "[heuristic][sequential]") 
 TEST_CASE("Scylla overlap trace line: fresh count emitted (#76)", "[heuristic][scylla][overlap]") {
     const std::vector<std::string> lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
-        set_suite(h, "scylla");
+        select_heuristics(h, "scylla");
         enable_scylla(h);
     });
 

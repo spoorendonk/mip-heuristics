@@ -280,7 +280,7 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
     // reach the same optimum.
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    set_suite(highs, "fpr");
+    select_heuristics(highs, "fpr");
     // bell5 is the one bundled instance whose solve can terminate on
     // HiGHS's default `mip_rel_gap` (1e-4) with an incumbent short of
     // the optimum — 3 distinct primal bounds over 15 default-option

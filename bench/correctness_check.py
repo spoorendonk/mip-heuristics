@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""Correctness check across the mip_heuristic_suite values.
+"""Correctness check across the heuristic selections.
 
 Runs the HiGHS binary on small test instances (shipped with HiGHS in
-check/instances/) once per `mip_heuristic_suite` value: off, fj, fpr,
-local_mip, scylla, all.  Every one of them must still reach the known
-optimum — B&B finishes these instances on its own, so a failure means a
-heuristic broke the solve rather than failing to help it.
+check/instances/) once per selection: off, fj, fpr, local_mip, scylla, all.
+Every one of them must still reach the known optimum — B&B finishes these
+instances on its own, so a failure means a heuristic broke the solve rather
+than failing to help it.
 
-`off` doubles as the vanilla-equivalence row: it runs HiGHS's own
-pipeline, native FeasibilityJump included.  Use
-`bench/check_vanilla_equivalence.py` to compare it against an unpatched
-binary; this script only checks that it still solves.
+`off` doubles as the vanilla-equivalence row: with every
+`mip_heuristic_<name>_effort` at zero, nothing of ours runs and HiGHS's own
+pipeline is what is left.  Use `bench/check_vanilla_equivalence.py` to
+compare it against an unpatched binary; this script only checks that it
+still solves.  Note that `off` runs no FeasibilityJump at all — since #167
+the native call site never fires, so FJ is ours or it is absent.
 
 Checks that each solve finds the known-optimal objective within a
 tolerance.  Reports a per-instance x per-config pass/fail table.
 
-The table is one-dimensional over the suite values by design (issue #93).
+The table is one-dimensional over the selections by design (issue #93).
 The `threads=1` reproducible configuration it used to carry as a second
 dimension is covered by ctest instead — the execution-mode single-worker
 cases and the FPR resume-determinism cases all pin it.
@@ -36,6 +38,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from run_benchmark import config_options
+
 # Instances that ship with HiGHS check/instances/ and their known optima.
 INSTANCES: list[tuple[str, float, float]] = [
     # (name.mps, known_optimal, relative_tolerance)
@@ -47,8 +51,12 @@ INSTANCES: list[tuple[str, float, float]] = [
     ("p0548.mps", 8691.0, 1e-3),
 ]
 
+# One entry per selection, built through `run_benchmark.config_options` so
+# this script and the benchmark harness cannot disagree about what a name
+# means — a selection *zeroes* the heuristics it does not name, which since
+# #167 is the only way to exclude one.
 CONFIGS = {
-    value: {"mip_heuristic_suite": value}
+    value: config_options(value)
     for value in ("off", "fj", "fpr", "local_mip", "scylla", "all")
 }
 
@@ -152,7 +160,7 @@ def check_objective(obj: float | None, known_opt: float, tol: float) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Correctness check across the mip_heuristic_suite values"
+        description="Correctness check across the heuristic selections"
     )
     parser.add_argument(
         "--binary", default="./build/bin/highs", help="Path to HiGHS binary"
@@ -180,7 +188,7 @@ def main() -> None:
         nargs="+",
         default=list(CONFIGS.keys()),
         choices=list(CONFIGS.keys()),
-        help="mip_heuristic_suite values to test (default: all six)",
+        help="heuristic selections to test (default: all six)",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Print per-solve details"

@@ -5,18 +5,22 @@
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
-#include <map>
 #include <string>
 #include <vector>
 
 // ===================================================================
-// `mip_heuristic_<name>_effort = 0` genuinely disables a heuristic (#106)
+// `mip_heuristic_<name>_effort = 0` genuinely disables a heuristic
+// (#106, #167)
 //
 // Issue #107 expresses "this heuristic is excluded from the configuration"
-// as effort 0, which turns the subset choice into a zero-pattern of four
+// as effort 0, which turns the subset choice into a zero-pattern of five
 // continuous parameters instead of a separate discrete dimension — the
-// reduction that keeps its search tractable.  That is only sound if a zero
-// budget is indistinguishable from omitting the heuristic, and it was not:
+// reduction that keeps its search tractable.  #167 made that the only
+// encoding by retiring `mip_heuristic_suite`, so the option is now both the
+// budget and the selector, and this file pins what the zero buys.
+//
+// It was not always free.  Three things had to be fixed before a zero
+// budget was worth exactly what omitting a heuristic is worth:
 //
 //   * `run_opportunistic_loop` did decline a zero total, but three of the
 //     four heuristics do real work before they reach it.  Scylla built a
@@ -31,52 +35,25 @@
 //     *unclamped* threshold, so the one ceiling that could still have
 //     bounded such a run was the one that did not apply.
 //
-// `HeuristicBudget::disabled()` is now checked at the top of all four
-// entry points, alongside `ProblemView::degenerate()`, and `make_budget`
-// returns an all-zero budget at a zero total.
+// `HeuristicBudget::disabled()` is checked at the top of all four entry
+// points, alongside `ProblemView::degenerate()`, and `make_budget` returns
+// an all-zero budget at a zero total.
 //
-// One asymmetry used to be deliberate and is now gone.  Omitting `fpr` from
-// `mip_heuristic_suite` also disabled the dive-time `fpr_lp`, via
-// `heuristics::effective_flags`, while `mip_heuristic_fpr_effort = 0` did
-// not — `fpr_lp` draws from upstream's `mip_heuristic_effort` envelope and
-// never reads the presolve option.  #164 split the two: `fpr_lp` has its own
-// suite token and its own `mip_heuristic_fpr_lp_effort`, so zeroing an
-// effort and dropping the matching token now agree for all five.
+// Since #167 there are **two** gates, not one, and they are not redundant.
+// `heuristics::entry_enabled` skips the `kChain` entry outright at effort
+// <= 0, so nothing downstream is reached at all and no `[Heur]` line is
+// emitted.  `HeuristicBudget::disabled()` still guards the case that gate
+// cannot see: an effort small enough that `heuristic_effort_budget` floors
+// the derived budget to zero while the option itself is above zero.  The
+// cases below cover both, and the tiny-effort one is what keeps the entry
+// point guard from becoming dead code no test can reach.
 //
-// The comparisons below are still scoped to `phase=presolve`, and the four
-// `kCases` are still the presolve chain.  That scoping is what the name of
-// the equivalence case at the foot of this file records: it checks the
-// presolve chain, on `flugpl`, which never reaches a dive, so it could never
-// have said anything about `fpr_lp` in either direction.  `fpr_lp`'s own
-// equivalence is asserted where it can be seen — on the dispatch and on the
-// whole solve, in `tests/test_fpr_lp.cpp`.
+// The `fpr_lp` half of the same property is asserted where it can be seen —
+// on the dispatch, in `tests/test_fpr_lp.cpp` — since `flugpl` never
+// reaches a B&B dive.
 // ===================================================================
 
 namespace {
-
-// One `[Heur]` observation, reduced to the fields that are deterministic.
-//
-// `effort` and `found` are: at `threads=1` with a pinned `random_seed`,
-// repeated solves of a bundled instance reproduce them exactly (only the
-// wall-clock fields move).  That is what lets the equivalence check below
-// compare traces rather than just objectives.
-struct HeurLine {
-    std::string name;
-    std::string phase;
-    unsigned long long effort = 0;
-    bool found = false;
-
-    // Deliberately outside `operator==`: the equivalence assertions below
-    // compare traces across two solves, and wall time is the one field that
-    // is not reproducible.  It is carried anyway for the setup-cost test,
-    // which is the only reader.
-    double wall_ms = 0.0;
-
-    bool operator==(const HeurLine& other) const {
-        return name == other.name && phase == other.phase && effort == other.effort &&
-               found == other.found;
-    }
-};
 
 // Value of `key=` in `line`, or an empty string when absent.
 std::string field_of(const std::string& line, const std::string& key) {
@@ -90,37 +67,12 @@ std::string field_of(const std::string& line, const std::string& key) {
     return line.substr(start, end == std::string::npos ? end : end - start);
 }
 
-std::vector<HeurLine> heur_lines(const std::vector<std::string>& lines) {
-    std::vector<HeurLine> out;
+// The `name=` of every `[Heur] phase=presolve` line, in emission order.
+std::vector<std::string> presolve_heur_names(const std::vector<std::string>& lines) {
+    std::vector<std::string> out;
     for (const auto& line : lines) {
-        if (!line.contains("[Heur] name=")) {
-            continue;
-        }
-        out.push_back(HeurLine{field_of(line, "name"), field_of(line, "phase"),
-                               std::strtoull(field_of(line, "effort").c_str(), nullptr, 10),
-                               field_of(line, "found") == "1",
-                               std::strtod(field_of(line, "wall_ms").c_str(), nullptr)});
-    }
-    return out;
-}
-
-// The presolve-phase entries only — see the `fpr_lp` note in the header
-// comment.
-std::vector<HeurLine> presolve_lines(const std::vector<std::string>& lines) {
-    std::vector<HeurLine> out;
-    for (auto& entry : heur_lines(lines)) {
-        if (entry.phase == "presolve") {
-            out.push_back(entry);
-        }
-    }
-    return out;
-}
-
-std::vector<HeurLine> without(const std::vector<HeurLine>& lines, const std::string& name) {
-    std::vector<HeurLine> out;
-    for (const auto& entry : lines) {
-        if (entry.name != name) {
-            out.push_back(entry);
+        if (line.contains("[Heur] name=") && field_of(line, "phase") == "presolve") {
+            out.push_back(field_of(line, "name"));
         }
     }
     return out;
@@ -136,8 +88,8 @@ size_t offers_by(const std::vector<std::string>& lines, const std::string& name)
 
 // One reproducible solve, with `configure` applied on top.
 //
-// `threads=1` and a pinned `random_seed` are what make `[Heur] effort`
-// reproducible; `log_dev_level=3` is what makes the traces exist.
+// `threads=1` and a pinned `random_seed` are what make the trace
+// reproducible; `log_dev_level=3` is what makes it exist.
 template <typename Configure>
 std::vector<std::string> trace_solve(const char* inst, Configure&& configure) {
     ScopedThreadPin pin;
@@ -149,214 +101,119 @@ std::vector<std::string> trace_solve(const char* inst, Configure&& configure) {
     });
 }
 
-// Solve with every heuristic enabled but `name` zeroed.
-std::vector<std::string> zeroed(const char* inst, const char* name) {
-    const std::string option = std::string("mip_heuristic_") + name + "_effort";
-    return trace_solve(inst, [&](Highs& h) {
-        set_suite(h, "all");
-        require_option(h, option, 0.0);
-    });
-}
-
-// Solve with `name` left out of the suite entirely.
-std::vector<std::string> omitted(const char* inst, const char* suite) {
-    return trace_solve(inst, [&](Highs& h) { set_suite(h, suite); });
-}
-
-// `all` minus one presolve heuristic, in chain order — the spelling
-// `mip_heuristic_suite` requires (`run_benchmark.py` names the same subsets
-// with `+`).
-//
-// Every complement keeps `fpr_lp`, because the other side of each
-// comparison is `suite=all`, which enables it (#164).  Dropping it here
-// would put a second difference into a comparison that exists to isolate
-// one — inert on `flugpl`, which never reaches a B&B dive, but only by
-// accident of the instance.
+// The four presolve heuristics and the solution-source character each
+// prints in HiGHS's incumbent display.
 struct Case {
     const char* name;
-    const char* complement;
-    char source_code;  // the solution-source character this heuristic prints
+    char source_code;
 };
 
 constexpr std::array<Case, 4> kCases = {{
-    {"fj", "fpr,local_mip,scylla,fpr_lp", 'J'},
-    {"fpr", "fj,local_mip,scylla,fpr_lp", 'A'},
-    {"local_mip", "fj,fpr,scylla,fpr_lp", 'M'},
-    {"scylla", "fj,fpr,local_mip,fpr_lp", 'G'},
+    {"fj", 'J'},
+    {"fpr", 'A'},
+    {"local_mip", 'M'},
+    {"scylla", 'G'},
 }};
+
+// Every heuristic enabled except `name`.  Scylla ships at effort 0, so it
+// is raised first and then zeroed again by the selection on the arms that
+// exclude it — `select_heuristics` only ever writes zeros, so the order
+// matters.
+std::vector<std::string> all_but(const char* inst, const char* name) {
+    return trace_solve(inst, [&](Highs& h) {
+        enable_scylla(h);
+        require_option(h, std::string("mip_heuristic_") + name + "_effort", 0.0);
+    });
+}
 
 }  // namespace
 
-// A zeroed heuristic is dispatched — `run_sequential` still walks its
-// `kChain` entry — but does nothing: no charged effort, no accepted
-// solution, and not one offer to the pool.  Asserting on the charged
-// effort and on `found` rather than on wall time, which is not a
-// property of the change.
-TEST_CASE("effort-zero: a zeroed heuristic charges nothing and offers nothing", "[effort-zero]") {
+// A zeroed heuristic is not dispatched at all: `run_sequential` skips its
+// `kChain` entry before the ledger is touched, so it emits no `[Heur]`
+// line, offers nothing to the pool, and reaches no incumbent display row.
+//
+// The absent line is the load-bearing assertion, and it is stronger than
+// the `effort=0` line it replaced.  A dispatched-but-idle heuristic could
+// still have paid for setup — `precompute_var_orders`, `ContestedPdlp`
+// construction — and charged none of it, which is exactly the hole #106
+// was filed against.  No line means `run_and_charge` never ran, which means
+// the entry point was never called, which is a structural statement about
+// the setup rather than a measurement of it.  That is what retired the
+// `[serial]`-tagged wall-clock case this file used to carry: it compared a
+// disabled heuristic's `[Heur]` window against a threshold, and there is no
+// longer a window to time.
+TEST_CASE("effort-zero: a zeroed heuristic is absent from the trace", "[effort-zero]") {
     for (const Case& c : kCases) {
         INFO("heuristic " << c.name);
-        const auto lines = zeroed("flugpl.mps", c.name);
-        const auto presolve = presolve_lines(lines);
+        const auto lines = all_but("flugpl.mps", c.name);
+        const auto names = presolve_heur_names(lines);
 
-        const auto entry =
-            std::ranges::find_if(presolve, [&](const HeurLine& l) { return l.name == c.name; });
-        REQUIRE(entry != presolve.end());
-        CHECK(entry->effort == 0);
-        CHECK(entry->found == false);
-
-        // Nothing was offered, so nothing could have been accepted — the
-        // stronger statement, since `found` only reports acceptance.
+        CHECK(std::ranges::find(names, std::string(c.name)) == names.end());
         CHECK(offers_by(lines, c.name) == 0);
-        // And nothing reached HiGHS's incumbent display under this
-        // heuristic's source character either.
         CHECK(!source_codes(lines).contains(c.source_code));
     }
 }
 
+// The complement, and the guard against every case above passing because
+// the trace is empty: each heuristic *does* appear when it is the one left
+// enabled.
+TEST_CASE("effort-zero: an enabled heuristic is present in the trace", "[effort-zero]") {
+    for (const Case& c : kCases) {
+        INFO("heuristic " << c.name);
+        const auto lines = trace_solve("flugpl.mps", [&](Highs& h) {
+            enable_scylla(h);
+            select_heuristics(h, c.name);
+        });
+        const auto names = presolve_heur_names(lines);
+
+        CHECK(names == std::vector<std::string>{c.name});
+    }
+}
+
+// Zeroing every heuristic leaves the chain with nothing to build, and
+// `run_sequential` returns before `make_problem` — the shared CSC
+// transpose, which is the most expensive piece of setup in that function
+// and is charged to no heuristic.  Asserted as an empty presolve trace,
+// which is what "returned before the ledger existed" looks like from
+// outside.
+//
+// `p0548` is the bundled instance with the most columns, so the one whose
+// setup would cost most if any of it ran.
+TEST_CASE("effort-zero: a fully zeroed chain builds nothing", "[effort-zero]") {
+    const auto lines = trace_solve("p0548.mps", [](Highs& h) { select_heuristics(h, "off"); });
+    CHECK(presolve_heur_names(lines).empty());
+}
+
 // Scylla's setup is the expensive one — a `ContestedPdlp` wraps a whole
 // `Highs` LP copy, and the per-config variable orders reach the clique
-// table (`clique_cover::build_clique_cover`, once per config).  `[ScyllaOverlap]` is emitted at the
-// end of `scylla::run` from the workers it constructed, so its absence is a direct observable that
-// none of that setup ran.  It is also exactly what omitting Scylla from the suite produces, which
-// is the point.
-TEST_CASE("effort-zero: scylla builds no PDLP wrapper at effort 0", "[effort-zero]") {
+// table (`clique_cover::build_clique_cover`, once per config).
+// `[ScyllaOverlap]` is emitted at the end of `scylla::run` from the workers
+// it constructed, so its absence is a direct observable that none of that
+// setup ran.
+//
+// The third arm is the one that reaches `HeuristicBudget::disabled()`
+// rather than `entry_enabled`: an effort far above zero but small enough
+// that `heuristic_effort_budget(nnz, effort)` floors to zero, so the chain
+// dispatches Scylla — the `[Heur]` line is emitted — and the entry point
+// declines before building anything.  Without this arm, deleting
+// `budget.disabled()` from `scylla::run` would leave the whole file green.
+TEST_CASE("effort-zero: scylla builds no PDLP wrapper at a zero budget", "[effort-zero]") {
     CHECK(log_contains(trace_solve("flugpl.mps",
                                    [](Highs& h) {
-                                       set_suite(h, "all");
-                                       // The control arm has to actually run Scylla,
-                                       // and since #107 the shipped effort is 0.
+                                       // The control arm has to actually run
+                                       // Scylla, which ships at effort 0.
                                        enable_scylla(h);
+                                       select_heuristics(h, "scylla");
                                    }),
                        "[ScyllaOverlap]"));
-    CHECK(!log_contains(zeroed("flugpl.mps", "scylla"), "[ScyllaOverlap]"));
-    CHECK(!log_contains(omitted("flugpl.mps", "fj,fpr,local_mip"), "[ScyllaOverlap]"));
-}
 
-// The half the assertions above cannot reach: that the guard removes the
-// *setup*, not merely the search.
-//
-// Charged effort and offer counts are both blind to it — `precompute_var_orders`
-// and `ContestedPdlp` construction are uncharged, so deleting
-// `budget.disabled()` from all four entry points leaves every other
-// assertion in this file passing (measured: 3 of 4 cases green, only the
-// `[ScyllaOverlap]` one below failing).  The only observable that moves is
-// the wall-clock window the ledger already reports.
-//
-// This is therefore the one test here that reads a time, and it is written
-// to be a *structural* comparison rather than a performance one.  With the
-// guard, a disabled heuristic's `[Heur]` window is two `timer_.read()`
-// calls around a function that returns immediately: `%.1f` prints `0.0`,
-// i.e. under 0.05 ms, on every bundled instance, 3 runs each.  Without it,
-// on `p0548` — the bundled instance with the most columns, so the one whose
-// setup costs most — FPR reports 0.7 ms and Scylla 0.5 ms, reproducibly to
-// the digit.  The threshold below sits an order of magnitude above the
-// guarded value and well under half the unguarded one.
-//
-// The minimum over repeats, not one sample: a scheduler hiccup between two
-// clock reads can inflate any single window on a loaded machine, while the
-// cost the counterfactual pays is real work that every repeat pays again.
-// So the min keeps the false-failure rate near zero without weakening what
-// the test detects.
-//
-// `[serial]` on top of that (issue #146): the min over three repeats is a
-// variance reducer, not a bound, and a 0.3 ms threshold is inside the
-// window a single deschedule opens under `ctest -j$(nproc)` on a saturated
-// host — three of them can all be unlucky.  ctest's `RUN_SERIAL` restores
-// the idle machine the 0.0 ms / 0.5-0.7 ms separation above was measured
-// on.  The alternative — raising `kSetupFreeMs` until it stops failing —
-// would walk it into the unguarded values it has to stay well below, at
-// which point the case asserts nothing.
-TEST_CASE("effort-zero: a zeroed heuristic runs no setup either", "[effort-zero][serial]") {
-    constexpr int kRepeats = 3;
-    constexpr double kSetupFreeMs = 0.3;
+    CHECK(!log_contains(all_but("flugpl.mps", "scylla"), "[ScyllaOverlap]"));
 
-    std::map<std::string, double> fastest;
-    for (int repeat = 0; repeat < kRepeats; ++repeat) {
-        // `p0548`, and every heuristic zeroed at once: the point is that no
-        // entry point pays for setup, and one solve measures all four.
-        const auto lines = trace_solve("p0548.mps", [](Highs& h) {
-            set_suite(h, "all");
-            for (const Case& c : kCases) {
-                require_option(h, std::string("mip_heuristic_") + c.name + "_effort", 0.0);
-            }
-        });
-        for (const HeurLine& entry : presolve_lines(lines)) {
-            const auto it = fastest.find(entry.name);
-            if (it == fastest.end() || entry.wall_ms < it->second) {
-                fastest[entry.name] = entry.wall_ms;
-            }
-        }
-    }
-
-    REQUIRE(fastest.size() == kCases.size());
-    for (const auto& [name, wall_ms] : fastest) {
-        INFO("heuristic " << name << " best-of-" << kRepeats << " wall_ms " << wall_ms);
-        CHECK(wall_ms < kSetupFreeMs);
-    }
-}
-
-// The equivalence #107's parameter encoding rests on: zeroing a
-// heuristic's effort leaves the rest of the presolve chain doing exactly
-// what omitting it from the suite would.
-//
-// **The presolve chain, and only that** — which is what this case is named
-// for since #164.  It runs on `flugpl`, which never reaches a B&B dive, and
-// it filters to `phase=presolve`, so a dive-time difference is outside its
-// reach by construction.  Under the old name ("equivalent to omitting the
-// heuristic from the suite") it read as the general claim, and for `fpr`
-// that claim was false: zeroing `mip_heuristic_fpr_effort` left `fpr_lp`
-// running where dropping the `fpr` token killed it.  That is exactly the
-// misreading #164 was filed against, so the name now says the scope.
-//
-// Compared as traces, not just objectives: two configurations can agree on
-// the final objective while spending completely different budgets, and it
-// is the budgets a calibration search reads.  The zeroed heuristic's own
-// entry is excluded from the comparison because it is the one documented
-// difference — `run_sequential` still books it, so `[Heur] name=<n>
-// effort=0 found=0` is emitted where omission emits nothing at all.  That
-// is a log difference and not a behavioural one; asserting on solver state
-// rather than log identity is what keeps it out of the way.
-TEST_CASE("effort-zero: the rest of the presolve chain is unchanged by either spelling",
-          "[effort-zero]") {
-    for (const Case& c : kCases) {
-        INFO("heuristic " << c.name);
-        const auto zero_lines = zeroed("flugpl.mps", c.name);
-        const auto omit_lines = omitted("flugpl.mps", c.complement);
-
-        CHECK(without(presolve_lines(zero_lines), c.name) == presolve_lines(omit_lines));
-        CHECK(source_codes(zero_lines) == source_codes(omit_lines));
-
-        // The zeroed heuristic is the only extra presolve entry.
-        CHECK(presolve_lines(zero_lines).size() == presolve_lines(omit_lines).size() + 1);
-    }
-}
-
-// The objective itself, on an instance whose optimum every configuration
-// reaches: disabling a heuristic by either spelling must not change what
-// the solver returns.  `mip_rel_gap = 0` on both sides so the comparison is
-// between two proven optima rather than between two incumbents each
-// allowed to stop 1e-4 short.
-TEST_CASE("effort-zero: the reported objective is unchanged", "[effort-zero]") {
-    const auto objective = [](auto&& configure) {
-        Highs h;
-        h.setOptionValue("output_flag", false);
-        require_option(h, "mip_rel_gap", 0.0);
-        configure(h);
-        REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
-        REQUIRE(h.run() == HighsStatus::kOk);
-        double obj = 0.0;
-        h.getInfoValue("objective_function_value", obj);
-        return obj;
-    };
-
-    for (const Case& c : kCases) {
-        INFO("heuristic " << c.name);
-        const std::string option = std::string("mip_heuristic_") + c.name + "_effort";
-        const double zero_obj = objective([&](Highs& h) {
-            set_suite(h, "all");
-            require_option(h, option, 0.0);
-        });
-        const double omit_obj = objective([&](Highs& h) { set_suite(h, c.complement); });
-        CHECK(zero_obj == omit_obj);
-    }
+    const auto tiny = trace_solve("flugpl.mps", [](Highs& h) {
+        select_heuristics(h, "scylla");
+        require_option(h, "mip_heuristic_scylla_effort", 1e-9);
+    });
+    INFO("a sub-unit effort must still dispatch, so the entry point guard is what declines");
+    CHECK(presolve_heur_names(tiny) == std::vector<std::string>{"scylla"});
+    CHECK(!log_contains(tiny, "[ScyllaOverlap]"));
 }

@@ -172,7 +172,7 @@ TEST_CASE("LocalMIP cold-start: emits non-zero [Sequential] when upstream heuris
     const std::vector<std::string> lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
         h.setOptionValue("mip_root_presolve_only", true);
-        set_suite(h, "local_mip");
+        select_heuristics(h, "local_mip");
     });
 
     REQUIRE(heuristic_reported_effort(lines, "local_mip"));
@@ -200,7 +200,7 @@ TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74
           "[heuristic][local_mip][pool-aware]") {
     const std::vector<std::string> lines = solve_capturing_log("lseu.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);
-        set_suite(h, "all");
+        select_heuristics(h, "all");
         // Force HiGHS to run the full root-presolve chain (fj → local_mip)
         // before any branching, so the [Sequential] lines are guaranteed
         // to appear regardless of whether HiGHS would otherwise shortcut
@@ -283,7 +283,7 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_root_presolve_only", true);
-    set_suite(h, "local_mip");
+    select_heuristics(h, "local_mip");
     // threads=1 is load-bearing for the `pool == 0` assertion below.  The
     // continuous runner resolves each worker's start inside the parallel
     // region, so with several workers a late starter can legitimately
@@ -331,7 +331,7 @@ TEST_CASE("LocalMIP standalone: cold-start construction fires at the default wor
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_root_presolve_only", true);
-    set_suite(h, "local_mip");
+    select_heuristics(h, "local_mip");
     REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
 
@@ -356,7 +356,7 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     Highs h;
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_root_presolve_only", true);
-    set_suite(h, "all");
+    select_heuristics(h, "all");
     // `lseu.mps` is the same instance the existing #74 regression test
     // uses — FJ reliably finds a feasible inside the presolve budget,
     // so the pool is non-empty by the time LocalMIP fires.  FPR runs

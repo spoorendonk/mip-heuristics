@@ -232,13 +232,15 @@ def probe_log(
 
 
 PROBE_OPTS = (
-    "mip_heuristic_suite = all\n"
     "mip_heuristic_fj_effort = 1.0\n"
     "mip_heuristic_fj_patience = 0\n"
     "mip_heuristic_presolve_only = true\n"
     "random_seed = 0\n"
 )
-FULL_SOLVE_OPTS = "mip_heuristic_suite = all\nrandom_seed = 0\n"
+# A full solve at default options: what makes it a full solve rather than a
+# probe run is the *absence* of `mip_heuristic_presolve_only`, which is the
+# key the refusal below reads.
+FULL_SOLVE_OPTS = "random_seed = 0\n"
 
 
 def write_tree(
@@ -1329,7 +1331,6 @@ def _traced_run(effort_charged: int, nnz: int = 4096) -> str:
 
 def _opts(effort: float) -> str:
     return (
-        "mip_heuristic_suite = fpr\n"
         f"mip_heuristic_fpr_effort = {effort}\n"
         "mip_heuristic_fpr_patience = 0\n"
         "mip_heuristic_presolve_only = true\n"
@@ -1405,7 +1406,6 @@ def test_fj_budget_is_read_per_worker(tmp_path):
         heur=(heur_line("fj", charged),),
     )
     opts = (
-        "mip_heuristic_suite = fj\n"
         "mip_heuristic_fj_effort = 20.0\n"  # 20 base budgets, per worker
         "mip_heuristic_fj_patience = 0\n"
         "mip_heuristic_presolve_only = true\n"
