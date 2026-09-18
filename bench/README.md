@@ -178,4 +178,4 @@ This is unrelated to the *virtual best* inside the same script, which is referen
 
 `docs/REPRODUCIBILITY.md` (what is reproducible, and the exact protocols),
 `docs/PARAMETERS.md` (every tunable, and where its default came from),
-`docs/README.md` (the source papers), `CONTRIBUTING.md` (build, test, lint).
+`docs/README.md` (the source papers), `README.md` (build, test, lint).

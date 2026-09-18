@@ -6,13 +6,12 @@
 # Nearly every failure below needs the same remedy for the same reason: this
 # script decides "already applied?" by searching for text it previously
 # inserted, so a tree patched by an older version of the script cannot be
-# rewritten in place.  The rule and its rationale live in CONTRIBUTING.md
-# under "The clean-rebuild rule"; this string keeps the command itself in
-# front of whoever hit the error, and keeps nineteen copies of it from
-# drifting apart.
+# rewritten in place.  Any change to the text this script inserts therefore
+# needs PATCH_VERSION bumped and the fetched tree cleaned before it takes
+# effect; this string keeps the command itself in front of whoever hit the
+# error, and keeps nineteen copies of it from drifting apart.
 string(CONCAT CLEAN_REBUILD
-    "Clean the HiGHS source tree and rebuild "
-    "(see CONTRIBUTING.md, \"The clean-rebuild rule\"): "
+    "Clean the HiGHS source tree and rebuild: "
     "rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt "
     "&& cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build")
 

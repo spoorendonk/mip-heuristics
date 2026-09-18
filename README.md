@@ -3,13 +3,13 @@
 [![CI](https://github.com/spoorendonk/mip-heuristics/actions/workflows/ci.yml/badge.svg)](https://github.com/spoorendonk/mip-heuristics/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A unified open-source reference implementation and empirical evaluation of four modern primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant. All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions.
+A unified open-source reference implementation and empirical evaluation of four primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant. All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions.
 
 The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: on instances never used for tuning the patched solver improves the `mipfeas` primal-integral SGM by 16.4% — it reaches a good solution *sooner*, while final solution quality is level.
 
 This repository has no paper of its own; it implements four published ones, listed under [References](#references).
 
-**Documentation**: [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, lint, review bar) · [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the `mipfeas` protocol) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`bench/README.md`](bench/README.md) (the harness and the campaign) · [`docs/README.md`](docs/README.md) (source papers).
+**Documentation**: [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the `mipfeas` protocol) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`bench/README.md`](bench/README.md) (the harness and the campaign) · [`docs/README.md`](docs/README.md) (source papers).
 
 ## Key Features
 
@@ -223,7 +223,16 @@ ctest --test-dir build -R "execution-mode: flugpl objective" --output-on-failure
 
 Catch2 v3. Characterization tests verify known-optimal objectives against MIPLIB instances bundled with HiGHS.
 
-`clang-format` and `clang-tidy` run over `src/` and `tests/` as ctest tests labelled `lint`, adding roughly 30 s to a full run — hence `ctest -LE lint` while iterating. Without the venv above they are **not registered at all** and `ctest` reports green having linted nothing, which is what `-DMIP_HEURISTICS_REQUIRE_LINT=ON` exists to prevent. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the tool-version contract.
+The benchmark harness has its own Python suite, registered in ctest as `bench_python_tests` and runnable directly:
+
+```bash
+.venv/bin/python -m pytest bench
+.venv/bin/ruff check bench cmake
+```
+
+`clang-format` and `clang-tidy` run over `src/` and `tests/` as ctest tests labelled `lint`, adding roughly 30 s to a full run — hence `ctest -LE lint` while iterating. Without the venv above they are **not registered at all** and `ctest` reports green having linted nothing, which is what `-DMIP_HEURISTICS_REQUIRE_LINT=ON` exists to prevent. The versions above are part of the contract: clang-format's output changes between major releases, so a different major fails the gate.
+
+Git hooks live in `.githooks/` (Conventional Commits on `commit-msg`, format plus `ctest -LE lint` on `pre-commit`, a clean rebuild and the full suite on `pre-push`). `cmake -B build` points `core.hooksPath` at them; by hand it is `git config core.hooksPath .githooks`.
 
 ## Reproducing
 

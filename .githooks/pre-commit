@@ -51,7 +51,7 @@ if [ -n "$CPP_FILES" ]; then
 		"$CLANG_FORMAT" -i $CPP_FILES || true
 	else
 		echo "Note: no clang-format found (venv or PATH) — staged C++ left unformatted."
-		echo "      The clang_format ctest gate will judge it anyway; see CONTRIBUTING.md."
+		echo "      The clang_format ctest gate will judge it anyway."
 	fi
 fi
 

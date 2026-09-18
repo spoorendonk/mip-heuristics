@@ -120,6 +120,20 @@ Issues get picked up cold, in fresh sessions, often by an agent with no access t
 - **Don't use deprecated patterns.** Check current docs, not training data.
 - **Performance matters.** Most of this is solvers: profile before micro-optimizing, but don't sacrifice perf for "clean code". Price any micro-optimization against the 4% anchor below.
 
+## Code Hygiene Bar
+
+Every change is held to this list; it is not a one-off checklist.
+
+- **Net LoC must go down** on a refactor. Adding indirection without deleting duplication is not a refactor.
+- **No new abstraction with exactly one implementor.** Carve an existing type; don't invent a parallel one.
+- **No O(n) scan** where an incremental structure already exists or is cheap to maintain. Keep an explicit index list beside the flag array and iterate that.
+- **Hot loops use flat `std::vector` plus index arrays.** No `std::map`, `std::set`, `std::unordered_*` or `std::list` on a per-attempt or per-step path.
+- **`reserve()` known sizes.** No allocation inside a worker's inner step loop.
+- **Pass by `const&` or `std::span`.** No vector copies across the runner boundary.
+- **Delete dead code in the commit that orphans it.** No `TODO` placeholders, no stubs, no "wire this up later".
+- **Never mutate HiGHS solver state.** No `const_cast` on `HighsOptions`, and no writing an upstream `HighsMipSolverData` counter outside `src/effort_ledger`, the one place that deliberately charges the RENS/RINS envelope. Read solver options; don't reset, override or restore them.
+- **The effort ledger is not thread-safe.** `charge_presolve` and `charge_dive` do plain non-atomic `+=` and must be called from the dispatching thread with every parallel region joined. Charging from inside a worker callback corrupts `heuristic_lp_iterations`, which decides whether RENS/RINS run at all — silent, non-reproducible budget corruption.
+
 # Project: mip-heuristics
 
 ## Project Overview
@@ -128,7 +142,6 @@ Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solv
 
 **Reader-facing docs**, kept in sync with this file — update both when the behaviour they describe moves:
 - `README.md` — positioning, the heuristic table and how each one is enabled, recorded benchmark results, build options.
-- `CONTRIBUTING.md` — build/test/lint commands, the git hooks and how a checkout gets them, the clean-rebuild rule for patch-script changes, the benchmarking rules, the standing code-hygiene bar.
 - `docs/REPRODUCIBILITY.md` — what is reproducible and what is not, and the exact `mipfeas` reproduction protocol.
 - `docs/PARAMETERS.md` — every tunable `constexpr`. **Verified by ctest** (`docs_parameter_references`, via `bench/check_docs_refs.py`): renaming a documented constant fails the suite. Entries name symbols, **never line numbers** — line numbers drift on essentially every refactor. Don't reintroduce them.
 
@@ -195,7 +208,7 @@ GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver us
 
 **Integration model**: Heuristics are compiled as a static object library (`mip_heuristics`) whose objects are injected into the HiGHS `highs` target. The HiGHS source is fetched at build time (v1.15.1) with patches applied from `third_party/highs_patch/`. Heuristics access HiGHS internals directly via `HighsMipSolver&`.
 
-**No backward compatibility with older patch versions.** `apply_patch.cmake` refuses any HiGHS tree whose `mip-heuristics patch version` marker is not the current `PATCH_VERSION`, and does not attempt an in-place upgrade — no retired-identifier list, no rewriting an older option layout. **Bump `PATCH_VERSION` on any change to inserted text and clean-rebuild; that is the whole contract.** The marker lives in `HighsOptions.h`, so it speaks only for that file — the surviving probes are the ones for markerless files: `HighsMipSolver.cpp`, whose `heuristics::run_presolve` / `fpr_lp::run` idempotency sentinels are present in every layout the call sites have ever had, and `HighsCliqueTable.h`, whose two const clique-list accessors are likewise markerless. Retiring an option that appeared in an inserted *call site* means updating that file's probe to name it; retiring one that only appeared in `HighsOptions.h` means nothing but the version bump. The same stance applies to the harness: results trees must use the `<config>/seed<N>/` layout, and config names have no aliases.
+**No backward compatibility with older patch versions.** `apply_patch.cmake` refuses any HiGHS tree whose `mip-heuristics patch version` marker is not the current `PATCH_VERSION`, and does not attempt an in-place upgrade — no retired-identifier list, no rewriting an older option layout. **Bump `PATCH_VERSION` on any change to inserted text and clean-rebuild; that is the whole contract.** The clean rebuild is `rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt` before re-configuring — an existing tree was patched by the *old* script, so a modified one either declines to run or appends its new text to an old layout, and the failure then surfaces somewhere unrelated. CI's dependency cache key includes the patch script for the same reason. The marker lives in `HighsOptions.h`, so it speaks only for that file — the surviving probes are the ones for markerless files: `HighsMipSolver.cpp`, whose `heuristics::run_presolve` / `fpr_lp::run` idempotency sentinels are present in every layout the call sites have ever had, and `HighsCliqueTable.h`, whose two const clique-list accessors are likewise markerless. Retiring an option that appeared in an inserted *call site* means updating that file's probe to name it; retiring one that only appeared in `HighsOptions.h` means nothing but the version bump. The same stance applies to the harness: results trees must use the `<config>/seed<N>/` layout, and config names have no aliases.
 
 **Bumping the HiGHS tag**: HiGHS renames `advanced` options across minor versions with no deprecation shim (`pdlp_scaling` → `pdlp_scaling_mode` and `pdlp_e_restart_method` → `pdlp_cupdlpc_restart_method` at v1.14.0). Every `Highs` instance we build sets `output_flag=false`, so a rejected `setOptionValue` is completely silent — it reports failure only through the return status. After a bump, grep for `setOptionValue` and check each name against `_deps/highs-src/highs/lp_data/HighsOptions.h`, and prefer routing writes through a status-checking helper (`set_option_or_die` in `contested_pdlp.cpp`). Verifying that an option *exists* is not enough: check that the code path you're on actually reads it (e.g. `pdlp_scaling_mode` is consumed only by HiPDLP, never by cuPDLP-C).
 

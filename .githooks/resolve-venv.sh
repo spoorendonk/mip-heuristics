@@ -14,7 +14,7 @@
 # This repo's pyproject.toml holds nothing but [tool.ruff] / [tool.pytest]
 # config, so the predicate below says "not a Python project" and the hooks
 # never *demand* a venv. They still use one when present, and here one always
-# is: `.venv/bin` is where CONTRIBUTING.md installs the pinned clang-format /
+# is: `.venv/bin` is where README.md installs the pinned clang-format /
 # clang-tidy pair, and the exact path cmake/Lint.cmake searches. A hook that
 # fell back to a PATH clang-format would format code against a different tool
 # version than the `clang_format` ctest gate judges it with.
