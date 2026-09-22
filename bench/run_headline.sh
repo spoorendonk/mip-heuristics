@@ -6,7 +6,11 @@
 #   bench/run_headline.sh next <hours>   run within a window, resume safely
 #   bench/run_headline.sh until <HH:MM>  run until a wall-clock time today/tomorrow
 #   bench/run_headline.sh status
-#   bench/run_headline.sh report
+#   bench/run_headline.sh report         the tables  -> bench/headline/tables.txt
+#   bench/run_headline.sh paired         the paired statistics -> bench/headline/paired.txt
+#
+# Both readers score under the benchmark's published formula, the default of
+# `analyze_results.py` (`--formula mipfeas`), which is what the paper reports.
 #
 # `run_mipfeas.sh` with this stage's environment, like every other campaign
 # stage (#109).  It executes; it chooses nothing.
@@ -150,15 +154,51 @@ cmd_report() {
 		--instances "$REPO/bench/instances_mipfeas.txt" \
 		--exclude-instances "$REPO/bench/instances_tuning.txt"
 	echo
+	echo "=== secondary: the tuning set"
+	python3 "$REPO/bench/analyze_results.py" "$out" --configs "$CONFIG" vanilla \
+		--time-limit 600 --baseline --summary \
+		--instances "$REPO/bench/instances_tuning.txt"
+	echo
 	echo "=== per-heuristic attribution of accepted incumbents"
 	python3 "$REPO/bench/analyze_results.py" "$out" --configs "$CONFIG" vanilla \
 		--time-limit 600 --attribution
+}
+
+# The paired statistics behind bench/headline/paired.txt.  Three arms: the
+# selected configuration, the previous four-heuristic vector (`all-prev-vector`,
+# the second arm this stage ran over the same 233) and vanilla; every pair is
+# reported, first named as numerator.  Four instance sets: everything, the
+# held-out complement of the tuning set, the tuning set, and the 95 held-out
+# instances the stage 3 held-out check never saw.
+SECOND_ARM="${HEADLINE_SECOND_ARM:-all-prev-vector}"
+
+cmd_paired() {
+	local out="$REPO/bench/results/mipfeas"
+	local mipfeas="$REPO/bench/instances_mipfeas.txt"
+	local tuning="$REPO/bench/instances_tuning.txt"
+	local heldout48="$REPO/bench/instances_heldout48.txt"
+	paired() {
+		python3 "$REPO/bench/analyze_results.py" "$out" \
+			--configs "$CONFIG" "$SECOND_ARM" vanilla --time-limit 600 --paired "$@"
+	}
+	echo "=== all 233"
+	paired
+	echo
+	echo "=== held-out 143: the complement of the tuning set"
+	paired --instances "$mipfeas" --exclude-instances "$tuning"
+	echo
+	echo "=== tuning 90"
+	paired --instances "$tuning"
+	echo
+	echo "=== unseen 95: held-out minus the 48 of the stage 3 held-out check"
+	paired --instances "$mipfeas" --exclude-instances "$tuning" --exclude-instances "$heldout48"
 }
 
 case "${1:-status}" in
 next) shift; cmd_next "$@" ;;
 until) shift; cmd_until "$@" ;;
 report) cmd_report ;;
+paired) cmd_paired ;;
 status) mipfeas status ;;
-*) echo "usage: $0 {next <hours>|until <HH:MM>|status|report}" >&2; exit 1 ;;
+*) echo "usage: $0 {next <hours>|until <HH:MM>|status|report|paired}" >&2; exit 1 ;;
 esac

@@ -11,8 +11,29 @@ abstract: "A unified open-source reference implementation and empirical evaluati
 version: "0.1.0"
 repository-code: "https://github.com/spoorendonk/mip-heuristics"
 url: "https://github.com/spoorendonk/mip-heuristics"
-date-released: "2026-06-25"
+date-released: "2026-09-18"
 license: MIT
+doi: 10.5281/zenodo.22837482
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22837482
+    description: "Version DOI for v0.1.0"
+  - type: doi
+    value: 10.5281/zenodo.22837481
+    description: "Concept DOI, resolves to the latest version"
+preferred-citation:
+  type: article
+  title: "Presolve heuristics in HiGHS: implementation and computational study"
+  authors:
+    - family-names: Spoorendonk
+      given-names: Simon
+      orcid: "https://orcid.org/0009-0007-4304-6956"
+  year: 2026
+  journal: "arXiv preprint"
+  identifiers:
+    - type: other
+      value: "arXiv:2609.22938"
+  url: "https://arxiv.org/abs/2609.22938"
 references:
   - type: article
     title: "A fix-propagate-repair heuristic for mixed integer programming"

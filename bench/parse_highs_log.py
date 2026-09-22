@@ -567,6 +567,88 @@ class SolveResult:
         integral += prev_gap * (time_limit - prev_time)
         return integral
 
+    def mipfeas_gap_at(
+        self, time_limit: float, reference: float | None
+    ) -> float | None:
+        """The published `mipfeas` gap of the last incumbent at or before `time_limit`.
+
+        The penalty `mipfeas_penalty` integrates, read at the limit.  An
+        incumbent up to `MIPFEAS_LIMIT_GRACE_S` past the limit still counts,
+        as HiGHS reports a solution found by the node that was running when
+        the clock ran out.  `None` when there is no incumbent by then or no
+        usable reference; callers score that as `MIPFEAS_NO_INCUMBENT`.
+        """
+        last: float | None = None
+        for inc in self.incumbents:
+            if inc.time < time_limit + MIPFEAS_LIMIT_GRACE_S:
+                last = inc.objective
+            else:
+                break
+        if last is None or reference is None or not math.isfinite(reference):
+            return None
+        return mipfeas_penalty(last, reference)
+
+    def mipfeas_integral(self, time_limit: float, reference: float | None) -> float:
+        """The published `mipfeas` score of this run, on the benchmark's own scale.
+
+        Mirrors `calculate_primal_integral` in the benchmark's
+        `create_primalintegral.py` (Bussieck and Dirkse 2026):
+
+            p(t) = 2                                    no incumbent yet
+                   1                                    z(t) * z* < 0
+                   |z(t) - z*| / max(|z(t)|, |z*|, 1)   otherwise
+            P    = (1 / T) * integral of p(t) over [0, T]
+
+        so P lies in [0, 2] and is aggregated with a shifted geometric mean at
+        shift 0.001.  `reference` is the benchmark's own z*
+        (`bench/mipfeas_optimal_objective.csv`), never a virtual best.  Four
+        things differ from `primal_integral`: the division by T, the
+        no-incumbent penalty of 2 rather than 1, the denominator, and the flat
+        1 for a sign flip.  A run with no usable reference scores 2, the same
+        as one that never became feasible.  Incumbents at or past the limit
+        are ignored, for the reason `primal_integral` gives.
+        """
+        if reference is None or not math.isfinite(reference):
+            return MIPFEAS_NO_INCUMBENT
+        area = 0.0
+        prev_time = 0.0
+        prev_p = MIPFEAS_NO_INCUMBENT
+        for inc in self.incumbents:
+            if inc.time >= time_limit:
+                break
+            area += prev_p * (inc.time - prev_time)
+            prev_time = inc.time
+            prev_p = mipfeas_penalty(inc.objective, reference)
+        area += prev_p * (time_limit - prev_time)
+        return area / time_limit
+
+
+# The published `mipfeas` scoring (Bussieck and Dirkse 2026), as the
+# benchmark's own `create_primalintegral.py` computes it.  `SolveResult.
+# mipfeas_integral` and `mipfeas_gap_at` build on these; `bench/analyze_results.py`
+# reports them by default.
+MIPFEAS_NO_INCUMBENT = 2.0
+MIPFEAS_SHIFT = 0.001
+# An incumbent this far past the limit still counts for the gap at the limit:
+# HiGHS reports the solution of the node that was running when the clock ran
+# out.  The integral ignores it, as its area past the limit is zero anyway.
+MIPFEAS_LIMIT_GRACE_S = 1.0
+
+
+def mipfeas_penalty(objective: float, reference: float) -> float:
+    """The `mipfeas` penalty p of one incumbent against the benchmark's z*.
+
+    Exactly as the benchmark's script computes it: a flat 1 when the objective
+    and z* have opposite signs, otherwise the signed gap ``(z - z*) /
+    max(|z|, |z*|, 1)`` rounded to six decimals, floored at 0 so an incumbent
+    better than z* (which the script maps to z*) scores 0.  Every benchmark
+    instance is a minimisation.
+    """
+    if objective * reference < 0.0:
+        return 1.0
+    denom = max(abs(objective), abs(reference), 1.0)
+    return max(0.0, round((objective - reference) / denom, 6))
+
 
 # Regex for MIP log data lines.
 # Source char (or space) at position 0, then fields separated by whitespace.

@@ -24,14 +24,21 @@ this file the phrase is already taken.
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import os
+import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from parse_highs_log import SolveResult, parse_log_file
+from parse_highs_log import (
+    MIPFEAS_NO_INCUMBENT,
+    MIPFEAS_SHIFT,
+    SolveResult,
+    parse_log_file,
+)
 
 
 def parse_solu_file(path: str) -> dict[str, tuple[str, float | None]]:
@@ -508,7 +515,7 @@ def _oracle_score(r: SolveResult | None, time_limit: float, ref: float | None) -
     """The headline metric, lower-is-better, with a missing row worst-possible."""
     if r is None:
         return float("inf")
-    return r.primal_integral(time_limit, ref)
+    return score_integral(r, time_limit, ref)
 
 
 def build_oracle_config(
@@ -738,6 +745,264 @@ def shifted_geomean(values: list[float], shift: float = 1.0) -> float:
         return float("nan")
     log_sum = sum(math.log(max(v + shift, 1e-12)) for v in values)
     return math.exp(log_sum / len(values)) - shift
+
+
+# ---------------------------------------------------------------------------
+# Which formula scores a run.
+#
+# `mipfeas` (the default) is the benchmark's published scoring, the one the
+# paper reports: `SolveResult.mipfeas_integral` / `mipfeas_gap_at` against the
+# benchmark's own z* (`bench/mipfeas_optimal_objective.csv`), no incumbent
+# scored 2, SGM shift 0.001 on the normalised integral.  `campaign` is the
+# scoring the campaign's stages were run and read under: `primal_integral` /
+# `primal_gap_at` in gap-seconds, no incumbent scored 1, against a MIPLIB
+# `.solu` reference improved by any better primal an arm observed.  It is
+# kept so the ablation write-ups under `bench/ablation_*/` stay reproducible.
+# ---------------------------------------------------------------------------
+
+FORMULAS: tuple[str, ...] = ("mipfeas", "campaign")
+_state = {"formula": "mipfeas"}
+
+
+def set_formula(name: str) -> None:
+    if name not in FORMULAS:
+        raise ValueError(f"unknown formula {name!r}; expected one of {FORMULAS}")
+    _state["formula"] = name
+
+
+def formula() -> str:
+    return _state["formula"]
+
+
+def score_integral(r: SolveResult, time_limit: float, ref: float | None) -> float:
+    """The primal integral of one run under the formula in effect."""
+    if formula() == "campaign":
+        return r.primal_integral(time_limit, ref)
+    return r.mipfeas_integral(time_limit, ref)
+
+
+def score_gap(r: SolveResult, time_cutoff: float, ref: float | None) -> float | None:
+    """The primal gap at a cutoff under the formula in effect; None if no incumbent."""
+    if formula() == "campaign":
+        return r.primal_gap_at(time_cutoff, ref)
+    return r.mipfeas_gap_at(time_cutoff, ref)
+
+
+def missing_gap() -> float:
+    """What an instance with no incumbent scores in a gap SGM."""
+    return 1.0 if formula() == "campaign" else MIPFEAS_NO_INCUMBENT
+
+
+def integral_shift() -> float:
+    """The SGM shift for the primal integral: 1 gap-second, or the benchmark's 0.001."""
+    return 1.0 if formula() == "campaign" else MIPFEAS_SHIFT
+
+
+def parse_mipfeas_z(path: str) -> dict[str, float]:
+    """Read the benchmark's own reference objectives, {instance: z*}.
+
+    `bench/mipfeas_optimal_objective.csv` is the benchmark's
+    `optimal_objective.csv`, copied verbatim from its results archive
+    (bench/README.md), header spelling included.  Rows without a numeric
+    objective are skipped.
+    """
+    refs: dict[str, float] = {}
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        inst_col = next(c for c in reader.fieldnames or () if c.startswith("Instance"))
+        obj_col = next(c for c in reader.fieldnames or () if c.startswith("Objective"))
+        for row in reader:
+            try:
+                refs[row[inst_col].strip()] = float(row[obj_col])
+            except (TypeError, ValueError):
+                continue
+    return refs
+
+
+def apply_reference_formula(
+    best_known: dict[str, float | None], mipfeas_z: dict[str, float]
+) -> dict[str, float | None]:
+    """The reference each instance is scored against under the formula in effect.
+
+    Under `mipfeas` it is the benchmark's z* wherever the file has one, whatever
+    the arms found, so a score is the one the benchmark's own script would give
+    the same run.  An instance the file lacks keeps the campaign's virtual best.
+    Under `campaign` the input is returned unchanged.
+    """
+    if formula() != "mipfeas":
+        return best_known
+    return {inst: mipfeas_z.get(inst, ref) for inst, ref in best_known.items()}
+
+
+# ---------------------------------------------------------------------------
+# Paired comparison, the statistics `bench/headline/paired.txt` reports.
+# ---------------------------------------------------------------------------
+
+_NORMAL = statistics.NormalDist()
+
+
+def normal_sf(z: float) -> float:
+    """1 - Phi(z), via erfc so the tail keeps its precision."""
+    return 0.5 * math.erfc(z / math.sqrt(2.0))
+
+
+def sign_test(better: int, worse: int) -> float:
+    """Two-sided sign test, normal approximation without continuity correction."""
+    n = better + worse
+    if n == 0:
+        return 1.0
+    z = abs(better - n / 2.0) / (math.sqrt(n) / 2.0)
+    return 2.0 * normal_sf(z)
+
+
+def min_detectable_decrease(
+    sd: float, n: int, alpha: float = 0.05, power: float = 0.8
+) -> float:
+    """Smallest proportional decrease a paired test at this n resolves, 1 - exp(-d).
+
+    `d = (z_{1-alpha/2} + z_{power}) * sd / sqrt(n)` is the detectable mean log
+    ratio.  Read as a decrease, the side an improvement is quoted on; the same d
+    read as an increase, exp(d) - 1, is a different number.
+    """
+    d = (
+        (_NORMAL.inv_cdf(1.0 - alpha / 2.0) + _NORMAL.inv_cdf(power))
+        * sd
+        / math.sqrt(n)
+    )
+    return 1.0 - math.exp(-d)
+
+
+@dataclass(frozen=True)
+class Paired:
+    """A paired comparison of two arms over a common instance set, lower is better."""
+
+    n: int
+    ratio: float
+    ci_lo: float
+    ci_hi: float
+    t: float
+    p: float
+    sd: float
+    better: int
+    tied: int
+    worse: int
+    sign_p: float
+    shift: float
+
+    @property
+    def pct(self) -> float:
+        """100 * (1 - ratio): the improvement of the numerator arm, in percent."""
+        return 100.0 * (1.0 - self.ratio)
+
+    @property
+    def mdd80(self) -> float:
+        return min_detectable_decrease(self.sd, self.n)
+
+
+def paired(a: list[float], b: list[float], shift: float) -> Paired:
+    """Paired per-instance comparison of `a` against `b` on the log ratio.
+
+    Both lists are aligned per instance.  With ``d_i = log(a_i + s) - log(b_i + s)``
+    at the metric's own SGM shift `s`: ratio ``exp(mean d)``, the shifted
+    geometric-mean ratio; sd the sample sd of d; ``t = mean / se``; a normal
+    interval ``exp(mean +- z_{0.975} se)`` and p-value.  `better` counts
+    instances where `a` is strictly smaller, `tied` exact equality, which is
+    what two arms that both found nothing produce.
+    """
+    if len(a) != len(b):
+        raise ValueError(f"paired needs equal-length inputs, got {len(a)} and {len(b)}")
+    n = len(a)
+    if n < 2:
+        raise ValueError(f"paired needs at least 2 observations, got {n}")
+    diffs = [
+        math.log(max(x + shift, 1e-12)) - math.log(max(y + shift, 1e-12))
+        for x, y in zip(a, b)
+    ]
+    mean = sum(diffs) / n
+    sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (n - 1))
+    se = sd / math.sqrt(n)
+    if se > 0.0:
+        t = mean / se
+        p = 2.0 * normal_sf(abs(t))
+    else:
+        t = 0.0 if mean == 0.0 else math.copysign(float("inf"), mean)
+        p = 1.0 if mean == 0.0 else 0.0
+    z = _NORMAL.inv_cdf(0.975)
+    better = sum(1 for x, y in zip(a, b) if x < y)
+    worse = sum(1 for x, y in zip(a, b) if x > y)
+    return Paired(
+        n=n,
+        ratio=math.exp(mean),
+        ci_lo=math.exp(mean - z * se),
+        ci_hi=math.exp(mean + z * se),
+        t=t,
+        p=p,
+        sd=sd,
+        better=better,
+        tied=n - better - worse,
+        worse=worse,
+        sign_p=sign_test(better, worse),
+        shift=shift,
+    )
+
+
+def print_paired(
+    agg_results: dict[str, dict[str, SolveResult]],
+    configs: list[str],
+    instances: list[str],
+    time_limit: float,
+    best_known: dict[str, float | None],
+    synthetic: set[str] | None = None,
+) -> None:
+    """Print the paired statistics for every pair of configs, first named as numerator.
+
+    Two lines per pair: the primal integral over every instance, and the final
+    gap at the limit over the instances both arms made feasible.
+    """
+    real = [c for c in configs if c not in (synthetic or set())]
+    print(
+        f"\n## Paired per-instance log-ratio ({len(instances)} instances, "
+        f"{time_limit:.0f} s, shift={integral_shift()}, formula={formula()})\n"
+    )
+    print(
+        "Lower is better; the first named arm is the numerator.  Intervals are\n"
+        "normal, exp(mean +- 1.96*se); the sign test is the normal approximation\n"
+        "without continuity correction; mdd80 is the smallest decrease this n\n"
+        "resolves at 80% power, read on the improvement side, 1 - exp(-d).\n"
+    )
+    width = max((len(f"{c1}/{c2}") for c1 in real for c2 in real), default=8) + 2
+    for i, c1 in enumerate(real):
+        for c2 in real[i + 1 :]:
+            a = [
+                score_integral(agg_results[c1][inst], time_limit, best_known.get(inst))
+                for inst in instances
+            ]
+            b = [
+                score_integral(agg_results[c2][inst], time_limit, best_known.get(inst))
+                for inst in instances
+            ]
+            st = paired(a, b, integral_shift())
+            print(f"{c1 + '/' + c2:<{width}} primal integral  {_paired_line(st)}")
+            both = []
+            for inst in instances:
+                ga = score_gap(agg_results[c1][inst], time_limit, best_known.get(inst))
+                gb = score_gap(agg_results[c2][inst], time_limit, best_known.get(inst))
+                if ga is not None and gb is not None:
+                    both.append((ga, gb))
+            if len(both) >= 2:
+                stg = paired([x for x, _ in both], [y for _, y in both], MIPFEAS_SHIFT)
+                print(
+                    f"{'':<{width}} final gap        {_paired_line(stg)}  (both feasible)"
+                )
+
+
+def _paired_line(st: Paired) -> str:
+    return (
+        f"n={st.n:>3} ratio={st.ratio:.3f} CI=[{st.ci_lo:.3f},{st.ci_hi:.3f}] "
+        f"t={st.t:.2f} p={st.p:.4f} sd={st.sd:.3f} | better/tied/worse "
+        f"{st.better}/{st.tied}/{st.worse} sign p={st.sign_p:.2g} | "
+        f"mdd80={st.mdd80 * 100:.1f}%"
+    )
 
 
 def format_float(v: float | None, width: int = 10, prec: int = 4) -> str:
@@ -1040,12 +1305,12 @@ def print_comparison_table(
         # one config found a solution, skip only when neither did.
         ref = best_known.get(inst) if best_known else None
         for tc in active_cutoffs:
-            g1 = r1.primal_gap_at(tc, ref)
-            g2 = r2.primal_gap_at(tc, ref)
+            g1 = score_gap(r1, tc, ref)
+            g2 = score_gap(r2, tc, ref)
             print(f"{format_float(g1, 12, 6)} {format_float(g2, 12, 6)} ", end="")
             if g1 is not None or g2 is not None:
-                g1c = g1 if g1 is not None else 1.0
-                g2c = g2 if g2 is not None else 1.0
+                g1c = g1 if g1 is not None else missing_gap()
+                g2c = g2 if g2 is not None else missing_gap()
                 gap_vals[tc][c1].append(g1c)
                 gap_vals[tc][c2].append(g2c)
                 if g1c < g2c - 1e-6:
@@ -1219,13 +1484,19 @@ def print_paper_metrics(
     # --- SGM of time-to-first-feasible (shift=1s, matching FJ/FPR) ---
     # Clamp at time_limit: HiGHS occasionally reports an incumbent found
     # fractionally after the wall-clock limit (node completing mid-timeout).
-    print(f"\n{'SGM T1st (s=1)':<25}", end="")
+    # Under the published formula a run with no incumbent counts at the limit,
+    # so the SGM is over every instance; the campaign's reading dropped it.
+    fill_missing = formula() == "mipfeas"
+    t1st_label = "SGM T1st (s=1, none=T)" if fill_missing else "SGM T1st (s=1)"
+    print(f"\n{t1st_label:<25}", end="")
     for c in configs:
         t1st = []
         for inst in instances:
             r = agg_results.get(c, {}).get(inst)
             if r and r.time_to_first_feasible is not None:
                 t1st.append(min(r.time_to_first_feasible, time_limit))
+            elif r and fill_missing:
+                t1st.append(time_limit)
         print(f" {format_float(shifted_geomean(t1st, 1.0), 12, 4)}", end="")
     print()
 
@@ -1241,8 +1512,8 @@ def print_paper_metrics(
     print()
 
     # --- SGM of primal gap at cutoff (shift=0.001, matching mipfeas) ---
-    # Infeasible instances contribute gap=1.0 so all instances are counted
-    # (matching Mittelmann's published benchmark methodology).
+    # An instance with no incumbent contributes `missing_gap()` (2 under the
+    # published formula, 1 under the campaign's) so all instances are counted.
     print(f"{'SGM Gap@' + str(int(time_limit)) + 's (s=0.001)':<25}", end="")
     for c in configs:
         gaps = []
@@ -1250,22 +1521,22 @@ def print_paper_metrics(
             r = agg_results.get(c, {}).get(inst)
             if r:
                 ref = best_known.get(inst) if best_known else None
-                g = r.primal_gap_at(time_limit, ref)
-                gaps.append(g if g is not None else 1.0)
+                g = score_gap(r, time_limit, ref)
+                gaps.append(g if g is not None else missing_gap())
         print(f" {format_float(shifted_geomean(gaps, 0.001), 12, 6)}", end="")
     print()
 
-    # --- SGM of primal integral (shift=1.0) ---
-    print(f"{'SGM Primal Integral':<25}", end="")
+    # --- SGM of primal integral, at the formula's own shift ---
+    pi_label = f"SGM PrimalInt (s={integral_shift():g})"
+    print(f"{pi_label:<25}", end="")
     for c in configs:
         pis = []
         for inst in instances:
             r = agg_results.get(c, {}).get(inst)
             if r:
                 ref = best_known.get(inst) if best_known else None
-                pi = r.primal_integral(time_limit, ref)
-                pis.append(pi)
-        print(f" {format_float(shifted_geomean(pis, 1.0), 12, 4)}", end="")
+                pis.append(score_integral(r, time_limit, ref))
+        print(f" {format_float(shifted_geomean(pis, integral_shift()), 12, 6)}", end="")
     print()
 
     # --- SGM of HiGHS-reported primal-dual integral (shift=1.0) ---
@@ -1385,10 +1656,13 @@ def print_mipfeas_summary(
 ) -> None:
     """Print the mipfeas headline metrics: primal-integral SGM ratio and feasibility counts.
 
-    The mipfeas benchmark uses primal integral (area under primal-gap curve, 600s
-    window, shift=0.001) as the primary metric with shifted geometric mean across
-    all 233 instances, and counts the number of instances where a feasible solution
-    was found within the time limit.
+    The mipfeas benchmark scores each run by its primal integral over the 600 s
+    window and aggregates with a shifted geometric mean at shift 0.001 across
+    all 233 instances, and counts the instances where a feasible solution was
+    found within the time limit.  Under the default formula the integral is
+    the benchmark's own (normalised by the window, in [0, 2]); under
+    `--formula campaign` it is the campaign's, in gap-seconds, at the same
+    shift.
     """
     instances = get_common_instances(results, configs)
     if not instances:
@@ -1398,7 +1672,8 @@ def print_mipfeas_summary(
     mipfeas_shift = 0.001
 
     print(
-        f"\n## mipfeas Headline Metrics ({len(instances)} instances, {time_limit:.0f}s, SGM shift={mipfeas_shift})\n"
+        f"\n## mipfeas Headline Metrics ({len(instances)} instances, {time_limit:.0f}s, "
+        f"SGM shift={mipfeas_shift}, formula={formula()})\n"
     )
 
     pi_per_config: dict[str, list[float]] = {}
@@ -1410,8 +1685,7 @@ def print_mipfeas_summary(
             r = agg_results.get(c, {}).get(inst)
             if r:
                 ref = best_known.get(inst) if best_known else None
-                pi = r.primal_integral(time_limit, ref)
-                pis.append(pi)
+                pis.append(score_integral(r, time_limit, ref))
                 if r.incumbents:
                     feas_count += 1
         pi_per_config[c] = pis
@@ -1471,14 +1745,14 @@ def _config_metrics(
         if r.time_to_first_feasible is not None:
             t1st.append(min(r.time_to_first_feasible, time_limit))
         ref = best_known.get(inst) if best_known else None
-        g = r.primal_gap_at(time_limit, ref)
-        gaps.append(g if g is not None else 1.0)
-        pis.append(r.primal_integral(time_limit, ref))
+        g = score_gap(r, time_limit, ref)
+        gaps.append(g if g is not None else missing_gap())
+        pis.append(score_integral(r, time_limit, ref))
     return {
         "feasible": float(feas),
         "sgm_t1st": shifted_geomean(t1st, 1.0),
         "sgm_gap": shifted_geomean(gaps, 0.001),
-        "sgm_pi": shifted_geomean(pis, 1.0),
+        "sgm_pi": shifted_geomean(pis, integral_shift()),
         "mipfeas_sgm": shifted_geomean(pis, 0.001),
     }
 
@@ -1655,6 +1929,37 @@ def main() -> None:
         help="MIPLIB .solu file with reference objectives",
     )
     parser.add_argument(
+        "--formula",
+        choices=FORMULAS,
+        default="mipfeas",
+        help=(
+            "How a run is scored. 'mipfeas' (default) is the benchmark's published "
+            "formula, the one the paper reports: normalised primal integral in "
+            "[0, 2], no incumbent scored 2, against the benchmark's own reference "
+            "objectives (--mipfeas-z). 'campaign' is the scoring the campaign's "
+            "stages were run under: gap-seconds, no incumbent scored 1, against "
+            "the .solu reference improved by any better observed primal."
+        ),
+    )
+    parser.add_argument(
+        "--mipfeas-z",
+        default=os.path.join(
+            os.path.dirname(__file__), "mipfeas_optimal_objective.csv"
+        ),
+        metavar="CSV",
+        help="The benchmark's own reference objectives (its optimal_objective.csv).",
+    )
+    parser.add_argument(
+        "--paired",
+        action="store_true",
+        help=(
+            "Print only the paired per-instance statistics for every pair of "
+            "configs: log-ratio of the primal integral at the formula's SGM "
+            "shift, and of the final gap over the instances both arms made "
+            "feasible. What bench/headline/paired.txt is made of."
+        ),
+    )
+    parser.add_argument(
         "--baseline",
         action="store_true",
         help=(
@@ -1709,13 +2014,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--exclude-instances",
+        action="append",
         default=None,
         metavar="FILE",
         help=(
             "Remove the instance names listed in FILE from every report. "
             "Applied after --instances, so the held-out complement of a "
             "tuning set is '--instances instances_mipfeas.txt "
-            "--exclude-instances <tuning>' with no third file to drift."
+            "--exclude-instances <tuning>' with no third file to drift. "
+            "Repeatable; the exclusions are the union."
         ),
     )
     parser.add_argument(
@@ -1751,6 +2058,7 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    set_formula(args.formula)
 
     # Parse NAME=DIR config overrides so ablation anchors can be loaded from a
     # different results directory than the positional results_dir.
@@ -1781,11 +2089,11 @@ def main() -> None:
     # set it actually covers without having to know any of this happened.
     try:
         include = read_instance_list(args.instances) if args.instances else None
-        exclude = (
-            read_instance_list(args.exclude_instances)
-            if args.exclude_instances
-            else None
-        )
+        exclude = None
+        if args.exclude_instances:
+            exclude = []
+            for path in args.exclude_instances:
+                exclude.extend(read_instance_list(path))
     except OSError as exc:
         print(f"Error: cannot read instance list: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -1797,7 +2105,9 @@ def main() -> None:
             include,
             exclude,
             include_path=args.instances,
-            exclude_path=args.exclude_instances,
+            exclude_path=", ".join(args.exclude_instances)
+            if args.exclude_instances
+            else None,
         )
 
     # An instance the solution file says has no finite objective cannot carry a
@@ -1819,6 +2129,17 @@ def main() -> None:
         )
 
     best_known = build_best_known(results, active_configs, common, solu_refs)
+    if formula() == "mipfeas":
+        if not os.path.exists(args.mipfeas_z):
+            print(
+                f"Error: --formula mipfeas needs the benchmark's reference objectives, "
+                f"none at {args.mipfeas_z}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        best_known = apply_reference_formula(
+            best_known, parse_mipfeas_z(args.mipfeas_z)
+        )
 
     # The oracle is additive reporting: it gets its own row and must not move
     # any existing one.  `synthetic` carries that through to the head-to-head
@@ -1848,6 +2169,17 @@ def main() -> None:
             synthetic.add(oracle_report.name)
 
     agg_results = aggregate_results(results, active_configs)
+
+    if args.paired:
+        print_paired(
+            agg_results,
+            active_configs,
+            common,
+            args.time_limit,
+            best_known,
+            synthetic=synthetic,
+        )
+        return
 
     print_killed_runs(results, active_configs)
 

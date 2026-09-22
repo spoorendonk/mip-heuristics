@@ -2,12 +2,14 @@
 
 [![CI](https://github.com/spoorendonk/mip-heuristics/actions/workflows/ci.yml/badge.svg)](https://github.com/spoorendonk/mip-heuristics/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![arXiv](https://img.shields.io/badge/arXiv-2609.22938-b31b1b.svg)](https://arxiv.org/abs/2609.22938)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22837481.svg)](https://doi.org/10.5281/zenodo.22837481)
 
 A unified open-source reference implementation and empirical evaluation of four primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant. All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions.
 
-The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: on instances never used for tuning the patched solver improves the `mipfeas` primal-integral SGM by 16.4% — it reaches a good solution *sooner*, while final solution quality is level.
+The implementation accompanying: S. Spoorendonk, [*Presolve heuristics in HiGHS: implementation and computational study*](https://arxiv.org/abs/2609.22938), arXiv:2609.22938, 2026. The four heuristics are the published ones listed under [References](#references).
 
-This repository has no paper of its own; it implements four published ones, listed under [References](#references).
+The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: on the `mipfeas` benchmark (233 instances, 600 s) the patched solver improves the primal-integral SGM by 23.7% over the full set and by 12.9% on the instances never used for tuning — it reaches a good solution *sooner*. At the time limit it is only slightly ahead.
 
 **Documentation**: [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the `mipfeas` protocol) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`bench/README.md`](bench/README.md) (the harness and the campaign) · [`docs/README.md`](docs/README.md) (source papers).
 
@@ -124,70 +126,64 @@ feasibility benchmark — 233 instances from the MIPLIB 2017 benchmark collectio
 with the known-infeasible ones excluded, scored by the primal integral —
 introduced by Bussieck and Dirkse in
 [*Expanding the Focus*](https://www.gams.com/blog/2026/03/expanding-the-focus-introducing-the-mipfeas-benchmark/)
-(GAMS, 17 March 2026). Full write-up and the paired statistics:
-[`bench/headline/`](bench/headline/).
+(GAMS, 17 March 2026). The numbers below are the paper's (Table 5 and Section 4.6,
+[arXiv:2609.22938](https://arxiv.org/abs/2609.22938)) and are what
+[`bench/headline/`](bench/headline/) reproduces: `bench/analyze_results.py`
+scores every run with the benchmark's published formula (primal integral
+divided by the time limit, so it lies in [0, 2]; gap 2 before the first
+incumbent; the benchmark's own reference objectives,
+`bench/mipfeas_optimal_objective.csv`; SGM shift 0.001).
 
-| Metric | Patched | Vanilla |
-|---|---|---|
-| **SGM primal integral, all 233** | **19.18** | 26.57 |
-| **SGM primal integral, held-out 143** | **22.89** | 27.36 |
-| #Feasible | **214** | 211 |
+| Set (n) | Arm | #Feasible | #Wins | SGM final gap | **SGM primal integral** |
+|---|---|---|---|---|---|
+| Full set (233) | **patched** | **214** | **49** | **0.0054** | **0.0484** |
+| | vanilla | 211 | 36 | 0.0066 | 0.0637 |
+| Tuning set (90) | **patched** | 86 | **19** | **0.0043** | **0.0344** |
+| | vanilla | 86 | 15 | 0.0056 | 0.0562 |
+| Held-out (143) | **patched** | **128** | **30** | **0.0062** | **0.0600** |
+| | vanilla | 125 | 21 | 0.0072 | 0.0690 |
 
-Paired per instance, on the log-ratio of the primal integral:
+Wins are strictly better objectives at the limit. Every SGM is over all
+instances; a run with no solution by the limit scores 2 in gap and primal
+integral. Paired per instance on the primal integral, ratio patched/vanilla:
 
 | set | n | ratio | 95% CI | p | better / tied / worse |
 |---|---|---|---|---|---|
-| all 233 | 233 | 0.722 | [0.633, 0.823] | <0.001 | 107 / 32 / 94 |
-| **held-out 143** | **143** | **0.836** | **[0.732, 0.956]** | **0.009** | 57 / 25 / 61 |
-| tuning 90 | 90 | 0.572 | [0.441, 0.741] | <0.001 | 50 / 7 / 33 |
+| all 233 | 233 | 0.763 | [0.684, 0.852] | <0.001 | 114 / 24 / 95 |
+| **held-out 143** | **143** | **0.871** | **[0.782, 0.970]** | **0.012** | 63 / 19 / 61 |
+| tuning 90 | 90 | 0.619 | [0.496, 0.772] | <0.001 | 51 / 5 / 34 |
 
-**The held-out number is the result: 16.4% better on instances never used for
-tuning.** The tuning set shows 43% — the selection bias the split exists to
-quantify, and a factor of nearly three. Reporting the tuning figure as the
-headline would overstate the effect by that much.
+**The held-out number is the fairer estimate: 12.9% better on instances never
+used for tuning**, against 23.7% over the full set and 38% on the tuning set,
+which was drawn from instances some heuristic solves alone. Of the 143 held-out
+instances, 48 were already seen in the stage 3 held-out check; on the other 95
+the ratio is 0.861, [0.746, 0.994], p = 0.041.
 
 ### Three qualifications that belong with it
 
-**The win is magnitude, not frequency.** 57 better against 61 worse on
-held-out; a sign test finds nothing (p = 0.71). The heuristics do not win more
-often — they win *bigger*: `comp07-2idx` 600 → 7.8 and `sorrell3` 162 → 2.3,
-against `fast0507` 14.4 → 248.
+**The win is magnitude, not frequency.** 63 better against 61 worse on
+held-out: the patched solver does not win more often, and the decrease comes
+from a minority of instances with large gains.
 
-**Final solution quality is level.** Paired final primal gap at 600 s: better on
-45, tied on 130, worse on 34. HiGHS's own machinery still holds **188 of 214**
-final answers. The claim is that HiGHS reaches a good solution *sooner*, not
-that it reaches a better one — which is what the primal integral measures and
-what a feasibility heuristic should claim.
+**At the limit it is slightly ahead, not level.** It finds a solution on 4
+instances where vanilla finds none, each first found by one of our heuristics,
+against 1 the other way. Paired over the 210 instances both made feasible, its
+final gap is smaller on 42 and larger on 34, a ratio of 0.836, [0.718, 0.974],
+p = 0.022; on the held-out complement that is 0.871, [0.720, 1.053] over 125
+instances, which does not separate. HiGHS's own machinery still holds **188 of
+214** final answers. The claim is that HiGHS reaches a good solution *sooner*,
+which is what the primal integral measures and what a feasibility heuristic
+should claim.
 
-**Low power with significance implies overstatement.** At the measured paired sd
-the held-out n=143 resolves about 17.5%, and the observed effect is 16.4% — both
-read on the same side of the ratio. Quote the interval, not the point.
+**Two of the five mechanisms contribute nothing in full solves.** Scylla and
+`fpr_lp` produced no accepted incumbent in any full-limit run that carried them
+and ship at effort zero; their implementations remain.
 
 ### Where it comes from
 
-Partitioning the 233 instances by which heuristic produced the patched arm's
-*first* incumbent:
-
-| first incumbent from | n | ratio vs vanilla | 95% CI |
-|---|---|---|---|
-| **FeasibilityJump** | **112** | **0.563** | **[0.451, 0.702]** |
-| FPR | 25 | 0.732 | [0.409, 1.309] |
-| HiGHS/other | 68 | 0.956 | [0.722, 1.267] |
-| **no incumbent found** | **20** | **1.005** | **[0.995, 1.014]** |
-
-The effect is concentrated where FeasibilityJump gets there first and is absent
-everywhere else, with the 20 instances where nothing is found acting as an
-internal control: the two arms are identical to within 1%, so the pairing is
-tight and 0.563 is an effect rather than noise.
-
-That does **not** make this a result about parallelism. Our FJ differs from
-vanilla's in three confounded ways — 16 opportunistic workers against one call,
-a per-worker budget totalling ~5x vanilla's single allowance, and the two
-corrected upstream defects ([#159](https://github.com/spoorendonk/mip-heuristics/issues/159),
-[#160](https://github.com/spoorendonk/mip-heuristics/issues/160)) — and vanilla
-runs its own FJ, so the comparison already includes FJ-vs-FJ.
-
-Which heuristic produced which solution, across the same 233:
+Which heuristic produced which solution, over the 214 instances the patched
+arm made feasible (233 for vanilla's 211), read from the solution-source tags
+of the log:
 
 | | patched #First | #Best | vanilla #First | #Best |
 |---|---|---|---|---|
@@ -197,7 +193,17 @@ Which heuristic produced which solution, across the same 233:
 | HiGHS/other | 79 | **188** | 114 | **201** |
 
 Ours find the first feasible solution on 135 of 214 instances against vanilla's
-97 of 211, and hold the final best on 26 against 10.
+97 of 211, and hold the final best on 26 against 10. Inside the chain, FPR and
+LocalMIP add to what FJ finds: on 71 of the 114 instances where FJ found the
+first solution a later heuristic found a better one, LocalMIP on 62 and FPR on
+16, and on those the median gap went from 0.624 at FJ's best to 0.382.
+
+That does **not** make this a result about parallelism. Our FJ differs from
+vanilla's in three confounded ways — 16 opportunistic workers against one call,
+a per-worker budget totalling ~5x vanilla's single allowance, and the two
+corrected upstream defects ([#159](https://github.com/spoorendonk/mip-heuristics/issues/159),
+[#160](https://github.com/spoorendonk/mip-heuristics/issues/160)) — and vanilla
+runs its own FJ, so the comparison already includes FJ-vs-FJ.
 
 ## Build Options
 
@@ -289,17 +295,34 @@ the *result*, not the logs.
 
 ## Citing
 
+Cite the paper for the result and the archived release for the code.
 [`CITATION.cff`](CITATION.cff) carries the citation metadata in machine-readable
 form — GitHub's "Cite this repository" button reads it.
 
-**There is no tagged release and no DOI yet**, and this repository has no paper
-of its own. Until the first release mints one
-([#166](https://github.com/spoorendonk/mip-heuristics/issues/166)), cite a commit
-rather than `main`: the benchmark tables move with the code.
+The paper is **arXiv:2609.22938**, <https://arxiv.org/abs/2609.22938> (v1,
+19 Sep 2026). Every number it reports was produced by release v0.1.0 of this
+repository:
 
-What there *is* to cite is the work these implementations are of — cite the
-source paper for the heuristic you are referring to, from the list below. The
-`mipfeas` benchmark, its instance set and its metric are Bussieck and Dirkse's
+```bibtex
+@misc{spoorendonk2026presolveheuristics,
+  title        = {Presolve heuristics in {HiGHS}: implementation and computational study},
+  author       = {Spoorendonk, Simon},
+  year         = {2026},
+  eprint       = {2609.22938},
+  archivePrefix= {arXiv},
+  primaryClass = {math.OC},
+  url          = {https://arxiv.org/abs/2609.22938}
+}
+```
+
+The archived code is on Zenodo. **v0.1.0 is [10.5281/zenodo.22837482](https://doi.org/10.5281/zenodo.22837482)**;
+the concept DOI [10.5281/zenodo.22837481](https://doi.org/10.5281/zenodo.22837481)
+always resolves to the latest version. The benchmark tables move with the code,
+so cite the tag rather than `main`.
+
+The heuristics themselves are the work of their authors — cite the source paper
+for the one you are referring to, from the list below. The `mipfeas` benchmark,
+its instance set and its metric are Bussieck and Dirkse's
 ([*Expanding the Focus*](https://www.gams.com/blog/2026/03/expanding-the-focus-introducing-the-mipfeas-benchmark/),
 GAMS, 2026).
 

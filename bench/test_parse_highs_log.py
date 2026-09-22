@@ -786,3 +786,80 @@ def test_a_wall_clock_kill_still_records_its_bound():
     result = parse_log("TIMEOUT: process killed after 90.0s\n")
     assert result.killed is True
     assert result.killed_after == 90.0
+
+
+# ---------------------------------------------------------------------------
+# The published `mipfeas` scoring, as the benchmark's own script computes it
+# ---------------------------------------------------------------------------
+
+
+def test_mipfeas_penalty_matches_the_benchmark_script():
+    from parse_highs_log import mipfeas_penalty
+
+    # |z - z*| / max(|z|, |z*|, 1): the denominator takes the larger magnitude.
+    assert mipfeas_penalty(12.0, 10.0) == pytest.approx(round(2.0 / 12.0, 6))
+    # Better than z* is mapped to z* by the script, so it scores 0, not negative.
+    assert mipfeas_penalty(9.0, 10.0) == 0.0
+    # Opposite signs are charged a flat 1.
+    assert mipfeas_penalty(-1.0, 10.0) == 1.0
+    # The denominator is floored at 1.
+    assert mipfeas_penalty(0.5, 0.2) == pytest.approx(0.3)
+    # Rounded to six decimals, as the script rounds it.
+    assert mipfeas_penalty(10.0000001, 10.0) == 0.0
+
+
+def test_mipfeas_integral_is_normalised_and_charges_two_before_the_first_incumbent():
+    from parse_highs_log import mipfeas_penalty
+
+    r = parse_log(
+        "Running HiGHS 1.15.1 (git hash: x): c\n"
+        + _mip_line(10.0, 12.0)
+        + _mip_line(300.0, 11.0)
+    )
+    p12, p11 = mipfeas_penalty(12.0, 10.0), mipfeas_penalty(11.0, 10.0)
+    expected = (2.0 * 10.0 + p12 * 290.0 + p11 * 300.0) / 600.0
+    assert r.mipfeas_integral(600.0, 10.0) == pytest.approx(expected)
+    # The campaign's own integral is a different number on a different scale.
+    assert r.primal_integral(600.0, 10.0) == pytest.approx(
+        10.0 + 0.2 * 290.0 + 0.1 * 300.0
+    )
+
+    never = parse_log("Running HiGHS 1.15.1 (git hash: x): c\n")
+    assert never.mipfeas_integral(600.0, 10.0) == 2.0
+    # No usable reference scores like never feasible, not like optimal.
+    assert r.mipfeas_integral(600.0, None) == 2.0
+    assert r.mipfeas_integral(600.0, float("inf")) == 2.0
+
+
+def test_mipfeas_integral_ignores_incumbents_past_the_time_limit():
+    killed = parse_log(
+        "Running HiGHS 1.15.1 (git hash: x): c\n"
+        + _mip_line(10.0, 12.0)
+        + _mip_line(300.0, 11.0)
+        + _mip_line(900.0, 10.0)
+        + "\nTIMEOUT: process killed after 1020.0s\n"
+    )
+    clean = parse_log(
+        "Running HiGHS 1.15.1 (git hash: x): c\n"
+        + _mip_line(10.0, 12.0)
+        + _mip_line(300.0, 11.0)
+    )
+    assert killed.mipfeas_integral(600.0, 10.0) == clean.mipfeas_integral(600.0, 10.0)
+
+
+def test_mipfeas_gap_at_reads_the_last_incumbent_within_the_grace_window():
+    from parse_highs_log import MIPFEAS_LIMIT_GRACE_S, mipfeas_penalty
+
+    r = parse_log(
+        "Running HiGHS 1.15.1 (git hash: x): c\n"
+        + _mip_line(10.0, 12.0)
+        + _mip_line(
+            600.0 + MIPFEAS_LIMIT_GRACE_S / 2, 11.0
+        )  # the closing node's solution
+        + _mip_line(600.0 + 2 * MIPFEAS_LIMIT_GRACE_S, 10.0)  # too late to count
+    )
+    assert r.mipfeas_gap_at(600.0, 10.0) == pytest.approx(mipfeas_penalty(11.0, 10.0))
+    assert r.mipfeas_gap_at(5.0, 10.0) is None
+    assert r.mipfeas_gap_at(600.0, None) is None
+    never = parse_log("Running HiGHS 1.15.1 (git hash: x): c\n")
+    assert never.mipfeas_gap_at(600.0, 10.0) is None

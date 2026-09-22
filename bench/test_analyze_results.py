@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import random
@@ -949,3 +951,202 @@ def test_cli_missing_instance_list_is_a_clean_error(tmp_path: Path):
     assert res.returncode == 1
     assert "cannot read instance list" in res.stderr
     assert "Traceback" not in res.stderr
+
+
+# --- the published formula and the paired statistics -------------------------
+
+
+def test_paired_reproduces_the_hand_arithmetic():
+    import math
+
+    from analyze_results import paired
+
+    # log ratios: log 0.5, 0, log 2 -> mean 0, sample sd = log 2.
+    st = paired([1.0, 2.0, 4.0], [2.0, 2.0, 2.0], shift=0.0)
+    assert st.n == 3
+    assert st.ratio == pytest.approx(1.0)
+    assert st.sd == pytest.approx(math.log(2.0))
+    assert st.t == 0.0
+    assert st.p == pytest.approx(1.0)
+    se = math.log(2.0) / math.sqrt(3.0)
+    assert st.ci_hi == pytest.approx(math.exp(1.959963984540054 * se))
+    assert st.ci_lo == pytest.approx(1.0 / st.ci_hi)
+    assert (st.better, st.tied, st.worse) == (1, 1, 1)
+    assert st.pct == pytest.approx(0.0)
+
+
+def test_paired_shift_keeps_a_zero_metric_finite():
+    from analyze_results import paired
+
+    # An instance solved at t = 0 has primal integral exactly 0; the shift is
+    # what makes its log ratio defined.
+    st = paired([0.0, 1.0], [1.0, 1.0], shift=0.001)
+    assert st.ratio > 0.0 and st.ratio < 1.0
+    assert (st.better, st.tied, st.worse) == (1, 1, 0)
+
+
+def test_sign_test_is_the_normal_approximation_without_continuity_correction():
+    from analyze_results import sign_test
+
+    assert sign_test(57, 61) == pytest.approx(0.7127, abs=1e-3)
+    assert sign_test(0, 0) == 1.0
+    assert sign_test(10, 10) == pytest.approx(1.0)
+
+
+def test_min_detectable_decrease_is_read_on_the_improvement_side():
+    import math
+
+    from analyze_results import min_detectable_decrease
+
+    d = (1.959963984540054 + 0.8416212335729143) * 0.8 / math.sqrt(143)
+    assert min_detectable_decrease(0.8, 143) == pytest.approx(1.0 - math.exp(-d))
+    assert min_detectable_decrease(0.8, 143) < math.exp(d) - 1.0
+
+
+def test_bundled_benchmark_reference_covers_every_mipfeas_instance():
+    """The benchmark's z* file and the mipfeas list are two halves of one claim."""
+    from analyze_results import parse_mipfeas_z
+
+    bench = os.path.dirname(os.path.abspath(__file__))
+    z = parse_mipfeas_z(os.path.join(bench, "mipfeas_optimal_objective.csv"))
+    instances = read_instance_list(os.path.join(bench, "instances_mipfeas.txt"))
+    assert len(instances) == 233
+    assert [i for i in instances if i not in z] == []
+    assert all(isinstance(v, float) for v in z.values())
+
+
+def test_apply_reference_formula_prefers_the_benchmark_z_under_mipfeas():
+    from analyze_results import apply_reference_formula, formula, set_formula
+
+    before = formula()
+    try:
+        set_formula("mipfeas")
+        assert apply_reference_formula({"a": 5.0, "b": None}, {"a": 7.0}) == {
+            "a": 7.0,
+            "b": None,
+        }
+        set_formula("campaign")
+        assert apply_reference_formula({"a": 5.0}, {"a": 7.0}) == {"a": 5.0}
+        with pytest.raises(ValueError):
+            set_formula("neither")
+    finally:
+        set_formula(before)
+
+
+def _write_z(tmp_path: Path, values: dict[str, float]) -> Path:
+    z = tmp_path / "z.csv"
+    lines = ['"InstanceInst.","ObjectiveObje."']
+    lines += [f'"{k}","{v}"' for k, v in values.items()]
+    z.write_text("\n".join(lines) + "\n")
+    return z
+
+
+def test_cli_paired_prints_one_block_per_pair(tmp_path: Path):
+    _plain_tree(tmp_path)
+    z = _write_z(tmp_path, {"a": 10.0, "b": 20.0, "c": 30.0})
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "patched",
+        "vanilla",
+        "--paired",
+        "--time-limit",
+        "5",
+        "--mipfeas-z",
+        str(z),
+    )
+    assert res.returncode == 0, res.stderr
+    assert (
+        "## Paired per-instance log-ratio (3 instances, 5 s, shift=0.001, formula=mipfeas)"
+        in res.stdout
+    )
+    # Identical logs in both arms: ratio 1, every instance tied, on both metrics.
+    lines = [
+        line
+        for line in res.stdout.splitlines()
+        if "patched/vanilla" in line or "final gap" in line
+    ]
+    assert len(lines) == 2
+    assert "ratio=1.000" in lines[0] and "better/tied/worse 0/3/0" in lines[0]
+    assert "n=  3" in lines[1] and "(both feasible)" in lines[1]
+    assert "## Paper Metrics" not in res.stdout
+
+
+def test_cli_mipfeas_formula_is_the_default_and_needs_the_reference_file(
+    tmp_path: Path,
+):
+    _plain_tree(tmp_path)
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "patched",
+        "vanilla",
+        "--time-limit",
+        "5",
+        "--mipfeas-z",
+        str(tmp_path / "absent.csv"),
+    )
+    assert res.returncode == 1
+    assert "reference objectives" in res.stderr
+
+    z = _write_z(tmp_path, {"a": 10.0, "b": 20.0, "c": 30.0})
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "patched",
+        "vanilla",
+        "--time-limit",
+        "5",
+        "--baseline",
+        "--mipfeas-z",
+        str(z),
+    )
+    assert res.returncode == 0, res.stderr
+    assert "formula=mipfeas" in res.stdout
+    assert "SGM T1st (s=1, none=T)" in res.stdout
+    assert "SGM PrimalInt (s=0.001)" in res.stdout
+
+
+def test_cli_campaign_formula_restores_the_campaign_reading(tmp_path: Path):
+    _plain_tree(tmp_path)
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "patched",
+        "vanilla",
+        "--time-limit",
+        "5",
+        "--baseline",
+        "--formula",
+        "campaign",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "formula=campaign" in res.stdout
+    assert "SGM T1st (s=1)  " in res.stdout
+    assert "SGM PrimalInt (s=1)" in res.stdout
+
+
+def test_cli_exclude_instances_is_repeatable(tmp_path: Path):
+    _plain_tree(tmp_path)
+    z = _write_z(tmp_path, {"a": 10.0, "b": 20.0, "c": 30.0})
+    drop_b = tmp_path / "drop_b.txt"
+    drop_b.write_text("b\n")
+    drop_c = tmp_path / "drop_c.txt"
+    drop_c.write_text("c\n")
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "patched",
+        "vanilla",
+        "--time-limit",
+        "5",
+        "--mipfeas-z",
+        str(z),
+        "--exclude-instances",
+        str(drop_b),
+        "--exclude-instances",
+        str(drop_c),
+    )
+    assert res.returncode == 0, res.stderr
+    assert "1 instances retained" in res.stdout
+    assert "## Paper Metrics (1 instances" in res.stdout

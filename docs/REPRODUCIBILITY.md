@@ -124,21 +124,39 @@ reproducible exactly is the protocol.
 **Solver version.** HiGHS `v1.15.1`, fetched at configure time by
 `cmake/FetchHiGHS.cmake` and patched from `third_party/highs_patch/`.
 
-**Reference objectives.** `bench/miplib2017-v36.solu`, a verbatim copy of
-upstream MIPLIB 2017's current solution file
-(<https://miplib.zib.de/downloads/miplib2017-v36.solu>, retrieved 2026-08-20).
-Do **not** pin an intermediate version: `v20`–`v35` carry `=opt= 111.0` for
-`supportcase22`, which upstream itself retracted when a solution of 110 was
-submitted, and a reference worse than achievable yields negative primal gaps.
-`v36` records it feasible at `=best= 110.0`, which is what
-`bench/instances_mipfeas.txt` counts it as.
+**Scoring and reference objectives.** `bench/analyze_results.py` scores a run
+by default with the benchmark's published formula (`--formula mipfeas`), as
+its own `create_primalintegral.py` does: penalty 2 before the first incumbent,
+1 on a sign flip, otherwise `|z - z*| / max(|z|, |z*|, 1)` rounded to six
+decimals; the primal integral is that penalty integrated over the window and
+divided by the time limit; SGMs are over every instance at shift 0.001. The
+reference z* is the benchmark's own, `bench/mipfeas_optimal_objective.csv`, a
+verbatim copy (header spelling included, sha256
+`5ea4c3cc159b51816b36f5a809abf49529827d28b7131d9e865ad14d9c8a42d2`) of the
+`optimal_objective.csv` in its September 2026 results archive
+(`2026-09-16_mipfeas_results_and_scripts.zip`, linked from the GAMS blog post
+introducing `mipfeas`). It covers all 233 instances and is never improved by an
+observed primal, so a score is the one the benchmark's script would give the
+same run. Two of its values differ from MIPLIB's `.solu`.
 
-An instance whose solution-file tag asserts no finite objective (`=inf=`,
-`=unbd=`) is excluded from every table by `bench/analyze_results.py`, with the
-exclusion printed. A gap against such an instance falls back to the best
-*observed* primal, which is zero for whichever config found it — a
-self-referential number that would enter the headline SGM looking like a real
-one.
+`--formula campaign` restores the scoring the campaign's stages were run and
+read under, which the ablation write-ups in `bench/ablation_*/` still use:
+gap-seconds rather than a normalised integral, no incumbent scored 1, and the
+reference taken from `bench/miplib2017-v36.solu`, a verbatim copy of upstream
+MIPLIB 2017's current solution file
+(<https://miplib.zib.de/downloads/miplib2017-v36.solu>, retrieved 2026-08-20),
+improved by any better primal an arm observed. Do **not** pin an intermediate
+version: `v20`–`v35` carry `=opt= 111.0` for `supportcase22`, which upstream
+itself retracted when a solution of 110 was submitted, and a reference worse
+than achievable yields negative primal gaps. `v36` records it feasible at
+`=best= 110.0`, which is what `bench/instances_mipfeas.txt` counts it as.
+
+Under either formula, an instance whose solution-file tag asserts no finite
+objective (`=inf=`, `=unbd=`) is excluded from every table by
+`bench/analyze_results.py`, with the exclusion printed: a gap against such an
+instance would fall back to the best *observed* primal, which is zero for
+whichever config found it — a self-referential number that would enter the
+headline SGM looking like a real one.
 
 **Telling a patched binary from an unpatched one.** The version and githash
 banners are identical between them — `highs --version` prints exactly the same
@@ -367,9 +385,9 @@ launcher checks by refusing a binary without the patch marker.
   paired sd is mostly made of, and the baseline is also single-seed, so
   averaging patched seeds removes at most half the seed noise. That bounds the
   gain but does not eliminate it: at the held-out sd, three seeds would resolve
-  16.1-16.8% against the observed 16.4%, so they *might* have sharpened this —
+  13.1-13.7% against the observed 12.9%, so they *might* have sharpened this —
   and with one seed the seed-noise share cannot be estimated to say. The
-  decision stands on the effect already being separated at p = 0.009 rather
+  decision stands on the effect already being separated at p = 0.012 rather
   than on the extra seeds being useless. Full arithmetic in
   `bench/headline/README.md`.
 * **No `off` patch-overhead arm at scale**, no additional vanilla seeds, no

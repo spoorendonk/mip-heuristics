@@ -88,13 +88,14 @@ BENCH_DIR = Path(__file__).resolve().parent
 
 # Copied into `<archive>/bench/` so the archive regenerates its tables with no
 # checkout present.  `analyze_results.py` imports `parse_highs_log` from its own
-# directory and defaults `--solu` to the `.solu` beside it, so the three have to
-# travel together; this script joins them because `verify` is what REGENERATE.sh
-# runs.
+# directory and defaults `--solu` and `--mipfeas-z` to the reference files
+# beside it, so the four have to travel together; this script joins them
+# because `verify` is what REGENERATE.sh runs.
 ARCHIVE_BENCH_FILES = (
     "analyze_results.py",
     "parse_highs_log.py",
     "miplib2017-v36.solu",
+    "mipfeas_optimal_objective.csv",
     "make_archive.py",
 )
 

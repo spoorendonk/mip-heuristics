@@ -27,7 +27,7 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | script | what it produces |
 |---|---|
 | `parse_highs_log.py` | one `SolveResult` per log: incumbents, bounds, timings, `[Heur]`/`[HeurSol]` traces. Every other reader goes through it |
-| `analyze_results.py` | the headline tables — SGM, primal integral, wins, oracle rows, instance filters |
+| `analyze_results.py` | the headline tables — SGM, primal integral, wins, oracle rows, instance filters, paired statistics. Scores with the benchmark's published formula by default (`--formula mipfeas`); `--formula campaign` is the scoring the ablation write-ups were read under |
 | `analyze_presolve_probe.py` | the calibration probe: informative set and its excluded complement, effort trajectories, gap to best known, and the derived parameter vector |
 | `make_tuning_set.py` | a stratified tuning subset, sampled from a results tree on time-to-first-feasible |
 | `derive_from_probe.sh` | **probe tree → every artifact, one command** (see below), written into `ablation_effort/` |
@@ -157,7 +157,9 @@ python3 bench/analyze_results.py bench/results/mipfeas --configs all vanilla \
 
 `bench/instances_tuning.txt` is the 90-instance tuning list and is entirely inside the mipfeas 233, so that second command is the held-out complement: exactly 143 instances, the set the headline number is read on.
 
-`--instances` applies first, then `--exclude-instances`, so the complement never has to exist as a third file that can drift out of sync with the tuning list it is defined against. Both are applied to the loaded tree before aggregation, so **every table reports the instance count it actually covers** and a restricted run cannot be misread as a full one.
+`--instances` applies first, then `--exclude-instances`, so the complement never has to exist as a third file that can drift out of sync with the tuning list it is defined against. `--exclude-instances` may be repeated (the exclusions are the union), which is how `bench/run_headline.sh paired` reads the 95 held-out instances the stage 3 held-out check never saw. Both are applied to the loaded tree before aggregation, so **every table reports the instance count it actually covers** and a restricted run cannot be misread as a full one.
+
+`--paired` prints, instead of the tables, the paired per-instance statistics for every pair of configs — the log-ratio of the primal integral at the SGM shift, with a normal interval, the sign test and the minimum detectable decrease at 80% power, and the same for the final gap over the instances both arms made feasible. `bench/headline/paired.txt` is its output over four instance sets.
 
 `--oracle A B C` adds a best-of-those-configs row — the ceiling any per-instance selection mechanism could reach, which is what makes a negative result about a *selector* separable from a negative result about *selection*:
 
@@ -172,7 +174,9 @@ The oracle is **additive**: it gets its own row and moves no existing one. It is
 
 This is unrelated to the *virtual best* inside the same script, which is reference-objective handling — when an observed primal beats the published `.solu` value, that observed value becomes the reference so a config is not punished for finding something better.
 
-**Reference objectives** come from `bench/miplib2017-v36.solu` (upstream MIPLIB 2017, retrieved 2026-08-20). An instance the file marks `=inf=` or `=unbd=` has no finite objective to measure a gap against, so the script excludes it from every table and says so, rather than folding a self-referential gap into a 233-instance SGM.
+**Reference objectives.** Under the default `--formula mipfeas` the reference is the benchmark's own z*, `bench/mipfeas_optimal_objective.csv` (its `optimal_objective.csv`, copied verbatim from the September 2026 results archive linked from the GAMS blog post; `docs/REPRODUCIBILITY.md` has the hash), whatever the arms found, so a score is the one the benchmark's script would give the same run. Under `--formula campaign` it is the virtual best above, seeded from `bench/miplib2017-v36.solu` (upstream MIPLIB 2017, retrieved 2026-08-20). Under either, an instance the `.solu` file marks `=inf=` or `=unbd=` has no finite objective to measure a gap against, so the script excludes it from every table and says so, rather than folding a self-referential gap into a 233-instance SGM.
+
+**The ablation write-ups were read under the campaign formula.** `bench/ablation_effort/`, `bench/ablation_search/` and `bench/ablation_fprlp/` record numbers in gap-seconds with no incumbent scored 1; to reproduce them, pass `--formula campaign` (`compare_finalists.sh` forwards its arguments). `bench/headline/` is under the published formula, which is what the paper reports.
 
 ## Reader-facing docs
 

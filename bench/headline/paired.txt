@@ -1,21 +1,86 @@
-Paired per-instance log-ratio of the primal integral at 600 s, one seed.
-Lower is better; the first named arm is the numerator.
+=== all 233
 
-Conventions: intervals are normal, exp(mean +- 1.96*se), not Student-t; the
-sign test is the normal approximation without continuity correction.  A
-minimum detectable effect, where quoted, is read on the same side of the
-ratio as the observed one -- 1 - exp(-d) for an improvement, exp(d) - 1 for a
-regression, which are not the same number.
+## Paired per-instance log-ratio (233 instances, 600 s, shift=0.001, formula=mipfeas)
 
-B'(shipped)/vanilla, all 233         n=233 ratio=0.722 CI=[0.633,0.823] t=-4.87 p=0.0000 sd=1.022 | better/tied/worse 107/32/94 sign p=0.36
-B'(shipped)/vanilla, held-out 143    n=143 ratio=0.836 CI=[0.732,0.956] t=-2.62 p=0.0087 sd=0.815 | better/tied/worse 57/25/61 sign p=0.71
-B'(shipped)/vanilla, tuning 90       n= 90 ratio=0.572 CI=[0.441,0.741] t=-4.23 p=0.0000 sd=1.254 | better/tied/worse 50/7/33 sign p=0.062
+Lower is better; the first named arm is the numerator.  Intervals are
+normal, exp(mean +- 1.96*se); the sign test is the normal approximation
+without continuity correction; mdd80 is the smallest decrease this n
+resolves at 80% power, read on the improvement side, 1 - exp(-d).
 
-prev-4-heuristic/vanilla, all 233    n=233 ratio=0.743 CI=[0.636,0.869] t=-3.72 p=0.0002 sd=1.217 | better/tied/worse 103/27/103 sign p=1
-prev-4-heuristic/vanilla, held-out 143 n=143 ratio=0.849 CI=[0.726,0.993] t=-2.04 p=0.0409 sd=0.958 | better/tied/worse 60/20/63 sign p=0.79
-prev-4-heuristic/vanilla, tuning 90  n= 90 ratio=0.602 CI=[0.439,0.824] t=-3.17 p=0.0015 sd=1.523 | better/tied/worse 43/7/40 sign p=0.74
+all/all-prev-vector               primal integral  n=233 ratio=0.965 CI=[0.906,1.027] t=-1.13 p=0.2602 sd=0.489 | better/tied/worse 140/26/67 sign p=3.9e-07 | mdd80=8.6%
+                                  final gap        n=213 ratio=0.940 CI=[0.848,1.043] t=-1.17 p=0.2421 sd=0.769 | better/tied/worse 34/149/30 sign p=0.62 | mdd80=13.7%  (both feasible)
+all/vanilla                       primal integral  n=233 ratio=0.763 CI=[0.684,0.852] t=-4.82 p=0.0000 sd=0.856 | better/tied/worse 114/24/95 sign p=0.19 | mdd80=14.5%
+                                  final gap        n=210 ratio=0.836 CI=[0.718,0.974] t=-2.29 p=0.0218 sd=1.128 | better/tied/worse 42/134/34 sign p=0.36 | mdd80=19.6%  (both feasible)
+all-prev-vector/vanilla           primal integral  n=233 ratio=0.791 CI=[0.697,0.898] t=-3.62 p=0.0003 sd=0.987 | better/tied/worse 106/20/107 sign p=0.95 | mdd80=16.6%
+                                  final gap        n=209 ratio=0.895 CI=[0.751,1.067] t=-1.24 p=0.2151 sd=1.296 | better/tied/worse 43/132/34 sign p=0.31 | mdd80=22.2%  (both feasible)
 
-B'/prev-4-heuristic, all 233         n=233 ratio=0.972 CI=[0.898,1.052] t=-0.71 p=0.4750 sd=0.617 | better/tied/worse 133/33/67 sign p=3.1e-06
+=== held-out 143: the complement of the tuning set
 
-Final primal gap at 600 s, paired over all 233:
-  B' better 44, tied 132, vanilla better 34
+## Instance selection
+
+Restricted to: /home/simon/code/my/mip-heuristics/bench/instances_mipfeas.txt
+Excluding:     /home/simon/code/my/mip-heuristics/bench/instances_tuning.txt
+143 instances retained, 90 removed by list.
+Every table below covers 143 instance(s) common to the requested configs — its
+stated count is not the full tree's.
+
+## Paired per-instance log-ratio (143 instances, 600 s, shift=0.001, formula=mipfeas)
+
+Lower is better; the first named arm is the numerator.  Intervals are
+normal, exp(mean +- 1.96*se); the sign test is the normal approximation
+without continuity correction; mdd80 is the smallest decrease this n
+resolves at 80% power, read on the improvement side, 1 - exp(-d).
+
+all/all-prev-vector               primal integral  n=143 ratio=0.979 CI=[0.905,1.059] t=-0.53 p=0.5969 sd=0.477 | better/tied/worse 82/18/43 sign p=0.00049 | mdd80=10.6%
+                                  final gap        n=127 ratio=0.930 CI=[0.806,1.074] t=-0.98 p=0.3255 sd=0.828 | better/tied/worse 18/90/19 sign p=0.87 | mdd80=18.6%  (both feasible)
+all/vanilla                       primal integral  n=143 ratio=0.871 CI=[0.782,0.970] t=-2.50 p=0.0123 sd=0.659 | better/tied/worse 63/19/61 sign p=0.86 | mdd80=14.3%
+                                  final gap        n=125 ratio=0.871 CI=[0.720,1.053] t=-1.43 p=0.1532 sd=1.082 | better/tied/worse 24/81/20 sign p=0.55 | mdd80=23.8%  (both feasible)
+all-prev-vector/vanilla           primal integral  n=143 ratio=0.890 CI=[0.785,1.008] t=-1.83 p=0.0671 sd=0.764 | better/tied/worse 63/16/64 sign p=0.93 | mdd80=16.4%
+                                  final gap        n=124 ratio=0.947 CI=[0.756,1.187] t=-0.47 p=0.6392 sd=1.281 | better/tied/worse 26/80/18 sign p=0.23 | mdd80=27.6%  (both feasible)
+
+=== tuning 90
+
+## Instance selection
+
+Restricted to: /home/simon/code/my/mip-heuristics/bench/instances_tuning.txt
+90 instances retained, 143 removed by list.
+Every table below covers 90 instance(s) common to the requested configs — its
+stated count is not the full tree's.
+
+## Paired per-instance log-ratio (90 instances, 600 s, shift=0.001, formula=mipfeas)
+
+Lower is better; the first named arm is the numerator.  Intervals are
+normal, exp(mean +- 1.96*se); the sign test is the normal approximation
+without continuity correction; mdd80 is the smallest decrease this n
+resolves at 80% power, read on the improvement side, 1 - exp(-d).
+
+all/all-prev-vector               primal integral  n= 90 ratio=0.942 CI=[0.848,1.046] t=-1.12 p=0.2648 sd=0.510 | better/tied/worse 58/8/24 sign p=0.00017 | mdd80=14.0%
+                                  final gap        n= 86 ratio=0.955 CI=[0.828,1.102] t=-0.63 p=0.5287 sd=0.677 | better/tied/worse 16/59/11 sign p=0.34 | mdd80=18.5%  (both feasible)
+all/vanilla                       primal integral  n= 90 ratio=0.619 CI=[0.496,0.772] t=-4.26 p=0.0000 sd=1.069 | better/tied/worse 51/5/34 sign p=0.065 | mdd80=27.1%
+                                  final gap        n= 85 ratio=0.788 CI=[0.611,1.017] t=-1.83 p=0.0667 sd=1.196 | better/tied/worse 18/53/14 sign p=0.48 | mdd80=30.5%  (both feasible)
+all-prev-vector/vanilla           primal integral  n= 90 ratio=0.657 CI=[0.508,0.850] t=-3.20 p=0.0014 sd=1.246 | better/tied/worse 43/4/43 sign p=1 | mdd80=30.8%
+                                  final gap        n= 85 ratio=0.823 CI=[0.622,1.090] t=-1.36 p=0.1741 sd=1.320 | better/tied/worse 17/52/16 sign p=0.86 | mdd80=33.0%  (both feasible)
+
+=== unseen 95: held-out minus the 48 of the stage 3 held-out check
+
+## Instance selection
+
+Restricted to: /home/simon/code/my/mip-heuristics/bench/instances_mipfeas.txt
+Excluding:     /home/simon/code/my/mip-heuristics/bench/instances_tuning.txt, /home/simon/code/my/mip-heuristics/bench/instances_heldout48.txt
+95 instances retained, 138 removed by list.
+Every table below covers 95 instance(s) common to the requested configs — its
+stated count is not the full tree's.
+
+## Paired per-instance log-ratio (95 instances, 600 s, shift=0.001, formula=mipfeas)
+
+Lower is better; the first named arm is the numerator.  Intervals are
+normal, exp(mean +- 1.96*se); the sign test is the normal approximation
+without continuity correction; mdd80 is the smallest decrease this n
+resolves at 80% power, read on the improvement side, 1 - exp(-d).
+
+all/all-prev-vector               primal integral  n= 95 ratio=1.013 CI=[0.908,1.130] t=0.23 p=0.8150 sd=0.545 | better/tied/worse 55/11/29 sign p=0.0046 | mdd80=14.5%
+                                  final gap        n= 86 ratio=0.926 CI=[0.768,1.118] t=-0.80 p=0.4241 sd=0.889 | better/tied/worse 13/59/14 sign p=0.85 | mdd80=23.6%  (both feasible)
+all/vanilla                       primal integral  n= 95 ratio=0.861 CI=[0.746,0.994] t=-2.04 p=0.0413 sd=0.716 | better/tied/worse 43/11/41 sign p=0.83 | mdd80=18.6%
+                                  final gap        n= 83 ratio=0.910 CI=[0.733,1.131] t=-0.85 p=0.3955 sd=1.009 | better/tied/worse 18/51/14 sign p=0.48 | mdd80=26.7%  (both feasible)
+all-prev-vector/vanilla           primal integral  n= 95 ratio=0.850 CI=[0.719,1.004] t=-1.91 p=0.0558 sd=0.830 | better/tied/worse 42/10/43 sign p=0.91 | mdd80=21.2%
+                                  final gap        n= 83 ratio=1.002 CI=[0.743,1.352] t=0.02 p=0.9871 sd=1.389 | better/tied/worse 19/50/14 sign p=0.38 | mdd80=34.8%  (both feasible)
