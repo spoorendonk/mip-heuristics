@@ -3,6 +3,7 @@
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "highs_context.h"
 #include "incumbent_sink.h"
 #include "local_mip.h"
 #include "local_mip_construction.h"
@@ -375,8 +376,10 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
     // `initialize_scheduler()` calls are no-ops.
     highs::parallel::initialize_scheduler();
 
-    using RunFn = DispatchOutcome (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
-                                      SolutionSink&);
+    // The chain's signature: FPR and Scylla take the solver, FJ and LocalMIP
+    // (core runners since #170) are adapted to it below.
+    using RunFn = DispatchOutcome (*)(HighsMipSolver&, const ProblemView&, const HeuristicBudget&,
+                                      ExecutionContext&, SolutionSink&);
     auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
@@ -404,7 +407,9 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
         // than picking one of the four per-heuristic constants — it runs
         // all four `run` functions through the same `RunFn`.
         const size_t returned =
-            run_fn(problem, make_budget(budget, exec.num_workers, budget >> 2), exec, sink).effort;
+            run_fn(*mipsolver, problem, make_budget(budget, exec.num_workers, budget >> 2), exec,
+                   sink)
+                .effort;
         mipsolver->mipdata_->heuristic_effort_used += returned;
         const size_t after = mipsolver->mipdata_->heuristic_effort_used;
 
@@ -427,13 +432,16 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
     };
 
     SECTION("fj") {
-        check_invariant(&fj::run);
+        check_invariant([](HighsMipSolver&, const ProblemView& p, const HeuristicBudget& b,
+                           ExecutionContext& e, SolutionSink& s) { return fj::run(p, b, e, s); });
     }
     SECTION("fpr") {
         check_invariant(&fpr::run);
     }
     SECTION("local_mip") {
-        check_invariant(&local_mip::run);
+        check_invariant([](HighsMipSolver&, const ProblemView& p, const HeuristicBudget& b,
+                           ExecutionContext& e,
+                           SolutionSink& s) { return local_mip::run(p, b, e, s); });
     }
     SECTION("scylla") {
         check_invariant(&scylla::run);

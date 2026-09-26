@@ -1,6 +1,7 @@
 #include "contested_pdlp.h"
 
 #include "heuristic_context.h"
+#include "highs_context.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "pump_common.h"

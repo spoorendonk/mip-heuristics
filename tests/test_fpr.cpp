@@ -3,6 +3,7 @@
 #include "fpr_strategies.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "highs_context.h"
 #include "parallel/HighsParallel.h"
 #include "test_common.h"
 

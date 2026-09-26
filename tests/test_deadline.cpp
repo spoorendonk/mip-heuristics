@@ -4,6 +4,7 @@
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "highs_context.h"
 #include "local_mip.h"
 #include "local_mip_caches.h"
 #include "parallel/HighsParallel.h"

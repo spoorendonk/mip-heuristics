@@ -5,6 +5,7 @@
 #include "fpr.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
+#include "highs_context.h"
 #include "incumbent_sink.h"
 #include "io/HighsIO.h"
 #include "local_mip.h"
@@ -96,18 +97,30 @@ struct HeuristicConfig {
     // each other.
     // **0 means no gate at all** — see `patience_threshold`.
     double HighsOptionsStruct::* patience;
-    DispatchOutcome (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
-                           SolutionSink&);
+    DispatchOutcome (*run)(HighsMipSolver&, const ProblemView&, const HeuristicBudget&,
+                           ExecutionContext&, SolutionSink&);
 };
+
+// FJ and LocalMIP run in the heuristic core, on the view alone; FPR and
+// Scylla also need the solver (#170).  This adapts a core runner to the
+// chain's signature.
+template <DispatchOutcome (*Run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
+                                 SolutionSink&)>
+DispatchOutcome without_solver(HighsMipSolver& /*mipsolver*/, const ProblemView& problem,
+                               const HeuristicBudget& budget, ExecutionContext& exec,
+                               SolutionSink& sink) {
+    return Run(problem, budget, exec, sink);
+}
 
 constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HighsOptionsStruct::mip_heuristic_fj_effort,
      &HighsOptionsStruct::mip_heuristic_run_feasibility_jump, true,
-     &HighsOptionsStruct::mip_heuristic_fj_patience, &fj::run},
+     &HighsOptionsStruct::mip_heuristic_fj_patience, &without_solver<&fj::run>},
     {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
      &HighsOptionsStruct::mip_heuristic_fpr_patience, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HighsOptionsStruct::mip_heuristic_local_mip_effort,
-     nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience, &local_mip::run},
+     nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience,
+     &without_solver<&local_mip::run>},
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
      false, &HighsOptionsStruct::mip_heuristic_scylla_patience, &scylla::run},
 });
@@ -274,8 +287,9 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         const HeuristicBudget slice = make_budget(
             total, exec.num_workers, patience_threshold(problem.nnz, patience_per_base, total));
         sink.set_source(h.source_tag);
-        run_and_charge(h.name,
-                       [&]() -> DispatchOutcome { return h.run(problem, slice, exec, sink); });
+        run_and_charge(h.name, [&]() -> DispatchOutcome {
+            return h.run(mipsolver, problem, slice, exec, sink);
+        });
     }
 
     return false;

@@ -5,6 +5,7 @@
 #include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
+#include "highs_context.h"
 #include "mip/HighsMipSolver.h"
 #include "opportunistic_runner.h"
 #include "solution_sink.h"
@@ -296,7 +297,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         return attempt;
     }
     // The one clock FPR's search polls below this worker (issue #117).
-    const Deadline deadline = exec_.deadline();
+    const Deadline deadline = exec_.deadline;
 
     // Issue #77 lifecycle.  Two mechanics in play:
     //
@@ -490,13 +491,11 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 // Parallel FPR
 // ---------------------------------------------------------------------------
 
-DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, SolutionSink& sink) {
+DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
+                    const HeuristicBudget& budget, ExecutionContext& exec, SolutionSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
         return {};
     }
-
-    HighsMipSolver& mipsolver = exec.mipsolver;
 
     // Precompute var_orders sequentially before any parallel region.  A
     // deadline that passes inside it retires the whole dispatch: the table
@@ -508,7 +507,7 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // searched, and the two are the same `effort=0 found=0` line to every
     // consumer that cannot tell them apart.
     VarOrderTable var_orders;
-    if (!precompute_var_orders(mipsolver, exec.deadline(), var_orders)) {
+    if (!precompute_var_orders(mipsolver, exec.deadline, var_orders)) {
         return DispatchOutcome::abandoned();
     }
 

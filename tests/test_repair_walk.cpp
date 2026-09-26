@@ -3,6 +3,7 @@
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "highs_context.h"
 #include "parallel/HighsParallel.h"
 #include "prop_engine.h"
 #include "repair_walk.h"

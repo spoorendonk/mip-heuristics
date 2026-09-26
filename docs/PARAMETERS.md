@@ -1691,7 +1691,8 @@ read the reported effort rather than assuming the option was spent. They are reg
 ### What bounds the deadline's tightness
 
 - **File**: `src/deadline.h` (`Deadline`), `src/heuristic_context.h`
-  (`ExecutionContext::past_deadline`, `deadline_of`), `src/fpr_core.cpp`
+  (`ExecutionContext::past_deadline`), `src/highs_context.h` (`deadline_of`),
+  `src/fpr_core.cpp`
   (`kDeadlinePollNodes`), `src/prop_engine.cpp`
   (`kPropagateDeadlinePollWork`), `src/fpr_lp.cpp` (`build_setup`)
 

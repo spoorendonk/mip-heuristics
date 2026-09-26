@@ -3,7 +3,6 @@
 #include "fj_worker.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "mip/HighsMipSolver.h"
 #include "opportunistic_runner.h"
 #include "solution_sink.h"
 
@@ -19,8 +18,10 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         return {};
     }
 
-    HighsMipSolver& mipsolver = exec.mipsolver;
-    const auto random_seed_opp = static_cast<uint32_t>(mipsolver.options_mip_->random_seed);
+    // The `random_seed` option itself: `base_seed` is it plus
+    // `kBaseSeedOffset` (`heuristic_base_seed`), so this is the exact
+    // inverse, in the same modular `uint32_t` arithmetic.
+    const uint32_t random_seed_opp = exec.base_seed - kBaseSeedOffset;
 
     struct FjState {
         std::unique_ptr<FjWorker> worker;

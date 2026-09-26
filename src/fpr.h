@@ -2,6 +2,7 @@
 
 #include <cstddef>
 
+class HighsMipSolver;
 class SolutionSink;
 struct DispatchOutcome;
 struct ExecutionContext;
@@ -36,9 +37,11 @@ namespace fpr {
 // a single worker whose behaviour is reproducible under a fixed
 // `random_seed`.
 //
-// Implements the uniform runner contract; see heuristic_context.h.
-DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, SolutionSink& sink);
+// Implements the uniform runner contract (see heuristic_context.h) plus the
+// solver itself, because its variable orders read the clique table and the live root domain
+// (`precompute_var_orders`).
+DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
+                    const HeuristicBudget& budget, ExecutionContext& exec, SolutionSink& sink);
 
 #ifndef NDEBUG
 // Test-only lifecycle counters for the issue #77 pause/resume path.

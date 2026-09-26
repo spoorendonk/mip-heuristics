@@ -4,6 +4,7 @@
 #include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
+#include "highs_context.h"
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -99,13 +100,12 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
 
 }  // namespace
 
-DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, SolutionSink& sink) {
+DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
+                    const HeuristicBudget& budget, ExecutionContext& exec, SolutionSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
         return {};
     }
 
-    HighsMipSolver& mipsolver = exec.mipsolver;
     const HighsInt pdlp_iter_cap = compute_pdlp_iter_cap(budget.total, problem.nnz);
     ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
     // A plain zero, not an abandoned setup: the shared LP copy failed to
@@ -133,7 +133,7 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // otherwise distinguish this from a dispatch that pumped and found
     // nothing.
     std::vector<std::vector<HighsInt>> var_orders;
-    if (!precompute_config_var_orders(mipsolver, exec.deadline(), var_orders)) {
+    if (!precompute_config_var_orders(mipsolver, exec.deadline, var_orders)) {
         return DispatchOutcome::abandoned();
     }
 

@@ -3,6 +3,7 @@
 #include "fpr_var_order.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "highs_context.h"
 #include "incumbent_sink.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"

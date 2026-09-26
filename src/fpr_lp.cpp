@@ -8,6 +8,7 @@
 #include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
+#include "highs_context.h"
 #include "incumbent_sink.h"
 #include "io/HighsIO.h"
 #include "mip/HighsLpRelaxation.h"
@@ -402,7 +403,7 @@ public:
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
         cfg.scratch = &scratch_;
 
-        auto result = fpr_attempt(problem_, exec_.deadline(), cfg, rng_, attempt_idx_);
+        auto result = fpr_attempt(problem_, exec_.deadline, cfg, rng_, attempt_idx_);
         ++attempt_idx_;
 
         attempt.effort = result.effort;

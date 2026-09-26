@@ -2,6 +2,7 @@
 
 #include <cstddef>
 
+class HighsMipSolver;
 class SolutionSink;
 struct DispatchOutcome;
 struct ExecutionContext;
@@ -47,8 +48,10 @@ namespace scylla {
 // seed.  Set `threads=1` for a single chain whose behaviour is
 // reproducible under a fixed `random_seed`.
 //
-// Implements the uniform runner contract; see heuristic_context.h.
-DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, SolutionSink& sink);
+// Implements the uniform runner contract (see heuristic_context.h) plus the
+// solver itself, because its `ContestedPdlp`, LP relaxation and variable orders are built from
+// it.
+DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
+                    const HeuristicBudget& budget, ExecutionContext& exec, SolutionSink& sink);
 
 }  // namespace scylla

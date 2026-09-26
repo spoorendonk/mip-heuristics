@@ -450,7 +450,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // `SolutionPool::get_restart`), so this chain's RNG stream moves
         // from the point of removal onward, independent of and in addition
         // to the shift from #122's seeding-block deletion.
-        HeuristicResult rounded = fpr_attempt(problem_, exec_.deadline(), cfg, rng_, 0);
+        HeuristicResult rounded = fpr_attempt(problem_, exec_.deadline, cfg, rng_, 0);
 
         base_.total_effort += rounded.effort;
         base_.effort_since_improvement += rounded.effort;

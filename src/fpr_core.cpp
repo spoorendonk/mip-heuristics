@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 
@@ -143,6 +145,18 @@ PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMa
     // loop below polls.
     engine_opt->set_deadline(deadline);
     return *engine_opt;
+}
+
+// The engine `fpr_attempt_begin` engaged for the attempt in flight, for
+// `step` and `finish`.  Reaching either without one is calling them out of
+// order, and an `assert` is a no-op under `NDEBUG`, so abort unconditionally
+// rather than dereference an empty optional.
+PropEngine& attempt_engine(FprScratch& scratch) {
+    if (!scratch.prop_engine.has_value()) {
+        std::fprintf(stderr, "fpr_core: attempt step/finish without fpr_attempt_begin.\n");
+        std::abort();
+    }
+    return *scratch.prop_engine;
 }
 
 // Strategy-aware value selection.  `cfg.strategy` must be non-null — issue
@@ -412,7 +426,7 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, const ProblemView& proble
     // parameter name of repair_search() itself.  Lower-casing only the
     // locals would split one symbol across two spellings.
     // NOLINTNEXTLINE(readability-identifier-naming)
-    PropEngine& E = *scratch.prop_engine;
+    PropEngine& E = attempt_engine(scratch);
     auto& dfs_stack = scratch.dfs_stack;
     auto& var_order = scratch.var_order;
 
@@ -690,7 +704,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, const ProblemView& pr
     // parameter name of repair_search() itself.  Lower-casing only the
     // locals would split one symbol across two spellings.
     // NOLINTNEXTLINE(readability-identifier-naming)
-    PropEngine& E = *scratch.prop_engine;
+    PropEngine& E = attempt_engine(scratch);
 
     auto is_int = [&](HighsInt j) { return is_integer(c.integrality, j); };
 

@@ -4,6 +4,7 @@
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "highs_context.h"
 #include "incumbent_sink.h"
 #include "parallel/HighsParallel.h"
 #include "scylla.h"
@@ -118,8 +119,8 @@ TEST_CASE("setup-bail: an expired deadline is reported as an abandoned setup", "
         Dispatch d(*mipsolver);
         const HeuristicBudget budget =
             make_budget(kAmpleBudget, d.exec.num_workers, kAmpleBudget >> 2);
-        return scylla ? scylla::run(d.problem, budget, d.exec, d.sink)
-                      : fpr::run(d.problem, budget, d.exec, d.sink);
+        return scylla ? scylla::run(*mipsolver, d.problem, budget, d.exec, d.sink)
+                      : fpr::run(*mipsolver, d.problem, budget, d.exec, d.sink);
     };
 
     SECTION("fpr") {
@@ -164,11 +165,11 @@ TEST_CASE("setup-bail: a disabled heuristic is not an abandoned setup", "[setup-
     const HeuristicBudget none = make_budget(0, d.exec.num_workers, 0);
     REQUIRE(none.disabled());
 
-    const DispatchOutcome fpr_out = fpr::run(d.problem, none, d.exec, d.sink);
+    const DispatchOutcome fpr_out = fpr::run(*mipsolver, d.problem, none, d.exec, d.sink);
     CHECK_FALSE(fpr_out.abandoned_setup);
     CHECK(fpr_out.effort == 0);
 
-    const DispatchOutcome scylla_out = scylla::run(d.problem, none, d.exec, d.sink);
+    const DispatchOutcome scylla_out = scylla::run(*mipsolver, d.problem, none, d.exec, d.sink);
     CHECK_FALSE(scylla_out.abandoned_setup);
     CHECK(scylla_out.effort == 0);
 }

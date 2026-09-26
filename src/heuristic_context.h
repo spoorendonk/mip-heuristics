@@ -3,15 +3,15 @@
 #include "deadline.h"
 #include "heuristic_common.h"
 #include "lp_data/HighsLp.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
-#include "parallel/HighsParallel.h"
 #include "util/HighsInt.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
+
+struct HighsLogOptions;
 
 // Common execution scaffold for the four presolve heuristics (issue #94).
 //
@@ -56,7 +56,7 @@
 // signature, but it is immutable for the duration of a dispatch: it is
 // shared by every worker of every heuristic in the chain, so caching
 // mutable per-dispatch state on it would be an unsynchronised shared
-// write.  Both of its methods are `const`.
+// write.  Its methods are `const`.
 
 // What one dispatch of a heuristic did, as its runner reports it (issue
 // #119).  Used to be a bare `size_t` effort count.
@@ -226,18 +226,6 @@ struct ProblemStorage {
 ProblemView make_problem(const HighsLp& model, ProblemStorage& storage, double feastol,
                          double epsilon);
 
-// Snapshot `HighsDomain::isBinary` for every column.  Must run on the
-// dispatching thread, before any parallel region — see `ProblemView::binary`.
-inline std::vector<uint8_t> build_binary_mask(const HighsMipSolver& mipsolver) {
-    const HighsInt ncol = mipsolver.model_->num_col_;
-    const HighsDomain& domain = mipsolver.mipdata_->getDomain();
-    std::vector<uint8_t> mask(static_cast<size_t>(ncol), 0);
-    for (HighsInt j = 0; j < ncol; ++j) {
-        mask[j] = domain.isBinary(j) ? 1 : 0;
-    }
-    return mask;
-}
-
 // One heuristic's slice of the presolve effort envelope.  `total` used to
 // travel separately as a bare `max_effort` parameter while the other three
 // were fields of `ParallelSetup`; they are one thing and now travel as one.
@@ -295,8 +283,11 @@ struct HeuristicBudget {
     [[nodiscard]] bool disabled() const { return total == 0; }
 };
 
-// How a heuristic runs: the worker count, the RNG base seed, and the one
-// termination predicate.
+// How a heuristic runs: the worker count, the RNG base seed, the deadline,
+// the log, and the one termination predicate.  Nothing in it names the
+// solver (#170): the HiGHS adapter builds one with `make_exec`
+// (highs_context.h), and a caller running the workers on its own threads
+// builds its own.
 //
 // Historical note on `attempt_cap`: the deleted epoch-gated runner gave FJ a
 // separate cadence (`kEpochsPerWorkerFj = 20` against 10 for the rest), on
@@ -307,13 +298,15 @@ struct HeuristicBudget {
 // concern was never benchmarked; recorded here so it is not lost with the
 // constant, but no cadence changed for any surviving execution path.
 struct ExecutionContext {
-    HighsMipSolver& mipsolver;
     size_t num_workers;  // highs::parallel::num_threads(), at least 1
     uint32_t base_seed;  // seeded from `random_seed` via heuristic_base_seed
-    double time_limit;
 
-    // The wall-clock half of "should we stop?", and the only half a worker
-    // thread may call (issue #114).
+    // The run's wall-clock deadline, and the only half of "should we
+    // stop?" a worker thread may poll (issue #114).  Also handed as it is
+    // to the layers below a heuristic's runner: `fpr_core`'s DFS and the
+    // repair search under it have no `ExecutionContext` (issue #117), and
+    // taking this one rather than building their own is what keeps them
+    // from stopping against a different clock or limit than their runner.
     //
     // `HighsTimer::read()` is `const` and, for the solve clock, writes
     // nothing — it reads `clock_start`/`clock_time` and calls
@@ -323,33 +316,42 @@ struct ExecutionContext {
     // every presolve heuristic can poll the deadline from inside its own
     // inner loop without a poller seat.
     //
-    // Deliberately the solver's own clock rather than a `steady_clock`
-    // snapshot: a second origin would no longer agree with the `[Heur]
-    // start_s`/`end_s` the ledger emits, which the tests and
-    // `bench/parse_highs_log.py` both read against this same limit.
-    // `HighsTimer` bottoms out in `high_resolution_clock` and is therefore
-    // not monotonic (see `effort_ledger.h`); that risk is pre-existing and
-    // is the price of one shared origin.
-    [[nodiscard]] bool past_deadline() const { return deadline().expired(); }
+    // In the HiGHS adapter it is the solver's own clock rather than a
+    // `steady_clock` snapshot (`make_exec`): a second origin would no longer
+    // agree with the `[Heur] start_s`/`end_s` the ledger emits, which the
+    // tests and `bench/parse_highs_log.py` both read against this same
+    // limit.  `HighsTimer` bottoms out in `high_resolution_clock` and is
+    // therefore not monotonic (see `effort_ledger.h`); that risk is
+    // pre-existing and is the price of one shared origin.
+    Deadline deadline;
 
-    // The same deadline as a standalone pollable value, for the layers
-    // below a heuristic's runner: `fpr_core`'s DFS and the repair search
-    // under it are shared by three callers and have no `ExecutionContext`
-    // (issue #117).  One definition rather than two — a sub-algorithm
-    // that stopped against a different clock or a different limit than
-    // its runner would be the drift this method exists to prevent.
-    [[nodiscard]] Deadline deadline() const { return make_deadline(mipsolver.timer_, time_limit); }
+    // Where the workers' own solvers log (FJ's `FeasibilityJumpSolver`).
+    // Held by reference, so it must outlive the context, and it must be a
+    // working one: a default-constructed `HighsLogOptions` holds null
+    // `output_flag` / `log_to_console` / `log_dev_level` pointers, which the
+    // logger dereferences.  `Highs::getOptions().log_options` is one; a
+    // caller without a `Highs` points those three at its own values.
+    const HighsLogOptions& log_options;
+
+    // The external half of "should we stop?", or empty when nothing
+    // outside the clock can end the run.  In the HiGHS adapter it is
+    // `HighsMipSolverData::terminatorTerminated()`, which *writes*
+    // `mipsolver.termination_status_` when a terminator is attached — so
+    // it is called only through `terminated()`, and only by one caller at
+    // a time.
+    std::function<bool()> terminator;
+
+    [[nodiscard]] bool past_deadline() const { return deadline.expired(); }
 
     // The full "should we stop?" predicate.  Three hand-rolled copies of
     // it existed before this struct.
     //
-    // Not thread-safe for concurrent callers: `terminatorTerminated()`
-    // writes `mipsolver.termination_status_` when a terminator is attached.
-    // That write — not the clock read — is the whole reason this one needs
-    // a single caller.  `mode_dispatch` calls it between heuristics, with
-    // every parallel region already joined, and inside a parallel region
-    // the worker holding `ContinuousLoopState`'s claimable poller seat
-    // calls it on everyone's behalf.
+    // Not thread-safe for concurrent callers: `terminator` may write (see
+    // above).  That write — not the clock read — is the whole reason this
+    // one needs a single caller.  `mode_dispatch` calls it between
+    // heuristics, with every parallel region already joined, and inside a
+    // parallel region the worker holding `ContinuousLoopState`'s claimable
+    // poller seat calls it on everyone's behalf.
     //
     // There is no longer an exception: FPR's multi-attempt inner loop used
     // to poll this directly from its own worker thread, which was a race
@@ -357,7 +359,7 @@ struct ExecutionContext {
     // instead (issue #114), which is the half it actually needed, so the
     // seat is now the only route to the terminator.
     [[nodiscard]] bool terminated() const {
-        return mipsolver.mipdata_->terminatorTerminated() || past_deadline();
+        return (terminator && terminator()) || past_deadline();
     }
 
     // Deterministic seed for worker `w`.  The runner seeds its own per-worker
@@ -368,26 +370,6 @@ struct ExecutionContext {
         return base_seed + (static_cast<uint32_t>(w) * kSeedStride);
     }
 };
-
-// Derive one dispatch's execution parameters.  Shared by `run_sequential`
-// and by `fpr_lp`, which runs on the same continuous parallel runner from a
-// setup of its own shape.
-inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
-    return ExecutionContext{mipsolver,
-                            static_cast<size_t>(std::max(1, highs::parallel::num_threads())),
-                            heuristic_base_seed(mipsolver.options_mip_->random_seed),
-                            mipsolver.options_mip_->time_limit};
-}
-
-// The dispatch's deadline, for a callee that was handed the solver but not
-// the `ExecutionContext` built from it — `fpr_core`'s attempt lifecycle, on
-// behalf of all three of its callers (issue #117).  Reads the same option
-// `make_exec` copies into `ExecutionContext::time_limit`, so deriving it
-// here rather than threading the context through cannot drift: there is one
-// option and one clock.
-inline Deadline deadline_of(const HighsMipSolver& mipsolver) {
-    return make_deadline(mipsolver.timer_, mipsolver.options_mip_->time_limit);
-}
 
 // Split a heuristic's slice of the effort envelope into the per-worker,
 // per-attempt and staleness ceilings its workers and the runner use.
@@ -418,48 +400,4 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
                            .attempt_cap = std::max<size_t>(total / (num_workers * 10), 1),
                            .stale = stale,
                            .worker_stale = std::max<size_t>(stale / num_workers, 1)};
-}
-
-// A view over the solver's model and row-wise buffers plus a CSC transpose
-// the caller already holds, with the incumbent and `isBinary` snapshots.
-// `csc` must outlive every use of the returned view.  Must be called on the
-// dispatching thread, before any parallel region — see
-// `ProblemView::incumbent`.  `fpr_lp` calls it directly, over the CSC its
-// setup built; everything else goes through `make_problem` below.
-inline ProblemView problem_view(HighsMipSolver& mipsolver, const CscMatrix& csc) {
-    const HighsLp* model = mipsolver.model_;
-    HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
-    // Designated initialisers: two snapshots have been appended to this
-    // aggregate in as many issues, and three of the members in the middle
-    // are a positional `HighsInt, HighsInt, size_t` run that a mis-ordered
-    // addition would silently convert between.
-    return ProblemView{.model = model,
-                       .ar_start = &mipdata->ARstart_,
-                       .ar_index = &mipdata->ARindex_,
-                       .ar_value = &mipdata->ARvalue_,
-                       .csc = &csc,
-                       .uplocks = &mipdata->uplocks,
-                       .downlocks = &mipdata->downlocks,
-                       .feastol = mipdata->feastol,
-                       .epsilon = mipdata->epsilon,
-                       .ncol = model->num_col_,
-                       .nrow = model->num_row_,
-                       .nnz = mipdata->ARindex_.size(),
-                       .incumbent = mipdata->incumbent,
-                       .binary = build_binary_mask(mipsolver)};
-}
-
-// Build the CSC transpose into caller-owned `csc` and return
-// `problem_view` over it.
-//
-// One call covers a whole FJ -> FPR -> LocalMIP -> Scylla chain: the
-// row-major buffers the transpose is built from are written by
-// `HighsMipSolverData::runSetup()` before any heuristic dispatch and are
-// not touched again while the chain runs, so a single snapshot is valid for
-// all four.  (Each heuristic used to build its own identical copy.)
-inline ProblemView make_problem(HighsMipSolver& mipsolver, CscMatrix& csc) {
-    const HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
-    csc = build_csc(mipsolver.model_->num_col_, mipsolver.model_->num_row_, mipdata->ARstart_,
-                    mipdata->ARindex_, mipdata->ARvalue_);
-    return problem_view(mipsolver, csc);
 }

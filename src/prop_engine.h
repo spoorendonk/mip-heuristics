@@ -268,10 +268,11 @@ public:
     // an attempt: `fpr_core.cpp`'s `acquire_engine` caches one `PropEngine`
     // per worker across attempts and `repair_search` caches the secondary
     // engine R the same way, so the arming has to happen on the *reuse*
-    // path as much as on the construction path.  The `Deadline` must come
-    // from `ExecutionContext::deadline()` or `deadline_of(mipsolver)` --
-    // the only two ways to build one -- so a fixpoint cannot stop against a
-    // different clock or limit than the runner above it.
+    // path as much as on the construction path.  The `Deadline` must be
+    // the runner's own `ExecutionContext::deadline` -- which the HiGHS
+    // adapter builds with `deadline_of(mipsolver)`, the one way to build one
+    // from the solver -- so a fixpoint cannot stop against a different clock
+    // or limit than the runner above it.
     void set_deadline(const Deadline& d) { deadline_ = d; }
     [[nodiscard]] const Deadline& deadline() const { return deadline_; }
 

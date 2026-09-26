@@ -1,8 +1,9 @@
 #include "fj_worker.h"
 
 #include "heuristic_context.h"
+#include "io/HighsIO.h"
+#include "lp_data/HighsLp.h"
 #include "mip/feasibilityjump.hh"
-#include "mip/HighsMipSolver.h"
 #include "solution_sink.h"
 
 #include <algorithm>
@@ -65,8 +66,8 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         return {};
 #endif
 
-        const HighsLogOptions& log_options = exec_.mipsolver.options_mip_->log_options;
-        impl_ = std::make_unique<Impl>(log_options, static_cast<int>(seed_), epsilon, feastol);
+        impl_ =
+            std::make_unique<Impl>(exec_.log_options, static_cast<int>(seed_), epsilon, feastol);
 
         impl_->col_value.resize(model->num_col_, 0.0);
 
