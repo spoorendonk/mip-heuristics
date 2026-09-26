@@ -15,18 +15,20 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(MIP_HEURISTICS_BUILD_TESTS
        "Build and register the tests, bench checks and lint gates" ${PROJECT_IS_TOP_LEVEL})
 
-# Optional instrumentation for the LocalMIP warm-start branch counters.
-# These atomic counters fire on every dispatch in the production binary
-# but are only consumed by two tests.  When OFF the counter increments
-# compile out via `if constexpr` and the public API returns zeros; when
-# ON, the counters fire and the test suite uses them as regression
-# sentinels.  So the default follows MIP_HEURISTICS_BUILD_TESTS: ON
-# wherever the tests are built to read them, OFF for a parent consuming
-# only the library, which would pay the overhead for nothing.  A top-level
-# production build wanting zero counter overhead passes
-# `-DMIP_HEURISTICS_INSTRUMENT=OFF` explicitly.
+# Optional instrumentation for the LocalMIP counters: the warm-start
+# branches and the deadline polls.  These atomic counters fire on every
+# dispatch in the production binary but are only read by five tests.
+# When OFF the counter increments compile out via `if constexpr` and the
+# public API returns zeros; when ON, the counters fire and the test suite
+# uses them as regression sentinels.  So the default follows
+# MIP_HEURISTICS_BUILD_TESTS: ON wherever the tests are built to read them,
+# OFF for a parent consuming only the library, which would pay the
+# overhead for nothing.  A top-level production build wanting zero counter
+# overhead passes `-DMIP_HEURISTICS_INSTRUMENT=OFF` explicitly.  Like any
+# option default, this only seeds a fresh cache: a tree first configured
+# with the tests off keeps INSTRUMENT=OFF until it is set ON explicitly.
 option(MIP_HEURISTICS_INSTRUMENT
-       "Enable LocalMIP warm-start branch instrumentation counters" ${MIP_HEURISTICS_BUILD_TESTS})
+       "Enable LocalMIP warm-start and deadline-poll instrumentation counters" ${MIP_HEURISTICS_BUILD_TESTS})
 
 option(MIP_HEURISTICS_INSTALL_GIT_HOOKS
        "Point this checkout's core.hooksPath at the tracked .githooks/" ${PROJECT_IS_TOP_LEVEL})

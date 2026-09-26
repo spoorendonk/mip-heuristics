@@ -211,7 +211,7 @@ runs its own FJ, so the comparison already includes FJ-vs-FJ.
 |------|---------|-------------|
 | `-DCMAKE_BUILD_TYPE=Release` | — | Optimized build. The heuristics are unusable at `-O0`. |
 | `-DMIP_HEURISTICS_REQUIRE_LINT=ON` | `OFF` | Turn a missing or wrong-major-version clang tool into a **configure failure** instead of a warning. CI sets it; so should you — the default failure mode is a gate that silently checks nothing. |
-| `-DMIP_HEURISTICS_INSTRUMENT=OFF` | follows `MIP_HEURISTICS_BUILD_TESTS` | Compile out the LocalMIP warm-start branch counters. They are consumed by two tests, so they are on wherever the tests are built and off as a subproject; turn them off at top level only when measuring their overhead in a production build. |
+| `-DMIP_HEURISTICS_INSTRUMENT=OFF` | follows `MIP_HEURISTICS_BUILD_TESTS` | Compile out the LocalMIP warm-start and deadline-poll counters. They are read by five tests, so on a fresh cache they are on wherever the tests are built and off as a subproject; turn them off at top level only when measuring their overhead in a production build. |
 | `-DMIP_HEURISTICS_BUILD_TESTS=ON` | top-level only | Build and register the Catch2 suite, the bench and docs checks and the lint gates. On when this is the top-level project, off as a subproject. |
 | `-DMIP_HEURISTICS_INSTALL_GIT_HOOKS=OFF` | top-level only | Leave this checkout's `core.hooksPath` alone. On when this is the top-level project, off as a subproject. |
 | `-DMIP_HEURISTICS_CUDA=ON` | `OFF` | Enable cuPDLP GPU backend for Scylla. Requires `CUDA_HOME` exported; **fails the configure** rather than falling back to CPU, because GPU vs CPU is a compile-time `#ifdef` in HiGHS and a silent fallback would be indistinguishable at the command line. Build into a separate tree and verify with `ldd build-gpu/bin/highs \| grep cudart`. |
@@ -232,7 +232,7 @@ target_link_libraries(my_solver PRIVATE highs)
 
 `highs` (alias `highs::highs`) is the consumer-facing target: HiGHS v1.15.1 with the patch applied and the heuristics' objects compiled into it, built static. Its interface carries HiGHS's include directories, so `#include "Highs.h"` works as is. As a subproject this project registers nothing of its own: no tests, bench or lint checks in the parent's ctest, no `lint` target, the fetched checkout's git hooks config left alone, and the instrumentation counters compiled out. HiGHS's own extra targets still come along as upstream defines them (`highs-bin`, the `highs_extras` library, CPack and install rules). `BUILD_TESTING`, `BUILD_SHARED_LIBS` and the other HiGHS switches are set only in this project's scope, so the parent's own values stand.
 
-Set any of the options above in the parent before `FetchContent_MakeAvailable`. `set(MIP_HEURISTICS_BUILD_TESTS ON)` builds the suite (and turns the counters back on, since the tests read them), but ctest only picks the tests up if the parent itself enables testing, with `include(CTest)` or `enable_testing()`.
+Set any of the options above in the parent before `FetchContent_MakeAvailable`. `set(MIP_HEURISTICS_BUILD_TESTS ON)` builds the suite and, on a fresh cache, defaults the counters on, since the tests read them; in an existing build tree also set `MIP_HEURISTICS_INSTRUMENT=ON`, or those tests skip. ctest only picks the tests up if the parent itself enables testing, with `include(CTest)` or `enable_testing()`.
 
 ## Tests
 
