@@ -40,7 +40,10 @@ source "$(dirname "$0")/resolve-venv.sh"
 # Check if only non-code files changed (skip build+test for docs-only pushes).
 # .githooks/ is excluded: a hook change cannot alter build or test outcomes, so
 # a hooks-only push should not pay for a clean rebuild.
-CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|txt|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
+# Prose is .md and .rst only.  `.txt` is code: it covers CMakeLists.txt at any
+# depth, requirements*.txt, and data the tests read (the bench instance
+# lists), so a push touching only those still gets the clean build and test.
+CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
 
 # ============================================================
 # Step 1: Clean build + test (hard block)
