@@ -399,18 +399,18 @@ TEST_CASE("FPR: lp_ref is the strategy path's reference-point mechanism", "[fpr]
     auto run_once = [&](const double* lp_ref) {
         FprScratch scratch;
         FprConfig cfg{};
+        std::vector<HighsInt> var_order;
         cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-        cfg.csc = &csc;
         cfg.mode = FrameworkMode::kDfs;
         cfg.strategy = &kStratLp;  // VarStrategy::kTypecl (lp_ref-free order), ValStrategy::kLp
         cfg.lp_ref = lp_ref;
-        cfg.binary_mask = problem.binary.data();
         cfg.scratch = &scratch;
         Rng rng(777);
         FprAttemptState state;
-        fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
+        set_var_order(cfg, var_order, *mipsolver, rng);
+        fpr_attempt_begin(state, problem, deadline_of(*mipsolver), cfg, rng, /*attempt_idx=*/0);
         while (state.phase == FprAttemptState::Phase::kDfs) {
-            fpr_attempt_step(state, *mipsolver, cfg, rng, cfg.max_effort);
+            fpr_attempt_step(state, problem, deadline_of(*mipsolver), cfg, rng, cfg.max_effort);
         }
         Probe p;
         for (HighsInt j = 0; j < ncol; ++j) {

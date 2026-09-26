@@ -1,10 +1,10 @@
 #include "fpr_core.h"
 
+#include "deadline.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "lp_data/HConst.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
+#include "lp_data/HighsLp.h"
 #include "prop_engine.h"
 #include "repair_search.h"
 #include "repair_walk.h"
@@ -43,9 +43,7 @@ constexpr HighsInt kDeadlinePollNodes = 16;
 // stashable), so each function rebuilds them from this struct.  Cheap
 // — the lambdas are stateless wrappers over const refs.
 struct AttemptCtx {
-    HighsMipSolver& mipsolver;
     const HighsLp* model;
-    HighsMipSolverData* mipdata;
     const std::vector<HighsInt>& ar_start;
     const std::vector<HighsInt>& ar_index;
     const std::vector<double>& ar_value;
@@ -59,34 +57,34 @@ struct AttemptCtx {
     bool minimize;
     HighsInt ncol;
     HighsInt nrow;
-    // Dispatch-time `isBinary` snapshot; see `FprConfig::binary_mask`.
+    // Dispatch-time `isBinary` snapshot; see `ProblemView::binary`.
     const uint8_t* binary;
+    const std::vector<HighsInt>& uplocks;
+    const std::vector<HighsInt>& downlocks;
 
     [[nodiscard]] bool is_binary(HighsInt j) const { return binary[j] != 0; }
 };
 
-AttemptCtx make_ctx(HighsMipSolver& mipsolver, const uint8_t* binary) {
-    assert(binary != nullptr && "FprConfig::binary_mask must be set");
-    const auto* model = mipsolver.model_;
-    auto* mipdata = mipsolver.mipdata_.get();
+AttemptCtx make_ctx(const ProblemView& problem) {
+    const HighsLp* model = problem.model;
     return AttemptCtx{
-        mipsolver,
         model,
-        mipdata,
-        mipdata->ARstart_,
-        mipdata->ARindex_,
-        mipdata->ARvalue_,
+        *problem.ar_start,
+        *problem.ar_index,
+        *problem.ar_value,
         model->col_lower_,
         model->col_upper_,
         model->col_cost_,
         model->row_lower_,
         model->row_upper_,
         model->integrality_,
-        mipdata->feastol,
+        problem.feastol,
         model->sense_ == ObjSense::kMinimize,
         model->num_col_,
         model->num_row_,
-        binary,
+        problem.binary.data(),
+        *problem.uplocks,
+        *problem.downlocks,
     };
 }
 
@@ -113,10 +111,11 @@ double finite_clamp_helper(double val, double lo, double hi) {
 // scratch; comparing dangling pointers to .data() of vectors that have
 // since been freed is technically indeterminate per the C++ standard
 // but benign on all mainstream toolchains.  Hot-path callers (the FPR
-// worker, scylla, fpr_lp) pair a stable `cfg.csc` and a
-// stable `mipsolver` with the scratch's lifetime — see the lifetime
-// comment on `FprConfig::scratch` in `fpr_core.h`.
-PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMatrix& csc) {
+// worker, scylla, fpr_lp) pair a stable `ProblemView` with the
+// scratch's lifetime — see the lifetime comment on `FprConfig::scratch`
+// in `fpr_core.h`.
+PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMatrix& csc,
+                           const Deadline& deadline) {
     std::optional<PropEngine>& engine_opt = scratch.prop_engine;
     const bool engine_valid =
         engine_opt.has_value() && engine_opt->ncol() == c.ncol && engine_opt->nrow() == c.nrow &&
@@ -139,10 +138,10 @@ PropEngine& acquire_engine(FprScratch& scratch, const AttemptCtx& c, const CscMa
     // Arm the engine's own wall-clock poll (issue #151) on both paths: the
     // cached engine survives across attempts, so a `set_deadline` only on
     // the emplace path would leave every attempt after the first
-    // propagating against a null deadline.  `deadline_of` is one of the two
-    // sanctioned constructors, so the fixpoint stops against exactly the
-    // clock and limit the DFS loop below polls.
-    engine_opt->set_deadline(deadline_of(c.mipsolver));
+    // propagating against a null deadline.  It is the caller's `deadline`,
+    // so the fixpoint stops against exactly the clock and limit the DFS
+    // loop below polls.
+    engine_opt->set_deadline(deadline);
     return *engine_opt;
 }
 
@@ -189,11 +188,11 @@ bool is_row_violated_in_ctx(HighsInt i, double lhs, const AttemptCtx& c) {
 // it would move work across a worker's inner loop, and the closeout takes no unmeasured performance
 // risk; the standards also rank fidelity to the reference algorithm above mechanical extraction.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const FprConfig& cfg,
-                       Rng& rng, int attempt_idx) {
+void fpr_attempt_begin(FprAttemptState& state, const ProblemView& problem, const Deadline& deadline,
+                       const FprConfig& cfg, Rng& rng, int attempt_idx) {
     assert(cfg.scratch != nullptr && "fpr_attempt_begin requires cfg.scratch");
     FprScratch& scratch = *cfg.scratch;
-    const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
+    const AttemptCtx c = make_ctx(problem);
 
     // Lifecycle reset.
     state = FprAttemptState{};
@@ -210,22 +209,20 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
         return;
     }
 
-    // The lifecycle API requires cfg.csc — one-shot callers go via
-    // `fpr_attempt` which builds a local CSC.  Persistent callers (the
-    // FPR worker) all carry a stable cfg.csc.
-    assert(cfg.csc != nullptr && "fpr_attempt_begin requires cfg.csc");
-    const CscMatrix& csc = *cfg.csc;
+    const CscMatrix& csc = *problem.csc;
     assert(cfg.strategy != nullptr && "FprConfig::strategy must be set (issue #120)");
+    // Required, and not only in a debug build: the search cannot compute an
+    // order itself (see `FprConfig::precomputed_var_order`), and reading a
+    // null one is no gentler than `attempt_engine`'s case.
+    if (cfg.precomputed_var_order == nullptr) {
+        std::fprintf(stderr, "fpr_core: fpr_attempt_begin without a precomputed variable order.\n");
+        std::abort();
+    }
 
     // --- Phase 1: variable ranking -------------------------------------------------
     auto& var_order = scratch.var_order;
-    var_order.clear();
-    if (cfg.precomputed_var_order != nullptr) {
-        var_order.assign(cfg.precomputed_var_order,
-                         cfg.precomputed_var_order + cfg.precomputed_var_order_size);
-    } else {
-        var_order = compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
-    }
+    var_order.assign(cfg.precomputed_var_order,
+                     cfg.precomputed_var_order + cfg.precomputed_var_order_size);
     state.var_order_size = static_cast<HighsInt>(var_order.size());
 
     // Ensure scratch.lhs_cache has capacity for finish().
@@ -240,7 +237,7 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     // spellings; renaming the documentation too would cost the mapping
     // back to the paper, which the standards rank above naming.
     // NOLINTNEXTLINE(readability-identifier-naming)
-    PropEngine& E = acquire_engine(scratch, c, csc);
+    PropEngine& E = acquire_engine(scratch, c, csc, deadline);
 
     // No E.sol(j) seeding here (issue #122): a prior block wrote a
     // deterministic-or-random starting solution into every column before
@@ -279,9 +276,9 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
     }
 
     // Trivially-roundable fixings (paper Section 6).
-    if (!c.mipdata->uplocks.empty()) {
-        const auto& uplocks = c.mipdata->uplocks;
-        const auto& downlocks = c.mipdata->downlocks;
+    if (!c.uplocks.empty()) {
+        const auto& uplocks = c.uplocks;
+        const auto& downlocks = c.downlocks;
         for (HighsInt j = 0; j < c.ncol; ++j) {
             if (!is_int(j) || E.var(j).fixed) {
                 continue;
@@ -399,16 +396,16 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
 // move work across a worker's inner loop, and the closeout takes no unmeasured performance risk;
 // the standards also rank fidelity to the reference algorithm above mechanical extraction.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver,
-                               const FprConfig& cfg, Rng& rng, size_t effort_remaining) {
+FprStepResult fpr_attempt_step(FprAttemptState& state, const ProblemView& problem,
+                               const Deadline& deadline, const FprConfig& cfg, Rng& rng,
+                               size_t effort_remaining) {
     assert(state.phase == FprAttemptState::Phase::kDfs &&
            "fpr_attempt_step called outside kDfs phase");
     assert(cfg.scratch != nullptr);
-    assert(cfg.csc != nullptr);
 
     FprScratch& scratch = *cfg.scratch;
-    const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
-    const CscMatrix& csc = *cfg.csc;
+    const AttemptCtx c = make_ctx(problem);
+    const CscMatrix& csc = *problem.csc;
     // NOLINT rationale: `E` is the paper's own symbol for the primary
     // propagation engine (Fig. 5), used under that name in the prose in
     // fpr_core.h, repair_search.h and fpr_strategies.h and as the
@@ -459,7 +456,6 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
     // loop the coarsest indivisible unit in the solve, and the deadline
     // only as tight as it is long.  Measured at 1.9x a 30 s limit on
     // `rail02` before this poll existed.
-    const Deadline deadline = deadline_of(mipsolver);
     HighsInt nodes_since_poll = 0;
 
     while (!dfs_stack.empty() && state.nodes_visited < state.node_limit && !state.found_complete &&
@@ -674,12 +670,12 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
 // worker's inner loop, and the closeout takes no unmeasured performance risk; the standards also
 // rank fidelity to the reference algorithm above mechanical extraction.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipsolver,
-                                   const FprConfig& cfg, Rng& rng) {
+HeuristicResult fpr_attempt_finish(FprAttemptState& state, const ProblemView& problem,
+                                   const Deadline& deadline, const FprConfig& cfg, Rng& rng) {
     assert(cfg.scratch != nullptr);
 
     FprScratch& scratch = *cfg.scratch;
-    const AttemptCtx c = make_ctx(mipsolver, cfg.binary_mask);
+    const AttemptCtx c = make_ctx(problem);
 
     // Degenerate model from begin() — short-circuit cleanly.
     if (c.ncol == 0 || c.nrow == 0) {
@@ -687,8 +683,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
         return {};
     }
 
-    assert(cfg.csc != nullptr);
-    const CscMatrix& csc = *cfg.csc;
+    const CscMatrix& csc = *problem.csc;
     // NOLINT rationale: `E` is the paper's own symbol for the primary
     // propagation engine (Fig. 5), used under that name in the prose in
     // fpr_core.h, repair_search.h and fpr_strategies.h and as the
@@ -819,7 +814,6 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
     // internal per-nnz valve, the shape `repair_walk` has used since
     // #124.  What both spend is still charged to the attempt through
     // `total_prop_work`.
-    const Deadline deadline = deadline_of(mipsolver);
     if (!feasible && !deadline.expired() && cfg.mode == FrameworkMode::kRepairSearch) {
         size_t rs_effort = 0;
         feasible = repair_search(E, solution, lhs_cache, c.col_lb.data(), c.col_ub.data(),
@@ -902,40 +896,20 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipso
 // and accepts a null cfg.scratch by routing through a function-local scratch
 // (matches the pre-#77 contract for those callers).
 
-HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng& rng,
-                            int attempt_idx) {
-    const auto* model = mipsolver.model_;
-    auto* mipdata = mipsolver.mipdata_.get();
-    const HighsInt ncol = model->num_col_;
-    const HighsInt nrow = model->num_row_;
-    if (ncol == 0 || nrow == 0) {
+HeuristicResult fpr_attempt(const ProblemView& problem, const Deadline& deadline,
+                            const FprConfig& cfg, Rng& rng, int attempt_idx) {
+    if (problem.ncol == 0 || problem.nrow == 0) {
         return {};
     }
 
     FprScratch local_scratch;
-    CscMatrix owned_csc;
-    if (cfg.csc == nullptr) {
-        owned_csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
-    }
-
     FprConfig effective_cfg = cfg;
     if (effective_cfg.scratch == nullptr) {
         effective_cfg.scratch = &local_scratch;
     }
-    if (effective_cfg.csc == nullptr) {
-        effective_cfg.csc = &owned_csc;
-    }
-    // Same fallback shape as `csc`/`scratch` above: a one-shot caller that
-    // took no dispatch snapshot gets one here.  Callers inside a parallel
-    // region (fpr_lp, scylla, FprWorker) always set it and skip this.
-    std::vector<uint8_t> owned_binary;
-    if (effective_cfg.binary_mask == nullptr) {
-        owned_binary = build_binary_mask(mipsolver);
-        effective_cfg.binary_mask = owned_binary.data();
-    }
 
     FprAttemptState state;
-    fpr_attempt_begin(state, mipsolver, effective_cfg, rng, attempt_idx);
+    fpr_attempt_begin(state, problem, deadline, effective_cfg, rng, attempt_idx);
 
     // Single-shot DFS gated by `cfg.max_effort` — matches the pre-#77
     // contract for one-shot callers (scylla / fpr_lp / tests).
@@ -951,11 +925,11 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng
         const size_t remaining =
             effective_cfg.max_effort > already_used ? effective_cfg.max_effort - already_used : 0;
         const FprStepResult outcome =
-            fpr_attempt_step(state, mipsolver, effective_cfg, rng, remaining);
+            fpr_attempt_step(state, problem, deadline, effective_cfg, rng, remaining);
         if (outcome == FprStepResult::kBudgetGate) {
             state.phase = FprAttemptState::Phase::kReadyToFinish;
         }
     }
 
-    return fpr_attempt_finish(state, mipsolver, effective_cfg, rng);
+    return fpr_attempt_finish(state, problem, deadline, effective_cfg, rng);
 }

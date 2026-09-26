@@ -24,7 +24,8 @@
 // take exactly the parts it needs, and `mode_dispatch` can build the
 // expensive part (the CSC transpose) once for the whole chain.
 //
-// `fpr_lp.cpp` takes only `make_exec` / `make_budget`: it runs on the same
+// `fpr_lp.cpp` takes `make_exec` / `make_budget` and builds its view with
+// `problem_view` over the CSC its setup built: it runs on the same
 // continuous parallel runner but keeps its own `LpFprSetup` for the LP
 // references, reduced costs and shared `ContestedPdlp` that the presolve
 // heuristics have no equivalent of.
@@ -155,8 +156,8 @@ struct ProblemView {
     // (`incumbent = sol;`) rewrites the live buffer under a concurrent
     // reader — element-wise while the sizes match, reallocating out from
     // under it on the empty-to-sized transition.  Empty when the solver had
-    // no incumbent at dispatch time.  `fpr_lp` keeps the equivalent copy in
-    // its own `LpFprSetup`.
+    // no incumbent at dispatch time.  `fpr_lp` takes the same snapshot, through
+    // `problem_view`.
     //
     // The snapshot is the *floor* a worker starts from, not necessarily what
     // it gets: both readers consult the shared pool first, which holds the
@@ -419,22 +420,15 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
                            .worker_stale = std::max<size_t>(stale / num_workers, 1)};
 }
 
-// Build the CSC transpose into caller-owned `csc` and return a view over it
-// together with the model pointers, derived sizes and the incumbent
-// snapshot.
-//
-// `csc` must outlive every use of the returned view.  One call covers a
-// whole FJ -> FPR -> LocalMIP -> Scylla chain: the row-major buffers the
-// transpose is built from are written by `HighsMipSolverData::runSetup()`
-// before any heuristic dispatch and are not touched again while the chain
-// runs, so a single snapshot is valid for all four.  (Each heuristic used
-// to build its own identical copy.)  Must be called on the dispatching
-// thread, before any parallel region — see `ProblemView::incumbent`.
-inline ProblemView make_problem(HighsMipSolver& mipsolver, CscMatrix& csc) {
+// A view over the solver's model and row-wise buffers plus a CSC transpose
+// the caller already holds, with the incumbent and `isBinary` snapshots.
+// `csc` must outlive every use of the returned view.  Must be called on the
+// dispatching thread, before any parallel region — see
+// `ProblemView::incumbent`.  `fpr_lp` calls it directly, over the CSC its
+// setup built; everything else goes through `make_problem` below.
+inline ProblemView problem_view(HighsMipSolver& mipsolver, const CscMatrix& csc) {
     const HighsLp* model = mipsolver.model_;
     HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
-    csc = build_csc(model->num_col_, model->num_row_, mipdata->ARstart_, mipdata->ARindex_,
-                    mipdata->ARvalue_);
     // Designated initialisers: two snapshots have been appended to this
     // aggregate in as many issues, and three of the members in the middle
     // are a positional `HighsInt, HighsInt, size_t` run that a mis-ordered
@@ -453,4 +447,19 @@ inline ProblemView make_problem(HighsMipSolver& mipsolver, CscMatrix& csc) {
                        .nnz = mipdata->ARindex_.size(),
                        .incumbent = mipdata->incumbent,
                        .binary = build_binary_mask(mipsolver)};
+}
+
+// Build the CSC transpose into caller-owned `csc` and return
+// `problem_view` over it.
+//
+// One call covers a whole FJ -> FPR -> LocalMIP -> Scylla chain: the
+// row-major buffers the transpose is built from are written by
+// `HighsMipSolverData::runSetup()` before any heuristic dispatch and are
+// not touched again while the chain runs, so a single snapshot is valid for
+// all four.  (Each heuristic used to build its own identical copy.)
+inline ProblemView make_problem(HighsMipSolver& mipsolver, CscMatrix& csc) {
+    const HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
+    csc = build_csc(mipsolver.model_->num_col_, mipsolver.model_->num_row_, mipdata->ARstart_,
+                    mipdata->ARindex_, mipdata->ARvalue_);
+    return problem_view(mipsolver, csc);
 }

@@ -7,9 +7,12 @@
 // surface area small — anything used by a single file stays in that
 // file as a file-local helper.
 
+#include "fpr_core.h"
+#include "fpr_var_order.h"
 #include "Highs.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "rng.h"
 
 #include <algorithm>
 #include <array>
@@ -358,4 +361,18 @@ inline std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsC
         &mipsolver->mipdata_->getCutPool(), &mipsolver->mipdata_->getConflictPool(),
         &mipsolver->mipdata_->getPseudoCost());
     return mipsolver;
+}
+
+// Give `cfg` the variable order `fpr_attempt_begin` used to compute for
+// itself when none was precomputed.  FPR's search takes the order from its
+// caller since #170 (`compute_var_order` reads the clique table, which is
+// on the HiGHS side of the split), so a test calls this with the attempt's
+// own `rng` immediately before `fpr_attempt_begin` / `fpr_attempt`: the
+// draws are the ones that call made first, so the attempt is unchanged.
+// `order` owns the storage and must outlive the attempt.
+inline void set_var_order(FprConfig& cfg, std::vector<HighsInt>& order,
+                          const HighsMipSolver& mipsolver, Rng& rng) {
+    order = compute_var_order(mipsolver, cfg.strategy->var_strategy, rng, cfg.lp_ref);
+    cfg.precomputed_var_order = order.data();
+    cfg.precomputed_var_order_size = static_cast<HighsInt>(order.size());
 }

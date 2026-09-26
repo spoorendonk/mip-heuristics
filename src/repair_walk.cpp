@@ -110,7 +110,7 @@ bool repair_walk(PropEngine& E, HighsInt max_steps, double noise, Rng& rng, size
     // by our implementation" -- so an engine without activities cannot
     // measure a partial assignment's violation at all.  `fpr_attempt_begin`
     // arms every repairing mode; a debug assert rather than a silent
-    // degradation, matching `binary_mask`'s treatment next door.
+    // degradation, like the lifecycle's own asserts on `FprConfig`.
     assert(E.activities_initialized() &&
            "repair_walk requires PropEngine::init_activities() (fpr_attempt_begin arms it)");
     if (!E.activities_initialized()) {

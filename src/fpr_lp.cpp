@@ -5,6 +5,7 @@
 #include "fpr_lp_arms.h"
 #include "fpr_lp_refs.h"
 #include "fpr_strategies.h"
+#include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "incumbent_sink.h"
@@ -191,11 +192,6 @@ struct LpFprSetup {
     std::vector<double> analytic_center;  // ac_ptr source (Class 2)
     std::vector<double> zero_vertex;      // zv_ptr source (Class 3a)
 
-    // Per-column `HighsDomain::isBinary`, snapshotted here because the
-    // workers below classify columns from it while an accepted solution
-    // may be propagating the live root domain (issue #99).
-    std::vector<uint8_t> binary;
-
     size_t budget = 0;
 };
 
@@ -285,8 +281,6 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
 
     s.csc = build_csc(ncol, nrow, mipdata->ARstart_, mipdata->ARindex_, mipdata->ARvalue_);
 
-    s.binary = build_binary_mask(mipsolver);
-
     // Full-obj LP solution — direct reference to the solver's col_value
     // vector (stable while we run because we do not trigger further LP
     // solves during LP-FPR).
@@ -358,9 +352,10 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
 
 class LpFprWorker {
 public:
-    LpFprWorker(HighsMipSolver& mipsolver, const LpFprSetup& setup, IncumbentSink& sink,
-                int arm_idx, uint32_t seed, WorkerTrace trace)
-        : mipsolver_(mipsolver),
+    LpFprWorker(const ProblemView& problem, const ExecutionContext& exec, const LpFprSetup& setup,
+                IncumbentSink& sink, int arm_idx, uint32_t seed, WorkerTrace trace)
+        : problem_(problem),
+          exec_(exec),
           setup_(setup),
           sink_(sink),
           arm_idx_(arm_idx),
@@ -400,16 +395,14 @@ public:
         FprConfig cfg{};
         cfg.max_effort = attempt_budget;
         cfg.cont_fallback = nullptr;
-        cfg.csc = &setup_.csc;
         cfg.mode = arm.config->mode;
         cfg.strategy = &arm.config->strat;
         cfg.lp_ref = arm.lp_ref;
         cfg.precomputed_var_order = var_order.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
-        cfg.binary_mask = setup_.binary.data();
         cfg.scratch = &scratch_;
 
-        auto result = fpr_attempt(mipsolver_, cfg, rng_, attempt_idx_);
+        auto result = fpr_attempt(problem_, exec_.deadline(), cfg, rng_, attempt_idx_);
         ++attempt_idx_;
 
         attempt.effort = result.effort;
@@ -463,7 +456,8 @@ public:
 private:
     void randomize_arm() { arm_idx_ = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng_); }
 
-    HighsMipSolver& mipsolver_;
+    const ProblemView& problem_;
+    const ExecutionContext& exec_;
     const LpFprSetup& setup_;
     IncumbentSink& sink_;
 
@@ -510,11 +504,10 @@ private:
 // with the presolve heuristics, which have always floored, is the point.
 // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
 // wrap around the curated config list with distinct seeds for diversity.
-size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
-                   const HeuristicBudget& budget, IncumbentSink& sink) {
+size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
+                   const ExecutionContext& exec, const HeuristicBudget& budget,
+                   IncumbentSink& sink) {
     g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
-
-    HighsMipSolver& mipsolver = exec.mipsolver;
 
     // Per-worker lightweight state: just the LpFprWorker instance.
     struct LpFprOppState {
@@ -529,8 +522,8 @@ size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
             uint32_t seed = exec.worker_seed(worker_idx);
-            return LpFprOppState{std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed,
-                                                               WorkerTrace{worker_idx, 0}),
+            return LpFprOppState{std::make_unique<LpFprWorker>(problem, exec, setup, sink, arm,
+                                                               seed, WorkerTrace{worker_idx, 0}),
                                  WorkerTrace{worker_idx, 0}};
         },
         [&](LpFprOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
@@ -540,8 +533,8 @@ size_t run_workers(const LpFprSetup& setup, const ExecutionContext& exec,
                 int arm = std::uniform_int_distribution<int>(0, kNumLpArms - 1)(rng);
                 auto seed = static_cast<uint32_t>(rng());
                 state.trace.effort_base = state.worker->traced_effort();
-                state.worker =
-                    std::make_unique<LpFprWorker>(mipsolver, setup, sink, arm, seed, state.trace);
+                state.worker = std::make_unique<LpFprWorker>(problem, exec, setup, sink, arm, seed,
+                                                             state.trace);
             });
         });
 }
@@ -694,6 +687,12 @@ void run(HighsMipSolver& mipsolver) {
         // presolve heuristics' are, even though the setup around them is
         // fpr_lp's own.
         const ExecutionContext exec = make_exec(mipsolver);
+        // The workers' view of the model, over the CSC the setup built.
+        // Its `isBinary` snapshot is what they classify columns from while
+        // an accepted solution may be propagating the live root domain
+        // (issue #99); nothing between the setup and here writes that
+        // domain.
+        const ProblemView problem = problem_view(mipsolver, setup.csc);
         // `worker_budget >> 2` is the pre-#111 staleness rule, kept here
         // deliberately: issue #111 replaced the fraction-of-budget stale
         // thresholds in the *presolve* chain and put fpr_lp out of scope.
@@ -703,8 +702,9 @@ void run(HighsMipSolver& mipsolver) {
         // this one — so the argument for an absolute, instance-scaled
         // ceiling has to be made against that envelope, not restated from
         // the presolve chain.
-        worker_effort = run_workers(
-            setup, exec, make_budget(worker_budget, exec.num_workers, worker_budget >> 2), sink);
+        worker_effort =
+            run_workers(problem, setup, exec,
+                        make_budget(worker_budget, exec.num_workers, worker_budget >> 2), sink);
         // Read after the worker loop has joined; the sink starts at zero
         // because it is constructed per dispatch.
         found = sink.accepted() > 0;

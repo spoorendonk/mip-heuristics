@@ -94,15 +94,14 @@ inline constexpr int kNumFprConfigs = static_cast<int>(std::size(kFprConfigs));
 //
 class ScyllaWorker {
 public:
-    // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
-    // issue #99) and `var_orders` holds one precomputed variable order per
-    // `kFprConfigs` entry.  Both are built on the dispatching thread and
-    // must outlive the worker: this constructor also runs on a task thread
-    // when `scylla::run` rebuilds a retired worker, and computing a var
-    // order there would read the live root domain and mutate the clique
-    // table under a concurrent `addIncumbent`.
-    ScyllaWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec, ContestedPdlp& pdlp,
-                 const CscMatrix& csc, IncumbentSink& sink, const uint8_t* binary,
+    // `problem` carries the dispatch's `isBinary` snapshot
+    // (`ProblemView::binary`, issue #99) and `var_orders` holds one
+    // precomputed variable order per `kFprConfigs` entry.  Both are built
+    // on the dispatching thread and must outlive the worker: this constructor also runs on a task
+    // thread when `scylla::run` rebuilds a retired worker, and computing a var order there would
+    // read the live root domain and mutate the clique table under a concurrent `addIncumbent`.
+    ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem,
+                 const ExecutionContext& exec, ContestedPdlp& pdlp, IncumbentSink& sink,
                  const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
                  size_t stale_budget, uint32_t seed, int worker_idx, int num_workers,
                  WorkerTrace trace, std::atomic<uint64_t>* improvement_gen = nullptr);
@@ -151,6 +150,8 @@ private:
                             const std::vector<double>*& x_bar_ptr);
 
     HighsMipSolver& mipsolver_;
+    // Must outlive the worker.
+    const ProblemView& problem_;
     // The dispatch's deadline, one source of truth with the other three
     // heuristics (issue #114).  Polled through `past_deadline()` like
     // theirs: the pump loop used to want the *scalar* remaining time to
@@ -159,8 +160,6 @@ private:
     // length of any peer solve this worker blocks behind (issue #117).
     const ExecutionContext& exec_;
     ContestedPdlp& pdlp_;
-    const CscMatrix& csc_;
-    const uint8_t* binary_;
     IncumbentSink& sink_;
 
     HighsInt ncol_ = 0;

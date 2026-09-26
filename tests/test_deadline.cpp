@@ -733,19 +733,19 @@ size_t one_attempt_effort(const char* instance, double time_limit) {
     const ProblemView problem = make_problem(*mipsolver, csc);
 
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     // "Cannot bind": the effort gates in `fpr_attempt_step` and
     // `fpr_attempt_finish` are subtractions against this, so it stands in
     // for the `mip_heuristic_fpr_effort=1e6` an unreachable budget is
     // spelled as end-to-end.  Half of SIZE_MAX rather than all of it so
     // the `max_effort - already_used` arithmetic has room on both sides.
     cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-    cfg.csc = &csc;
     cfg.mode = FrameworkMode::kRepairSearch;
     cfg.strategy = &kStratLocks;
-    cfg.binary_mask = problem.binary.data();
 
     Rng rng(0);
-    return fpr_attempt(*mipsolver, cfg, rng, 0).effort;
+    set_var_order(cfg, var_order, *mipsolver, rng);
+    return fpr_attempt(problem, deadline_of(*mipsolver), cfg, rng, 0).effort;
 }
 
 }  // namespace
@@ -951,18 +951,18 @@ TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just t
 
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-    cfg.csc = &csc;
     cfg.mode = FrameworkMode::kDfs;
     cfg.strategy = &kStratLocks;
-    cfg.binary_mask = problem.binary.data();
     cfg.scratch = &scratch;
 
     Rng rng(0);
 
     // Attempt 1 — the construction path.
     FprAttemptState first;
-    fpr_attempt_begin(first, *mipsolver, cfg, rng, 0);
+    set_var_order(cfg, var_order, *mipsolver, rng);
+    fpr_attempt_begin(first, problem, deadline_of(*mipsolver), cfg, rng, 0);
     REQUIRE(scratch.prop_engine.has_value());
     // Without this the node assertion at the end is vacuous: a
     // non-propagating mode never calls `propagate` from the DFS at all.
@@ -972,10 +972,10 @@ TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just t
 
     // Run it out, so the next `begin` sees a genuinely reused engine
     // rather than one abandoned mid-DFS.
-    while (fpr_attempt_step(first, *mipsolver, cfg, rng, cfg.max_effort) ==
+    while (fpr_attempt_step(first, problem, deadline_of(*mipsolver), cfg, rng, cfg.max_effort) ==
            FprStepResult::kBudgetGate) {
     }
-    static_cast<void>(fpr_attempt_finish(first, *mipsolver, cfg, rng));
+    static_cast<void>(fpr_attempt_finish(first, problem, deadline_of(*mipsolver), cfg, rng));
 
     // Attempt 2 — the reuse path, with the limit moved behind the clock.
     // `deadline_of` reads `options_mip_`, which aliases the live `Highs`
@@ -984,7 +984,8 @@ TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just t
     // on `kLiveLimit` and fails here.
     require_option(highs, "time_limit", kExpiredLimit);
     FprAttemptState second;
-    fpr_attempt_begin(second, *mipsolver, cfg, rng, 1);
+    set_var_order(cfg, var_order, *mipsolver, rng);
+    fpr_attempt_begin(second, problem, deadline_of(*mipsolver), cfg, rng, 1);
     REQUIRE(scratch.prop_engine.has_value());
     CHECK(scratch.prop_engine->deadline().timer == &mipsolver->timer_);
     CHECK(scratch.prop_engine->deadline().limit == kExpiredLimit);
@@ -995,7 +996,8 @@ TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just t
     // own pre-node poll would allow.  Both halves are load-bearing — an
     // un-armed engine never returns the state, and a `step` that ignores
     // it visits the full batch.
-    static_cast<void>(fpr_attempt_step(second, *mipsolver, cfg, rng, cfg.max_effort));
+    static_cast<void>(
+        fpr_attempt_step(second, problem, deadline_of(*mipsolver), cfg, rng, cfg.max_effort));
     INFO("nodes visited under an already-expired deadline: " << second.nodes_visited);
     // The DFS stopped rather than finished -- otherwise the node count
     // below would be small for a reason that has nothing to do with the
@@ -1011,5 +1013,5 @@ TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just t
     // but the gap between the two is the mechanism, and it is what this
     // discriminates.
     CHECK(second.nodes_visited < 15);
-    static_cast<void>(fpr_attempt_finish(second, *mipsolver, cfg, rng));
+    static_cast<void>(fpr_attempt_finish(second, problem, deadline_of(*mipsolver), cfg, rng));
 }

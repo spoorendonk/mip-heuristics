@@ -165,23 +165,23 @@ struct ScyllaProbe {
     std::vector<double> sol;
 };
 
-ScyllaProbe round_once(HighsMipSolver& mipsolver, const CscMatrix& csc, const ProblemView& problem,
+ScyllaProbe round_once(HighsMipSolver& mipsolver, const ProblemView& problem,
                        const NamedConfig& named, const double* x_bar, HighsInt ncol) {
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-    cfg.csc = &csc;
     cfg.mode = named.mode;
     cfg.strategy = &named.strat;
     cfg.lp_ref = x_bar;
     cfg.cont_fallback = x_bar;
-    cfg.binary_mask = problem.binary.data();
     cfg.scratch = &scratch;
     Rng rng(2024);
     FprAttemptState state;
-    fpr_attempt_begin(state, mipsolver, cfg, rng, /*attempt_idx=*/0);
+    set_var_order(cfg, var_order, mipsolver, rng);
+    fpr_attempt_begin(state, problem, deadline_of(mipsolver), cfg, rng, /*attempt_idx=*/0);
     while (state.phase == FprAttemptState::Phase::kDfs) {
-        fpr_attempt_step(state, mipsolver, cfg, rng, cfg.max_effort);
+        fpr_attempt_step(state, problem, deadline_of(mipsolver), cfg, rng, cfg.max_effort);
     }
     ScyllaProbe p;
     for (HighsInt j = 0; j < ncol; ++j) {
@@ -227,9 +227,9 @@ TEST_CASE("Scylla: two different x_bar inputs round to different x_hat (#121)",
     for (int i = 0; i < kNumFprConfigs; ++i) {
         INFO("kFprConfigs[" << i << "]");
         const ScyllaProbe with_lo =
-            round_once(*mipsolver, csc, problem, kFprConfigs[i], x_bar_lo.data(), ncol);
+            round_once(*mipsolver, problem, kFprConfigs[i], x_bar_lo.data(), ncol);
         const ScyllaProbe with_hi =
-            round_once(*mipsolver, csc, problem, kFprConfigs[i], x_bar_hi.data(), ncol);
+            round_once(*mipsolver, problem, kFprConfigs[i], x_bar_hi.data(), ncol);
 
         bool any_column_differs = false;
         for (HighsInt j = 0; j < ncol; ++j) {
@@ -378,7 +378,7 @@ TEST_CASE("Scylla: the pump advances on a failed FPR rounding (#155)",
     // One worker, so every round takes the mutex uncontended and is
     // `fresh` — the guard the pump-state block sits behind.
     constexpr size_t kBudget = size_t{1} << 20;
-    ScyllaWorker worker(*mipsolver, exec, pdlp, csc, sink, problem.binary.data(), var_orders,
+    ScyllaWorker worker(*mipsolver, problem, exec, pdlp, sink, var_orders,
                         /*total_budget=*/kBudget,
                         /*stale_budget=*/std::numeric_limits<size_t>::max(),
                         /*seed=*/7, /*worker_idx=*/0, /*num_workers=*/1, WorkerTrace{0, 0});

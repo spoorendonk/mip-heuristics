@@ -538,8 +538,8 @@ TEST_CASE("ProblemView::incumbent is a dispatch snapshot, not the live vector (#
 //
 // `addIncumbent` propagates the root domain, tightening the very bound
 // vectors `HighsDomain::isBinary` reads, while workers classify columns
-// from them.  `ProblemView::binary` (and `FprConfig::binary_mask`, and
-// `LpFprSetup::binary`) is the snapshot that replaces those live reads.
+// from them.  `ProblemView::binary` is the snapshot that replaces those live
+// reads, for LocalMIP and for FPR's search (Scylla and `fpr_lp` included).
 TEST_CASE("ProblemView::binary is a dispatch snapshot of isBinary (#99)",
           "[heuristic][heuristic-context]") {
     highs::parallel::initialize_scheduler();

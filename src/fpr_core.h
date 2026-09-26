@@ -12,9 +12,9 @@
 #include <optional>
 #include <vector>
 
-struct CscMatrix;
+struct Deadline;
 struct HeuristicResult;
-class HighsMipSolver;
+struct ProblemView;
 
 // DFS node used by fpr_attempt's Phase 2 fix-and-propagate search.  Declared
 // here only so FprScratch can own a reusable stack across calls; never
@@ -101,7 +101,7 @@ struct FprScratch {
 
     // Phase 2: reusable primary PropEngine E.  Constructed lazily on the
     // first fpr_attempt call for this worker (problem data is pulled from
-    // HighsMipSolver at that point) and reset() on subsequent calls so
+    // the `ProblemView` at that point) and reset() on subsequent calls so
     // every internal vector (vs_, solution_, prop_in_wl_, undo stacks,
     // activity state, and the IndexedMinHeap-backed domain PQ) retains
     // its capacity across reuse.  Constructing PropEngine freshly per
@@ -153,9 +153,6 @@ struct FprConfig {
     size_t max_effort;
     // Fallback values for zero-cost continuous vars (length ncol)
     const double* cont_fallback;
-    // Optional pre-built CSC matrix (avoids redundant build if caller already has
-    // one)
-    const CscMatrix* csc;
 
     // --- Framework mode (paper Section 3) ---
     FrameworkMode mode = FrameworkMode::kDiveprop;
@@ -175,27 +172,15 @@ struct FprConfig {
     // (`kZerocore`/`kZerolp`/`kCore`/`kLp` -> `val_lp_based`).
     const double* lp_ref = nullptr;
 
-    // --- Pre-computed variable order (avoids data races on the clique table) ---
-    // When non-null, fpr_attempt uses this order instead of computing one.
+    // --- Variable order, computed by the caller ---
+    // Required.  `compute_var_order` reads the clique table and the live
+    // root domain, so every caller computes the order on its dispatching
+    // thread (`fpr::precompute_var_orders`, `fpr_lp`'s `build_setup`,
+    // `scylla::precompute_config_var_orders`) and FPR's search never
+    // computes one itself (#170).  The column classification comes from
+    // `ProblemView::binary`, the dispatch's `isBinary` snapshot (#99).
     const HighsInt* precomputed_var_order = nullptr;
     HighsInt precomputed_var_order_size = 0;
-
-    // --- Binary-column snapshot (avoids a data race on the root domain) ---
-    // Per-column `HighsDomain::isBinary`, at least `ncol` entries, taken on
-    // the dispatching thread (`ProblemView::binary`, or `LpFprSetup`'s copy
-    // for the dive-time heuristic).  Same rationale as the var order above:
-    // a peer worker's accepted solution reaches `addIncumbent`, which
-    // propagates the root domain and tightens the very bounds `isBinary`
-    // reads (issue #99).
-    //
-    // **Any caller running inside a parallel region must set this.**  The
-    // lifecycle API asserts on it — a debug assert, so a null mask in an
-    // NDEBUG build is a null dereference at the first `is_binary`, not a
-    // graceful degradation.  The one-shot `fpr_attempt` snapshots for
-    // itself when it is null; no caller relies on that today (both
-    // one-shot callers set the mask), it exists to match the `csc` /
-    // `scratch` compatibility shims beside it.
-    const uint8_t* binary_mask = nullptr;
 
     // --- Repair parameters (paper: Salvagnin et al. 2025, Section 5) ---
     // Noise parameter p: probability of random walk move (paper default: 0.75).
@@ -229,14 +214,14 @@ struct FprConfig {
     // used (handy for one-shot callers).  Not thread-safe.
     //
     // Lifetime constraint: if `scratch` is non-null and persists across
-    // fpr_attempt calls, the problem data pointed to by `csc` and by
-    // HighsMipSolver's AR*/bounds/integrality buffers must remain valid
-    // for the scratch's lifetime.  fpr_attempt caches a PropEngine inside
+    // fpr_attempt calls, the problem data the `ProblemView` points at (CSC,
+    // AR*, bounds, integrality) must remain valid for the scratch's
+    // lifetime.  fpr_attempt caches a PropEngine inside
     // the scratch that holds observer pointers into those buffers, and
     // the pointer-identity guard only re-emplaces when pointer *values*
     // differ — dangling-pointer comparison is technically indeterminate
     // per the C++ standard (benign on all mainstream implementations).
-    // In practice every hot-path caller pairs a stable `csc` with its
+    // In practice every hot-path caller pairs a stable view with its
     // scratch, so this is a latent-footgun warning rather than a live
     // hazard.
     FprScratch* scratch = nullptr;
@@ -249,8 +234,12 @@ struct FprConfig {
 // `fix()`/propagation auto-fix or the Phase 2.5 fill loop overwrite it — a
 // prior seeding block wrote plausible-looking starting values here that
 // never survived to any caller-observable output, on any path.
-HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng& rng,
-                            int attempt_idx);
+//
+// `deadline` is the solve's wall clock, polled by the DFS, the propagation
+// fixpoints and the repair searches under it (issue #117); every entry point
+// below takes the same one.
+HeuristicResult fpr_attempt(const ProblemView& problem, const Deadline& deadline,
+                            const FprConfig& cfg, Rng& rng, int attempt_idx);
 
 // ---------------------------------------------------------------------------
 // Pause/resume lifecycle (issue #77)
@@ -271,7 +260,7 @@ HeuristicResult fpr_attempt(HighsMipSolver& mipsolver, const FprConfig& cfg, Rng
 // stacks — the cardinal correctness invariant of this API.
 //
 // Determinism: every per-call input is either identical across runs (the
-// `cfg` reference and `mipsolver` problem buffers are immutable for the
+// `cfg` reference and the `ProblemView`'s buffers are immutable for the
 // attempt's lifetime) or a per-worker piece of state threaded through
 // (`Rng &rng` and `FprAttemptState`).  Two runs with identical seeds
 // produce bit-identical attempt traces — see `[fpr][resume][determinism]`
@@ -339,8 +328,8 @@ enum class FprStepResult {
 // `cfg.scratch` MUST be non-null; the lifecycle API does not support the
 // one-shot `local_scratch` fallback (one-shot callers should keep using
 // `fpr_attempt`).
-void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const FprConfig& cfg,
-                       Rng& rng, int attempt_idx);
+void fpr_attempt_begin(FprAttemptState& state, const ProblemView& problem, const Deadline& deadline,
+                       const FprConfig& cfg, Rng& rng, int attempt_idx);
 
 // Phase 2 DFS resume.  Runs the fix-and-propagate loop until either the
 // per-call effort budget is exhausted (returns `kBudgetGate`) or the DFS
@@ -350,8 +339,9 @@ void fpr_attempt_begin(FprAttemptState& state, HighsMipSolver& mipsolver, const 
 // this loop has: `cfg.max_effort` is the one-shot wrapper's cap and is
 // unread here (issue #156).  Calling `step` when `state.phase != kDfs` is
 // a programming error.
-FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver,
-                               const FprConfig& cfg, Rng& rng, size_t effort_remaining);
+FprStepResult fpr_attempt_step(FprAttemptState& state, const ProblemView& problem,
+                               const Deadline& deadline, const FprConfig& cfg, Rng& rng,
+                               size_t effort_remaining);
 
 // Phase 2.5 (fill remaining unfixed) + Phase 3 (repair / 1-opt) + result
 // build.  Always runs to verdict in one call (Phase 3 self-throttles via
@@ -368,5 +358,5 @@ FprStepResult fpr_attempt_step(FprAttemptState& state, HighsMipSolver& mipsolver
 // `ncol`-sized and integral on every non-degenerate return; only
 // `found_feasible` says whether it satisfies the rows.  The two degenerate
 // `ncol == 0 || nrow == 0` returns are the sole empty ones.
-HeuristicResult fpr_attempt_finish(FprAttemptState& state, HighsMipSolver& mipsolver,
-                                   const FprConfig& cfg, Rng& rng);
+HeuristicResult fpr_attempt_finish(FprAttemptState& state, const ProblemView& problem,
+                                   const Deadline& deadline, const FprConfig& cfg, Rng& rng);

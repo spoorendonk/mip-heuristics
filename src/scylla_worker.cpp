@@ -39,18 +39,16 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 
 }  // namespace
 
-ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec,
-                           ContestedPdlp& pdlp, const CscMatrix& csc, IncumbentSink& sink,
-                           const uint8_t* binary,
+ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem,
+                           const ExecutionContext& exec, ContestedPdlp& pdlp, IncumbentSink& sink,
                            const std::vector<std::vector<HighsInt>>& var_orders,
                            size_t total_budget, size_t stale_budget, uint32_t seed, int worker_idx,
                            int num_workers, WorkerTrace trace,
                            std::atomic<uint64_t>* improvement_gen)
     : mipsolver_(mipsolver),
+      problem_(problem),
       exec_(exec),
       pdlp_(pdlp),
-      csc_(csc),
-      binary_(binary),
       sink_(sink),
       num_workers_(std::max(num_workers, 1)),
       epsilon_(pump::kEpsilonInit),
@@ -175,7 +173,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
     }
 
     const auto* model = mipsolver_.model_;
-    auto* mipdata = mipsolver_.mipdata_.get();
+    const std::vector<HighsInt>& ar_start = *problem_.ar_start;
+    const std::vector<HighsInt>& ar_index = *problem_.ar_index;
+    const std::vector<double>& ar_value = *problem_.ar_value;
     const auto& integrality = model->integrality_;
     const auto& orig_cost = model->col_cost_;
 
@@ -360,8 +360,8 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             if (mip_feasible) {
                 for (HighsInt i = 0; i < nrow_; ++i) {
                     double lhs = 0.0;
-                    for (HighsInt k = mipdata->ARstart_[i]; k < mipdata->ARstart_[i + 1]; ++k) {
-                        lhs += mipdata->ARvalue_[k] * x_bar[mipdata->ARindex_[k]];
+                    for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
+                        lhs += ar_value[k] * x_bar[ar_index[k]];
                     }
                     if (lhs > model->row_upper_[i] + feastol ||
                         lhs < model->row_lower_[i] - feastol) {
@@ -409,7 +409,6 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         FprConfig cfg{};
         cfg.max_effort = remaining_budget;
         cfg.cont_fallback = x_bar.data();
-        cfg.csc = &csc_;
         cfg.mode = named.mode;
         cfg.strategy = &named.strat;
         // Algorithm 1.1 line 12 (issue #121): x_hat = fix-and-propagate(x_bar).
@@ -436,7 +435,6 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         cfg.lp_ref = x_bar.data();
         cfg.precomputed_var_order = var_order_->data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order_->size());
-        cfg.binary_mask = binary_;
         cfg.scratch = &fpr_scratch_;
 
         // No pool restart is pulled here: `fpr_attempt` has no seed
@@ -452,7 +450,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // `SolutionPool::get_restart`), so this chain's RNG stream moves
         // from the point of removal onward, independent of and in addition
         // to the shift from #122's seeding-block deletion.
-        HeuristicResult rounded = fpr_attempt(mipsolver_, cfg, rng_, 0);
+        HeuristicResult rounded = fpr_attempt(problem_, exec_.deadline(), cfg, rng_, 0);
 
         base_.total_effort += rounded.effort;
         base_.effort_since_improvement += rounded.effort;

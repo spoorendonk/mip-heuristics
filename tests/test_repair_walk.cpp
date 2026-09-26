@@ -548,6 +548,7 @@ struct SwapHarness {
     ProblemView problem;
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
 
     explicit SwapHarness(FrameworkMode mode) {
         highs::parallel::initialize_scheduler();
@@ -555,10 +556,8 @@ struct SwapHarness {
         mipsolver = bare_mipsolver_on(highs, cb, build_swap_mip);
         problem = make_problem(*mipsolver, csc);
         cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-        cfg.csc = &csc;
         cfg.mode = mode;
         cfg.strategy = &kForcedUpLr;
-        cfg.binary_mask = problem.binary.data();
         cfg.scratch = &scratch;
     }
 
@@ -566,10 +565,12 @@ struct SwapHarness {
     // slice, and stop before `finish` so a caller can inspect what the
     // dive itself decided.
     void dive(Rng& rng, size_t slice = std::numeric_limits<size_t>::max() / 4) {
-        fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
+        set_var_order(cfg, var_order, *mipsolver, rng);
+        fpr_attempt_begin(state, problem, deadline_of(*mipsolver), cfg, rng, /*attempt_idx=*/0);
         int guard = 0;
         while (state.phase == FprAttemptState::Phase::kDfs && guard++ < 100) {
-            static_cast<void>(fpr_attempt_step(state, *mipsolver, cfg, rng, slice));
+            static_cast<void>(
+                fpr_attempt_step(state, problem, deadline_of(*mipsolver), cfg, rng, slice));
         }
         REQUIRE(guard < 100);
     }
@@ -609,7 +610,8 @@ TEST_CASE("FPR diveprop: a mid-dive propagation failure is repaired, not fatal (
     REQUIRE(h.scratch.prop_engine->var(1).fixed);
     REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
 
-    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    const HeuristicResult result =
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
     REQUIRE(result.found_feasible);
     REQUIRE(result.solution.size() == 2);
     REQUIRE(result.solution[0] == Catch::Approx(0.0));
@@ -634,7 +636,8 @@ TEST_CASE("FPR dive: a fixing that violates a row is repaired, not dived past (#
     REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
     REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
 
-    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    const HeuristicResult result =
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
     REQUIRE(result.found_feasible);
     REQUIRE(result.solution[0] == Catch::Approx(0.0));
     REQUIRE(result.solution[1] == Catch::Approx(1.0));
@@ -654,7 +657,8 @@ TEST_CASE("FPR dfsrep: repair runs in a backtracking mode too (#124)",
     REQUIRE(h.state.found_complete);
     REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
 
-    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    const HeuristicResult result =
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
     REQUIRE(result.found_feasible);
     REQUIRE(result.solution[0] == Catch::Approx(0.0));
     REQUIRE(result.solution[1] == Catch::Approx(1.0));
@@ -682,7 +686,9 @@ TEST_CASE("FPR diveprop: an unrepaired node keeps diving instead of ending the a
     // either, and the row re-check rejects the assignment.
     REQUIRE(h.state.found_complete);
     Rng finish_rng(1);
-    REQUIRE_FALSE(fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, finish_rng).found_feasible);
+    REQUIRE_FALSE(
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, finish_rng)
+            .found_feasible);
 }
 
 TEST_CASE("FPR diveprop: the in-tree repair's effort reaches the engine's counter (#124)",
@@ -699,11 +705,14 @@ TEST_CASE("FPR diveprop: the in-tree repair's effort reaches the engine's counte
         SwapHarness h(FrameworkMode::kDiveprop);
         h.cfg.walksat_iterations = steps;
         Rng rng(1);
-        fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+        set_var_order(h.cfg, h.var_order, *h.mipsolver, rng);
+        fpr_attempt_begin(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
+                          /*attempt_idx=*/0);
         REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
         // A one-unit slice runs exactly one node: the gate is a delta from
         // the call's start, so it admits the first node and no more.
-        static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng,
+        static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg,
+                                           rng,
                                            /*effort_remaining=*/1));
         return h.state.effort_consumed;
     };
@@ -726,7 +735,8 @@ TEST_CASE("FPR diveprop: an in-tree repair leaves the attempt resumable (#77 x #
     REQUIRE(h.state.found_complete);
     REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
 
-    const HeuristicResult sliced = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    const HeuristicResult sliced =
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
     REQUIRE(sliced.found_feasible);
     REQUIRE(sliced.solution.size() == 2);
     REQUIRE(sliced.solution[0] == Catch::Approx(0.0));
@@ -805,18 +815,19 @@ TEST_CASE("FPR diveprop: a budget-exhausted fixpoint does not trigger repair (#1
 
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-    cfg.csc = &csc;
     cfg.mode = FrameworkMode::kDiveprop;
     cfg.strategy = &kForcedUpLr;
-    cfg.binary_mask = problem.binary.data();
     cfg.scratch = &scratch;
     Rng rng(1);
 
     FprAttemptState state;
-    fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
+    set_var_order(cfg, var_order, *mipsolver, rng);
+    fpr_attempt_begin(state, problem, deadline_of(*mipsolver), cfg, rng, /*attempt_idx=*/0);
     while (state.phase == FprAttemptState::Phase::kDfs) {
-        static_cast<void>(fpr_attempt_step(state, *mipsolver, cfg, rng, cfg.max_effort));
+        static_cast<void>(
+            fpr_attempt_step(state, problem, deadline_of(*mipsolver), cfg, rng, cfg.max_effort));
     }
 
     // The node cost exactly propagation plus `Apply`'s scan of z's own
@@ -871,18 +882,19 @@ TEST_CASE("FPR dive: a dive refuted at its own leaf still runs Phase 2.5 and Pha
     const ProblemView problem = make_problem(*mipsolver, csc);
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-    cfg.csc = &csc;
     cfg.mode = FrameworkMode::kDive;
     cfg.strategy = &kForcedUpLr;
-    cfg.binary_mask = problem.binary.data();
     cfg.scratch = &scratch;
     Rng rng(41);
 
     FprAttemptState state;
-    fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
+    set_var_order(cfg, var_order, *mipsolver, rng);
+    fpr_attempt_begin(state, problem, deadline_of(*mipsolver), cfg, rng, /*attempt_idx=*/0);
     while (state.phase == FprAttemptState::Phase::kDfs) {
-        static_cast<void>(fpr_attempt_step(state, *mipsolver, cfg, rng, cfg.max_effort));
+        static_cast<void>(
+            fpr_attempt_step(state, problem, deadline_of(*mipsolver), cfg, rng, cfg.max_effort));
     }
 
     // The dive was refuted at every node, including its last one, and no
@@ -892,7 +904,8 @@ TEST_CASE("FPR dive: a dive refuted at its own leaf still runs Phase 2.5 and Pha
     REQUIRE(state.found_complete);
 
     const size_t dive_effort = state.effort_consumed;
-    const HeuristicResult result = fpr_attempt_finish(state, *mipsolver, cfg, rng);
+    const HeuristicResult result =
+        fpr_attempt_finish(state, problem, deadline_of(*mipsolver), cfg, rng);
 
     // This model has no feasible solution, so the verdict is infeasible
     // either way; what distinguishes the two is whether `finish` did the
@@ -947,6 +960,7 @@ struct PropRefuteHarness {
     ProblemView problem;
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     FprAttemptState state;
 
     PropRefuteHarness() {
@@ -955,10 +969,8 @@ struct PropRefuteHarness {
         mipsolver = bare_mipsolver_on(highs, cb, build_prop_refute_mip);
         problem = make_problem(*mipsolver, csc);
         cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-        cfg.csc = &csc;
         cfg.mode = FrameworkMode::kDiveprop;
         cfg.strategy = &kForcedUpLr;
-        cfg.binary_mask = problem.binary.data();
         cfg.scratch = &scratch;
     }
 };
@@ -989,9 +1001,11 @@ TEST_CASE("FPR diveprop: a propagation-only refutation triggers the repair (#124
     }
 
     Rng rng(43);
-    fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+    set_var_order(h.cfg, h.var_order, *h.mipsolver, rng);
+    fpr_attempt_begin(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng, /*attempt_idx=*/0);
     while (h.state.phase == FprAttemptState::Phase::kDfs) {
-        static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, h.cfg.max_effort));
+        static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg,
+                                           rng, h.cfg.max_effort));
     }
 
     REQUIRE(h.state.found_complete);
@@ -1000,7 +1014,8 @@ TEST_CASE("FPR diveprop: a propagation-only refutation triggers the repair (#124
     REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
     REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
 
-    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    const HeuristicResult result =
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
     REQUIRE(result.found_feasible);
 }
 
@@ -1016,15 +1031,18 @@ TEST_CASE("FPR diveprop: a child node starts from the repaired state, not the re
     PropRefuteHarness h;
     Rng rng(47);
 
-    fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+    set_var_order(h.cfg, h.var_order, *h.mipsolver, rng);
+    fpr_attempt_begin(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng, /*attempt_idx=*/0);
     // One node per `step` call, so the engine can be read between them.
     REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
-    static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, /*effort_remaining=*/1));
+    static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
+                                       /*effort_remaining=*/1));
     REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
     REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
 
     REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
-    static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, /*effort_remaining=*/1));
+    static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
+                                       /*effort_remaining=*/1));
 
     // Node 2 fixed z and nothing else; x0 and y still carry what node 1's
     // repair decided.  Marks taken before the repair would show x0 back at
@@ -1168,6 +1186,7 @@ struct LateViolationHarness {
     ProblemView problem;
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     FprAttemptState state;
 
     explicit LateViolationHarness(FrameworkMode mode) {
@@ -1180,20 +1199,19 @@ struct LateViolationHarness {
         // reaches the same state with a realistic budget and a long
         // attempt; one is the cheap way to reproduce it.
         cfg.max_effort = 1;
-        cfg.csc = &csc;
         cfg.mode = mode;
         cfg.strategy = &kForcedUpLr;
-        cfg.binary_mask = problem.binary.data();
         cfg.scratch = &scratch;
     }
 
     // Run the DFS to its verdict on a slice far larger than the attempt
     // needs, so `cfg.max_effort` is the only small number in play.
     void dive(Rng& rng) {
-        fpr_attempt_begin(state, *mipsolver, cfg, rng, /*attempt_idx=*/0);
+        set_var_order(cfg, var_order, *mipsolver, rng);
+        fpr_attempt_begin(state, problem, deadline_of(*mipsolver), cfg, rng, /*attempt_idx=*/0);
         int guard = 0;
         while (state.phase == FprAttemptState::Phase::kDfs && guard++ < 100) {
-            static_cast<void>(fpr_attempt_step(state, *mipsolver, cfg, rng,
+            static_cast<void>(fpr_attempt_step(state, problem, deadline_of(*mipsolver), cfg, rng,
                                                std::numeric_limits<size_t>::max() / 4));
         }
         REQUIRE(guard < 100);
@@ -1219,7 +1237,8 @@ TEST_CASE(
     const size_t effort_before_finish = h.scratch.prop_engine->effort();
     const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
-    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    const HeuristicResult result =
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
 
     // Phase 2.5 filled c1 = c2 = 0, so `c1 + c2 >= 1` is violated at the
     // leaf and only the leaf-time `walksat_repair` can recover it.
@@ -1250,7 +1269,8 @@ TEST_CASE(
     const size_t effort_before_finish = h.scratch.prop_engine->effort();
     const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
-    const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+    const HeuristicResult result =
+        fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
 
     REQUIRE(result.found_feasible);
     REQUIRE(result.solution.size() == 3);
@@ -1396,6 +1416,7 @@ struct ParityHarness {
     ProblemView problem;
     FprScratch scratch;
     FprConfig cfg{};
+    std::vector<HighsInt> var_order;
     FprAttemptState state;
 
     explicit ParityHarness(FrameworkMode mode) {
@@ -1404,10 +1425,8 @@ struct ParityHarness {
         mipsolver = bare_mipsolver_on(highs, cb, build_parity_mip);
         problem = make_problem(*mipsolver, csc);
         cfg.max_effort = std::numeric_limits<size_t>::max() / 2;
-        cfg.csc = &csc;
         cfg.mode = mode;
         cfg.strategy = &kForcedUpLr;
-        cfg.binary_mask = problem.binary.data();
         cfg.scratch = &scratch;
     }
 };
@@ -1443,13 +1462,15 @@ TEST_CASE("fpr_attempt hands back a complete integer point on a failed rounding 
         // skipping, which is why this shape is pinned first.
         ParityHarness h(FrameworkMode::kDfs);
         Rng rng(5);
-        fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+        set_var_order(h.cfg, h.var_order, *h.mipsolver, rng);
+        fpr_attempt_begin(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
+                          /*attempt_idx=*/0);
         REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
 
         // A one-unit slice admits exactly one node: the gate is a delta
         // from this call's start.
-        const FprStepResult outcome =
-            fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng, /*effort_remaining=*/1);
+        const FprStepResult outcome = fpr_attempt_step(
+            h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng, /*effort_remaining=*/1);
         REQUIRE(outcome == FprStepResult::kBudgetGate);
         REQUIRE_FALSE(h.state.found_complete);
 
@@ -1460,7 +1481,8 @@ TEST_CASE("fpr_attempt hands back a complete integer point on a failed rounding 
         const size_t effort_before = h.state.effort_consumed;
         const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
-        const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+        const HeuristicResult result =
+            fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
         require_complete_integer_point(result, h.problem);
 
         // The `!found_complete` path used to return `E.effort()`
@@ -1481,11 +1503,13 @@ TEST_CASE("fpr_attempt hands back a complete integer point on a failed rounding 
         // buys the dive a third node.
         ParityHarness h(FrameworkMode::kDfs);
         Rng rng(6);
-        fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+        set_var_order(h.cfg, h.var_order, *h.mipsolver, rng);
+        fpr_attempt_begin(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
+                          /*attempt_idx=*/0);
         int guard = 0;
         while (h.state.phase == FprAttemptState::Phase::kDfs && guard++ < 100) {
-            static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng,
-                                               std::numeric_limits<size_t>::max() / 4));
+            static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg,
+                                               rng, std::numeric_limits<size_t>::max() / 4));
         }
         REQUIRE(guard < 100);
         REQUIRE(h.state.phase == FprAttemptState::Phase::kReadyToFinish);
@@ -1493,7 +1517,8 @@ TEST_CASE("fpr_attempt hands back a complete integer point on a failed rounding 
         // Not the node limit: the stack really did empty.
         REQUIRE(h.state.nodes_visited < h.problem.ncol + 1);
 
-        const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+        const HeuristicResult result =
+            fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
         require_complete_integer_point(result, h.problem);
     }
 
@@ -1505,16 +1530,19 @@ TEST_CASE("fpr_attempt hands back a complete integer point on a failed rounding 
         // `scratch.solution` as Phase 3 left it.
         ParityHarness h(FrameworkMode::kDive);
         Rng rng(7);
-        fpr_attempt_begin(h.state, *h.mipsolver, h.cfg, rng, /*attempt_idx=*/0);
+        set_var_order(h.cfg, h.var_order, *h.mipsolver, rng);
+        fpr_attempt_begin(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
+                          /*attempt_idx=*/0);
         int guard = 0;
         while (h.state.phase == FprAttemptState::Phase::kDfs && guard++ < 100) {
-            static_cast<void>(fpr_attempt_step(h.state, *h.mipsolver, h.cfg, rng,
-                                               std::numeric_limits<size_t>::max() / 4));
+            static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg,
+                                               rng, std::numeric_limits<size_t>::max() / 4));
         }
         REQUIRE(guard < 100);
         REQUIRE(h.state.found_complete);
 
-        const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
+        const HeuristicResult result =
+            fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
         require_complete_integer_point(result, h.problem);
     }
 }

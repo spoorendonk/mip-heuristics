@@ -1,16 +1,36 @@
 #pragma once
 
-// Umbrella header: re-exports the three split TUs so existing callers that
-// included "fpr_strategies.h" keep working unchanged.
+// FPR's strategy vocabulary (paper Section 3, Table 3): the variable and
+// value strategies, the framework modes and the named combinations.
 //
-// The actual implementations now live in:
-//   - fpr_var_order.{h,cpp}  — variable ranking (VarStrategy + compute_var_order)
+// The implementations live in:
 //   - fpr_val_select.{h,cpp} — value selection (ValStrategy + choose_value)
+//   - fpr_var_order.{h,cpp}  — variable ranking (`compute_var_order`).  It
+//     reads the clique table and the live root domain, so it is on the
+//     HiGHS side of the core/adapter split (#170) and FPR's search takes
+//     its order precomputed.
 //   - fpr_lp_refs.{h,cpp}    — LP reference solutions (only TU that pulls Highs.h)
 
-#include "fpr_lp_refs.h"
 #include "fpr_val_select.h"
-#include "fpr_var_order.h"
+
+// ---------------------------------------------------------------------------
+// Variable ranking strategies (paper Table 1)
+// ---------------------------------------------------------------------------
+enum class VarStrategy {
+    kLR,          // formulation order
+    kType,        // grouped by type: binary, integer, continuous
+    kRandom,      // random shuffle within each type bucket
+    kLocks,       // sorted by max(uplocks, downlocks) within type
+    kTypecl,      // clique cover for binaries, then type
+    kCliques,     // clique cover + analytic-center-weighted random sort
+    kCliques2,    // dynamic clique cover using LP solution
+    kDomainSize,  // dynamic: smallest domain first at each DFS node
+};
+
+// Does this variable strategy recompute ordering dynamically at each DFS node?
+inline bool is_dynamic_var_strategy(VarStrategy s) {
+    return s == VarStrategy::kDomainSize;
+}
 
 // ---------------------------------------------------------------------------
 // Strategy configuration (paper Section 3)

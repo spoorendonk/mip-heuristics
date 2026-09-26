@@ -2,6 +2,7 @@
 
 #include "fpr_core.h"
 #include "fpr_strategies.h"
+#include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "incumbent_sink.h"
@@ -79,11 +80,9 @@ namespace {
 // a paused attempt returns without a solution every time.
 class FprWorker {
 public:
-    // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
-    // issue #99); it must outlive the worker.
-    FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
-              const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx, uint32_t seed,
-              size_t stale_budget);
+    // `problem` must outlive the worker.
+    FprWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+              const VarOrderTable& var_orders, int worker_idx, uint32_t seed, size_t stale_budget);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
@@ -104,12 +103,10 @@ private:
     // what makes the gate independent of how an attempt was sliced.
     void charge(const AttemptResult& attempt);
 
+    const ProblemView& problem_;
     const ExecutionContext& exec_;
-    HighsMipSolver& mipsolver_;
-    const CscMatrix& csc_;
     IncumbentSink& sink_;
     const VarOrderTable& var_orders_;
-    const uint8_t* binary_;
 
     int worker_idx_;
 
@@ -230,15 +227,13 @@ bool precompute_var_orders(HighsMipSolver& mipsolver, const Deadline& deadline,
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
-FprWorker::FprWorker(const ExecutionContext& exec, const CscMatrix& csc, IncumbentSink& sink,
-                     const VarOrderTable& var_orders, const uint8_t* binary, int worker_idx,
-                     uint32_t seed, size_t stale_budget)
-    : exec_(exec),
-      mipsolver_(exec.mipsolver),
-      csc_(csc),
+FprWorker::FprWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+                     const VarOrderTable& var_orders, int worker_idx, uint32_t seed,
+                     size_t stale_budget)
+    : problem_(problem),
+      exec_(exec),
       sink_(sink),
       var_orders_(var_orders),
-      binary_(binary),
       worker_idx_(worker_idx),
       trace_(WorkerTrace{worker_idx, 0}),
       rng_(seed) {
@@ -300,6 +295,8 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     if (base_.finished) {
         return attempt;
     }
+    // The one clock FPR's search polls below this worker (issue #117).
+    const Deadline deadline = exec_.deadline();
 
     // Issue #77 lifecycle.  Two mechanics in play:
     //
@@ -419,17 +416,15 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         // effort cap from its caller at all.
         cfg.max_effort = std::numeric_limits<size_t>::max();
         cfg.cont_fallback = nullptr;
-        cfg.csc = &csc_;
         cfg.mode = mode_;
         cfg.strategy = &strat;
         cfg.lp_ref = nullptr;
         cfg.precomputed_var_order = var_order.data();
         cfg.precomputed_var_order_size = static_cast<HighsInt>(var_order.size());
-        cfg.binary_mask = binary_;
         cfg.scratch = &scratch_;
 
         if (!attempt_alive()) {
-            fpr_attempt_begin(attempt_state_, mipsolver_, cfg, rng_, attempt_idx_);
+            fpr_attempt_begin(attempt_state_, problem_, deadline, cfg, rng_, attempt_idx_);
             // `attempt_state_.phase` is now `kDfs` (or `kReadyToFinish`
             // if Phase 1 already produced a complete fixing); either way
             // `attempt_alive()` is true on the next iteration.
@@ -441,7 +436,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
             const size_t budget_remaining =
                 call_cap > attempt.effort ? call_cap - attempt.effort : 0;
             const FprStepResult outcome =
-                fpr_attempt_step(attempt_state_, mipsolver_, cfg, rng_, budget_remaining);
+                fpr_attempt_step(attempt_state_, problem_, deadline, cfg, rng_, budget_remaining);
             attempt.effort += attempt_state_.effort_consumed - before_step;
             if (outcome == FprStepResult::kBudgetGate) {
 #ifndef NDEBUG
@@ -461,7 +456,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         }
 
         const size_t before_finish = attempt_state_.effort_consumed;
-        HeuristicResult result = fpr_attempt_finish(attempt_state_, mipsolver_, cfg, rng_);
+        HeuristicResult result = fpr_attempt_finish(attempt_state_, problem_, deadline, cfg, rng_);
         attempt.effort += attempt_state_.effort_consumed - before_finish;
 
         // Incumbent improvement, not "this attempt reached a feasible
@@ -527,9 +522,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         // sized Phase 3's repair/WalkSAT sub-budgets, and issue #156
         // removed those — an attempt spans calls, so `PropEngine::effort()`
         // outgrows any such number and the cap it produced arrived as 0.
-        workers.push_back(std::make_unique<FprWorker>(exec, *problem.csc, sink, var_orders,
-                                                      problem.binary.data(), static_cast<int>(w),
-                                                      seed, budget.worker_stale));
+        workers.push_back(std::make_unique<FprWorker>(
+            problem, exec, sink, var_orders, static_cast<int>(w), seed, budget.worker_stale));
     }
 
     struct FprOppState {
