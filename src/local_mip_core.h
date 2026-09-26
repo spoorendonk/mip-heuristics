@@ -1,10 +1,10 @@
 #pragma once
 
 #include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "local_mip_caches.h"
 #include "lp_data/HConst.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
+#include "lp_data/HighsLp.h"
 
 #include <algorithm>
 #include <cmath>
@@ -116,7 +116,7 @@ struct WorkerCtx {
     // Effort tracking (coefficient accesses)
     size_t effort = 0;
 
-    WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uint8_t* binary_);
+    explicit WorkerCtx(const ProblemView& problem);
 
     [[nodiscard]] bool is_int(HighsInt j) const { return ::is_integer(integrality, j); }
 

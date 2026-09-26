@@ -37,8 +37,6 @@
 #include "heuristic_common.h"
 #include "local_mip_core.h"
 #include "lp_data/HConst.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
 #include "rng.h"
 
 #include <algorithm>
@@ -251,26 +249,26 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
 // recomputing that state or passing it through a parameter pack wider than the function.
 // This runs once per cold start, so the argument is shared state, not throughput.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, size_t max_effort,
+size_t construct_initial_solution(const ProblemView& problem, Rng& rng, size_t max_effort,
                                   std::vector<double>& out_solution) {
-    const HighsInt ncol = inputs.ncol;
-    const HighsInt nrow = inputs.nrow;
+    const HighsInt ncol = problem.ncol;
+    const HighsInt nrow = problem.nrow;
 
     out_solution.assign(ncol, 0.0);
     if (ncol == 0) {
         return 0;
     }
 
-    const auto& col_lb = *inputs.col_lb;
-    const auto& col_ub = *inputs.col_ub;
-    const auto& row_lo = *inputs.row_lo;
-    const auto& row_hi = *inputs.row_hi;
-    const auto& integrality = *inputs.integrality;
-    const auto& ar_start = *inputs.ar_start;
-    const auto& ar_index = *inputs.ar_index;
-    const auto& ar_value = *inputs.ar_value;
-    const CscMatrix& csc = *inputs.csc;
-    const double feastol = inputs.feastol;
+    const auto& col_lb = problem.model->col_lower_;
+    const auto& col_ub = problem.model->col_upper_;
+    const auto& row_lo = problem.model->row_lower_;
+    const auto& row_hi = problem.model->row_upper_;
+    const auto& integrality = problem.model->integrality_;
+    const auto& ar_start = *problem.ar_start;
+    const auto& ar_index = *problem.ar_index;
+    const auto& ar_value = *problem.ar_value;
+    const CscMatrix& csc = *problem.csc;
+    const double feastol = problem.feastol;
 
     // --- Phase A: zero-start (paper Alg 1 Line 1) -----------------------
     for (HighsInt j = 0; j < ncol; ++j) {
@@ -425,28 +423,6 @@ size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, si
     // See the comment near the early-exit return above for the unit
     // rationale.
     return effort;
-}
-
-// HighsMipSolver& thin wrapper: assemble ConstructionInputs from the
-// solver's model + mipdata and delegate.
-size_t construct_initial_solution(HighsMipSolver& mipsolver, const CscMatrix& csc, Rng& rng,
-                                  size_t max_effort, std::vector<double>& out_solution) {
-    const auto* model = mipsolver.model_;
-    auto* mipdata = mipsolver.mipdata_.get();
-    ConstructionInputs inputs;
-    inputs.ncol = model->num_col_;
-    inputs.nrow = model->num_row_;
-    inputs.ar_start = &mipdata->ARstart_;
-    inputs.ar_index = &mipdata->ARindex_;
-    inputs.ar_value = &mipdata->ARvalue_;
-    inputs.col_lb = &model->col_lower_;
-    inputs.col_ub = &model->col_upper_;
-    inputs.row_lo = &model->row_lower_;
-    inputs.row_hi = &model->row_upper_;
-    inputs.integrality = &model->integrality_;
-    inputs.csc = &csc;
-    inputs.feastol = mipdata->feastol;
-    return construct_initial_solution(inputs, rng, max_effort, out_solution);
 }
 
 }  // namespace local_mip_detail

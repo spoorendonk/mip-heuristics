@@ -107,6 +107,7 @@ add_library(mip_heuristics OBJECT
     src/fpr_lp_refs.cpp
     src/fpr_val_select.cpp
     src/fpr_var_order.cpp
+    src/heuristic_context.cpp
     src/incumbent_sink.cpp
     src/local_mip.cpp
     src/local_mip_construction.cpp

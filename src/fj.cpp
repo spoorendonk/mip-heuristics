@@ -85,7 +85,7 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                         // matrix, now sized once alongside every other
                         // heuristic's.
                         state.worker = std::make_unique<FjWorker>(
-                            mipsolver, exec, sink, budget.per_worker, budget.worker_stale, seed,
+                            problem, exec, sink, budget.per_worker, budget.worker_stale, seed,
                             std::move(start), state.trace);
                     }
                     return state.worker->run_attempt(run_cap);

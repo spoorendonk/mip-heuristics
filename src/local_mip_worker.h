@@ -5,8 +5,6 @@
 #include "incumbent_sink.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
 #include "util/HighsInt.h"
 #include "worker_base.h"
 
@@ -40,11 +38,10 @@ public:
     // (issue #98), and a dead one: the caller only passes null when its
     // resolved start is empty, which by `resolve_worker_start`'s ordering
     // means the pool and the incumbent were empty too.
-    // `binary` is the dispatch's `isBinary` snapshot (`ProblemView::binary`,
-    // issue #99); it must outlive the worker.
-    LocalMipWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec, const CscMatrix& csc,
-                   IncumbentSink& sink, size_t total_budget, size_t stale_budget, uint32_t seed,
-                   const double* initial_solution, const uint8_t* binary, WorkerTrace trace);
+    // `problem` must outlive the worker.
+    LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+                   size_t total_budget, size_t stale_budget, uint32_t seed,
+                   const double* initial_solution, WorkerTrace trace);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
@@ -58,12 +55,10 @@ public:
     [[nodiscard]] size_t traced_effort() const { return trace_.at(ctx_.effort); }
 
 private:
-    HighsMipSolver& mipsolver_;
     // Read only for `past_deadline()`, every `kTermCheckWork` counted units of
     // the search loop: one attempt at a large effort option runs far past
     // the solve's `time_limit` otherwise (issue #114).
     const ExecutionContext& exec_;
-    const CscMatrix& csc_;
     IncumbentSink& sink_;
     Rng rng_;
 

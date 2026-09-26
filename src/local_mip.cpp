@@ -6,8 +6,7 @@
 #include "local_mip_construction.h"
 #include "local_mip_worker.h"
 #include "lp_data/HConst.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
+#include "lp_data/HighsLp.h"
 #include "opportunistic_runner.h"
 #include "rng.h"
 
@@ -108,13 +107,15 @@ inline void bump_counter(std::atomic<int64_t>& counter) {
 // shared pool with the LocalMIP source tag; if infeasible the caller
 // still uses it as the search's starting point (paper's intended
 // behaviour).
-bool is_solution_feasible(const HighsMipSolver& mipsolver, const std::vector<double>& solution) {
-    const auto* model = mipsolver.model_;
-    const auto* mipdata = mipsolver.mipdata_.get();
-    const HighsInt ncol = model->num_col_;
-    const HighsInt nrow = model->num_row_;
-    const double feastol = mipdata->feastol;
-    const double inttol = mipdata->epsilon;
+bool is_solution_feasible(const ProblemView& problem, const std::vector<double>& solution) {
+    const HighsLp* model = problem.model;
+    const HighsInt ncol = problem.ncol;
+    const HighsInt nrow = problem.nrow;
+    const double feastol = problem.feastol;
+    const double inttol = problem.epsilon;
+    const std::vector<HighsInt>& ar_start = *problem.ar_start;
+    const std::vector<HighsInt>& ar_index = *problem.ar_index;
+    const std::vector<double>& ar_value = *problem.ar_value;
     if (std::cmp_not_equal(solution.size(), ncol)) {
         return false;
     }
@@ -131,11 +132,11 @@ bool is_solution_feasible(const HighsMipSolver& mipsolver, const std::vector<dou
             return false;
         }
     }
-    // Row feasibility — walk HiGHS's ARstart_/ARindex_/ARvalue_ once.
+    // Row feasibility — walk the row-wise matrix once.
     for (HighsInt i = 0; i < nrow; ++i) {
         double lhs = 0.0;
-        for (HighsInt k = mipdata->ARstart_[i]; k < mipdata->ARstart_[i + 1]; ++k) {
-            lhs += mipdata->ARvalue_[k] * solution[mipdata->ARindex_[k]];
+        for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
+            lhs += ar_value[k] * solution[ar_index[k]];
         }
         if (lhs < model->row_lower_[i] - feastol || lhs > model->row_upper_[i] + feastol) {
             return false;
@@ -144,9 +145,8 @@ bool is_solution_feasible(const HighsMipSolver& mipsolver, const std::vector<dou
     return true;
 }
 
-double compute_solution_objective(const HighsMipSolver& mipsolver,
-                                  const std::vector<double>& solution) {
-    const auto* model = mipsolver.model_;
+double compute_solution_objective(const ProblemView& problem, const std::vector<double>& solution) {
+    const HighsLp* model = problem.model;
     double obj = model->offset_;
     for (HighsInt j = 0; j < model->num_col_; ++j) {
         obj += model->col_cost_[j] * solution[j];
@@ -159,7 +159,7 @@ double compute_solution_objective(const HighsMipSolver& mipsolver,
 //
 //   1. Prefer the pool's best if one exists (an earlier heuristic in
 //      the same presolve chain or another worker may have landed one).
-//   2. Else prefer `incumbent` if non-empty (warm start).  That is the
+//   2. Else prefer `problem.incumbent` if non-empty (warm start).  That is the
 //      dispatch's snapshot (`ProblemView::incumbent`), never the live
 //      `mipdata->incumbent`, which a peer worker's accepted solution can
 //      reallocate mid-read (issue #98).  Reaching this branch means the
@@ -191,10 +191,8 @@ double compute_solution_objective(const HighsMipSolver& mipsolver,
 // the function returned via the pool or incumbent branches, or via the
 // cold-start cache hit).  Callers add it to
 // `mipdata->heuristic_effort_used` (R1-3 round-3 review).
-std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMatrix& csc,
-                                         IncumbentSink& sink, const WorkerTrace& trace,
-                                         const std::vector<double>& incumbent, size_t max_effort,
-                                         uint32_t seed,
+std::vector<double> resolve_worker_start(const ProblemView& problem, IncumbentSink& sink,
+                                         const WorkerTrace& trace, size_t max_effort, uint32_t seed,
                                          std::vector<double>* cold_start_cache = nullptr,
                                          size_t* effort_out = nullptr) {
     // `copy_best` takes the pool lock once and copies only the top
@@ -207,9 +205,9 @@ std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMat
         bump_counter(g_pool_count);
         return start;
     }
-    if (!incumbent.empty()) {
+    if (!problem.incumbent.empty()) {
         bump_counter(g_incumbent_count);
-        return incumbent;
+        return problem.incumbent;
     }
     // Cold start: neither the pool nor the incumbent has a solution.
     // Re-use a cached construction if one was produced earlier in this
@@ -222,8 +220,8 @@ std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMat
     bump_counter(g_construction_count);
     Rng rng(seed);
     std::vector<double> constructed;
-    size_t construction_effort = construct_initial_solution(
-        mipsolver, csc, rng, construction_effort_cap(max_effort), constructed);
+    size_t construction_effort =
+        construct_initial_solution(problem, rng, construction_effort_cap(max_effort), constructed);
     if (effort_out != nullptr) {
         *effort_out += construction_effort;
     }
@@ -234,8 +232,8 @@ std::vector<double> resolve_worker_start(HighsMipSolver& mipsolver, const CscMat
     // tag because that would require an upstream HiGHS patch.
     // Infeasible constructions are the paper's intended input to the
     // search phase and are not inserted.
-    if (!constructed.empty() && is_solution_feasible(mipsolver, constructed)) {
-        double obj = compute_solution_objective(mipsolver, constructed);
+    if (!constructed.empty() && is_solution_feasible(problem, constructed)) {
+        double obj = compute_solution_objective(problem, constructed);
         // Discarded on purpose: this is a publish, not a worker's attempt
         // verdict.  `resolve_worker_start` runs at *worker construction*
         // — on the dispatching thread for the prime, and on task threads
@@ -285,7 +283,6 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         return {};
     }
 
-    HighsMipSolver& mipsolver = exec.mipsolver;
     const HighsInt ncol = problem.ncol;
 
     struct LmState {
@@ -336,8 +333,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         size_t primed_effort = 0;
         // `worker = -1`: the prime runs on the dispatching thread, before
         // any worker slot exists, so its publish belongs to no slot.
-        resolve_worker_start(mipsolver, *problem.csc, sink, WorkerTrace{-1, 0}, problem.incumbent,
-                             budget.per_worker, exec.base_seed, &cold_start_cache, &primed_effort);
+        resolve_worker_start(problem, sink, WorkerTrace{-1, 0}, budget.per_worker, exec.base_seed,
+                             &cold_start_cache, &primed_effort);
         construction_effort.fetch_add(primed_effort, std::memory_order_relaxed);
     }
 
@@ -351,9 +348,9 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                 local_cache = cold_start_cache;  // cheap if empty, one copy if warm
             }
             size_t my_construction_effort = 0;
-            std::vector<double> start = resolve_worker_start(
-                mipsolver, *problem.csc, sink, WorkerTrace{worker_idx, 0}, problem.incumbent,
-                budget.per_worker, seed, &local_cache, &my_construction_effort);
+            std::vector<double> start =
+                resolve_worker_start(problem, sink, WorkerTrace{worker_idx, 0}, budget.per_worker,
+                                     seed, &local_cache, &my_construction_effort);
             if (my_construction_effort > 0) {
                 construction_effort.fetch_add(my_construction_effort, std::memory_order_relaxed);
             }
@@ -379,9 +376,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
             // instead of restarting below the value already emitted.
             const WorkerTrace trace{worker_idx, my_construction_effort};
             return LmState{
-                std::make_unique<LocalMipWorker>(mipsolver, exec, *problem.csc, sink,
-                                                 budget.per_worker, budget.worker_stale, seed,
-                                                 start.data(), problem.binary.data(), trace),
+                std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
+                                                 budget.worker_stale, seed, start.data(), trace),
                 trace};
         },
         [&](LmState& state, Rng& rng, size_t run_cap) -> AttemptResult {
@@ -393,8 +389,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                 retire_trace(state.worker, state.trace);
                 std::vector<double> restart_sol;
                 if (!sink.get_restart(rng, restart_sol)) {
-                    // Snapshot, not `problem.mipdata->incumbent`: this runs
-                    // on a worker thread while peers submit (issue #98).
+                    // The dispatch's snapshot, not HiGHS's live incumbent:
+                    // this runs on a worker thread while peers submit (#98).
                     // The pool is empty on this branch, so no submission has
                     // happened and the snapshot is current.
                     if (!problem.incumbent.empty()) {
@@ -417,8 +413,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                         auto cseed = static_cast<uint32_t>(rng());
                         Rng construct_rng(cseed);
                         size_t my_construction_effort = construct_initial_solution(
-                            mipsolver, *problem.csc, construct_rng,
-                            construction_effort_cap(budget.per_worker), restart_sol);
+                            problem, construct_rng, construction_effort_cap(budget.per_worker),
+                            restart_sol);
                         construction_effort.fetch_add(my_construction_effort,
                                                       std::memory_order_relaxed);
                         state.trace.effort_base += my_construction_effort;
@@ -428,8 +424,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                                  problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
                 auto seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LocalMipWorker>(
-                    mipsolver, exec, *problem.csc, sink, budget.per_worker, budget.worker_stale,
-                    seed, restart_sol.data(), problem.binary.data(), state.trace);
+                    problem, exec, sink, budget.per_worker, budget.worker_stale, seed,
+                    restart_sol.data(), state.trace);
             }
             return state.worker->run_attempt(run_cap);
         });

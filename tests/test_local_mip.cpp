@@ -55,40 +55,30 @@ TEST_CASE("LocalMIP only: egout", "[heuristic][local_mip]") {
 TEST_CASE("LocalMIP construction: feasibility-first sweep repairs tiny MIP",
           "[heuristic][local_mip][construction]") {
     using local_mip_detail::construct_initial_solution;
-    using local_mip_detail::ConstructionInputs;
 
-    const HighsInt ncol = 2;
-    const HighsInt nrow = 1;
-    // Row-major: one row with (x0 + x1) >= 1.
-    std::vector<HighsInt> ar_start = {0, 2};
-    std::vector<HighsInt> ar_index = {0, 1};
-    std::vector<double> ar_value = {1.0, 1.0};
-    std::vector<double> col_lb = {0.0, 0.0};
-    std::vector<double> col_ub = {1.0, 1.0};
-    std::vector<double> row_lo = {1.0};
-    std::vector<double> row_hi = {kHighsInf};
-    std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kInteger};
-    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
-
-    ConstructionInputs inputs;
-    inputs.ncol = ncol;
-    inputs.nrow = nrow;
-    inputs.ar_start = &ar_start;
-    inputs.ar_index = &ar_index;
-    inputs.ar_value = &ar_value;
-    inputs.col_lb = &col_lb;
-    inputs.col_ub = &col_ub;
-    inputs.row_lo = &row_lo;
-    inputs.row_hi = &row_hi;
-    inputs.integrality = &integrality;
-    inputs.csc = &csc;
-    inputs.feastol = 1e-6;
+    // One row, (x0 + x1) >= 1, column-wise.  Built through the core
+    // `make_problem`, which is how a caller that owns its model gets a view.
+    HighsLp lp;
+    lp.num_col_ = 2;
+    lp.num_row_ = 1;
+    lp.col_cost_ = {0.0, 0.0};
+    lp.col_lower_ = {0.0, 0.0};
+    lp.col_upper_ = {1.0, 1.0};
+    lp.row_lower_ = {1.0};
+    lp.row_upper_ = {kHighsInf};
+    lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kInteger};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.start_ = {0, 1, 2};
+    lp.a_matrix_.index_ = {0, 0};
+    lp.a_matrix_.value_ = {1.0, 1.0};
+    ProblemStorage storage;
+    const ProblemView problem = make_problem(lp, storage, /*feastol=*/1e-6, /*epsilon=*/1e-9);
 
     std::vector<double> solution;
     Rng rng(42);
     // Generous budget: this is a 2-variable model so any positive
     // budget is more than enough.
-    construct_initial_solution(inputs, rng, /*max_effort=*/1000, solution);
+    construct_initial_solution(problem, rng, /*max_effort=*/1000, solution);
 
     REQUIRE(solution.size() == 2);
     // Bounds respected.
@@ -110,38 +100,22 @@ TEST_CASE("LocalMIP construction: feasibility-first sweep repairs tiny MIP",
 TEST_CASE("LocalMIP construction: zero-start respects bounds with lb > 0 / ub < 0",
           "[heuristic][local_mip][construction]") {
     using local_mip_detail::construct_initial_solution;
-    using local_mip_detail::ConstructionInputs;
 
-    const HighsInt ncol = 3;
-    const HighsInt nrow = 0;  // no constraints → only zero-start phase runs
-    std::vector<HighsInt> ar_start = {0};
-    std::vector<HighsInt> ar_index;
-    std::vector<double> ar_value;
-    std::vector<double> col_lb = {2.0, -5.0, -3.0};  // lb>0 / lb<0 / ub<0
-    std::vector<double> col_ub = {5.0, -1.0, -1.0};
-    std::vector<double> row_lo;
-    std::vector<double> row_hi;
-    std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kContinuous,
-                                             HighsVarType::kInteger};
-    CscMatrix csc = build_csc(ncol, nrow, ar_start, ar_index, ar_value);
-
-    ConstructionInputs inputs;
-    inputs.ncol = ncol;
-    inputs.nrow = nrow;
-    inputs.ar_start = &ar_start;
-    inputs.ar_index = &ar_index;
-    inputs.ar_value = &ar_value;
-    inputs.col_lb = &col_lb;
-    inputs.col_ub = &col_ub;
-    inputs.row_lo = &row_lo;
-    inputs.row_hi = &row_hi;
-    inputs.integrality = &integrality;
-    inputs.csc = &csc;
-    inputs.feastol = 1e-6;
+    HighsLp lp;
+    lp.num_col_ = 3;
+    lp.num_row_ = 0;  // no constraints → only zero-start phase runs
+    lp.col_cost_ = {0.0, 0.0, 0.0};
+    lp.col_lower_ = {2.0, -5.0, -3.0};  // lb>0 / lb<0 / ub<0
+    lp.col_upper_ = {5.0, -1.0, -1.0};
+    lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kContinuous, HighsVarType::kInteger};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.start_ = {0, 0, 0, 0};
+    ProblemStorage storage;
+    const ProblemView problem = make_problem(lp, storage, /*feastol=*/1e-6, /*epsilon=*/1e-9);
 
     std::vector<double> solution;
     Rng rng(7);
-    construct_initial_solution(inputs, rng, /*max_effort=*/1000, solution);
+    construct_initial_solution(problem, rng, /*max_effort=*/1000, solution);
 
     REQUIRE(solution.size() == 3);
     // x0: lb=2 (>0), value-closest-to-0 = lb = 2.
@@ -815,7 +789,7 @@ TEST_CASE("LocalMIP tight move: compute_tight_delta satisfies the row it targets
     auto mipsolver = build_bare_mipsolver(highs, cb);
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);
-    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+    local_mip_detail::WorkerCtx ctx(problem);
 
     // Slack demanded of the opposite bound, and of the variable's own
     // bounds: wide enough that neither the nearest-bound choice nor the
@@ -943,7 +917,7 @@ TEST_CASE("LocalMIP: violation partition agrees with HiGHS's feastol, not a stri
 
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);
-    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+    local_mip_detail::WorkerCtx ctx(problem);
 
     REQUIRE(ctx.nrow == 1);
     const HighsInt row = 0;
@@ -1141,10 +1115,10 @@ TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
     // Deterministic, pinned seed -- no wall-clock dependence. Unbounded
     // total/staleness budgets: `attempt_budget` below is the only bound,
     // so it alone decides how much search the worker gets.
-    local_mip_detail::LocalMipWorker worker(
-        *mipsolver, exec, csc, sink, /*total_budget=*/std::numeric_limits<size_t>::max(),
-        /*stale_budget=*/std::numeric_limits<size_t>::max(), /*seed=*/1, initial_solution.data(),
-        problem.binary.data(), WorkerTrace{});
+    local_mip_detail::LocalMipWorker worker(problem, exec, sink,
+                                            /*total_budget=*/std::numeric_limits<size_t>::max(),
+                                            /*stale_budget=*/std::numeric_limits<size_t>::max(),
+                                            /*seed=*/1, initial_solution.data(), WorkerTrace{});
 
     // Sized below the *pre-fix* code's own cost of even reaching its
     // first plateau-escape attempt -- the discriminating evidence for
@@ -1211,7 +1185,7 @@ TEST_CASE("LocalMIP: the lift phase applies a move the tabu list forbids (#149)"
 
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);
-    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+    local_mip_detail::WorkerCtx ctx(problem);
 
     // The feasible starting point: x0=2, x1=0, row tight at its lower
     // bound.  `rebuild_state` is what fills `lhs`, the violated/satisfied
@@ -1278,7 +1252,7 @@ TEST_CASE("LocalMIP: breakthrough delta obeys Definition 2's obj(s) >= obj(s*) (
 
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);
-    local_mip_detail::WorkerCtx ctx(*mipsolver, csc, problem.binary.data());
+    local_mip_detail::WorkerCtx ctx(problem);
 
     ctx.solution[0] = 2.0;
     ctx.solution[1] = 0.0;

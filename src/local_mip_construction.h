@@ -29,9 +29,8 @@
 // See `local_mip_construction.cpp` for the algorithmic details and
 // commentary on how closely this follows the paper.
 
-#include "heuristic_common.h"
+#include "heuristic_context.h"
 #include "lp_data/HighsLp.h"
-#include "mip/HighsMipSolver.h"
 #include "rng.h"
 #include "util/HighsInt.h"
 
@@ -61,25 +60,6 @@ inline size_t construction_effort_cap(size_t max_effort) {
     return static_cast<size_t>(static_cast<double>(max_effort) * kConstructionEffortFraction);
 }
 
-// Inputs required by the construction phase, assembled as a struct so
-// the unit-test entry point can drive the function without a full
-// `HighsMipSolver`.  The `HighsMipSolver&` overload below is a thin
-// wrapper.
-struct ConstructionInputs {
-    HighsInt ncol;
-    HighsInt nrow;
-    const std::vector<HighsInt>* ar_start;
-    const std::vector<HighsInt>* ar_index;
-    const std::vector<double>* ar_value;
-    const std::vector<double>* col_lb;
-    const std::vector<double>* col_ub;
-    const std::vector<double>* row_lo;
-    const std::vector<double>* row_hi;
-    const std::vector<HighsVarType>* integrality;
-    const CscMatrix* csc;
-    double feastol;
-};
-
 // Compute a tight-move delta for row `i`, variable `j`, coefficient
 // `coeff` that would satisfy row `i` from the current `lhs[i]`.
 // Mirrors `WorkerCtx::compute_tight_delta` but as a free function so we
@@ -108,14 +88,7 @@ double tight_delta_for_row(HighsInt i, HighsInt j, double coeff, const std::vect
 // charged.  Callers are expected to add this to
 // `mipdata->heuristic_effort_used` so cold-start work counts against
 // the global effort budget (R1-3 round-3 review).
-size_t construct_initial_solution(const ConstructionInputs& inputs, Rng& rng, size_t max_effort,
+size_t construct_initial_solution(const ProblemView& problem, Rng& rng, size_t max_effort,
                                   std::vector<double>& out_solution);
-
-// Thin wrapper over the inputs form: extracts the refs from
-// `mipsolver` (model + mipdata).  Used by `local_mip.cpp`'s
-// cold-start fallback.  Returns the construction effort (see overload
-// above); callers must book it into `mipdata->heuristic_effort_used`.
-size_t construct_initial_solution(HighsMipSolver& mipsolver, const CscMatrix& csc, Rng& rng,
-                                  size_t max_effort, std::vector<double>& out_solution);
 
 }  // namespace local_mip_detail

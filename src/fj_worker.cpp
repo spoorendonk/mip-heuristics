@@ -4,7 +4,6 @@
 #include "incumbent_sink.h"
 #include "mip/feasibilityjump.hh"
 #include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,10 +24,10 @@ struct FjWorker::Impl {
         : solver(log_options, seed, epsilon, feastol) {}
 };
 
-FjWorker::FjWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec, IncumbentSink& sink,
+FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
                    std::vector<double> start, WorkerTrace trace)
-    : mipsolver_(mipsolver),
+    : problem_(problem),
       exec_(exec),
       sink_(sink),
       start_(std::move(start)),
@@ -52,10 +51,9 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         return {};
     }
 
-    const HighsLp* model = mipsolver_.model_;
-    auto* mipdata = mipsolver_.mipdata_.get();
-    const double feastol = mipsolver_.options_mip_->mip_feasibility_tolerance;
-    const double epsilon = mipdata->epsilon;
+    const HighsLp* model = problem_.model;
+    const double feastol = problem_.feastol;
+    const double epsilon = problem_.epsilon;
     const auto sense_multiplier = static_cast<double>(model->sense_);
 
     // First attempt: build the solver and initial assignments.
@@ -67,7 +65,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         return {};
 #endif
 
-        const HighsLogOptions& log_options = mipsolver_.options_mip_->log_options;
+        const HighsLogOptions& log_options = exec_.mipsolver.options_mip_->log_options;
         impl_ = std::make_unique<Impl>(log_options, static_cast<int>(seed_), epsilon, feastol);
 
         impl_->col_value.resize(model->num_col_, 0.0);

@@ -114,16 +114,33 @@ struct [[nodiscard]] DispatchOutcome {
     static DispatchOutcome abandoned() { return {.effort = 0, .abandoned_setup = true}; }
 };
 
-// Read-only view of the model a heuristic searches.  Every member but the
-// incumbent snapshot is a non-owning pointer or a derived size; the pointees
-// are owned by the caller that built it (the CSC — `run_sequential`'s local)
-// or by the solver (model, mipdata), and outlive the whole heuristic chain.
-// Built once per dispatch and passed by const reference — the snapshot makes
-// it no longer trivially cheap to copy.
+// Read-only view of the model a heuristic searches: everything a worker
+// reads, and nothing of the solver it was read from (issue #170).  Every
+// member but the two snapshots is a non-owning pointer, a derived size or
+// a tolerance; the pointees are owned by whoever built the view — the
+// solver and `run_sequential`'s CSC local for the presolve chain
+// (`make_problem(HighsMipSolver&, CscMatrix&)`), or a `ProblemStorage` for
+// a caller that owns its model — and outlive every worker reading them.
+// Built once per dispatch and passed by const reference — the snapshots
+// make it no longer trivially cheap to copy.
 struct ProblemView {
+    // Bounds, integrality, cost, sense, offset, row bounds and the
+    // column-wise matrix.
     const HighsLp* model = nullptr;
-    const HighsMipSolverData* mipdata = nullptr;
+    // Row-wise copy of `model->a_matrix_`.
+    const std::vector<HighsInt>* ar_start = nullptr;
+    const std::vector<HighsInt>* ar_index = nullptr;
+    const std::vector<double>* ar_value = nullptr;
     const CscMatrix* csc = nullptr;
+    // Per-column up- and down-lock counts, for FPR's trivially-roundable
+    // fixings.
+    const std::vector<HighsInt>* uplocks = nullptr;
+    const std::vector<HighsInt>* downlocks = nullptr;
+
+    // `mip_feasibility_tolerance` and `small_matrix_value`, as
+    // `HighsMipSolverData::feastol` / `epsilon` hold them.
+    double feastol = 0.0;
+    double epsilon = 0.0;
 
     // Derived sizes, previously recomputed at every call site that wanted
     // one of them.
@@ -182,6 +199,31 @@ struct ProblemView {
     // A model with no columns or no rows: every heuristic declines it.
     [[nodiscard]] bool degenerate() const { return ncol == 0 || nrow == 0; }
 };
+
+// What a `ProblemView` points at when there is no `HighsMipSolverData` to
+// borrow it from — a caller running the heuristics on a model it owns,
+// such as the original model read with `Highs::readModel`.  Must outlive
+// every view built over it.
+struct ProblemStorage {
+    std::vector<HighsInt> ar_start;
+    std::vector<HighsInt> ar_index;
+    std::vector<double> ar_value;
+    std::vector<HighsInt> uplocks;
+    std::vector<HighsInt> downlocks;
+    CscMatrix csc;
+};
+
+// A view over a caller's own `model`, with `storage` filled the way
+// `HighsMipSolverData::runSetup()` fills the solver's copies: the row-wise
+// matrix through `highsSparseTranspose`, the lock counts by the same rule,
+// and the CSC from the row-wise matrix as `make_problem` builds it.  The
+// binary mask is `HighsDomain::isBinary` at the model's own bounds (an
+// integer column with bounds exactly `[0, 1]`), and there is no incumbent.
+// `feastol` / `epsilon` are the caller's `mip_feasibility_tolerance` /
+// `small_matrix_value`.  `model` must be column-wise, carry `integrality_`
+// for every column, and outlive the view.
+ProblemView make_problem(const HighsLp& model, ProblemStorage& storage, double feastol,
+                         double epsilon);
 
 // Snapshot `HighsDomain::isBinary` for every column.  Must run on the
 // dispatching thread, before any parallel region — see `ProblemView::binary`.
@@ -398,8 +440,14 @@ inline ProblemView make_problem(HighsMipSolver& mipsolver, CscMatrix& csc) {
     // are a positional `HighsInt, HighsInt, size_t` run that a mis-ordered
     // addition would silently convert between.
     return ProblemView{.model = model,
-                       .mipdata = mipdata,
+                       .ar_start = &mipdata->ARstart_,
+                       .ar_index = &mipdata->ARindex_,
+                       .ar_value = &mipdata->ARvalue_,
                        .csc = &csc,
+                       .uplocks = &mipdata->uplocks,
+                       .downlocks = &mipdata->downlocks,
+                       .feastol = mipdata->feastol,
+                       .epsilon = mipdata->epsilon,
                        .ncol = model->num_col_,
                        .nrow = model->num_row_,
                        .nnz = mipdata->ARindex_.size(),

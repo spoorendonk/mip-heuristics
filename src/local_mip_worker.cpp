@@ -6,8 +6,6 @@
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
 #include "lp_data/HConst.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
 
 #include <algorithm>
 #include <cmath>
@@ -80,20 +78,13 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
     }
 }
 
-LocalMipWorker::LocalMipWorker(HighsMipSolver& mipsolver, const ExecutionContext& exec,
-                               const CscMatrix& csc, IncumbentSink& sink, size_t total_budget,
-                               size_t stale_budget, uint32_t seed, const double* initial_solution,
-                               const uint8_t* binary, WorkerTrace trace)
-    : mipsolver_(mipsolver),
-      exec_(exec),
-      csc_(csc),
-      sink_(sink),
-      rng_(seed),
-      trace_(trace),
-      ctx_(mipsolver, csc, binary) {
+LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec,
+                               IncumbentSink& sink, size_t total_budget, size_t stale_budget,
+                               uint32_t seed, const double* initial_solution, WorkerTrace trace)
+    : exec_(exec), sink_(sink), rng_(seed), trace_(trace), ctx_(problem) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
-    const HighsInt ncol = mipsolver.model_->num_col_;
+    const HighsInt ncol = ctx_.ncol;
 
     // Precompute variable subsets
     for (HighsInt j = 0; j < ncol; ++j) {
@@ -142,7 +133,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
         return {};
     }
 
-    const HighsInt ncol = mipsolver_.model_->num_col_;
+    const HighsInt ncol = ctx_.ncol;
 
     AttemptResult attempt{};
     size_t effort_start = ctx_.effort;

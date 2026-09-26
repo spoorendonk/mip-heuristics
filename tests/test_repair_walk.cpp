@@ -792,11 +792,11 @@ TEST_CASE("FPR diveprop: a budget-exhausted fixpoint does not trigger repair (#1
     size_t ref_effort = 0;
     {
         // NOLINTNEXTLINE(readability-identifier-naming)
-        PropEngine E(problem.ncol, problem.nrow, problem.mipdata->ARstart_.data(),
-                     problem.mipdata->ARindex_.data(), problem.mipdata->ARvalue_.data(), csc,
-                     problem.model->col_lower_.data(), problem.model->col_upper_.data(),
-                     problem.model->row_lower_.data(), problem.model->row_upper_.data(),
-                     problem.model->integrality_.data(), problem.mipdata->feastol);
+        PropEngine E(problem.ncol, problem.nrow, problem.ar_start->data(), problem.ar_index->data(),
+                     problem.ar_value->data(), csc, problem.model->col_lower_.data(),
+                     problem.model->col_upper_.data(), problem.model->row_lower_.data(),
+                     problem.model->row_upper_.data(), problem.model->integrality_.data(),
+                     problem.feastol);
         E.init_activities();
         REQUIRE(E.fix(2, 1.0));
         REQUIRE(E.propagate(2) == PropResult::kBudgetExhausted);
@@ -976,11 +976,11 @@ TEST_CASE("FPR diveprop: a propagation-only refutation triggers the repair (#124
     // file that owns the behaviour.
     {
         // NOLINTNEXTLINE(readability-identifier-naming)
-        PropEngine E(h.problem.ncol, h.problem.nrow, h.problem.mipdata->ARstart_.data(),
-                     h.problem.mipdata->ARindex_.data(), h.problem.mipdata->ARvalue_.data(), h.csc,
+        PropEngine E(h.problem.ncol, h.problem.nrow, h.problem.ar_start->data(),
+                     h.problem.ar_index->data(), h.problem.ar_value->data(), h.csc,
                      h.problem.model->col_lower_.data(), h.problem.model->col_upper_.data(),
                      h.problem.model->row_lower_.data(), h.problem.model->row_upper_.data(),
-                     h.problem.model->integrality_.data(), h.problem.mipdata->feastol);
+                     h.problem.model->integrality_.data(), h.problem.feastol);
         E.init_activities();
         REQUIRE(E.fix(0, 1.0));
         size_t probe_effort = 0;
@@ -1217,7 +1217,7 @@ TEST_CASE(
     REQUIRE(h.state.effort_consumed > h.cfg.max_effort);
 
     const size_t effort_before_finish = h.scratch.prop_engine->effort();
-    const auto nnz = static_cast<size_t>(h.problem.mipdata->ARindex_.size());
+    const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
     const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
 
@@ -1248,7 +1248,7 @@ TEST_CASE(
     REQUIRE(h.state.effort_consumed > h.cfg.max_effort);
 
     const size_t effort_before_finish = h.scratch.prop_engine->effort();
-    const auto nnz = static_cast<size_t>(h.problem.mipdata->ARindex_.size());
+    const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
     const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
 
@@ -1458,7 +1458,7 @@ TEST_CASE("fpr_attempt hands back a complete integer point on a failed rounding 
         // sees in production.
         h.state.phase = FprAttemptState::Phase::kReadyToFinish;
         const size_t effort_before = h.state.effort_consumed;
-        const auto nnz = static_cast<size_t>(h.problem.mipdata->ARindex_.size());
+        const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
         const HeuristicResult result = fpr_attempt_finish(h.state, *h.mipsolver, h.cfg, rng);
         require_complete_integer_point(result, h.problem);

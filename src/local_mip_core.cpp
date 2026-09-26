@@ -3,8 +3,7 @@
 #include "heuristic_common.h"
 #include "local_mip_caches.h"
 #include "lp_data/HConst.h"
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
+#include "lp_data/HighsLp.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,24 +26,24 @@ double compute_objective(const HighsLp* model, const std::vector<double>& soluti
 
 // --- WorkerCtx ---
 
-WorkerCtx::WorkerCtx(HighsMipSolver& mipsolver, const CscMatrix& csc_, const uint8_t* binary_)
-    : model(mipsolver.model_),
-      ar_start(mipsolver.mipdata_->ARstart_),
-      ar_index(mipsolver.mipdata_->ARindex_),
-      ar_value(mipsolver.mipdata_->ARvalue_),
-      col_lb(mipsolver.model_->col_lower_),
-      col_ub(mipsolver.model_->col_upper_),
-      col_cost(mipsolver.model_->col_cost_),
-      row_lo(mipsolver.model_->row_lower_),
-      row_hi(mipsolver.model_->row_upper_),
-      integrality(mipsolver.model_->integrality_),
-      csc(csc_),
-      feastol(mipsolver.mipdata_->feastol),
-      epsilon(mipsolver.mipdata_->epsilon),
-      minimize(mipsolver.model_->sense_ == ObjSense::kMinimize),
-      ncol(mipsolver.model_->num_col_),
-      nrow(mipsolver.model_->num_row_),
-      binary(binary_),
+WorkerCtx::WorkerCtx(const ProblemView& problem)
+    : model(problem.model),
+      ar_start(*problem.ar_start),
+      ar_index(*problem.ar_index),
+      ar_value(*problem.ar_value),
+      col_lb(problem.model->col_lower_),
+      col_ub(problem.model->col_upper_),
+      col_cost(problem.model->col_cost_),
+      row_lo(problem.model->row_lower_),
+      row_hi(problem.model->row_upper_),
+      integrality(problem.model->integrality_),
+      csc(*problem.csc),
+      feastol(problem.feastol),
+      epsilon(problem.epsilon),
+      minimize(problem.model->sense_ == ObjSense::kMinimize),
+      ncol(problem.model->num_col_),
+      nrow(problem.model->num_row_),
+      binary(problem.binary.data()),
       solution(ncol),
       lhs(nrow),
       weight(nrow, 1),
