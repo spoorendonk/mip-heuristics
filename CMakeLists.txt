@@ -10,23 +10,26 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # but are only consumed by two tests.  When OFF the counter increments
 # compile out via `if constexpr` and the public API returns zeros; when
 # ON, the counters fire and the test suite uses them as regression
-# sentinels.  Defaults ON because this project always builds tests
-# (BUILD_TESTING is force-set ON below); production builds wanting zero
-# counter overhead pass `-DMIP_HEURISTICS_INSTRUMENT=OFF` explicitly.
+# sentinels.  Defaults ON because a top-level build always builds tests
+# (see MIP_HEURISTICS_BUILD_TESTS below); production builds wanting zero
+# counter overhead, a parent project's included, set
+# `MIP_HEURISTICS_INSTRUMENT=OFF` explicitly.
 # R3-1 round-4 review; R5 R1-1/R2-2/R3-2 dropped the dead else-branch
 # whose default was unreachable due to the BUILD_TESTING force later.
 option(MIP_HEURISTICS_INSTRUMENT
        "Enable LocalMIP warm-start branch instrumentation counters" ON)
 
 option(MIP_HEURISTICS_INSTALL_GIT_HOOKS
-       "Point this checkout's core.hooksPath at the tracked .githooks/" ON)
+       "Point this checkout's core.hooksPath at the tracked .githooks/" ${PROJECT_IS_TOP_LEVEL})
 
 # The git hooks live in .githooks/ under version control, so a fresh clone gets
 # them for free -- but git only runs hooks from core.hooksPath, which is
 # per-checkout config and cannot be tracked.  Configure sets it, since
 # `cmake -B build` is the first thing anyone runs here.  Idempotent, and it
 # never overwrites a value someone else set deliberately: only an unset
-# hooksPath, or one already pointing at .githooks, is touched.
+# hooksPath, or one already pointing at .githooks, is touched.  Defaults OFF
+# as a subproject: a copy FetchContent cloned into a parent's build tree is
+# not a checkout anyone commits from.
 # EXISTS, not IS_DIRECTORY: in a linked worktree .git is a file.
 if(MIP_HEURISTICS_INSTALL_GIT_HOOKS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
     find_package(Git QUIET)
@@ -146,7 +149,22 @@ target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics>)
 target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # --- Tests ---
-set(BUILD_TESTING ON CACHE BOOL "" FORCE)
+# Everything from here to the end of the file serves this repo's own
+# development: the Catch2 suite, the bench and docs checks, and the lint gates
+# (whose `lint` target name would also collide with a parent's).  A parent
+# that pulls this project in with FetchContent or add_subdirectory wants the
+# patched `highs` target above, not these in its ctest, so they are on only
+# as the top-level project; -DMIP_HEURISTICS_BUILD_TESTS=ON forces them on
+# from a parent.  Consumer-facing targets therefore go above this line.
+option(MIP_HEURISTICS_BUILD_TESTS
+       "Build and register the tests, bench checks and lint gates" ${PROJECT_IS_TOP_LEVEL})
+if(NOT MIP_HEURISTICS_BUILD_TESTS)
+    return()
+endif()
+
+# A normal variable, overriding the OFF that cmake/FetchHiGHS.cmake set for
+# HiGHS's own suite, so include(CTest) below enables testing here.
+set(BUILD_TESTING ON)
 include(FetchContent)
 FetchContent_Declare(Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git

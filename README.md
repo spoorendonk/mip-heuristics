@@ -212,7 +212,25 @@ runs its own FJ, so the comparison already includes FJ-vs-FJ.
 | `-DCMAKE_BUILD_TYPE=Release` | — | Optimized build. The heuristics are unusable at `-O0`. |
 | `-DMIP_HEURISTICS_REQUIRE_LINT=ON` | `OFF` | Turn a missing or wrong-major-version clang tool into a **configure failure** instead of a warning. CI sets it; so should you — the default failure mode is a gate that silently checks nothing. |
 | `-DMIP_HEURISTICS_INSTRUMENT=OFF` | `ON` | Compile out the LocalMIP warm-start branch counters. They are consumed by two tests, so leave them on unless you are measuring their overhead in a production build. |
+| `-DMIP_HEURISTICS_BUILD_TESTS=ON` | top-level only | Build and register the Catch2 suite, the bench and docs checks and the lint gates. On when this is the top-level project, off as a subproject. |
+| `-DMIP_HEURISTICS_INSTALL_GIT_HOOKS=OFF` | top-level only | Leave this checkout's `core.hooksPath` alone. On when this is the top-level project, off as a subproject. |
 | `-DMIP_HEURISTICS_CUDA=ON` | `OFF` | Enable cuPDLP GPU backend for Scylla. Requires `CUDA_HOME` exported; **fails the configure** rather than falling back to CPU, because GPU vs CPU is a compile-time `#ifdef` in HiGHS and a silent fallback would be indistinguishable at the command line. Build into a separate tree and verify with `ldd build-gpu/bin/highs \| grep cudart`. |
+
+### As a subproject
+
+A parent project can pull this in with `FetchContent` (or `add_subdirectory`) and link the patched HiGHS library:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(mip_heuristics
+    GIT_REPOSITORY https://github.com/spoorendonk/mip-heuristics.git
+    GIT_TAG        <commit>)
+FetchContent_MakeAvailable(mip_heuristics)
+
+target_link_libraries(my_solver PRIVATE highs)
+```
+
+`highs` (alias `highs::highs`) is the consumer-facing target: HiGHS v1.15.1 with the patch applied and the heuristics' objects compiled into it, built static. Its interface carries HiGHS's include directories, so `#include "Highs.h"` works as is. As a subproject nothing else is registered: no tests, bench or lint checks in the parent's ctest, no `lint` target, and the fetched checkout's git hooks config is left alone. `BUILD_TESTING` and `BUILD_SHARED_LIBS` are set only in this project's scope, so the parent's own values stand. Set any of the options above in the parent before `FetchContent_MakeAvailable`, e.g. `set(MIP_HEURISTICS_INSTRUMENT OFF)` for zero counter overhead.
 
 ## Tests
 
@@ -238,7 +256,7 @@ The benchmark harness has its own Python suite, registered in ctest as `bench_py
 
 `clang-format` and `clang-tidy` run over `src/` and `tests/` as ctest tests labelled `lint`, adding roughly 30 s to a full run — hence `ctest -LE lint` while iterating. Without the venv above they are **not registered at all** and `ctest` reports green having linted nothing, which is what `-DMIP_HEURISTICS_REQUIRE_LINT=ON` exists to prevent. The versions above are part of the contract: clang-format's output changes between major releases, so a different major fails the gate.
 
-Git hooks live in `.githooks/` (Conventional Commits on `commit-msg`, format plus `ctest -LE lint` on `pre-commit`, a clean rebuild and the full suite on `pre-push`). `cmake -B build` points `core.hooksPath` at them; by hand it is `git config core.hooksPath .githooks`.
+Git hooks live in `.githooks/` (Conventional Commits on `commit-msg`, format plus `ctest -LE lint` on `pre-commit`, a clean rebuild and the full suite on `pre-push`). `cmake -B build` points `core.hooksPath` at them when this is the top-level project; by hand it is `git config core.hooksPath .githooks`.
 
 ## Reproducing
 

@@ -1,9 +1,12 @@
 include(FetchContent)
 
-# Disable HiGHS components we don't need
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# Disable HiGHS components we don't need.  Normal variables, not forced
+# cache entries: HiGHS's option() calls honour them (CMP0077; HiGHS requires
+# CMake 3.15), and they stay in this directory scope, so a parent project
+# that pulls this one in keeps its own BUILD_TESTING and BUILD_SHARED_LIBS.
+set(BUILD_TESTING OFF)
+set(BUILD_EXAMPLES OFF)
+set(BUILD_SHARED_LIBS OFF)
 
 # Optional CUDA/GPU acceleration for cuPDLP-C (used by PDLP solver in Scylla)
 #
