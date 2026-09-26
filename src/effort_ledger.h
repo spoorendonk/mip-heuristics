@@ -90,7 +90,7 @@ public:
     // sites spell their answer out.  **Do not give it one back.** A third
     // dive caller would inherit `false` silently — the wrong answer for a
     // bailing one, and an invisible wrong answer, which is the same reason
-    // `IncumbentSink::offer` is `[[nodiscard]]` rather than trusting a
+    // `SolutionSink::offer` is `[[nodiscard]]` rather than trusting a
     // caller to remember.
     void charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
                      size_t nnz, double t0_s, double t1_s, bool abandoned_setup);

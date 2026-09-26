@@ -95,7 +95,7 @@ class HeuristicSample:
 class HeurSolSample:
     """A single `[HeurSol]` per-offered-solution observation.
 
-    Emitted by `IncumbentSink::offer` in `src/incumbent_sink.cpp`, once per
+    Emitted by `IncumbentSink::on_accept` in `src/incumbent_sink.cpp`, once per
     solution any heuristic worker offers the shared pool — accepted or not.
     `[Heur]` is one line per *dispatch* and therefore cannot show what
     happens inside one; this is the line the patience calibration
@@ -779,7 +779,7 @@ def _parse_heur(line: str) -> HeuristicSample | None:
 
 
 # Per-offered-solution instrumentation at log_dev_level=3, emitted by
-# `IncumbentSink::offer`:
+# `IncumbentSink::on_accept`:
 #   [HeurSol] name=fpr dispatch=2 worker=3 effort_at=91238 wall_ms=12.4 \
 #             obj=778.45908999999983 accepted=1
 #

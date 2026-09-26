@@ -2,13 +2,13 @@
 
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "incumbent_sink.h"
 #include "local_mip_construction.h"
 #include "local_mip_worker.h"
 #include "lp_data/HConst.h"
 #include "lp_data/HighsLp.h"
 #include "opportunistic_runner.h"
 #include "rng.h"
+#include "solution_sink.h"
 
 #include <atomic>
 #include <cmath>
@@ -191,7 +191,7 @@ double compute_solution_objective(const ProblemView& problem, const std::vector<
 // the function returned via the pool or incumbent branches, or via the
 // cold-start cache hit).  Callers add it to
 // `mipdata->heuristic_effort_used` (R1-3 round-3 review).
-std::vector<double> resolve_worker_start(const ProblemView& problem, IncumbentSink& sink,
+std::vector<double> resolve_worker_start(const ProblemView& problem, SolutionSink& sink,
                                          const WorkerTrace& trace, size_t max_effort, uint32_t seed,
                                          std::vector<double>* cold_start_cache = nullptr,
                                          size_t* effort_out = nullptr) {
@@ -272,7 +272,7 @@ void retire_trace(const std::unique_ptr<LocalMipWorker>& worker, WorkerTrace& tr
 }  // namespace
 
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, IncumbentSink& sink) {
+                    ExecutionContext& exec, SolutionSink& sink) {
     // Issue #75: the old `mipdata->incumbent.empty()` early-return is
     // gone.  Cold-start is now handled by `resolve_worker_start` which
     // runs the paper's construction phase when neither pool nor

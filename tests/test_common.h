@@ -316,7 +316,7 @@ inline double solve_no_heuristics() {
 //
 // A hand-built model (`Highs::addVar`/`addRow` rather than `readModel`)
 // works here for read-only inspection, but if the caller is going to
-// offer a solution through it (`IncumbentSink::offer` /
+// offer a solution through it (`SolutionSink::offer` /
 // `HighsMipSolverData::addIncumbent`), round-trip it through
 // `highs.passModel(highs.getLp())` first: `addRow` leaves the matrix
 // row-wise, and offering a solution against a row-wise model segfaults

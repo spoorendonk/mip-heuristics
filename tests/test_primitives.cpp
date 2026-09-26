@@ -1,6 +1,9 @@
+#include "lp_data/HighsLp.h"
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
 #include "rng.h"
 #include "solution_pool.h"
+#include "solution_sink.h"
+#include "worker_base.h"
 
 #include <atomic>
 #include <catch2/catch_approx.hpp>
@@ -8,6 +11,7 @@
 #include <mutex>
 #include <random>
 #include <thread>
+#include <utility>
 #include <vector>
 
 TEST_CASE("SolutionPool: basic operations", "[pool]") {
@@ -175,59 +179,82 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
     }
 }
 
-// ── SolutionPool: set_on_accept callback ──
+// ── SolutionSink: on_accept ──
 
-TEST_CASE("SolutionPool: on_accept fires for accepted solutions only", "[pool]") {
-    SolutionPool pool(3, true);  // minimize, capacity 3
+namespace {
 
-    std::vector<std::pair<std::vector<double>, int>> fired;
-    pool.set_on_accept(
-        [&](const std::vector<double>& sol, int src) { fired.emplace_back(sol, src); });
-
-    // Three insertions into an empty pool — all accepted.
-    REQUIRE(pool.try_add(10.0, {10.0}, kSolutionSourceFPR).accepted);
-    REQUIRE(pool.try_add(8.0, {8.0}, kSolutionSourceLocalMIP).accepted);
-    REQUIRE(pool.try_add(6.0, {6.0}, kSolutionSourceFJ).accepted);
-    REQUIRE(fired.size() == 3);
-    REQUIRE(fired[0].second == kSolutionSourceFPR);
-    REQUIRE(fired[1].second == kSolutionSourceLocalMIP);
-    REQUIRE(fired[2].second == kSolutionSourceFJ);
-    REQUIRE(fired[2].first == std::vector<double>{6.0});
-
-    // Pool is full (capacity 3). Inserting a dominated solution must not fire.
-    REQUIRE_FALSE(pool.try_add(999.0, {999.0}, kSolutionSourceFPR).accepted);
-    REQUIRE(fired.size() == 3);  // unchanged
-
-    // Inserting an improving solution fires the callback.
-    REQUIRE(pool.try_add(4.0, {4.0}, kSolutionSourceFPR).accepted);
-    REQUIRE(fired.size() == 4);
-    REQUIRE(fired[3].first == std::vector<double>{4.0});
+// A one-column continuous minimisation model: enough for a sink, and no
+// integer column, so the pool's diversity path never admits a dominated
+// offer and "accepted" is exactly "beats the worst entry of a full pool".
+HighsLp one_column_lp() {
+    HighsLp lp;
+    lp.num_col_ = 1;
+    lp.col_cost_ = {1.0};
+    lp.col_lower_ = {0.0};
+    lp.col_upper_ = {kHighsInf};
+    lp.integrality_ = {HighsVarType::kContinuous};
+    return lp;
 }
 
-TEST_CASE("SolutionPool: on_accept callback under concurrent try_add", "[pool][thread-safety]") {
-    SolutionPool pool(50, true);
+// Records every `on_accept`, under its own mutex: taking it while the
+// pool's spin-lock is held would be the lock inversion the hook's
+// "outside the pool lock" contract rules out.
+class RecordingSink : public SolutionSink {
+public:
+    using SolutionSink::SolutionSink;
 
-    std::mutex cb_mtx;
-    std::atomic<int> cb_count{0};
-    std::atomic<int> accepted_count{0};
+    std::mutex mtx;
+    std::vector<std::pair<std::vector<double>, int>> fired;
 
-    // Set callback before spawning workers (happens-before satisfied).
-    pool.set_on_accept([&](const std::vector<double>& sol, int /*src*/) {
-        // Acquiring cb_mtx while the pool spin-lock is NOT held proves
-        // no lock inversion: callback fires outside the pool lock.
-        std::scoped_lock guard(cb_mtx);
-        REQUIRE_FALSE(sol.empty());
-        cb_count.fetch_add(1, std::memory_order_relaxed);
-    });
+private:
+    void on_accept(double /*objective*/, const std::vector<double>& solution, int source,
+                   const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
+        std::scoped_lock guard(mtx);
+        fired.emplace_back(solution, source);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("SolutionSink: on_accept fires for accepted offers only", "[pool]") {
+    const HighsLp lp = one_column_lp();
+    RecordingSink sink(lp, kSolutionSourceFPR);
+
+    // Fill the pool — every offer into a non-full pool is accepted.
+    for (int k = 0; k < kPoolCapacity; ++k) {
+        const auto obj = static_cast<double>(100 - k);
+        REQUIRE(sink.offer(obj, {obj}, WorkerTrace{}, 0).accepted);
+    }
+    REQUIRE(sink.fired.size() == static_cast<size_t>(kPoolCapacity));
+    REQUIRE(sink.fired.back().second == kSolutionSourceFPR);
+    REQUIRE(sink.fired.back().first == std::vector<double>{100.0 - (kPoolCapacity - 1)});
+
+    // Full pool: a dominated offer is refused and must not fire.
+    REQUIRE_FALSE(sink.offer(999.0, {999.0}, WorkerTrace{}, 0).accepted);
+    REQUIRE(sink.fired.size() == static_cast<size_t>(kPoolCapacity));
+    REQUIRE(sink.accepted() == static_cast<size_t>(kPoolCapacity));
+
+    // An improving offer fires.
+    REQUIRE(sink.offer(4.0, {4.0}, WorkerTrace{}, 0).accepted);
+    REQUIRE(sink.fired.size() == static_cast<size_t>(kPoolCapacity) + 1);
+    REQUIRE(sink.fired.back().first == std::vector<double>{4.0});
+}
+
+TEST_CASE("SolutionSink: on_accept under concurrent offers", "[pool][thread-safety]") {
+    const HighsLp lp = one_column_lp();
+    RecordingSink sink(lp, kSolutionSourceFPR);
 
     constexpr int kNumThreads = 4;
     constexpr int kOpsPerThread = 50;
+    std::atomic<int> accepted_count{0};
     std::vector<std::thread> threads;
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < kOpsPerThread; ++i) {
-                auto obj = static_cast<double>((t * kOpsPerThread) + i);
-                if (pool.try_add(obj, {obj}, kSolutionSourceFPR).accepted) {
+                // Decreasing objectives, so plenty of offers are accepted
+                // after the pool has filled.
+                const auto obj = static_cast<double>(1000 - (t * kOpsPerThread) - i);
+                if (sink.offer(obj, {obj}, WorkerTrace{t, 0}, 0).accepted) {
                     accepted_count.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -237,8 +264,10 @@ TEST_CASE("SolutionPool: on_accept callback under concurrent try_add", "[pool][t
         thr.join();
     }
 
-    // Every accepted insertion must have triggered exactly one callback.
-    REQUIRE(cb_count.load() == accepted_count.load());
+    // Every accepted offer triggered exactly one `on_accept`, and the
+    // sink's own counter agrees.
+    REQUIRE(sink.fired.size() == static_cast<size_t>(accepted_count.load()));
+    REQUIRE(sink.accepted() == static_cast<size_t>(accepted_count.load()));
 }
 
 TEST_CASE("SolutionPool: empty pool restart returns false", "[pool][edge]") {

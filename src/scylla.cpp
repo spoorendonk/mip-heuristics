@@ -4,12 +4,12 @@
 #include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "incumbent_sink.h"
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "opportunistic_runner.h"
 #include "scylla_worker.h"
+#include "solution_sink.h"
 
 #include <algorithm>
 #include <atomic>
@@ -100,7 +100,7 @@ HighsInt compute_pdlp_iter_cap(size_t max_effort, size_t nnz_lp) {
 }  // namespace
 
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, IncumbentSink& sink) {
+                    ExecutionContext& exec, SolutionSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
         return {};
     }

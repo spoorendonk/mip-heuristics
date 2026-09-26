@@ -5,10 +5,10 @@
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "incumbent_sink.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "pump_common.h"
+#include "solution_sink.h"
 
 #include <algorithm>
 #include <cassert>
@@ -40,7 +40,7 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 }  // namespace
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem,
-                           const ExecutionContext& exec, ContestedPdlp& pdlp, IncumbentSink& sink,
+                           const ExecutionContext& exec, ContestedPdlp& pdlp, SolutionSink& sink,
                            const std::vector<std::vector<HighsInt>>& var_orders,
                            size_t total_budget, size_t stale_budget, uint32_t seed, int worker_idx,
                            int num_workers, WorkerTrace trace,

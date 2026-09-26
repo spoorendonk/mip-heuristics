@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-class IncumbentSink;
+class SolutionSink;
 struct DispatchOutcome;
 struct ExecutionContext;
 struct HeuristicBudget;
@@ -117,5 +117,5 @@ void note_attempt_effort(int64_t effort_charged);
 // The effort returned covers the cold-start construction sweep as well
 // as the search itself.
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, IncumbentSink& sink);
+                    ExecutionContext& exec, SolutionSink& sink);
 }  // namespace local_mip

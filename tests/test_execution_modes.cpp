@@ -255,10 +255,10 @@ bool lseu_emits_fj_tag() {
 // wrapped in an IncumbentSink — seeds it from the incumbent once, and hands
 // it to every heuristic's `run` as an `&` parameter.  Each solution accepted
 // by the pool
-// is immediately forwarded to HiGHS via the on_accept callback (so
+// is immediately forwarded to HiGHS by `IncumbentSink::on_accept` (so
 // timestamps reflect find time, not flush time).  The per-entry source
-// tag (#73) is preserved and forwarded by the callback so HiGHS logs
-// `J`/`A`/`M`/`G` per heuristic.  This test proves the callback path
+// tag (#73) is preserved and forwarded with it so HiGHS logs
+// `J`/`A`/`M`/`G` per heuristic.  This test proves that path
 // round-trips FJ's tag; the pool-restart semantic for downstream
 // heuristics is exercised transitively (FPR's get_restart reads from
 // the same pool that FJ wrote to).

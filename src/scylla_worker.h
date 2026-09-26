@@ -17,7 +17,7 @@
 #include <vector>
 
 class HighsMipSolver;
-class IncumbentSink;
+class SolutionSink;
 struct ExecutionContext;
 
 // Per-worker default cap on consecutive stale-snapshot rounds before the
@@ -101,7 +101,7 @@ public:
     // thread when `scylla::run` rebuilds a retired worker, and computing a var order there would
     // read the live root domain and mutate the clique table under a concurrent `addIncumbent`.
     ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem,
-                 const ExecutionContext& exec, ContestedPdlp& pdlp, IncumbentSink& sink,
+                 const ExecutionContext& exec, ContestedPdlp& pdlp, SolutionSink& sink,
                  const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
                  size_t stale_budget, uint32_t seed, int worker_idx, int num_workers,
                  WorkerTrace trace, std::atomic<uint64_t>* improvement_gen = nullptr);
@@ -160,7 +160,7 @@ private:
     // length of any peer solve this worker blocks behind (issue #117).
     const ExecutionContext& exec_;
     ContestedPdlp& pdlp_;
-    IncumbentSink& sink_;
+    SolutionSink& sink_;
 
     HighsInt ncol_ = 0;
     HighsInt nrow_ = 0;

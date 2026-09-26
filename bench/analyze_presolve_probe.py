@@ -57,7 +57,7 @@ not.  `CHAIN_SOURCES` is the set of display codes the patch assigns to our
 four heuristics.
 
 Trajectories come from the `[HeurSol]` trace, one line per
-`IncumbentSink::offer`, emitted at `log_dev_level=3`.  Everything about how
+`IncumbentSink::on_accept`, emitted at `log_dev_level=3`.  Everything about how
 those lines group into dispatches — the process-global `dispatch` id, the
 `heur_index` that binds a dispatch to the `[Heur]` line closing it, and the
 model's nonzero count — is `bench/parse_highs_log.py`'s to decide, and this
@@ -114,7 +114,7 @@ PRESOLVE_HEURISTICS: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla")
 # `z` (HiGHS's trivial heuristics), `X`/`Y`, `T`, `B` — is not ours.
 CHAIN_SOURCES = frozenset("AMGJ")
 
-# `IncumbentSink::offer` tags an offer made off any worker slot with this,
+# `SolutionSink::offer` tags an offer made off any worker slot with this,
 # for LocalMIP's cold-start publish on the dispatching thread.  Such an offer
 # is a real solution but not a worker's improvement-free interval, so it
 # counts for the informative set and never enters the gap distribution.
@@ -227,7 +227,7 @@ def patience_option(name: str) -> str:
 
 @dataclass(frozen=True)
 class HeurSolSample:
-    """One `IncumbentSink::offer`, as the #106 contract spells it.
+    """One `SolutionSink::offer`, as the #106 contract spells it.
 
         [HeurSol] name=<n> dispatch=<i> worker=<w> effort_at=<E> wall_ms=<X> \
     obj=<O> accepted=<0|1>   (only accepted offers are emitted since #113)

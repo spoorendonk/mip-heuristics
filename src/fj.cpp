@@ -3,9 +3,9 @@
 #include "fj_worker.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "incumbent_sink.h"
 #include "mip/HighsMipSolver.h"
 #include "opportunistic_runner.h"
+#include "solution_sink.h"
 
 #include <memory>
 #include <utility>
@@ -14,7 +14,7 @@
 namespace fj {
 
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, IncumbentSink& sink) {
+                    ExecutionContext& exec, SolutionSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
         return {};
     }

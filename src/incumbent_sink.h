@@ -1,10 +1,8 @@
 #pragma once
 
-#include "rng.h"
-#include "solution_pool.h"
+#include "solution_sink.h"
 #include "worker_base.h"
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -12,113 +10,26 @@
 
 class HighsMipSolver;
 
-// The one place a heuristic worker hands a solution back to the solver.
+// The `SolutionSink` a presolve chain or an `fpr_lp` dive hands its
+// workers: every solution the pool accepts is submitted to HiGHS at once,
+// and traced.
 //
-// Owns the shared `SolutionPool`, the mutex that serialises HiGHS's
-// non-thread-safe `trySolution`, and the `kSolutionSource*` tag the
-// running heuristic's entries are attributed with.  Before this class the
-// pool + mutex + on_accept wiring was written out twice, verbatim, in
+// Owns the mutex that serialises HiGHS's non-thread-safe `trySolution`
+// and the `[HeurSol]` dispatch context; the pool, the tag and the offer
+// verdicts are `SolutionSink`'s (#170).  Before this class the pool +
+// mutex + accept wiring was written out twice, verbatim, in
 // `mode_dispatch.cpp` and `fpr_lp.cpp`, and every worker hard-coded the
 // source constant of its own heuristic at its `try_add` call.
 //
-// Submission is immediate rather than batched: the accept callback runs
-// as soon as the pool takes a solution, so a HiGHS incumbent timestamp
-// reflects find time rather than end-of-dispatch flush time.
-class IncumbentSink {
+// Submission is immediate rather than batched: `on_accept` runs as soon as
+// the pool takes a solution, so a HiGHS incumbent timestamp reflects find
+// time rather than end-of-dispatch flush time.
+class IncumbentSink final : public SolutionSink {
 public:
-    // Constructs the pool, seeds it from the current incumbent, and wires
-    // the accept callback.  `source` tags everything offered until
-    // `set_source` says otherwise.
+    // Constructs the pool, seeds it from the current incumbent, and opens
+    // a dispatch.  `source` tags everything offered until `set_source`
+    // says otherwise.
     IncumbentSink(HighsMipSolver& mipsolver, int source);
-
-    IncumbentSink(const IncumbentSink&) = delete;
-    IncumbentSink& operator=(const IncumbentSink&) = delete;
-
-    // What one offer did, in the two senses that matter (#116).
-    //
-    // `accepted` is the pool's admission verdict, unchanged since #111.
-    // `improved_incumbent` is whether the offer moved the best objective
-    // the solve knows — decided by `SolutionPool` against the best it held
-    // before the insertion, which is the same thing while a presolve
-    // dispatch runs: the sink seeds the pool from the incumbent and every
-    // solution that reaches HiGHS goes through the pool first, so nothing
-    // can lower the incumbent behind the pool's back.  Deriving it there
-    // rather than from a solver field is also what keeps it off a worker
-    // thread, where reading `mipdata` races `addIncumbent` (#98/#99).
-    struct OfferResult {
-        bool accepted = false;
-        bool improved_incumbent = false;
-    };
-
-    // Offer a candidate solution.  When the pool accepts it, HiGHS has
-    // already been told, from inside this call.  Safe to call concurrently
-    // from any worker.
-    //
-    // Two verdicts, because there are two questions and #111 answered the
-    // wrong one with the right mechanism.  Every presolve worker used to
-    // drop the pool's answer and substitute a worker-local notion ("I beat
-    // my own best"), which resets to nothing on rebuild, so the staleness
-    // counters the patience gates read were cleared by solutions the pool
-    // had refused: on `fpr/flugpl` at one worker, 2,785,359 effort against
-    // a 69,632 ceiling with exactly one accepted incumbent, i.e. 39
-    // ceilings' worth of free resets.  #111 pointed the gates at
-    // `accepted`, which fixed the refusals but left the pool's *admission
-    // policy* driving them — it keeps a top-K, so a heuristic beating its
-    // own worst entry resets staleness forever.  #113's probe put a number
-    // on the difference: 233 instances, presolve-only, 30 s, 16 workers,
-    // FPR earns ~3.3 M acceptances against 590 incumbent improvements,
-    // Scylla 367,801 against 374.  Five orders of magnitude, so a patience
-    // calibrated on improvements cannot be spent against a gate that
-    // resets on acceptances.
-    //
-    // So `OfferResult::improved_incumbent` is what every staleness gate
-    // reads (#116), and `accepted` is what `accepted()`, `[Heur] found`
-    // and `[HeurSol] accepted` keep reporting — production, in the sense
-    // of "a feasible solution worth keeping", is still the pool's call and
-    // external tooling reads it as that.
-    //
-    // `[[nodiscard]]` since #111, and returning a struct rather than a
-    // bool is deliberate: it makes every gate site name which fact it
-    // reads instead of inheriting whichever one `offer` happened to mean.
-    // The two deliberate discards are spelled `static_cast<void>` with a
-    // reason at the call site.
-    //
-    // Both flags are computed inside `SolutionPool`'s own lock — which is
-    // where the pre-offer best is race-free — and returned by value, so
-    // reading them adds no shared state (#98/#99).
-    //
-    // `effort_at` is the offering worker's own charged effort at the moment
-    // of the offer — the counter that worker's *own* patience gate reads, so a
-    // difference between two `effort_at` values is directly comparable with
-    // `HeuristicBudget::worker_stale` (#106).  Every worker keeps such a
-    // counter already; none of them is recomputed or redefined for this,
-    // and Scylla's stays the amortised (PDLP cost ÷ N) one its gate uses.
-    // It is *not* monotone across a dispatch: FJ, LocalMIP and Scylla all
-    // rebuild a retired worker in place and a rebuild starts a fresh
-    // counter at zero, so the per-dispatch sequence is sawtooth.
-    //
-    // `trace` names the worker slot the offer comes from and carries the
-    // charge of that slot's retired occupants, so `trace.at(effort_at)` is
-    // monotone across rebuilds; see `WorkerTrace` in worker_base.h.
-    //
-    // Emits the `[HeurSol]` trace line (see incumbent_sink.cpp).
-    [[nodiscard]] OfferResult offer(double objective, const std::vector<double>& solution,
-                                    const WorkerTrace& trace, size_t effort_at);
-
-    // Number of offers the pool has accepted since construction.  The
-    // `found` field of the `[Heur]` instrumentation line (issue #95) is
-    // this counter moving across one heuristic's dispatch; the sink is
-    // the only place that knows, because a worker's return value is its
-    // effort and nothing else.  Relaxed loads are enough: the dispatching
-    // thread reads it either side of a joined parallel region, so the
-    // join already provides the ordering.
-    //
-    // "Accepted by the pool", not "improved the incumbent": the pool also
-    // admits a solution within `kDiversityObjTolerance` of the best when
-    // it is structurally diverse.  `found=1` therefore means the heuristic
-    // produced a feasible solution worth keeping, which is what the
-    // `found` field of the `[Heur]` line reports.
-    size_t accepted() const { return accepted_.load(std::memory_order_relaxed); }
 
     // Retarget the attribution tag for subsequent offers.  Legal only
     // between heuristics, on the dispatching thread, with every parallel
@@ -141,29 +52,24 @@ public:
     // dive, and a per-sink counter would hand every dive the same id.
     [[nodiscard]] uint64_t dispatch_id() const { return dispatch_id_; }
 
-    // Restart material for a worker beginning a fresh attempt.  Both are
-    // thread-safe (the pool takes its own lock).
-    bool get_restart(Rng& rng, std::vector<double>& out) { return pool_.get_restart(rng, out); }
-    bool copy_best(std::vector<double>& out) { return pool_.copy_best(out); }
-
 private:
     // Take the next process-global dispatch id, remember the heuristic name
     // the tag maps to, and stamp the dispatch's start on the solver clock.
     void begin_dispatch(int source);
 
+    // Submit to HiGHS, then emit the `[HeurSol]` line.
+    void on_accept(double objective, const std::vector<double>& solution, int source,
+                   const WorkerTrace& trace, size_t effort_at) override;
+
     // Emit one `[HeurSol]` line.  `const` and lock-free by construction —
     // see the definition for the threading argument.
-    void trace_offer(const WorkerTrace& trace, size_t effort_at, double objective,
-                     bool accepted) const;
+    void trace_offer(const WorkerTrace& trace, size_t effort_at, double objective) const;
 
     HighsMipSolver& mipsolver_;
-    SolutionPool pool_;
     // Serialises `trySolution`: `HighsMipSolverData::addIncumbent` is not
-    // thread-safe and the accept callback fires on whichever worker
-    // thread produced the solution.
+    // thread-safe and `on_accept` runs on whichever worker thread produced
+    // the solution.
     std::mutex highs_mtx_;
-    int source_;
-    std::atomic<size_t> accepted_{0};
 
     // `[HeurSol]` dispatch context.  Written only by `begin_dispatch`, i.e.
     // at construction and at `set_source`, both of which run on the

@@ -353,7 +353,7 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
 class LpFprWorker {
 public:
     LpFprWorker(const ProblemView& problem, const ExecutionContext& exec, const LpFprSetup& setup,
-                IncumbentSink& sink, int arm_idx, uint32_t seed, WorkerTrace trace)
+                SolutionSink& sink, int arm_idx, uint32_t seed, WorkerTrace trace)
         : problem_(problem),
           exec_(exec),
           setup_(setup),
@@ -459,7 +459,7 @@ private:
     const ProblemView& problem_;
     const ExecutionContext& exec_;
     const LpFprSetup& setup_;
-    IncumbentSink& sink_;
+    SolutionSink& sink_;
 
     int arm_idx_;
     // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
@@ -506,7 +506,7 @@ private:
 // wrap around the curated config list with distinct seeds for diversity.
 size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
                    const ExecutionContext& exec, const HeuristicBudget& budget,
-                   IncumbentSink& sink) {
+                   SolutionSink& sink) {
     g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
 
     // Per-worker lightweight state: just the LpFprWorker instance.

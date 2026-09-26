@@ -3,10 +3,7 @@
 #include "parallel/HighsSpinMutex.h"
 #include "rng.h"
 
-#include <functional>
 #include <vector>
-
-class HighsMipSolver;
 
 inline constexpr int kPoolCapacity = 10;
 
@@ -60,12 +57,6 @@ public:
     // integer.  Thread-safe (acquires lock).
     void set_integer_mask(std::vector<bool> mask);
 
-    // Register a callback invoked (outside the pool lock) whenever a solution
-    // is accepted. Call once before dispatching workers. The callback receives
-    // the solution vector and source tag and must be thread-safe (multiple
-    // workers may trigger it concurrently).
-    void set_on_accept(std::function<void(const std::vector<double>&, int)> callback);
-
     // What one offer did to the pool.  Two facts, because they are two
     // questions with different answers and #116 is about not confusing
     // them: `accepted` is the admission policy's verdict — is this worth
@@ -90,8 +81,8 @@ public:
         bool improved_best = false;
     };
 
-    // Try to add a solution.  Invokes the on_accept callback (if set)
-    // after releasing the pool lock.
+    // Try to add a solution.  What happens to an accepted one beyond the
+    // pool is `SolutionSink::on_accept`'s business, outside this lock.
     // `source` is one of the kSolutionSource* constants and is stored on
     // the inserted entry for later provenance-aware flushing.
     // Insertion policy (when pool is full):
@@ -180,13 +171,4 @@ private:
     // by construction, unlike `entries_.front()` — see `try_add`.
     double best_seen_ = 0.0;
     bool has_best_seen_ = false;
-    // Invoked outside pool lock after a successful insertion. Set once before
-    // workers start; reads from worker threads are unsynchronized but safe
-    // because the happens-before from thread creation covers the write.
-    std::function<void(const std::vector<double>&, int)> on_accept_;
 };
-
-// Seed a pool with the current incumbent (if any). Defined inline to
-// avoid pulling HighsMipSolver includes into the header — callers
-// already include both solution_pool.h and HighsMipSolver.h.
-void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver);

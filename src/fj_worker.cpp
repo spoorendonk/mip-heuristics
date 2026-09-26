@@ -1,9 +1,9 @@
 #include "fj_worker.h"
 
 #include "heuristic_context.h"
-#include "incumbent_sink.h"
 #include "mip/feasibilityjump.hh"
 #include "mip/HighsMipSolver.h"
+#include "solution_sink.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,7 +24,7 @@ struct FjWorker::Impl {
         : solver(log_options, seed, epsilon, feastol) {}
 };
 
-FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
                    std::vector<double> start, WorkerTrace trace)
     : problem_(problem),

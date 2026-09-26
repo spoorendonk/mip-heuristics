@@ -2,9 +2,9 @@
 
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "incumbent_sink.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
+#include "solution_sink.h"
 #include "util/HighsInt.h"
 #include "worker_base.h"
 
@@ -29,7 +29,7 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
 
 // Worker wrapping WorkerCtx. Runs weighted local search, accumulating
 // effort and submitting improving solutions through the shared
-// `IncumbentSink`.
+// `SolutionSink`.
 class LocalMipWorker {
 public:
     // `initial_solution` is the start `resolve_worker_start` produced, or
@@ -39,7 +39,7 @@ public:
     // resolved start is empty, which by `resolve_worker_start`'s ordering
     // means the pool and the incumbent were empty too.
     // `problem` must outlive the worker.
-    LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+    LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
                    const double* initial_solution, WorkerTrace trace);
 
@@ -59,7 +59,7 @@ private:
     // the search loop: one attempt at a large effort option runs far past
     // the solve's `time_limit` otherwise (issue #114).
     const ExecutionContext& exec_;
-    IncumbentSink& sink_;
+    SolutionSink& sink_;
     Rng rng_;
 
     // Effort / staleness / finished bookkeeping.  `total_budget` and

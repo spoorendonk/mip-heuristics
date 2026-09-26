@@ -10,7 +10,7 @@
 // dispatch-level one.  It is *not* "the pool accepted something": that
 // verdict is still reported, by `[Heur] found` and `[HeurSol] accepted`,
 // and the two differ by up to five orders of magnitude (see
-// `IncumbentSink::offer`).
+// `SolutionSink::offer`).
 struct AttemptResult {
     size_t effort = 0;
     bool found_improvement = false;
@@ -65,7 +65,7 @@ struct WorkerTrace {
 // search stopped producing, which is the entire job of this counter
 // (issue #111).
 //
-// What counts as producing is `IncumbentSink::OfferResult`'s
+// What counts as producing is `SolutionSink::OfferResult`'s
 // `improved_incumbent`, not its `accepted` (issue #116): the pool keeps a
 // top-K, so a heuristic that merely beats its own worst entry would clear
 // this counter forever without the solve's best objective moving.  The

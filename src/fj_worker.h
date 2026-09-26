@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-class IncumbentSink;
+class SolutionSink;
 struct ExecutionContext;
 struct ProblemView;
 
@@ -29,7 +29,7 @@ public:
     // `mipdata->incumbent` is what issue #98 was about, and a reference to
     // a caller local would dangle.
     // `problem` must outlive the worker.
-    FjWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+    FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
              size_t total_budget, size_t stale_budget, uint32_t seed, std::vector<double> start,
              WorkerTrace trace);
     ~FjWorker();
@@ -55,7 +55,7 @@ private:
     // one attempt at a large effort option runs far past the solve's
     // `time_limit` otherwise (issue #114).
     const ExecutionContext& exec_;
-    IncumbentSink& sink_;
+    SolutionSink& sink_;
     const std::vector<double> start_;
     const uint32_t seed_;
 

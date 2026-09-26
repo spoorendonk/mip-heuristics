@@ -97,7 +97,7 @@ struct HeuristicConfig {
     // **0 means no gate at all** — see `patience_threshold`.
     double HighsOptionsStruct::* patience;
     DispatchOutcome (*run)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
-                           IncumbentSink&);
+                           SolutionSink&);
 };
 
 constexpr auto kChain = std::to_array<HeuristicConfig>({

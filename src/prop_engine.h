@@ -210,7 +210,7 @@ public:
     // shape of bug this three-valuing fixed. A caller that genuinely has
     // nothing to decide from the verdict discards it explicitly with
     // `static_cast<void>` and a reason, matching the `-Werror=unused-result`
-    // culture this project already applies to `IncumbentSink::offer`.
+    // culture this project already applies to `SolutionSink::offer`.
     [[nodiscard]] PropResult propagate(HighsInt fixed_var = -1);
 
     // Add rows of variable j to the propagation worklist.

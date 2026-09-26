@@ -120,10 +120,11 @@ add_library(mip_heuristics OBJECT
     src/mode_dispatch.cpp
     src/scylla_worker.cpp
     src/solution_pool.cpp
+    src/solution_sink.cpp
     src/scylla.cpp
     src/walksat.cpp
 )
-# `IncumbentSink::offer` is `[[nodiscard]]` because dropping its verdict is
+# `SolutionSink::offer` is `[[nodiscard]]` because dropping its verdict is
 # the bug issue #111 fixed: every presolve worker computed the pool's
 # answer, discarded it, and substituted a worker-local notion of
 # "improved" that reset on every rebuild.  `[[nodiscard]]` alone does not

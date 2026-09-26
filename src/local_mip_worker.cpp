@@ -1,11 +1,11 @@
 #include "local_mip_worker.h"
 
 #include "heuristic_common.h"
-#include "incumbent_sink.h"
 #include "local_mip.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
 #include "lp_data/HConst.h"
+#include "solution_sink.h"
 
 #include <algorithm>
 #include <cmath>
@@ -79,7 +79,7 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
 }
 
 LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec,
-                               IncumbentSink& sink, size_t total_budget, size_t stale_budget,
+                               SolutionSink& sink, size_t total_budget, size_t stale_budget,
                                uint32_t seed, const double* initial_solution, WorkerTrace trace)
     : exec_(exec), sink_(sink), rng_(seed), trace_(trace), ctx_(problem) {
     base_.total_budget = total_budget;

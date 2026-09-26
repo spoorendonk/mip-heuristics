@@ -58,19 +58,27 @@ const char* name_for_source(int source) {
 }  // namespace
 
 IncumbentSink::IncumbentSink(HighsMipSolver& mipsolver, int source)
-    : mipsolver_(mipsolver),
-      pool_(kPoolCapacity, mipsolver.model_->sense_ == ObjSense::kMinimize),
-      source_(source) {
-    // Seed first, register second: the seeded incumbent came from HiGHS
-    // and re-submitting it here would be pointless work on the accept
-    // path.
-    seed_pool(pool_, mipsolver);
-
-    auto* mipdata = mipsolver.mipdata_.get();
-    pool_.set_on_accept([this, mipdata](const std::vector<double>& sol, int src) {
-        std::scoped_lock guard(highs_mtx_);
-        mipdata->trySolution(sol, src);
-    });
+    : SolutionSink(*mipsolver.model_, source), mipsolver_(mipsolver) {
+    // Seed the pool with the current incumbent, straight into the pool
+    // rather than through `offer`: it came from HiGHS, so re-submitting it
+    // would be pointless work, and it is the pool's initial state, not an
+    // offer from a heuristic — there is no dispatch yet and so no
+    // staleness counter for the verdict to feed, and it must not be
+    // counted as production by anything.  Reads the live
+    // `mipdata->incumbent`, which is legal only because every sink is
+    // constructed on the dispatching thread before any worker starts;
+    // workers read the dispatch snapshot instead (`ProblemView::incumbent`,
+    // issue #98).  Tagged with the generic kSolutionSourceHeuristic so
+    // nothing downstream misattributes it.
+    const HighsLp* model = mipsolver.model_;
+    const std::vector<double>& incumbent = mipsolver.mipdata_->incumbent;
+    if (!incumbent.empty()) {
+        double obj = model->offset_;
+        for (HighsInt j = 0; j < model->num_col_; ++j) {
+            obj += model->col_cost_[j] * incumbent[j];
+        }
+        static_cast<void>(pool_.try_add(obj, incumbent, kSolutionSourceHeuristic));
+    }
 
     // Constructing a sink opens a dispatch: `fpr_lp` builds one per dive
     // and never calls `set_source`, so this is that path's only boundary.
@@ -91,23 +99,18 @@ void IncumbentSink::begin_dispatch(int source) {
     dispatch_start_s_ = mipsolver_.timer_.read();
 }
 
-IncumbentSink::OfferResult IncumbentSink::offer(double objective,
-                                                const std::vector<double>& solution,
-                                                const WorkerTrace& trace, size_t effort_at) {
-    const SolutionPool::AddResult added = pool_.try_add(objective, solution, source_);
-    // `accepted_` and the trace line both stay on the admission verdict:
-    // they feed `[Heur] found` and `[HeurSol] accepted`, whose meaning
-    // external tooling depends on.  Only the gates read the other flag.
-    if (added.accepted) {
-        accepted_.fetch_add(1, std::memory_order_relaxed);
+void IncumbentSink::on_accept(double objective, const std::vector<double>& solution, int source,
+                              const WorkerTrace& trace, size_t effort_at) {
+    {
+        std::scoped_lock guard(highs_mtx_);
+        mipsolver_.mipdata_->trySolution(solution, source);
     }
-    trace_offer(trace, effort_at, objective, added.accepted);
-    return OfferResult{.accepted = added.accepted, .improved_incumbent = added.improved_best};
+    trace_offer(trace, effort_at, objective);
 }
 
-void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, double objective,
-                                bool accepted) const {
-    // Only accepted offers are traced (#113).  Every consumer reads
+void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at,
+                                double objective) const {
+    // Only accepted offers are traced (#113): this runs from `on_accept`.  Every consumer reads
     // acceptances — the productive/stale split, the inter-acceptance gap
     // distribution, and the informative-set split all filter to `accepted` —
     // so a rejected offer's line fed nothing, and there are a great many of
@@ -122,9 +125,7 @@ void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, doub
     // produces anything at all, admitted or not.  Nothing consumes it
     // today; if something needs it, it wants a counter in `[Heur]`, not a
     // line per offer.
-    if (!accepted) {
-        return;
-    }
+    //
     // Threading, and why there is no mutex here.
     //
     // `offer` is called concurrently by every worker of a dispatch.  This
@@ -169,5 +170,5 @@ void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at, doub
                 "[HeurSol] name=%s dispatch=%llu worker=%d effort_at=%zu wall_ms=%.1f "
                 "obj=%.17g accepted=%d\n",
                 dispatch_name_, static_cast<unsigned long long>(dispatch_id_), trace.worker,
-                effort_at, wall_ms, objective, accepted ? 1 : 0);
+                effort_at, wall_ms, objective, 1);
 }

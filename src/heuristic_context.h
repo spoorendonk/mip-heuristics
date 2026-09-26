@@ -30,13 +30,13 @@
 // references, reduced costs and shared `ContestedPdlp` that the presolve
 // heuristics have no equivalent of.
 //
-// Ownership: solution submission is not here — it lives in `IncumbentSink`
-// (incumbent_sink.h), owned by `mode_dispatch::run_sequential` and threaded
-// through each heuristic's entry point.  Per-worker effort/staleness
-// bookkeeping lives in
-// `WorkerBudgetState` (worker_base.h); `HeuristicBudget`
-// holds the *derived* values each worker's base struct receives on
-// construction.  All four heuristics' budgets come from their own
+// Ownership: solution submission is not here — it lives in `SolutionSink`
+// (solution_sink.h), which inside HiGHS is the `IncumbentSink` that
+// `mode_dispatch::run_sequential` owns and threads through each heuristic's
+// entry point.  Per-worker effort/staleness bookkeeping lives in
+// `WorkerBudgetState` (worker_base.h); `HeuristicBudget` holds the
+// *derived* values each worker's base struct receives on construction.
+// All four heuristics' budgets come from their own
 // `mip_heuristic_<name>_effort` option; FJ's sizes `per_worker` and lets
 // `total` scale with the pool, the other three size `total` and are
 // divided across it (see mode_dispatch.cpp).
@@ -44,7 +44,7 @@
 // The uniform runner contract every presolve heuristic implements:
 //
 //     DispatchOutcome <ns>::run(const ProblemView &problem, const HeuristicBudget &budget,
-//                               ExecutionContext &exec, IncumbentSink &sink);
+//                               ExecutionContext &exec, SolutionSink &sink);
 //
 // `mode_dispatch::run_sequential` owns all four arguments — including the
 // source tag the sink attributes this heuristic's solutions with — and books
@@ -84,7 +84,7 @@
 // object that outlives the dispatch; a return value cannot leak into the
 // next heuristic because there is no state to forget to clear.
 //
-// `[[nodiscard]]`, for the reason `IncumbentSink::offer` is: a dropped
+// `[[nodiscard]]`, for the reason `SolutionSink::offer` is: a dropped
 // outcome loses both the effort — which `run_sequential` books into
 // `heuristic_effort_used` and nothing else can recover — and the bail flag
 // this issue exists to carry.  `-Werror=unused-result` on `mip_heuristics`

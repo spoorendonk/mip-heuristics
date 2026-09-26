@@ -1124,7 +1124,7 @@ Three things to carry forward.
 - **File**: `src/solution_pool.h`
 - **Default**: `1e-9` (relative, with an absolute floor of the same size)
 - **Meaning**: The margin an offer must clear for
-  `IncumbentSink::OfferResult::improved_incumbent` to be true — the fact
+  `SolutionSink::OfferResult::improved_incumbent` to be true — the fact
   every patience gate reads, decided inside `SolutionPool`'s own lock
   against a monotone watermark of the best objective the pool has ever
   accepted. **Deliberately not a re-use of `kDiversityObjTolerance`**,
@@ -1535,7 +1535,7 @@ rebuild, so a rebuilt worker cleared the dispatch's staleness by
 rediscovering a solution the pool already held; fixing the threshold alone
 left FPR at 19.98x over a 20x sweep on `flugpl`, where it spent forty
 ceilings' worth of effort for one accepted solution. #111 pointed both
-gates at `IncumbentSink::offer`'s verdict instead, and called pool
+gates at `SolutionSink::offer`'s verdict instead, and called pool
 acceptance the project's definition of production. **#116 reverses that
 for the gate**, on the probe's evidence: the pool keeps a top-K, so a
 heuristic that merely beats its own worst entry resets staleness forever.
@@ -1545,7 +1545,7 @@ acceptances against 590 incumbent improvements, LocalMIP ~3.3 M against
 magnitude on FPR — so a patience calibrated on improvements (the only
 thing it can honestly be calibrated on) cannot be spent against a gate
 that resets on acceptances. Both gates now read
-`IncumbentSink::OfferResult::improved_incumbent`, decided inside
+`SolutionSink::OfferResult::improved_incumbent`, decided inside
 `SolutionPool`'s own lock against the best objective the pool has ever
 accepted — a monotone watermark rather than its front entry, which is
 belt and braces now that the diversity path may no longer evict the best

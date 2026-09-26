@@ -5,9 +5,9 @@
 #include "fpr_var_order.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
-#include "incumbent_sink.h"
 #include "mip/HighsMipSolver.h"
 #include "opportunistic_runner.h"
+#include "solution_sink.h"
 #include "worker_base.h"
 
 #include <algorithm>
@@ -81,7 +81,7 @@ namespace {
 class FprWorker {
 public:
     // `problem` must outlive the worker.
-    FprWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+    FprWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
               const VarOrderTable& var_orders, int worker_idx, uint32_t seed, size_t stale_budget);
 
     AttemptResult run_attempt(size_t attempt_budget);
@@ -105,7 +105,7 @@ private:
 
     const ProblemView& problem_;
     const ExecutionContext& exec_;
-    IncumbentSink& sink_;
+    SolutionSink& sink_;
     const VarOrderTable& var_orders_;
 
     int worker_idx_;
@@ -227,7 +227,7 @@ bool precompute_var_orders(HighsMipSolver& mipsolver, const Deadline& deadline,
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
-FprWorker::FprWorker(const ProblemView& problem, const ExecutionContext& exec, IncumbentSink& sink,
+FprWorker::FprWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                      const VarOrderTable& var_orders, int worker_idx, uint32_t seed,
                      size_t stale_budget)
     : problem_(problem),
@@ -491,7 +491,7 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
 // ---------------------------------------------------------------------------
 
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
-                    ExecutionContext& exec, IncumbentSink& sink) {
+                    ExecutionContext& exec, SolutionSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
         return {};
     }

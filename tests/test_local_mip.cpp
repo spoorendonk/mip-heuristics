@@ -376,7 +376,7 @@ TEST_CASE("Heuristics: run return value matches heuristic_effort_used delta",
     highs::parallel::initialize_scheduler();
 
     using RunFn = DispatchOutcome (*)(const ProblemView&, const HeuristicBudget&, ExecutionContext&,
-                                      IncumbentSink&);
+                                      SolutionSink&);
     auto check_invariant = [&](RunFn run_fn) {
         Highs highs;
         highs.setOptionValue("output_flag", false);
@@ -511,7 +511,7 @@ TEST_CASE("ProblemView::incumbent is a dispatch snapshot, not the live vector (#
         REQUIRE(!problem.incumbent.empty());
 
         // Diverge the live vector from the snapshot, then build the sink:
-        // `seed_pool` reads the live one, so the pool stays empty and the
+        // the sink's constructor reads the live one, so the pool stays empty and the
         // incumbent branch of `resolve_worker_start` — dead in production,
         // where the pool always carries the incumbent — becomes reachable.
         mipdata->incumbent.clear();

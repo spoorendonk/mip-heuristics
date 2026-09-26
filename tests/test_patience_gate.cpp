@@ -30,7 +30,7 @@
 // at infinity on every rebuild, so the pool's verdict was computed,
 // discarded, and replaced by one that a rebuilt worker could satisfy by
 // rediscovering a solution the pool already held.  #111 pointed the gates
-// at `IncumbentSink::offer`'s acceptance verdict, which fixed that and
+// at `SolutionSink::offer`'s acceptance verdict, which fixed that and
 // left a subtler version of the same defect: the pool keeps a top-K, so a
 // heuristic beating its own *worst* entry resets staleness forever
 // without the solve's best objective moving.  #113 measured how far apart
@@ -341,7 +341,7 @@ TEST_CASE("patience gate: FPR on egout binds once the gate counts improvements",
 // looks.  It reports `found=1` at every budget level while effort scaled
 // 20x, and `found` is not a count: `EffortLedger` sets it from
 // `sink.accepted() > accepted_before` (see effort_ledger.cpp and
-// `IncumbentSink::accepted`'s own comment), so it says only that *at
+// `SolutionSink::accepted`'s own comment), so it says only that *at
 // least one* offer was accepted during that dispatch.  It is consistent
 // with one solution and with fifty.  Establishing that a dispatch stopped
 // producing needs the accepted objectives themselves, not this field.
@@ -554,7 +554,7 @@ TEST_CASE("patience gate: an offer the pool refuses does not reset staleness", "
     // above, which does fail pre-fix (19.96x against a 4x bound).
     //
     // The *wiring* — that no worker drops the verdict again — is guarded
-    // by the compiler: `IncumbentSink::offer` is `[[nodiscard]]` and
+    // by the compiler: `SolutionSink::offer` is `[[nodiscard]]` and
     // `CMakeLists.txt` puts `-Werror=unused-result` on our two targets,
     // so a re-drop is a hard build failure rather than a warning that
     // scrolls past.  (Without that flag it was only a warning: nothing
@@ -624,7 +624,7 @@ TEST_CASE("patience gate: an offer the pool refuses does not reset staleness", "
 
 TEST_CASE("patience gate: the pool separates acceptance from improvement", "[patience][unit]") {
     // The two facts `SolutionPool::try_add` reports, and the three ways
-    // they can come apart.  This is the predicate `IncumbentSink::offer`
+    // they can come apart.  This is the predicate `SolutionSink::offer`
     // forwards as `OfferResult`, so it is where the #116 policy lives.
     SolutionPool pool(/*capacity=*/3, /*minimize=*/true);
 

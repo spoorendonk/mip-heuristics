@@ -1,8 +1,5 @@
 #include "solution_pool.h"
 
-#include "mip/HighsMipSolver.h"
-#include "mip/HighsMipSolverData.h"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -12,10 +9,6 @@
 
 SolutionPool::SolutionPool(int capacity, bool minimize)
     : capacity_(capacity), minimize_(minimize) {}
-
-void SolutionPool::set_on_accept(std::function<void(const std::vector<double>&, int)> callback) {
-    on_accept_ = std::move(callback);
-}
 
 void SolutionPool::set_integer_mask(std::vector<bool> mask) {
     std::scoped_lock lock(mtx_);
@@ -179,17 +172,12 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
             has_best_seen_ = true;
         }
     }
-    // Invoke callback outside the pool lock to avoid lock inversion: the
-    // callback holds its own mutex to serialize concurrent trySolution calls.
     // `improved_best` implies `accepted` in every branch above — an offer
     // that beats the best beats the worst too, so it takes the standard
     // replacement path — but tie them together rather than leaving that to
     // a reader of the admission policy: a staleness gate must never reset
     // on a solution the pool did not keep.
     result.improved_best = result.improved_best && result.accepted;
-    if (result.accepted && on_accept_) {
-        on_accept_(sol, source);
-    }
     return result;
 }
 
@@ -307,38 +295,4 @@ bool SolutionPool::copy_best(std::vector<double>& out) {
 int SolutionPool::size() {
     std::scoped_lock lock(mtx_);
     return static_cast<int>(entries_.size());
-}
-
-// Reads the live `mipdata->incumbent`, which is legal only because every
-// caller constructs its `IncumbentSink` on the dispatching thread before
-// any worker starts — nothing can be submitting concurrently.  Workers read
-// the dispatch snapshot instead (`ProblemView::incumbent`, issue #98).
-void seed_pool(SolutionPool& pool, const HighsMipSolver& mipsolver) {
-    const auto* model = mipsolver.model_;
-    auto* mipdata = mipsolver.mipdata_.get();
-
-    // Build integer mask from model integrality and set on pool.
-    const HighsInt ncol = model->num_col_;
-    std::vector<bool> int_mask(ncol);
-    for (HighsInt j = 0; j < ncol; ++j) {
-        int_mask[j] = (model->integrality_[j] != HighsVarType::kContinuous);
-    }
-    pool.set_integer_mask(std::move(int_mask));
-
-    if (mipdata->incumbent.empty()) {
-        return;
-    }
-    double obj = model->offset_;
-    for (HighsInt j = 0; j < ncol; ++j) {
-        obj += model->col_cost_[j] * mipdata->incumbent[j];
-    }
-    // The incumbent came from HiGHS itself (or a prior heuristic that has
-    // already been attributed), so on flush HiGHS will recognize it as a
-    // duplicate and drop it before logging.  Tag it with the generic
-    // kSolutionSourceHeuristic so nothing downstream misattributes it.
-    // Discarded on purpose: this is the pool's initial state, not an
-    // offer from a heuristic.  There is no dispatch yet and so no
-    // staleness counter for the verdict to feed, and the seeded solution
-    // must not be counted as production by anything.
-    static_cast<void>(pool.try_add(obj, mipdata->incumbent, kSolutionSourceHeuristic));
 }

@@ -23,8 +23,9 @@
 // cannot show what happens *inside* one — and the patience values #107
 // calibrates are exactly an intra-dispatch quantity ("how much
 // improvement-free effort is enough before this is going nowhere?").  This
-// line is emitted from `IncumbentSink::offer`, the project's single
-// definition of production, once per *accepted* offer.  Rejected offers
+// line is emitted from `IncumbentSink::on_accept`, reached only through
+// `SolutionSink::offer` — the project's single definition of production —
+// once per *accepted* offer.  Rejected offers
 // were traced too until #113, when a clock-bound probe run turned out to
 // spend a few percent of its wall time and 65 % of a whole results tree
 // writing lines nothing reads: every consumer filters to `accepted`.  The
