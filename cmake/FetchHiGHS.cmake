@@ -53,8 +53,11 @@ if(MIP_HEURISTICS_CUDA)
     # *normal* variable of the same name from $CUDA_HOME (see above), so this
     # is the value CMake uses for anything reached before that point.
     set(CMAKE_CUDA_COMPILER "${CMAKE_CUDA_COMPILER}" CACHE FILEPATH "" FORCE)
-    set(CUPDLP_GPU ON CACHE BOOL "" FORCE)
-    set(CUPDLP_FIND_CUDA ON CACHE BOOL "" FORCE)
+    # Normal variables, like the BUILD_* switches above and for the same
+    # reason: HiGHS's option() calls honour them and a parent's cache is left
+    # alone.
+    set(CUPDLP_GPU ON)
+    set(CUPDLP_FIND_CUDA ON)
     message(STATUS "MIP_HEURISTICS_CUDA: enabled (CUDA compiler: ${CMAKE_CUDA_COMPILER})")
 endif()
 
@@ -90,10 +93,10 @@ FetchContent_Declare(highs
 FetchContent_MakeAvailable(highs)
 
 # Post-condition: assert on the macro the compiler actually sees.  Testing
-# the `CUPDLP_GPU` variable here would be vacuous — we FORCE it into the
-# cache ourselves above, HiGHS never clears it (its only `set(CUPDLP_GPU
-# OFF)` is commented out), and anything HiGHS set inside its own directory
-# scope would not propagate back to us.  `HConfig.h` is `configure_file`d at
+# the `CUPDLP_GPU` variable here would be vacuous — we set it ourselves
+# above, HiGHS never clears it (its only `set(CUPDLP_GPU OFF)` is commented
+# out), and anything HiGHS set inside its own directory scope would not
+# propagate back to us.  `HConfig.h` is `configure_file`d at
 # configure time with `#cmakedefine CUPDLP_CPU` / `#cmakedefine CUPDLP_GPU`,
 # and that is precisely what `CupdlpWrapper.cpp` branches on to pick the
 # device — so this checks the GPU-vs-CPU compile-time truth directly.

@@ -5,19 +5,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# The Catch2 suite, the bench and docs checks and the lint gates serve this
+# repo's own development only.  A parent that pulls this project in with
+# FetchContent or add_subdirectory wants the patched `highs` target, not
+# these in its ctest (and not a `lint` target colliding with its own), so
+# they are on only as the top-level project; a parent can force them on by
+# setting this ON.  The early return() at "--- Tests ---" below does the
+# skipping.
+option(MIP_HEURISTICS_BUILD_TESTS
+       "Build and register the tests, bench checks and lint gates" ${PROJECT_IS_TOP_LEVEL})
+
 # Optional instrumentation for the LocalMIP warm-start branch counters.
 # These atomic counters fire on every dispatch in the production binary
 # but are only consumed by two tests.  When OFF the counter increments
 # compile out via `if constexpr` and the public API returns zeros; when
 # ON, the counters fire and the test suite uses them as regression
-# sentinels.  Defaults ON because a top-level build always builds tests
-# (see MIP_HEURISTICS_BUILD_TESTS below); production builds wanting zero
-# counter overhead, a parent project's included, set
-# `MIP_HEURISTICS_INSTRUMENT=OFF` explicitly.
-# R3-1 round-4 review; R5 R1-1/R2-2/R3-2 dropped the dead else-branch
-# whose default was unreachable due to the BUILD_TESTING force later.
+# sentinels.  So the default follows MIP_HEURISTICS_BUILD_TESTS: ON
+# wherever the tests are built to read them, OFF for a parent consuming
+# only the library, which would pay the overhead for nothing.  A top-level
+# production build wanting zero counter overhead passes
+# `-DMIP_HEURISTICS_INSTRUMENT=OFF` explicitly.
 option(MIP_HEURISTICS_INSTRUMENT
-       "Enable LocalMIP warm-start branch instrumentation counters" ON)
+       "Enable LocalMIP warm-start branch instrumentation counters" ${MIP_HEURISTICS_BUILD_TESTS})
 
 option(MIP_HEURISTICS_INSTALL_GIT_HOOKS
        "Point this checkout's core.hooksPath at the tracked .githooks/" ${PROJECT_IS_TOP_LEVEL})
@@ -149,15 +158,9 @@ target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics>)
 target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # --- Tests ---
-# Everything from here to the end of the file serves this repo's own
-# development: the Catch2 suite, the bench and docs checks, and the lint gates
-# (whose `lint` target name would also collide with a parent's).  A parent
-# that pulls this project in with FetchContent or add_subdirectory wants the
-# patched `highs` target above, not these in its ctest, so they are on only
-# as the top-level project; -DMIP_HEURISTICS_BUILD_TESTS=ON forces them on
-# from a parent.  Consumer-facing targets therefore go above this line.
-option(MIP_HEURISTICS_BUILD_TESTS
-       "Build and register the tests, bench checks and lint gates" ${PROJECT_IS_TOP_LEVEL})
+# Everything from here to the end of the file is development-only and skipped
+# unless MIP_HEURISTICS_BUILD_TESTS is on (see its declaration at the top).
+# Consumer-facing targets therefore go above this line.
 if(NOT MIP_HEURISTICS_BUILD_TESTS)
     return()
 endif()

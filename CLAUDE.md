@@ -49,7 +49,7 @@ When a complexity warning fires, don't extract methods mechanically. Ask what th
 - `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)` for clang-tidy.
 - Use FetchContent for dependencies.
 - A single root `CMakeLists.txt`; per-directory files would only add indirection.
-- **Consumable as a subproject.** A parent's `FetchContent` / `add_subdirectory` gets the patched `highs` target and nothing else: tests, Catch2, the bench and docs checks and the lint gates sit behind `MIP_HEURISTICS_BUILD_TESTS` (default `PROJECT_IS_TOP_LEVEL`, via an early `return()` in the root file), and hook installation defaults the same way. Consumer-facing targets go **above** that `return()`; anything development-only goes below it. Set HiGHS's switches (`BUILD_TESTING`, `BUILD_SHARED_LIBS`, …) as normal variables, never `CACHE FORCE`, which would overwrite the parent's.
+- **Consumable as a subproject.** `highs` is the consumer-facing target, and a parent's `FetchContent` / `add_subdirectory` gets no tests, lint gates or hooks of ours: tests, Catch2, the bench and docs checks and the lint gates sit behind `MIP_HEURISTICS_BUILD_TESTS` (default `PROJECT_IS_TOP_LEVEL`, via an early `return()` in the root file), hook installation defaults the same way, and `MIP_HEURISTICS_INSTRUMENT` follows `MIP_HEURISTICS_BUILD_TESTS`. HiGHS's own extra targets (`highs-bin`, `highs_extras`, CPack, install rules) still come along — they are upstream's. Consumer-facing targets go **above** that `return()`; anything development-only goes below it. Set HiGHS's switches (`BUILD_TESTING`, `BUILD_SHARED_LIBS`, …) as normal variables, never `CACHE FORCE`, which would overwrite the parent's.
 
 ## Testing (Catch2 v3)
 
