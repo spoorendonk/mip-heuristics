@@ -72,10 +72,16 @@ if [ -n "$CPP_FILES" ] && [ -n "$CLANG_TIDY" ]; then
 	[ -f "build/compile_commands.json" ] && COMPILE_DB="-p build"
 	[ -f "compile_commands.json" ] && COMPILE_DB="-p ."
 
+	# --header-filter as the tidy gate builds it: anchored at this checkout's
+	# src/ and tests/.  The portable HeaderFilterRegex in .clang-tidy also
+	# matches a fetched dependency's src/*.h under build/_deps, and --fix
+	# would rewrite that tree.
+	HEADER_FILTER="^$(git rev-parse --show-toplevel)/(src|tests)/"
 	if [ -n "$COMPILE_DB" ]; then
 		for f in $CPP_FILES; do
 			"$CLANG_TIDY" $COMPILE_DB \
 				--checks="-*,modernize-use-nullptr,modernize-use-override,modernize-use-using,readability-braces-around-statements" \
+				--header-filter="$HEADER_FILTER" \
 				--fix --quiet "$f" 2>/dev/null || true
 		done
 	fi
