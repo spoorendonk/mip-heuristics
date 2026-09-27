@@ -45,18 +45,17 @@ constexpr HighsInt kDeadlinePollNodes = 16;
 // stashable), so each function rebuilds them from this struct.  Cheap
 // — the lambdas are stateless wrappers over const refs.
 struct AttemptCtx {
-    const HighsLp* model;
     const std::vector<HighsInt>& ar_start;
     const std::vector<HighsInt>& ar_index;
     const std::vector<double>& ar_value;
     const std::vector<double>& col_lb;
     const std::vector<double>& col_ub;
+    // The view's minimisation form (#170).
     const std::vector<double>& col_cost;
     const std::vector<double>& row_lo;
     const std::vector<double>& row_hi;
     const std::vector<HighsVarType>& integrality;
     double feastol;
-    bool minimize;
     HighsInt ncol;
     HighsInt nrow;
     // Dispatch-time `isBinary` snapshot; see `ProblemView::binary`.
@@ -68,25 +67,11 @@ struct AttemptCtx {
 };
 
 AttemptCtx make_ctx(const ProblemView& problem) {
-    const HighsLp* model = problem.model;
     return AttemptCtx{
-        model,
-        *problem.ar_start,
-        *problem.ar_index,
-        *problem.ar_value,
-        model->col_lower_,
-        model->col_upper_,
-        model->col_cost_,
-        model->row_lower_,
-        model->row_upper_,
-        model->integrality_,
-        problem.feastol,
-        model->sense_ == ObjSense::kMinimize,
-        model->num_col_,
-        model->num_row_,
-        problem.binary.data(),
-        *problem.uplocks,
-        *problem.downlocks,
+        *problem.ar_start,     *problem.ar_index, *problem.ar_value,  *problem.col_lower,
+        *problem.col_upper,    *problem.col_cost, *problem.row_lower, *problem.row_upper,
+        *problem.integrality,  problem.feastol,   problem.ncol,       problem.nrow,
+        problem.binary.data(), *problem.uplocks,  *problem.downlocks,
     };
 }
 
@@ -168,8 +153,8 @@ PropEngine& attempt_engine(FprScratch& scratch) {
 double choose_fix_value(HighsInt j, const FprConfig& cfg, const AttemptCtx& c, PropEngine& E,
                         const CscMatrix& csc, Rng& rng) {
     assert(cfg.strategy != nullptr && "FprConfig::strategy must be set (issue #120)");
-    return choose_value(j, E.var(j).lb, E.var(j).ub, is_integer(c.integrality, j), c.minimize,
-                        c.col_cost[j], cfg.strategy->val_strategy, rng, cfg.lp_ref, c.row_lo.data(),
+    return choose_value(j, E.var(j).lb, E.var(j).ub, is_integer(c.integrality, j), c.col_cost[j],
+                        cfg.strategy->val_strategy, rng, cfg.lp_ref, c.row_lo.data(),
                         c.row_hi.data(),
                         E.activities_initialized() ? E.min_activity_data() : nullptr,
                         E.activities_initialized() ? E.max_activity_data() : nullptr, &csc);
@@ -736,7 +721,7 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, const ProblemView& pr
 
         if (!is_int(j)) {
             if (std::abs(c.col_cost[j]) > 1e-15) {
-                bool want_low = (c.minimize == (c.col_cost[j] > 0));
+                bool want_low = c.col_cost[j] > 0;
                 E.sol(j) = finite_clamp_helper(want_low ? lo : hi, lo, hi);
             } else {
                 double fallback = (cfg.cont_fallback != nullptr) ? cfg.cont_fallback[j] : 0.0;
@@ -884,12 +869,9 @@ HeuristicResult fpr_attempt_finish(FprAttemptState& state, const ProblemView& pr
         return HeuristicResult::infeasible_point(std::move(solution), total_prop_work);
     }
 
-    greedy_1opt(E, solution, lhs_cache, c.col_cost.data(), c.minimize, total_prop_work);
+    greedy_1opt(E, solution, lhs_cache, c.col_cost.data(), total_prop_work);
 
-    double obj = c.model->offset_;
-    for (HighsInt j = 0; j < c.ncol; ++j) {
-        obj += c.col_cost[j] * solution[j];
-    }
+    const double obj = problem.objective(solution);
 
     HeuristicResult result;
     result.found_feasible = true;

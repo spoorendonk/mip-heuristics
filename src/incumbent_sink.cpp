@@ -58,7 +58,7 @@ const char* name_for_source(int source) {
 }  // namespace
 
 IncumbentSink::IncumbentSink(HighsMipSolver& mipsolver, int source)
-    : SolutionSink(*mipsolver.model_, source), mipsolver_(mipsolver) {
+    : SolutionSink(mipsolver.model_->integrality_, source), mipsolver_(mipsolver) {
     // Seed the pool with the current incumbent, straight into the pool
     // rather than through `offer`: it came from HiGHS, so re-submitting it
     // would be pointless work, and it is the pool's initial state, not an

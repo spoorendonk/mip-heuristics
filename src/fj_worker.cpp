@@ -36,6 +36,11 @@ FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, Sol
       trace_(trace) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
+    // A model with no columns or no rows has nothing to search, and an
+    // attempt on one would charge no effort, so nothing would ever end it
+    // but the deadline.  The HiGHS runners never build a worker for one
+    // (`ProblemView::degenerate()`); a caller of the core might.
+    base_.finished = problem.degenerate();
 }
 
 FjWorker::~FjWorker() = default;
@@ -55,7 +60,12 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     const HighsLp* model = problem_.model;
     const double feastol = problem_.feastol;
     const double epsilon = problem_.epsilon;
-    const auto sense_multiplier = static_cast<double>(model->sense_);
+    // The view's minimisation form (#170), so FJ's own minimised objective
+    // is the view's up to the offset, with no sense to correct for.
+    const std::vector<double>& col_cost = *problem_.col_cost;
+    const std::vector<HighsVarType>& integrality = *problem_.integrality;
+    const std::vector<double>& row_lower = *problem_.row_lower;
+    const std::vector<double>& row_upper = *problem_.row_upper;
 
     // First attempt: build the solver and initial assignments.
     if (!initialized_) {
@@ -78,11 +88,11 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         const bool use_incumbent = !inc.empty();
 
         for (HighsInt col = 0; col < model->num_col_; ++col) {
-            double lower = model->col_lower_[col];
-            double upper = model->col_upper_[col];
+            double lower = (*problem_.col_lower)[col];
+            double upper = (*problem_.col_upper)[col];
 
             VarType fj_var_type;
-            if (model->integrality_[col] == HighsVarType::kContinuous) {
+            if (integrality[col] == HighsVarType::kContinuous) {
                 fj_var_type = VarType::Continuous;
             } else {
                 fj_var_type = VarType::Integer;
@@ -96,8 +106,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 base_.finished = true;
                 return {};
             }
-            impl_->solver.addVar(fj_var_type, lower, upper,
-                                 sense_multiplier * model->col_cost_[col]);
+            impl_->solver.addVar(fj_var_type, lower, upper, col_cost[col]);
 
             double initial_assignment = 0.0;
             if (use_incumbent && std::isfinite(inc[col])) {
@@ -116,19 +125,19 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         a_matrix.createRowwise(model->a_matrix_);
 
         for (HighsInt row = 0; row < model->num_row_; ++row) {
-            bool has_finite_lower = std::isfinite(model->row_lower_[row]);
-            bool has_finite_upper = std::isfinite(model->row_upper_[row]);
+            bool has_finite_lower = std::isfinite(row_lower[row]);
+            bool has_finite_upper = std::isfinite(row_upper[row]);
             if (has_finite_lower || has_finite_upper) {
                 HighsInt row_num_nz = a_matrix.start_[row + 1] - a_matrix.start_[row];
                 auto* row_index = a_matrix.index_.data() + a_matrix.start_[row];
                 auto* row_value = a_matrix.value_.data() + a_matrix.start_[row];
                 if (has_finite_lower) {
-                    impl_->solver.addConstraint(RowType::Gte, model->row_lower_[row], row_num_nz,
-                                                row_index, row_value, 0);
+                    impl_->solver.addConstraint(RowType::Gte, row_lower[row], row_num_nz, row_index,
+                                                row_value, 0);
                 }
                 if (has_finite_upper) {
-                    impl_->solver.addConstraint(RowType::Lte, model->row_upper_[row], row_num_nz,
-                                                row_index, row_value, 0);
+                    impl_->solver.addConstraint(RowType::Lte, row_upper[row], row_num_nz, row_index,
+                                                row_value, 0);
                 }
             }
         }
@@ -173,7 +182,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         // to reconstruct as `base_.total_effort + attempt_effort_consumed`.
         if (status.solution != nullptr) {
             best_sol.assign(status.solution, status.solution + status.numVars);
-            const double obj = model->offset_ + (sense_multiplier * status.solutionObjectiveValue);
+            const double obj = problem_.offset + status.solutionObjectiveValue;
             if (sink_.offer(obj, best_sol, trace_, trace_.at(status.totalEffort))
                     .improved_incumbent) {
                 improved_incumbent = true;

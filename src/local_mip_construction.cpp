@@ -259,11 +259,11 @@ size_t construct_initial_solution(const ProblemView& problem, Rng& rng, size_t m
         return 0;
     }
 
-    const auto& col_lb = problem.model->col_lower_;
-    const auto& col_ub = problem.model->col_upper_;
-    const auto& row_lo = problem.model->row_lower_;
-    const auto& row_hi = problem.model->row_upper_;
-    const auto& integrality = problem.model->integrality_;
+    const auto& col_lb = *problem.col_lower;
+    const auto& col_ub = *problem.col_upper;
+    const auto& row_lo = *problem.row_lower;
+    const auto& row_hi = *problem.row_upper;
+    const auto& integrality = *problem.integrality;
     const auto& ar_start = *problem.ar_start;
     const auto& ar_index = *problem.ar_index;
     const auto& ar_value = *problem.ar_value;

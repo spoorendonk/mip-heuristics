@@ -1,4 +1,4 @@
-#include "lp_data/HighsLp.h"
+#include "lp_data/HConst.h"
 #include "mip/HighsMipSolverData.h"  // for kSolutionSource* constants
 #include "rng.h"
 #include "solution_pool.h"
@@ -15,7 +15,7 @@
 #include <vector>
 
 TEST_CASE("SolutionPool: basic operations", "[pool]") {
-    SolutionPool pool(3, true);  // minimize, capacity 3
+    SolutionPool pool(3);  // capacity 3
 
     // Empty pool
     auto snap = pool.snapshot();
@@ -66,7 +66,7 @@ TEST_CASE("SolutionPool: diversity replacement preserves source tag", "[pool]") 
     // kDiversityObjTolerance * |best_obj| of best, and new solution Hamming-
     // distant from the most similar existing entry by at least
     // kDiversityMinHammingFrac of the integer-var count.
-    SolutionPool pool(kPoolCapacity, /*minimize=*/true);
+    SolutionPool pool(kPoolCapacity);
 
     // 20 integer vars: 1 flip = 5% Hamming fraction exactly, which satisfies
     // the `min_frac < kDiversityMinHammingFrac` rejection (strict <).  Use
@@ -122,7 +122,7 @@ TEST_CASE("SolutionPool: diversity replacement preserves source tag", "[pool]") 
 }
 
 TEST_CASE("SolutionPool: restart strategies", "[pool]") {
-    SolutionPool pool(5, true);
+    SolutionPool pool(5);
     static_cast<void>(pool.try_add(10.0, {0.0, 1.0, 0.0}, kSolutionSourceFPR));
     static_cast<void>(pool.try_add(5.0, {1.0, 0.0, 1.0}, kSolutionSourceFPR));
     static_cast<void>(pool.try_add(7.0, {0.0, 0.0, 1.0}, kSolutionSourceFPR));
@@ -143,7 +143,7 @@ TEST_CASE("SolutionPool: restart strategies", "[pool]") {
 // ── SolutionPool: thread-safety stress test ──
 
 TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-safety]") {
-    SolutionPool pool(10, true);
+    SolutionPool pool(10);
     static_cast<void>(pool.try_add(100.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR));
 
     constexpr int kNumThreads = 4;
@@ -183,18 +183,10 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
 
 namespace {
 
-// A one-column continuous minimisation model: enough for a sink, and no
-// integer column, so the pool's diversity path never admits a dominated
-// offer and "accepted" is exactly "beats the worst entry of a full pool".
-HighsLp one_column_lp() {
-    HighsLp lp;
-    lp.num_col_ = 1;
-    lp.col_cost_ = {1.0};
-    lp.col_lower_ = {0.0};
-    lp.col_upper_ = {kHighsInf};
-    lp.integrality_ = {HighsVarType::kContinuous};
-    return lp;
-}
+// One continuous column: enough for a sink, and no integer column, so the
+// pool's diversity path never admits a dominated offer and "accepted" is
+// exactly "beats the worst entry of a full pool".
+const std::vector<HighsVarType> kOneContinuousColumn{HighsVarType::kContinuous};
 
 // Records every `on_accept`, under its own mutex: taking it while the
 // pool's spin-lock is held would be the lock inversion the hook's
@@ -217,8 +209,7 @@ private:
 }  // namespace
 
 TEST_CASE("SolutionSink: on_accept fires for accepted offers only", "[pool]") {
-    const HighsLp lp = one_column_lp();
-    RecordingSink sink(lp, kSolutionSourceFPR);
+    RecordingSink sink(kOneContinuousColumn, kSolutionSourceFPR);
 
     // Fill the pool — every offer into a non-full pool is accepted.
     for (int k = 0; k < kPoolCapacity; ++k) {
@@ -241,8 +232,7 @@ TEST_CASE("SolutionSink: on_accept fires for accepted offers only", "[pool]") {
 }
 
 TEST_CASE("SolutionSink: on_accept under concurrent offers", "[pool][thread-safety]") {
-    const HighsLp lp = one_column_lp();
-    RecordingSink sink(lp, kSolutionSourceFPR);
+    RecordingSink sink(kOneContinuousColumn, kSolutionSourceFPR);
 
     constexpr int kNumThreads = 4;
     constexpr int kOpsPerThread = 50;
@@ -271,7 +261,7 @@ TEST_CASE("SolutionSink: on_accept under concurrent offers", "[pool][thread-safe
 }
 
 TEST_CASE("SolutionPool: empty pool restart returns false", "[pool][edge]") {
-    SolutionPool pool(5, true);
+    SolutionPool pool(5);
     Rng rng(42);
     std::vector<double> out;
     REQUIRE_FALSE(pool.get_restart(rng, out));
@@ -281,7 +271,7 @@ TEST_CASE("SolutionPool: empty pool restart returns false", "[pool][edge]") {
 // ── SolutionPool: single-entry pool always returns copy ──
 
 TEST_CASE("SolutionPool: single-entry restart is always copy", "[pool][edge]") {
-    SolutionPool pool(5, true);
+    SolutionPool pool(5);
     static_cast<void>(pool.try_add(10.0, {1.0, 2.0, 3.0}, kSolutionSourceFPR));
 
     Rng rng(42);
@@ -309,7 +299,7 @@ TEST_CASE("SolutionPool: the diversity path never evicts the best entry", "[pool
     // The offer below is built to be maximally tempting to the old rule: it
     // is nearest to the best entry and far from everything else.
     constexpr int kNumIntVars = 20;
-    SolutionPool pool(/*capacity=*/3, /*minimize=*/true);
+    SolutionPool pool(/*capacity=*/3);
     pool.set_integer_mask(std::vector<bool>(kNumIntVars, true));
 
     std::vector<double> best(kNumIntVars, 0.0);

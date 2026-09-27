@@ -22,7 +22,8 @@ enum class ValStrategy {
 // Choose a fixing value for variable j given the current domain [lb, ub].
 // For LP-based strategies, `lp_ref[j]` provides the reference LP value.
 // For loosedyn, precomputed row activities and bound arrays are needed.
-double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize, double cost,
+// `cost` is column j's cost in the `ProblemView`'s minimisation form.
+double choose_value(HighsInt j, double lb, double ub, bool is_int, double cost,
                     ValStrategy strategy, Rng& rng, const double* lp_ref,
                     // loosedyn support: nullable pointers
                     const double* row_lo, const double* row_hi, const double* min_act,

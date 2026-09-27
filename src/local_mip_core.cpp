@@ -12,35 +12,22 @@
 
 namespace local_mip_detail {
 
-namespace {
-
-double compute_objective(const HighsLp* model, const std::vector<double>& solution) {
-    double obj = model->offset_;
-    for (HighsInt j = 0; j < model->num_col_; ++j) {
-        obj += model->col_cost_[j] * solution[j];
-    }
-    return obj;
-}
-
-}  // namespace
-
 // --- WorkerCtx ---
 
 WorkerCtx::WorkerCtx(const ProblemView& problem)
-    : model(problem.model),
-      ar_start(*problem.ar_start),
+    : ar_start(*problem.ar_start),
       ar_index(*problem.ar_index),
       ar_value(*problem.ar_value),
-      col_lb(problem.model->col_lower_),
-      col_ub(problem.model->col_upper_),
-      col_cost(problem.model->col_cost_),
-      row_lo(problem.model->row_lower_),
-      row_hi(problem.model->row_upper_),
-      integrality(problem.model->integrality_),
+      col_lb(*problem.col_lower),
+      col_ub(*problem.col_upper),
+      col_cost(*problem.col_cost),
+      offset(problem.offset),
+      row_lo(*problem.row_lower),
+      row_hi(*problem.row_upper),
+      integrality(*problem.integrality),
       csc(*problem.csc),
       feastol(problem.feastol),
       epsilon(problem.epsilon),
-      minimize(problem.model->sense_ == ObjSense::kMinimize),
       ncol(problem.model->num_col_),
       nrow(problem.model->num_row_),
       binary(problem.binary.data()),
@@ -166,7 +153,10 @@ void WorkerCtx::rebuild_state() {
     feasible_recheck_counter = 0;
     full_recheck(/*update_sets=*/true, /*early_exit=*/false);
     lift.mark_all_dirty();
-    current_obj = compute_objective(model, solution);
+    current_obj = offset;
+    for (HighsInt j = 0; j < ncol; ++j) {
+        current_obj += col_cost[j] * solution[j];
+    }
 }
 
 // Cognitive complexity 35 (threshold 25).  Kept whole: LocalMIP's tight-delta rule (Defs 4-5): one
@@ -252,8 +242,7 @@ void WorkerCtx::update_weights(Rng& rng, bool is_feasible, bool best_feasible, d
         }
     } else {
         // With probability sp: smooth (weaken)
-        bool obj_better =
-            best_feasible && (minimize ? (current_obj < best_obj) : (current_obj > best_obj));
+        bool obj_better = best_feasible && current_obj < best_obj;
         if (obj_better && obj_weight > 1) {
             obj_weight -= 1;
         }
@@ -321,20 +310,12 @@ void LiftCache::recompute_one(HighsInt j, WorkerCtx& ctx) {
     if (lo_j > hi_j) {
         score[j] = 0.0;
     } else {
-        double target;
-        if (ctx.minimize) {
-            target = (ctx.col_cost[j] > 0) ? lo_j : hi_j;
-        } else {
-            target = (ctx.col_cost[j] > 0) ? hi_j : lo_j;
-        }
+        double target = (ctx.col_cost[j] > 0) ? lo_j : hi_j;
         target = ctx.clamp_and_round(j, target);
         if (std::abs(target - ctx.solution[j]) < kEpsZero) {
             score[j] = 0.0;
         } else {
             double obj_delta = ctx.col_cost[j] * (target - ctx.solution[j]);
-            if (!ctx.minimize) {
-                obj_delta = -obj_delta;
-            }
             score[j] = -obj_delta;  // positive = improving
         }
     }

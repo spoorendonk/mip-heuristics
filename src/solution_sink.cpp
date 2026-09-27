@@ -1,17 +1,16 @@
 #include "solution_sink.h"
 
 #include "lp_data/HConst.h"
-#include "lp_data/HighsLp.h"
 
 #include <atomic>
 #include <utility>
 #include <vector>
 
-SolutionSink::SolutionSink(const HighsLp& model, int source)
-    : pool_(kPoolCapacity, model.sense_ == ObjSense::kMinimize), source_(source) {
-    std::vector<bool> int_mask(model.num_col_);
-    for (HighsInt j = 0; j < model.num_col_; ++j) {
-        int_mask[j] = (model.integrality_[j] != HighsVarType::kContinuous);
+SolutionSink::SolutionSink(const std::vector<HighsVarType>& integrality, int source)
+    : pool_(kPoolCapacity), source_(source) {
+    std::vector<bool> int_mask(integrality.size());
+    for (size_t j = 0; j < integrality.size(); ++j) {
+        int_mask[j] = (integrality[j] != HighsVarType::kContinuous);
     }
     pool_.set_integer_mask(std::move(int_mask));
 }

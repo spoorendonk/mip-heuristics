@@ -52,19 +52,16 @@ std::pair<double, double> compute_candidate_scores(WorkerCtx& ctx, HighsInt j, d
     double new_obj = ctx.current_obj + obj_delta;
     double eps = ctx.epsilon;
     double progress = 0.0;
-    if ((!ctx.minimize && new_obj > ctx.current_obj + eps) ||
-        (ctx.minimize && new_obj < ctx.current_obj - eps)) {
+    if (new_obj < ctx.current_obj - eps) {
         progress += static_cast<double>(ctx.obj_weight);  // objective improved
-    } else if ((!ctx.minimize && new_obj < ctx.current_obj - eps) ||
-               (ctx.minimize && new_obj > ctx.current_obj + eps)) {
+    } else if (new_obj > ctx.current_obj + eps) {
         progress -= static_cast<double>(ctx.obj_weight);  // objective worsened
     }
 
     // Def 8: breakthrough bonus (beats best-found solution)
     double bonus = 0.0;
     if (best_feasible) {
-        bool beats_best = ctx.minimize ? (new_obj < best_obj - eps) : (new_obj > best_obj + eps);
-        if (beats_best) {
+        if (new_obj < best_obj - eps) {
             bonus += static_cast<double>(ctx.obj_weight);
         }
     }
@@ -162,7 +159,7 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
     double delta = new_val - ctx.solution[j];
     double obj_delta = ctx.col_cost[j] * delta;
     double new_obj = ctx.current_obj + obj_delta;
-    return ctx.minimize ? (new_obj < best_obj - ctx.epsilon) : (new_obj > best_obj + ctx.epsilon);
+    return new_obj < best_obj - ctx.epsilon;
 }
 
 // Paper Definition 2: `Delta_j = (obj(s*) - obj(s) - eps) / c_j` -- the
@@ -184,7 +181,7 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
 // strictly-better territory -- but never for a delta that started at
 // exactly zero, and never for a continuous variable, which this
 // function never rounds at all. `ctx.epsilon` is the same margin
-// `compute_candidate_scores`'s `beats_best`, `is_aspiration`, and
+// `compute_candidate_scores`'s breakthrough test, `is_aspiration`, and
 // `LocalMipWorker::run_attempt`'s own `improved` check already use for
 // "strictly better than the best found", so it is reused here rather
 // than introducing a second tolerance for the same question.
@@ -255,7 +252,7 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
 // skipping the loop, since `append_candidate` drops a zero delta.
 //
 // The comparison is the same strict form `is_aspiration` and
-// `compute_candidate_scores`'s `beats_best` use for "strictly better
+// `compute_candidate_scores`'s breakthrough test use for "strictly better
 // than the best found", rather than a second spelling of it.  It
 // differs from the reference's `<=` only around `cur_obj ==
 // best_obj - eps`, where the formula yields a zero delta that
@@ -267,9 +264,7 @@ bool is_aspiration(const WorkerCtx& ctx, HighsInt j, double new_val, double best
 // neither introduces nor removes it.
 double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_obj,
                                   double best_obj) {
-    bool already_breaks_through =
-        ctx.minimize ? (cur_obj < best_obj - ctx.epsilon) : (cur_obj > best_obj + ctx.epsilon);
-    if (already_breaks_through) {
+    if (cur_obj < best_obj - ctx.epsilon) {
         return 0.0;
     }
 
@@ -279,18 +274,6 @@ double compute_breakthrough_delta(const WorkerCtx& ctx, HighsInt j, double cur_o
     }
 
     double obj_gap = cur_obj - best_obj;
-    if (!ctx.minimize) {
-        // Computes the delta in the objective-*worsening* direction
-        // (unverified against the paper) and is dead in this
-        // integration -- HiGHS normalizes every model to minimization,
-        // so `ctx.minimize` was `false` on none of the 105 bundled
-        // instances, the two OBJSENSE MAX ones included. Before the
-        // `+ ctx.epsilon` fix below, a wrong sign here was harmless
-        // whenever it landed on `delta == 0`; with `eps` added it now
-        // produces a small non-zero move in the wrong direction
-        // instead of a no-op, should this branch ever go live.
-        obj_gap = -obj_gap;
-    }
 
     // `+ ctx.epsilon`: paper Definition 2's own eps, dropped before this
     // fix -- see the comment above, including its continuous-variable
@@ -424,12 +407,7 @@ Candidate select_lift_move(WorkerCtx& ctx) {
         if (lo > hi) {
             continue;
         }
-        double target;
-        if (ctx.minimize) {
-            target = (ctx.col_cost[j] > 0) ? lo : hi;
-        } else {
-            target = (ctx.col_cost[j] > 0) ? hi : lo;
-        }
+        double target = (ctx.col_cost[j] > 0) ? lo : hi;
         target = ctx.clamp_and_round(j, target);
         if (std::abs(target - ctx.solution[j]) < kEpsZero) {
             continue;

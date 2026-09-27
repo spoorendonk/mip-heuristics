@@ -84,6 +84,6 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
 
 // Greedy 1-opt: shift each integer variable by ±1 toward better objective
 // if the shift maintains feasibility. Modifies solution/lhs_cache in place.
+// `col_cost` is in minimisation form (`ProblemView::col_cost`).
 void greedy_1opt(const PropEngine& data, std::vector<double>& solution,
-                 std::vector<double>& lhs_cache, const double* col_cost, bool minimize,
-                 size_t& effort);
+                 std::vector<double>& lhs_cache, const double* col_cost, size_t& effort);

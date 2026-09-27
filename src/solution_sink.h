@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lp_data/HConst.h"
 #include "rng.h"
 #include "solution_pool.h"
 #include "worker_base.h"
@@ -8,9 +9,11 @@
 #include <cstddef>
 #include <vector>
 
-class HighsLp;
-
 // The one place a heuristic worker hands a solution back.
+//
+// Objectives are in the `ProblemView`'s minimisation form, offset included
+// (#170): the pool ranks lower as better, and for a maximisation model
+// every objective here is the negated original one.
 //
 // Owns the shared `SolutionPool` and the tag its entries are attributed
 // with, and counts what the pool accepted.  What happens to an accepted
@@ -20,10 +23,10 @@ class HighsLp;
 // take the solutions wherever it wants them.
 class SolutionSink {
 public:
-    // A pool for `model`: its sense decides what "better" means, and its
-    // integrality is the mask diversity-aware admission measures Hamming
-    // distance on.  `source` tags everything offered.
-    SolutionSink(const HighsLp& model, int source);
+    // A pool over columns of `integrality` (`*ProblemView::integrality`),
+    // the mask diversity-aware admission measures Hamming distance on.
+    // `source` tags everything offered.
+    SolutionSink(const std::vector<HighsVarType>& integrality, int source);
     virtual ~SolutionSink() = default;
 
     SolutionSink(const SolutionSink&) = delete;

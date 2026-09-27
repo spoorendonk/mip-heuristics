@@ -24,25 +24,21 @@ double val_random(double lb, double ub, bool is_int, Rng& rng) {
     return std::max(lb, std::min(ub, v));
 }
 
-double val_goodobj(double lb, double ub, bool minimize, double cost) {
+// The objective is the `ProblemView`'s minimisation form (#170), so "good"
+// is always the direction that lowers it.
+double val_goodobj(double lb, double ub, double cost) {
     if (std::abs(cost) < 1e-15) {
         return lb;  // paper Section 4.2: "always pick the lower bound"
     }
-    if (minimize) {
-        return (cost > 0) ? lb : ub;
-    }
-    return (cost > 0) ? ub : lb;
+    return (cost > 0) ? lb : ub;
 }
 
-double val_badobj(double lb, double ub, bool minimize, double cost) {
+double val_badobj(double lb, double ub, double cost) {
     if (std::abs(cost) < 1e-15) {
         return lb;  // paper Section 4.2: "always pick the lower bound"
     }
     // Opposite of goodobj
-    if (minimize) {
-        return (cost > 0) ? ub : lb;
-    }
-    return (cost > 0) ? lb : ub;
+    return (cost > 0) ? ub : lb;
 }
 
 // LP-based probabilistic rounding (paper Section 4.2):
@@ -73,7 +69,7 @@ double val_lp_based(double lb, double ub, bool is_int, double lp_val, Rng& rng) 
 // inner loop, and the closeout takes no unmeasured performance risk; the standards also rank
 // fidelity to the reference algorithm above mechanical extraction.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */, bool minimize, double cost,
+double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */, double cost,
                     const double* row_lo, const double* row_hi, const double* min_act,
                     const double* max_act, const CscMatrix& csc) {
     // Count dynamic up-locks and down-locks for variable j
@@ -134,12 +130,12 @@ double val_loosedyn(HighsInt j, double lb, double ub, bool /* is_int */, bool mi
         return lb;
     }
     // Tie: fall back to objective direction
-    return val_goodobj(lb, ub, minimize, cost);
+    return val_goodobj(lb, ub, cost);
 }
 
 }  // namespace
 
-double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize, double cost,
+double choose_value(HighsInt j, double lb, double ub, bool is_int, double cost,
                     ValStrategy strategy, Rng& rng, const double* lp_ref, const double* row_lo,
                     const double* row_hi, const double* min_act, const double* max_act,
                     const CscMatrix* csc) {
@@ -152,18 +148,17 @@ double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize
             v = val_random(lb, ub, is_int, rng);
             break;
         case ValStrategy::kGoodobj:
-            v = val_goodobj(lb, ub, minimize, cost);
+            v = val_goodobj(lb, ub, cost);
             break;
         case ValStrategy::kBadobj:
-            v = val_badobj(lb, ub, minimize, cost);
+            v = val_badobj(lb, ub, cost);
             break;
         case ValStrategy::kLoosedyn:
             if ((min_act != nullptr) && (max_act != nullptr) && (row_lo != nullptr) &&
                 (row_hi != nullptr) && (csc != nullptr)) {
-                v = val_loosedyn(j, lb, ub, is_int, minimize, cost, row_lo, row_hi, min_act,
-                                 max_act, *csc);
+                v = val_loosedyn(j, lb, ub, is_int, cost, row_lo, row_hi, min_act, max_act, *csc);
             } else {
-                v = val_goodobj(lb, ub, minimize, cost);
+                v = val_goodobj(lb, ub, cost);
             }
             break;
         case ValStrategy::kZerocore:
@@ -173,11 +168,11 @@ double choose_value(HighsInt j, double lb, double ub, bool is_int, bool minimize
             if (lp_ref != nullptr) {
                 v = val_lp_based(lb, ub, is_int, lp_ref[j], rng);
             } else {
-                v = val_goodobj(lb, ub, minimize, cost);
+                v = val_goodobj(lb, ub, cost);
             }
             break;
         default:
-            v = val_goodobj(lb, ub, minimize, cost);
+            v = val_goodobj(lb, ub, cost);
             break;
     }
     if (is_int) {

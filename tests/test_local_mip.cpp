@@ -69,11 +69,15 @@ TEST_CASE("LocalMIP construction: feasibility-first sweep repairs tiny MIP",
     lp.row_upper_ = {kHighsInf};
     lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kInteger};
     lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
     lp.a_matrix_.start_ = {0, 1, 2};
     lp.a_matrix_.index_ = {0, 0};
     lp.a_matrix_.value_ = {1.0, 1.0};
     ProblemStorage storage;
-    const ProblemView problem = make_problem(lp, storage, /*feastol=*/1e-6, /*epsilon=*/1e-9);
+    const auto made = make_problem(lp, storage, /*feastol=*/1e-6, /*epsilon=*/1e-9);
+    REQUIRE(made.has_value());
+    const ProblemView& problem = *made;
 
     std::vector<double> solution;
     Rng rng(42);
@@ -110,9 +114,13 @@ TEST_CASE("LocalMIP construction: zero-start respects bounds with lb > 0 / ub < 
     lp.col_upper_ = {5.0, -1.0, -1.0};
     lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kContinuous, HighsVarType::kInteger};
     lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
     lp.a_matrix_.start_ = {0, 0, 0, 0};
     ProblemStorage storage;
-    const ProblemView problem = make_problem(lp, storage, /*feastol=*/1e-6, /*epsilon=*/1e-9);
+    const auto made = make_problem(lp, storage, /*feastol=*/1e-6, /*epsilon=*/1e-9);
+    REQUIRE(made.has_value());
+    const ProblemView& problem = *made;
 
     std::vector<double> solution;
     Rng rng(7);
@@ -201,7 +209,7 @@ TEST_CASE("LocalMIP: warm-starts from pool when FJ finds feasible before it (#74
 // or construct fresh?) still relies on the `lseu.mps` test above.
 TEST_CASE("SolutionPool::copy_best returns exactly the seeded best entry (#74 unit)",
           "[heuristic][local_mip][pool-aware][unit]") {
-    SolutionPool pool(/*capacity=*/4, /*minimize=*/true);
+    SolutionPool pool(/*capacity=*/4);
     std::vector<double> probe;
     // Empty pool: no best, copy_best returns false and leaves `probe`
     // untouched.
@@ -1265,7 +1273,6 @@ TEST_CASE("LocalMIP: breakthrough delta obeys Definition 2's obj(s) >= obj(s*) (
     ctx.solution[0] = 2.0;
     ctx.solution[1] = 0.0;
     ctx.rebuild_state();
-    REQUIRE(ctx.minimize);
 
     // `obj(s) > obj(s*)`: Definition 2's main case.  The unrounded delta
     // is `-(1 + eps)`, floored away from zero to -2, landing x0 on its

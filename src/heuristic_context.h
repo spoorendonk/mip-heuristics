@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <functional>
+#include <string>
 #include <vector>
 
 struct HighsLogOptions;
@@ -125,9 +127,30 @@ struct [[nodiscard]] DispatchOutcome {
 // Built once per dispatch and passed by const reference — the snapshots
 // make it no longer trivially cheap to copy.
 struct ProblemView {
-    // Bounds, integrality, cost, sense, offset, row bounds and the
-    // column-wise matrix.
+    // The column-wise matrix, which FJ builds its own row-wise copy from.
+    // Never read its bounds, cost, offset, sense or integrality: the fields
+    // below replace them.
     const HighsLp* model = nullptr;
+    // Column and row bounds as the workers enforce them.  The HiGHS adapter
+    // points these at the presolved model's own; the core `make_problem`
+    // maps a magnitude at or above HiGHS's `infinite_bound` to infinity, as
+    // HiGHS's own model assessment does, and rounds an integer column's
+    // inward (`ceil(lb - feastol)`, `floor(ub + feastol)`), as the presolved
+    // model's already are.
+    const std::vector<double>* col_lower = nullptr;
+    const std::vector<double>* col_upper = nullptr;
+    const std::vector<double>* row_lower = nullptr;
+    const std::vector<double>* row_upper = nullptr;
+    // The objective in *minimisation* form, and the integrality of every
+    // column (#170).  Every worker reads these, so the heuristics only ever
+    // see a minimisation problem — as they do inside HiGHS, whose presolve
+    // turns a maximisation model into one before any heuristic runs.  Every
+    // objective a worker computes, and so every objective a `SolutionSink`
+    // or `SolutionPool` holds, is `offset + col_cost . x` in this form: the
+    // negated original objective for a maximisation model.
+    const std::vector<double>* col_cost = nullptr;
+    double offset = 0.0;
+    const std::vector<HighsVarType>* integrality = nullptr;
     // Row-wise copy of `model->a_matrix_`.
     const std::vector<HighsInt>* ar_start = nullptr;
     const std::vector<HighsInt>* ar_index = nullptr;
@@ -184,9 +207,9 @@ struct ProblemView {
     // Scope: taken once for the *whole* FJ -> FPR -> LocalMIP -> Scylla
     // chain, so a column that root propagation fixes after FJ's first
     // incumbent is still classified with its pre-FJ value by the other
-    // three.  Deliberate, and cheap: workers enforce bounds from
-    // `model->col_lower_/col_upper_`, never from `HighsDomain`, so the
-    // classification was already decoupled from the bounds they respect.
+    // three.  Deliberate, and cheap: workers enforce the view's
+    // `col_lower`/`col_upper`, never `HighsDomain`'s, so the classification
+    // was already decoupled from the bounds they respect.
     //
     // `uint8_t` rather than `std::vector<bool>`: workers index this from
     // hot loops, and the bit-packed specialisation costs a shift and mask
@@ -199,6 +222,15 @@ struct ProblemView {
 
     // A model with no columns or no rows: every heuristic declines it.
     [[nodiscard]] bool degenerate() const { return ncol == 0 || nrow == 0; }
+
+    // `x`'s objective in the view's minimisation form, offset included.
+    [[nodiscard]] double objective(const std::vector<double>& x) const {
+        double obj = offset;
+        for (HighsInt j = 0; j < ncol; ++j) {
+            obj += (*col_cost)[j] * x[j];
+        }
+        return obj;
+    }
 };
 
 // What a `ProblemView` points at when there is no `HighsMipSolverData` to
@@ -212,19 +244,66 @@ struct ProblemStorage {
     std::vector<HighsInt> uplocks;
     std::vector<HighsInt> downlocks;
     CscMatrix csc;
+    // The negated costs of a maximisation model; empty otherwise.
+    std::vector<double> col_cost;
+    // The bounds, huge ones mapped to infinity and integer columns' rounded
+    // inward.
+    std::vector<double> col_lower;
+    std::vector<double> col_upper;
+    std::vector<double> row_lower;
+    std::vector<double> row_upper;
+    // All-continuous for a model with no `integrality_` (a pure LP); empty
+    // otherwise.
+    std::vector<HighsVarType> integrality;
+};
+
+// Why `make_problem` refused a model.  The kinds are distinct because the
+// caller acts on them differently: a malformed model is a bug in whoever
+// built it, an infeasible one is an answer about the model, and an
+// unsupported one needs another tool.  The line between the first two is
+// HiGHS's own (`assessLp`, `assessBounds`, `assessMatrix`): what it refuses
+// with an error is malformed, what it lets through with a warning or
+// solves to infeasibility is infeasible.
+struct ProblemError {
+    enum class Kind {
+        // Structurally broken: sizes that disagree with the dimensions, a
+        // matrix that is not column-wise with them, starts that do not begin
+        // at 0 or are not monotone, row indices out of range or repeated
+        // within a column, an integrality or sense outside its enum, a NaN
+        // anywhere, a non-finite (or `infinite_cost`-sized) cost or offset,
+        // a coefficient at or above `large_matrix_value`, or a lower bound
+        // at `+infinite_bound` or an upper one at `-infinite_bound`.
+        kMalformed,
+        // Provably infeasible on its face: crossed bounds (an integer column's
+        // after rounding inward), or an empty row whose bounds exclude 0.
+        kInfeasible,
+        // A semi-continuous or semi-integer column, which the workers do
+        // not model: they read integrality as "anything but continuous is an
+        // integer", which would drop the column's zero branch.
+        kUnsupported,
+    };
+    Kind kind;
+    std::string message;
 };
 
 // A view over a caller's own `model`, with `storage` filled the way
 // `HighsMipSolverData::runSetup()` fills the solver's copies: the row-wise
 // matrix through `highsSparseTranspose`, the lock counts by the same rule,
 // and the CSC from the row-wise matrix as `make_problem` builds it.  The
-// binary mask is `HighsDomain::isBinary` at the model's own bounds (an
+// binary mask is `HighsDomain::isBinary` at the normalised bounds (an
 // integer column with bounds exactly `[0, 1]`), and there is no incumbent.
 // `feastol` / `epsilon` are the caller's `mip_feasibility_tolerance` /
-// `small_matrix_value`.  `model` must be column-wise, carry `integrality_`
-// for every column, and outlive the view.
-ProblemView make_problem(const HighsLp& model, ProblemStorage& storage, double feastol,
-                         double epsilon);
+// `small_matrix_value`.  `model` must outlive the view.
+//
+// Normalised as HiGHS's presolve normalises a model before its heuristics
+// see it, so that nothing a worker reports can violate what it was given:
+// minimisation form (a maximisation model's costs and offset negated into
+// `storage`), bounds of magnitude `infinite_bound` or more mapped to
+// infinity, integer column bounds rounded inward, and a model without
+// `integrality_` all continuous.  Everything is checked in one linear pass
+// over the model; see `ProblemError` for what is refused.
+std::expected<ProblemView, ProblemError> make_problem(const HighsLp& model, ProblemStorage& storage,
+                                                      double feastol, double epsilon);
 
 // One heuristic's slice of the presolve effort envelope.  `total` used to
 // travel separately as a bare `max_effort` parameter while the other three

@@ -108,7 +108,7 @@ inline void bump_counter(std::atomic<int64_t>& counter) {
 // still uses it as the search's starting point (paper's intended
 // behaviour).
 bool is_solution_feasible(const ProblemView& problem, const std::vector<double>& solution) {
-    const HighsLp* model = problem.model;
+    const std::vector<HighsVarType>& integrality = *problem.integrality;
     const HighsInt ncol = problem.ncol;
     const HighsInt nrow = problem.nrow;
     const double feastol = problem.feastol;
@@ -121,14 +121,14 @@ bool is_solution_feasible(const ProblemView& problem, const std::vector<double>&
     }
     // Integer feasibility.
     for (HighsInt j = 0; j < ncol; ++j) {
-        if (model->integrality_[j] == HighsVarType::kInteger ||
-            model->integrality_[j] == HighsVarType::kImplicitInteger) {
+        if (integrality[j] == HighsVarType::kInteger ||
+            integrality[j] == HighsVarType::kImplicitInteger) {
             if (std::abs(solution[j] - std::round(solution[j])) > inttol) {
                 return false;
             }
         }
-        if (solution[j] < model->col_lower_[j] - feastol ||
-            solution[j] > model->col_upper_[j] + feastol) {
+        if (solution[j] < (*problem.col_lower)[j] - feastol ||
+            solution[j] > (*problem.col_upper)[j] + feastol) {
             return false;
         }
     }
@@ -138,20 +138,11 @@ bool is_solution_feasible(const ProblemView& problem, const std::vector<double>&
         for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
             lhs += ar_value[k] * solution[ar_index[k]];
         }
-        if (lhs < model->row_lower_[i] - feastol || lhs > model->row_upper_[i] + feastol) {
+        if (lhs < (*problem.row_lower)[i] - feastol || lhs > (*problem.row_upper)[i] + feastol) {
             return false;
         }
     }
     return true;
-}
-
-double compute_solution_objective(const ProblemView& problem, const std::vector<double>& solution) {
-    const HighsLp* model = problem.model;
-    double obj = model->offset_;
-    for (HighsInt j = 0; j < model->num_col_; ++j) {
-        obj += model->col_cost_[j] * solution[j];
-    }
-    return obj;
 }
 
 // Resolve the starting point for a worker with the paper's cold-start
@@ -233,7 +224,7 @@ std::vector<double> resolve_worker_start(const ProblemView& problem, SolutionSin
     // Infeasible constructions are the paper's intended input to the
     // search phase and are not inserted.
     if (!constructed.empty() && is_solution_feasible(problem, constructed)) {
-        double obj = compute_solution_objective(problem, constructed);
+        double obj = problem.objective(constructed);
         // Discarded on purpose: this is a publish, not a worker's attempt
         // verdict.  `resolve_worker_start` runs at *worker construction*
         // — on the dispatching thread for the prime, and on task threads
@@ -368,8 +359,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                 }
             }
             if (worker_idx != 0) {
-                perturb_solution(start, problem.binary.data(), problem.model->integrality_,
-                                 problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
+                perturb_solution(start, problem.binary.data(), *problem.integrality,
+                                 *problem.col_lower, *problem.col_upper, ncol, rng);
             }
             // The construction this slot just paid seeds its trace base, so
             // the worker's zeroed `ctx_.effort` continues the slot's count
@@ -420,8 +411,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                         state.trace.effort_base += my_construction_effort;
                     }
                 }
-                perturb_solution(restart_sol, problem.binary.data(), problem.model->integrality_,
-                                 problem.model->col_lower_, problem.model->col_upper_, ncol, rng);
+                perturb_solution(restart_sol, problem.binary.data(), *problem.integrality,
+                                 *problem.col_lower, *problem.col_upper, ncol, rng);
                 auto seed = static_cast<uint32_t>(rng());
                 state.worker = std::make_unique<LocalMipWorker>(
                     problem, exec, sink, budget.per_worker, budget.worker_stale, seed,

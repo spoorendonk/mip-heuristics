@@ -571,7 +571,7 @@ TEST_CASE("patience gate: an offer the pool refuses does not reset staleness", "
     constexpr size_t kEffortPerAttempt = 300;
     constexpr int kAttempts = 20;
 
-    SolutionPool pool(/*capacity=*/2, /*minimize=*/true);
+    SolutionPool pool(/*capacity=*/2);
     REQUIRE(pool.try_add(1.0, {1.0, 0.0}, kSolutionSourceLocalMIP).accepted);
     REQUIRE(pool.try_add(2.0, {0.0, 1.0}, kSolutionSourceLocalMIP).accepted);
 
@@ -626,7 +626,7 @@ TEST_CASE("patience gate: the pool separates acceptance from improvement", "[pat
     // The two facts `SolutionPool::try_add` reports, and the three ways
     // they can come apart.  This is the predicate `SolutionSink::offer`
     // forwards as `OfferResult`, so it is where the #116 policy lives.
-    SolutionPool pool(/*capacity=*/3, /*minimize=*/true);
+    SolutionPool pool(/*capacity=*/3);
 
     // First solution of the solve: nothing to improve on, so it improves
     // by definition.  The pool is seeded from the incumbent at sink
@@ -666,13 +666,6 @@ TEST_CASE("patience gate: the pool separates acceptance from improvement", "[pat
     REQUIRE_FALSE(tie.improved_best);
     const auto epsilon = pool.try_add(5.0 - 1e-12, {7.0}, kSolutionSourceFPR);
     REQUIRE_FALSE(epsilon.improved_best);
-
-    // And the same three cases for a maximization pool, since the
-    // comparison is the one thing that flips with the sense.
-    SolutionPool maxpool(/*capacity=*/2, /*minimize=*/false);
-    REQUIRE(maxpool.try_add(10.0, {1.0}, kSolutionSourceFPR).improved_best);
-    REQUIRE_FALSE(maxpool.try_add(5.0, {2.0}, kSolutionSourceFPR).improved_best);
-    REQUIRE(maxpool.try_add(20.0, {3.0}, kSolutionSourceFPR).improved_best);
 }
 
 TEST_CASE("patience gate: an accepted non-improvement resets neither gate level",
@@ -686,7 +679,7 @@ TEST_CASE("patience gate: an accepted non-improvement resets neither gate level"
     constexpr size_t kThreshold = 1000;
     constexpr size_t kEffortPerAttempt = 300;
 
-    SolutionPool pool(/*capacity=*/3, /*minimize=*/true);
+    SolutionPool pool(/*capacity=*/3);
     REQUIRE(pool.try_add(10.0, {1.0}, kSolutionSourceLocalMIP).improved_best);
 
     WorkerBudgetState worker;
@@ -756,7 +749,7 @@ TEST_CASE("patience gate: the diversity path keeps the best and manufactures no 
     // measured under (`improving_offers` tracks a monotone best-so-far), and
     // because it does not depend on the admission policy staying this shape.
     constexpr int kNumIntVars = 20;
-    SolutionPool pool(/*capacity=*/2, /*minimize=*/true);
+    SolutionPool pool(/*capacity=*/2);
     pool.set_integer_mask(std::vector<bool>(kNumIntVars, true));
 
     std::vector<double> best(kNumIntVars, 0.0);

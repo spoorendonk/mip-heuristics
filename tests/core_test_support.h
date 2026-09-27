@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstddef>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 namespace core_test {
@@ -31,8 +32,8 @@ constexpr int kMaxAttempts = 2000;
 constexpr double kFeasTol = 1e-6;
 constexpr double kEpsilon = 1e-9;
 
-// A sink that keeps the best offer it accepted, objective included.  The
-// cases minimise, so best is lowest.
+// A sink that keeps the best offer it accepted, objective included: the
+// objective is what the maximisation case checks.
 class BestSink : public SolutionSink {
 public:
     using SolutionSink::SolutionSink;
@@ -71,7 +72,9 @@ struct Setup {
                .terminator = {}} {}
 
     static ProblemView make_view(const HighsLp& lp, ProblemStorage& storage) {
-        return make_problem(lp, storage, kFeasTol, kEpsilon);
+        auto made = make_problem(lp, storage, kFeasTol, kEpsilon);
+        REQUIRE(made.has_value());
+        return std::move(*made);
     }
 };
 
@@ -127,7 +130,8 @@ void run_until_found(Worker& worker, const SolutionSink& sink) {
 struct Found {
     BestSink fj;
     BestSink local_mip;
-    explicit Found(const HighsLp& lp) : fj(lp, 0), local_mip(lp, 0) {}
+    explicit Found(const std::vector<HighsVarType>& integrality)
+        : fj(integrality, 0), local_mip(integrality, 0) {}
 };
 
 inline void run_both(const Setup& s, Found& found) {
@@ -140,18 +144,18 @@ inline void run_both(const Setup& s, Found& found) {
     run_until_found(local_mip, found.local_mip);
 }
 
-// minimise 3 x0 + 2 x1 + 4 x2 + x3 + 7
+// maximise 3 x0 + 2 x1 + 4 x2 + x3 + 7
 //   s.t.   x0 + x1 + x2        <= 2
 //          2 x0 + x2 - x3      <= 3
 //          x1 + x3             >= 1
 //          x0, x1, x2 in {0, 1}, x3 in [0, 2.5] continuous.
-// Small enough to read by eye, the offset non-trivial, one continuous
-// column so the objective is not integral by construction.
-inline HighsLp small_model() {
+// Small enough to read by eye, sense and offset both non-trivial, one
+// continuous column so the objective is not integral by construction.
+inline HighsLp maximisation_model() {
     HighsLp lp;
     lp.num_col_ = 4;
     lp.num_row_ = 3;
-    lp.sense_ = ObjSense::kMinimize;
+    lp.sense_ = ObjSense::kMaximize;
     lp.offset_ = 7.0;
     lp.col_cost_ = {3.0, 2.0, 4.0, 1.0};
     lp.col_lower_ = {0.0, 0.0, 0.0, 0.0};

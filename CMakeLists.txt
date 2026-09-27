@@ -290,6 +290,7 @@ add_executable(mip_heuristics_tests
     tests/test_clique_cover.cpp
     tests/test_fj_jump_value.cpp
     tests/test_fj_objective_sign.cpp
+    tests/test_problem_view.cpp
 )
 # Same guard as `mip_heuristics` above — a test that drops the verdict
 # would model the bug rather than catch it. `-Werror=switch` joins it for

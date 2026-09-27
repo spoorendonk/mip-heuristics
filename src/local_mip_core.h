@@ -58,21 +58,21 @@ namespace local_mip_detail {
 
 // --- WorkerCtx: central context for the local search worker ---
 struct WorkerCtx {
-    // Model refs
-    const HighsLp* model;
+    // Model refs.  The objective is the view's minimisation form (#170):
+    // the search only ever minimises.
     const std::vector<HighsInt>& ar_start;
     const std::vector<HighsInt>& ar_index;
     const std::vector<double>& ar_value;
     const std::vector<double>& col_lb;
     const std::vector<double>& col_ub;
     const std::vector<double>& col_cost;
+    const double offset;
     const std::vector<double>& row_lo;
     const std::vector<double>& row_hi;
     const std::vector<HighsVarType>& integrality;
     const CscMatrix& csc;
     const double feastol;
     const double epsilon;
-    const bool minimize;
     const HighsInt ncol;
     const HighsInt nrow;
     // Dispatch-time `isBinary` snapshot (`ProblemView::binary`), at least

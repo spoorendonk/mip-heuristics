@@ -7,8 +7,7 @@
 #include <random>
 #include <utility>
 
-SolutionPool::SolutionPool(int capacity, bool minimize)
-    : capacity_(capacity), minimize_(minimize) {}
+SolutionPool::SolutionPool(int capacity) : capacity_(capacity) {}
 
 void SolutionPool::set_integer_mask(std::vector<bool> mask) {
     std::scoped_lock lock(mtx_);
@@ -78,8 +77,7 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
             result.improved_best = true;
         } else {
             const double margin = kImprovementObjMargin * std::max(1.0, std::abs(best_seen_));
-            result.improved_best =
-                minimize_ ? obj < best_seen_ - margin : obj > best_seen_ + margin;
+            result.improved_best = obj < best_seen_ - margin;
         }
 
         // Find insertion point (entries_ kept sorted, best first)
@@ -87,15 +85,13 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
         // std::lower_bound but does not model indirect_strict_weak_order, so
         // std::ranges::lower_bound does not accept it — hence the
         // NOLINTs on the three call sites below.
-        auto cmp = [this](const Entry& entry, double val) {
-            return minimize_ ? entry.objective < val : entry.objective > val;
-        };
+        auto cmp = [](const Entry& entry, double val) { return entry.objective < val; };
         // NOLINTNEXTLINE(modernize-use-ranges)
         auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj, cmp);
 
         if (std::cmp_greater_equal(entries_.size(), capacity_)) {
             auto& worst = entries_.back();
-            bool dominated = minimize_ ? obj >= worst.objective : obj <= worst.objective;
+            bool dominated = obj >= worst.objective;
 
             if (!dominated) {
                 // Standard path: improves on worst — replace worst.
@@ -184,8 +180,7 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
 SolutionPool::Snapshot SolutionPool::snapshot() {
     std::scoped_lock lock(mtx_);
     if (entries_.empty()) {
-        return {false, minimize_ ? std::numeric_limits<double>::infinity()
-                                 : -std::numeric_limits<double>::infinity()};
+        return {false, std::numeric_limits<double>::infinity()};
     }
     return {true, entries_[0].objective};
 }

@@ -339,8 +339,7 @@ bool walksat_repair(const PropEngine& data, std::vector<double>& solution,
 // ---------------------------------------------------------------------------
 
 void greedy_1opt(const PropEngine& data, std::vector<double>& solution,
-                 std::vector<double>& lhs_cache, const double* col_cost, bool minimize,
-                 size_t& effort) {
+                 std::vector<double>& lhs_cache, const double* col_cost, size_t& effort) {
     const HighsInt ncol = data.ncol();
     const HighsInt* __restrict csc_start = data.csc_start();
     const HighsInt* __restrict csc_row = data.csc_row();
@@ -364,8 +363,8 @@ void greedy_1opt(const PropEngine& data, std::vector<double>& solution,
             continue;
         }
 
-        // direction = -sign(cj) when minimizing, +sign(cj) when maximizing.
-        const double direction = (cj > 0) == minimize ? -1.0 : 1.0;
+        // Against the cost: `col_cost` is the view's minimisation form.
+        const double direction = cj > 0 ? -1.0 : 1.0;
         const double old_val = sol_p[j];
         double new_val = old_val + direction;
         const double lb = col_lb[j];

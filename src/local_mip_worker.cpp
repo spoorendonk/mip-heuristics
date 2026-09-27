@@ -84,6 +84,9 @@ LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContex
     : exec_(exec), sink_(sink), rng_(seed), trace_(trace), ctx_(problem) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
+    // Nothing to search, and an attempt would charge no effort; see the
+    // same line in `FjWorker`'s constructor.
+    base_.finished = problem.degenerate();
     const HighsInt ncol = ctx_.ncol;
 
     // Precompute variable subsets
@@ -118,8 +121,7 @@ LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContex
     }
 
     ctx_.rebuild_state();
-    best_objective_ = ctx_.minimize ? std::numeric_limits<double>::infinity()
-                                    : -std::numeric_limits<double>::infinity();
+    best_objective_ = std::numeric_limits<double>::infinity();
     best_solution_.resize(ncol);
 }
 
@@ -165,18 +167,26 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     // answer: the residual becomes one step plus a constant of charged
     // work, instead of one constant of steps whose cost the model sets.
     auto spent = [&]() { return ctx_.effort - effort_start; };
+    //
+    // And on steps as well, at the same count: a step that charges nothing
+    // would otherwise leave `spent()` short of the next poll for good, and
+    // the attempt with no clock at all.  A step that charges effort charges
+    // at least one unit, so `kTermCheckWork` of them reach the work bound
+    // first and on every other run this one never fires.
     size_t next_deadline_poll = 0;
+    size_t steps_since_poll = 0;
     while (spent() < attempt_budget && !base_.exhausted(spent())) {
         if (base_.stale(spent())) {
             base_.finished = true;
             break;
         }
-        if (spent() >= next_deadline_poll) {
+        if (spent() >= next_deadline_poll || ++steps_since_poll > kTermCheckWork) {
             local_mip::note_deadline_poll();
             if (exec_.past_deadline()) {
                 break;
             }
             next_deadline_poll = spent() + kTermCheckWork;
+            steps_since_poll = 0;
         }
 
         bool feasible_mode = ctx_.violated.empty();
@@ -200,10 +210,8 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             bool improved = false;
             if (!best_feasible_) {
                 improved = true;
-            } else if (ctx_.minimize) {
-                improved = (obj < best_objective_ - ctx_.epsilon);
             } else {
-                improved = (obj > best_objective_ + ctx_.epsilon);
+                improved = (obj < best_objective_ - ctx_.epsilon);
             }
 
             if (improved) {

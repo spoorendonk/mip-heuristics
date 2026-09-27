@@ -15,6 +15,7 @@
 #include "util/HighsInt.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -61,11 +62,22 @@ inline ExecutionContext make_exec(HighsMipSolver& mipsolver) {
 inline ProblemView problem_view(HighsMipSolver& mipsolver, const CscMatrix& csc) {
     const HighsLp* model = mipsolver.model_;
     HighsMipSolverData* mipdata = mipsolver.mipdata_.get();
+    // The presolved model is already in minimisation form: `HPresolve`
+    // negates a maximisation model's costs and offset before anything else,
+    // presolve on or off, so the view points at its costs unchanged.
+    assert(model->sense_ == ObjSense::kMinimize);
     // Designated initialisers: two snapshots have been appended to this
     // aggregate in as many issues, and three of the members in the middle
     // are a positional `HighsInt, HighsInt, size_t` run that a mis-ordered
     // addition would silently convert between.
     return ProblemView{.model = model,
+                       .col_lower = &model->col_lower_,
+                       .col_upper = &model->col_upper_,
+                       .row_lower = &model->row_lower_,
+                       .row_upper = &model->row_upper_,
+                       .col_cost = &model->col_cost_,
+                       .offset = model->offset_,
+                       .integrality = &model->integrality_,
                        .ar_start = &mipdata->ARstart_,
                        .ar_index = &mipdata->ARindex_,
                        .ar_value = &mipdata->ARvalue_,

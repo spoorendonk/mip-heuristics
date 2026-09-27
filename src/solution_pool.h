@@ -50,7 +50,9 @@ public:
         int source;
     };
 
-    SolutionPool(int capacity, bool minimize);
+    // Lower objectives are better: every objective offered is in the
+    // `ProblemView`'s minimisation form (#170).
+    explicit SolutionPool(int capacity);
 
     // Set the integer variable mask.  Must be called before diversity-aware
     // insertion can take effect.  is_integer[j] == true iff variable j is
@@ -163,7 +165,6 @@ private:
     mutable HighsSpinMutex mtx_;
     std::vector<Entry> entries_;
     int capacity_;
-    bool minimize_;
     std::vector<bool> integer_mask_;  // true for integer variables
     int num_integers_ = 0;            // cached count of integer vars
     // Best objective ever accepted, and whether anything has been.  The
