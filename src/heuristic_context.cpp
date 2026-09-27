@@ -305,7 +305,7 @@ bool take_restart(const RestartSource& source, Rng& rng, std::vector<double>& ou
         bool usable = true;
         for (HighsInt j = 0; j < problem.ncol && usable; ++j) {
             double v = out[j];
-            usable = !std::isnan(v);
+            usable = std::isfinite(v);
             if ((*problem.integrality)[j] != HighsVarType::kContinuous) {
                 v = std::round(v);
             }

@@ -162,16 +162,12 @@ size_t stop_at_first_solution(HoldingSink& sink, std::atomic<bool>& stop, Run ru
     return effort;
 }
 
-// One attempt as long as the whole run, and a patience that never fires:
-// nothing inside the run can end the attempt the stop lands in, so only a
-// poll of the stop flag inside it can.  The total is a fuse, so a run that
-// never finds anything ends and fails rather than hangs.
 // A total for the runs below that end on their own, long enough for many
 // stalls and short enough that a broken case fails in well under a second.
 constexpr size_t kFuse = kAttemptBudget * 64;
 
-// minimise x0 + x1 + x2  s.t.  x0 + x1 >= 1,  x1 + x2 >= 1,  x in [0, 10],
-// with every column of `type`.
+// minimise x0 + x1 + x2  s.t.  x0 + x1 >= 1,  x1 + x2 >= 1,
+// x in [0, upper], with every column of `type`.
 HighsLp two_cover_model(HighsVarType type, double upper) {
     HighsLp lp;
     lp.num_col_ = 3;
@@ -191,6 +187,10 @@ HighsLp two_cover_model(HighsVarType type, double upper) {
     return lp;
 }
 
+// One attempt as long as the whole run, and a patience that never fires:
+// nothing inside the run can end the attempt the stop lands in, so only a
+// poll of the stop flag inside it can.  The total is a fuse, so a run that
+// never finds anything ends and fails rather than hangs.
 HeuristicBudget one_long_attempt() {
     HeuristicBudget budget = make_until_stopped_budget(kBudget, kBudget);
     budget.total = kBudget;
@@ -409,4 +409,51 @@ TEST_CASE("core: a run_until_stopped slot other than 0 polls the terminator",
 
     REQUIRE(effort > 0);
     REQUIRE(term_calls == 3);
+}
+
+TEST_CASE("core: take_restart rounds, clamps and refuses a source's point",
+          "[core][until_stopped]") {
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    std::vector<double> served;
+    const RestartSource source = [&served](Rng& /*rng*/, std::vector<double>& out) {
+        out = served;
+        return true;
+    };
+    Rng rng(0);
+    std::vector<double> taken;
+
+    const Setup binaries(two_cover_model(HighsVarType::kInteger, 1.0),
+                         highs.getOptions().log_options);
+    // Clamped into [0, 1] and rounded: 2 -> 1, -1 -> 0, 0.5 -> 1.
+    served = {2.0, -1.0, 0.5};
+    REQUIRE(take_restart(source, rng, taken, binaries.problem));
+    REQUIRE(taken == std::vector<double>{1.0, 0.0, 1.0});
+    // A NaN is refused, and `out` is left empty.
+    served = {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0};
+    REQUIRE_FALSE(take_restart(source, rng, taken, binaries.problem));
+    REQUIRE(taken.empty());
+    // As is a point of the wrong width.
+    served = {0.0, 0.0};
+    REQUIRE_FALSE(take_restart(source, rng, taken, binaries.problem));
+    REQUIRE(taken.empty());
+
+    // An infinity is refused even where the bound it would clamp to is
+    // infinite too.
+    const Setup unbounded(two_cover_model(HighsVarType::kContinuous, kHighsInf),
+                          highs.getOptions().log_options);
+    REQUIRE((*unbounded.problem.col_upper)[0] == kHighsInf);
+    served = {kHighsInf, 0.0, 0.0};
+    REQUIRE_FALSE(take_restart(source, rng, taken, unbounded.problem));
+    REQUIRE(taken.empty());
+    served = {0.0, -kHighsInf, 0.0};
+    REQUIRE_FALSE(take_restart(source, rng, taken, unbounded.problem));
+    REQUIRE(taken.empty());
+}
+
+TEST_CASE("core: a patience of 0 in make_until_stopped_budget means no gate",
+          "[core][until_stopped]") {
+    constexpr size_t kUnbounded = std::numeric_limits<size_t>::max();
+    REQUIRE(make_until_stopped_budget(1024, 0).worker_stale == kUnbounded);
+    REQUIRE(make_until_stopped_budget(1024, 7).worker_stale == 7);
 }

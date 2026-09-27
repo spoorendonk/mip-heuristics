@@ -560,7 +560,9 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // sink's own pool (#171): fill `out` with a point in the view's column
 // space and return true, or return false to fall back to the pool, the
 // view's incumbent and finally a fresh construction, in that order.  A
-// point that is not `ncol` long, or holds a NaN, is treated as a false.
+// point that is not `ncol` long, or holds a non-finite value (a NaN or
+// an infinity, even on a column whose bound is infinite), is treated as a
+// false.
 // Any other point is used after rounding its integer columns to the nearest
 // integer and clamping every column into the view's bounds (`take_restart`),
 // so an arbitrary point — a crossover, an LP solution — is a legal start:
