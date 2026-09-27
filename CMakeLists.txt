@@ -352,6 +352,79 @@ catch_discover_tests(mip_heuristics_tests
     TEST_SPEC "~[serial]"
     TEST_LIST mip_heuristics_tests_PARALLEL)
 
+# The heuristic core on its own (#170): links `mip_heuristics_core` and
+# nothing else of ours (HiGHS itself comes with it, for `readModel`), and
+# runs FJ and LocalMIP on an original model with no `HighsMipSolver`.  A
+# separate executable so that the link line, not only the source, is the
+# one a caller of the core would have.  No `[serial]` case: nothing here
+# reads a clock.
+add_executable(mip_heuristics_core_tests tests/test_core.cpp)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch)
+endif()
+target_link_libraries(mip_heuristics_core_tests PRIVATE mip_heuristics_core Catch2::Catch2WithMain)
+target_compile_definitions(mip_heuristics_core_tests PRIVATE
+    "INSTANCES_DIR=\"${highs_SOURCE_DIR}/check/instances\"")
+if(MIP_HEURISTICS_INSTRUMENT)
+    target_compile_definitions(mip_heuristics_core_tests PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
+endif()
+catch_discover_tests(mip_heuristics_core_tests TEST_LIST mip_heuristics_core_tests_ALL)
+
+# The core linked against a libhighs with the MIP solver and the adapter
+# taken out: every member built from `highs/mip/*.cpp`, and every object of
+# `mip_heuristics` (and of the core itself).  The core archive goes in whole
+# (`WHOLE_ARCHIVE`): an ordinary archive link extracts only the members these
+# cases reach, and a dependency in any other member — the reviewer's
+# `Highs::run` planted in `repair_search.cpp` — would link unseen.  Whole,
+# every core member has to resolve here, so this executable does not link if
+# any of them needs the MIP solver or the adapter, directly or through
+# another libhighs member.  The archive is named as a file, not linked as a
+# target, because the target's `$<LINK_ONLY:highs>` would bring the whole of
+# libhighs back.  Its cases build their model by hand: the `Highs` class
+# itself reaches the MIP solver.
+file(GLOB _mip_sources ${highs_SOURCE_DIR}/highs/mip/*.cpp)
+get_target_property(_adapter_sources mip_heuristics SOURCES)
+get_target_property(_core_cpp mip_heuristics_core SOURCES)
+list(FILTER _core_cpp INCLUDE REGEX "\\.cpp$")
+set(_drop "")
+# The core's own copies go too (libhighs carries them; see `target_sources`
+# on `highs`), so the whole-archive core below is the only one linked.
+foreach(_source IN LISTS _mip_sources _adapter_sources _core_cpp)
+    get_filename_component(_name ${_source} NAME)
+    list(APPEND _drop "${_name}.o")
+endforeach()
+list(JOIN _drop "|" _drop)
+set(_highs_without_mip ${CMAKE_CURRENT_BINARY_DIR}/libhighs_without_mip.a)
+add_custom_command(
+    OUTPUT ${_highs_without_mip}
+    COMMAND ${CMAKE_COMMAND} -DAR=${CMAKE_AR} -DIN=$<TARGET_FILE:highs>
+            -DOUT=${_highs_without_mip} -DDROP=${_drop}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
+    DEPENDS highs ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
+    COMMENT "libhighs without the MIP solver and the adapter"
+    VERBATIM)
+add_custom_target(highs_without_mip DEPENDS ${_highs_without_mip})
+
+add_executable(mip_heuristics_core_standalone_tests tests/test_core_standalone.cpp)
+add_dependencies(mip_heuristics_core_standalone_tests mip_heuristics_core highs_without_mip)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(mip_heuristics_core_standalone_tests PRIVATE -Werror=unused-result
+                                                                        -Werror=switch)
+endif()
+target_include_directories(mip_heuristics_core_standalone_tests PRIVATE
+    $<TARGET_PROPERTY:mip_heuristics_core,INTERFACE_INCLUDE_DIRECTORIES>)
+find_package(Threads REQUIRED)
+target_link_libraries(mip_heuristics_core_standalone_tests PRIVATE
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,$<TARGET_FILE:mip_heuristics_core>> ${_highs_without_mip}
+    Threads::Threads ${CMAKE_DL_LIBS}
+    Catch2::Catch2WithMain)
+if(MIP_HEURISTICS_INSTRUMENT)
+    target_compile_definitions(mip_heuristics_core_standalone_tests PRIVATE
+        MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
+endif()
+catch_discover_tests(mip_heuristics_core_standalone_tests
+    TEST_LIST mip_heuristics_core_standalone_tests_ALL)
+
 # Python bench tests — unit tests for the log parser, the benchmark
 # harness and the results analysis.  The measurements themselves run off a
 # real MIPLIB results tree and stay a manual/CI step; these tests only cover
