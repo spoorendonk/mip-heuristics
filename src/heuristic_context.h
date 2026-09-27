@@ -87,8 +87,8 @@ struct HighsLogOptions;
 // `[[nodiscard]]`, for the reason `SolutionSink::offer` is: a dropped
 // outcome loses both the effort — which `run_sequential` books into
 // `heuristic_effort_used` and nothing else can recover — and the bail flag
-// this issue exists to carry.  `-Werror=unused-result` on `mip_heuristics`
-// and `mip_heuristics_tests` is what makes the attribute a build failure
+// this issue exists to carry.  `-Werror=unused-result` on our library and
+// test targets is what makes the attribute a build failure
 // rather than a warning that scrolls past.  It costs a caller that wants
 // one field nothing: `run(...).effort` is a *use* of the return value, so
 // only a call whose whole result is thrown away trips it, and the single

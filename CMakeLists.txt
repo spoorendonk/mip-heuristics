@@ -95,34 +95,72 @@ endif()
 
 include(cmake/FetchHiGHS.cmake)
 
+# The heuristics in two layers (#170).
+#
+# `mip_heuristics_core` is the algorithms, the solution pool and sink, the
+# runner scaffold and the model view, and needs no `HighsMipSolver`: it
+# includes no `mip/` header but the header-only `feasibilityjump.hh`, and a
+# caller can run FJ and LocalMIP from it on a model it owns.  The ctest
+# `core_boundary` enforces both halves of that.  Headers are listed so the
+# check can read them off the target.
+#
+# `mip_heuristics` is the HiGHS adapter: the presolve chain and `fpr_lp`
+# entry points, the solver-facing sink, the effort ledger, FPR's clique
+# rankings and Scylla.  Its objects are injected into `highs`, as the
+# whole library's were before the split.
+add_library(mip_heuristics_core STATIC
+    src/continuous_loop.h
+    src/deadline.h
+    src/fj.cpp
+    src/fj.h
+    src/fj_worker.cpp
+    src/fj_worker.h
+    src/fpr_core.cpp
+    src/fpr_core.h
+    src/fpr_strategies.h
+    src/fpr_val_select.cpp
+    src/fpr_val_select.h
+    src/heuristic_common.h
+    src/heuristic_context.cpp
+    src/heuristic_context.h
+    src/local_mip.cpp
+    src/local_mip.h
+    src/local_mip_caches.h
+    src/local_mip_construction.cpp
+    src/local_mip_construction.h
+    src/local_mip_core.cpp
+    src/local_mip_core.h
+    src/local_mip_search.cpp
+    src/local_mip_worker.cpp
+    src/local_mip_worker.h
+    src/opportunistic_runner.h
+    src/prop_engine.cpp
+    src/prop_engine.h
+    src/repair_search.cpp
+    src/repair_search.h
+    src/repair_walk.cpp
+    src/repair_walk.h
+    src/rng.h
+    src/solution_pool.cpp
+    src/solution_pool.h
+    src/solution_sink.cpp
+    src/solution_sink.h
+    src/walksat.cpp
+    src/walksat.h
+    src/worker_base.h
+)
 add_library(mip_heuristics OBJECT
     src/clique_cover.cpp
     src/contested_pdlp.cpp
     src/effort_ledger.cpp
-    src/fj.cpp
-    src/fj_worker.cpp
     src/fpr.cpp
-    src/fpr_core.cpp
     src/fpr_lp.cpp
     src/fpr_lp_refs.cpp
-    src/fpr_val_select.cpp
     src/fpr_var_order.cpp
-    src/heuristic_context.cpp
     src/incumbent_sink.cpp
-    src/local_mip.cpp
-    src/local_mip_construction.cpp
-    src/local_mip_core.cpp
-    src/local_mip_search.cpp
-    src/local_mip_worker.cpp
-    src/prop_engine.cpp
-    src/repair_search.cpp
-    src/repair_walk.cpp
     src/mode_dispatch.cpp
     src/scylla_worker.cpp
-    src/solution_pool.cpp
-    src/solution_sink.cpp
     src/scylla.cpp
-    src/walksat.cpp
 )
 # `SolutionSink::offer` is `[[nodiscard]]` because dropping its verdict is
 # the bug issue #111 fixed: every presolve worker computed the pool's
@@ -135,10 +173,8 @@ add_library(mip_heuristics OBJECT
 # failure mode CLAUDE.md warns about for the lint gates.
 #
 # Promoting just this one diagnostic to an error makes the guard real.
-# PRIVATE and per-target on purpose: `mip_heuristics` is an OBJECT library
-# whose *already compiled* objects are injected into `highs`, so the flag
-# cannot reach HiGHS's own translation units, which are third-party and
-# not ours to police.
+# PRIVATE and per-target on purpose: the flag must not reach HiGHS's own
+# translation units, which are third-party and not ours to police.
 #
 # `-Werror=switch` joins it for the same reason (issue #128's cold
 # review): a `switch` over one of our own scoped enums with no `default`
@@ -149,17 +185,64 @@ add_library(mip_heuristics OBJECT
 # switch presently in `src/` and `tests/` either covers its enum
 # exhaustively or carries an explicit `default:`, so this costs nothing
 # today; it is meant to catch the next one that doesn't.
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mip_heuristics PRIVATE -Werror=unused-result -Werror=switch)
-endif()
+foreach(_target mip_heuristics_core mip_heuristics)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${_target} PRIVATE -Werror=unused-result -Werror=switch)
+    endif()
+    if(MIP_HEURISTICS_INSTRUMENT)
+        target_compile_definitions(${_target} PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
+    endif()
+endforeach()
 
+# The include directories are spelled out rather than taken from `highs`'s
+# usage requirements, which would also bring `-fPIC` and HiGHS's own
+# warning flags: the heuristics compile exactly as they did before the
+# split.  `$<LINK_ONLY:highs>` supplies the HiGHS utility symbols the core
+# needs (timer, sparse transpose, logging) without those requirements.
+# Installed, the core's headers sit beside HiGHS's (see the install rules
+# below), which they include by the same relative paths.
+target_include_directories(mip_heuristics_core PUBLIC
+    $<BUILD_INTERFACE:${highs_SOURCE_DIR}/highs>
+    $<BUILD_INTERFACE:${highs_BINARY_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<INSTALL_INTERFACE:include/highs>
+    $<INSTALL_INTERFACE:include/mip_heuristics>)
+target_link_libraries(mip_heuristics_core PUBLIC $<LINK_ONLY:highs>)
+# The core's headers are C++23 (`std::expected`, designated initialisers,
+# `[[nodiscard]]` structs), so a caller compiling against them needs it too;
+# `CMAKE_CXX_STANDARD` above only reaches this project's own targets.
+target_compile_features(mip_heuristics_core PUBLIC cxx_std_23)
 target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
-if(MIP_HEURISTICS_INSTRUMENT)
-    target_compile_definitions(mip_heuristics PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
-endif()
 
-target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics>)
+# `libhighs` holds both layers: the adapter's objects, as it always has, and
+# the core's.  Self-contained, so a plain `-lhighs` link (pkg-config, or any
+# build system but CMake) resolves on its own, as on a build without the
+# split.  Linking the core to `highs` instead would make the two archives
+# each need the other, a cycle CMake can order but a `.pc` file cannot:
+# pkg-config collapses the repeated `-lhighs` it would take.  The core
+# library below is the same objects again, for a caller that wants the core
+# without the adapter; a link naming both archives pulls each object once.
+target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics> $<TARGET_OBJECTS:mip_heuristics_core>)
 target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# The core, installed into the export set HiGHS puts `highs` in
+# (`install(EXPORT highs-targets)`, cmake/cpp-highs.cmake upstream, plus the
+# build-tree `highs-targets.cmake`), so a `find_package(highs)` caller gets
+# `highs::mip_heuristics_core` beside `highs::highs`, and its headers under
+# `include/mip_heuristics`.
+include(GNUInstallDirs)
+install(TARGETS mip_heuristics_core
+    EXPORT highs-targets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    COMPONENT libs)
+export(TARGETS mip_heuristics_core
+    NAMESPACE highs::
+    APPEND FILE "${highs_BINARY_DIR}/highs-targets.cmake")
+get_target_property(_core_sources mip_heuristics_core SOURCES)
+list(FILTER _core_sources INCLUDE REGEX "\\.h$")
+install(FILES ${_core_sources}
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mip_heuristics
+    COMPONENT libs)
 
 # --- Tests ---
 # Everything from here to the end of the file is development-only and skipped
@@ -309,6 +392,32 @@ if(_bench_py)
     add_test(
         NAME docs_parameter_references
         COMMAND ${_bench_py} ${CMAKE_CURRENT_SOURCE_DIR}/bench/check_docs_refs.py
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    # The core/adapter boundary (#170): no core unit reaches an adapter or
+    # `mip/` header, transitively, and no symbol the core leaves undefined
+    # lives in the MIP solver or the adapter.  Standard library only, like
+    # the docs check above.  The shared C++ runtime is passed in so what it
+    # exports is not charged to whichever member carries a copy.
+    execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
+        OUTPUT_VARIABLE _cxx_runtime
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    add_test(
+        NAME core_boundary
+        COMMAND ${_bench_py} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_boundary.py
+                --nm ${CMAKE_NM}
+                --core-lib $<TARGET_FILE:mip_heuristics_core>
+                --highs-lib $<TARGET_FILE:highs>
+                --cxx-runtime ${_cxx_runtime}
+                --highs-mip-dir ${highs_SOURCE_DIR}/highs/mip
+                --src-dir ${CMAKE_CURRENT_SOURCE_DIR}/src
+                --compile-commands ${CMAKE_BINARY_DIR}/compile_commands.json
+                --core-sources $<TARGET_PROPERTY:mip_heuristics_core,SOURCES>
+                --adapter-sources $<TARGET_PROPERTY:mip_heuristics,SOURCES>
+        COMMAND_EXPAND_LISTS
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
 endif()
