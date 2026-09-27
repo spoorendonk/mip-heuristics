@@ -63,6 +63,12 @@ struct ContinuousLoopState {
     static constexpr int kNoPoller = -1;
     std::atomic<int> poller{0};
 
+    ContinuousLoopState() = default;
+    // A loop whose seat starts with worker `first_poller` rather than 0:
+    // `run_on_caller_thread` runs one slot, of any index, and that slot must
+    // hold the seat or nothing would ever poll the terminator.
+    explicit ContinuousLoopState(int first_poller) : poller(first_poller) {}
+
     [[nodiscard]] bool stopped() const { return stop.load(std::memory_order_relaxed); }
 
     void request_stop() { stop.store(true, std::memory_order_relaxed); }
@@ -83,8 +89,8 @@ struct ContinuousLoopState {
     // these calls single-caller; it has to publish like one.
     //
     // The `cur == w` fast path needs no acquire: the only holder that
-    // never CASed is worker 0 via the initialiser below, ordered by
-    // thread creation, and a worker never re-claims after releasing.
+    // never CASed is the initial one (worker 0, or `first_poller`), ordered
+    // by thread creation, and a worker never re-claims after releasing.
     bool claim_poller(int w) {
         int cur = poller.load(std::memory_order_relaxed);
         if (cur == w) {

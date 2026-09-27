@@ -1,11 +1,9 @@
 #pragma once
+#include "heuristic_context.h"
+
 #include <cstddef>
 
 class SolutionSink;
-struct DispatchOutcome;
-struct ExecutionContext;
-struct HeuristicBudget;
-struct ProblemView;
 
 namespace fj {
 
@@ -39,4 +37,12 @@ namespace fj {
 // Implements the uniform runner contract; see heuristic_context.h.
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                     ExecutionContext& exec, SolutionSink& sink);
+
+// One FjWorker slot on the calling thread until `exec` says stop (#171),
+// rebuilt whenever it stalls, from `source` first.  The rebuilt worker
+// starts from that point unperturbed.  See `run_until_stopped` in
+// heuristic_context.h for the contract.
+[[nodiscard]] size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,
+                                       const ExecutionContext& exec, int worker,
+                                       const RestartSource& source, SolutionSink& sink);
 }  // namespace fj

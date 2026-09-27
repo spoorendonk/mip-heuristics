@@ -1,13 +1,11 @@
 #pragma once
 
+#include "heuristic_context.h"
+
 #include <cstddef>
 #include <cstdint>
 
 class SolutionSink;
-struct DispatchOutcome;
-struct ExecutionContext;
-struct HeuristicBudget;
-struct ProblemView;
 
 namespace local_mip {
 
@@ -118,4 +116,12 @@ void note_attempt_effort(int64_t effort_charged);
 // as the search itself.
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                     ExecutionContext& exec, SolutionSink& sink);
+
+// One LocalMipWorker slot on the calling thread until `exec` says stop
+// (#171), rebuilt whenever it stalls, from `source` first and with the
+// same fresh perturbation as any restart.  See `run_until_stopped` in
+// heuristic_context.h for the contract.
+[[nodiscard]] size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,
+                                       const ExecutionContext& exec, int worker,
+                                       const RestartSource& source, SolutionSink& sink);
 }  // namespace local_mip
