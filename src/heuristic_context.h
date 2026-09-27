@@ -13,7 +13,6 @@
 #include <functional>
 #include <limits>
 #include <string>
-#include <utility>
 #include <vector>
 
 struct HighsLogOptions;
@@ -507,21 +506,30 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // caller owns, not the HiGHS task scheduler — until `exec` says stop.  It
 // is the same slot loop the presolve dispatch runs N of in parallel
 // (`run_on_caller_thread` in opportunistic_runner.h), with two differences:
-// a stalled worker is always rebuilt and never retires its slot
+// a stalled worker is always rebuilt rather than retiring its slot
 // (`attempt_with_rebuild`), and a rebuild asks `source` for its start point
 // before the sink's own pool.  The in-HiGHS dispatch does not use it.
 //
-// What ends it: `exec.stop` or the deadline, both polled through
-// `past_deadline()` inside an attempt on the worker's own cadence (FJ at
-// every upstream callback, i.e. every 500000 FJ effort units or found
-// solution; LocalMIP every `kTermCheckWork` counted units or steps) and
-// again before every attempt; `exec.terminator`, before every other
-// attempt; `budget.total`; or `budget.stale`, the run-level patience.
-// `make_until_stopped_budget` lifts the last two.  So a stop is seen within
-// one poll interval, except while a worker is being built: FJ's solver
-// construction and LocalMIP's cold-start construction sweep (one O(nnz)
-// pass) poll nothing, as in the presolve dispatch.  A worker is rebuilt
-// when it stalls (`budget.worker_stale`) or spends `budget.per_worker`.
+// What ends it:
+//   - `exec.stop` or the deadline, both polled through `past_deadline()`
+//     inside an attempt on the worker's own cadence (FJ at every upstream
+//     callback, i.e. every 500000 FJ effort units or found solution;
+//     LocalMIP every `kTermCheckWork` counted units or steps) and again
+//     before every attempt;
+//   - `exec.terminator`, before every other attempt;
+//   - `budget.total`, and a `budget.attempt_cap` of 0, which returns before
+//     the first attempt;
+//   - `budget.stale`, the run-level patience;
+//   - a worker that charges nothing even when freshly rebuilt, which
+//     retires the slot: a degenerate view (returned at once, as 0), or FJ
+//     built with `HIGHSINT64`, which never searches.
+// `make_until_stopped_budget` lifts `total` and `stale`.  So a stop is seen
+// within one poll interval, except while a worker is being built: FJ's
+// solver construction and LocalMIP's cold-start construction sweep (one
+// O(nnz) pass) poll nothing, as in the presolve dispatch.  A worker is
+// rebuilt when it stalls (`budget.worker_stale`) or spends
+// `budget.per_worker`.
+//
 // `exec.num_workers` is not read; `worker` picks the slot's seed
 // (`exec.worker_seed(worker)`) and its trace identity, and for LocalMIP a
 // slot other than 0 perturbs its first start, as in the presolve dispatch.
@@ -539,41 +547,51 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // Several threads may each run a slot against one `sink`, `source`, `exec`
 // and stop flag — `SolutionSink` is thread-safe — but then `source` and
 // `terminator` are called concurrently and must be thread-safe too.
+//
+// Exceptions.  Nothing here throws of its own accord beyond allocation
+// failure.  An exception thrown by `source`, `on_accept` or `terminator`
+// propagates out of `run_until_stopped` with the basic guarantee: the slot's
+// worker is destroyed, no lock is held (`on_accept` runs outside the pool
+// lock), and `sink` stays usable.  Uncaught in a `std::thread`'s body, it
+// calls `std::terminate`, so a caller whose callbacks can throw catches
+// around the call.
 
 // Where a `run_until_stopped` slot takes its start point, ahead of the
-// sink's own pool (#171): fill `out` with a point in the view's
-// column space and return true, or return false to fall back to the pool,
-// the view's incumbent and finally a fresh construction, in that order.  A
-// point that is not `ncol` long is treated as a false.  The workers clamp
-// it into the view's bounds, and LocalMIP rounds its integer columns; FJ
-// takes it as its starting assignment and LocalMIP perturbs it as it does
-// any restart.  `rng` is the slot's own generator, there for a source that
-// wants to draw — `SolutionSink::get_restart` has this signature, so a
-// source can forward to another sink's pool crossover.  Empty means no
-// source; the presolve dispatch passes an empty one.
+// sink's own pool (#171): fill `out` with a point in the view's column
+// space and return true, or return false to fall back to the pool, the
+// view's incumbent and finally a fresh construction, in that order.  A
+// point that is not `ncol` long, or holds a NaN, is treated as a false.
+// Any other point is used after rounding its integer columns to the nearest
+// integer and clamping every column into the view's bounds (`take_restart`),
+// so an arbitrary point — a crossover, an LP solution — is a legal start:
+// FJ leaves the columns it never moves as it found them, and would
+// otherwise report a fractional integer column as part of a solution.  FJ
+// starts from the point as it is; LocalMIP perturbs it as it does any
+// restart, except for slot 0's first start, which it takes unperturbed.
+// `rng` is the slot's own generator, there for a source that wants to draw
+// — `SolutionSink::get_restart` has this signature, so a source can forward
+// to another sink's pool crossover.  Empty means no source; the presolve
+// dispatch passes an empty one.
 using RestartSource = std::function<bool(Rng& rng, std::vector<double>& out)>;
 
-// `source`'s point into `out`, when there is a source and its point has
-// the view's width; otherwise false, with `out` empty.
-[[nodiscard]] inline bool take_restart(const RestartSource& source, Rng& rng,
-                                       std::vector<double>& out, HighsInt ncol) {
-    if (source && source(rng, out) && std::cmp_equal(out.size(), ncol)) {
-        return true;
-    }
-    out.clear();
-    return false;
-}
+// `source`'s point into `out`, rounded and clamped into `problem` as the
+// contract above says, when there is a source and its point is usable;
+// otherwise false, with `out` empty.
+[[nodiscard]] bool take_restart(const RestartSource& source, Rng& rng, std::vector<double>& out,
+                                const ProblemView& problem);
 
 // The budget for a `run_until_stopped` slot that only the caller's stop
 // should end: no ceiling on the run or on one worker, no run-level patience,
 // `attempt_cap` effort between two of the runner's own checks, and a worker
 // rebuilt once `patience` of its effort has gone by without moving the
-// sink's best.  Both in the heuristic's own effort unit.
+// sink's best.  Both in the heuristic's own effort unit.  A `patience` of
+// 0 means no gate, as it does for every `mip_heuristic_<name>_patience`
+// option: the worker is then rebuilt only if it retires by itself.
 inline HeuristicBudget make_until_stopped_budget(size_t attempt_cap, size_t patience) {
     constexpr size_t kUnbounded = std::numeric_limits<size_t>::max();
     return HeuristicBudget{.total = kUnbounded,
                            .per_worker = kUnbounded,
                            .attempt_cap = attempt_cap,
                            .stale = kUnbounded,
-                           .worker_stale = patience};
+                           .worker_stale = patience == 0 ? kUnbounded : patience};
 }

@@ -55,7 +55,7 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
     // this reads the same material without racing a concurrent
     // `addIncumbent`.
     std::vector<double> start;
-    if (!take_restart(source, rng, start, problem.ncol) && !sink.copy_best(start)) {
+    if (!take_restart(source, rng, start, problem) && !sink.copy_best(start)) {
         start = problem.incumbent;
     }
     // Carry the outgoing worker's charge into the replacement's trace base,

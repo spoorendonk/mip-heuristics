@@ -4,6 +4,7 @@
 #include "lp_data/HighsLp.h"
 #include "util/HighsUtils.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <expected>
@@ -296,4 +297,24 @@ std::expected<ProblemView, ProblemError> make_problem(const HighsLp& model, Prob
                        .nnz = storage.ar_index.size(),
                        .incumbent = {},
                        .binary = std::move(binary)};
+}
+
+bool take_restart(const RestartSource& source, Rng& rng, std::vector<double>& out,
+                  const ProblemView& problem) {
+    if (source && source(rng, out) && std::cmp_equal(out.size(), problem.ncol)) {
+        bool usable = true;
+        for (HighsInt j = 0; j < problem.ncol && usable; ++j) {
+            double v = out[j];
+            usable = !std::isnan(v);
+            if ((*problem.integrality)[j] != HighsVarType::kContinuous) {
+                v = std::round(v);
+            }
+            out[j] = std::max((*problem.col_lower)[j], std::min((*problem.col_upper)[j], v));
+        }
+        if (usable) {
+            return true;
+        }
+    }
+    out.clear();
+    return false;
 }

@@ -166,6 +166,31 @@ size_t stop_at_first_solution(HoldingSink& sink, std::atomic<bool>& stop, Run ru
 // nothing inside the run can end the attempt the stop lands in, so only a
 // poll of the stop flag inside it can.  The total is a fuse, so a run that
 // never finds anything ends and fails rather than hangs.
+// A total for the runs below that end on their own, long enough for many
+// stalls and short enough that a broken case fails in well under a second.
+constexpr size_t kFuse = kAttemptBudget * 64;
+
+// minimise x0 + x1 + x2  s.t.  x0 + x1 >= 1,  x1 + x2 >= 1,  x in [0, 10],
+// with every column of `type`.
+HighsLp two_cover_model(HighsVarType type, double upper) {
+    HighsLp lp;
+    lp.num_col_ = 3;
+    lp.num_row_ = 2;
+    lp.col_cost_ = {1.0, 1.0, 1.0};
+    lp.col_lower_ = {0.0, 0.0, 0.0};
+    lp.col_upper_ = {upper, upper, upper};
+    lp.integrality_ = {type, type, type};
+    lp.row_lower_ = {1.0, 1.0};
+    lp.row_upper_ = {kHighsInf, kHighsInf};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
+    lp.a_matrix_.start_ = {0, 1, 3, 4};
+    lp.a_matrix_.index_ = {0, 0, 1, 1};
+    lp.a_matrix_.value_ = {1.0, 1.0, 1.0, 1.0};
+    return lp;
+}
+
 HeuristicBudget one_long_attempt() {
     HeuristicBudget budget = make_until_stopped_budget(kBudget, kBudget);
     budget.total = kBudget;
@@ -176,6 +201,11 @@ HeuristicBudget one_long_attempt() {
 
 TEST_CASE("core: LocalMIP on a caller's thread stops at its next poll after the stop flag",
           "[core][until_stopped]") {
+    // The assertion is on the poll counters, which only an instrumented
+    // build keeps.
+    if constexpr (!local_mip::kInstrumented) {
+        SKIP("Built with MIP_HEURISTICS_INSTRUMENT=OFF — counters compiled out");
+    }
     Highs highs;
     read(highs, "egout.mps");
     const HighsLp& lp = highs.getLp();
@@ -238,25 +268,11 @@ TEST_CASE("core: FJ on a caller's thread stops in the callback that saw the stop
 
 TEST_CASE("core: a stalled LocalMIP worker restarts from the caller's source",
           "[core][until_stopped]") {
-    // minimise x0 + x1 + x2  s.t.  x0 + x1 >= 1,  x1 + x2 >= 1,  x in [0, 10].
     // All continuous, so a restart's perturbation, which moves integer
     // columns only, leaves the source's point as it is, and the rebuilt
     // worker's first step offers exactly that point: it is feasible, and a
     // fresh worker has no best of its own to beat.
-    HighsLp lp;
-    lp.num_col_ = 3;
-    lp.num_row_ = 2;
-    lp.col_cost_ = {1.0, 1.0, 1.0};
-    lp.col_lower_ = {0.0, 0.0, 0.0};
-    lp.col_upper_ = {10.0, 10.0, 10.0};
-    lp.row_lower_ = {1.0, 1.0};
-    lp.row_upper_ = {kHighsInf, kHighsInf};
-    lp.a_matrix_.format_ = MatrixFormat::kColwise;
-    lp.a_matrix_.num_col_ = lp.num_col_;
-    lp.a_matrix_.num_row_ = lp.num_row_;
-    lp.a_matrix_.start_ = {0, 1, 3, 4};
-    lp.a_matrix_.index_ = {0, 0, 1, 1};
-    lp.a_matrix_.value_ = {1.0, 1.0, 1.0, 1.0};
+    const HighsLp lp = two_cover_model(HighsVarType::kContinuous, 10.0);
     // Feasible, interior and dyadic: no move LocalMIP makes lands on it, and
     // it compares exactly.
     const std::vector<double> point = {0.375, 0.8125, 0.5};
@@ -303,9 +319,10 @@ TEST_CASE("core: a stalled LocalMIP worker restarts from the caller's source",
 
     // A patience of one unit, so the first worker stalls as soon as it
     // stops improving, and no ceiling on a worker: the rebuild can only be
-    // the stall's.  The total is a fuse.
+    // the stall's.  The total is a fuse, short so that a restart which
+    // never reads the source fails fast.
     HeuristicBudget budget = make_until_stopped_budget(kAttemptBudget, 1);
-    budget.total = kBudget;
+    budget.total = kFuse;
     REQUIRE(budget.per_worker == std::numeric_limits<size_t>::max());
 
     const size_t effort =
@@ -317,4 +334,79 @@ TEST_CASE("core: a stalled LocalMIP worker restarts from the caller's source",
     for (const std::vector<double>& x : sink.before_restart) {
         REQUIRE(x != point);
     }
+}
+
+TEST_CASE("core: FJ restarts from a fractional source point rounded to an integer one",
+          "[core][until_stopped]") {
+    // Binary columns, and a source that serves the midpoint of the box to
+    // every start.  FJ never moves a column it has no reason to, so without
+    // the rounding in `take_restart` it reports the midpoint's fractional
+    // columns as part of a "solution".
+    const HighsLp lp = two_cover_model(HighsVarType::kInteger, 1.0);
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+
+    int source_calls = 0;
+    const RestartSource source = [&](Rng& /*rng*/, std::vector<double>& out) {
+        ++source_calls;
+        out = {0.5, 0.5, 0.5};
+        return true;
+    };
+
+    // The rule itself: integer columns rounded, every column clamped.
+    Rng rng(0);
+    std::vector<double> taken;
+    REQUIRE(take_restart(source, rng, taken, s.problem));
+    REQUIRE(taken == std::vector<double>{1.0, 1.0, 1.0});
+    source_calls = 0;
+
+    struct AllSink : SolutionSink {
+        using SolutionSink::SolutionSink;
+        std::vector<std::vector<double>> all;
+
+    private:
+        void on_accept(double /*obj*/, const std::vector<double>& x, int /*source*/,
+                       const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
+            all.push_back(x);
+        }
+    } all_sink(*s.problem.integrality, 0);
+
+    // A patience of one unit, so every attempt that moves nothing rebuilds
+    // the worker from the source again; the total is the fuse that ends it.
+    HeuristicBudget budget = make_until_stopped_budget(kAttemptBudget, 1);
+    budget.total = kFuse;
+    const size_t effort =
+        fj::run_until_stopped(s.problem, budget, s.exec, /*worker=*/0, source, all_sink);
+
+    REQUIRE(effort > 0);
+    // Every start came from the source: the first worker's and the
+    // rebuilds' after it.
+    REQUIRE(source_calls >= 2);
+    REQUIRE_FALSE(all_sink.all.empty());
+    for (const std::vector<double>& x : all_sink.all) {
+        REQUIRE(is_feasible(lp, x));
+    }
+}
+
+TEST_CASE("core: a run_until_stopped slot other than 0 polls the terminator",
+          "[core][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    // The slot holds the poller seat whatever its index, so the terminator
+    // is asked every other attempt and the run ends on the call that says
+    // stop.  Short attempts, so that takes a few of them.
+    int term_calls = 0;
+    ExecutionContext exec = s.exec;
+    exec.terminator = [&term_calls] { return ++term_calls == 3; };
+    BestSink sink(*s.problem.integrality, 0);
+    HeuristicBudget budget = make_until_stopped_budget(/*attempt_cap=*/1024, /*patience=*/0);
+    budget.total = kFuse;
+
+    const size_t effort =
+        local_mip::run_until_stopped(s.problem, budget, exec, /*worker=*/5, RestartSource{}, sink);
+
+    REQUIRE(effort > 0);
+    REQUIRE(term_calls == 3);
 }

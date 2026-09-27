@@ -315,7 +315,7 @@ struct Slots {
         // before it is destroyed (#106).
         retire_trace(state.worker, state.trace);
         std::vector<double> restart_sol;
-        if (!take_restart(source, rng, restart_sol, problem.ncol) &&
+        if (!take_restart(source, rng, restart_sol, problem) &&
             !sink.get_restart(rng, restart_sol)) {
             // The dispatch's snapshot, not HiGHS's live incumbent: this runs
             // on a worker thread while peers submit (#98).  The pool is
@@ -465,7 +465,7 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             auto seed = static_cast<uint32_t>(rng());
             std::vector<double> start;
             size_t construction = 0;
-            if (!take_restart(source, rng, start, problem.ncol)) {
+            if (!take_restart(source, rng, start, problem)) {
                 start = resolve_worker_start(problem, sink, WorkerTrace{worker_idx, 0},
                                              budget.per_worker, seed, nullptr, &construction);
             }
