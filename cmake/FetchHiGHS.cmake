@@ -77,19 +77,26 @@ file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch/apply_patch.cmak
 
 # A parent project's own HiGHS patches, layered on the same tree in the same
 # PATCH_COMMAND, after ours: each script runs as `cmake -DSOURCE_DIR=<tree>
-# -P <script>`, in list order, and owns its own idempotency and version
+# -DPATCH_SCRIPT_SHA=<its hash> -P <script>`, in list order, and owns its own idempotency and version
 # guard — this file only runs them.  Each script's hash goes into its command
 # for the reason given above, so editing one re-runs the whole patch step.
 # Patching the fetched tree from outside instead would race FetchContent's
-# patch stamp.  Empty (the default, and always the case top-level) appends
-# nothing, so the stamped command is exactly the built-in one.  A normal
+# patch stamp.  Empty (the default) appends nothing, so the stamped
+# command is exactly the built-in one; empty list elements are skipped.  Only
+# the listed file is hashed, not files it includes.  Removing or reordering a
+# script does not undo what it already did to the tree: that takes a clean
+# rebuild.  A normal
 # variable set by the parent before FetchContent_MakeAvailable takes
 # precedence over this cache entry (CMP0126).
 set(MIP_HEURISTICS_EXTRA_HIGHS_PATCHES "" CACHE STRING
     "Absolute paths of .cmake scripts run on the HiGHS tree after the built-in patch")
 set(_extra_patch_commands "")
 foreach(_script IN LISTS MIP_HEURISTICS_EXTRA_HIGHS_PATCHES)
-    if(NOT IS_ABSOLUTE "${_script}" OR NOT EXISTS "${_script}")
+    if(_script STREQUAL "")
+        continue()
+    endif()
+    if(NOT IS_ABSOLUTE "${_script}" OR NOT EXISTS "${_script}"
+       OR IS_DIRECTORY "${_script}")
         message(FATAL_ERROR
             "MIP_HEURISTICS_EXTRA_HIGHS_PATCHES: '${_script}' is not an "
             "absolute path to an existing file.")
