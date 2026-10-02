@@ -75,6 +75,35 @@ endif()
 file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch/apply_patch.cmake
      MIP_HEURISTICS_PATCH_SHA)
 
+# A parent project's own HiGHS patches, layered on the same tree in the same
+# PATCH_COMMAND, after ours: each script runs as `cmake -DSOURCE_DIR=<tree>
+# -P <script>`, in list order, and owns its own idempotency and version
+# guard — this file only runs them.  Each script's hash goes into its command
+# for the reason given above, so editing one re-runs the whole patch step.
+# Patching the fetched tree from outside instead would race FetchContent's
+# patch stamp.  Empty (the default, and always the case top-level) appends
+# nothing, so the stamped command is exactly the built-in one.  A normal
+# variable set by the parent before FetchContent_MakeAvailable takes
+# precedence over this cache entry (CMP0126).
+set(MIP_HEURISTICS_EXTRA_HIGHS_PATCHES "" CACHE STRING
+    "Absolute paths of .cmake scripts run on the HiGHS tree after the built-in patch")
+set(_extra_patch_commands "")
+foreach(_script IN LISTS MIP_HEURISTICS_EXTRA_HIGHS_PATCHES)
+    if(NOT IS_ABSOLUTE "${_script}" OR NOT EXISTS "${_script}")
+        message(FATAL_ERROR
+            "MIP_HEURISTICS_EXTRA_HIGHS_PATCHES: '${_script}' is not an "
+            "absolute path to an existing file.")
+    endif()
+    file(SHA256 "${_script}" _script_sha)
+    list(APPEND _extra_patch_commands
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=<SOURCE_DIR>
+            -DPATCH_SCRIPT_SHA=${_script_sha}
+            -P ${_script})
+endforeach()
+unset(_script)
+unset(_script_sha)
+
 FetchContent_Declare(highs
     GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS.git
     GIT_TAG        v1.15.1
@@ -88,7 +117,9 @@ FetchContent_Declare(highs
         -DSOURCE_DIR=<SOURCE_DIR>
         -DPATCH_SCRIPT_SHA=${MIP_HEURISTICS_PATCH_SHA}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/highs_patch/apply_patch.cmake
+        ${_extra_patch_commands}
 )
+unset(_extra_patch_commands)
 
 FetchContent_MakeAvailable(highs)
 
