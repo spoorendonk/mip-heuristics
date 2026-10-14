@@ -344,7 +344,8 @@ private:
     // `min_activity_` / `max_activity_` are what callers read: the finite sum
     // when the count is zero, -inf / +inf otherwise.  An infinite contribution
     // of either sign counts, so a column fixed at an infinite value widens its
-    // rows to unbounded rather than to a signed infinity: never NaN, and never
+    // rows to unbounded rather than to a signed infinity, and a stored zero
+    // coefficient contributes nothing: never NaN, and never
     // a violation `range_violated` could report falsely.
     std::vector<double> min_activity_;
     std::vector<double> max_activity_;

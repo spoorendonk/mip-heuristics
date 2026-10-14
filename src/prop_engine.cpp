@@ -705,7 +705,12 @@ struct Contribution {
     double hi;
 };
 
+// A stored zero coefficient contributes nothing, whatever the bound: `0 * inf`
+// is NaN, and the core's `make_problem` keeps explicit zeros.
 Contribution contribution(const VarState& vs, double a) {
+    if (a == 0.0) {
+        return {0.0, 0.0};
+    }
     if (vs.fixed) {
         return {a * vs.val, a * vs.val};
     }
@@ -726,6 +731,14 @@ void add_contribution(double c, double& finite, HighsInt& ninf) {
 // Replace `old_c` by `new_c` in one side of a row's activity.  Both finite
 // is the common case and keeps the single `+=` of the difference, so a model
 // without an infinite bound accumulates exactly the sums it always did.
+double published_min(HighsInt ninf, double finite) {
+    return ninf > 0 ? -kHighsInf : finite;
+}
+
+double published_max(HighsInt ninf, double finite) {
+    return ninf > 0 ? kHighsInf : finite;
+}
+
 void replace_contribution(double old_c, double new_c, double& finite, HighsInt& ninf) {
     const bool old_inf = std::isinf(old_c);
     const bool new_inf = std::isinf(new_c);
@@ -744,8 +757,8 @@ void replace_contribution(double old_c, double new_c, double& finite, HighsInt& 
 }  // namespace
 
 void PropEngine::publish_activity(HighsInt i) {
-    min_activity_[i] = min_ninf_[i] > 0 ? -kHighsInf : min_finite_[i];
-    max_activity_[i] = max_ninf_[i] > 0 ? kHighsInf : max_finite_[i];
+    min_activity_[i] = published_min(min_ninf_[i], min_finite_[i]);
+    max_activity_[i] = published_max(max_ninf_[i], max_finite_[i]);
 }
 
 void PropEngine::init_activities() {
@@ -779,17 +792,26 @@ void PropEngine::update_activities(HighsInt j, const VarState& old_vs) {
     const HighsInt kend = col_start_[j + 1];
     const HighsInt* __restrict col_row = col_row_;
     const double* __restrict col_val = col_val_;
+    double* __restrict min_a = min_activity_.data();
+    double* __restrict max_a = max_activity_.data();
+    double* __restrict min_fin = min_finite_.data();
+    double* __restrict max_fin = max_finite_.data();
+    HighsInt* __restrict min_ninf = min_ninf_.data();
+    HighsInt* __restrict max_ninf = max_ninf_.data();
 
     for (HighsInt p = kbeg; p < kend; ++p) {
         const HighsInt i = col_row[p];
         const double a = col_val[p];
         const Contribution old_c = contribution(old_vs, a);
         const Contribution new_c = contribution(new_vs, a);
+        // Component comparisons, not a delta: the same infinite contribution
+        // before and after compares equal and skips the row.
         if (old_c.lo != new_c.lo || old_c.hi != new_c.hi) {
-            act_undo_.push_back({i, min_ninf_[i], max_ninf_[i], min_finite_[i], max_finite_[i]});
-            replace_contribution(old_c.lo, new_c.lo, min_finite_[i], min_ninf_[i]);
-            replace_contribution(old_c.hi, new_c.hi, max_finite_[i], max_ninf_[i]);
-            publish_activity(i);
+            act_undo_.push_back({i, min_ninf[i], max_ninf[i], min_fin[i], max_fin[i]});
+            replace_contribution(old_c.lo, new_c.lo, min_fin[i], min_ninf[i]);
+            replace_contribution(old_c.hi, new_c.hi, max_fin[i], max_ninf[i]);
+            min_a[i] = published_min(min_ninf[i], min_fin[i]);
+            max_a[i] = published_max(max_ninf[i], max_fin[i]);
         }
     }
 }

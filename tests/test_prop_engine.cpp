@@ -651,6 +651,49 @@ TEST_CASE("PropEngine: fixing a column with an infinite bound keeps row activity
     REQUIRE(eng.row_min_activity(1) == 1e5 - 3.0);
     REQUIRE(eng.row_max_activity(1) == 1e5 - 3.0);
     REQUIRE(eng.row_max_activity(0) == 2e5);
+
+    // Propagation's path: a bound tightened from infinite to finite on a
+    // column that stays unfixed, and back on backtrack.
+    eng.backtrack_to(vs_m, sol_m, act_m);
+    REQUIRE(eng.tighten_ub(0, 7.0));
+    REQUIRE_FALSE(eng.var(0).fixed);
+    REQUIRE(eng.row_max_activity(0) == 14.0);
+    REQUIRE(eng.row_max_activity(1) == kHighsInf);
+    REQUIRE(eng.tighten_lb(1, -2.0));
+    REQUIRE(eng.tighten_ub(1, 5.0));
+    REQUIRE(eng.row_min_activity(1) == -2.0);
+    REQUIRE(eng.row_max_activity(1) == 12.0);
+    eng.backtrack_to(vs_m, sol_m, act_m);
+    REQUIRE(eng.row_max_activity(0) == kHighsInf);
+    REQUIRE(eng.row_min_activity(1) == -kHighsInf);
+    REQUIRE(eng.row_max_activity(1) == kHighsInf);
+}
+
+// A stored zero coefficient on a column with an infinite bound contributes
+// nothing: `0 * inf` is NaN, and the core's `make_problem` keeps explicit zeros.
+TEST_CASE("PropEngine: a zero coefficient on an unbounded column leaves activity finite",
+          "[prop-engine]") {
+    // x0 continuous (-inf, +inf) with a stored 0, x1 integer [0, 3].
+    //   row 0: 0 x0 + x1 <= 2
+    const std::vector<HighsInt> ar_start = {0, 2};
+    const std::vector<HighsInt> ar_index = {0, 1};
+    const std::vector<double> ar_value = {0.0, 1.0};
+    const std::vector<double> col_lb = {-kHighsInf, 0.0};
+    const std::vector<double> col_ub = {kHighsInf, 3.0};
+    const std::array<double, 1> row_lo = {-kHighsInf};
+    const std::array<double, 1> row_hi = {2.0};
+    const std::vector<HighsVarType> integrality = {HighsVarType::kContinuous,
+                                                   HighsVarType::kInteger};
+    const CscMatrix csc = build_csc(2, 1, ar_start, ar_index, ar_value);
+    PropEngine eng(2, 1, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
+                   col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), 1e-6);
+    eng.init_activities();
+    REQUIRE(eng.row_min_activity(0) == 0.0);
+    REQUIRE(eng.row_max_activity(0) == 3.0);
+    REQUIRE(eng.fix(0, 4.0));
+    REQUIRE(eng.fix(1, 3.0));
+    REQUIRE(eng.row_min_activity(0) == 3.0);
+    REQUIRE(eng.row_max_activity(0) == 3.0);
 }
 
 // ===================================================================
