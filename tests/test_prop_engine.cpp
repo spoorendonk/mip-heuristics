@@ -1,6 +1,7 @@
 #include "heuristic_common.h"
 #include "Highs.h"
 #include "prop_engine.h"
+#include "repair_walk.h"
 
 #include <array>
 #include <catch2/catch_approx.hpp>
@@ -584,6 +585,72 @@ TEST_CASE("PropEngine: pointer-identity guard detects problem swap",
     // Each feastol component is covered too: a mismatch on feastol alone
     // must be detected even when all pointers still match the first model.
     REQUIRE_FALSE(matches(eng1, m1, 1e-9));
+}
+
+// #184: a row's cached activity is a finite sum plus a count of infinite
+// contributions.  Before that, fixing a column with an infinite bound at a
+// finite value computed `inf + (finite - inf)` and left the row NaN, which
+// no `range_violated` comparison reports.
+TEST_CASE("PropEngine: fixing a column with an infinite bound keeps row activity finite",
+          "[prop-engine]") {
+    // x0 integer [0, +inf), x1 continuous (-inf, +inf), x2 integer [0, 4].
+    //   row 0: 2 x0 - x2 <= 10
+    //   row 1: x0 + x1 >= 1
+    const std::vector<HighsInt> ar_start = {0, 2, 4};
+    const std::vector<HighsInt> ar_index = {0, 2, 0, 1};
+    const std::vector<double> ar_value = {2.0, -1.0, 1.0, 1.0};
+    const std::vector<double> col_lb = {0.0, -kHighsInf, 0.0};
+    const std::vector<double> col_ub = {kHighsInf, kHighsInf, 4.0};
+    const std::array<double, 2> row_lo = {-kHighsInf, 1.0};
+    const std::array<double, 2> row_hi = {10.0, kHighsInf};
+    const std::vector<HighsVarType> integrality = {
+        HighsVarType::kInteger, HighsVarType::kContinuous, HighsVarType::kInteger};
+    const CscMatrix csc = build_csc(3, 2, ar_start, ar_index, ar_value);
+    PropEngine eng(3, 2, ar_start.data(), ar_index.data(), ar_value.data(), csc, col_lb.data(),
+                   col_ub.data(), row_lo.data(), row_hi.data(), integrality.data(), 1e-6);
+    eng.init_activities();
+
+    REQUIRE(eng.row_min_activity(0) == -4.0);
+    REQUIRE(eng.row_max_activity(0) == kHighsInf);
+    REQUIRE(eng.row_min_activity(1) == -kHighsInf);
+    REQUIRE(eng.row_max_activity(1) == kHighsInf);
+
+    const HighsInt vs_m = eng.vs_mark();
+    const HighsInt sol_m = eng.sol_mark();
+    const HighsInt act_m = eng.act_mark();
+
+    // The bounding-box value #174 fixes a half-bounded integer at.
+    REQUIRE(eng.fix(0, 1e5));
+    REQUIRE(eng.row_min_activity(0) == 2e5 - 4.0);
+    REQUIRE(eng.row_max_activity(0) == 2e5);
+    // Row 1 keeps x1's two infinite contributions: still unbounded, not NaN.
+    REQUIRE(eng.row_min_activity(1) == -kHighsInf);
+    REQUIRE(eng.row_max_activity(1) == kHighsInf);
+    // The repair's violation measure sees row 0 now.
+    size_t effort = 0;
+    REQUIRE(any_violated_row_in_column(eng, 0, effort));
+
+    // Fixing x1 too leaves row 1 finite.
+    REQUIRE(eng.fix(1, -3.0));
+    REQUIRE(eng.row_min_activity(1) == 1e5 - 3.0);
+    REQUIRE(eng.row_max_activity(1) == 1e5 - 3.0);
+
+    // Backtracking restores every activity exactly, infinities included.
+    eng.backtrack_to(vs_m, sol_m, act_m);
+    REQUIRE(eng.row_min_activity(0) == -4.0);
+    REQUIRE(eng.row_max_activity(0) == kHighsInf);
+    REQUIRE(eng.row_min_activity(1) == -kHighsInf);
+    REQUIRE(eng.row_max_activity(1) == kHighsInf);
+
+    // And the restored counts are live: fixing in the other order lands on the
+    // same values, through a row with only x0's upper bound left infinite.
+    REQUIRE(eng.fix(1, -3.0));
+    REQUIRE(eng.row_min_activity(1) == -3.0);
+    REQUIRE(eng.row_max_activity(1) == kHighsInf);
+    REQUIRE(eng.fix(0, 1e5));
+    REQUIRE(eng.row_min_activity(1) == 1e5 - 3.0);
+    REQUIRE(eng.row_max_activity(1) == 1e5 - 3.0);
+    REQUIRE(eng.row_max_activity(0) == 2e5);
 }
 
 // ===================================================================

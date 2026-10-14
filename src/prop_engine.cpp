@@ -649,8 +649,12 @@ void PropEngine::backtrack_to(HighsInt vs_mark_target, HighsInt sol_mark_target,
     // Restore row activities
     if (act_mark_target >= 0) {
         for (HighsInt u = static_cast<HighsInt>(act_undo_.size()) - 1; u >= act_mark_target; --u) {
-            min_activity_[act_undo_[u].row] = act_undo_[u].old_min;
-            max_activity_[act_undo_[u].row] = act_undo_[u].old_max;
+            const ActUndo& undo = act_undo_[u];
+            min_finite_[undo.row] = undo.old_min_finite;
+            max_finite_[undo.row] = undo.old_max_finite;
+            min_ninf_[undo.row] = undo.old_min_ninf;
+            max_ninf_[undo.row] = undo.old_max_ninf;
+            publish_activity(undo.row);
         }
         act_undo_.resize(act_mark_target);
     }
@@ -693,32 +697,75 @@ HighsInt PropEngine::act_mark() const {
     return static_cast<HighsInt>(act_undo_.size());
 }
 
+namespace {
+
+// One column's contribution to a row's [min, max] activity.
+struct Contribution {
+    double lo;
+    double hi;
+};
+
+Contribution contribution(const VarState& vs, double a) {
+    if (vs.fixed) {
+        return {a * vs.val, a * vs.val};
+    }
+    if (a > 0) {
+        return {a * vs.lb, a * vs.ub};
+    }
+    return {a * vs.ub, a * vs.lb};
+}
+
+void add_contribution(double c, double& finite, HighsInt& ninf) {
+    if (std::isinf(c)) {
+        ++ninf;
+    } else {
+        finite += c;
+    }
+}
+
+// Replace `old_c` by `new_c` in one side of a row's activity.  Both finite
+// is the common case and keeps the single `+=` of the difference, so a model
+// without an infinite bound accumulates exactly the sums it always did.
+void replace_contribution(double old_c, double new_c, double& finite, HighsInt& ninf) {
+    const bool old_inf = std::isinf(old_c);
+    const bool new_inf = std::isinf(new_c);
+    if (!old_inf && !new_inf) {
+        finite += (new_c - old_c);
+        return;
+    }
+    if (old_inf) {
+        --ninf;
+    } else {
+        finite -= old_c;
+    }
+    add_contribution(new_c, finite, ninf);
+}
+
+}  // namespace
+
+void PropEngine::publish_activity(HighsInt i) {
+    min_activity_[i] = min_ninf_[i] > 0 ? -kHighsInf : min_finite_[i];
+    max_activity_[i] = max_ninf_[i] > 0 ? kHighsInf : max_finite_[i];
+}
+
 void PropEngine::init_activities() {
     min_activity_.assign(nrow_, 0.0);
     max_activity_.assign(nrow_, 0.0);
+    min_finite_.assign(nrow_, 0.0);
+    max_finite_.assign(nrow_, 0.0);
+    min_ninf_.assign(nrow_, 0);
+    max_ninf_.assign(nrow_, 0);
     act_undo_.clear();
     act_undo_.reserve(static_cast<size_t>(4) *
                       static_cast<size_t>(ncol_));  // grows with nnz touched during DFS
 
     for (HighsInt i = 0; i < nrow_; ++i) {
-        double lo = 0.0;
-        double hi = 0.0;
         for (HighsInt k = ar_start_[i]; k < ar_start_[i + 1]; ++k) {
-            HighsInt j = ar_index_[k];
-            double a = ar_value_[k];
-            if (vs_[j].fixed) {
-                lo += a * vs_[j].val;
-                hi += a * vs_[j].val;
-            } else if (a > 0) {
-                lo += a * vs_[j].lb;
-                hi += a * vs_[j].ub;
-            } else {
-                lo += a * vs_[j].ub;
-                hi += a * vs_[j].lb;
-            }
+            const Contribution c = contribution(vs_[ar_index_[k]], ar_value_[k]);
+            add_contribution(c.lo, min_finite_[i], min_ninf_[i]);
+            add_contribution(c.hi, max_finite_[i], max_ninf_[i]);
         }
-        min_activity_[i] = lo;
-        max_activity_[i] = hi;
+        publish_activity(i);
     }
 }
 
@@ -732,49 +779,17 @@ void PropEngine::update_activities(HighsInt j, const VarState& old_vs) {
     const HighsInt kend = col_start_[j + 1];
     const HighsInt* __restrict col_row = col_row_;
     const double* __restrict col_val = col_val_;
-    double* __restrict min_a = min_activity_.data();
-    double* __restrict max_a = max_activity_.data();
 
     for (HighsInt p = kbeg; p < kend; ++p) {
         const HighsInt i = col_row[p];
         const double a = col_val[p];
-
-        // Compute old contribution to [min, max] activity
-        double old_lo;
-        double old_hi;
-        if (old_vs.fixed) {
-            old_lo = a * old_vs.val;
-            old_hi = old_lo;
-        } else if (a > 0) {
-            old_lo = a * old_vs.lb;
-            old_hi = a * old_vs.ub;
-        } else {
-            old_lo = a * old_vs.ub;
-            old_hi = a * old_vs.lb;
-        }
-
-        // Compute new contribution
-        double new_lo;
-        double new_hi;
-        if (new_vs.fixed) {
-            new_lo = a * new_vs.val;
-            new_hi = new_lo;
-        } else if (a > 0) {
-            new_lo = a * new_vs.lb;
-            new_hi = a * new_vs.ub;
-        } else {
-            new_lo = a * new_vs.ub;
-            new_hi = a * new_vs.lb;
-        }
-
-        // Use component comparisons rather than (delta != 0) so that
-        // infinite contributions (e.g. a * -inf when a bound is -kHighsInf)
-        // compare equal to themselves and skip the update; the delta would
-        // be NaN in that case and silently corrupt the activity.
-        if (old_lo != new_lo || old_hi != new_hi) {
-            act_undo_.push_back({i, min_a[i], max_a[i]});
-            min_a[i] += (new_lo - old_lo);
-            max_a[i] += (new_hi - old_hi);
+        const Contribution old_c = contribution(old_vs, a);
+        const Contribution new_c = contribution(new_vs, a);
+        if (old_c.lo != new_c.lo || old_c.hi != new_c.hi) {
+            act_undo_.push_back({i, min_ninf_[i], max_ninf_[i], min_finite_[i], max_finite_[i]});
+            replace_contribution(old_c.lo, new_c.lo, min_finite_[i], min_ninf_[i]);
+            replace_contribution(old_c.hi, new_c.hi, max_finite_[i], max_ninf_[i]);
+            publish_activity(i);
         }
     }
 }

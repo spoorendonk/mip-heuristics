@@ -336,16 +336,32 @@ private:
     // Null (no finite limit) until `set_deadline` arms it.
     Deadline deadline_;
 
-    // Per-row min/max activities (empty until init_activities() is called)
+    // Per-row min/max activities (empty until init_activities() is called).
+    // Each is kept as a finite sum plus a count of infinite contributions
+    // (#184), the scheme HiGHS's `HighsDomain` uses: subtracting an infinite
+    // old contribution from an infinite sum is NaN, so a column leaving an
+    // infinite bound -- fixed at a finite value -- would poison the row.
+    // `min_activity_` / `max_activity_` are what callers read: the finite sum
+    // when the count is zero, -inf / +inf otherwise.  An infinite contribution
+    // of either sign counts, so a column fixed at an infinite value widens its
+    // rows to unbounded rather than to a signed infinity: never NaN, and never
+    // a violation `range_violated` could report falsely.
     std::vector<double> min_activity_;
     std::vector<double> max_activity_;
+    std::vector<double> min_finite_;
+    std::vector<double> max_finite_;
+    std::vector<HighsInt> min_ninf_;
+    std::vector<HighsInt> max_ninf_;
 
-    // Activity undo: {row, old_min, old_max}
+    // Activity undo: a row's finite sums and infinity counts before a change.
     struct ActUndo {
         HighsInt row;
-        double old_min;
-        double old_max;
+        HighsInt old_min_ninf;
+        HighsInt old_max_ninf;
+        double old_min_finite;
+        double old_max_finite;
     };
+    void publish_activity(HighsInt i);
     std::vector<ActUndo> act_undo_;
 
     // Domain priority queue for dynamic variable selection.
