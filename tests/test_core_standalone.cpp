@@ -9,6 +9,8 @@
 // `run` reaches the MIP solver: the model is built by hand.
 
 #include "core_test_support.h"
+#include "fpr_core.h"
+#include "fpr_strategies.h"
 #include "heuristic_context.h"
 #include "io/HighsIO.h"
 #include "util/HighsTimer.h"
@@ -440,4 +442,68 @@ TEST_CASE("core: workers stay inside integer bounds that need rounding", "[core]
         REQUIRE(sink->found);
         REQUIRE(is_feasible(lp, sink->solution));
     }
+}
+
+TEST_CASE("core: FPR reports only finite points on free integer columns",
+          "[core][validation][fpr]") {
+    // minimise x0 - x2
+    //   s.t.  x0 + x1 >= 1,  x0 - x1 <= 3,  x2 - x1 <= 5,  x1 <= 10
+    //         x0, x1 free integers, x2 integer in [0, inf).
+    // Every value strategy reads a column's domain, and before the paper's
+    // bounding box reached the integer value selection (#174) an infinite
+    // bound was fixed as such: `fpr_attempt` reported x = [NaN, inf]-shaped
+    // points as feasible, because a NaN row activity compares as satisfied.
+    const QuietLog log;
+    HighsLp lp;
+    lp.num_col_ = 3;
+    lp.num_row_ = 4;
+    lp.col_cost_ = {1.0, 0.0, -1.0};
+    lp.col_lower_ = {-kHighsInf, -kHighsInf, 0.0};
+    lp.col_upper_ = {kHighsInf, kHighsInf, kHighsInf};
+    lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kInteger, HighsVarType::kInteger};
+    lp.row_lower_ = {1.0, -kHighsInf, -kHighsInf, -kHighsInf};
+    lp.row_upper_ = {kHighsInf, 3.0, 5.0, 10.0};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
+    lp.a_matrix_.start_ = {0, 2, 6, 7};
+    lp.a_matrix_.index_ = {0, 1, 0, 1, 2, 3, 2};
+    lp.a_matrix_.value_ = {1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0};
+    const Setup s(lp, log.options);
+
+    const std::vector<HighsInt> order = {0, 1, 2};
+    const std::vector<double> lp_ref = {-0.4, 1.3, 2.7};
+    int found = 0;
+    for (const FrameworkMode mode :
+         {FrameworkMode::kDfs, FrameworkMode::kDfsrep, FrameworkMode::kDive,
+          FrameworkMode::kDiveprop, FrameworkMode::kRepairSearch}) {
+        for (const ValStrategy val :
+             {ValStrategy::kUp, ValStrategy::kRandom, ValStrategy::kGoodobj, ValStrategy::kBadobj,
+              ValStrategy::kLoosedyn, ValStrategy::kZerocore, ValStrategy::kZerolp,
+              ValStrategy::kCore, ValStrategy::kLp}) {
+            const FprStrategyConfig strategy{.var_strategy = VarStrategy::kLR, .val_strategy = val};
+            const FprConfig cfg{.max_effort = kBudget,
+                                .cont_fallback = nullptr,
+                                .mode = mode,
+                                .strategy = &strategy,
+                                .lp_ref = lp_ref.data(),
+                                .precomputed_var_order = order.data(),
+                                .precomputed_var_order_size = 3};
+            for (std::uint64_t seed = 0; seed < 4; ++seed) {
+                Rng rng(seed);
+                const HeuristicResult r = fpr_attempt(s.problem, Deadline{}, cfg, rng, 0);
+                CAPTURE(static_cast<int>(mode), static_cast<int>(val), seed);
+                for (const double v : r.solution) {
+                    REQUIRE(std::isfinite(v));
+                }
+                if (r.found_feasible) {
+                    ++found;
+                    REQUIRE(std::isfinite(r.objective));
+                    REQUIRE(is_feasible(lp, r.solution));
+                }
+            }
+        }
+    }
+    // Not vacuous: the model is easy, and most combinations solve it.
+    REQUIRE(found > 0);
 }

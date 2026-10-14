@@ -75,19 +75,40 @@ AttemptCtx make_ctx(const ProblemView& problem) {
     };
 }
 
-// Paper: artificial bounding box [-100000, +100000] for infinite bounds.
-double finite_clamp_helper(double val, double lo, double hi) {
+// Paper Sect. 6: "if after presolve some variables still have some infinite
+// bound, we impose an artificial bounding box of [-100000, +100000]".  A box
+// with one finite side is anchored at it (`[lo, lo + kBox]`), so a finite
+// bound beyond 1e5 cannot cross the box; the paper does not say which.
+//
+// Every value FPR picks for a column goes through this box — the integer
+// value selection, its alternative branch and Phase 1's trivially-roundable
+// fixings as well as the continuous fill (#174).  Handed a raw infinite
+// bound, those fix a column at +-inf, and the point that comes back is
+// non-finite with a NaN row activity, which no `<` comparison calls violated.
+// A domain with both bounds finite is returned unchanged, so a model without
+// an infinite bound picks exactly the values it always did.
+struct Box {
+    double lo;
+    double hi;
+};
+
+Box boxed_domain(double lo, double hi) {
     constexpr double kBox = 1e5;
     if (lo > -kHighsInf && hi < kHighsInf) {
-        return std::max(lo, std::min(hi, val));
+        return {lo, hi};
     }
     if (lo > -kHighsInf) {
-        return std::max(lo, std::min(lo + kBox, val));
+        return {lo, lo + kBox};
     }
     if (hi < kHighsInf) {
-        return std::min(hi, std::max(hi - kBox, val));
+        return {hi - kBox, hi};
     }
-    return std::max(-kBox, std::min(kBox, val));
+    return {-kBox, kBox};
+}
+
+double finite_clamp_helper(double val, double lo, double hi) {
+    const Box b = boxed_domain(lo, hi);
+    return std::max(b.lo, std::min(b.hi, val));
 }
 
 // Lazy-construct (or reset) the cached PropEngine inside the scratch.
@@ -153,7 +174,8 @@ PropEngine& attempt_engine(FprScratch& scratch) {
 double choose_fix_value(HighsInt j, const FprConfig& cfg, const AttemptCtx& c, PropEngine& E,
                         const CscMatrix& csc, Rng& rng) {
     assert(cfg.strategy != nullptr && "FprConfig::strategy must be set (issue #120)");
-    return choose_value(j, E.var(j).lb, E.var(j).ub, is_integer(c.integrality, j), c.col_cost[j],
+    const Box b = boxed_domain(E.var(j).lb, E.var(j).ub);
+    return choose_value(j, b.lo, b.hi, is_integer(c.integrality, j), c.col_cost[j],
                         cfg.strategy->val_strategy, rng, cfg.lp_ref, c.row_lo.data(),
                         c.row_hi.data(),
                         E.activities_initialized() ? E.min_activity_data() : nullptr,
@@ -164,7 +186,8 @@ double compute_alt(HighsInt j, double preferred, const AttemptCtx& c, PropEngine
     if (c.is_binary(j)) {
         return (preferred < 0.5) ? 1.0 : 0.0;
     }
-    double alt = (std::abs(preferred - E.var(j).lb) < c.feastol) ? E.var(j).ub : E.var(j).lb;
+    const Box b = boxed_domain(E.var(j).lb, E.var(j).ub);
+    double alt = (std::abs(preferred - b.lo) < c.feastol) ? b.hi : b.lo;
     if (is_integer(c.integrality, j)) {
         alt = std::round(alt);
     }
@@ -282,10 +305,11 @@ void fpr_attempt_begin(FprAttemptState& state, const ProblemView& problem, const
             if (!is_int(j) || E.var(j).fixed) {
                 continue;
             }
+            const Box b = boxed_domain(E.var(j).lb, E.var(j).ub);
             if (uplocks[j] == 0 && downlocks[j] != 0) {
-                E.fix(j, E.var(j).ub);
+                E.fix(j, b.hi);
             } else if (downlocks[j] == 0 && uplocks[j] != 0) {
-                E.fix(j, E.var(j).lb);
+                E.fix(j, b.lo);
             }
         }
     }

@@ -153,9 +153,14 @@ you change these, see `docs/REPRODUCIBILITY.md`.
 - **File**: `src/fpr_core.cpp` (anonymous namespace)
 - **Default**: `1e5`
 - **Meaning**: When a variable has an unbounded side (lb = −∞ or ub =
-  +∞), `finite_clamp_helper` maps the variable into a box of width
-  `kBox` anchored at the finite bound (or `[−kBox, +kBox]` if both
-  sides are infinite). Paper specifies `[−100000, +100000]`.
+  +∞), `boxed_domain` replaces its domain by a box of width `kBox`
+  anchored at the finite bound (or `[−kBox, +kBox]` if both sides are
+  infinite). Paper specifies `[−100000, +100000]`; anchoring at a finite
+  bound is our reading, so a bound beyond 1e5 cannot cross the box.
+  Every value FPR picks goes through it: integer value selection, the
+  DFS alternative branch and Phase 1's trivially-roundable fixings as
+  well as the continuous fill (#174). A domain with both bounds finite
+  is untouched.
 - **Suggested range**: 1e3–1e6. Smaller values keep the DFS closer to
   the feasible region on unbounded models; larger values allow more
   diverse initial points.

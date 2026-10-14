@@ -126,6 +126,30 @@ TEST_CASE("SolutionPool: an entry_refs pointer outlives the entry's eviction", "
     REQUIRE(*refs[0].solution == std::vector<double>{7.0, 8.0});
 }
 
+TEST_CASE("SolutionPool: a non-finite objective or point is refused", "[pool]") {
+    // #174: a NaN objective used to be admitted and ranked like any other.
+    constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    SolutionPool pool(/*capacity=*/4);
+    for (const double obj : {kNan, kInf, -kInf}) {
+        const auto r = pool.try_add(obj, {1.0, 2.0}, kSourceA);
+        REQUIRE_FALSE(r.accepted);
+        REQUIRE_FALSE(r.improved_best);
+    }
+    for (const double v : {kNan, kInf, -kInf}) {
+        const auto r = pool.try_add(1.0, {v, 2.0}, kSourceA);
+        REQUIRE_FALSE(r.accepted);
+        REQUIRE_FALSE(r.improved_best);
+    }
+    REQUIRE(pool.sorted_entries().empty());
+    REQUIRE_FALSE(pool.snapshot().has_solution);
+
+    // A finite offer after them is the pool's first.
+    const auto r = pool.try_add(3.0, {1.0, 2.0}, kSourceA);
+    REQUIRE(r.accepted);
+    REQUIRE(r.improved_best);
+}
+
 // Also run under ThreadSanitizer by `mip_heuristics_pool_tsan_tests`.
 TEST_CASE("SolutionPool: concurrent offers, reads and restarts on pointer entries",
           "[pool][thread-safety]") {

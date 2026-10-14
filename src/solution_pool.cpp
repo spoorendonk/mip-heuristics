@@ -99,6 +99,14 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
 // argument is lock scope, not throughput.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int source) {
+    // A non-finite objective or point is refused outright (#174): every
+    // decision below orders by objective, and a NaN one would be admitted,
+    // ranked and handed to crossover and every later comparison.  Checked
+    // before the lock; a finite offer is decided exactly as before.
+    if (!std::isfinite(obj) ||
+        !std::ranges::all_of(*sol, [](double v) { return std::isfinite(v); })) {
+        return {};
+    }
     // Pointers whose last reference this call drops — an evicted entry, the
     // scan's snapshot — are destroyed at return, after the lock: freeing a
     // large vector is not work to do while peers spin.
@@ -168,9 +176,7 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
 
             if (std::cmp_less(entries_.size(), capacity_)) {
                 insert_sorted();
-            } else if (!(obj >= entries_.back().objective)) {
-                // Spelled as the negation of "dominated", not `obj < worst`,
-                // so a NaN objective takes this path as it always has.
+            } else if (obj < entries_.back().objective) {
                 // Standard path: improves on worst — replace worst.
                 evicted = std::move(entries_.back().solution);
                 entries_.pop_back();
