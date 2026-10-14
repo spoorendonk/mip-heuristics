@@ -4,7 +4,9 @@
 #include "rng.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 
 inline constexpr int kPoolCapacity = 10;
@@ -174,6 +176,13 @@ public:
 
     int size();
 
+    // Test seam: called by `try_add` between a diversity scan and the hold
+    // of the lock that applies it, on the offering thread with no lock
+    // held, so a test can move the pool mid-scan deterministically and
+    // check the verdict is re-decided.  Set it before any concurrent use;
+    // production never sets it.
+    void set_scan_hook_for_test(std::function<void()> hook) { scan_hook_ = std::move(hook); }
+
 private:
     using MaskPtr = std::shared_ptr<const std::vector<bool>>;
 
@@ -210,6 +219,7 @@ private:
     // diversity scan taken outside the lock can tell whether it still
     // describes the pool (see `try_add`).
     std::uint64_t generation_ = 0;
+    std::function<void()> scan_hook_;
     // Best objective ever accepted, and whether anything has been.  The
     // predicate `improved_best` is decided against, under mtx_; monotone
     // by construction, unlike `entries_.front()` — see `try_add`.

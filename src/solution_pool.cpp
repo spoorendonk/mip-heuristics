@@ -111,6 +111,8 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
     std::vector<std::pair<SolutionPtr, int>> seen;
     std::vector<int> dists;
     MaskPtr mask;
+    MaskPtr stale_mask;  // a replaced mask, released after the unlock
+    bool mask_changed = false;
     std::uint64_t scanned_generation = 0;
     bool scanned = false;
     // Sized here so the snapshot taken under the lock never allocates.
@@ -197,7 +199,12 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                     } else {
                         // Measure outside the lock, then decide again.
                         scan.assign(entries_.begin(), entries_.end());
-                        mask = integer_mask_;
+                        if (mask != integer_mask_) {
+                            // Distances measured under another mask do not
+                            // stand: `seen` is emptied after the unlock.
+                            stale_mask = std::exchange(mask, integer_mask_);
+                            mask_changed = true;
+                        }
                         scanned_generation = generation_;
                         need_scan = true;
                     }
@@ -228,7 +235,13 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
         }
 
         // The scan, outside the lock.  Entries are immutable, so a pointer
-        // seen before is the same vector and its distance stands.
+        // seen before is the same vector and its distance stands — under the
+        // same mask, which is why a mask change empties the cache.
+        if (mask_changed) {
+            seen.clear();
+            stale_mask.reset();
+            mask_changed = false;
+        }
         dists.resize(scan.size());
         for (size_t idx = 0; idx < scan.size(); ++idx) {
             const auto& entry = scan[idx].solution;
@@ -241,6 +254,9 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             }
         }
         scanned = true;
+        if (scan_hook_) {
+            scan_hook_();
+        }
     }
 }
 

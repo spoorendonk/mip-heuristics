@@ -186,3 +186,112 @@ TEST_CASE("SolutionPool: concurrent offers, reads and restarts on pointer entrie
         REQUIRE(entries[i - 1].objective <= entries[i].objective);
     }
 }
+
+// ── The scan outside the lock, re-decided when the pool moved under it ──
+
+namespace {
+
+constexpr int kRedecideNcol = 20;
+
+// Three entries and an offer built so the offer is dominated (it ties the
+// worst), sits within the diversity tolerance of the best, and is two
+// columns from the best and far from the rest: under an all-integer mask it
+// is diverse enough to be admitted.
+void seed_three(SolutionPool& pool) {
+    std::vector<double> best(kRedecideNcol, 0.0);
+    std::vector<double> mid(kRedecideNcol, 1.0);
+    std::vector<double> worst(kRedecideNcol, 1.0);
+    worst[0] = 0.0;
+    REQUIRE(pool.try_add(100.0, best, kSourceA).accepted);
+    REQUIRE(pool.try_add(101.0, mid, kSourceA).accepted);
+    REQUIRE(pool.try_add(102.0, worst, kSourceA).accepted);
+}
+
+std::vector<double> near_best_offer() {
+    std::vector<double> offer(kRedecideNcol, 0.0);
+    offer[0] = 1.0;
+    offer[1] = 1.0;
+    return offer;
+}
+
+void require_same_pool(SolutionPool& a, SolutionPool& b) {
+    const auto ea = a.sorted_entries();
+    const auto eb = b.sorted_entries();
+    REQUIRE(ea.size() == eb.size());
+    for (size_t i = 0; i < ea.size(); ++i) {
+        REQUIRE(ea[i].objective == eb[i].objective);
+        REQUIRE(ea[i].source == eb[i].source);
+        REQUIRE(ea[i].solution == eb[i].solution);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("SolutionPool: a mask changed mid-scan is decided under the new mask", "[pool]") {
+    // The mask the offer ends up judged under marks only the columns where
+    // it agrees with the best entry, so it is no longer diverse.  Distances
+    // measured under the old mask must not be reused against the new one.
+    std::vector<bool> narrow(kRedecideNcol, true);
+    narrow[0] = false;
+    narrow[1] = false;
+
+    SolutionPool pool(/*capacity=*/3);
+    pool.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
+    seed_three(pool);
+    int hook_calls = 0;
+    pool.set_scan_hook_for_test([&] {
+        if (hook_calls++ == 0) {
+            pool.set_integer_mask(narrow);
+        }
+    });
+    const auto moved = pool.try_add(102.0, near_best_offer(), kSourceB);
+    REQUIRE(hook_calls == 2);  // scanned, then rescanned under the new mask
+
+    // One hold of the lock in the final state decides it this way.
+    SolutionPool reference(/*capacity=*/3);
+    reference.set_integer_mask(narrow);
+    seed_three(reference);
+    const auto direct = reference.try_add(102.0, near_best_offer(), kSourceB);
+
+    REQUIRE_FALSE(direct.accepted);
+    REQUIRE(moved.accepted == direct.accepted);
+    REQUIRE(moved.improved_best == direct.improved_best);
+    require_same_pool(pool, reference);
+}
+
+TEST_CASE("SolutionPool: entries changed mid-scan are decided as they now stand", "[pool]") {
+    // A peer's better solution lands during the scan.  Against the new best
+    // the offer is outside the diversity tolerance, so the verdict the scan
+    // alone would give (admit) must not be applied.
+    std::vector<double> peer(kRedecideNcol, 1.0);
+    peer[2] = 0.0;
+
+    SolutionPool pool(/*capacity=*/3);
+    pool.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
+    seed_three(pool);
+    int hook_calls = 0;
+    pool.set_scan_hook_for_test([&] {
+        if (hook_calls++ == 0) {
+            REQUIRE(pool.try_add(90.0, peer, kSourceC).accepted);
+        }
+    });
+    const auto moved = pool.try_add(102.0, near_best_offer(), kSourceB);
+    REQUIRE(hook_calls == 1);
+
+    SolutionPool reference(/*capacity=*/3);
+    reference.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
+    seed_three(reference);
+    REQUIRE(reference.try_add(90.0, peer, kSourceC).accepted);
+    const auto direct = reference.try_add(102.0, near_best_offer(), kSourceB);
+
+    REQUIRE_FALSE(direct.accepted);
+    REQUIRE(moved.accepted == direct.accepted);
+    REQUIRE(moved.improved_best == direct.improved_best);
+    require_same_pool(pool, reference);
+
+    // Without the move, the same offer is admitted: the scan's own verdict.
+    SolutionPool unmoved(/*capacity=*/3);
+    unmoved.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
+    seed_three(unmoved);
+    REQUIRE(unmoved.try_add(102.0, near_best_offer(), kSourceB).accepted);
+}
