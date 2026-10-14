@@ -1078,8 +1078,13 @@ def test_paired_reproduces_the_hand_arithmetic():
     assert st.t == 0.0
     assert st.p == pytest.approx(1.0)
     se = math.log(2.0) / math.sqrt(3.0)
-    assert st.ci_hi == pytest.approx(math.exp(1.959963984540054 * se))
+    # t_{2, 0.975} = 4.302652729911275; the normal interval is kept beside it.
+    assert st.ci_hi == pytest.approx(math.exp(4.302652729911275 * se))
     assert st.ci_lo == pytest.approx(1.0 / st.ci_hi)
+    assert st.normal_ci_hi == pytest.approx(math.exp(1.959963984540054 * se))
+    assert st.normal_ci_lo == pytest.approx(1.0 / st.normal_ci_hi)
+    assert st.normal_p == pytest.approx(1.0)
+    assert st.median_ratio == pytest.approx(1.0)
     assert (st.better, st.tied, st.worse) == (1, 1, 1)
     assert st.pct == pytest.approx(0.0)
 
@@ -1468,3 +1473,137 @@ def test_csv_leaves_a_non_finite_value_empty(tmp_path: Path):
         (row,) = csv.DictReader(f)
     assert row["primal_bound"] == "" and row["reference"] == ""
     assert row["t_first"] == "" and row["feasible"] == "0"
+
+
+# --- t interval, median ratio and seed pairing (#179) ------------------------
+
+
+def _from_d(d: list[float]) -> tuple[list[float], list[float]]:
+    """Arms whose log ratios at shift 1 are exactly `d`: b = 0, a = e^d - 1."""
+    return [math.exp(x) - 1.0 for x in d], [0.0] * len(d)
+
+
+def test_t_quantile_and_tail_match_published_values():
+    from analyze_results import t_ppf, t_sf
+
+    for df, q975 in (
+        (1, 12.706204736174707),
+        (2, 4.302652729911275),
+        (4, 2.7764451051977987),
+        (9, 2.2621571627409915),
+        (30, 2.0422724563012373),
+    ):
+        assert t_ppf(0.975, df) == pytest.approx(q975, rel=1e-9)
+        assert t_sf(q975, df) == pytest.approx(0.025, rel=1e-8)
+    assert t_ppf(0.025, 4) == pytest.approx(-2.7764451051977987, rel=1e-9)
+    assert t_sf(0.0, 7) == pytest.approx(0.5)
+
+
+def test_paired_constant_d_gives_a_degenerate_interval_at_exp_d():
+    from analyze_results import paired
+
+    a, b = _from_d([0.2] * 6)
+    st = paired(a, b, shift=1.0)
+    assert st.sd == pytest.approx(0.0, abs=1e-12)
+    for v in (st.ratio, st.median_ratio, st.ci_lo, st.ci_hi):
+        assert v == pytest.approx(math.exp(0.2))
+
+
+def test_paired_mixed_sign_d_gives_the_hand_computed_t_interval():
+    from analyze_results import paired
+
+    d = [0.1, -0.2, 0.3, -0.1, 0.05]
+    st = paired(*_from_d(d), shift=1.0)
+    mean = sum(d) / 5
+    sd = math.sqrt(sum((x - mean) ** 2 for x in d) / 4)
+    half = 2.7764451051977987 * sd / math.sqrt(5)  # t_{4, 0.975}
+    assert st.ci_lo == pytest.approx(math.exp(mean - half))
+    assert st.ci_hi == pytest.approx(math.exp(mean + half))
+    assert st.ci_lo < 1.0 < st.ci_hi
+    # Wider than the normal interval, and a larger p-value.
+    assert st.ci_lo < st.normal_ci_lo and st.normal_ci_hi < st.ci_hi
+    assert st.p > st.normal_p
+
+
+def test_paired_median_ratio_of_an_odd_and_an_even_n():
+    from analyze_results import paired
+
+    odd = paired(*_from_d([0.5, -0.1, 0.0, 2.0, 0.1]), shift=1.0)
+    assert odd.median_ratio == pytest.approx(math.exp(0.1))
+    even = paired(*_from_d([0.5, -0.1, 2.0, 0.1]), shift=1.0)
+    assert even.median_ratio == pytest.approx(math.exp((0.1 + 0.5) / 2))
+    # One outlier moves the mean ratio, not the median.
+    assert odd.ratio > odd.median_ratio
+
+
+def test_seed_paired_values_take_the_sgm_over_the_common_seeds():
+    from analyze_results import seed_paired_values, shifted_geomean
+
+    def run(v: float) -> SolveResult:
+        return SolveResult(primal_bound=v)
+
+    results = {
+        "x": {0: {"i": run(1.0), "j": run(4.0)}, 1: {"i": run(3.0), "j": run(2.0)}},
+        "y": {0: {"i": run(2.0), "j": run(5.0)}, 1: {"i": run(2.0)}},
+    }
+
+    def score(r: SolveResult, inst: str) -> float | None:
+        return r.primal_bound
+
+    sp = seed_paired_values(results, "x", "y", ["i", "j"], score, 1.0)
+    assert sp.instances == ["i", "j"]
+    assert sp.a[0] == pytest.approx(shifted_geomean([1.0, 3.0], 1.0))
+    assert sp.b[0] == pytest.approx(2.0)
+    # j: y has no seed-1 run, so it pairs on seed 0 alone, and says so.
+    assert sp.a[1] == pytest.approx(4.0) and sp.b[1] == pytest.approx(5.0)
+    assert sp.differing == {"j": ([0, 1], [0])}
+    assert sp.unpaired == []
+    # With equal seed sets the paired ratio is the ratio of the SGMs over runs.
+    eq = seed_paired_values(results, "x", "y", ["i"], score, 1.0)
+    assert eq.differing == {}
+    assert (eq.a[0] + 1.0) / (eq.b[0] + 1.0) == pytest.approx(
+        (shifted_geomean([1.0, 3.0], 1.0) + 1.0)
+        / (shifted_geomean([2.0, 2.0], 1.0) + 1.0)
+    )
+    # A score of None on either side drops the seed; none left drops the instance.
+    gone = seed_paired_values(results, "x", "y", ["i"], lambda r, i: None, 1.0)
+    assert gone.instances == [] and gone.unpaired == ["i"]
+
+
+def test_cli_paired_seeds_pairs_every_seed_and_names_unequal_seed_sets(
+    tmp_path: Path,
+):
+    fast = _feasible_log(objective=10.0, found_at=1.0, solve_time=5.0)
+    slow = _feasible_log(objective=10.0, found_at=3.0, solve_time=5.0)
+    _write_seeded_tree(
+        tmp_path,
+        {
+            "x": {0: {"a": fast, "b": fast}, 1: {"a": slow, "b": fast}},
+            "y": {0: {"a": slow, "b": slow}, 1: {"a": slow}},
+        },
+    )
+    z = _write_z(tmp_path, {"a": 10.0, "b": 10.0})
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "x",
+        "y",
+        "--paired-seeds",
+        "--time-limit",
+        "5",
+        "--mipfeas-z",
+        str(z),
+    )
+    assert res.returncode == 0, res.stderr
+    assert "formula=mipfeas, seed-paired)" in res.stdout
+    assert "seed sets differ on 1 instance(s)" in res.stdout
+    assert "b: x {0,1}, y {0}" in res.stdout
+    line = next(ln for ln in res.stdout.splitlines() if "primal integral" in ln)
+    assert "n=  2" in line and "median=" in line
+    # mipfeas integral of one z* incumbent at t: 2t/5.  a: x seeds {0.4, 1.2}
+    # against y {1.2, 1.2}; b: x seed 0 only, 0.4 against 1.2.
+    s = 0.001
+    da = (math.log(0.4 + s) + math.log(1.2 + s)) / 2 - math.log(1.2 + s)
+    db = math.log(0.4 + s) - math.log(1.2 + s)
+    ratio = math.exp((da + db) / 2)
+    assert f"ratio={ratio:.3f}" in line

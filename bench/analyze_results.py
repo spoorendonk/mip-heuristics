@@ -29,6 +29,7 @@ import math
 import os
 import statistics
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -871,6 +872,79 @@ def sign_test(better: int, worse: int) -> float:
     return 2.0 * normal_sf(z)
 
 
+def _betacf(a: float, b: float, x: float) -> float:
+    """The continued fraction of the regularized incomplete beta (modified Lentz)."""
+    tiny = 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 500):
+        m2 = 2 * m
+        for aa in (
+            m * (b - m) * x / ((qam + m2) * (a + m2)),
+            -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2)),
+        ):
+            d = 1.0 + aa * d
+            d = 1.0 / (d if abs(d) > tiny else tiny)
+            c = 1.0 + aa / c
+            c = c if abs(c) > tiny else tiny
+            h *= d * c
+        if abs(d * c - 1.0) < 1e-15:
+            break
+    return h
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    """The regularized incomplete beta function I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    log_front = (
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(log_front) * _betacf(a, b, x) / a
+    return 1.0 - math.exp(log_front) * _betacf(b, a, 1.0 - x) / b
+
+
+def t_sf(t: float, df: float) -> float:
+    """1 - F(t) of Student's t with `df` degrees of freedom.
+
+    The standard library has no t distribution; this is the textbook identity
+    ``P(T > t) = I_{df/(df+t^2)}(df/2, 1/2) / 2`` for t >= 0, exact for every
+    df rather than a table with a normal tail.
+    """
+    if math.isinf(t):
+        return 0.0 if t > 0 else 1.0
+    tail = 0.5 * _betainc(df / 2.0, 0.5, df / (df + t * t))
+    return tail if t >= 0.0 else 1.0 - tail
+
+
+def t_ppf(q: float, df: float) -> float:
+    """The q-quantile of Student's t with `df` degrees of freedom, by bisection."""
+    if not 0.0 < q < 1.0:
+        raise ValueError(f"t_ppf needs 0 < q < 1, got {q}")
+    if q < 0.5:
+        return -t_ppf(1.0 - q, df)
+    lo, hi = 0.0, 1.0
+    while t_sf(hi, df) > 1.0 - q:
+        hi *= 2.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if t_sf(mid, df) > 1.0 - q:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
 def min_detectable_decrease(
     sd: float, n: int, alpha: float = 0.05, power: float = 0.8
 ) -> float:
@@ -890,7 +964,12 @@ def min_detectable_decrease(
 
 @dataclass(frozen=True)
 class Paired:
-    """A paired comparison of two arms over a common instance set, lower is better."""
+    """A paired comparison of two arms over a common instance set, lower is better.
+
+    `ci_lo`/`ci_hi`/`p` are the t_{n-1} interval and p-value (#179); the
+    normal ones `bench/headline/paired.txt` was written with stay beside them
+    as `normal_*`.
+    """
 
     n: int
     ratio: float
@@ -904,6 +983,10 @@ class Paired:
     worse: int
     sign_p: float
     shift: float
+    median_ratio: float
+    normal_ci_lo: float
+    normal_ci_hi: float
+    normal_p: float
 
     @property
     def pct(self) -> float:
@@ -920,10 +1003,14 @@ def paired(a: list[float], b: list[float], shift: float) -> Paired:
 
     Both lists are aligned per instance.  With ``d_i = log(a_i + s) - log(b_i + s)``
     at the metric's own SGM shift `s`: ratio ``exp(mean d)``, the shifted
-    geometric-mean ratio; sd the sample sd of d; ``t = mean / se``; a normal
-    interval ``exp(mean +- z_{0.975} se)`` and p-value.  `better` counts
-    instances where `a` is strictly smaller, `tied` exact equality, which is
-    what two arms that both found nothing produce.
+    geometric-mean ratio; `median_ratio` ``exp(median d)``, what a typical
+    instance sees, so a ratio carried by one instance shows as the two
+    disagreeing; sd the sample sd of d; ``t = mean / se``; the interval
+    ``exp(mean +- t_{n-1, 0.975} se)`` and the two-sided t_{n-1} p-value,
+    since a normal one undercovers at the 10 to 20 instances of a smoke
+    benchmark.  The normal interval and p-value are kept as `normal_*`.
+    `better` counts instances where `a` is strictly smaller, `tied` exact
+    equality, which is what two arms that both found nothing produce.
     """
     if len(a) != len(b):
         raise ValueError(f"paired needs equal-length inputs, got {len(a)} and {len(b)}")
@@ -937,20 +1024,23 @@ def paired(a: list[float], b: list[float], shift: float) -> Paired:
     mean = sum(diffs) / n
     sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (n - 1))
     se = sd / math.sqrt(n)
+    df = n - 1
     if se > 0.0:
         t = mean / se
-        p = 2.0 * normal_sf(abs(t))
+        p = 2.0 * t_sf(abs(t), df)
+        normal_p = 2.0 * normal_sf(abs(t))
     else:
         t = 0.0 if mean == 0.0 else math.copysign(float("inf"), mean)
-        p = 1.0 if mean == 0.0 else 0.0
+        p = normal_p = 1.0 if mean == 0.0 else 0.0
     z = _NORMAL.inv_cdf(0.975)
+    tq = t_ppf(0.975, df)
     better = sum(1 for x, y in zip(a, b) if x < y)
     worse = sum(1 for x, y in zip(a, b) if x > y)
     return Paired(
         n=n,
         ratio=math.exp(mean),
-        ci_lo=math.exp(mean - z * se),
-        ci_hi=math.exp(mean + z * se),
+        ci_lo=math.exp(mean - tq * se),
+        ci_hi=math.exp(mean + tq * se),
         t=t,
         p=p,
         sd=sd,
@@ -959,7 +1049,73 @@ def paired(a: list[float], b: list[float], shift: float) -> Paired:
         worse=worse,
         sign_p=sign_test(better, worse),
         shift=shift,
+        median_ratio=math.exp(statistics.median(diffs)),
+        normal_ci_lo=math.exp(mean - z * se),
+        normal_ci_hi=math.exp(mean + z * se),
+        normal_p=normal_p,
     )
+
+
+@dataclass(frozen=True)
+class SeedPairing:
+    """Per-instance values for `paired` built from every seed both configs ran (#179).
+
+    `a[i]` / `b[i]` are the shifted geometric means, at the metric's own
+    shift, of one config's per-run scores on `instances[i]` over the seeds
+    both configs have a scored run at, so ``log(a_i + s)`` is the mean log of
+    those runs and, where every instance has the same seeds, the paired ratio
+    is the ratio of the two configs' SGMs over all paired runs.  `differing`
+    names each instance whose two seed sets are not equal, with both sets:
+    a config whose runs failed is otherwise compared on its survivors alone.
+    `unpaired` are the instances no common seed scored, left out.
+    """
+
+    instances: list[str]
+    a: list[float]
+    b: list[float]
+    differing: dict[str, tuple[list[int], list[int]]]
+    unpaired: list[str]
+
+
+def seed_paired_values(
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    c1: str,
+    c2: str,
+    instances: list[str],
+    score: Callable[[SolveResult, str], float | None],
+    shift: float,
+) -> SeedPairing:
+    """Pair `c1` against `c2` per instance over the seeds both ran.
+
+    `score(run, instance)` is one run's metric, or None where it has none (a
+    final gap of a run that found nothing); a seed counts only where both
+    runs have one.
+    """
+    kept: list[str] = []
+    a: list[float] = []
+    b: list[float] = []
+    differing: dict[str, tuple[list[int], list[int]]] = {}
+    unpaired: list[str] = []
+    for inst in instances:
+        sa = sorted(s for s, d in results.get(c1, {}).items() if inst in d)
+        sb = sorted(s for s, d in results.get(c2, {}).items() if inst in d)
+        if sa != sb:
+            differing[inst] = (sa, sb)
+        xs: list[float] = []
+        ys: list[float] = []
+        for seed in sorted(set(sa) & set(sb)):
+            x = score(results[c1][seed][inst], inst)
+            y = score(results[c2][seed][inst], inst)
+            if x is not None and y is not None:
+                xs.append(x)
+                ys.append(y)
+        if not xs:
+            unpaired.append(inst)
+            continue
+        kept.append(inst)
+        a.append(shifted_geomean(xs, shift))
+        b.append(shifted_geomean(ys, shift))
+    return SeedPairing(kept, a, b, differing, unpaired)
 
 
 def print_paired(
@@ -969,53 +1125,95 @@ def print_paired(
     time_limit: float,
     best_known: dict[str, float | None],
     synthetic: set[str] | None = None,
+    results: dict[str, dict[int, dict[str, SolveResult]]] | None = None,
 ) -> None:
     """Print the paired statistics for every pair of configs, first named as numerator.
 
     Two lines per pair: the primal integral over every instance, and the final
-    gap at the limit over the instances both arms made feasible.
+    gap at the limit over the instances both arms made feasible.  With
+    `results`, each instance's value is the seed SGM `seed_paired_values`
+    builds; without, it is the seed-collapsed row of `agg_results`.
     """
     real = [c for c in configs if c not in (synthetic or set())]
+    by_seed = results is not None
+    mode = ", seed-paired" if by_seed else ""
     print(
         f"\n## Paired per-instance log-ratio ({len(instances)} instances, "
-        f"{time_limit:.0f} s, shift={integral_shift()}, formula={formula()})\n"
+        f"{time_limit:.0f} s, shift={integral_shift()}, formula={formula()}{mode})\n"
     )
     print(
-        "Lower is better; the first named arm is the numerator.  Intervals are\n"
-        "normal, exp(mean +- 1.96*se); the sign test is the normal approximation\n"
-        "without continuity correction; mdd80 is the smallest decrease this n\n"
-        "resolves at 80% power, read on the improvement side, 1 - exp(-d).\n"
+        "Lower is better; the first named arm is the numerator.  ratio is\n"
+        "exp(mean d), median exp(median d); intervals and p are t_{n-1},\n"
+        "exp(mean +- t*se); the sign test is the normal approximation without\n"
+        "continuity correction; mdd80 is the smallest decrease this n resolves\n"
+        "at 80% power, read on the improvement side, 1 - exp(-d).\n"
     )
+    if by_seed:
+        print(
+            "Each instance's value is the shifted geometric mean of its runs over\n"
+            "the seeds both arms ran (for the final gap, both made feasible).\n"
+        )
+
+    def integral(r: SolveResult, inst: str) -> float:
+        return score_integral(r, time_limit, best_known.get(inst))
+
+    def gap(r: SolveResult, inst: str) -> float | None:
+        return score_gap(r, time_limit, best_known.get(inst))
+
     width = max((len(f"{c1}/{c2}") for c1 in real for c2 in real), default=8) + 2
     for i, c1 in enumerate(real):
         for c2 in real[i + 1 :]:
-            a = [
-                score_integral(agg_results[c1][inst], time_limit, best_known.get(inst))
-                for inst in instances
-            ]
-            b = [
-                score_integral(agg_results[c2][inst], time_limit, best_known.get(inst))
-                for inst in instances
-            ]
-            st = paired(a, b, integral_shift())
-            print(f"{c1 + '/' + c2:<{width}} primal integral  {_paired_line(st)}")
-            both = []
-            for inst in instances:
-                ga = score_gap(agg_results[c1][inst], time_limit, best_known.get(inst))
-                gb = score_gap(agg_results[c2][inst], time_limit, best_known.get(inst))
-                if ga is not None and gb is not None:
-                    both.append((ga, gb))
+            if results is not None:
+                pi = seed_paired_values(
+                    results, c1, c2, instances, integral, integral_shift()
+                )
+                pg = seed_paired_values(results, c1, c2, instances, gap, MIPFEAS_SHIFT)
+                a, b = pi.a, pi.b
+                both = list(zip(pg.a, pg.b))
+            else:
+                a = [integral(agg_results[c1][inst], inst) for inst in instances]
+                b = [integral(agg_results[c2][inst], inst) for inst in instances]
+                both = []
+                for inst in instances:
+                    ga = gap(agg_results[c1][inst], inst)
+                    gb = gap(agg_results[c2][inst], inst)
+                    if ga is not None and gb is not None:
+                        both.append((ga, gb))
+            label = c1 + "/" + c2
+            if len(a) >= 2:
+                st = paired(a, b, integral_shift())
+                print(f"{label:<{width}} primal integral  {_paired_line(st)}")
             if len(both) >= 2:
                 stg = paired([x for x, _ in both], [y for _, y in both], MIPFEAS_SHIFT)
                 print(
                     f"{'':<{width}} final gap        {_paired_line(stg)}  (both feasible)"
                 )
+            if results is not None and pi.differing:
+                print(
+                    f"{'':<{width}} seed sets differ on {len(pi.differing)} "
+                    "instance(s), paired on the common seeds only:"
+                )
+                for inst, (sa, sb) in pi.differing.items():
+                    print(
+                        f"{'':<{width}}   {inst}: {c1} {_seed_list(sa)}, "
+                        f"{c2} {_seed_list(sb)}"
+                    )
+            if results is not None and pi.unpaired:
+                print(
+                    f"{'':<{width}} no common seed on {len(pi.unpaired)} "
+                    f"instance(s), left out: {', '.join(pi.unpaired)}"
+                )
+
+
+def _seed_list(seeds: list[int]) -> str:
+    return "{" + ",".join(str(s) for s in seeds) + "}"
 
 
 def _paired_line(st: Paired) -> str:
     return (
-        f"n={st.n:>3} ratio={st.ratio:.3f} CI=[{st.ci_lo:.3f},{st.ci_hi:.3f}] "
-        f"t={st.t:.2f} p={st.p:.4f} sd={st.sd:.3f} | better/tied/worse "
+        f"n={st.n:>3} ratio={st.ratio:.3f} median={st.median_ratio:.3f} "
+        f"CI=[{st.ci_lo:.3f},{st.ci_hi:.3f}] t={st.t:.2f} p={st.p:.4f} "
+        f"sd={st.sd:.3f} | better/tied/worse "
         f"{st.better}/{st.tied}/{st.worse} sign p={st.sign_p:.2g} | "
         f"mdd80={st.mdd80 * 100:.1f}%"
     )
@@ -2122,6 +2320,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--paired-seeds",
+        action="store_true",
+        help=(
+            "--paired, pairing per instance the shifted geometric mean of the "
+            "metric over the seeds both configs ran instead of the median-seed "
+            "row; names every instance where the two seed sets differ."
+        ),
+    )
+    parser.add_argument(
         "--baseline",
         action="store_true",
         help=(
@@ -2351,7 +2558,7 @@ def main() -> None:
         n = write_runs_csv(args.csv, results, real, common, args.time_limit, best_known)
         print(f"Wrote {n} runs to {args.csv}", file=sys.stderr)
 
-    if args.paired:
+    if args.paired or args.paired_seeds:
         print_paired(
             agg_results,
             active_configs,
@@ -2359,6 +2566,7 @@ def main() -> None:
             args.time_limit,
             best_known,
             synthetic=synthetic,
+            results=results if args.paired_seeds else None,
         )
         return
 
