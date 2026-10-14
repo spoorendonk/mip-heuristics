@@ -79,30 +79,36 @@ WarmStartCounters warm_start_counters();
 // Test-only introspection on the search loop's wall-clock poll (#162).
 // `polls` counts how many times `LocalMipWorker::run_attempt` asked
 // `ExecutionContext::past_deadline()`; `effort` is the effort those
-// attempts charged.
+// attempts charged.  `max_gap` is the most effort any attempt charged
+// between two polls, or between its last poll and its end, and
+// `max_iteration` the most any one pass of its loop charged.
 //
-// The pair is the *mechanism* the fix has to be pinned on, and it is what
-// a whole-solve assertion cannot see: the cadence is denominated in
-// charged work, so the invariant is "a poll happens at least every
-// `kTermCheckWork` units", i.e. `polls * kTermCheckWork >= effort`.  Under
-// the retired step cadence the poll rate was tied to `step_` and to
-// nothing the model could scale, so on any instance whose average step
-// charges more than `kTermCheckWork / 1000` units the same run polls too
-// rarely and the inequality fails.  Reading it needs no clock, which is
-// what makes the check load-safe — the wall-clock overrun it prevents is
-// not something `ctest -j$(nproc)` can be trusted to reproduce.
+// They are the *mechanism* the fix has to be pinned on, and it is what a
+// whole-solve assertion cannot see: the cadence is denominated in charged
+// work, so a poll comes at the first loop pass that starts `kTermCheckWork`
+// units past the previous one, and the contract is
+// `max_gap < kTermCheckWork + max_iteration` (#173) -- the same residual
+// `docs/PARAMETERS.md` gives, one step plus `kTermCheckWork` units.  It is
+// not `polls * kTermCheckWork >= effort`: every gap overshoots
+// `kTermCheckWork` by up to one pass, and those overshoots add up.  Under
+// the retired step cadence a gap was 1000 steps, which on any instance
+// whose average step charges more than `kTermCheckWork / 1000` units breaks
+// the contract by a wide margin.  Reading them needs no clock.
 struct DeadlinePollCounters {
     int64_t polls;
     int64_t effort;
+    int64_t max_gap;
+    int64_t max_iteration;
 };
 
 void reset_deadline_poll_counters();
 DeadlinePollCounters deadline_poll_counters();
 
 // Called by `LocalMipWorker::run_attempt`: once per wall-clock poll, and
-// once at the end of each attempt with the effort that attempt charged.
+// once at the end of each attempt with the effort that attempt charged and
+// its largest poll gap and loop pass.
 void note_deadline_poll();
-void note_attempt_effort(int64_t effort_charged);
+void note_attempt_effort(int64_t effort_charged, int64_t max_gap, int64_t max_iteration);
 // Runs N continuous `parallel::for_each` workers with per-worker
 // self-termination.  Worker 0 starts from the unperturbed incumbent;
 // workers 1..N-1 start from perturbed incumbents.  Stalled workers are

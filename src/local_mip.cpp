@@ -39,6 +39,14 @@ std::atomic<int64_t> g_construction_count{0};
 // The wall-clock poll counters (#162).  Same contract as the three above.
 std::atomic<int64_t> g_deadline_polls{0};
 std::atomic<int64_t> g_deadline_poll_effort{0};
+std::atomic<int64_t> g_deadline_poll_max_gap{0};
+std::atomic<int64_t> g_deadline_poll_max_iteration{0};
+
+void fetch_max(std::atomic<int64_t>& a, int64_t v) {
+    int64_t cur = a.load(std::memory_order_relaxed);
+    while (cur < v && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
+    }
+}
 
 }  // namespace
 
@@ -54,30 +62,35 @@ void reset_deadline_poll_counters() {
     if constexpr (kInstrumented) {
         g_deadline_polls.store(0, std::memory_order_relaxed);
         g_deadline_poll_effort.store(0, std::memory_order_relaxed);
+        g_deadline_poll_max_gap.store(0, std::memory_order_relaxed);
+        g_deadline_poll_max_iteration.store(0, std::memory_order_relaxed);
     }
 }
 
 DeadlinePollCounters deadline_poll_counters() {
     if constexpr (kInstrumented) {
         return {g_deadline_polls.load(std::memory_order_relaxed),
-                g_deadline_poll_effort.load(std::memory_order_relaxed)};
+                g_deadline_poll_effort.load(std::memory_order_relaxed),
+                g_deadline_poll_max_gap.load(std::memory_order_relaxed),
+                g_deadline_poll_max_iteration.load(std::memory_order_relaxed)};
     }
-    return {0, 0};
+    return {0, 0, 0, 0};
 }
 
-// The invariant is about the whole attempt: the poll count has to cover
-// the effort the attempt charged, including whatever it spent after its
-// last poll.  Hence two calls rather than one — a poll, and an attempt's
-// closing charge.
+// The contract covers the whole attempt, including whatever it spent after
+// its last poll, so the gaps are reported at its close.  Hence two calls
+// rather than one — a poll, and an attempt's closing charge.
 void note_deadline_poll() {
     if constexpr (kInstrumented) {
         g_deadline_polls.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-void note_attempt_effort(int64_t effort_charged) {
+void note_attempt_effort(int64_t effort_charged, int64_t max_gap, int64_t max_iteration) {
     if constexpr (kInstrumented) {
         g_deadline_poll_effort.fetch_add(effort_charged, std::memory_order_relaxed);
+        fetch_max(g_deadline_poll_max_gap, max_gap);
+        fetch_max(g_deadline_poll_max_iteration, max_iteration);
     }
 }
 

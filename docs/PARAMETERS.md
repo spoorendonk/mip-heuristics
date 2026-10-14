@@ -530,9 +530,13 @@ you change these, see `docs/REPRODUCIBILITY.md`.
   after essentially every step, and the residual is one step plus this
   constant whatever the model looks like. Pinned by "deadline: LocalMIP
   polls the clock on a work cadence, not a step count" in
-  `tests/test_deadline.cpp`, which asserts
-  `polls * kTermCheckWork >= effort` off the `local_mip::
-  deadline_poll_counters()` seam and reads **no clock** — the overrun it
+  `tests/test_deadline.cpp`, which asserts that no attempt charges
+  `kTermCheckWork` plus one loop pass or more between two polls (or after
+  its last one), `max_gap < kTermCheckWork + max_iteration`, off the
+  `local_mip::deadline_poll_counters()` seam. It is not
+  `polls * kTermCheckWork >= effort`: each gap overshoots the constant by
+  up to one pass, and the overshoots add up (#173). The case reads **no
+  clock**, and its fixture runs with no time limit — the overrun it
   prevents is wall-clock, but a timing assertion on a bundled instance
   could neither see the defect (all of them are three orders of magnitude
   too small) nor survive `ctest -j$(nproc)`.

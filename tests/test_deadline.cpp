@@ -504,33 +504,47 @@ TEST_CASE("deadline: LocalMIP stops at the time limit, not at its effort budget"
 // 15 s limit was overrun by ~46 s — the same ~46 s at a 30 s limit, which
 // is the signature of a residual no shorter limit can shrink.
 //
-// This pins the mechanism rather than the overrun, and deliberately reads
-// no clock (CLAUDE.md's rule 2, not rule 3).  The cadence is denominated
-// in charged work, so the invariant is that a poll happens at least once
-// every `kTermCheckWork` units: `polls * kTermCheckWork >= effort`.  The
-// retired cadence tied the poll rate to `step_` and to nothing the model
-// scales, so it violates this on any instance whose average step charges
-// more than `kTermCheckWork / 1000` units — `gesa2` charges far more than
-// that, which is why a small bundled instance suffices here where it did
-// not for the wall-clock form.  Being clock-free, it is also immune to the
-// load that would make a timing assertion flaky.
+// This pins the mechanism rather than the overrun (CLAUDE.md's rule 2, not
+// rule 3).  The cadence is denominated in charged work: a poll comes at the
+// first loop pass that starts `kTermCheckWork` units past the previous one,
+// so no attempt charges more than `kTermCheckWork` plus one pass between two
+// polls, or between its last poll and its end -- the residual
+// `docs/PARAMETERS.md` gives.  The retired cadence polled every 1000 steps,
+// a gap the model sets: `gesa2`'s average step charges far more than
+// `kTermCheckWork / 1000` units, which is why a small bundled instance
+// suffices here where it did not for the wall-clock form.
+//
+// The contract is the gap, not `polls * kTermCheckWork >= effort`: every gap
+// overshoots `kTermCheckWork` by up to one pass and the overshoots add up,
+// so that form held on a clock-bound run only while their sum stayed under
+// one `kTermCheckWork` -- 2.6% headroom on the development machine (#173).
+//
+// The fixture is clock-free as well: no time limit, a budget that binds
+// (`effort = 1.0`), one thread and a fixed seed, so the dispatch is the
+// same run whatever the load.  It used to share `alone_at_limit`'s 0.1 s
+// limit, which a loaded machine spends before the chain reaches LocalMIP:
+// no `[Heur]` line, and `lines.size() == 1` failed (#173).  Being
+// budget-bound, it also ends attempts on their budget, so the gap after an
+// attempt's last poll is exercised and not only the deadline's break.
 TEST_CASE("deadline: LocalMIP polls the clock on a work cadence, not a step count", "[deadline]") {
     if constexpr (!local_mip::kInstrumented) {
         SUCCEED("counters compiled out");
         return;
     }
     local_mip::reset_deadline_poll_counters();
-    const std::string line = alone_at_limit("local_mip", kUnbindableEffort);
+    const std::string line = alone_at("local_mip", 1.0, kHighsInf);
     const auto counters = local_mip::deadline_poll_counters();
 
     INFO(line);
     INFO("polls=" << counters.polls << " effort=" << counters.effort
+                  << " max_gap=" << counters.max_gap << " max_iteration=" << counters.max_iteration
                   << " kTermCheckWork=" << local_mip_detail::kTermCheckWork);
-    // The dispatch has to have done something, or the invariant is vacuous.
-    REQUIRE(counters.effort > 0);
-    REQUIRE(counters.polls > 0);
-    CHECK(counters.polls * static_cast<int64_t>(local_mip_detail::kTermCheckWork) >=
-          counters.effort);
+    // The dispatch has to have done something, and polled more than once,
+    // or the contract is vacuous.
+    REQUIRE(std::cmp_greater(counters.effort, local_mip_detail::kTermCheckWork));
+    REQUIRE(counters.polls > 1);
+    CHECK(counters.max_gap <
+          static_cast<int64_t>(local_mip_detail::kTermCheckWork) + counters.max_iteration);
 }
 
 // FPR already polled the deadline per inner attempt — via `terminated()`,

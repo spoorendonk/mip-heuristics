@@ -175,13 +175,27 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     // first and on every other run this one never fires.
     size_t next_deadline_poll = 0;
     size_t steps_since_poll = 0;
+    // Instrumentation only (#173): the largest charge between two polls and
+    // of one loop pass, which the cadence's contract is stated in.
+    size_t last_poll_at = 0;
+    size_t pass_start = 0;
+    size_t max_poll_gap = 0;
+    size_t max_pass = 0;
     while (spent() < attempt_budget && !base_.exhausted(spent())) {
+        if constexpr (local_mip::kInstrumented) {
+            max_pass = std::max(max_pass, spent() - pass_start);
+            pass_start = spent();
+        }
         if (base_.stale(spent())) {
             base_.finished = true;
             break;
         }
         if (spent() >= next_deadline_poll || ++steps_since_poll > kTermCheckWork) {
             local_mip::note_deadline_poll();
+            if constexpr (local_mip::kInstrumented) {
+                max_poll_gap = std::max(max_poll_gap, spent() - last_poll_at);
+                last_poll_at = spent();
+            }
             if (exec_.past_deadline()) {
                 break;
             }
@@ -441,7 +455,13 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     }
 
     size_t attempt_effort = ctx_.effort - effort_start;
-    local_mip::note_attempt_effort(static_cast<int64_t>(attempt_effort));
+    if constexpr (local_mip::kInstrumented) {
+        max_pass = std::max(max_pass, spent() - pass_start);
+        max_poll_gap = std::max(max_poll_gap, spent() - last_poll_at);
+    }
+    local_mip::note_attempt_effort(static_cast<int64_t>(attempt_effort),
+                                   static_cast<int64_t>(max_poll_gap),
+                                   static_cast<int64_t>(max_pass));
     base_.total_effort += attempt_effort;
     // Only add effort consumed since the last improvement within this
     // attempt (avoid double-counting when improvement resets the counter).
