@@ -728,9 +728,8 @@ void add_contribution(double c, double& finite, HighsInt& ninf) {
     }
 }
 
-// Replace `old_c` by `new_c` in one side of a row's activity.  Both finite
-// is the common case and keeps the single `+=` of the difference, so a model
-// without an infinite bound accumulates exactly the sums it always did.
+// What a row's side publishes: its finite sum, or an infinity once any
+// contribution to it is infinite.
 double published_min(HighsInt ninf, double finite) {
     return ninf > 0 ? -kHighsInf : finite;
 }
@@ -739,6 +738,9 @@ double published_max(HighsInt ninf, double finite) {
     return ninf > 0 ? kHighsInf : finite;
 }
 
+// Replace `old_c` by `new_c` in one side of a row's activity.  Both finite
+// is the common case and keeps the single `+=` of the difference, so a model
+// without an infinite bound accumulates exactly the sums it always did.
 void replace_contribution(double old_c, double new_c, double& finite, HighsInt& ninf) {
     const bool old_inf = std::isinf(old_c);
     const bool new_inf = std::isinf(new_c);
