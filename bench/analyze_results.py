@@ -1101,8 +1101,6 @@ def seed_paired_values(
     for inst in instances:
         sa = sorted(s for s, d in results.get(c1, {}).items() if inst in d)
         sb = sorted(s for s, d in results.get(c2, {}).items() if inst in d)
-        if sa != sb:
-            differing[inst] = (sa, sb)
         xs: list[float] = []
         ys: list[float] = []
         for seed in sorted(set(sa) & set(sb)):
@@ -1114,6 +1112,8 @@ def seed_paired_values(
         if not xs:
             unpaired.append(inst)
             continue
+        if sa != sb:
+            differing[inst] = (sa, sb)
         kept.append(inst)
         a.append(shifted_geomean(xs, shift))
         b.append(shifted_geomean(ys, shift))
@@ -1203,6 +1203,11 @@ def print_paired(
             if len(both) >= 2:
                 stg = paired([x for x, _ in both], [y for _, y in both], MIPFEAS_SHIFT)
                 print(f"{'':<{width}} final gap        {line_of(stg)}  (both feasible)")
+            elif not normal:
+                print(
+                    f"{'':<{width}} final gap        n={len(both)}, not compared  "
+                    "(both feasible)"
+                )
             if results is not None and pi.differing:
                 print(
                     f"{'':<{width}} seed sets differ on {len(pi.differing)} "
@@ -1233,23 +1238,29 @@ def _seed_list(seeds: list[int]) -> str:
     return "{" + ",".join(str(s) for s in seeds) + "}"
 
 
-def _paired_line(st: Paired) -> str:
+def _paired_tail(st: Paired) -> str:
+    """What both line formats share after the p-value."""
     return (
-        f"n={st.n:>3} ratio={st.ratio:.3f} median={st.median_ratio:.3f} "
-        f"CI=[{st.ci_lo:.3f},{st.ci_hi:.3f}] t={st.t:.2f} p={st.p:.4f} "
         f"sd={st.sd:.3f} | better/tied/worse "
         f"{st.better}/{st.tied}/{st.worse} sign p={st.sign_p:.2g} | "
         f"mdd80={st.mdd80 * 100:.1f}%"
     )
 
 
+def _paired_line(st: Paired) -> str:
+    return (
+        f"n={st.n:>3} ratio={st.ratio:.3f} median={st.median_ratio:.3f} "
+        f"CI=[{st.ci_lo:.3f},{st.ci_hi:.3f}] t={st.t:.2f} p={st.p:.4f} "
+        + _paired_tail(st)
+    )
+
+
 def _normal_paired_line(st: Paired) -> str:
+    """The line `bench/headline/paired.txt` was written in, normal interval."""
     return (
         f"n={st.n:>3} ratio={st.ratio:.3f} "
         f"CI=[{st.normal_ci_lo:.3f},{st.normal_ci_hi:.3f}] "
-        f"t={st.t:.2f} p={st.normal_p:.4f} sd={st.sd:.3f} | better/tied/worse "
-        f"{st.better}/{st.tied}/{st.worse} sign p={st.sign_p:.2g} | "
-        f"mdd80={st.mdd80 * 100:.1f}%"
+        f"t={st.t:.2f} p={st.normal_p:.4f} " + _paired_tail(st)
     )
 
 
@@ -2350,7 +2361,8 @@ def main() -> None:
             "Print only the paired per-instance statistics for every pair of "
             "configs: log-ratio of the primal integral at the formula's SGM "
             "shift, and of the final gap over the instances both arms made "
-            "feasible. What bench/headline/paired.txt is made of."
+            "feasible, with the t_{n-1} interval and the median ratio. "
+            "bench/headline/paired.txt is made with --paired-normal."
         ),
     )
     parser.add_argument(

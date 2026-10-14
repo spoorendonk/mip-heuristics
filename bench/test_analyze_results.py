@@ -1660,3 +1660,14 @@ def test_cli_paired_seeds_caps_the_unequal_seed_notices(tmp_path: Path):
     assert "seed sets differ on 13 instance(s)" in res.stdout
     assert res.stdout.count(": x {0,1}, y {0}") == 10
     assert "... and 3 more" in res.stdout
+
+
+def test_seed_paired_values_do_not_call_an_unpaired_instance_differing():
+    from analyze_results import seed_paired_values
+
+    results = {
+        "x": {0: {"i": SolveResult(primal_bound=1.0)}},
+        "y": {1: {"i": SolveResult(primal_bound=2.0)}},
+    }
+    sp = seed_paired_values(results, "x", "y", ["i"], lambda r, i: 1.0, 1.0)
+    assert sp.unpaired == ["i"] and sp.differing == {}

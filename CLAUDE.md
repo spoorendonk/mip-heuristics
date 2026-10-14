@@ -178,8 +178,10 @@ report having done. The pre-push hook is the backstop, not the review.
 refuse the push:
 
 ```sh
-git update-ref "refs/reviews/$(git rev-parse HEAD)" HEAD
-git push --atomic origin HEAD "refs/reviews/$(git rev-parse HEAD)"
+sha=$(git rev-parse HEAD)
+branch=$(git symbolic-ref --short HEAD)
+git update-ref "refs/reviews/$sha" "$sha"
+xk lock -- git push --atomic origin "$sha:refs/heads/$branch" "refs/reviews/$sha"
 ```
 
 The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
@@ -189,15 +191,10 @@ never ran. wcp's README has the step to paste into the project's CI.
 `--atomic` lands the branch and its receipt together or not at all.
 
 **Push the reviewed sha by name, and commit nothing until the push returns.**
-`HEAD` in the push line is resolved when git gets to it, not when the
+A `HEAD` in the push line is resolved when git gets to it, not when the
 command is typed, and on a shared machine `xk lock` can hold it for minutes
-before the local CI even starts. A commit made meanwhile in the same
-checkout goes out with it, unreviewed, and its receipt does not:
-
-```sh
-sha=$(git rev-parse HEAD)
-xk lock -- git push --atomic origin "$sha:refs/heads/main" "refs/reviews/$sha"
-```
+before the local CI even starts; a commit made meanwhile in the same checkout
+would go out with it, unreviewed, while its receipt names the older sha.
 
 Plain git, on purpose. No wcp, no harness, nothing installed — so a reviewer on
 any machine can write it, and a clone that has never heard of wcp is still able
