@@ -31,19 +31,20 @@ option(MIP_HEURISTICS_REQUIRE_LINT
        "Fail configuration when the clang tools are missing or the wrong major version. \
 CI must set this ON so a missing tool can never silently drop the gate." OFF)
 
-# The root CMakeLists sets MIP_HEURISTICS_VENV_BIN: this tree's `.venv/bin`,
-# or the main checkout's from a linked worktree.
-set(_lint_hint "${MIP_HEURISTICS_VENV_BIN}")
+# The root CMakeLists sets MIP_HEURISTICS_VENV_BINS: this tree's `.venv/bin`,
+# then the main checkout's when this is a linked worktree.  Each tool is
+# probed across the list in order.
+set(_lint_hint ${MIP_HEURISTICS_VENV_BINS})
 
 # NAMES_PER_DIR so `.venv/bin` really is searched first.  Without it CMake
 # tries each NAME across every directory in turn, and a system
 # clang-format-<major> on PATH would outrank the pinned venv copy.
 find_program(CLANG_FORMAT_EXE
              NAMES clang-format-${MIP_HEURISTICS_CLANG_TOOLS_VERSION} clang-format
-             HINTS "${_lint_hint}" NAMES_PER_DIR)
+             HINTS ${_lint_hint} NAMES_PER_DIR)
 find_program(CLANG_TIDY_EXE
              NAMES clang-tidy-${MIP_HEURISTICS_CLANG_TOOLS_VERSION} clang-tidy
-             HINTS "${_lint_hint}" NAMES_PER_DIR)
+             HINTS ${_lint_hint} NAMES_PER_DIR)
 
 # `<tool> --version` prints e.g. "clang-format version 22.1.8" or, for
 # clang-tidy, a multi-line banner containing "LLVM version 22.1.8".
@@ -129,9 +130,13 @@ endif()
 # ctest runs it.
 # Same interpreter preference as the bench tests above: `.venv/bin/python`
 # first, system Python3 second.
-if(EXISTS "${_lint_hint}/python")
-    set(_lint_py "${_lint_hint}/python")
-else()
+set(_lint_py "")
+foreach(_venv_bin IN LISTS _lint_hint)
+    if(NOT _lint_py AND EXISTS "${_venv_bin}/python")
+        set(_lint_py "${_venv_bin}/python")
+    endif()
+endforeach()
+if(NOT _lint_py)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         set(_lint_py "${Python3_EXECUTABLE}")

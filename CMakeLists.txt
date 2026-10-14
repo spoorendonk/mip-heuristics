@@ -436,37 +436,71 @@ catch_discover_tests(mip_heuristics_core_standalone_tests
 # the scripts' own logic (regexes, aggregation, exit codes, error paths) so
 # they are kept honest as the harness evolves.
 #
-# Prefer the venv's python (where `pip install pytest` typically lands in
-# this project) over the system interpreter.  Skip silently when neither
-# has pytest so `ctest` on a fresh clone stays green.
+# Prefer a venv's python (where `pip install pytest` typically lands in
+# this project) over the system interpreter.  Skip silently when none has
+# pytest so `ctest` on a fresh clone stays green.
 #
-# The venv is this tree's `.venv/bin`, or else the main checkout's, found
-# through the common git directory: a linked worktree has no `.venv` of its
-# own, and the pre-push local CI builds in one.  Without the second look the
-# choice there falls to `find_package(Python3)`, which takes an active conda
-# env or virtualenv ahead of PATH, and one without pytest drops
-# `bench_python_tests` from the gate silently.  `cmake/Lint.cmake` searches
-# the same directory for the pinned clang tools.
-set(MIP_HEURISTICS_VENV_BIN "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin")
+# The venvs are this tree's `.venv/bin` and then the main checkout's, found
+# through the common git directory: the pre-push local CI builds in a linked
+# worktree with no `.venv` of its own, and one a developer's worktree has may
+# hold only what `uv run` put there.  So each tool is probed across both, in
+# that order, as the git hooks do — a directory is not taken whole.  Without
+# the second look the choice in a worktree falls to `find_package(Python3)`,
+# which takes an active conda env or virtualenv ahead of PATH, and one
+# without pytest drops `bench_python_tests` from the gate silently.
+# `cmake/Lint.cmake` searches the same list for the pinned clang tools.
+#
+# The main checkout counts only when this source tree is a work tree's top
+# level: as a plain subdirectory of another repository the common git
+# directory is the parent's, and so would be the venv.  `--git-common-dir`
+# is made absolute here rather than with `--path-format=absolute`, which
+# git before 2.31 echoes back as output instead of refusing.
+set(MIP_HEURISTICS_VENV_BINS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin")
 find_package(Git QUIET)
-if(NOT EXISTS "${MIP_HEURISTICS_VENV_BIN}" AND GIT_EXECUTABLE)
+if(GIT_EXECUTABLE)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" rev-parse --path-format=absolute --git-common-dir
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --show-toplevel --git-common-dir
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        OUTPUT_VARIABLE _git_common_dir
+        RESULT_VARIABLE _git_rc
+        OUTPUT_VARIABLE _git_out
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET)
-    if(_git_common_dir MATCHES "/\\.git$")
-        get_filename_component(_main_checkout "${_git_common_dir}" DIRECTORY)
-        if(EXISTS "${_main_checkout}/.venv/bin")
-            set(MIP_HEURISTICS_VENV_BIN "${_main_checkout}/.venv/bin")
+    string(REPLACE "\n" ";" _git_lines "${_git_out}")
+    list(LENGTH _git_lines _git_nlines)
+    if(_git_rc EQUAL 0 AND _git_nlines EQUAL 2)
+        list(GET _git_lines 0 _git_top)
+        list(GET _git_lines 1 _git_common_dir)
+        get_filename_component(_git_common_dir "${_git_common_dir}" ABSOLUTE
+                               BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        file(REAL_PATH "${_git_top}" _git_top)
+        file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}" _this_top)
+        if(_git_top STREQUAL _this_top AND _git_common_dir MATCHES "/\\.git$")
+            get_filename_component(_main_checkout "${_git_common_dir}" DIRECTORY)
+            list(APPEND MIP_HEURISTICS_VENV_BINS "${_main_checkout}/.venv/bin")
+            list(REMOVE_DUPLICATES MIP_HEURISTICS_VENV_BINS)
         endif()
     endif()
 endif()
+# The first venv python with pytest, else the first venv python at all (the
+# docs and boundary checks below need only the standard library), else
+# whatever `find_package` finds.
 set(_bench_py "")
-if(EXISTS "${MIP_HEURISTICS_VENV_BIN}/python")
-    set(_bench_py "${MIP_HEURISTICS_VENV_BIN}/python")
-else()
+foreach(_venv_bin IN LISTS MIP_HEURISTICS_VENV_BINS)
+    if(EXISTS "${_venv_bin}/python")
+        if(NOT _bench_py)
+            set(_bench_py "${_venv_bin}/python")
+        endif()
+        execute_process(
+            COMMAND "${_venv_bin}/python" -c "import pytest"
+            RESULT_VARIABLE _venv_has_pytest
+            OUTPUT_QUIET ERROR_QUIET)
+        if(_venv_has_pytest EQUAL 0)
+            set(_bench_py "${_venv_bin}/python")
+            break()
+        endif()
+    endif()
+endforeach()
+if(NOT _bench_py)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         set(_bench_py "${Python3_EXECUTABLE}")
