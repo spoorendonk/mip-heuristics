@@ -736,7 +736,7 @@ def test_cli_refuses_to_fold_in_an_instance_with_no_valid_reference(tmp_path: Pa
 def _mipfeas_sgm_per_config(results, configs, oracle_name=None, time_limit=5.0):
     """mipfeas headline SGM per config, through the real reporting pipeline."""
     common = get_common_instances(results, configs)
-    best_known = build_best_known(results, configs, common, {})
+    best_known = build_best_known(results, configs, common, {}, time_limit)
     all_configs = list(configs)
     if oracle_name is not None:
         tree, report = build_oracle_config(
@@ -883,7 +883,9 @@ def test_oracle_drops_an_instance_a_non_participant_config_lacks(tmp_path: Path)
     results = load_results(str(tmp_path), ["fpr", "scylla", "combined"])
     common = get_common_instances(results, ["fpr", "scylla", "combined"])
     assert common == ["i1"]
-    best_known = build_best_known(results, ["fpr", "scylla", "combined"], common, {})
+    best_known = build_best_known(
+        results, ["fpr", "scylla", "combined"], common, {}, 5.0
+    )
 
     _, report = build_oracle_config(
         results, ["fpr", "scylla"], best_known, 5.0, instances=common
@@ -1438,3 +1440,31 @@ def test_csv_is_not_written_unless_asked(tmp_path: Path):
     assert res.returncode == 0, res.stderr
     assert "Wrote" not in res.stderr
     assert sorted(p.name for p in tmp_path.glob("*.csv")) == ["z.csv"]
+
+
+def test_scored_time_gives_only_a_solved_run_its_own_time():
+    from analyze_results import scored_time
+
+    def run(status: str, t: float) -> SolveResult:
+        return SolveResult(status=status, solve_time=t)
+
+    assert scored_time(run("Optimal", 3.0), 100.0) == 3.0
+    assert scored_time(run("Optimal", 140.0), 100.0) == 100.0
+    # Stopped early without solving: not a fast solve.
+    for status in ("Memory limit reached", "Solution limit reached", "Interrupted"):
+        assert scored_time(run(status, 3.0), 100.0) == 100.0
+    assert scored_time(run("Time limit reached", 100.02), 100.0) == 100.0
+    assert scored_time(_killed([(1.0, 1.0)]), 100.0) == 100.0
+    assert scored_time(SolveResult(), 100.0) == 100.0
+
+
+def test_csv_leaves_a_non_finite_value_empty(tmp_path: Path):
+    from analyze_results import write_runs_csv
+
+    out = tmp_path / "runs.csv"
+    results = {"cfg": {0: {"inst": SolveResult(status="Time limit reached")}}}
+    assert write_runs_csv(str(out), results, ["cfg"], ["inst"], 100.0, {}) == 1
+    with open(out, newline="") as f:
+        (row,) = csv.DictReader(f)
+    assert row["primal_bound"] == "" and row["reference"] == ""
+    assert row["t_first"] == "" and row["feasible"] == "0"

@@ -34,7 +34,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_highs_log import (
-    KILLED_STATUS,
     MIPFEAS_NO_INCUMBENT,
     MIPFEAS_SHIFT,
     SolveResult,
@@ -94,7 +93,7 @@ def build_best_known(
     configs: list[str],
     instances: list[str],
     solu_refs: dict[str, tuple[str, float | None]],
-    time_limit: float | None = None,
+    time_limit: float,
 ) -> dict[str, float | None]:
     """Build {instance: reference_objective} from .solu + observed primals.
 
@@ -1682,7 +1681,6 @@ def generate_survival_plot(
 # beside feasible and the primal integral (#176).  The time SGM is at shift 1 s.
 TIME_SGM_SHIFT = 1.0
 OPTIMAL_STATUS = "Optimal"
-TIME_LIMIT_STATUS = "Time limit reached"
 
 
 def opt_found(r: SolveResult, time_limit: float, ref: float | None) -> bool:
@@ -1702,14 +1700,17 @@ def opt_proven(r: SolveResult, time_limit: float) -> bool:
 
 
 def scored_time(r: SolveResult, time_limit: float) -> float:
-    """The solve time the time SGM reads: `min(solve_time, T)`, or T if unfinished.
+    """The solve time the time SGM reads: `min(solve_time, T)` if solved, else T.
 
-    A run that reached the time limit, or has no Solving report — a killed run,
-    whose `solve_time` the parser leaves at 0, or a log that never got that
-    far — counts as T.  A run with a report followed by a kill marker finished
-    by HiGHS's own word and is read off its report, as `primal_at` reads it.
+    Only a run HiGHS reported `Optimal` keeps its own time.  Every other run
+    counts as T: one that reached the time limit, one with no Solving report
+    (a killed run, whose `solve_time` the parser leaves at 0, or a log that
+    never got that far), and one that stopped early without solving (a
+    memory limit, an interrupt, a presolve-only solution limit), which would
+    otherwise score as a fast solve.  A run with a report followed by a kill
+    marker is read off its report, as `primal_at` reads it.
     """
-    if not r.status or r.status in (KILLED_STATUS, TIME_LIMIT_STATUS):
+    if r.status != OPTIMAL_STATUS:
         return time_limit
     return min(r.solve_time, time_limit)
 
@@ -1785,10 +1786,10 @@ def print_mipfeas_summary(
             f"{len(instances):>12}"
         )
     print(
-        f"\nSGM(Time) is in seconds at shift {TIME_SGM_SHIFT:g}; a run that hit the "
-        "limit, was killed or has no\nSolving report counts as the limit.  "
-        "#OptFound: zero mipfeas penalty at the limit;\n#OptProven: status "
-        "Optimal within the limit."
+        f"\nSGM(Time) is in seconds at shift {TIME_SGM_SHIFT:g}; a run not reported "
+        "Optimal counts as the limit.\n#OptFound: zero mipfeas penalty at the "
+        "limit against the reference (z* under\nformula=mipfeas); #OptProven: "
+        "status Optimal within the limit."
     )
 
     # Print pairwise ratios
@@ -1839,12 +1840,13 @@ def write_runs_csv(
     Every run, not the seed-collapsed rows the tables read.  `primal_bound` is
     `primal_at(time_limit)`, so a killed run carries its last incumbent at the
     limit rather than the parser's inf; `primal_integral` is under the formula
-    in effect, `time` is `scored_time`.  A missing value is an empty cell,
-    booleans are 0/1.
+    in effect, `time` is `scored_time`.  A missing or non-finite value (no
+    incumbent by the limit, no reference) is an empty cell, so the column
+    stays numeric for a reader; booleans are 0/1.
     """
 
     def cell(v: float | None) -> str:
-        return "" if v is None else repr(v)
+        return "" if v is None or not math.isfinite(v) else repr(v)
 
     rows = 0
     with open(path, "w", newline="") as f:
