@@ -436,12 +436,36 @@ catch_discover_tests(mip_heuristics_core_standalone_tests
 # the scripts' own logic (regexes, aggregation, exit codes, error paths) so
 # they are kept honest as the harness evolves.
 #
-# Prefer `.venv/bin/python` (where `pip install pytest` typically lands in
+# Prefer the venv's python (where `pip install pytest` typically lands in
 # this project) over the system interpreter.  Skip silently when neither
 # has pytest so `ctest` on a fresh clone stays green.
+#
+# The venv is this tree's `.venv/bin`, or else the main checkout's, found
+# through the common git directory: a linked worktree has no `.venv` of its
+# own, and the pre-push local CI builds in one.  Without the second look the
+# choice there falls to `find_package(Python3)`, which takes an active conda
+# env or virtualenv ahead of PATH, and one without pytest drops
+# `bench_python_tests` from the gate silently.  `cmake/Lint.cmake` searches
+# the same directory for the pinned clang tools.
+set(MIP_HEURISTICS_VENV_BIN "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin")
+find_package(Git QUIET)
+if(NOT EXISTS "${MIP_HEURISTICS_VENV_BIN}" AND GIT_EXECUTABLE)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --path-format=absolute --git-common-dir
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _git_common_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(_git_common_dir MATCHES "/\\.git$")
+        get_filename_component(_main_checkout "${_git_common_dir}" DIRECTORY)
+        if(EXISTS "${_main_checkout}/.venv/bin")
+            set(MIP_HEURISTICS_VENV_BIN "${_main_checkout}/.venv/bin")
+        endif()
+    endif()
+endif()
 set(_bench_py "")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
-    set(_bench_py "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+if(EXISTS "${MIP_HEURISTICS_VENV_BIN}/python")
+    set(_bench_py "${MIP_HEURISTICS_VENV_BIN}/python")
 else()
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)

@@ -49,8 +49,9 @@ REPO="$(cd "$HERE/.." && pwd)"
 FINALISTS="$HERE/finalists.json"
 RESULTS="${FINALISTS_RESULTS:-$REPO/bench/results/finalists}"
 
-# A binary outside build/, because `pre-push` runs `rm -rf build` and would
-# delete it out from under a running campaign (CLAUDE.md).
+# A binary outside build/, because a clean rebuild in this checkout
+# (`rm -rf build`, CLAUDE.md's `clean` block) would delete it out from under
+# a running campaign.
 BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/irace/bin/highs}"
 
 # Arms to run.  `confirm: false` in finalists.json records a selection that

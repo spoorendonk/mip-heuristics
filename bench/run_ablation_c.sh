@@ -69,8 +69,9 @@ REPO="$(cd "$HERE/.." && pwd)"
 RESULTS="${ABLATION_C_RESULTS:-$REPO/bench/results/ablation_c}"
 FINALISTS="$REPO/bench/results/finalists"
 
-# A binary outside build/, because `pre-push` runs `rm -rf build` and would
-# delete it out from under a running campaign (CLAUDE.md).  This is also the
+# A binary outside build/, because a clean rebuild in this checkout
+# (`rm -rf build`, CLAUDE.md's `clean` block) would delete it out from under
+# a running campaign.  This is also the
 # exact binary both existing finalist arms ran on, which C1 requires: its 20
 # runs and their `D-shipped` pair must not straddle a rebuild.
 BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/irace/bin/highs}"

@@ -31,7 +31,9 @@ option(MIP_HEURISTICS_REQUIRE_LINT
        "Fail configuration when the clang tools are missing or the wrong major version. \
 CI must set this ON so a missing tool can never silently drop the gate." OFF)
 
-set(_lint_hint "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin")
+# The root CMakeLists sets MIP_HEURISTICS_VENV_BIN: this tree's `.venv/bin`,
+# or the main checkout's from a linked worktree.
+set(_lint_hint "${MIP_HEURISTICS_VENV_BIN}")
 
 # NAMES_PER_DIR so `.venv/bin` really is searched first.  Without it CMake
 # tries each NAME across every directory in turn, and a system
