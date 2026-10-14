@@ -1090,11 +1090,16 @@ def count_wins(
     configs: list[str],
     instances: list[str],
     synthetic: set[str] | None = None,
+    time_limit: float | None = None,
 ) -> dict[str, int]:
     """Count #Win: instances where one config finds a strictly better primal bound.
 
     Ties (all best-bound holders within 1e-6 of each other) are not credited
     to any config. Returns {config: win_count}.
+
+    Each run's bound is `SolveResult.primal_at(time_limit)`: the Solving
+    report's for a run that reached one, the last incumbent at the limit for
+    a killed run (#175), which would otherwise lose at inf.
 
     `synthetic` excludes non-competitor rows; see `count_first` for why a
     reporting row left in the field silently rewrites real configs' counts.
@@ -1106,8 +1111,9 @@ def count_wins(
         bounds = {}
         for c in contenders:
             r = agg_results.get(c, {}).get(inst)
-            if r and r.primal_bound != float("inf"):
-                bounds[c] = r.primal_bound
+            bound = r.primal_at(time_limit) if r else float("inf")
+            if bound != float("inf"):
+                bounds[c] = bound
         if not bounds:
             continue
         best = min(bounds.values())
@@ -1416,7 +1422,13 @@ def _print_category_breakdown(
         if not insts_in_cat:
             continue
         feas = {c: count_feasible(results, c, insts_in_cat)["any"] for c in configs}
-        wins = count_wins(agg_results, configs, insts_in_cat, synthetic=synthetic)
+        wins = count_wins(
+            agg_results,
+            configs,
+            insts_in_cat,
+            synthetic=synthetic,
+            time_limit=time_limit,
+        )
         row = f"{cat:<8} {len(insts_in_cat):>6}"
         for c in configs:
             win_cell = "-" if c in synthetic else str(wins[c])
@@ -1466,7 +1478,9 @@ def print_paper_metrics(
         print()
 
     # --- #Win (on aggregated) ---
-    win_counts = count_wins(agg_results, configs, instances, synthetic=synthetic)
+    win_counts = count_wins(
+        agg_results, configs, instances, synthetic=synthetic, time_limit=time_limit
+    )
     print(f"\n{'#Win (best obj)':<25}", end="")
     for c in configs:
         cell = "-" if c in synthetic else str(win_counts[c])

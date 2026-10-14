@@ -938,6 +938,96 @@ def test_cli_oracle_is_excluded_from_head_to_head_columns(tmp_path: Path):
         assert line.split()[-1] == "-", line
 
 
+def _killed_log(*, incumbents: list[tuple[float, float]], killed_after: float) -> str:
+    """A log the harness cut short: incumbent lines, then its kill marker."""
+    lines = [
+        f"H       0       0         0   0.00%          0"
+        f"              {objective}              Large"
+        f"      0      0      0       0.0   {found_at}s\n"
+        for found_at, objective in incumbents
+    ]
+    return "".join(lines) + f"TIMEOUT: process killed after {killed_after:.0f}s\n"
+
+
+def _killed(incumbents: list[tuple[float, float]]) -> SolveResult:
+    r = SolveResult(killed=True)
+    for t, obj in incumbents:
+        r.incumbents.append(Incumbent(time=t, objective=obj, source="H", nodes=0))
+    return r
+
+
+def test_primal_at_reads_a_killed_run_off_its_last_incumbent_at_the_limit():
+    # #175: a killed run has no Solving report, so `primal_bound` stays inf.
+    r = _killed([(10.0, 70.0), (99.5, 50.0), (100.5, 45.0), (105.0, 40.0)])
+    assert r.primal_bound == float("inf")
+    assert r.primal_at(100.0) == 45.0  # within the grace past the limit
+    assert r.primal_at(50.0) == 70.0
+    assert r.primal_at(5.0) == float("inf")
+    assert r.primal_at(None) == 40.0
+    assert _killed([]).primal_at(100.0) == float("inf")
+
+
+def test_primal_at_reads_a_finished_run_off_its_report():
+    r = _result(1.0)  # one incumbent at objective 1.0
+    r.primal_bound = 0.5
+    assert r.primal_at(100.0) == 0.5
+    assert r.primal_at(None) == 0.5
+
+
+def test_count_wins_credits_a_killed_run_by_its_incumbents():
+    # The issue's fixture: vanilla killed at 50 against a finished 60 wins,
+    # killed at 302 against a finished 302 ties.
+    finished = SolveResult(primal_bound=60.0)
+    tie = SolveResult(primal_bound=302.0)
+    agg = {
+        "all": {"30n20b8": finished, "air05": tie},
+        "vanilla": {
+            "30n20b8": _killed([(20.0, 80.0), (90.0, 50.0)]),
+            "air05": _killed([(30.0, 302.0)]),
+        },
+    }
+    configs = ["all", "vanilla"]
+    insts = ["30n20b8", "air05"]
+    assert count_wins(agg, configs, insts, time_limit=100.0) == {"all": 0, "vanilla": 1}
+    # An incumbent past the limit and its grace does not count: 50 arrives
+    # too late, so vanilla holds 80 and the finished 60 wins.
+    assert count_wins(agg, configs, insts, time_limit=80.0) == {"all": 1, "vanilla": 0}
+
+
+def test_cli_win_counts_read_killed_runs_off_their_incumbents(tmp_path: Path):
+    _write_seeded_tree(
+        tmp_path,
+        {
+            "all": {
+                0: {
+                    "30n20b8": _feasible_log(
+                        objective=60.0, found_at=40.0, solve_time=100.0
+                    ),
+                    "air05": _feasible_log(
+                        objective=302.0, found_at=40.0, solve_time=100.0
+                    ),
+                }
+            },
+            "vanilla": {
+                0: {
+                    "30n20b8": _killed_log(
+                        incumbents=[(90.0, 50.0)], killed_after=120.0
+                    ),
+                    "air05": _killed_log(
+                        incumbents=[(30.0, 302.0)], killed_after=120.0
+                    ),
+                }
+            },
+        },
+    )
+    res = _run_cli(tmp_path, "--configs", "all", "vanilla", "--time-limit", "100")
+    assert res.returncode == 0, res.stderr
+    line = next(
+        ln for ln in res.stdout.splitlines() if ln.startswith("#Win (best obj)")
+    )
+    assert line.split()[-2:] == ["0", "1"], line
+
+
 def test_cli_missing_instance_list_is_a_clean_error(tmp_path: Path):
     _plain_tree(tmp_path)
     res = _run_cli(

@@ -578,15 +578,40 @@ class SolveResult:
         the clock ran out.  `None` when there is no incumbent by then or no
         usable reference; callers score that as `MIPFEAS_NO_INCUMBENT`.
         """
+        last = self.last_incumbent_at(time_limit)
+        if last is None or reference is None or not math.isfinite(reference):
+            return None
+        return mipfeas_penalty(last, reference)
+
+    def last_incumbent_at(self, time_limit: float) -> float | None:
+        """The objective of the last incumbent at or before `time_limit`.
+
+        Within `MIPFEAS_LIMIT_GRACE_S` past the limit, for the reason
+        `mipfeas_gap_at` gives.  `None` when there is none by then.
+        """
         last: float | None = None
         for inc in self.incumbents:
             if inc.time < time_limit + MIPFEAS_LIMIT_GRACE_S:
                 last = inc.objective
             else:
                 break
-        if last is None or reference is None or not math.isfinite(reference):
-            return None
-        return mipfeas_penalty(last, reference)
+        return last
+
+    def primal_at(self, time_limit: float | None) -> float:
+        """The primal bound this run reached by `time_limit`, for comparing runs.
+
+        A run with a Solving report is read off it: `primal_bound`, exactly.
+        A killed run has none, so `primal_bound` stays inf however many
+        incumbents it printed (#175); it is read off its last incumbent at the
+        limit instead — the value `mipfeas_gap_at` scores.  With no
+        `time_limit`, off its last incumbent at all.  Inf when it has none.
+        """
+        if not self.killed:
+            return self.primal_bound
+        if time_limit is None:
+            return self.incumbents[-1].objective if self.incumbents else float("inf")
+        last = self.last_incumbent_at(time_limit)
+        return float("inf") if last is None else last
 
     def mipfeas_integral(self, time_limit: float, reference: float | None) -> float:
         """The published `mipfeas` score of this run, on the benchmark's own scale.

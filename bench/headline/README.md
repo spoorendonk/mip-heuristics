@@ -73,7 +73,8 @@ not a setting on the patched one.
 | held-out (143) | **patched (B')** | **128** | **30** | **7.89** | **0.0062** | **0.0600** |
 | | vanilla | 125 | 21 | 9.52 | 0.0072 | 0.0690 |
 
-Wins are strictly better objectives at the limit. Paired per instance on the
+Wins are strictly better objectives at the limit (two counts move by one
+under #175; see Killed runs below). Paired per instance on the
 primal integral (full output in `paired.txt`):
 
 | set | n | ratio | 95% CI | t | p | better/tied/worse |
@@ -233,7 +234,17 @@ That is why the previous arm is `all-prev-vector` rather than `all`.
 **Killed runs.** Four, listed at the top of `tables.txt`: three patched
 (`germanrr`, `neos-3046615-murg`, `neos-5114902-kasavu`) and one vanilla
 (`neos-5114902-kasavu`), kept as truncated logs. They score correctly: T1st and
-the primal integral read incumbent lines, not the final report.
+the primal integral read incumbent lines, not the final report. The win count
+did not until #175: it compared the Solving report's primal bound, which a
+killed run never prints, so `neos-5114902-kasavu` — both arms killed, `all`
+ahead at the limit (gap 0.130 against vanilla's 0.698) — was credited to
+neither. Read off each killed
+run's last incumbent at the limit, as `analyze_results.py` now does, `all`'s
+wins are **50, not 49, on the full set and 20, not 19, on the tuning set**
+(`kasavu` is a tuning instance); held-out and vanilla counts are unchanged.
+The table above and `tables.txt` keep the published 49 and 19, being the
+generated output of the run as reported; the results tree is not in the
+repository, so they are not regenerated here.
 
 ## Comparability
 
