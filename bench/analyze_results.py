@@ -34,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_highs_log import (
+    KILLED_STATUS,
     MIPFEAS_NO_INCUMBENT,
     MIPFEAS_SHIFT,
     SolveResult,
@@ -93,16 +94,25 @@ def build_best_known(
     configs: list[str],
     instances: list[str],
     solu_refs: dict[str, tuple[str, float | None]],
+    time_limit: float | None = None,
 ) -> dict[str, float | None]:
-    """Build {instance: reference_objective} from .solu + observed primals."""
+    """Build {instance: reference_objective} from .solu + observed primals.
+
+    A run's observed primal is `primal_at(time_limit)` (#186): a killed run
+    has `primal_bound` inf whatever it found, so its incumbents would never
+    enter the reference; `primal_at` reads it off its last incumbent at the
+    limit.  For a run that finished it is `primal_bound` exactly.
+    """
     refs: dict[str, float | None] = {}
     for inst in instances:
         observed: list[float] = []
         for c in configs:
             for seed_data in results.get(c, {}).values():
                 r = seed_data.get(inst)
-                if r and r.primal_bound != float("inf"):
-                    observed.append(r.primal_bound)
+                if r:
+                    p = r.primal_at(time_limit)
+                    if p != float("inf"):
+                        observed.append(p)
         solu_value = None
         if inst in solu_refs:
             tag, val = solu_refs[inst]
@@ -1668,6 +1678,42 @@ def generate_survival_plot(
     print(f"Survival plot saved to {output_path}")
 
 
+# The paper's result tables (§4) report opt. found, opt. proven and a time SGM
+# beside feasible and the primal integral (#176).  The time SGM is at shift 1 s.
+TIME_SGM_SHIFT = 1.0
+OPTIMAL_STATUS = "Optimal"
+TIME_LIMIT_STATUS = "Time limit reached"
+
+
+def opt_found(r: SolveResult, time_limit: float, ref: float | None) -> bool:
+    """The last incumbent by the limit (with its grace) scores a zero `mipfeas` penalty.
+
+    Against `ref`, the reference the run is scored against: the benchmark's z*
+    under the default formula.  The penalty is rounded to six decimals, so a
+    proven-optimal run whose incumbent is merely within `mip_rel_gap` of z* is
+    not counted, and an incumbent better than z* is.
+    """
+    return r.mipfeas_gap_at(time_limit, ref) == 0.0
+
+
+def opt_proven(r: SolveResult, time_limit: float) -> bool:
+    """HiGHS reported `Optimal` within the limit."""
+    return r.status == OPTIMAL_STATUS and r.solve_time <= time_limit
+
+
+def scored_time(r: SolveResult, time_limit: float) -> float:
+    """The solve time the time SGM reads: `min(solve_time, T)`, or T if unfinished.
+
+    A run that reached the time limit, or has no Solving report — a killed run,
+    whose `solve_time` the parser leaves at 0, or a log that never got that
+    far — counts as T.  A run with a report followed by a kill marker finished
+    by HiGHS's own word and is read off its report, as `primal_at` reads it.
+    """
+    if not r.status or r.status in (KILLED_STATUS, TIME_LIMIT_STATUS):
+        return time_limit
+    return min(r.solve_time, time_limit)
+
+
 def print_mipfeas_summary(
     results: dict[str, dict[int, dict[str, SolveResult]]],
     agg_results: dict[str, dict[str, SolveResult]],
@@ -1675,7 +1721,7 @@ def print_mipfeas_summary(
     time_limit: float,
     best_known: dict[str, float | None] | None,
 ) -> None:
-    """Print the mipfeas headline metrics: primal-integral SGM ratio and feasibility counts.
+    """Print the mipfeas headline metrics: primal-integral SGM ratio and the counts.
 
     The mipfeas benchmark scores each run by its primal integral over the 600 s
     window and aggregates with a shifted geometric mean at shift 0.001 across
@@ -1683,7 +1729,9 @@ def print_mipfeas_summary(
     found within the time limit.  Under the default formula the integral is
     the benchmark's own (normalised by the window, in [0, 2]); under
     `--formula campaign` it is the campaign's, in gap-seconds, at the same
-    shift.
+    shift.  Beside them, the paper's other three columns: opt. found
+    (`opt_found`), opt. proven (`opt_proven`) and the time SGM at shift 1 s
+    (`scored_time`), all read off the same seed-collapsed row.
     """
     instances = get_common_instances(results, configs)
     if not instances:
@@ -1698,28 +1746,50 @@ def print_mipfeas_summary(
     )
 
     pi_per_config: dict[str, list[float]] = {}
+    time_per_config: dict[str, list[float]] = {}
     feas_per_config: dict[str, int] = {}
+    found_per_config: dict[str, int] = {}
+    proven_per_config: dict[str, int] = {}
     for c in configs:
         pis = []
-        feas_count = 0
+        times = []
+        feas_count = found_count = proven_count = 0
         for inst in instances:
             r = agg_results.get(c, {}).get(inst)
             if r:
                 ref = best_known.get(inst) if best_known else None
                 pis.append(score_integral(r, time_limit, ref))
+                times.append(scored_time(r, time_limit))
                 if r.incumbents:
                     feas_count += 1
+                found_count += opt_found(r, time_limit, ref)
+                proven_count += opt_proven(r, time_limit)
         pi_per_config[c] = pis
+        time_per_config[c] = times
         feas_per_config[c] = feas_count
+        found_per_config[c] = found_count
+        proven_per_config[c] = proven_count
 
     # Print per-config row
     print(
-        f"{'Config':<20} {'SGM(PrimalIntegral)':<22} {'#Feasible':>10} {'#Instances':>12}"
+        f"{'Config':<20} {'SGM(PrimalIntegral)':<22} {'#Feasible':>10} "
+        f"{'#OptFound':>10} {'#OptProven':>11} {'SGM(Time)':>10} {'#Instances':>12}"
     )
-    print("-" * 68)
+    print("-" * 101)
     for c in configs:
         sgm = shifted_geomean(pi_per_config[c], mipfeas_shift)
-        print(f"{c:<20} {sgm:<22.6f} {feas_per_config[c]:>10} {len(instances):>12}")
+        sgm_t = shifted_geomean(time_per_config[c], TIME_SGM_SHIFT)
+        print(
+            f"{c:<20} {sgm:<22.6f} {feas_per_config[c]:>10} "
+            f"{found_per_config[c]:>10} {proven_per_config[c]:>11} {sgm_t:>10.1f} "
+            f"{len(instances):>12}"
+        )
+    print(
+        f"\nSGM(Time) is in seconds at shift {TIME_SGM_SHIFT:g}; a run that hit the "
+        "limit, was killed or has no\nSolving report counts as the limit.  "
+        "#OptFound: zero mipfeas penalty at the limit;\n#OptProven: status "
+        "Optimal within the limit."
+    )
 
     # Print pairwise ratios
     if len(configs) >= 2:
@@ -1737,6 +1807,75 @@ def print_mipfeas_summary(
         print(
             f"Feasible delta {c1}-{c2}: {feas1 - feas2:+d}  ({c1}={feas1}, {c2}={feas2})"
         )
+
+
+CSV_FIELDS: tuple[str, ...] = (
+    "config",
+    "seed",
+    "instance",
+    "feasible",
+    "t_first",
+    "primal_bound",
+    "reference",
+    "primal_integral",
+    "opt_found",
+    "opt_proven",
+    "time",
+    "status",
+    "killed",
+)
+
+
+def write_runs_csv(
+    path: str,
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    configs: list[str],
+    instances: list[str],
+    time_limit: float,
+    best_known: dict[str, float | None],
+) -> int:
+    """Write one row per (config, seed, instance) run to `path`; returns the row count.
+
+    Every run, not the seed-collapsed rows the tables read.  `primal_bound` is
+    `primal_at(time_limit)`, so a killed run carries its last incumbent at the
+    limit rather than the parser's inf; `primal_integral` is under the formula
+    in effect, `time` is `scored_time`.  A missing value is an empty cell,
+    booleans are 0/1.
+    """
+
+    def cell(v: float | None) -> str:
+        return "" if v is None else repr(v)
+
+    rows = 0
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(CSV_FIELDS)
+        for c in configs:
+            for seed in sorted(results.get(c, {})):
+                for inst in instances:
+                    r = results[c][seed].get(inst)
+                    if r is None:
+                        continue
+                    ref = best_known.get(inst)
+                    w.writerow(
+                        [
+                            c,
+                            seed,
+                            inst,
+                            int(bool(r.incumbents)),
+                            cell(r.time_to_first_feasible),
+                            cell(r.primal_at(time_limit)),
+                            cell(ref),
+                            cell(score_integral(r, time_limit, ref)),
+                            int(opt_found(r, time_limit, ref)),
+                            int(opt_proven(r, time_limit)),
+                            cell(scored_time(r, time_limit)),
+                            r.status,
+                            int(r.killed),
+                        ]
+                    )
+                    rows += 1
+    return rows
 
 
 def _config_metrics(
@@ -2070,6 +2209,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--csv",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Also write one row per (config, seed, instance) run to PATH: "
+            "feasible, t_first, primal_bound at the limit, reference, primal "
+            "integral, opt_found, opt_proven, scored time, status and killed. "
+            "Covers every seed of the instances the tables cover, under the "
+            "formula in effect; the oracle row is not written."
+        ),
+    )
+    parser.add_argument(
         "--oracle-name",
         default=ORACLE_DEFAULT_NAME,
         metavar="NAME",
@@ -2149,7 +2300,9 @@ def main() -> None:
             filt, reference_dropped=unusable, final_count=len(common)
         )
 
-    best_known = build_best_known(results, active_configs, common, solu_refs)
+    best_known = build_best_known(
+        results, active_configs, common, solu_refs, args.time_limit
+    )
     if formula() == "mipfeas":
         if not os.path.exists(args.mipfeas_z):
             print(
@@ -2190,6 +2343,11 @@ def main() -> None:
             synthetic.add(oracle_report.name)
 
     agg_results = aggregate_results(results, active_configs, args.time_limit)
+
+    if args.csv:
+        real = [c for c in active_configs if c not in synthetic]
+        n = write_runs_csv(args.csv, results, real, common, args.time_limit, best_known)
+        print(f"Wrote {n} runs to {args.csv}", file=sys.stderr)
 
     if args.paired:
         print_paired(

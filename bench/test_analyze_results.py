@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import math
 import os
 import sys
 
@@ -1279,3 +1281,160 @@ def test_aggregate_results_reads_a_killed_seed_at_the_limit_only():
     c = SolveResult(primal_bound=70.0)
     results = {"cfg": {0: {"inst": a}, 1: {"inst": b}, 2: {"inst": c}}}
     assert aggregate_results(results, ["cfg"], 100.0)["cfg"]["inst"] is c
+
+
+def test_build_best_known_takes_a_killed_runs_incumbent_at_the_limit():
+    # #186: a killed run has `primal_bound` inf, so its 50 never entered the
+    # observed reference and the finished run's 100 did.
+    finished = SolveResult(primal_bound=100.0)
+    killed = _killed([(10.0, 80.0), (90.0, 50.0), (150.0, 5.0)])
+    results = {"a": {0: {"inst": finished}}, "b": {0: {"inst": killed}}}
+    refs = build_best_known(results, ["a", "b"], ["inst"], {}, 100.0)
+    # The 5 found at 150 s is past a 100 s limit and does not count.
+    assert refs == {"inst": 50.0}
+    # A published reference the killed run beat is improved by it too.
+    solu = {"inst": ("=best=", 70.0)}
+    assert build_best_known(results, ["a", "b"], ["inst"], solu, 100.0) == {
+        "inst": 50.0
+    }
+
+
+# --- opt. found, opt. proven, time SGM and the per-run CSV (#176) -----------
+
+
+def _report_log(
+    *, incumbents: list[tuple[float, float]], status: str, primal: float, timing: float
+) -> str:
+    """Incumbent lines, then a Solving report with this status and timing."""
+    lines = [
+        f"H       0       0         0   0.00%          0"
+        f"              {objective}              Large"
+        f"      0      0      0       0.0   {found_at}s\n"
+        for found_at, objective in incumbents
+    ]
+    return "".join(lines) + (
+        f"      Status            {status}\n"
+        f"      Primal bound      {primal}\n"
+        "      Nodes             17\n"
+        f"      Timing            {timing:.2f}\n"
+    )
+
+
+def _opt_tree(tmp_path: Path) -> Path:
+    """Five runs at a 100 s limit, one per case the three new columns separate.
+
+    a  proven at 40 s on z*             found, proven, time 40
+    b  killed, its incumbent is z*      found,          time T (parser says 0)
+    c  Optimal, but only at 101 s       found,          time T
+    d  Optimal at 20 s, 40.001 vs 40    proven, not found (penalty 2.5e-5), 20
+    e  time limit reached at 60 vs 50   neither,        time T
+    """
+    logs = {
+        "a": _report_log(
+            incumbents=[(5.0, 10.0)], status="Optimal", primal=10.0, timing=40.0
+        ),
+        "b": _killed_log(incumbents=[(30.0, 20.0)], killed_after=170.0),
+        "c": _report_log(
+            incumbents=[(50.0, 30.0)], status="Optimal", primal=30.0, timing=101.0
+        ),
+        "d": _report_log(
+            incumbents=[(10.0, 40.001)], status="Optimal", primal=40.001, timing=20.0
+        ),
+        "e": _report_log(
+            incumbents=[(10.0, 60.0)],
+            status="Time limit reached",
+            primal=60.0,
+            timing=100.02,
+        ),
+    }
+    _write_seeded_tree(tmp_path, {"cfg": {0: logs}})
+    return _write_z(tmp_path, {"a": 10.0, "b": 20.0, "c": 30.0, "d": 40.0, "e": 50.0})
+
+
+def test_summary_counts_opt_found_opt_proven_and_the_time_sgm(tmp_path: Path):
+    z = _opt_tree(tmp_path)
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "cfg",
+        "--summary",
+        "--time-limit",
+        "100",
+        "--mipfeas-z",
+        str(z),
+    )
+    assert res.returncode == 0, res.stderr
+    block = res.stdout.split("## mipfeas Headline Metrics", 1)[1]
+    assert "#OptFound" in block and "#OptProven" in block and "SGM(Time)" in block
+    row = next(ln.split() for ln in block.splitlines() if ln.startswith("cfg "))
+    _, _sgm_pi, feas, found, proven, sgm_t, n = row
+    assert (feas, found, proven, n) == ("5", "3", "2", "5")
+    times = [40.0, 100.0, 100.0, 20.0, 100.0]
+    expected = math.exp(sum(math.log(t + 1.0) for t in times) / len(times)) - 1.0
+    assert sgm_t == f"{expected:.1f}"
+    # Scoring the killed run at the parser's 0 s would give a different number.
+    at_zero = [40.0, 0.0, 100.0, 20.0, 100.0]
+    wrong = math.exp(sum(math.log(t + 1.0) for t in at_zero) / 5) - 1.0
+    assert sgm_t != f"{wrong:.1f}"
+
+
+def test_csv_writes_one_row_per_run(tmp_path: Path):
+    z = _opt_tree(tmp_path)
+    out = tmp_path / "runs.csv"
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "cfg",
+        "--summary",
+        "--time-limit",
+        "100",
+        "--mipfeas-z",
+        str(z),
+        "--csv",
+        str(out),
+    )
+    assert res.returncode == 0, res.stderr
+    with open(out, newline="") as f:
+        rows = {r["instance"]: r for r in csv.DictReader(f)}
+    assert sorted(rows) == ["a", "b", "c", "d", "e"]
+    assert {r["config"] for r in rows.values()} == {"cfg"}
+    assert {r["seed"] for r in rows.values()} == {"0"}
+    flags = {k: (r["opt_found"], r["opt_proven"]) for k, r in rows.items()}
+    assert flags == {
+        "a": ("1", "1"),
+        "b": ("1", "0"),
+        "c": ("1", "0"),
+        "d": ("0", "1"),
+        "e": ("0", "0"),
+    }
+    assert {k: float(r["time"]) for k, r in rows.items()} == {
+        "a": 40.0,
+        "b": 100.0,
+        "c": 100.0,
+        "d": 20.0,
+        "e": 100.0,
+    }
+    # A killed run carries its incumbent at the limit, not the parser's inf.
+    assert float(rows["b"]["primal_bound"]) == 20.0
+    assert rows["b"]["killed"] == "1" and rows["b"]["status"] == KILLED_STATUS
+    assert float(rows["b"]["t_first"]) == 30.0
+    assert float(rows["d"]["reference"]) == 40.0
+    assert float(rows["a"]["primal_integral"]) == pytest.approx(0.1)  # 2 for 5 of 100 s
+    assert rows["e"]["feasible"] == "1"
+
+
+def test_csv_is_not_written_unless_asked(tmp_path: Path):
+    z = _opt_tree(tmp_path)
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "cfg",
+        "--summary",
+        "--time-limit",
+        "100",
+        "--mipfeas-z",
+        str(z),
+    )
+    assert res.returncode == 0, res.stderr
+    assert "Wrote" not in res.stderr
+    assert sorted(p.name for p in tmp_path.glob("*.csv")) == ["z.csv"]

@@ -314,7 +314,11 @@ def contribution(
         print("no instances in common", file=sys.stderr)
         return 2
     refs = build_best_known(
-        results, list(dirs), shared, parse_solu_file("bench/miplib2017-v36.solu")
+        results,
+        list(dirs),
+        shared,
+        parse_solu_file("bench/miplib2017-v36.solu"),
+        TIME_LIMIT,
     )
     control, arm = results["control"][0], results["arm"][0]
 
