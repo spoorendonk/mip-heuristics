@@ -1,3 +1,17 @@
+<!-- wcp: CLAUDE.md base=45f6a643367b type=cpp-python -->
+<!-- wcp-declined: a6e5ec6d33d8 CLAUDE.md Discipline -->
+<!-- wcp-declined: 1a2483f6e234 Plan Adherence -->
+<!-- wcp-declined: e1a2b49b4c80 Reference Correctness -->
+<!-- wcp-declined: 027569c8a6fc Common Mistakes -->
+<!-- wcp-declined: e9feadcddcb5 Testing (GoogleTest) -->
+<!-- wcp-declined: a87ec66c5246 Python -->
+<!-- wcp-declined: cc3df5ee540d Testing (pytest) -->
+<!-- wcp-declined: 004504610dd6 Dependencies -->
+<!-- wcp-declined: 69dc0f786da4 nanobind Bindings -->
+<!-- wcp-declined: c4fc130d1235 Ownership and Lifetime -->
+<!-- wcp-declined: cf8d0fc1773f Type Conversions -->
+<!-- wcp-declined: 7e7de94f1273 Testing Bindings -->
+<!-- wcp-declined: 9070a09f6181 LSP -->
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -65,23 +79,21 @@ When a complexity warning fires, don't extract methods mechanically. Ask what th
 ## Development Workflow
 
 ```
-plan (non-trivial) → implement → test → push to main
+plan (non-trivial) → implement → test → /code-review → push to main
 ```
 
-Nothing formats on save — there are no Claude Code hooks. `clang-format` runs at commit time: `pre-commit` formats the staged C++, applies safe `clang-tidy` fixes, and re-stages the result, so what you commit is canonical even though the file you just edited is not. Don't hand-tune formatting — let the hook normalize it, or run it yourself:
+Nothing formats on save or at commit. `pre-commit` (wcp's) only **checks**: `clang-format --dry-run -Werror` over every tracked C/C++ file, against the major version `.clang-format-version` pins, plus `ruff format --check`, `ruff check` and `mypy` through `uv run`, each skipped loudly when it cannot run. It rewrites nothing and runs no tests, so format before committing:
 
 ```
 .venv/bin/clang-format -i <files>                       # normalize in place
 .venv/bin/clang-format --dry-run --Werror <files>       # check only, non-zero if unformatted
 ```
 
-**Use the venv's clang tools, not PATH.** The pinned 22.1.8 pair lives in `.venv/bin`, which is the exact path `cmake/Lint.cmake` searches; a different major version formats differently and fails the `clang_format` ctest gate. The hooks resolve the venv first for the same reason.
+**Use the venv's clang tools, not PATH.** The pinned 22.1.8 pair lives in `.venv/bin`, which is the exact path `cmake/Lint.cmake` searches; a different major version formats differently and fails the `clang_format` ctest gate. Both hooks put the main checkout's `.venv/bin` first on PATH for the same reason. `uv run` in this repository writes a trivial `uv.lock` (`pyproject.toml` holds only tool tables, no `[project]`); it is gitignored.
 
-The hooks are **tracked in `.githooks/`** (`commit-msg`, `pre-commit`, `pre-push`, and the sourced `resolve-venv.sh`) — edit them there, not in `.git/hooks/`, which is empty of ours. Git only runs them when `core.hooksPath` points at that directory, and that setting is per-checkout config which cannot be tracked; `cmake -B build` sets it (option `MIP_HEURISTICS_INSTALL_GIT_HOOKS`, ON as the top-level project), leaving an existing `.githooks` value alone and warning rather than clobbering a hooksPath someone else set. To wire a clone up by hand: `git config core.hooksPath .githooks`. `.claude/` is gitignored, owned by this repo, and not part of the published artifact — edit it in place; it holds only permission rules and a statusline. A new Claude Code hook must read its file path and command from the hook JSON **on stdin**, never `$CLAUDE_FILE_PATH` (unset by Claude Code — a hook reading it no-ops silently rather than failing). The clang-format and clang-tidy gates deliberately live outside the hooks, as ctest tests labelled `lint` plus the CI job, so a fresh clone still runs them.
+The hooks are wcp's, in `.githooks/` (see Hooks Are Files In This Repository). `cmake -B build` also points `core.hooksPath` at them (option `MIP_HEURISTICS_INSTALL_GIT_HOOKS`, ON as the top-level project), leaving an existing `.githooks` value alone and warning rather than clobbering a hooksPath someone else set. `.claude/` is gitignored and not part of the published artifact; `wcp init` writes its permission rules and statusline. A new Claude Code hook must read its file path and command from the hook JSON **on stdin**, never `$CLAUDE_FILE_PATH` (unset by Claude Code — a hook reading it no-ops silently rather than failing). The clang-format and clang-tidy gates deliberately live outside the hooks, as ctest tests labelled `lint` plus the CI job, so a fresh clone still runs them.
 
-**Never `git push --no-verify` or `git commit --no-verify`** unless asked; a failing hook is a signal, so fix the root cause.
-
-**Do not `git push` while a benchmark is running**: `pre-push` runs the `clean` block, which is `rm -rf build`, so the push deletes `build/bin/highs` out from under every in-flight run — and a harness that stops on a non-zero target exit (irace) loses the whole campaign, not one experiment. `git commit` is safe (`pre-commit` runs tests, not a rebuild). So commit freely during a campaign and push when the machine is idle, or point the run at a copy of the binary outside `build/` (`MIPFEAS_BINARY` / `MIP_HEURISTICS_BINARY` both take a path).
+**A push is a clean build and the full suite, in a fresh worktree** under `~/.cache/local-ci`, not in this checkout: it leaves `build/` alone, so pushing during a benchmark no longer deletes the binary under it, but it does load the machine for the length of a HiGHS build. On a shared machine take the lock and cap it: `xk lock -- git push ...`, with `git config hooks.localCiCpus 0-3` in the clone so `-j"$(nproc)"` follows the pin. ccache makes the second worktree's build cheap only because no compile command carries a worktree-specific path: the user-level `base_dir` rewrites path *arguments*, not `-D` values, so `INSTANCES_DIR` is defined only on `tests/test_paths.cpp` and read through `instances_dir()`. Keep new path-valued defines off target-wide compile definitions.
 
 ## Git Workflow
 
@@ -92,6 +104,36 @@ Feature branches are optional for larger changes: always branch from main (`git 
 After a successful push:
 - **Close any gh issue the work resolved**: `gh issue close <num> -c "<one-line note>"`, for every issue the push covers.
 - **Delete the feature branch** if one was used: `git branch -d <branch>`, plus `git push origin --delete <branch>` if pushed.
+
+## Hooks Are Files In This Repository
+
+The git hooks live in `.githooks/` as ordinary shell scripts, committed like any other file. `wcp init` copies them there and points `core.hooksPath` at them; wcp installs no Claude Code hooks at all. The gate is those files and nothing else, so a clone without wcp installed is still gated — including the review receipt, which is a line of plain git the Self-Review section documents rather than anything wcp runs.
+
+- **They are yours to read, and yours to edit.** Each hook carries a `# wcp:` line recording the digest of the bytes wcp wrote. That is what lets `wcp doctor` tell an edit you made from a version wcp has moved past: an untouched hook is refreshed silently, an edited one is left alone, and one that moved on both sides is reported rather than overwritten. Edit them when the project needs something different — and say so upstream if the default was wrong for everyone.
+- **A clone is not gated until someone runs `wcp init` in it.** git clones neither a hooks directory nor local config, so the files arriving with the clone is not the same as git running them. `wcp doctor` reports an unset `core.hooksPath` as an error for exactly this reason.
+- **They call no wcp.** A hook that shelled out to a missing tool would exit 127, which git reads as a refusal — so a machine without wcp could not commit, and could not commit the fix either. What the hooks do call is the project's own toolchain, and there they fail open and say so on stderr.
+- **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause, or change the hook deliberately and commit that.
+
+## This Document Carries A Provenance Line
+
+The comment at the top of this file is wcp's record of the bytes it wrote, in the same scheme the hooks use. `wcp doctor` reads it to tell an edit you made from a version wcp has moved past, and it is where this project's type is recorded — there is no `.wcp/` directory and no config file beside it.
+
+**The prose is yours.** wcp writes this document once and never rewrites it unasked; edit it freely. When wcp adds or changes a section you have not edited, `wcp doctor` names it and `wcp init --interactive` offers it, one section at a time; answering `n` declines that version for good. Leave the top line in place, and the tooling stays able to tell your changes from its own.
+
+## Running wcp
+
+wcp is a command-line tool installed once per machine, outside any repository. The hooks never call it, so a machine without it is still gated.
+
+```sh
+uv tool install git+https://github.com/spoorendonk/wcp   # once per machine; @vX.Y.Z for a release
+uv tool upgrade wcp                                       # to update an install without a tag
+uv tool install --force git+https://github.com/spoorendonk/wcp@vX.Y.Z   # to move a tagged one
+wcp --help                                                # the commands; `wcp <command> --help` for each one
+```
+
+- **Run `wcp doctor`** after pulling, after updating wcp, and before editing the hooks or this file. It changes nothing, and every finding names the command that fixes it. It exits 1 only when the gate does not work, e.g. `core.hooksPath` is unset, which is how every fresh clone starts until someone runs `wcp init` in it.
+- **Files wcp wrote carry a `wcp:` provenance line**: `# wcp:` in each hook, and the comment at the top of this file. Edit the files when the project needs to, but leave that line in place. It is how `wcp doctor` tells your edits apart from a newer wcp version.
+- **If `wcp` is not on PATH**, say so rather than installing it unasked. Installing it is a machine-wide change.
 
 ## Commit Messages
 
@@ -108,8 +150,72 @@ GitHub Issues, via the `gh` CLI.
 - **Default to HTTPS** for GitHub remotes, not SSH.
 - **Read an issue** with `gh issue view <num> --json title,body,labels,state,comments`; plain `gh issue view <num>` is deprecated for programmatic use.
 - Don't defer work into a new issue unless it is substantial. Fix small follow-ups inline or leave them alone.
+- **Label work in progress** with `session:<name>`, your session's name: `wcp claim <num>` when you start, `wcp release <num>` when you stop, hand over or close it (by hand: `gh issue edit <num> --add-label` / `--remove-label "session:<name>"`). Every session acts as the same GitHub user, so the label is what tells them apart; one left on an issue nobody is working on reads as a claim.
 
 Issues get picked up cold, in fresh sessions, often by an agent with no access to this machine. So: keep the body **self-contained** (problem, motivation, acceptance criteria, repro steps); use **no local references** (`/home/user/...`, "see my other checkout" — dead links in a fresh session); prefer **stable external links** (GitHub permalinks, papers, RFCs); and **describe local code by concept, not path**, hinting that the agent can search under `..`, `../..`, or `~/code/`.
+
+## Working Through Issues
+
+A session's goal is often a list of issues (`wcp goal`). Work through them in the order given, one at a time:
+
+1. **Issue check.** Read the issue and what it links. If it is clear and implementable, say so in one line and go on; this should be fast. If not, write a plan as a comment on the issue (plans go on issues, never in git) and work from it. If a later issue's plan changes an earlier one, re-plan then.
+2. **Implement.**
+3. **Gate and commit.** Run the project's gate (`## Build & Test`) and commit: a review reads commits, never uncommitted changes (`## Self-Review`).
+4. **Review by one cold reviewer**: a fresh teammate or subagent running `/code-review` on the commits not yet pushed, never several reviewers in parallel. On findings, fix, gate, commit, and review again with a fresh reviewer. **At most two rounds**; the fix after the second is confirmed, not reviewed again (`## Self-Review`). Anything real left after that, or found out of scope, becomes its own issue. The bar for filing is a concrete failure scenario or a missing acceptance criterion; nits are fixed within the round or dropped.
+5. **Record, push, close.** Record the review on a clean tree, push it with the commit (`## Self-Review`), and close the issue.
+
+Without agent teams, implement in the session itself and review with a fresh subagent; the caps and the bar are the same.
+
+**A hygiene goal** (`/goal Hygiene round …`, set by `wcp hygiene`) is a task, not a list of issues: work it from its note. Its findings are edits to existing issues or new issues labelled `tech-debt`; nothing is fixed inside the round, one cold reviewer checks the findings (at most two rounds), and the task ends with the summary comment its note specifies, whose first line is the marker wcp looks for.
+
+## Self-Review
+
+**Code you produced gets reviewed before it lands on main.** Run `/code-review`
+on your own changes and act on what it finds; the review is not a formality you
+report having done. The pre-push hook is the backstop, not the review.
+
+**Then record the review, and push it with the commit**, or `pre-push` will
+refuse the push:
+
+```sh
+git update-ref "refs/reviews/$(git rev-parse HEAD)" HEAD
+git push --atomic origin HEAD "refs/reviews/$(git rev-parse HEAD)"
+```
+
+The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
+travels with the push, so a CI step can check every commit that reaches the
+trunk — including one pushed with `--no-verify`, or from a clone whose hooks
+never ran. wcp's README has the step to paste into the project's CI.
+`--atomic` lands the branch and its receipt together or not at all.
+
+Plain git, on purpose. No wcp, no harness, nothing installed — so a reviewer on
+any machine can write it, and a clone that has never heard of wcp is still able
+to record a review and push. Every worktree of a clone sees the same receipts,
+and each names one commit, so a review counts for that commit wherever it is
+checked out and for nothing else.
+
+**What it means, and what it does not.** It records that a review happened at
+this commit — not what was reviewed. It carries exactly the trust of whoever ran
+it, and it is a line anybody can write by hand; what it buys is that nobody can
+push work no one has looked at *without noticing they are doing it*.
+
+A later commit has no receipt, and the next push is refused again. That is
+deliberate: a new commit is work nobody reviewed, including the commit that
+fixes what the review found.
+
+**The fix after the last round.** Reviews stop after two rounds, so the commit
+that fixes the second round's findings gets no third review. That round's
+reviewer reads the fix commit alone (`git show <sha>`) against its own
+findings, and the receipt is recorded for the fix once it confirms they are
+addressed. It looks for nothing new. What it does not confirm is taken out of
+the fix, which makes a new commit: the same reviewer confirms that one before
+its receipt is recorded, and what was taken out becomes its own issue.
+
+**Record it only when the tree is clean.** With nothing new committed, a review
+falls back to reading uncommitted changes — so a record written then names a
+commit that does not contain what was read, and the push it clears is of work
+nobody reviewed. Commit first, then review, then record. Untracked scratch files
+do not matter; staged and unstaged changes to tracked files do.
 
 ## Working Rules
 
@@ -154,10 +260,9 @@ Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solv
 # ctest reports green having linted nothing.  Include pytest — the root
 # CMakeLists prefers `.venv/bin/python`, so a venv without it unregisters
 # `bench_python_tests` rather than falling back to the system interpreter.
-# Include ruff for the same class of reason: both git hooks guard their ruff
-# step on `[ -x "$VENV_BIN/ruff" ]`, so a venv without it skips Python linting
-# silently while CI still gates on `ruff check bench cmake` — the hooks pass
-# and CI goes red.
+# Include ruff for the same class of reason: pre-commit runs it through
+# `uv run`, which skips it when the venv lacks it, while CI still gates on
+# `ruff check bench cmake` — the hook passes and CI goes red.
 python3 -m venv .venv
 .venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 ruff==0.16.3 pytest
 
@@ -189,7 +294,7 @@ The first build fetches and compiles HiGHS via FetchContent, which dominates it.
 
 ## Build & Test
 
-**`.githooks/pre-push` parses these three fenced blocks by tag** (`clean`, `build`, `test`) and runs them as the push gate, so they are the single definition of a full local run — keep them executable as written and keep the tags. The hook unsets `GIT_DIR` / `GIT_WORK_TREE` around each one: `git push` exports `GIT_DIR=.git` into the hook environment, and CMake's nested `git clone` inside FetchContent would then treat that as the repository it is cloning into, failing when it checks out the HiGHS tag. That belongs in the hook, not here, so the documented command stays the one a human would type.
+**`.githooks/pre-push` runs these three fenced blocks by tag** (`clean`, `build`, `test`) as the local CI, after the linear-history and review-receipt checks, in a fresh worktree at the tip being pushed, and skips them for a documentation-only push — so they are the single definition of a full local run; keep them executable as written and keep the tags. The hook unsets `GIT_DIR` / `GIT_WORK_TREE` around them, which CMake's nested `git clone` inside FetchContent needs: with `GIT_DIR=.git` exported it treats that as the repository it is cloning into and fails checking out the HiGHS tag. The `test` block is the whole suite, lint gates included, rather than wcp's per-source `clang_tidy:<path>` scheme: `clang_tidy` is one gate (`cmake/clang_tidy_gate.py`), so the push re-tidies everything every time.
 
 ```clean
 rm -rf build

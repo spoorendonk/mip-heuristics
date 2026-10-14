@@ -74,8 +74,9 @@ CONFIG="${HEADLINE_CONFIG:-all}"
 # (config, instance, seed), so nothing already run is repeated.
 SEEDS="${HEADLINE_SEEDS:-0}"
 
-# A binary outside build/, because `pre-push` runs `rm -rf build` and would
-# delete it out from under a multi-day campaign (CLAUDE.md).  Staged by hand
+# A binary outside build/, because a clean rebuild in this checkout
+# (`rm -rf build`, CLAUDE.md's `clean` block) would delete it out from under
+# a multi-day campaign.  Staged by hand
 # rather than built here: which binary produced the headline is the one fact
 # the whole comparison rests on, so it is named, not discovered.
 BINARY="${MIP_HEURISTICS_BINARY:-$REPO/bench/results/mipfeas/bin/highs}"

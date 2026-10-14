@@ -263,7 +263,7 @@ The benchmark harness has its own Python suite, registered in ctest as `bench_py
 
 `clang-format` and `clang-tidy` run over `src/` and `tests/` as ctest tests labelled `lint`, adding roughly 30 s to a full run — hence `ctest -LE lint` while iterating. Without the venv above they are **not registered at all** and `ctest` reports green having linted nothing, which is what `-DMIP_HEURISTICS_REQUIRE_LINT=ON` exists to prevent. The versions above are part of the contract: clang-format's output changes between major releases, so a different major fails the gate.
 
-Git hooks live in `.githooks/` (Conventional Commits on `commit-msg`, format plus `ctest -LE lint` on `pre-commit`, a clean rebuild and the full suite on `pre-push`). `cmake -B build` points `core.hooksPath` at them when this is the top-level project; by hand it is `git config core.hooksPath .githooks`.
+Git hooks live in `.githooks/`, installed by [wcp](https://github.com/spoorendonk/wcp) (Conventional Commits on `commit-msg`; a clang-format and ruff check on `pre-commit`; linear history, a review receipt, then a clean build and the full suite in a fresh worktree on `pre-push`). `cmake -B build` points `core.hooksPath` at them when this is the top-level project; by hand it is `git config core.hooksPath .githooks`.
 
 ## Reproducing
 
