@@ -600,13 +600,14 @@ class SolveResult:
     def primal_at(self, time_limit: float | None) -> float:
         """The primal bound this run reached by `time_limit`, for comparing runs.
 
-        A run with a Solving report is read off it: `primal_bound`, exactly.
-        A killed run has none, so `primal_bound` stays inf however many
-        incumbents it printed (#175); it is read off its last incumbent at the
-        limit instead — the value `mipfeas_gap_at` scores.  With no
-        `time_limit`, off its last incumbent at all.  Inf when it has none.
+        A run with a Solving report is read off it: `primal_bound`, exactly,
+        even when a kill marker follows the report.  A killed run without one
+        has `primal_bound` inf however many incumbents it printed (#175); it is
+        read off its last incumbent at the limit instead — the value
+        `mipfeas_gap_at` scores.  With no `time_limit`, off its last incumbent
+        at all.  Inf when it has none.
         """
-        if not self.killed:
+        if not (self.killed and self.status == KILLED_STATUS):
             return self.primal_bound
         if time_limit is None:
             return self.incumbents[-1].objective if self.incumbents else float("inf")
@@ -658,6 +659,11 @@ MIPFEAS_SHIFT = 0.001
 # HiGHS reports the solution of the node that was running when the clock ran
 # out.  The integral ignores it, as its area past the limit is zero anyway.
 MIPFEAS_LIMIT_GRACE_S = 1.0
+
+# The status of a killed run that never reached its Solving report.  One set
+# only by `parse_log`, and only then, so it is also how `primal_at` tells a
+# report-less run from one that carries both a report and a kill marker.
+KILLED_STATUS = "Killed (timeout)"
 
 
 def mipfeas_penalty(objective: float, reference: float) -> float:
@@ -1055,7 +1061,7 @@ def parse_log(log_text: str) -> SolveResult:
     # rather than unconditional so a log that somehow carries both a report and
     # a marker keeps HiGHS's own word for what happened.
     if result.killed and not result.status:
-        result.status = "Killed (timeout)"
+        result.status = KILLED_STATUS
 
     # Sanity check: if the Solving report says there is a finite primal bound
     # but no incumbents were recorded, a source code is missing from

@@ -241,7 +241,9 @@ ahead at the limit (gap 0.130 against vanilla's 0.698) — was credited to
 neither. Read off each killed
 run's last incumbent at the limit, as `analyze_results.py` now does, `all`'s
 wins are **50, not 49, on the full set and 20, not 19, on the tuning set**
-(`kasavu` is a tuning instance); held-out and vanilla counts are unchanged.
+(`kasavu` is a tuning instance), and `all`'s win cell in `kasavu`'s row of
+each set's category breakdown moves by one with them; held-out and vanilla
+counts are unchanged.
 The table above and `tables.txt` keep the published 49 and 19, being the
 generated output of the run as reported; the results tree is not in the
 repository, so they are not regenerated here.

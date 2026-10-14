@@ -34,8 +34,10 @@ from analyze_results import (
     source_label,
 )
 from parse_highs_log import (
+    KILLED_STATUS,
     Incumbent,
     SolveResult,
+    parse_log,
 )
 
 
@@ -950,7 +952,7 @@ def _killed_log(*, incumbents: list[tuple[float, float]], killed_after: float) -
 
 
 def _killed(incumbents: list[tuple[float, float]]) -> SolveResult:
-    r = SolveResult(killed=True)
+    r = SolveResult(killed=True, status=KILLED_STATUS)
     for t, obj in incumbents:
         r.incumbents.append(Incumbent(time=t, objective=obj, source="H", nodes=0))
     return r
@@ -972,6 +974,19 @@ def test_primal_at_reads_a_finished_run_off_its_report():
     r.primal_bound = 0.5
     assert r.primal_at(100.0) == 0.5
     assert r.primal_at(None) == 0.5
+
+
+def test_primal_at_keeps_the_report_of_a_run_killed_after_it():
+    # A report followed by a kill marker: HiGHS's own word stands, even
+    # against an incumbent the cutoff would read differently.
+    r = parse_log(
+        _feasible_log(objective=60.0, found_at=40.0, solve_time=100.0)
+        + "TIMEOUT: process killed after 120s\n"
+    )
+    assert r.killed
+    assert r.status != KILLED_STATUS
+    assert r.primal_at(100.0) == 60.0
+    assert r.primal_at(10.0) == 60.0  # the incumbent at 40 s is past this cutoff
 
 
 def test_count_wins_credits_a_killed_run_by_its_incumbents():
