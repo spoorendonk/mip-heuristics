@@ -188,6 +188,17 @@ trunk — including one pushed with `--no-verify`, or from a clone whose hooks
 never ran. wcp's README has the step to paste into the project's CI.
 `--atomic` lands the branch and its receipt together or not at all.
 
+**Push the reviewed sha by name, and commit nothing until the push returns.**
+`HEAD` in the push line is resolved when git gets to it, not when the
+command is typed, and on a shared machine `xk lock` can hold it for minutes
+before the local CI even starts. A commit made meanwhile in the same
+checkout goes out with it, unreviewed, and its receipt does not:
+
+```sh
+sha=$(git rev-parse HEAD)
+xk lock -- git push --atomic origin "$sha:refs/heads/main" "refs/reviews/$sha"
+```
+
 Plain git, on purpose. No wcp, no harness, nothing installed — so a reviewer on
 any machine can write it, and a clone that has never heard of wcp is still able
 to record a review and push. Every worktree of a clone sees the same receipts,

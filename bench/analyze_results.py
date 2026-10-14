@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import math
 import os
 import statistics
@@ -927,6 +928,7 @@ def t_sf(t: float, df: float) -> float:
     return tail if t >= 0.0 else 1.0 - tail
 
 
+@functools.lru_cache(maxsize=256)
 def t_ppf(q: float, df: float) -> float:
     """The q-quantile of Student's t with `df` degrees of freedom, by bisection."""
     if not 0.0 < q < 1.0:
@@ -1126,13 +1128,16 @@ def print_paired(
     best_known: dict[str, float | None],
     synthetic: set[str] | None = None,
     results: dict[str, dict[int, dict[str, SolveResult]]] | None = None,
+    normal: bool = False,
 ) -> None:
     """Print the paired statistics for every pair of configs, first named as numerator.
 
     Two lines per pair: the primal integral over every instance, and the final
     gap at the limit over the instances both arms made feasible.  With
     `results`, each instance's value is the seed SGM `seed_paired_values`
-    builds; without, it is the seed-collapsed row of `agg_results`.
+    builds; without, it is the seed-collapsed row of `agg_results`.  `normal`
+    prints the normal interval and p-value in the line format
+    `bench/headline/paired.txt` was written in, without the median ratio.
     """
     real = [c for c in configs if c not in (synthetic or set())]
     by_seed = results is not None
@@ -1141,13 +1146,23 @@ def print_paired(
         f"\n## Paired per-instance log-ratio ({len(instances)} instances, "
         f"{time_limit:.0f} s, shift={integral_shift()}, formula={formula()}{mode})\n"
     )
-    print(
-        "Lower is better; the first named arm is the numerator.  ratio is\n"
-        "exp(mean d), median exp(median d); intervals and p are t_{n-1},\n"
-        "exp(mean +- t*se); the sign test is the normal approximation without\n"
-        "continuity correction; mdd80 is the smallest decrease this n resolves\n"
-        "at 80% power, read on the improvement side, 1 - exp(-d).\n"
-    )
+    if normal:
+        print(
+            "Lower is better; the first named arm is the numerator.  Intervals are\n"
+            "normal, exp(mean +- 1.96*se); the sign test is the normal approximation\n"
+            "without continuity correction; mdd80 is the smallest decrease this n\n"
+            "resolves at 80% power, read on the improvement side, 1 - exp(-d).\n"
+        )
+    else:
+        print(
+            "Lower is better; the first named arm is the numerator.  ratio is\n"
+            "exp(mean d), median exp(median d); intervals and p are t_{n-1},\n"
+            "exp(mean +- t*se); the sign test is the normal approximation without\n"
+            "continuity correction; mdd80 is the smallest decrease this n resolves\n"
+            "at 80% power, read on the improvement side, 1 - exp(-d), on normal\n"
+            "quantiles, so it is a little smaller than the t interval implies.\n"
+        )
+    line_of = _normal_paired_line if normal else _paired_line
     if by_seed:
         print(
             "Each instance's value is the shifted geometric mean of its runs over\n"
@@ -1182,27 +1197,36 @@ def print_paired(
             label = c1 + "/" + c2
             if len(a) >= 2:
                 st = paired(a, b, integral_shift())
-                print(f"{label:<{width}} primal integral  {_paired_line(st)}")
+                print(f"{label:<{width}} primal integral  {line_of(st)}")
+            else:
+                print(f"{label:<{width}} primal integral  n={len(a)}, not compared")
             if len(both) >= 2:
                 stg = paired([x for x, _ in both], [y for _, y in both], MIPFEAS_SHIFT)
-                print(
-                    f"{'':<{width}} final gap        {_paired_line(stg)}  (both feasible)"
-                )
+                print(f"{'':<{width}} final gap        {line_of(stg)}  (both feasible)")
             if results is not None and pi.differing:
                 print(
                     f"{'':<{width}} seed sets differ on {len(pi.differing)} "
                     "instance(s), paired on the common seeds only:"
                 )
-                for inst, (sa, sb) in pi.differing.items():
+                for inst, (sa, sb) in list(pi.differing.items())[:_MAX_SEED_NOTICES]:
                     print(
                         f"{'':<{width}}   {inst}: {c1} {_seed_list(sa)}, "
                         f"{c2} {_seed_list(sb)}"
+                    )
+                if len(pi.differing) > _MAX_SEED_NOTICES:
+                    print(
+                        f"{'':<{width}}   ... and "
+                        f"{len(pi.differing) - _MAX_SEED_NOTICES} more"
                     )
             if results is not None and pi.unpaired:
                 print(
                     f"{'':<{width}} no common seed on {len(pi.unpaired)} "
                     f"instance(s), left out: {', '.join(pi.unpaired)}"
                 )
+
+
+# A config missing a whole seed differs on every instance; name a few, count the rest.
+_MAX_SEED_NOTICES = 10
 
 
 def _seed_list(seeds: list[int]) -> str:
@@ -1214,6 +1238,16 @@ def _paired_line(st: Paired) -> str:
         f"n={st.n:>3} ratio={st.ratio:.3f} median={st.median_ratio:.3f} "
         f"CI=[{st.ci_lo:.3f},{st.ci_hi:.3f}] t={st.t:.2f} p={st.p:.4f} "
         f"sd={st.sd:.3f} | better/tied/worse "
+        f"{st.better}/{st.tied}/{st.worse} sign p={st.sign_p:.2g} | "
+        f"mdd80={st.mdd80 * 100:.1f}%"
+    )
+
+
+def _normal_paired_line(st: Paired) -> str:
+    return (
+        f"n={st.n:>3} ratio={st.ratio:.3f} "
+        f"CI=[{st.normal_ci_lo:.3f},{st.normal_ci_hi:.3f}] "
+        f"t={st.t:.2f} p={st.normal_p:.4f} sd={st.sd:.3f} | better/tied/worse "
         f"{st.better}/{st.tied}/{st.worse} sign p={st.sign_p:.2g} | "
         f"mdd80={st.mdd80 * 100:.1f}%"
     )
@@ -2320,6 +2354,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--paired-normal",
+        action="store_true",
+        help=(
+            "--paired with the normal interval and p-value, in the line format "
+            "bench/headline/paired.txt was written in (no median ratio)."
+        ),
+    )
+    parser.add_argument(
         "--paired-seeds",
         action="store_true",
         help=(
@@ -2558,7 +2600,7 @@ def main() -> None:
         n = write_runs_csv(args.csv, results, real, common, args.time_limit, best_known)
         print(f"Wrote {n} runs to {args.csv}", file=sys.stderr)
 
-    if args.paired or args.paired_seeds:
+    if args.paired or args.paired_seeds or args.paired_normal:
         print_paired(
             agg_results,
             active_configs,
@@ -2567,6 +2609,7 @@ def main() -> None:
             best_known,
             synthetic=synthetic,
             results=results if args.paired_seeds else None,
+            normal=args.paired_normal,
         )
         return
 

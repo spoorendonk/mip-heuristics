@@ -133,7 +133,9 @@ produced a figure is part of the figure.
   + s))` with the SGM shift `s = 1e-3`. The integral spans orders of magnitude
   across instances, and pairing cancels instance difficulty — the dominant
   variance component in cross-instance MIP benchmarking.
-* **Intervals are normal**, `exp(mean +- 1.96 * se)`, not Student-t.
+* **Intervals are normal**, `exp(mean +- 1.96 * se)`, not Student-t. That is
+  `analyze_results.py --paired-normal`, which `run_headline.sh paired` runs;
+  plain `--paired` now prints the t_{n-1} interval and the median ratio.
 * **The sign test is the normal approximation**, without continuity
   correction.
 * **Minimum detectable effect** is `1 - exp(-d)` for an improvement and

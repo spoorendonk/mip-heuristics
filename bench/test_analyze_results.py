@@ -1607,3 +1607,56 @@ def test_cli_paired_seeds_pairs_every_seed_and_names_unequal_seed_sets(
     db = math.log(0.4 + s) - math.log(1.2 + s)
     ratio = math.exp((da + db) / 2)
     assert f"ratio={ratio:.3f}" in line
+
+
+def test_cli_paired_normal_prints_the_line_format_paired_txt_was_written_in(
+    tmp_path: Path,
+):
+    _plain_tree(tmp_path)
+    z = _write_z(tmp_path, {"a": 10.0, "b": 20.0, "c": 30.0})
+    common = ("--configs", "patched", "vanilla", "--time-limit", "5")
+    normal = _run_cli(tmp_path, *common, "--paired-normal", "--mipfeas-z", str(z))
+    assert normal.returncode == 0, normal.stderr
+    assert "Intervals are\nnormal, exp(mean +- 1.96*se)" in normal.stdout
+    line = next(ln for ln in normal.stdout.splitlines() if "primal integral" in ln)
+    assert "median=" not in line and "ratio=1.000 CI=[" in line
+    t = _run_cli(tmp_path, *common, "--paired", "--mipfeas-z", str(z))
+    assert "intervals and p are t_{n-1}" in t.stdout
+
+
+def test_cli_paired_says_so_when_too_few_instances_pair(tmp_path: Path):
+    _plain_tree(tmp_path)
+    keep = tmp_path / "keep.txt"
+    keep.write_text("a\n")
+    res = _run_cli(
+        tmp_path,
+        "--configs",
+        "patched",
+        "vanilla",
+        "--paired",
+        "--time-limit",
+        "5",
+        "--instances",
+        str(keep),
+    )
+    assert res.returncode == 0, res.stderr
+    assert "primal integral  n=1, not compared" in res.stdout
+
+
+def test_cli_paired_seeds_caps_the_unequal_seed_notices(tmp_path: Path):
+    log = _feasible_log(objective=10.0, found_at=1.0, solve_time=5.0)
+    names = [f"i{k:02d}" for k in range(13)]
+    _write_seeded_tree(
+        tmp_path,
+        {
+            "x": {0: dict.fromkeys(names, log), 1: dict.fromkeys(names, log)},
+            "y": {0: dict.fromkeys(names, log)},
+        },
+    )
+    res = _run_cli(
+        tmp_path, "--configs", "x", "y", "--paired-seeds", "--time-limit", "5"
+    )
+    assert res.returncode == 0, res.stderr
+    assert "seed sets differ on 13 instance(s)" in res.stdout
+    assert res.stdout.count(": x {0,1}, y {0}") == 10
+    assert "... and 3 more" in res.stdout

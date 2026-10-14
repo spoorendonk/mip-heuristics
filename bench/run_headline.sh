@@ -171,6 +171,8 @@ cmd_report() {
 # reported, first named as numerator.  Four instance sets: everything, the
 # held-out complement of the tuning set, the tuning set, and the 95 held-out
 # instances the stage 3 held-out check never saw.
+# `--paired-normal` is the normal interval and line format paired.txt was
+# written in; plain `--paired` prints the t_{n-1} interval since #179.
 SECOND_ARM="${HEADLINE_SECOND_ARM:-all-prev-vector}"
 
 cmd_paired() {
@@ -180,7 +182,7 @@ cmd_paired() {
 	local heldout48="$REPO/bench/instances_heldout48.txt"
 	paired() {
 		python3 "$REPO/bench/analyze_results.py" "$out" \
-			--configs "$CONFIG" "$SECOND_ARM" vanilla --time-limit 600 --paired "$@"
+			--configs "$CONFIG" "$SECOND_ARM" vanilla --time-limit 600 --paired-normal "$@"
 	}
 	echo "=== all 233"
 	paired
