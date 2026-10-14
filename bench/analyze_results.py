@@ -415,12 +415,21 @@ def get_common_instances(
 
 
 def aggregate_results(
-    results: dict[str, dict[int, dict[str, SolveResult]]], configs: list[str]
+    results: dict[str, dict[int, dict[str, SolveResult]]],
+    configs: list[str],
+    time_limit: float | None,
 ) -> dict[str, dict[str, SolveResult]]:
-    """Aggregate across seeds using median for each metric.
+    """Collapse seeds to one run per instance: the median seed.
 
-    Returns {config: {instance: SolveResult}} with median values.
-    For incumbents, uses the seed with the median primal_bound (upper-middle for even N).
+    Returns {config: {instance: SolveResult}}, each the whole SolveResult of
+    the seed whose `primal_at(time_limit)` is the median (upper-middle for
+    even N), so every metric read off the row comes from that one seed.
+
+    The key is `primal_at`, not `primal_bound` (#185): a killed run has no
+    Solving report and `primal_bound` inf whatever it found, so it would sort
+    last; `primal_at` reads it off its last incumbent at the limit, the value
+    `count_wins` compares.  For a run that finished it is `primal_bound`
+    exactly, so a tree without killed runs aggregates as it always did.
     """
     aggregated: dict[str, dict[str, SolveResult]] = {}
     for config in configs:
@@ -440,9 +449,7 @@ def aggregate_results(
                 aggregated[config][inst] = seed_results[0]
                 continue
 
-            # Pick the median-performing seed based on primal_bound
-            # (lower is better for minimization; use the middle one)
-            by_obj = sorted(seed_results, key=lambda r: r.primal_bound)
+            by_obj = sorted(seed_results, key=lambda r: r.primal_at(time_limit))
             median_r = by_obj[len(by_obj) // 2]
 
             aggregated[config][inst] = median_r
@@ -611,7 +618,7 @@ def build_oracle_config(
             candidates.update(seed_data.keys())
     ordered = sorted(candidates)
 
-    agg = aggregate_results(results, present)
+    agg = aggregate_results(results, present, time_limit)
     in_scope = set(instances) if instances is not None else set(ordered)
 
     complete: list[str] = []
@@ -2182,7 +2189,7 @@ def main() -> None:
             active_configs = [*active_configs, oracle_report.name]
             synthetic.add(oracle_report.name)
 
-    agg_results = aggregate_results(results, active_configs)
+    agg_results = aggregate_results(results, active_configs, args.time_limit)
 
     if args.paired:
         print_paired(

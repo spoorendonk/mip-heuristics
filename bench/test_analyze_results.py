@@ -749,7 +749,7 @@ def _mipfeas_sgm_per_config(results, configs, oracle_name=None, time_limit=5.0):
         results = {**results, oracle_name: tree}
         all_configs = [*configs, oracle_name]
         common = get_common_instances(results, all_configs)
-    agg = aggregate_results(results, all_configs)
+    agg = aggregate_results(results, all_configs, time_limit)
     return {
         c: _config_metrics(results, agg, c, common, time_limit, best_known)[
             "mipfeas_sgm"
@@ -836,7 +836,7 @@ def test_oracle_row_dominates_participants_instance_by_instance(tmp_path: Path):
     tree, _ = build_oracle_config(
         results, ["fpr", "scylla"], _REFS, 5.0, instances=common
     )
-    agg = aggregate_results(results, ["fpr", "scylla"])
+    agg = aggregate_results(results, ["fpr", "scylla"], 5.0)
     for inst in common:
         oracle_pi = tree[0][inst].primal_integral(5.0, _REFS[inst])
         for c in ("fpr", "scylla"):
@@ -906,7 +906,7 @@ def test_oracle_row_does_not_move_head_to_head_counts(tmp_path: Path):
     )
     results = {**results, "oracle": tree}
     configs = ["fpr", "scylla", "oracle"]
-    agg = aggregate_results(results, configs)
+    agg = aggregate_results(results, configs, 5.0)
 
     without = count_first(agg, ["fpr", "scylla"], common)
     with_oracle = count_first(agg, configs, common, synthetic={"oracle"})
@@ -1255,3 +1255,27 @@ def test_cli_exclude_instances_is_repeatable(tmp_path: Path):
     assert res.returncode == 0, res.stderr
     assert "1 instances retained" in res.stdout
     assert "## Paper Metrics (1 instances" in res.stdout
+
+
+def test_aggregate_results_picks_the_median_seed_at_the_limit():
+    # #185: seed 0 finished at 100, seeds 1 and 2 were killed with last
+    # incumbents 50 and 60.  By `primal_bound` they sort [100, inf, inf] and
+    # seed 1 (50) is picked; at the limit they are [50, 60, 100], median 60.
+    finished = SolveResult(primal_bound=100.0)
+    killed_50 = _killed([(10.0, 80.0), (90.0, 50.0)])
+    killed_60 = _killed([(30.0, 60.0)])
+    results = {
+        "cfg": {0: {"inst": finished}, 1: {"inst": killed_50}, 2: {"inst": killed_60}}
+    }
+    agg = aggregate_results(results, ["cfg"], 100.0)
+    assert agg["cfg"]["inst"] is killed_60
+
+
+def test_aggregate_results_reads_a_killed_seed_at_the_limit_only():
+    # An incumbent past the limit does not count: seed 1's 10 at 150 s is
+    # after a 100 s limit, so at the limit it holds 90 and is the worst seed.
+    a = SolveResult(primal_bound=40.0)
+    b = _killed([(20.0, 90.0), (150.0, 10.0)])
+    c = SolveResult(primal_bound=70.0)
+    results = {"cfg": {0: {"inst": a}, 1: {"inst": b}, 2: {"inst": c}}}
+    assert aggregate_results(results, ["cfg"], 100.0)["cfg"]["inst"] is c
