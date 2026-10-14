@@ -275,6 +275,7 @@ add_executable(mip_heuristics_tests
     tests/test_scylla.cpp
     tests/test_fpr_lp.cpp
     tests/test_primitives.cpp
+    tests/test_solution_pool.cpp
     tests/test_execution_modes.cpp
     tests/test_attribution.cpp
     tests/test_prop_engine.cpp
@@ -429,6 +430,34 @@ if(MIP_HEURISTICS_INSTRUMENT)
 endif()
 catch_discover_tests(mip_heuristics_core_standalone_tests
     TEST_LIST mip_heuristics_core_standalone_tests_ALL)
+
+# The pool's own tests again, under ThreadSanitizer (#180): the pool shares
+# immutable solution vectors across threads by `shared_ptr` and scans them
+# outside its lock, which is the kind of claim a sanitizer checks and a
+# stress test does not.  Two translation units, nothing of HiGHS but the
+# header-only spin-lock, so the instrumented build is seconds; Catch2 stays
+# uninstrumented, which costs nothing because no assertion runs on a worker
+# thread.  Skipped where the toolchain cannot link `-fsanitize=thread`.
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread")
+set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")
+check_cxx_source_compiles("int main() { return 0; }" MIP_HEURISTICS_HAVE_TSAN)
+unset(CMAKE_REQUIRED_FLAGS)
+unset(CMAKE_REQUIRED_LINK_OPTIONS)
+if(MIP_HEURISTICS_HAVE_TSAN)
+    add_executable(mip_heuristics_pool_tsan_tests
+        tests/test_solution_pool.cpp src/solution_pool.cpp)
+    target_include_directories(mip_heuristics_pool_tsan_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR})
+    target_compile_options(mip_heuristics_pool_tsan_tests PRIVATE -fsanitize=thread -g)
+    target_link_options(mip_heuristics_pool_tsan_tests PRIVATE -fsanitize=thread)
+    target_link_libraries(mip_heuristics_pool_tsan_tests PRIVATE Catch2::Catch2WithMain)
+    add_test(NAME solution_pool_tsan COMMAND mip_heuristics_pool_tsan_tests)
+    set_tests_properties(solution_pool_tsan PROPERTIES
+        ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1")
+else()
+    message(WARNING "ThreadSanitizer does not link here; solution_pool_tsan is not registered")
+endif()
 
 # Python bench tests — unit tests for the log parser, the benchmark
 # harness and the results analysis.  The measurements themselves run off a

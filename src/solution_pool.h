@@ -3,6 +3,8 @@
 #include "parallel/HighsSpinMutex.h"
 #include "rng.h"
 
+#include <cstdint>
+#include <memory>
 #include <vector>
 
 inline constexpr int kPoolCapacity = 10;
@@ -27,6 +29,12 @@ inline constexpr double kDiversityMinHammingFrac = 0.05;
 inline constexpr double kImprovementObjMargin = 1e-9;
 
 // Thread-safe solution pool. Keeps top-K solutions sorted by objective.
+//
+// Each entry's solution is held through a `shared_ptr` to an immutable
+// vector, so the pool lock covers decisions and pointer moves only: every
+// O(ncol) copy, crossover and Hamming scan runs outside it, on pointers taken
+// under it (#180).  A caller sharing one pool across many threads otherwise
+// pays every copy as lock wait on every operation.
 // Supports restart strategies: guided crossover, neighborhood crossover,
 // and biased copy.  When an integer mask is set, insertion is
 // diversity-aware: solutions that don't improve the worst objective can
@@ -39,6 +47,8 @@ public:
         double best_objective;
     };
 
+    using SolutionPtr = std::shared_ptr<const std::vector<double>>;
+
     struct Entry {
         double objective;
         std::vector<double> solution;
@@ -48,6 +58,14 @@ public:
         // rather than falling back on the generic kSolutionSourceHeuristic
         // tag.
         int source;
+    };
+
+    // One entry, by pointer.  The vector is never written once inserted, so
+    // a reference stays valid, and unchanged, after the pool evicts it.
+    struct EntryRef {
+        double objective;
+        int source;
+        SolutionPtr solution;
     };
 
     // Lower objectives are better: every objective offered is in the
@@ -106,6 +124,17 @@ public:
     // Deliberately not `entries_.front()`: rule 2 above can evict the
     // front entry, so the pool's best objective goes backwards where the
     // solve's never does.
+    //
+    // The diversity path's Hamming scan runs outside the lock, on a pointer
+    // snapshot of the entries, and its verdict is applied only if the pool
+    // has not changed since (`generation_`); otherwise the decision is taken
+    // again against the new entries, rescanning only the ones the earlier
+    // scan has not seen.  So each offer is decided exactly as one hold of
+    // the lock over the whole decision would decide it.
+    [[nodiscard]] AddResult try_add(double obj, SolutionPtr sol, int source);
+
+    // The same, for a caller holding the vector: it is copied into a
+    // `shared_ptr` before the lock is taken, offered or not.
     [[nodiscard]] AddResult try_add(double obj, const std::vector<double>& sol, int source);
 
     // Atomically snapshot feasibility and current best objective.
@@ -126,11 +155,17 @@ public:
     // was unread on every path and removed those three call sites.
     bool get_restart(Rng& rng, std::vector<double>& out);
 
-    // Return sorted entries (best first). Caller should hold no lock.
+    // Return sorted entries (best first). Caller should hold no lock.  The
+    // vectors are copied outside the pool lock.
     std::vector<Entry> sorted_entries();
 
-    // Copy only the best entry's solution vector into `out`.  Acquires
-    // the pool lock once and copies one vector (vs `sorted_entries`,
+    // The entries by pointer, best first, into `out`, reusing its capacity:
+    // the lock covers pointer copies only, so a steady-state caller neither
+    // allocates nor copies a vector.
+    void entry_refs(std::vector<EntryRef>& out);
+
+    // Copy only the best entry's solution vector into `out`, outside the
+    // pool lock, which covers one pointer copy (vs `sorted_entries`,
     // which copies the whole pool including up to kPoolCapacity - 1
     // unused vectors).  Returns false when the pool is empty, with
     // `out` untouched.  Preferred entry point when the caller only
@@ -140,33 +175,41 @@ public:
     int size();
 
 private:
-    // Hamming distance on integer variables between two solutions.
-    // Caller must hold mtx_.
-    int hamming_distance(const std::vector<double>& a, const std::vector<double>& b) const;
+    using MaskPtr = std::shared_ptr<const std::vector<bool>>;
 
-    // Number of integer variables (cached from integer_mask_).
-    int num_integers() const;
+    // Hamming distance on the integer variables `mask` names.
+    static int hamming_distance(const std::vector<bool>& mask, const std::vector<double>& a,
+                                const std::vector<double>& b);
 
     // Whether column `j` is integer, tolerating a mask shorter than the
-    // solution vector (or absent entirely, which is how a pool built
-    // without integrality information behaves).
-    [[nodiscard]] bool is_integer_col(int j) const;
+    // solution vector (or empty, which is how a pool built without
+    // integrality information behaves).
+    [[nodiscard]] static bool is_integer_col(const std::vector<bool>& mask, int j);
 
-    // The three restart strategies `get_restart` dispatches between; see
-    // its documentation above for the roll ranges.  All three are called
-    // with mtx_ already held and write their result into `out`.
-    void guided_crossover(const std::vector<double>& sol_a, const std::vector<double>& sol_b,
-                          Rng& rng, std::vector<double>& out) const;
-    void neighborhood_crossover(const std::vector<double>& sol_better,
-                                const std::vector<double>& sol_other, Rng& rng,
-                                std::vector<double>& out) const;
-    void biased_copy(Rng& rng, std::vector<double>& out) const;
+    // The restart strategies `get_restart` dispatches between; see its
+    // documentation above for the roll ranges.  Called outside the lock, on
+    // vectors whose pointers were taken under it.
+    static void guided_crossover(const std::vector<bool>& mask, const std::vector<double>& sol_a,
+                                 const std::vector<double>& sol_b, Rng& rng,
+                                 std::vector<double>& out);
+    static void neighborhood_crossover(const std::vector<bool>& mask,
+                                       const std::vector<double>& sol_better,
+                                       const std::vector<double>& sol_other, Rng& rng,
+                                       std::vector<double>& out);
+    // The entry index the biased copy draws.  Caller holds mtx_.
+    static int biased_index(Rng& rng, int pool_size);
 
     mutable HighsSpinMutex mtx_;
-    std::vector<Entry> entries_;
+    std::vector<EntryRef> entries_;  // sorted best first
     int capacity_;
-    std::vector<bool> integer_mask_;  // true for integer variables
-    int num_integers_ = 0;            // cached count of integer vars
+    // Never null; replaced, never written, so a scan outside the lock reads
+    // the one it took.
+    MaskPtr integer_mask_;
+    int num_integers_ = 0;  // cached count of integer vars
+    // Bumped on every change to `entries_` or `integer_mask_`, so a
+    // diversity scan taken outside the lock can tell whether it still
+    // describes the pool (see `try_add`).
+    std::uint64_t generation_ = 0;
     // Best objective ever accepted, and whether anything has been.  The
     // predicate `improved_best` is decided against, under mtx_; monotone
     // by construction, unlike `entries_.front()` — see `try_add`.
