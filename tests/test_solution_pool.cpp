@@ -259,29 +259,29 @@ TEST_CASE("SolutionPool: a mask changed mid-scan is decided under the new mask",
     require_same_pool(pool, reference);
 }
 
-TEST_CASE("SolutionPool: entries changed mid-scan are decided as they now stand", "[pool]") {
-    // A peer's better solution lands during the scan.  Against the new best
-    // the offer is outside the diversity tolerance, so the verdict the scan
-    // alone would give (admit) must not be applied.
-    std::vector<double> peer(kRedecideNcol, 1.0);
-    peer[2] = 0.0;
-
+TEST_CASE("SolutionPool: entries changed mid-scan are rescanned before the decision", "[pool]") {
+    // A peer's solution lands during the scan: the offer's own vector, at
+    // an objective inside the diversity band.  The decision must then go
+    // through a rescan against the entries as they now stand, where the
+    // offer duplicates the new best and is refused.  Applying the first
+    // scan's distances to the new entries instead admits it (they say it is
+    // two columns from its nearest entry) and evicts by a stale index.
     SolutionPool pool(/*capacity=*/3);
     pool.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
     seed_three(pool);
     int hook_calls = 0;
     pool.set_scan_hook_for_test([&] {
         if (hook_calls++ == 0) {
-            REQUIRE(pool.try_add(90.0, peer, kSourceC).accepted);
+            REQUIRE(pool.try_add(99.5, near_best_offer(), kSourceC).accepted);
         }
     });
     const auto moved = pool.try_add(102.0, near_best_offer(), kSourceB);
-    REQUIRE(hook_calls == 1);
+    REQUIRE(hook_calls == 2);  // scanned, then rescanned against the new entries
 
     SolutionPool reference(/*capacity=*/3);
     reference.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
     seed_three(reference);
-    REQUIRE(reference.try_add(90.0, peer, kSourceC).accepted);
+    REQUIRE(reference.try_add(99.5, near_best_offer(), kSourceC).accepted);
     const auto direct = reference.try_add(102.0, near_best_offer(), kSourceB);
 
     REQUIRE_FALSE(direct.accepted);
@@ -289,7 +289,7 @@ TEST_CASE("SolutionPool: entries changed mid-scan are decided as they now stand"
     REQUIRE(moved.improved_best == direct.improved_best);
     require_same_pool(pool, reference);
 
-    // Without the move, the same offer is admitted: the scan's own verdict.
+    // Without the move, the same offer is admitted: the first scan's verdict.
     SolutionPool unmoved(/*capacity=*/3);
     unmoved.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
     seed_three(unmoved);
