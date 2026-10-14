@@ -21,7 +21,7 @@ TEST_CASE("Characterization: flugpl", "[heuristic][fpr]") {
     // Require a proven-optimal solve so the assertion is sound rather
     // than dependent on the search happening to land on the optimum.
     require_option(highs, "mip_rel_gap", 0.0);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);
@@ -37,7 +37,7 @@ TEST_CASE("Characterization: egout", "[heuristic][fpr]") {
     // Require a proven-optimal solve so the assertion is sound rather
     // than dependent on the search happening to land on the optimum.
     require_option(highs, "mip_rel_gap", 0.0);
-    REQUIRE(highs.readModel(kInstancesDir + "/egout.mps") == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/egout.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);
@@ -53,7 +53,7 @@ TEST_CASE("Characterization: bell5", "[heuristic][fpr]") {
     // Require a proven-optimal solve so the assertion is sound rather
     // than dependent on the search happening to land on the optimum.
     require_option(highs, "mip_rel_gap", 0.0);
-    REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);
@@ -127,7 +127,7 @@ TEST_CASE("FPR strategies: DFS mode on flugpl", "[fpr][strategies][dfs]") {
     // Test that DFS mode (with backtracking) solves flugpl
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);
@@ -186,7 +186,7 @@ double solve_with_seed_small_effort(const char* inst, int seed) {
     // Small effort → small per-call slice → multi-attempt loop and/or
     // pause-resume engages on the small HiGHS check instances.
     highs.setOptionValue("mip_heuristic_fpr_effort", 0.0007);
-    REQUIRE(highs.readModel(std::string(kInstancesDir) + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);
@@ -288,7 +288,7 @@ TEST_CASE("FPR resume: paper-curated rotation still solves with multi-attempt cy
     // runs, against 1 for every other instance the suite uses.  Assert
     // the known optimum only on a proven-optimal solve.
     require_option(highs, "mip_rel_gap", 0.0);
-    REQUIRE(highs.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(highs.run() == HighsStatus::kOk);
     double obj;
     highs.getInfoValue("objective_function_value", obj);

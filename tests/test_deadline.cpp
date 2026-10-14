@@ -362,7 +362,7 @@ std::vector<std::string> presolve_heur_lines(Configure&& configure, double limit
     require_option(h, "mip_heuristic_presolve_only", true);
     std::forward<Configure>(configure)(h);
 
-    REQUIRE(h.readModel(kInstancesDir + "/" + kInstance) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + kInstance) == HighsStatus::kOk);
     // `time_limit` goes in *after* the read, and this is load-bearing.
     //
     // The free-format MPS reader takes `options.time_limit` as a budget of

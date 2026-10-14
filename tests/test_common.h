@@ -13,6 +13,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "rng.h"
+#include "test_paths.h"
 
 #include <algorithm>
 #include <array>
@@ -24,11 +25,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-// Path to the HiGHS-provided `check/instances/` directory, injected by
-// CMake via `INSTANCES_DIR`.  Defined inline so every translation unit
-// that includes this header gets its own const reference.
-inline const std::string kInstancesDir = INSTANCES_DIR;
 
 // `setOptionValue` that fails the test when the option does not exist.
 // HiGHS returns `kError` for an unknown name and otherwise does nothing,
@@ -88,7 +84,7 @@ inline double solve_default(const char* inst) {
     // oversight.  If a new instance is added, re-run that check before
     // asserting its optimum tightly.
     require_option(h, "mip_rel_gap", 0.0);
-    REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;
     h.getInfoValue("objective_function_value", obj);
@@ -134,7 +130,7 @@ inline std::vector<std::string> solve_capturing_log(const char* inst, Configure&
     REQUIRE(h.setCallback(HighsCallbackFunctionType(log_cb), &capture) == HighsStatus::kOk);
     REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
     std::forward<Configure>(configure)(h);
-    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     std::forward<Inspect>(inspect)(h);
 
@@ -283,7 +279,7 @@ inline double solve_suite(const char* inst, const char* selection) {
     Highs h;
     h.setOptionValue("output_flag", false);
     select_heuristics(h, selection);
-    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;
     h.getInfoValue("objective_function_value", obj);
@@ -336,7 +332,7 @@ inline std::unique_ptr<HighsMipSolver> build_bare_mipsolver(Highs& highs, HighsC
     // machinery that comes later in `Highs::run` is not needed and
     // skipping presolve keeps this minimal.
     highs.setOptionValue("presolve", "off");
-    REQUIRE(highs.readModel(kInstancesDir + "/" + instance) == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/" + instance) == HighsStatus::kOk);
     require_option(highs, "time_limit", time_limit);
     auto mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
                                                       highs.getSolution());

@@ -277,7 +277,7 @@ TEST_CASE("LocalMIP: cold-start construction fires when pool and incumbent are e
     // scenario is about: nothing has populated the pool when the start is
     // resolved.
     require_option(h, "threads", 1);
-    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
 
     auto counters = local_mip::warm_start_counters();
@@ -315,7 +315,7 @@ TEST_CASE("LocalMIP standalone: cold-start construction fires at the default wor
     h.setOptionValue("output_flag", false);
     h.setOptionValue("mip_root_presolve_only", true);
     select_heuristics(h, "local_mip");
-    REQUIRE(h.readModel(kInstancesDir + "/flugpl.mps") == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
 
     auto counters = local_mip::warm_start_counters();
@@ -346,7 +346,7 @@ TEST_CASE("LocalMIP: pool warm-start fires when FJ pre-populates pool (#74)",
     // between the two at `suite=all` and can add to the pool as well;
     // the assertion is that LocalMIP started from the pool at all, not
     // that FJ specifically filled it.
-    REQUIRE(h.readModel(kInstancesDir + "/lseu.mps") == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/lseu.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
 
     auto counters = local_mip::warm_start_counters();

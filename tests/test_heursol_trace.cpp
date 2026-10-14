@@ -254,7 +254,7 @@ std::vector<std::string> traced_time_limited(const char* inst, double limit,
     REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
     require_option(h, "log_dev_level", 3);
     std::forward<Configure>(configure)(h);
-    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
     // After the read: the free-format MPS reader takes `time_limit` as a
     // parse budget too (see `test_deadline.cpp` for the measurement).
     require_option(h, "time_limit", limit);

@@ -43,7 +43,7 @@ double solve_fpr_lp(const char* inst, int threads = 0) {
     if (threads > 0) {
         h.setOptionValue("threads", threads);
     }
-    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;
     h.getInfoValue("objective_function_value", obj);
@@ -82,7 +82,7 @@ void require_no_fpr_lp_dispatch(const char* selection) {
     Highs h;
     h.setOptionValue("output_flag", false);
     select_heuristics(h, selection);
-    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
 }
@@ -122,7 +122,7 @@ TEST_CASE("fpr_lp: mip_heuristic_effort=0 disables fpr_lp via the budget cap",
     h.setOptionValue("mip_heuristic_run_rins", false);
     h.setOptionValue("mip_heuristic_run_root_reduced_cost", false);
     h.setOptionValue("mip_heuristic_effort", 0.0);
-    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     REQUIRE(fpr_lp::dispatch_counts().dispatches == 0);
 }
@@ -137,7 +137,7 @@ TEST_CASE("fpr_lp: a raised effort dispatches it beside presolve FPR",
     h.setOptionValue("output_flag", false);
     select_heuristics(h, "fpr,fpr_lp");
     h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
-    REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
 }
@@ -386,7 +386,7 @@ TEST_CASE("fpr_lp: a small effort share suppresses the dispatch the default make
         select_heuristics(h, "fpr_lp");
         h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
         require_option(h, "mip_heuristic_fpr_lp_effort", share);
-        REQUIRE(h.readModel(kInstancesDir + "/bell5.mps") == HighsStatus::kOk);
+        REQUIRE(h.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
         REQUIRE(h.run() == HighsStatus::kOk);
         return fpr_lp::dispatch_counts().dispatches;
     };

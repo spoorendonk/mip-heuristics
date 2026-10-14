@@ -43,7 +43,7 @@ TEST_CASE("execution-mode: p0548 objective", "[mode-matrix]") {
 TEST_CASE("execution-mode: infeasible detected", "[mode-matrix]") {
     Highs h;
     h.setOptionValue("output_flag", false);
-    REQUIRE(h.readModel(std::string(INSTANCES_DIR) + "/infeasible-mip0.mps") == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/infeasible-mip0.mps") == HighsStatus::kOk);
     h.run();
     REQUIRE(h.getModelStatus() == HighsModelStatus::kInfeasible);
 }

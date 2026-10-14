@@ -267,6 +267,7 @@ include(CTest)
 include(Catch)
 
 add_executable(mip_heuristics_tests
+    tests/test_paths.cpp
     tests/test_smoke.cpp
     tests/test_fpr.cpp
     tests/test_fj.cpp
@@ -301,7 +302,12 @@ endif()
 
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
-target_compile_definitions(mip_heuristics_tests PRIVATE
+# On `tests/test_paths.cpp` alone, not the target: a `-D` holding the build
+# tree's absolute path is one ccache's `base_dir` does not rewrite, so as a
+# target-wide define every test file would miss the cache in each fresh
+# pre-push worktree.  The file is in both test targets; the property is per
+# source, so it reaches both.
+set_source_files_properties(tests/test_paths.cpp PROPERTIES COMPILE_DEFINITIONS
     "INSTANCES_DIR=\"${highs_SOURCE_DIR}/check/instances\"")
 # Mirror the instrumentation flag onto the tests target so
 # `local_mip::kInstrumented` has a consistent value across TUs (ODR).
@@ -359,13 +365,11 @@ catch_discover_tests(mip_heuristics_tests
 # separate executable so that the link line, not only the source, is the
 # one a caller of the core would have.  No `[serial]` case: nothing here
 # reads a clock.
-add_executable(mip_heuristics_core_tests tests/test_core.cpp)
+add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_paths.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch)
 endif()
 target_link_libraries(mip_heuristics_core_tests PRIVATE mip_heuristics_core Catch2::Catch2WithMain)
-target_compile_definitions(mip_heuristics_core_tests PRIVATE
-    "INSTANCES_DIR=\"${highs_SOURCE_DIR}/check/instances\"")
 if(MIP_HEURISTICS_INSTRUMENT)
     target_compile_definitions(mip_heuristics_core_tests PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
 endif()

@@ -68,7 +68,7 @@ SolveOutcome solve_outcome(const char* inst, Configure&& configure) {
     require_option(h, "threads", 1);
     require_option(h, "random_seed", 0);
     std::forward<Configure>(configure)(h);
-    REQUIRE(h.readModel(kInstancesDir + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
 
     SolveOutcome out;
     out.status = h.run();

@@ -38,7 +38,7 @@ TEST_CASE("problem view: the core builder matches the adapter's view of the mode
 
         Highs core_side;
         core_side.setOptionValue("output_flag", false);
-        REQUIRE(core_side.readModel(kInstancesDir + "/" + instance) == HighsStatus::kOk);
+        REQUIRE(core_side.readModel(instances_dir() + "/" + instance) == HighsStatus::kOk);
         const HighsOptions& options = core_side.getOptions();
         ProblemStorage storage;
         const auto made =

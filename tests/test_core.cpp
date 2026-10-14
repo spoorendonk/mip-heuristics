@@ -12,6 +12,7 @@
 #include "heuristic_context.h"
 #include "Highs.h"
 #include "local_mip.h"
+#include "test_paths.h"
 
 #include <atomic>
 #include <catch2/catch_approx.hpp>
@@ -27,11 +28,9 @@ using namespace core_test;
 
 namespace {
 
-const std::string kInstancesDir = INSTANCES_DIR;
-
 void read(Highs& highs, const char* instance) {
     highs.setOptionValue("output_flag", false);
-    REQUIRE(highs.readModel(kInstancesDir + "/" + instance) == HighsStatus::kOk);
+    REQUIRE(highs.readModel(instances_dir() + "/" + instance) == HighsStatus::kOk);
 }
 
 }  // namespace
