@@ -84,7 +84,13 @@ void WorkerCtx::apply_move(HighsInt j, double new_val) {
     }
     for (HighsInt p = csc.col_start[j]; p < csc.col_start[j + 1]; ++p) {
         HighsInt i = csc.col_row[p];
+        if (track_violation) {
+            total_violation -= compute_violation(i, lhs[i]);
+        }
         lhs[i] += csc.col_val[p] * delta;
+        if (track_violation) {
+            total_violation += compute_violation(i, lhs[i]);
+        }
         update_violated(i);
         if (dirty_lift) {
             for (HighsInt k = ar_start[i]; k < ar_start[i + 1]; ++k) {
@@ -143,6 +149,14 @@ bool WorkerCtx::full_recheck(bool update_sets, bool early_exit) {
             }
         } else if (update_sets && !is_equality(i)) {
             satisfied.add(i);
+        }
+    }
+    // Over every row, as `lhs` now stands: an early exit leaves the rows
+    // past it at their previous values, which the running total also held.
+    if (track_violation) {
+        total_violation = 0.0;
+        for (HighsInt i = 0; i < nrow; ++i) {
+            total_violation += compute_violation(i, lhs[i]);
         }
     }
     return feasible;

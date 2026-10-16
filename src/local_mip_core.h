@@ -116,6 +116,13 @@ struct WorkerCtx {
     // Effort tracking (coefficient accesses)
     size_t effort = 0;
 
+    // The sum of every row's violation at `lhs`, kept only while
+    // `track_violation` is set (#188): `apply_move` adds each touched row's
+    // change, `full_recheck` recomputes it.  Uncharged, and read by nothing
+    // the search decides on.
+    bool track_violation = false;
+    double total_violation = 0.0;
+
     explicit WorkerCtx(const ProblemView& problem);
 
     [[nodiscard]] bool is_int(HighsInt j) const { return ::is_integer(integrality, j); }

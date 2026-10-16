@@ -121,6 +121,7 @@ LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContex
         }
     }
 
+    ctx_.track_violation = exec_.least_violated != nullptr;
     ctx_.rebuild_state();
     best_objective_ = std::numeric_limits<double>::infinity();
     best_solution_.resize(ncol);
@@ -201,6 +202,9 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 max_poll_gap = std::max(max_poll_gap, spent() - last_poll_at);
                 last_poll_at = spent();
             }
+            // Publish on the poll's cadence too, so a caller waiting for a
+            // start does not wait out a whole attempt.
+            publish_retained();
             if (exec_.past_deadline()) {
                 break;
             }
@@ -487,19 +491,17 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
 }
 
 // Uncharged, so a run that retains a point searches exactly as one that
-// does not: the sum is over the violated set the search maintains, and the
-// copy is skipped whenever the caller's holder already has a point at
-// least as good from another worker.
+// does not: the total is `WorkerCtx`'s running one, and the copy is made
+// only on a strict improvement the caller's holder would still take.  So a
+// worker keeps the first state at its own minimum, and ties between
+// workers' points go to the latest offer.
 void LocalMipWorker::retain_if_least_violated() {
-    LeastViolatedPoint* holder = exec_.least_violated;
+    const LeastViolatedPoint* holder = exec_.least_violated;
     if (holder == nullptr || ctx_.violated.elements.empty()) {
         return;
     }
-    double violation = 0.0;
-    for (const HighsInt i : ctx_.violated.elements) {
-        violation += ctx_.compute_violation(i, ctx_.lhs[i]);
-    }
-    if (violation <= retained_violation_ && holder->would_take(violation)) {
+    const double violation = ctx_.total_violation;
+    if (violation < retained_violation_ && holder->would_take(violation)) {
         retained_violation_ = violation;
         retained_ = ctx_.solution;
         retained_unpublished_ = true;

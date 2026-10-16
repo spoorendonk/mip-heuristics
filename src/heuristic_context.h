@@ -550,7 +550,9 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //     this thread and outside the pool lock;
 //   - `exec.terminator`, every other attempt: this thread holds the poller
 //     seat for the whole run;
-//   - `*exec.stop`, a relaxed load, from inside attempts and between them.
+//   - `*exec.stop`, a relaxed load, from inside attempts and between them;
+//   - `*exec.least_violated`, when set: a lock-free read every step and an
+//     `offer` at most every deadline poll (LocalMIP only).
 // Several threads may each run a slot against one `sink`, `source`, `exec`
 // and stop flag — `SolutionSink` is thread-safe — but then `source` and
 // `terminator` are called concurrently and must be thread-safe too.

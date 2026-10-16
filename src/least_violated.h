@@ -19,14 +19,16 @@
 // passes through; leave it null (the default, and what the HiGHS adapter
 // does) and nothing is measured or copied.  FJ does not feed it.
 //
-// The violation is the sum, over the rows the search counts as violated
-// (outside their bounds by more than `feastol`), of each row's distance to
-// its bounds — in the view's column space, which for a view built with the
-// core `make_problem` is the caller's model's own: columns are not
-// transformed, and every point the search holds is inside the column
-// bounds, so a row is the only thing a point can violate.  Only infeasible
-// states are offered; a feasible one goes to the `SolutionSink`.  Ties go
-// to the latest offer.
+// The violation is the sum over rows of each row's distance to its bounds,
+// as the search's own running activities have it, in the view's column
+// space, which for a view built with the core `make_problem` is the
+// caller's model's own: columns are not transformed, and every point the
+// search holds is inside the column bounds, so a row is the only thing a
+// point can violate.  Only infeasible
+// states (some row outside its bounds by more than `feastol`) are offered;
+// a feasible one goes to the `SolutionSink`.  A worker offers the first
+// state at its own minimum, on its deadline-poll cadence and at the end of
+// each attempt; between offers, ties go to the latest.
 //
 // Thread-safe: any number of workers may offer while any thread reads.
 // The point is published as an immutable shared vector, so a reader copies
