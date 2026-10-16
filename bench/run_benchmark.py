@@ -457,12 +457,12 @@ def check_known_options(path: str, options: dict[str, str], *, unpatched: bool) 
     two the message explains.
 
     The question is asked of the binary rather than answered from a list
-    here.  Of the seventeen `mip_heuristic_*` names a patched build carries,
+    here.  Of the eighteen `mip_heuristic_*` names a patched build carries,
     **seven are upstream's own** and legal on both binaries —
     `mip_heuristic_effort` and the six `mip_heuristic_run_*` switches
     (`feasibility_jump`, `rens`, `rins`, `root_reduced_cost`, `shifting`,
     `zi_round`) — so a prefix rule would refuse a valid sweep, and a
-    hardcoded list of the other ten would need editing on every option change
+    hardcoded list of the other eleven would need editing on every option change
     and would be wrong silently when it wasn't.  The binary already knows.
 
     Not the same check as `check_binary`: that one identifies the

@@ -146,12 +146,16 @@ for i, arg in enumerate(argv):
 # about the missing filename and exits.  Recording it would file a run with an
 # empty instance and config name.
 if model is None:
-    # The unpatched stand-in has none of the ten options the patch adds, and
+    # The unpatched stand-in has none of the eleven options the patch adds, and
     # says so the way HiGHS does.  `mip_heuristic_effort` and the six
     # `mip_heuristic_run_*` switches are upstream's own and stay legal on both.
     if opts_path and "unpatched" in os.path.basename(sys.argv[0]):
         patch_added = (
-            {"mip_heuristic_presolve_only", "mip_heuristic_fpr_lp_effort"}
+            {
+                "mip_heuristic_presolve_only",
+                "mip_heuristic_fpr_lp_effort",
+                "mip_heuristic_skip_submip_chain",
+            }
             | {
                 f"mip_heuristic_{h}_{axis}"
                 for h in ("fj", "fpr", "local_mip", "scylla")
