@@ -551,11 +551,13 @@ TEST_CASE("core: a least-violated holder keeps the minimum, ties to the latest",
 namespace {
 
 // Runs `run` with a `restart_now` that asks for a restart every other
-// attempt, and checks at the next ask that the source was called in
-// between.  No patience gate, so no stall forces a rebuild of its own.
+// attempt, and checks at each ask that the source was called since the
+// previous one exactly when that one said yes.  The model has no feasible
+// point and there is no patience gate, so no worker retires or stalls by
+// itself: every rebuild is the trigger's.
 template <typename Run>
 void require_restart_now_rebuilds(Run run) {
-    const HighsLp lp = two_cover_model(HighsVarType::kInteger, 1.0);
+    const HighsLp lp = infeasible_model();
     Highs highs;  // for its log options only
     highs.setOptionValue("output_flag", false);
     const Setup s(lp, highs.getOptions().log_options);
@@ -566,21 +568,20 @@ void require_restart_now_rebuilds(Run run) {
         return true;
     };
     int asked = 0;
-    int checked = 0;
     int honoured = 0;
-    int target = 0;
+    int unasked = 0;
+    bool said_yes = false;
+    int calls_at_ask = 0;
     ExecutionContext exec = s.exec;
     exec.restart_now = [&] {
-        if (target > 0) {
-            ++checked;
-            honoured += source_calls >= target ? 1 : 0;
-            target = 0;
+        if (asked > 0) {
+            const bool called = source_calls > calls_at_ask;
+            honoured += said_yes && called ? 1 : 0;
+            unasked += !said_yes && called ? 1 : 0;
         }
-        const bool now = ++asked % 2 == 0;
-        if (now) {
-            target = source_calls + 1;
-        }
-        return now;
+        said_yes = ++asked % 2 == 0;
+        calls_at_ask = source_calls;
+        return said_yes;
     };
     BestSink sink(*s.problem.integrality, 0);
     HeuristicBudget budget = make_until_stopped_budget(/*attempt_cap=*/1024, /*patience=*/0);
@@ -589,8 +590,10 @@ void require_restart_now_rebuilds(Run run) {
     const size_t effort = run(s.problem, budget, exec, source, sink);
 
     REQUIRE(effort > 0);
-    REQUIRE(checked > 0);
-    REQUIRE(honoured == checked);
+    REQUIRE(asked > 4);
+    // Every yes but possibly the last was followed by a rebuild, and no no.
+    REQUIRE(honoured >= (asked / 2) - 1);
+    REQUIRE(unasked == 0);
 }
 
 }  // namespace
