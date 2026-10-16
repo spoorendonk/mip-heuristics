@@ -319,3 +319,24 @@ TEST_CASE("SolutionPool: entries changed mid-scan are rescanned before the decis
     seed_three(unmoved);
     REQUIRE(unmoved.try_add(102.0, near_best_offer(), kSourceB).accepted);
 }
+
+TEST_CASE("SolutionPool: a best-only restart is the best entry, drawing nothing", "[pool]") {
+    SolutionPool pool(/*capacity=*/4);
+    std::vector<double> out;
+    Rng rng(7);
+    REQUIRE_FALSE(pool.get_restart(rng, out, SolutionPool::RestartPolicy::kBestOnly));
+    REQUIRE(pool.try_add(20.0, {0.0, 1.0, 0.0}, kSourceA).accepted);
+    REQUIRE(pool.try_add(10.0, {1.0, 1.0, 0.0}, kSourceB).accepted);
+    REQUIRE(pool.try_add(30.0, {0.0, 0.0, 1.0}, kSourceC).accepted);
+
+    Rng untouched = rng;
+    for (int i = 0; i < 50; ++i) {
+        REQUIRE(pool.get_restart(rng, out, SolutionPool::RestartPolicy::kBestOnly));
+        REQUIRE(out == std::vector<double>{1.0, 1.0, 0.0});
+    }
+    REQUIRE(rng() == untouched());  // the same stream: nothing was drawn
+    // A new best is what the next restart draws.
+    REQUIRE(pool.try_add(5.0, {1.0, 0.0, 1.0}, kSourceA).accepted);
+    REQUIRE(pool.get_restart(rng, out, SolutionPool::RestartPolicy::kBestOnly));
+    REQUIRE(out == std::vector<double>{1.0, 0.0, 1.0});
+}

@@ -125,9 +125,11 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             return state;
         },
         [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
-            return attempt_with_rebuild(state.worker, run_cap, [&] {
-                build_worker(state, rng, problem, budget, exec, sink, source);
-            });
+            auto rebuild = [&] { build_worker(state, rng, problem, budget, exec, sink, source); };
+            if (exec.restart_now && exec.restart_now()) {
+                rebuild();
+            }
+            return attempt_with_rebuild(state.worker, run_cap, rebuild);
         });
 }
 

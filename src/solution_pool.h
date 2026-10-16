@@ -142,6 +142,13 @@ public:
     // Atomically snapshot feasibility and current best objective.
     Snapshot snapshot();
 
+    // Which restart `get_restart` hands out (#189).  `kMixed` is the
+    // three-strategy draw below, and the default.  `kBestOnly` is always a
+    // copy of the best entry, drawing nothing from `rng`: ReXi (Mexi &
+    // Rehfeldt, Sect. 2.3) restarts its local search "from the best
+    // incumbent in the pool".
+    enum class RestartPolicy { kMixed, kBestOnly };
+
     // Get a restart solution via one of three strategies (roll order):
     //   [0.0, 0.4)  — guided crossover: keep agreed integer values, coin-flip
     //                  disagreements.
@@ -155,7 +162,8 @@ public:
     // caller left: FPR, fpr_lp and Scylla all called this too until issue
     // #122 found that the value they fed as an FPR fix-and-propagate seed
     // was unread on every path and removed those three call sites.
-    bool get_restart(Rng& rng, std::vector<double>& out);
+    bool get_restart(Rng& rng, std::vector<double>& out,
+                     RestartPolicy policy = RestartPolicy::kMixed);
 
     // Return sorted entries (best first). Caller should hold no lock.  The
     // vectors are copied outside the pool lock.

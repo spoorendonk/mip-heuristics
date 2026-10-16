@@ -485,7 +485,11 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             return slots.occupy(worker_idx, seed, std::move(start), construction, rng);
         },
         [&](LmState& state, Rng& rng, size_t run_cap) -> AttemptResult {
-            return attempt_with_rebuild(state.worker, run_cap, [&] { slots.rebuild(state, rng); });
+            auto rebuild = [&] { slots.rebuild(state, rng); };
+            if (exec.restart_now && exec.restart_now()) {
+                rebuild();
+            }
+            return attempt_with_rebuild(state.worker, run_cap, rebuild);
         });
     return total_effort + slots.construction_effort.load(std::memory_order_relaxed);
 }

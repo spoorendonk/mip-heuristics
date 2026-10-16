@@ -547,3 +547,48 @@ TEST_CASE("core: a least-violated holder keeps the minimum, ties to the latest",
     REQUIRE(violation == 2.0);
     REQUIRE(*x == std::vector<double>{2.1});
 }
+
+TEST_CASE("core: a restart_now trigger rebuilds the slot's worker from the source",
+          "[core][until_stopped]") {
+    const HighsLp lp = two_cover_model(HighsVarType::kInteger, 1.0);
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+    int source_calls = 0;
+    const RestartSource source = [&source_calls](Rng& /*rng*/, std::vector<double>& out) {
+        ++source_calls;
+        out = {1.0, 1.0, 1.0};
+        return true;
+    };
+    // Every other attempt asks for a restart, and the next ask checks that
+    // the source was called in between.
+    int asked = 0;
+    int checked = 0;
+    int honoured = 0;
+    int target = 0;
+    ExecutionContext exec = s.exec;
+    exec.restart_now = [&] {
+        if (target > 0) {
+            ++checked;
+            honoured += source_calls >= target ? 1 : 0;
+            target = 0;
+        }
+        const bool now = ++asked % 2 == 0;
+        if (now) {
+            target = source_calls + 1;
+        }
+        return now;
+    };
+    BestSink sink(*s.problem.integrality, 0);
+    // No patience gate: no stall forces a rebuild, so the trigger's are the
+    // rebuilds to count.
+    HeuristicBudget budget = make_until_stopped_budget(/*attempt_cap=*/1024, /*patience=*/0);
+    budget.total = kFuse;
+
+    const size_t effort =
+        local_mip::run_until_stopped(s.problem, budget, exec, /*worker=*/0, source, sink);
+
+    REQUIRE(effort > 0);
+    REQUIRE(checked > 0);
+    REQUIRE(honoured == checked);
+}

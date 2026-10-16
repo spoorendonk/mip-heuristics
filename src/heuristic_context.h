@@ -438,6 +438,16 @@ struct ExecutionContext {
     // Scylla never read it.
     LeastViolatedPoint* least_violated = nullptr;
 
+    // A caller's early-restart trigger for a `run_until_stopped` slot
+    // (#189), or empty for none.  Asked on the slot's thread before every
+    // attempt; true rebuilds the worker at once, from the caller's
+    // `RestartSource` first, as a stall would.  It lets a worker take up a
+    // peer's much better solution without waiting for its own patience to
+    // run out — ReXi's "Improve"; the margin is the caller's to choose,
+    // since only the caller knows both its pool's best and this worker's.
+    // The presolve dispatch never reads it.
+    std::function<bool()> restart_now;
+
     // The write-free half of "should we stop?": the caller's stop flag or
     // the wall-clock deadline.  Any worker thread may call it.
     [[nodiscard]] bool past_deadline() const {
@@ -551,6 +561,7 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //   - `exec.terminator`, every other attempt: this thread holds the poller
 //     seat for the whole run;
 //   - `*exec.stop`, a relaxed load, from inside attempts and between them;
+//   - `exec.restart_now`, when set, before every attempt;
 //   - `*exec.least_violated`, when set: a lock-free read every step and an
 //     `offer` at most every deadline poll (LocalMIP only).
 // Several threads may each run a slot against one `sink`, `source`, `exec`

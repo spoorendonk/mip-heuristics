@@ -323,7 +323,10 @@ int SolutionPool::biased_index(Rng& rng, int pool_size) {
     return std::uniform_int_distribution<int>(0, pool_size - 1)(rng);
 }
 
-bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out) {
+bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out, RestartPolicy policy) {
+    if (policy == RestartPolicy::kBestOnly) {
+        return copy_best(out);
+    }
     enum class Strategy { kGuided, kNeighborhood, kCopy };
     Strategy strategy = Strategy::kCopy;
     SolutionPtr first;

@@ -118,7 +118,10 @@ public:
 
     // Restart material for a worker beginning a fresh attempt.  Both are
     // thread-safe (the pool takes its own lock).
-    bool get_restart(Rng& rng, std::vector<double>& out) { return pool_.get_restart(rng, out); }
+    bool get_restart(Rng& rng, std::vector<double>& out,
+                     SolutionPool::RestartPolicy policy = SolutionPool::RestartPolicy::kMixed) {
+        return pool_.get_restart(rng, out, policy);
+    }
     bool copy_best(std::vector<double>& out) { return pool_.copy_best(out); }
 
 protected:
