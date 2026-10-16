@@ -315,6 +315,14 @@ bool any_enabled(const HighsOptions& options) {
 bool run_presolve(HighsMipSolver& mipsolver) {
     const HighsOptions& options = *mipsolver.options_mip_;
 
+    // A RINS/RENS sub-MIP copies its parent's options, so without this it
+    // runs the whole chain again on the sub-problem, under the parent's
+    // cutoff, where a first feasible solution is largely found already
+    // (#178).  Opt-in: the default runs it, as before the option.
+    if (mipsolver.submip && options.mip_heuristic_skip_submip_chain) {
+        return false;
+    }
+
     // This warning is **API, not prose**.  It describes a solve that ran
     // something other than what its configuration asked for while still
     // exiting cleanly with an ordinary-looking log, so it is the only signal

@@ -111,6 +111,8 @@ Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside t
 
 `mip_heuristic_presolve_only` (bool, default `false`) exits the solve after the presolve chain and before the root LP, keeping the incumbent. It is roughly 25x cheaper than a full solve and is the only way to measure the chain without B&B diluting it, which is what makes the tuning search affordable. Such a run reports `Solution limit reached`, `Nodes 0`, `LP iterations 0`, `Dual bound -inf` and CLI exit 1, so a presolve-only tree is not comparable to a full-solve tree on any dual-side metric.
 
+`mip_heuristic_skip_submip_chain` (bool, default `false`) runs no presolve heuristic inside a RINS/RENS sub-MIP, which otherwise inherits the parent's options and runs the whole chain again on the sub-problem (#178). The default keeps today's behaviour; whether turning it on helps the primal integral is not yet measured.
+
 `mip_heuristic_effort` keeps **vanilla semantics and its vanilla default of 0.05**: it is upstream's B&B dive-heuristic envelope, which gates RENS/RINS and `fpr_lp` alike. A patched binary at default options matches vanilla's B&B heuristic budget exactly.
 
 ### Reproducible runs

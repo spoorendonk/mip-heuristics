@@ -1,5 +1,7 @@
 #include "heuristic_common.h"
 #include "Highs.h"
+#include "mode_dispatch.h"
+#include "parallel/HighsParallel.h"
 #include "test_common.h"
 
 #include <algorithm>
@@ -239,6 +241,33 @@ TEST_CASE("Options: presolve-only defaults to false", "[options][presolve-only]"
     REQUIRE(highs.getOptionValue("mip_heuristic_presolve_only", presolve_only) == HighsStatus::kOk);
     REQUIRE_FALSE(presolve_only);
     REQUIRE(highs.setOptionValue("mip_heuristic_presolve_only", true) == HighsStatus::kOk);
+}
+
+// #178: a RINS/RENS sub-MIP copies its parent's options, so the skip is
+// keyed on `mipsolver.submip`.  The chain's work is read off the ledger's
+// one counter: nothing charged means nothing ran.
+TEST_CASE("Options: skip_submip_chain skips the chain in a sub-MIP only", "[options][submip]") {
+    // `build_bare_mipsolver`'s precondition; a no-op once started.
+    highs::parallel::initialize_scheduler();
+    auto effort_charged = [](bool submip, bool skip) {
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        require_option(highs, "mip_heuristic_skip_submip_chain", skip);
+        HighsCallback cb(&highs);
+        auto mipsolver = build_bare_mipsolver(highs, cb);
+        mipsolver->submip = submip;
+        const size_t before = mipsolver->mipdata_->heuristic_effort_used;
+        REQUIRE_FALSE(heuristics::run_presolve(*mipsolver));
+        return mipsolver->mipdata_->heuristic_effort_used - before;
+    };
+    bool skip = true;
+    Highs defaults;
+    REQUIRE(defaults.getOptionValue("mip_heuristic_skip_submip_chain", skip) == HighsStatus::kOk);
+    REQUIRE_FALSE(skip);
+
+    CHECK(effort_charged(/*submip=*/true, /*skip=*/true) == 0);
+    CHECK(effort_charged(/*submip=*/true, /*skip=*/false) > 0);
+    CHECK(effort_charged(/*submip=*/false, /*skip=*/true) > 0);
 }
 
 // The exact substring `bench/run_benchmark.py` greps a solve's log for, as

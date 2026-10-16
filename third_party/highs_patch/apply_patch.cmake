@@ -144,7 +144,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # the value verbatim are rewritten — upstream's standalone FeasibilityJump
 # no longer runs at any configuration, and `printSolutionSourceKey` asks
 # `heuristics::any_enabled` instead.
-set(PATCH_VERSION "25")
+#
+# Version 26 adds `mip_heuristic_skip_submip_chain` (#178): a bool record,
+# default false, which `heuristics::run_presolve` reads to return before the
+# chain in a RINS/RENS sub-MIP.  A record is inserted text.
+set(PATCH_VERSION "26")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -499,7 +503,8 @@ set(_patch_options
     "mip_heuristic_fpr_patience:double:0.3372:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_local_mip_patience:double:3.1943:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_scylla_patience:double:0.0:${kEffortMax}:Patience for the Scylla presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
-    "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found")
+    "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found"
+    "mip_heuristic_skip_submip_chain:bool:false:-:Run no presolve heuristic in a RINS/RENS sub-MIP, which inherits every other option from its parent. The default false runs the chain there as in the top-level solve")
 
 # The upstream record block all four record insertions anchor on, spelled
 # once: four copies of a four-line exact-match string is four chances for

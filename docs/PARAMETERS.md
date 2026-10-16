@@ -2329,10 +2329,19 @@ to `0.30` and overloaded as the presolve budget — that overload was split
 out into a presolve-only option, which in turn became the four
 per-heuristic options below.
 
-The custom patch-added options are exactly ten: the five effort budgets
-below, the four `mip_heuristic_<name>_patience` gates documented above, and
-`mip_heuristic_presolve_only`. There is no eleventh — heuristic selection is
-the zero-pattern of the five effort options.
+The custom patch-added options are exactly eleven: the five effort budgets
+below, the four `mip_heuristic_<name>_patience` gates documented above,
+`mip_heuristic_presolve_only` and `mip_heuristic_skip_submip_chain`. There is
+no twelfth — heuristic selection is the zero-pattern of the five effort
+options.
+
+`mip_heuristic_skip_submip_chain` (bool, default `false`) makes
+`heuristics::run_presolve` return before anything else in a sub-MIP
+(`mipsolver.submip`), so the RINS/RENS sub-MIPs, which copy every option of
+their parent, run no presolve heuristic. The default keeps the chain running
+there, as before the option (#178, which measured the chain at 9–33% of
+sub-MIP solve time on four MIPLIB instances); whether to turn it on is an
+open benchmark question, not a measured default.
 
 - `mip_heuristic_fj_effort` (default `0.3317`),
   `mip_heuristic_fpr_effort` (`3.161`),
