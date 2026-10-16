@@ -13,8 +13,9 @@ commit.
 
 For the runtime options a user actually sets (the five
 `mip_heuristic_<name>_effort` budgets, the four
-`mip_heuristic_<name>_patience` gates, `mip_heuristic_presolve_only` and
-upstream's own `mip_heuristic_effort`), see the closing section of this file
+`mip_heuristic_<name>_patience` gates, `mip_heuristic_presolve_only`,
+`mip_heuristic_skip_submip_chain` and upstream's own `mip_heuristic_effort`),
+see the closing section of this file
 and `README.md`. **Heuristic selection is those effort options and nothing
 else**: a value at or below zero means the heuristic does not run. For what is and is not reproducible when
 you change these, see `docs/REPRODUCIBILITY.md`.
