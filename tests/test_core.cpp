@@ -548,8 +548,13 @@ TEST_CASE("core: a least-violated holder keeps the minimum, ties to the latest",
     REQUIRE(*x == std::vector<double>{2.1});
 }
 
-TEST_CASE("core: a restart_now trigger rebuilds the slot's worker from the source",
-          "[core][until_stopped]") {
+namespace {
+
+// Runs `run` with a `restart_now` that asks for a restart every other
+// attempt, and checks at the next ask that the source was called in
+// between.  No patience gate, so no stall forces a rebuild of its own.
+template <typename Run>
+void require_restart_now_rebuilds(Run run) {
     const HighsLp lp = two_cover_model(HighsVarType::kInteger, 1.0);
     Highs highs;  // for its log options only
     highs.setOptionValue("output_flag", false);
@@ -560,8 +565,6 @@ TEST_CASE("core: a restart_now trigger rebuilds the slot's worker from the sourc
         out = {1.0, 1.0, 1.0};
         return true;
     };
-    // Every other attempt asks for a restart, and the next ask checks that
-    // the source was called in between.
     int asked = 0;
     int checked = 0;
     int honoured = 0;
@@ -580,15 +583,32 @@ TEST_CASE("core: a restart_now trigger rebuilds the slot's worker from the sourc
         return now;
     };
     BestSink sink(*s.problem.integrality, 0);
-    // No patience gate: no stall forces a rebuild, so the trigger's are the
-    // rebuilds to count.
     HeuristicBudget budget = make_until_stopped_budget(/*attempt_cap=*/1024, /*patience=*/0);
     budget.total = kFuse;
 
-    const size_t effort =
-        local_mip::run_until_stopped(s.problem, budget, exec, /*worker=*/0, source, sink);
+    const size_t effort = run(s.problem, budget, exec, source, sink);
 
     REQUIRE(effort > 0);
     REQUIRE(checked > 0);
     REQUIRE(honoured == checked);
+}
+
+}  // namespace
+
+TEST_CASE("core: a restart_now trigger rebuilds the slot's worker from the source",
+          "[core][until_stopped]") {
+    SECTION("LocalMIP") {
+        require_restart_now_rebuilds([](const ProblemView& problem, const HeuristicBudget& budget,
+                                        const ExecutionContext& exec, const RestartSource& source,
+                                        SolutionSink& sink) {
+            return local_mip::run_until_stopped(problem, budget, exec, /*worker=*/0, source, sink);
+        });
+    }
+    SECTION("FJ") {
+        require_restart_now_rebuilds([](const ProblemView& problem, const HeuristicBudget& budget,
+                                        const ExecutionContext& exec, const RestartSource& source,
+                                        SolutionSink& sink) {
+            return fj::run_until_stopped(problem, budget, exec, /*worker=*/0, source, sink);
+        });
+    }
 }

@@ -445,7 +445,9 @@ struct ExecutionContext {
     // peer's much better solution without waiting for its own patience to
     // run out — ReXi's "Improve"; the margin is the caller's to choose,
     // since only the caller knows both its pool's best and this worker's.
-    // The presolve dispatch never reads it.
+    // It names no slot, so a per-worker rule needs one `exec` per slot; a
+    // shared one calls it from every slot's thread.  The presolve dispatch
+    // never reads it.
     std::function<bool()> restart_now;
 
     // The write-free half of "should we stop?": the caller's stop flag or
@@ -565,8 +567,9 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //   - `*exec.least_violated`, when set: a lock-free read every step and an
 //     `offer` at most every deadline poll (LocalMIP only).
 // Several threads may each run a slot against one `sink`, `source`, `exec`
-// and stop flag — `SolutionSink` is thread-safe — but then `source` and
-// `terminator` are called concurrently and must be thread-safe too.
+// and stop flag — `SolutionSink` is thread-safe — but then `source`,
+// `terminator` and `restart_now` are called concurrently and must be
+// thread-safe too.
 //
 // Exceptions.  Nothing here throws of its own accord beyond allocation
 // failure.  An exception thrown by `source`, `on_accept` or `terminator`
