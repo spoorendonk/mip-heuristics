@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace local_mip_detail {
@@ -91,6 +92,15 @@ private:
     // Bounded by `kFeasibleMaxRandomWalks` so we eventually stop on
     // instances where perturbation can't break the plateau.
     HighsInt feasible_random_walks_done_ = 0;
+
+    // The least-violated infeasible state this worker has passed through
+    // (#188), kept only while `exec_.least_violated` is set and offered to
+    // it at the end of every attempt that lowered it.
+    double retained_violation_ = std::numeric_limits<double>::infinity();
+    std::vector<double> retained_;
+    bool retained_unpublished_ = false;
+    void retain_if_least_violated();
+    void publish_retained();
 };
 
 }  // namespace local_mip_detail

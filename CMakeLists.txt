@@ -123,6 +123,7 @@ add_library(mip_heuristics_core STATIC
     src/heuristic_common.h
     src/heuristic_context.cpp
     src/heuristic_context.h
+    src/least_violated.h
     src/local_mip.cpp
     src/local_mip.h
     src/local_mip_caches.h

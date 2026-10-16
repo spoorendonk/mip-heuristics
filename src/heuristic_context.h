@@ -16,6 +16,7 @@
 #include <vector>
 
 struct HighsLogOptions;
+class LeastViolatedPoint;
 
 // Common execution scaffold for the four presolve heuristics (issue #94).
 //
@@ -430,6 +431,12 @@ struct ExecutionContext {
     // an attempt as well as between attempts, which is what bounds a stop's
     // latency by a worker's poll cadence rather than by one attempt's budget.
     const std::atomic<bool>* stop = nullptr;
+
+    // Where LocalMIP's workers retain their least-violated infeasible point
+    // (#188), or null to retain nothing.  Caller-owned and thread-safe; see
+    // least_violated.h.  The HiGHS adapter leaves it null, and FJ, FPR and
+    // Scylla never read it.
+    LeastViolatedPoint* least_violated = nullptr;
 
     // The write-free half of "should we stop?": the caller's stop flag or
     // the wall-clock deadline.  Any worker thread may call it.

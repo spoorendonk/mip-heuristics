@@ -11,12 +11,15 @@
 #include "fj.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "least_violated.h"
 #include "local_mip.h"
 #include "test_paths.h"
 
+#include <algorithm>
 #include <atomic>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -455,4 +458,92 @@ TEST_CASE("core: a patience of 0 in make_until_stopped_budget means no gate",
     constexpr size_t kUnbounded = std::numeric_limits<size_t>::max();
     REQUIRE(make_until_stopped_budget(1024, 0).worker_stale == kUnbounded);
     REQUIRE(make_until_stopped_budget(1024, 7).worker_stale == 7);
+}
+
+namespace {
+
+// No feasible point: minimise 0 s.t.  x0 + x1 + x2 >= 4,  x0 + x1 <= 1,
+// x0, x1 binary, x2 integer in [0, 2].  The least total row violation is 1,
+// reached only at (1, 0, 2) and (0, 1, 2).
+HighsLp infeasible_model() {
+    HighsLp lp;
+    lp.num_col_ = 3;
+    lp.num_row_ = 2;
+    lp.col_cost_ = {0.0, 0.0, 0.0};
+    lp.col_lower_ = {0.0, 0.0, 0.0};
+    lp.col_upper_ = {1.0, 1.0, 2.0};
+    lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kInteger, HighsVarType::kInteger};
+    lp.row_lower_ = {4.0, -kHighsInf};
+    lp.row_upper_ = {kHighsInf, 1.0};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
+    lp.a_matrix_.start_ = {0, 2, 4, 5};
+    lp.a_matrix_.index_ = {0, 1, 0, 1, 0};
+    lp.a_matrix_.value_ = {1.0, 1.0, 1.0, 1.0, 1.0};
+    return lp;
+}
+
+// Total row violation of `x`, from the model's own column-wise matrix.
+double total_violation(const HighsLp& lp, const std::vector<double>& x) {
+    std::vector<double> activity(static_cast<size_t>(lp.num_row_), 0.0);
+    for (HighsInt j = 0; j < lp.num_col_; ++j) {
+        for (HighsInt k = lp.a_matrix_.start_[j]; k < lp.a_matrix_.start_[j + 1]; ++k) {
+            activity[lp.a_matrix_.index_[k]] += lp.a_matrix_.value_[k] * x[j];
+        }
+    }
+    double violation = 0.0;
+    for (HighsInt i = 0; i < lp.num_row_; ++i) {
+        violation +=
+            std::max({0.0, lp.row_lower_[i] - activity[i], activity[i] - lp.row_upper_[i]});
+    }
+    return violation;
+}
+
+}  // namespace
+
+TEST_CASE("core: LocalMIP retains its least-violated point while nothing is feasible",
+          "[core][until_stopped][least_violated]") {
+    const HighsLp lp = infeasible_model();
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+    LeastViolatedPoint retained;
+    ExecutionContext exec = s.exec;
+    exec.least_violated = &retained;
+    BestSink sink(*s.problem.integrality, 0);
+    HeuristicBudget budget = make_until_stopped_budget(/*attempt_cap=*/1024, /*patience=*/4096);
+    budget.total = kFuse;
+
+    const size_t effort =
+        local_mip::run_until_stopped(s.problem, budget, exec, /*worker=*/0, RestartSource{}, sink);
+
+    REQUIRE(effort > 0);
+    REQUIRE_FALSE(sink.found);
+    const auto [x, violation] = retained.best().value_or(LeastViolatedPoint::Point{nullptr, -1.0});
+    REQUIRE(x != nullptr);
+    REQUIRE(x->size() == static_cast<size_t>(lp.num_col_));
+    // The minimum over every point the model has, so over every point the
+    // search saw, and measured in the model's own space.
+    REQUIRE(violation == Catch::Approx(1.0));
+    REQUIRE(total_violation(lp, *x) == Catch::Approx(violation));
+    for (HighsInt j = 0; j < lp.num_col_; ++j) {
+        REQUIRE((*x)[j] == std::round((*x)[j]));
+        REQUIRE((*x)[j] >= lp.col_lower_[j]);
+        REQUIRE((*x)[j] <= lp.col_upper_[j]);
+    }
+}
+
+TEST_CASE("core: a least-violated holder keeps the minimum, ties to the latest",
+          "[core][least_violated]") {
+    LeastViolatedPoint retained;
+    REQUIRE_FALSE(retained.best().has_value());
+    REQUIRE(retained.offer(3.0, {3.0}));
+    REQUIRE(retained.offer(2.0, {2.0}));
+    REQUIRE_FALSE(retained.offer(2.5, {2.5}));
+    REQUIRE(retained.offer(2.0, {2.1}));
+    const auto [x, violation] = retained.best().value_or(LeastViolatedPoint::Point{nullptr, -1.0});
+    REQUIRE(x != nullptr);
+    REQUIRE(violation == 2.0);
+    REQUIRE(*x == std::vector<double>{2.1});
 }

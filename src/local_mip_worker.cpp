@@ -1,6 +1,7 @@
 #include "local_mip_worker.h"
 
 #include "heuristic_common.h"
+#include "least_violated.h"
 #include "local_mip.h"
 #include "local_mip_caches.h"
 #include "local_mip_core.h"
@@ -182,6 +183,10 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     size_t max_poll_gap = 0;
     size_t max_pass = 0;
     while (spent() < attempt_budget && !base_.exhausted(spent())) {
+        // Every state the loop passes through is seen here, before the
+        // step that leaves it; the one the last step leaves is seen after
+        // the loop.
+        retain_if_least_violated();
         if constexpr (local_mip::kInstrumented) {
             max_pass = std::max(max_pass, spent() - pass_start);
             pass_start = spent();
@@ -454,6 +459,9 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
         ++step_;
     }
 
+    retain_if_least_violated();
+    publish_retained();
+
     size_t attempt_effort = ctx_.effort - effort_start;
     if constexpr (local_mip::kInstrumented) {
         max_pass = std::max(max_pass, spent() - pass_start);
@@ -476,6 +484,33 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     attempt.effort = attempt_effort;
 
     return attempt;
+}
+
+// Uncharged, so a run that retains a point searches exactly as one that
+// does not: the sum is over the violated set the search maintains, and the
+// copy is skipped whenever the caller's holder already has a point at
+// least as good from another worker.
+void LocalMipWorker::retain_if_least_violated() {
+    LeastViolatedPoint* holder = exec_.least_violated;
+    if (holder == nullptr || ctx_.violated.elements.empty()) {
+        return;
+    }
+    double violation = 0.0;
+    for (const HighsInt i : ctx_.violated.elements) {
+        violation += ctx_.compute_violation(i, ctx_.lhs[i]);
+    }
+    if (violation <= retained_violation_ && holder->would_take(violation)) {
+        retained_violation_ = violation;
+        retained_ = ctx_.solution;
+        retained_unpublished_ = true;
+    }
+}
+
+void LocalMipWorker::publish_retained() {
+    if (retained_unpublished_) {
+        static_cast<void>(exec_.least_violated->offer(retained_violation_, retained_));
+        retained_unpublished_ = false;
+    }
 }
 
 }  // namespace local_mip_detail
