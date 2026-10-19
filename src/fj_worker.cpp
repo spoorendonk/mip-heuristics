@@ -152,6 +152,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     const bool resume = first_solve_done_;
     size_t attempt_effort_consumed = 0;
     bool improved_incumbent = false;
+    bool stalled = false;
     std::vector<double> best_sol;
 
     auto callback = [&](FJStatus status) -> CallbackControlFlow {
@@ -211,6 +212,17 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         if (exec_.past_deadline()) {
             return CallbackControlFlow::Terminate;
         }
+        // Stall detection, and FJ's only patience (#191): FJ's own counter,
+        // which restarts at a new fewest violated rows as well as at a
+        // better feasible objective.  Ahead of the pause: an attempt is
+        // usually shorter than `CALLBACK_EFFORT`, so the pause would
+        // otherwise end every callback and the stall would never be seen.
+        size_t esi = status.effortSinceLastImprovement;
+        if (esi > base_.stale_budget) {
+            stalled = true;
+            return CallbackControlFlow::Terminate;
+        }
+
         // Pause at the attempt boundary.
         if (attempt_effort_consumed >= attempt_budget) {
             return CallbackControlFlow::Terminate;
@@ -219,12 +231,6 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         if (status.totalEffort > base_.total_budget) {
             return CallbackControlFlow::Terminate;
         }
-        // Stall detection.
-        size_t esi = status.effortSinceLastImprovement;
-        if (esi > base_.stale_budget) {
-            return CallbackControlFlow::Terminate;
-        }
-
         return CallbackControlFlow::Continue;
     };
 
@@ -236,20 +242,22 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
 
     // An attempt counts as productive when it moved the incumbent, not
     // when upstream FJ hands back any solution at all, and not when the
-    // pool merely kept one (#116) — FJ's own `effortSinceLastImprovement`
-    // tracks the first, inside the solver, and that is the counter its
-    // callback gate reads.  This one is the dispatch's, and since #163 it
-    // is the disjunction over the offers the callback made: an attempt was
-    // productive if *any* of its solutions moved the incumbent.  Every
-    // solution reaches the sink through the callback — the discarded
-    // return of `solver.solve` carries none — so there is nothing left to
-    // offer here.
-    const bool improved = improved_incumbent;
-    if (improved) {
-        result.found_improvement = true;
-        base_.charge_improvement(attempt_effort_consumed);
-    } else {
-        base_.charge_no_improvement(attempt_effort_consumed);
+    // pool merely kept one (#116).  That is the dispatch's signal, for the
+    // runner-level gate, and since #163 it is the disjunction over the
+    // offers the callback made: an attempt was productive if *any* of its
+    // solutions moved the incumbent.  Every solution reaches the sink
+    // through the callback — the discarded return of `solver.solve`
+    // carries none — so there is nothing left to offer here.
+    result.found_improvement = improved_incumbent;
+
+    // The worker itself retires on FJ's own stall, not on effort since the
+    // incumbent moved (#191): before a first feasible solution the latter
+    // grows however fast the violations fall, and retired FJ at
+    // `worker_stale` on every bundled MIP at SCIP's `128 x nnz`.  So only
+    // the total half of `WorkerBudgetState` is charged here.
+    base_.total_effort += attempt_effort_consumed;
+    if (stalled || base_.exhausted()) {
+        base_.finished = true;
     }
 
     return result;

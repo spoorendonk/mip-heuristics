@@ -19,7 +19,8 @@ struct ProblemView;
 // and calls solve(initial, callback, /*resume=*/false).
 // Subsequent calls resume via solve(nullptr, callback, /*resume=*/true).
 //
-// Finished when FJ stalls (effortSinceLastImprovement exceeds threshold).
+// Finished when FJ stalls (effortSinceLastImprovement exceeds threshold)
+// or spends its total budget.
 class FjWorker {
 public:
     // `start` seeds the initial assignment: the best solution known when
@@ -59,12 +60,15 @@ private:
     const std::vector<double> start_;
     const uint32_t seed_;
 
-    // Effort / staleness / finished bookkeeping.  Both budgets come from
-    // the caller: FJ's patience has always been an absolute
-    // `nnz << 8` rather than a fraction of the allowance, and since issue
-    // #111 the other three heuristics derive theirs the same way, so it
-    // is sized once in `mode_dispatch` (`HeuristicBudget::worker_stale`)
-    // instead of re-derived from the FJ solver's own copy of the matrix.
+    // Effort / finished bookkeeping.  Both budgets come from the caller:
+    // FJ's patience has always been an absolute `nnz << 8` rather than a
+    // fraction of the allowance, and since issue #111 the other three
+    // heuristics derive theirs the same way, so it is sized once in
+    // `mode_dispatch` (`HeuristicBudget::worker_stale`) instead of
+    // re-derived from the FJ solver's own copy of the matrix.
+    // `stale_budget` is read against upstream FJ's own
+    // `effortSinceLastImprovement` only (#191), so
+    // `effort_since_improvement` is never charged.
     WorkerBudgetState base_;
     // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
     const WorkerTrace trace_;

@@ -125,6 +125,10 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             return state;
         },
         [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
+            // A retired worker ends the run: zero effort retires the slot.
+            if (budget.fj_stall_ends_run && state.worker->finished()) {
+                return {};
+            }
             auto rebuild = [&] { build_worker(state, rng, problem, budget, exec, sink, source); };
             if (exec.restart_now && exec.restart_now()) {
                 rebuild();

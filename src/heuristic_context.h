@@ -336,6 +336,13 @@ struct HeuristicBudget {
     // default.  Scylla is the documented exception — see scylla_worker.cpp.
     size_t worker_stale = 0;
 
+    // FJ in `run_until_stopped` only, default off (#191).  When set, a
+    // worker that retires — FJ's own `effortSinceLastImprovement` crossing
+    // `worker_stale`, or `per_worker` spent — ends the run instead of being
+    // rebuilt: SCIP's feasjump, one run ended by effort without progress on
+    // violations or objective.
+    bool fj_stall_ends_run = false;
+
     // This heuristic was handed nothing, and must therefore do nothing
     // (issue #106).
     //
@@ -542,12 +549,16 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //   - a worker that charges nothing even when freshly rebuilt, which
 //     retires the slot: a degenerate view (returned at once, as 0), or FJ
 //     built with `HIGHSINT64`, which never searches.
+//   - for FJ under `budget.fj_stall_ends_run`, the worker retiring: its
+//     `effortSinceLastImprovement` crossing `budget.worker_stale`, or its
+//     spending `budget.per_worker`, ends the run instead of a rebuild.
 // `make_until_stopped_budget` lifts `total` and `stale`.  So a stop is seen
 // within one poll interval, except while a worker is being built: FJ's
 // solver construction and LocalMIP's cold-start construction sweep (one
 // O(nnz) pass) poll nothing, as in the presolve dispatch.  A worker is
-// rebuilt when it stalls (`budget.worker_stale`) or spends
-// `budget.per_worker`.
+// rebuilt when it stalls (`budget.worker_stale`; for FJ against its own
+// `effortSinceLastImprovement`, for LocalMIP against effort since the
+// sink's best moved) or spends `budget.per_worker`.
 //
 // `exec.num_workers` is not read; `worker` picks the slot's seed
 // (`exec.worker_seed(worker)`) and its trace identity, and for LocalMIP a

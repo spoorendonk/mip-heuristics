@@ -54,7 +54,9 @@ struct WorkerTrace {
 // effort + staleness + a hard total budget — `FjWorker`, `FprWorker`,
 // `LocalMipWorker` and `ScyllaWorker`.  `FprWorker` joined them in issue
 // #111 and arms only the staleness half (its `total_budget` stays at
-// SIZE_MAX; see fpr.cpp).  `LpFprWorker` keeps a private stale counter
+// SIZE_MAX; see fpr.cpp).  `FjWorker` charges only the total half and
+// reads `stale_budget` against upstream FJ's own counter (#191; see
+// fj_worker.cpp).  `LpFprWorker` keeps a private stale counter
 // and `finished_` flag without this struct.
 //
 // `stale_budget` is the heuristic's patience: set by the caller from an

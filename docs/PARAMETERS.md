@@ -1908,10 +1908,17 @@ effort-gap distribution).
   is not armed at all, not "give up at once". #113's derived value was
   `0.1416` — itself the clamp to rounding, `0.25 x` the effort option beside
   it, rather than the raw p95 wait of `2.46`; before that, `0.71`.
-- **Meaning**: Step units per worker without an incumbent improvement, as
-  a multiple of `nnz << 10`. Scope is **per worker**, matching
+- **Meaning**: Step units per worker without progress, as a multiple of
+  `nnz << 10`. Scope is **per worker**, matching
   `mip_heuristic_fj_effort` — the only one of the four with that scope, so
-  the runner-level gate is this times the worker count. The quarter-of-the
+  the runner-level gate is this times the worker count. The two levels read
+  different progress: the runner-level gate counts effort since an
+  incumbent improvement, as for the other three, but the worker-level gate
+  reads only upstream FJ's own `effortSinceLastImprovement`, which restarts
+  at a new fewest violated rows as well as at a better feasible objective
+  (#191). Before a first feasible solution an incumbent notion grows however
+  fast the violations fall, so it retired FJ at SCIP feasjump's
+  `128 x nnz` on every bundled MIP; FJ's own counter is SCIP's rule. The quarter-of-the
   -ceiling shape is FJ's own: `nnz << 8` against a `nnz << 10` budget is
   what it has always shipped, it was the one heuristic already using an
   absolute threshold, and it is the model the other three were moved onto

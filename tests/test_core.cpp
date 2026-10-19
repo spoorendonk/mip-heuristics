@@ -615,3 +615,179 @@ TEST_CASE("core: a restart_now trigger rebuilds the slot's worker from the sourc
         });
     }
 }
+
+namespace {
+
+// SCIP's feasjump patience: 128 effort units per nonzero (#191).
+constexpr size_t kSearchPatiencePerNnz = 128;
+
+// SCIP's feasjump as a `run_until_stopped` budget: one worker, ended by
+// `patience` of FJ effort without progress, with the runner's checks a
+// tenth of it apart, and a total that is only a fuse.
+HeuristicBudget one_run_budget(size_t patience, size_t fuse) {
+    HeuristicBudget budget =
+        make_until_stopped_budget(std::max<size_t>(patience / 10, 1), patience);
+    budget.fj_stall_ends_run = true;
+    budget.total = fuse;
+    return budget;
+}
+
+// A sink that sets the stop flag at the first solution it accepts.
+struct FirstSink : SolutionSink {
+    FirstSink(const std::vector<HighsVarType>& integrality, std::atomic<bool>& stop)
+        : SolutionSink(integrality, 0), stop_(stop) {}
+    std::vector<double> first;
+
+private:
+    void on_accept(double /*obj*/, const std::vector<double>& x, int /*source*/,
+                   const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
+        if (first.empty()) {
+            first = x;
+            stop_.store(true);
+        }
+    }
+    std::atomic<bool>& stop_;
+};
+
+// minimise x0 + x1  s.t.  x0 + x1 >= 3, x binary: no assignment satisfies
+// the row, so FJ's violations stop falling at once and nothing is found.
+HighsLp unsatisfiable_model() {
+    HighsLp lp;
+    lp.num_col_ = 2;
+    lp.num_row_ = 1;
+    lp.col_cost_ = {1.0, 1.0};
+    lp.col_lower_ = {0.0, 0.0};
+    lp.col_upper_ = {1.0, 1.0};
+    lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kInteger};
+    lp.row_lower_ = {3.0};
+    lp.row_upper_ = {kHighsInf};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
+    lp.a_matrix_.start_ = {0, 1, 2};
+    lp.a_matrix_.index_ = {0, 0};
+    lp.a_matrix_.value_ = {1.0, 1.0};
+    return lp;
+}
+
+// minimise sum x  s.t.  x_i >= 1 for every i, x binary: from a zero start
+// every move FJ makes fixes one violated row, so its violations fall at
+// every step and it needs `n` steps — past FJ's first callback, at 500000
+// effort units — to reach the one feasible point.
+HighsLp falling_violations_model(HighsInt n) {
+    HighsLp lp;
+    lp.num_col_ = n;
+    lp.num_row_ = n;
+    lp.col_cost_.assign(n, 1.0);
+    lp.col_lower_.assign(n, 0.0);
+    lp.col_upper_.assign(n, 1.0);
+    lp.integrality_.assign(n, HighsVarType::kInteger);
+    lp.row_lower_.assign(n, 1.0);
+    lp.row_upper_.assign(n, kHighsInf);
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = n;
+    lp.a_matrix_.num_row_ = n;
+    lp.a_matrix_.start_.resize(n + 1);
+    lp.a_matrix_.index_.resize(n);
+    for (HighsInt j = 0; j <= n; ++j) {
+        lp.a_matrix_.start_[j] = j;
+    }
+    for (HighsInt j = 0; j < n; ++j) {
+        lp.a_matrix_.index_[j] = j;
+    }
+    lp.a_matrix_.value_.assign(n, 1.0);
+    return lp;
+}
+
+}  // namespace
+
+TEST_CASE("core: FJ's patience reads its own counter, not effort since the incumbent moved",
+          "[core][until_stopped]") {
+    // A patience far below the effort to the first solution, and one
+    // worker: effort since the incumbent moved crosses it at FJ's first
+    // callback, which would retire the worker and end the run with
+    // nothing.  FJ's own counter restarts at every step here (#191).
+    const HighsLp lp = falling_violations_model(HighsInt{1} << 17);
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+    std::atomic<bool> stop{false};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    FirstSink sink(*s.problem.integrality, stop);
+    constexpr size_t kPatience = 1024;
+
+    const size_t effort = fj::run_until_stopped(s.problem, one_run_budget(kPatience, kBudget), exec,
+                                                /*worker=*/0, RestartSource{}, sink);
+
+    // The premise: the search outlasts FJ's first callback.
+    REQUIRE(effort > 500000);
+    REQUIRE_FALSE(sink.first.empty());
+    REQUIRE(is_feasible(lp, sink.first));
+}
+
+TEST_CASE("core: FJ at SCIP's 128 x nnz finds a first solution on presolved bundled MIPs",
+          "[core][until_stopped]") {
+    // The patience SCIP's feasjump runs with, from a fresh start, in one
+    // run, on the presolved model as at a root (#191).  p0548 is not
+    // here: FJ needs ~5M effort units to its first solution on it, and its
+    // own counter stalls long before.
+    for (const char* instance : {"egout.mps", "bell5.mps", "lseu.mps", "gt2.mps"}) {
+        INFO(instance);
+        Highs highs;
+        read(highs, instance);
+        REQUIRE(highs.presolve() == HighsStatus::kOk);
+        const HighsLp lp = highs.getPresolvedLp();
+        REQUIRE(lp.num_col_ > 0);
+        const Setup s(lp, highs.getOptions().log_options);
+        std::atomic<bool> stop{false};
+        ExecutionContext exec = s.exec;
+        exec.stop = &stop;
+        FirstSink sink(*s.problem.integrality, stop);
+        const HeuristicBudget budget =
+            one_run_budget(kSearchPatiencePerNnz * s.problem.nnz, kBudget);
+
+        const size_t effort =
+            fj::run_until_stopped(s.problem, budget, exec, /*worker=*/0, RestartSource{}, sink);
+
+        REQUIRE(effort > 0);
+        REQUIRE_FALSE(sink.first.empty());
+        REQUIRE(is_feasible(lp, sink.first));
+    }
+}
+
+TEST_CASE("core: fj_stall_ends_run ends the run when FJ stalls", "[core][until_stopped]") {
+    const HighsLp lp = unsatisfiable_model();
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+    int source_calls = 0;
+    const RestartSource source = [&source_calls](Rng& /*rng*/, std::vector<double>& /*out*/) {
+        ++source_calls;
+        return false;
+    };
+    // FJ reads its counter at its callback, every 500000 effort units, so
+    // the stall is seen at the first callback and the fuse is far beyond.
+    constexpr size_t kStallFuse = size_t{1} << 24;
+    constexpr size_t kPatience = 1024;
+
+    SECTION("set: one worker, ended by its stall") {
+        SolutionSink sink(*s.problem.integrality, 0);
+        const size_t effort =
+            fj::run_until_stopped(s.problem, one_run_budget(kPatience, kStallFuse), s.exec,
+                                  /*worker=*/0, source, sink);
+        REQUIRE(effort > 0);
+        REQUIRE(effort < kStallFuse / 4);
+        REQUIRE(source_calls == 1);
+        REQUIRE(sink.accepted() == 0);
+    }
+    SECTION("unset: the stalled worker is rebuilt until the fuse") {
+        HeuristicBudget budget = one_run_budget(kPatience, kStallFuse);
+        budget.fj_stall_ends_run = false;
+        SolutionSink sink(*s.problem.integrality, 0);
+        const size_t effort =
+            fj::run_until_stopped(s.problem, budget, s.exec, /*worker=*/0, source, sink);
+        REQUIRE(effort >= kStallFuse);
+        REQUIRE(source_calls > 1);
+    }
+}
