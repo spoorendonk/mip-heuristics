@@ -500,7 +500,7 @@ Every presolve heuristic stops early when improvement-free effort crosses a thre
 
 **`CMakeLists.txt` puts `-Werror=unused-result` on every library and test target of ours**, without which a re-drop of that result is only a warning — nothing here passes `-Werror` and the clang-tidy gate cannot see `clang-diagnostic-*`, since `.clang-tidy` opens with `-*`. Keep that flag on our targets and off HiGHS's. The two deliberate discards (`fpr_lp`, LocalMIP's cold-start publish) are spelled `static_cast<void>` with a reason.
 
-**Only the gate's operand is the incumbent notion** — LocalMIP's `best_objective_`/`steps_since_improvement_` and FJ's internal `effortSinceLastImprovement` are the local search's own bookkeeping and still use the local notion.
+**Only the gate's operand is the incumbent notion** — LocalMIP's `best_objective_`/`steps_since_improvement_` and FJ's internal `effortSinceLastImprovement` are the local search's own bookkeeping and still use the local notion. **FJ's worker-level gate is the one exception**: it reads FJ's own `effortSinceLastImprovement` alone (#191), since before a first solution the incumbent notion retires FJ however fast its violations fall; FJ's runner-level gate reads `improved_incumbent` like the others'.
 
 **Scylla has a granularity floor no constant can cross**: one attempt charges a whole PDLP solve (`iters x nnz`), several times the ceiling, and `attempt_cap` does not govern a solve once started. Do **not** try to fix that by clamping `attempt_cap` — measurably ineffective.
 

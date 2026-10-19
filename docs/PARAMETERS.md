@@ -1568,7 +1568,11 @@ and returns both facts, so neither can be dropped or silently substituted
 for the other. Each local search's own bookkeeping — FJ's
 `effortSinceLastImprovement`, LocalMIP's `best_objective_` /
 `steps_since_improvement_` — is untouched: those are the search's notion,
-not the dispatch's.
+not the dispatch's. **FJ's worker-level gate is the one exception** (#191):
+it reads FJ's own `effortSinceLastImprovement` and nothing else, because
+before a first solution the incumbent notion grows however fast FJ's
+violations fall; FJ's runner-level gate reads `improved_incumbent` like
+the others'.
 
 **Zero means no gate at all.** `patience_threshold` returns an unbounded
 threshold when the multiplier is `0`, before the clamp below — not a

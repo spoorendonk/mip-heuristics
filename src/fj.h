@@ -21,10 +21,11 @@ namespace fj {
 // scope; the other three size a whole dispatch and are divided across
 // the pool.
 //
-// The default 256 is `nnz << 8`, the value FJ has always used and the
-// model the other three were moved onto: exactly a quarter of FJ's
-// default per-worker budget (`nnz << 10`).  0 disables the gate
-// entirely.  The default is registered in
+// The default is 0, which disables the gate entirely (#107).  `nnz << 8`
+// (0.25), a quarter of FJ's per-worker budget unit, is what FJ used
+// before and the model the other three were moved onto.  The
+// worker-level gate reads FJ's own `effortSinceLastImprovement`, not
+// effort since the incumbent moved (#191; see fj_worker.cpp).  The default is registered in
 // `third_party/highs_patch/apply_patch.cmake` and pinned by
 // `tests/test_smoke.cpp`; `docs/PARAMETERS.md` carries the calibration
 // notes.
