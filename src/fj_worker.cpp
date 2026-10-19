@@ -220,8 +220,9 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         //
         // The counter is read only here, so the patience has a floor of one
         // callback period, 500000 effort units: a `stale_budget` below that
-        // (`128 x nnz` under ~3900 nnz) stalls at the first callback past
-        // it, never sooner (#194).  Accepted, not fixed: HiGHS's own FJ
+        // (`128 x nnz` under ~3900 nnz) stalls at the first callback at
+        // which effort since the last improvement exceeds it, never sooner
+        // than the first callback (#194).  Accepted, not fixed: HiGHS's own FJ
         // (`HighsFeasibilityJump.cpp`, `fjControlCallback`) reads its
         // `nnz << 8` patience at the same callback and has the same floor,
         // and for FJ HiGHS is the reference ahead of SCIP, whose feasjump
