@@ -217,6 +217,15 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         // better feasible objective.  Ahead of the pause: an attempt is
         // usually shorter than `CALLBACK_EFFORT`, so the pause would
         // otherwise end every callback and the stall would never be seen.
+        //
+        // The counter is read only here, so the patience has a floor of one
+        // callback period, 500000 effort units: a `stale_budget` below that
+        // (`128 x nnz` under ~3900 nnz) stalls at the first callback past
+        // it, never sooner (#194).  Accepted, not fixed: HiGHS's own FJ
+        // (`HighsFeasibilityJump.cpp`, `fjControlCallback`) reads its
+        // `nnz << 8` patience at the same callback and has the same floor,
+        // and for FJ HiGHS is the reference ahead of SCIP, whose feasjump
+        // checks every move.
         size_t esi = status.effortSinceLastImprovement;
         if (esi > base_.stale_budget) {
             stalled = true;

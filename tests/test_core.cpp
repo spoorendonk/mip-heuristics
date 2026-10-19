@@ -768,6 +768,8 @@ TEST_CASE("core: fj_stall_ends_run ends the run when FJ stalls", "[core][until_s
     };
     // FJ reads its counter at its callback, every 500000 effort units, so
     // the stall is seen at the first callback and the fuse is far beyond.
+    // That callback is the patience's floor on a small model (#194).
+    constexpr size_t kCallbackEffort = 500000;
     constexpr size_t kStallFuse = size_t{1} << 24;
     constexpr size_t kPatience = 1024;
 
@@ -776,7 +778,7 @@ TEST_CASE("core: fj_stall_ends_run ends the run when FJ stalls", "[core][until_s
         const size_t effort =
             fj::run_until_stopped(s.problem, one_run_budget(kPatience, kStallFuse), s.exec,
                                   /*worker=*/0, source, sink);
-        REQUIRE(effort > 0);
+        REQUIRE(effort > kCallbackEffort);
         REQUIRE(effort < kStallFuse / 4);
         REQUIRE(source_calls == 1);
         REQUIRE(sink.accepted() == 0);

@@ -340,7 +340,9 @@ struct HeuristicBudget {
     // worker that retires — FJ's own `effortSinceLastImprovement` crossing
     // `worker_stale`, or `per_worker` spent — ends the run instead of being
     // rebuilt: SCIP's feasjump, one run ended by effort without progress on
-    // violations or objective.
+    // violations or objective.  The stall is read at FJ's callback, so it
+    // is seen no sooner than 500000 effort units in, whatever `worker_stale`
+    // says (#194; HiGHS's own FJ has the same floor).
     bool fj_stall_ends_run = false;
 
     // This heuristic was handed nothing, and must therefore do nothing
