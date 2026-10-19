@@ -70,7 +70,8 @@ public:
     // resets on acceptances.
     //
     // So `OfferResult::improved_incumbent` is what every staleness gate
-    // reads (#116), and `accepted` is what `accepted()`, `[Heur] found`
+    // but FJ's worker-level one reads (#116; FJ's reads FJ's own counter,
+    // #191), and `accepted` is what `accepted()`, `[Heur] found`
     // and `[HeurSol] accepted` keep reporting — production, in the sense
     // of "a feasible solution worth keeping", is still the pool's call and
     // external tooling reads it as that.

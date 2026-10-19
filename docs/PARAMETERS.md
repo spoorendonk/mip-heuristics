@@ -1135,7 +1135,7 @@ Three things to carry forward.
 - **Default**: `1e-9` (relative, with an absolute floor of the same size)
 - **Meaning**: The margin an offer must clear for
   `SolutionSink::OfferResult::improved_incumbent` to be true — the fact
-  every patience gate reads, decided inside `SolutionPool`'s own lock
+  every patience gate but FJ's worker-level one (#191) reads, decided inside `SolutionPool`'s own lock
   against a monotone watermark of the best objective the pool has ever
   accepted. **Deliberately not a re-use of `kDiversityObjTolerance`**,
   which is an *admission* band: reading that one as an improvement test
@@ -1921,10 +1921,10 @@ effort-gap distribution).
   reads only upstream FJ's own `effortSinceLastImprovement`, which restarts
   at a new fewest violated rows as well as at a better feasible objective
   (#191). Before a first feasible solution an incumbent notion grows however
-  fast the violations fall, so it retired FJ at SCIP feasjump's
-  `128 x nnz` on every bundled MIP; FJ's own counter is SCIP's rule. The quarter-of-the
-  -ceiling shape is FJ's own: `nnz << 8` against a `nnz << 10` budget is
-  what it has always shipped, it was the one heuristic already using an
+  fast the violations fall, so it retired FJ before its first solution
+  however its search was going; FJ's own counter is SCIP feasjump's rule.
+  The quarter-of-the-ceiling shape is FJ's own: `nnz << 8` against a
+  `nnz << 10` budget is what it shipped before #107, it was the one heuristic already using an
   absolute threshold, and it is the model the other three were moved onto
   and the clamp was taken from.
 - **Least trustworthy of the four.** The p50 knee behind its *effort*
