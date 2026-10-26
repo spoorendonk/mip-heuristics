@@ -466,8 +466,8 @@ endif()
 # the scripts' own logic (regexes, aggregation, exit codes, error paths) so
 # they are kept honest as the harness evolves.
 #
-# Prefer a venv's python (where `pip install pytest` typically lands in
-# this project) over the system interpreter.  Skip silently when none has
+# Prefer a venv's python (where `uv sync` puts pytest in this project) over
+# the system interpreter.  Skip silently when none has
 # pytest so `ctest` on a fresh clone stays green.
 #
 # The venvs are this tree's `.venv/bin` and then the main checkout's, found

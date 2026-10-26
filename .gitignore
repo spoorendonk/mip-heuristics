@@ -17,7 +17,3 @@ Highs.log
 # one there; a real search points it at the results tree with
 # RUN_TARGET_RUN_DIR.
 bench/target-runs/
-
-# Written by `uv run` (pre-commit): pyproject.toml has no [project], so the
-# lock records nothing.
-uv.lock

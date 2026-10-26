@@ -244,9 +244,9 @@ Set any of the options above in the parent before `FetchContent_MakeAvailable`. 
 ## Tests
 
 ```bash
-# Once per checkout — `.venv/bin` is the exact path the lint gates search.
-python3 -m venv .venv
-.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 ruff==0.16.3 pytest
+# Once per checkout — pyproject.toml's dev group into `.venv`, whose `bin`
+# is the exact path the lint gates search.
+uv sync
 
 ctest --test-dir build --output-on-failure -j$(nproc)                     # everything
 ctest --test-dir build -LE lint --output-on-failure                       # fast loop

@@ -82,6 +82,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_DIR = Path(__file__).resolve().parent
@@ -213,10 +214,11 @@ class Manifest:
     created_utc: str
     archive_name: str
     note: str
-    source: dict[str, object]
-    machine: dict[str, object]
-    run: dict[str, object]
-    baseline: dict[str, object]
+    # JSON-shaped: each block's fields are read by name in `render_provenance`.
+    source: dict[str, Any]
+    machine: dict[str, Any]
+    run: dict[str, Any]
+    baseline: dict[str, Any]
     configs: list[ConfigProvenance]
     tables: list[TableSpec]
     warnings: list[str]

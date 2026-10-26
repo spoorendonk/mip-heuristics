@@ -89,7 +89,7 @@ Nothing formats on save or at commit. `pre-commit` (wcp's) only **checks**: `cla
 .venv/bin/clang-format --dry-run --Werror <files>       # check only, non-zero if unformatted
 ```
 
-**Use the venv's clang tools, not PATH.** The pinned 22.1.8 pair lives in `.venv/bin`, which is the exact path `cmake/Lint.cmake` searches; a different major version formats differently and fails the `clang_format` ctest gate. Both hooks put the main checkout's `.venv/bin` first on PATH for the same reason. `uv run` in this repository writes a trivial `uv.lock` (`pyproject.toml` holds only tool tables, no `[project]`); it is gitignored.
+**Use the venv's clang tools, not PATH.** The pinned 22.1.8 pair lives in `.venv/bin`, which is the exact path `cmake/Lint.cmake` searches; a different major version formats differently and fails the `clang_format` ctest gate. Both hooks put the main checkout's `.venv/bin` first on PATH for the same reason. `pyproject.toml`'s `[project]` is never built (`package = false`): it carries `requires-python`, so the committed `uv.lock` is the same on every interpreter, and the dev dependency group is the whole Python toolchain. mypy reads `[tool.mypy]`, which names `bench` and `cmake` and excludes the build trees, whose `_deps` hold HiGHS's and Catch2's own Python; CI runs the same check.
 
 The hooks are wcp's, in `.githooks/` (see Hooks Are Files In This Repository). `cmake -B build` also points `core.hooksPath` at them (option `MIP_HEURISTICS_INSTALL_GIT_HOOKS`, ON as the top-level project), leaving an existing `.githooks` value alone and warning rather than clobbering a hooksPath someone else set. `.claude/` is gitignored and not part of the published artifact; `wcp init` writes its permission rules and statusline. A new Claude Code hook must read its file path and command from the hook JSON **on stdin**, never `$CLAUDE_FILE_PATH` (unset by Claude Code — a hook reading it no-ops silently rather than failing). The clang-format and clang-tidy gates deliberately live outside the hooks, as ctest tests labelled `lint` plus the CI job, so a fresh clone still runs them.
 
@@ -263,16 +263,15 @@ Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solv
 ## Build Commands
 
 ```bash
-# Lint tools, once per checkout.  `.venv/bin` is the exact path
-# cmake/Lint.cmake searches; without this the gates are never registered and
-# ctest reports green having linted nothing.  Include pytest — the root
-# CMakeLists prefers `.venv/bin/python`, so a venv without it unregisters
+# Dev tools, once per checkout: pyproject.toml's dev group (the pinned clang
+# pair, ruff, mypy, pytest) into `.venv`.  `.venv/bin` is the exact path
+# cmake/Lint.cmake searches; without it the gates are never registered and
+# ctest reports green having linted nothing.  pytest must be there too — the
+# root CMakeLists prefers `.venv/bin/python`, so a venv without it unregisters
 # `bench_python_tests` rather than falling back to the system interpreter.
-# Include ruff for the same class of reason: pre-commit runs it through
-# `uv run`, which skips it when the venv lacks it, while CI still gates on
-# `ruff check bench cmake` — the hook passes and CI goes red.
-python3 -m venv .venv
-.venv/bin/pip install clang-format==22.1.8 clang-tidy==22.1.8 ruff==0.16.3 pytest
+# pre-commit's `uv run` installs the same group, so the hook and the setup
+# cannot disagree; a venv made with pip instead is one `uv run` may rebuild.
+uv sync
 
 # Configure (from repo root)
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON

@@ -1,3 +1,29 @@
+# This is a C++ library; the Python here is its benchmark harness and build
+# scripts, never built or installed (`package = false`).  The `[project]` table
+# exists for `requires-python`, without which uv warns on every `uv run` and
+# writes a lock that follows the local interpreter.
+[project]
+name = "mip-heuristics-dev"
+version = "0"
+requires-python = ">=3.10"
+
+[tool.uv]
+package = false
+
+# The whole Python toolchain, so `uv sync` is the setup, and the `uv run` in
+# pre-commit installs the same set into a clone that never ran it.  The clang
+# pair is pinned to the version `.clang-format-version` names and
+# cmake/Lint.cmake requires; ruff and mypy are pinned because their rule sets
+# move between releases.
+[dependency-groups]
+dev = [
+    "clang-format==22.1.8",
+    "clang-tidy==22.1.8",
+    "mypy==2.4.0",
+    "pytest",
+    "ruff==0.16.3",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["bench"]
 addopts = "--ignore=build*"
@@ -46,3 +72,14 @@ ignore = [
     # inventing a second name for the same value at every such site.
     "PLW2901",
 ]
+
+[tool.mypy]
+files = ["bench", "cmake"]
+# pre-commit runs `mypy .`, which ignores `files` and walks the tree: keep it
+# out of the build trees, whose `_deps` hold HiGHS's and Catch2's own Python.
+exclude = ['^build', '^dist/']
+
+# Optional at runtime: `generate_survival_plot` skips the plot without it.
+[[tool.mypy.overrides]]
+module = ["matplotlib", "matplotlib.*"]
+ignore_missing_imports = true

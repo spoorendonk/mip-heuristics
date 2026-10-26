@@ -84,6 +84,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from analyze_results import load_results, parse_solu_file, resolve_reference
@@ -332,7 +333,7 @@ def _to_bool(value: object) -> bool:
     return bool(value)
 
 
-def _field_of(item: object, key: str, required: bool = True) -> object:
+def _field_of(item: object, key: str, required: bool = True) -> Any:
     for alias in _HEURSOL_FIELDS[key]:
         if hasattr(item, alias):
             return getattr(item, alias)
@@ -348,13 +349,13 @@ def _coerce(item: object) -> HeurSolSample:
     index = _field_of(item, "heur_index", required=False)
     return HeurSolSample(
         name=str(_field_of(item, "name")),
-        dispatch=int(_field_of(item, "dispatch")),  # type: ignore[arg-type]
-        worker=int(_field_of(item, "worker")),  # type: ignore[arg-type]
-        effort_at=int(_field_of(item, "effort_at")),  # type: ignore[arg-type]
-        wall_ms=float(_field_of(item, "wall_ms")),  # type: ignore[arg-type]
-        obj=float(_field_of(item, "obj")),  # type: ignore[arg-type]
+        dispatch=int(_field_of(item, "dispatch")),
+        worker=int(_field_of(item, "worker")),
+        effort_at=int(_field_of(item, "effort_at")),
+        wall_ms=float(_field_of(item, "wall_ms")),
+        obj=float(_field_of(item, "obj")),
         accepted=_to_bool(_field_of(item, "accepted")),
-        heur_index=None if index is None else int(index),  # type: ignore[arg-type]
+        heur_index=None if index is None else int(index),
     )
 
 
@@ -577,7 +578,8 @@ def improving_offers(members: list, sense: str) -> set[int]:
         # place that pairing lives.
         obj = float(_field_of(sample, "obj"))
         if best is None:
-            best, _ = obj, out.add(id(sample))
+            best = obj
+            out.add(id(sample))
             continue
         margin = 1e-9 * max(1.0, abs(best))
         better = obj < best - margin if sense == "min" else obj > best + margin
@@ -1799,17 +1801,13 @@ def derived_defaults(
         patience = (
             low if clamp is None else min(low, clamp) if low is not None else clamp
         )
+        effort_max = knee.censored_quantile(KNEE_QUANTILE)
+        effort_p90 = knee.quantile(0.9)
         out["heuristics"][name] = {
             "effort": None if effort is None else round(effort, 6),
             "effort_shipped": SHIPPED_EFFORT[name],
-            "effort_max": (
-                None
-                if knee.censored_quantile(KNEE_QUANTILE) is None
-                else round(knee.censored_quantile(KNEE_QUANTILE), 6)
-            ),
-            "effort_p90": (
-                None if knee.quantile(0.9) is None else round(knee.quantile(0.9), 6)
-            ),
+            "effort_max": (None if effort_max is None else round(effort_max, 6)),
+            "effort_p90": None if effort_p90 is None else round(effort_p90, 6),
             "effort_scope": (
                 "per_worker" if BUDGET_IS_PER_WORKER[name] else "per_dispatch"
             ),

@@ -14,6 +14,7 @@ import random
 import shutil
 import subprocess
 import sys
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -81,7 +82,7 @@ def truncated_log() -> str:
 
 def write_tree(
     tmp_path,
-    times: dict[str, object],
+    times: dict[str, Any],
     config: str = "vanilla",
     seeds: tuple[int, ...] = (0,),
     name: str = "results",
@@ -330,7 +331,7 @@ def test_end_to_end_produces_a_stratified_list(tmp_path):
     assert "stratum" in res.stderr and "TOTAL" in res.stderr
 
 
-def test_never_feasible_instances_are_sampled_not_dropped(tmp_path):
+def test_never_feasible_instances_are_sampled_not_dropped(tmp_path) -> None:
     # Half the set never becomes feasible; the bucket must be a stratum, not
     # a filter.
     times: dict[str, object] = {f"feas{i}": 1.5 for i in range(6)}
@@ -529,7 +530,7 @@ def test_solved_log_without_an_incumbent_line_is_refused(tmp_path):
     assert res.stdout == ""
 
 
-def test_partial_seed_coverage_refuses_until_allowed(tmp_path):
+def test_partial_seed_coverage_refuses_until_allowed(tmp_path) -> None:
     times: dict[str, object] = dict(_spread())
     times["patchy"] = {0: 3.0}  # present for seed 0, absent for seed 1
     tree = write_tree(tmp_path, times, seeds=(0, 1))

@@ -693,7 +693,7 @@ def score_result(
     """
     objective = presolve_objective(result)
     no_solution = objective is None
-    gap = no_solution_penalty if no_solution else primal_gap(objective, reference)
+    gap = no_solution_penalty if objective is None else primal_gap(objective, reference)
     wall_ms = heuristic_wall_ms(result)
     tau_s = wall_ms / 1000.0
     traced = sorted({s.name for s in result.heuristic_samples if s.phase == "presolve"})

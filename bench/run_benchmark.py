@@ -1020,16 +1020,16 @@ def main() -> None:
     # one suite value two names.
     seen: dict[tuple[str, tuple[tuple[str, str | float], ...]], str] = {}
     for plan in plans:
-        key = plan.identity
-        if key in seen:
+        identity = plan.identity
+        if identity in seen:
             print(
-                f"Warning: config {plan.name!r} is identical to {seen[key]!r} "
+                f"Warning: config {plan.name!r} is identical to {seen[identity]!r} "
                 "(same binary, same options) — duplicated work, not a second "
                 "data point",
                 file=sys.stderr,
             )
         else:
-            seen[key] = plan.name
+            seen[identity] = plan.name
     print(f"Configs        : {' '.join(p.name for p in plans)}")
     # State the instrumentation decision in the header of every run.  Without
     # it, `--dev-log` is a flag you discover you needed after the campaign:

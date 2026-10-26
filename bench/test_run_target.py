@@ -878,7 +878,8 @@ def parsed_parameter_file() -> list[tuple[str, str, str, str, str]]:
                 continue
             m = _PARAM_RE.match(line)
             assert m, f"unparseable parameter line: {line!r}"
-            entries.append(m.groups())
+            name, flag, kind, domain, condition = m.groups()
+            entries.append((name, flag, kind, domain, condition))
     return entries
 
 

@@ -16,11 +16,10 @@
 # clang-tidy 22.1.8; a different major version is a configure-time warning
 # (a hard error when MIP_HEURISTICS_REQUIRE_LINT is ON).
 #
-# Install with:  python3 -m venv .venv && .venv/bin/pip install \
-#                    clang-format==22.1.8 clang-tidy==22.1.8 pytest
+# Install with:  uv sync   (pyproject.toml's dev group, pytest included)
 # `.venv/bin` is searched first, so that install is picked up automatically.
-# Include `pytest`: the root CMakeLists prefers `.venv/bin/python` over the
-# system interpreter for the bench tests, so creating a venv *without* it
+# A venv needs `pytest` too: the root CMakeLists prefers `.venv/bin/python`
+# over the system interpreter for the bench tests, so a venv *without* it
 # silently unregisters `bench_python_tests` on a machine where the system
 # interpreter had it.
 

@@ -30,9 +30,10 @@ import math
 import os
 import statistics
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_highs_log import (
@@ -539,7 +540,7 @@ def _oracle_score(r: SolveResult | None, time_limit: float, ref: float | None) -
 def build_oracle_config(
     results: dict[str, dict[int, dict[str, SolveResult]]],
     participants: list[str],
-    best_known: dict[str, float | None] | None,
+    best_known: Mapping[str, float | None] | None,
     time_limit: float,
     name: str = ORACLE_DEFAULT_NAME,
     instances: list[str] | None = None,
@@ -1281,17 +1282,22 @@ def format_int(v: int | None, width: int = 8, signed: bool = False) -> str:
     return (f"{v:+d}" if signed else str(v)).rjust(width)
 
 
+class FeasibleCounts(TypedDict):
+    per_seed: dict[int, int]
+    any: int
+
+
 def count_feasible(
     results: dict[str, dict[int, dict[str, SolveResult]]],
     config: str,
     instances: list[str],
-) -> dict[str, int]:
+) -> FeasibleCounts:
     """Count #Feas: instances with at least one feasible solution across all seeds.
 
     Returns {"per_seed": {seed: count}, "any": count_any_seed}.
     """
     seeds = sorted(results.get(config, {}).keys())
-    per_seed = {}
+    per_seed: dict[int, int] = {}
     any_seed_count = 0
 
     for inst in instances:
@@ -1413,11 +1419,17 @@ def source_label(src: str) -> str:
     return CUSTOM_SOURCE_LABELS.get(src, "HiGHS/other")
 
 
+class Attribution(TypedDict):
+    first: dict[str, int]
+    best: dict[str, int]
+    n_feasible: int
+
+
 def heuristic_attribution(
     agg_results: dict[str, dict[str, SolveResult]],
     config: str,
     instances: list[str],
-) -> dict[str, object]:
+) -> Attribution:
     """Attribute, for one config, which heuristic found the first feasible
     incumbent and which produced the best (final) incumbent, per instance.
 
@@ -1460,15 +1472,15 @@ def print_attribution(
 
     for c in configs:
         attr = heuristic_attribution(agg_results, c, instances)
-        first = attr["first"]  # type: ignore[assignment]
-        best = attr["best"]  # type: ignore[assignment]
+        first = attr["first"]
+        best = attr["best"]
         n_feas = attr["n_feasible"]
         print(f"### {c}  ({n_feas} feasible)")
         print(f"{'Heuristic':<14} {'#First':>8} {'#Best':>8}")
         print("-" * 32)
-        labels = [lbl for lbl in ATTRIBUTION_ORDER if first.get(lbl) or best.get(lbl)]  # type: ignore[union-attr]
+        labels = [lbl for lbl in ATTRIBUTION_ORDER if first.get(lbl) or best.get(lbl)]
         for lbl in labels:
-            print(f"{lbl:<14} {first.get(lbl, 0):>8} {best.get(lbl, 0):>8}")  # type: ignore[union-attr]
+            print(f"{lbl:<14} {first.get(lbl, 0):>8} {best.get(lbl, 0):>8}")
         print()
 
 
@@ -1520,13 +1532,18 @@ def print_comparison_table(
     print("-" * 180)
 
     # Per-instance rows
-    wins = {"t1st": 0, "gap": {tc: 0 for tc in time_cutoffs}, "pd": 0}
-    losses = {"t1st": 0, "gap": {tc: 0 for tc in time_cutoffs}, "pd": 0}
-    ties = {"t1st": 0, "gap": {tc: 0 for tc in time_cutoffs}, "pd": 0}
+    wins = {"t1st": 0, "pd": 0}
+    losses = {"t1st": 0, "pd": 0}
+    ties = {"t1st": 0, "pd": 0}
+    gap_wins = dict.fromkeys(time_cutoffs, 0)
+    gap_losses = dict.fromkeys(time_cutoffs, 0)
+    gap_ties = dict.fromkeys(time_cutoffs, 0)
 
-    t1st_vals = {c1: [], c2: []}
-    gap_vals = {tc: {c1: [], c2: []} for tc in time_cutoffs}
-    pd_vals = {c1: [], c2: []}
+    t1st_vals: dict[str, list[float]] = {c1: [], c2: []}
+    gap_vals: dict[float, dict[str, list[float]]] = {
+        tc: {c1: [], c2: []} for tc in time_cutoffs
+    }
+    pd_vals: dict[str, list[float]] = {c1: [], c2: []}
     n_both = n_c1_only = n_c2_only = n_neither = 0
 
     for inst in instances:
@@ -1579,11 +1596,11 @@ def print_comparison_table(
                 gap_vals[tc][c1].append(g1c)
                 gap_vals[tc][c2].append(g2c)
                 if g1c < g2c - 1e-6:
-                    wins["gap"][tc] += 1
+                    gap_wins[tc] += 1
                 elif g2c < g1c - 1e-6:
-                    losses["gap"][tc] += 1
+                    gap_losses[tc] += 1
                 else:
-                    ties["gap"][tc] += 1
+                    gap_ties[tc] += 1
 
         # P-D integral (from HiGHS)
         pd1 = r1.pd_integral if r1.pd_integral != float("inf") else None
@@ -1625,7 +1642,7 @@ def print_comparison_table(
         if gap_vals[tc][c1]:
             label = f"Gap @ {int(tc)}s"
             print(
-                f"{label:<25} {wins['gap'][tc]:<12} {losses['gap'][tc]:<12} {ties['gap'][tc]:<8} "
+                f"{label:<25} {gap_wins[tc]:<12} {gap_losses[tc]:<12} {gap_ties[tc]:<8} "
                 f"{format_float(shifted_geomean(gap_vals[tc][c1], 0.001), 12, 6)} "
                 f"{format_float(shifted_geomean(gap_vals[tc][c2], 0.001), 12, 6)}"
             )

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -359,7 +360,7 @@ def test_parse_table_flag_rejects_malformed_input(value: str):
 
 
 def build(tree: Path, out: Path, **kwargs):
-    defaults = {
+    defaults: dict[str, Any] = {
         "configs": discover_configs(tree),
         "time_limit": 10.0,
         "note": "",
