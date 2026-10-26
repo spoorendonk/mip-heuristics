@@ -1160,7 +1160,7 @@ Three things to carry forward.
   diverse solution can have relative to the pool's current best and
   still be admitted (10%). A solution within 10% of the best objective
   may replace the most similar existing entry if its Hamming distance
-  exceeds `kDiversityMinHammingFrac`.
+  is at least `kDiversityMinHammingFrac`.
 
   The band exists because the pool is a restart and crossover reservoir,
   not an incumbent store: HiGHS's own `addIncumbent` takes a solution
@@ -1188,7 +1188,7 @@ Three things to carry forward.
 - **Default**: `0.05`
 - **Meaning**: A solution is considered structurally diverse if its
   Hamming distance (fraction of integer variables that differ) from all
-  existing pool entries exceeds this threshold. Used to qualify
+  existing pool entries is at least this threshold. Used to qualify
   solutions for the diversity-aware insertion path.
 - **Suggested range**: 0.01–0.20.
 

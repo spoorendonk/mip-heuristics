@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <cstdint>
+#include <ios>
 #include <limits>
 #include <memory>
 #include <random>
@@ -520,7 +521,7 @@ TEST_CASE("SolutionPool: a column's Hamming term is std::round's verdict at ever
             std::vector<double> offer = best;
             offer[0] = x;
             offer.back() = 3.25;  // continuous: never counted
-            INFO("x = " << x << ", y = " << y);
+            INFO("x = " << std::hexfloat << x << ", y = " << y);
             REQUIRE(pool.try_add(1.05, offer, kSourceC).accepted ==
                     (std::round(x) != std::round(y)));
         }

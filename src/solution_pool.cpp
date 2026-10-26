@@ -15,6 +15,7 @@ SolutionPool::SolutionPool(int capacity)
 
 void SolutionPool::set_integer_mask(std::vector<bool> mask) {
     std::vector<int> index;
+    index.reserve(mask.size());
     for (int j = 0; std::cmp_less(j, mask.size()); ++j) {
         if (mask[j]) {
             index.push_back(j);
