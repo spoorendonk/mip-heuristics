@@ -6,8 +6,10 @@
 #include "rng.h"
 #include "solution_pool.h"
 
+#include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -339,4 +341,188 @@ TEST_CASE("SolutionPool: a best-only restart is the best entry, drawing nothing"
     REQUIRE(pool.try_add(5.0, {1.0, 0.0, 1.0}, kSourceA).accepted);
     REQUIRE(pool.get_restart(rng, out, SolutionPool::RestartPolicy::kBestOnly));
     REQUIRE(out == std::vector<double>{1.0, 0.0, 1.0});
+}
+
+namespace {
+
+// The diversity rule as it stood before #195 made the scan fast, kept here
+// as the reference the pool is held to: every entry measured, `std::round`
+// on every column the flag array marks.
+class ReferencePool {
+public:
+    ReferencePool(int capacity, std::vector<bool> mask)
+        : capacity_(capacity), mask_(std::move(mask)) {
+        for (const bool b : mask_) {
+            num_integers_ += b ? 1 : 0;
+        }
+    }
+
+    bool try_add(double obj, const std::vector<double>& sol) {
+        if (std::cmp_less(entries_.size(), capacity_)) {
+            insert(obj, sol);
+            return true;
+        }
+        if (obj < entries_.back().first) {
+            entries_.pop_back();
+            insert(obj, sol);
+            return true;
+        }
+        const double best = entries_.front().first;
+        if (num_integers_ == 0 ||
+            std::abs(obj - best) >
+                std::max(kDiversityObjTolerance * std::abs(best), kDiversityObjTolerance * 1e-6)) {
+            return false;
+        }
+        ++diversity_offers_;
+        int min_dist = std::numeric_limits<int>::max();
+        int evict_dist = std::numeric_limits<int>::max();
+        int victim = -1;
+        for (int idx = 0; std::cmp_less(idx, entries_.size()); ++idx) {
+            int dist = 0;
+            for (int j = 0; std::cmp_less(j, sol.size()); ++j) {
+                if (mask_[j] && std::round(sol[j]) != std::round(entries_[idx].second[j])) {
+                    ++dist;
+                }
+            }
+            min_dist = std::min(min_dist, dist);
+            if (idx > 0 && dist < evict_dist) {
+                evict_dist = dist;
+                victim = idx;
+            }
+        }
+        if (static_cast<double>(min_dist) / num_integers_ < kDiversityMinHammingFrac ||
+            victim <= 0) {
+            return false;
+        }
+        ++diversity_accepts_;
+        entries_.erase(entries_.begin() + victim);
+        insert(obj, sol);
+        return true;
+    }
+
+    [[nodiscard]] int diversity_offers() const { return diversity_offers_; }
+    [[nodiscard]] int diversity_accepts() const { return diversity_accepts_; }
+
+    [[nodiscard]] const std::vector<std::pair<double, std::vector<double>>>& entries() const {
+        return entries_;
+    }
+
+private:
+    void insert(double obj, const std::vector<double>& sol) {
+        // NOLINTNEXTLINE(modernize-use-ranges)
+        auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj,
+                                    [](const auto& e, double v) { return e.first < v; });
+        entries_.insert(pos, {obj, sol});
+    }
+
+    int capacity_;
+    std::vector<bool> mask_;
+    int num_integers_ = 0;
+    int diversity_offers_ = 0;
+    int diversity_accepts_ = 0;
+    std::vector<std::pair<double, std::vector<double>>> entries_;
+};
+
+}  // namespace
+
+TEST_CASE("SolutionPool: the diversity scan decides every offer as the full std::round scan does",
+          "[pool]") {
+    // Mixed columns, a third continuous, and values on and off the rounding
+    // ties, negative ones included, so the distances depend on how a value
+    // rounds and on which columns count; objectives in a band narrow enough
+    // that most offers take the diversity path, where the scan stops at the
+    // first entry too close to the offer.
+    constexpr int kNcol = 30;
+    constexpr int kOffers = 3000;
+    std::vector<bool> mask(kNcol);
+    for (int j = 0; j < kNcol; ++j) {
+        mask[j] = j % 3 != 1;
+    }
+    const std::vector<double> values = {
+        -2.5, -1.5, -1.0, -0.5, -0.49999999999999994, -0.0, 0.0, 0.3, 0.5,
+        0.7,  1.0,  1.5,  2.5,  0.49999999999999994};
+    Rng rng(11);
+    auto pick_value = [&] {
+        return values[std::uniform_int_distribution<size_t>(0, values.size() - 1)(rng)];
+    };
+    // Offers are a few bank vectors with a column or two redrawn, so they
+    // sit near the entries and the scan refuses as well as admits.
+    std::vector<std::vector<double>> bank(4, std::vector<double>(kNcol));
+    for (auto& base : bank) {
+        std::ranges::generate(base, pick_value);
+    }
+    SolutionPool pool(/*capacity=*/5);
+    pool.set_integer_mask(mask);
+    ReferencePool reference(/*capacity=*/5, mask);
+    for (int i = 0; i < kOffers; ++i) {
+        const double obj = std::uniform_real_distribution<double>(100.0, 104.0)(rng);
+        std::vector<double> sol =
+            bank[std::uniform_int_distribution<size_t>(0, bank.size() - 1)(rng)];
+        for (auto& v : sol) {
+            if (std::uniform_int_distribution<int>(0, kNcol - 1)(rng) == 0) {
+                v = pick_value();
+            }
+        }
+        const bool expected = reference.try_add(obj, sol);
+        REQUIRE(pool.try_add(obj, sol, kSourceA).accepted == expected);
+    }
+    // Both diversity verdicts were reached, many times over.
+    REQUIRE(reference.diversity_accepts() > 50);
+    REQUIRE(reference.diversity_offers() - reference.diversity_accepts() > 50);
+    const auto entries = pool.sorted_entries();
+    REQUIRE(entries.size() == reference.entries().size());
+    for (size_t i = 0; i < entries.size(); ++i) {
+        REQUIRE(entries[i].objective == reference.entries()[i].first);
+        REQUIRE(entries[i].solution == reference.entries()[i].second);
+    }
+}
+
+TEST_CASE("SolutionPool: a column's Hamming term is std::round's verdict at every rounding edge",
+          "[pool]") {
+    // Twenty integer columns, so one differing column is exactly the 5%
+    // diversity threshold.  The best entry and the offer agree everywhere
+    // but column 0, where they hold `y` and `x`; the worst entry also
+    // differs in column 19, so it is never the offer's nearest.  The offer,
+    // inside the diversity band and not beating the worst, is admitted
+    // exactly when `x` and `y` round apart.
+    constexpr int kNcol = 21;  // the last column continuous
+    std::vector<bool> mask(kNcol, true);
+    mask.back() = false;
+    const double big = 4503599627370496.0;  // 2^52
+    const std::vector<double> values = {0.0,
+                                        -0.0,
+                                        0.49999999999999994,
+                                        0.5,
+                                        0.5000000000000001,
+                                        -0.49999999999999994,
+                                        -0.5,
+                                        1.5,
+                                        2.5,
+                                        -2.5,
+                                        1e-300,
+                                        big - 0.5,
+                                        big - 1.0,
+                                        big,
+                                        big + 2.0,
+                                        -(big - 0.5),
+                                        1e300,
+                                        -1e300};
+    for (const double x : values) {
+        for (const double y : values) {
+            SolutionPool pool(/*capacity=*/2);
+            pool.set_integer_mask(mask);
+            std::vector<double> best(kNcol, 0.0);
+            best[0] = y;
+            std::vector<double> worst = best;
+            worst[19] = 7.0;
+            REQUIRE(pool.try_add(1.0, best, kSourceA).accepted);
+            REQUIRE(pool.try_add(1.05, worst, kSourceB).accepted);
+            std::vector<double> offer = best;
+            offer[0] = x;
+            offer.back() = 3.25;  // continuous: never counted
+            INFO("x = " << x << ", y = " << y);
+            REQUIRE(pool.try_add(1.05, offer, kSourceC).accepted ==
+                    (std::round(x) != std::round(y)));
+        }
+    }
 }

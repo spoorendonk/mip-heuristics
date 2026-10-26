@@ -195,10 +195,18 @@ public:
     void set_scan_hook_for_test(std::function<void()> hook) { scan_hook_ = std::move(hook); }
 
 private:
-    using MaskPtr = std::shared_ptr<const std::vector<bool>>;
+    // The integer columns twice: the flag array the crossovers test column
+    // by column, and the ascending index list the Hamming scan iterates, so
+    // a scan skips the continuous columns rather than testing each (#195).
+    struct IntegerColumns {
+        std::vector<bool> mask;
+        std::vector<int> index;
+    };
+    using MaskPtr = std::shared_ptr<const IntegerColumns>;
 
-    // Hamming distance on the integer variables `mask` names.
-    static int hamming_distance(const std::vector<bool>& mask, const std::vector<double>& a,
+    // Hamming distance on the integer columns `index` lists, over the
+    // columns both vectors have.
+    static int hamming_distance(const std::vector<int>& index, const std::vector<double>& a,
                                 const std::vector<double>& b);
 
     // Whether column `j` is integer, tolerating a mask shorter than the
@@ -225,7 +233,6 @@ private:
     // Never null; replaced, never written, so a scan outside the lock reads
     // the one it took.
     MaskPtr integer_mask_;
-    int num_integers_ = 0;  // cached count of integer vars
     // Bumped on every change to `entries_` or `integer_mask_`, so a
     // diversity scan taken outside the lock can tell whether it still
     // describes the pool (see `try_add`).

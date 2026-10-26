@@ -2,46 +2,73 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <mutex>
 #include <random>
 #include <utility>
 
 SolutionPool::SolutionPool(int capacity)
-    : capacity_(capacity), integer_mask_(std::make_shared<const std::vector<bool>>()) {
+    : capacity_(capacity), integer_mask_(std::make_shared<const IntegerColumns>()) {
     entries_.reserve(capacity_ > 0 ? capacity_ : 0);
 }
 
 void SolutionPool::set_integer_mask(std::vector<bool> mask) {
-    int count = 0;
-    for (bool b : mask) {
-        if (b) {
-            ++count;
+    std::vector<int> index;
+    for (int j = 0; std::cmp_less(j, mask.size()); ++j) {
+        if (mask[j]) {
+            index.push_back(j);
         }
     }
-    auto next = std::make_shared<const std::vector<bool>>(std::move(mask));
+    auto next = std::make_shared<const IntegerColumns>(
+        IntegerColumns{.mask = std::move(mask), .index = std::move(index)});
     std::scoped_lock lock(mtx_);
     integer_mask_.swap(next);  // the old mask is released after the lock
-    num_integers_ = count;
     ++generation_;
 }
 
-int SolutionPool::hamming_distance(const std::vector<bool>& mask, const std::vector<double>& a,
-                                   const std::vector<double>& b) {
-    int dist = 0;
-    int n = static_cast<int>(std::min(a.size(), b.size()));
-    if (mask.empty()) {
-        return 0;
+namespace {
+
+// `std::round`, exactly, inlined: half away from zero, and the same value
+// for every finite `x` (both sides compare equal; a zero's sign may differ,
+// which `==` ignores).  The libm call was most of the Hamming scan's cost,
+// about 11 ns per column (#195).  At or above 2^52 every double is an
+// integer already; below it the conversion truncates exactly and `x - t`,
+// the fractional part, is exact too.
+double round_half_away(double x) {
+    constexpr double kTwoPow52 = 4503599627370496.0;
+    if (!(std::abs(x) < kTwoPow52)) {
+        return x;
     }
-    for (int j = 0; j < n; ++j) {
-        if (mask[j] && std::round(a[j]) != std::round(b[j])) {
-            ++dist;
+    const auto t = static_cast<double>(static_cast<std::int64_t>(x));
+    const double frac = x - t;
+    return t + static_cast<double>(frac >= 0.5) - static_cast<double>(frac <= -0.5);
+}
+
+}  // namespace
+
+int SolutionPool::hamming_distance(const std::vector<int>& index, const std::vector<double>& a,
+                                   const std::vector<double>& b) {
+    const auto n = std::min(a.size(), b.size());
+    int dist = 0;
+    for (const int j : index) {
+        if (std::cmp_greater_equal(j, n)) {
+            break;  // ascending, so no later column is in both vectors
         }
+        dist += static_cast<int>(round_half_away(a[j]) != round_half_away(b[j]));
     }
     return dist;
 }
 
 namespace {
+
+// Whether an offer at Hamming distance `dist` from an entry is diverse
+// enough from it.  One spelling, for the verdict and for the scan that stops
+// at the first entry failing it.
+bool far_enough(int dist, int num_integers) {
+    return static_cast<double>(dist) / static_cast<double>(num_integers) >=
+           kDiversityMinHammingFrac;
+}
 
 // The diversity path's verdict over one scan: `dists[i]` is the offer's
 // Hamming distance to entry `i`, best first.  Two different questions, so
@@ -75,10 +102,9 @@ int diversity_victim(const std::vector<int>& dists, int num_integers) {
             most_similar_idx = idx;
         }
     }
-    double min_frac = static_cast<double>(min_dist) / static_cast<double>(num_integers);
     // `most_similar_idx < 0` means the best entry is the only one there
     // is, so nothing may be evicted.
-    if (min_frac >= kDiversityMinHammingFrac && most_similar_idx > 0) {
+    if (far_enough(min_dist, num_integers) && most_similar_idx > 0) {
         return most_similar_idx;
     }
     return -1;
@@ -125,6 +151,7 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
     bool scanned = false;
     // Sized here so the snapshot taken under the lock never allocates.
     scan.reserve(capacity_ > 0 ? capacity_ : 0);
+    dists.reserve(capacity_ > 0 ? capacity_ : 0);
 
     for (;;) {
         AddResult result;
@@ -181,7 +208,7 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                 evicted = std::move(entries_.back().solution);
                 entries_.pop_back();
                 insert_sorted();
-            } else if (!integer_mask_->empty() && num_integers_ > 0 && !entries_.empty()) {
+            } else if (!integer_mask_->index.empty() && !entries_.empty()) {
                 // Diversity-aware path: pool is full and obj doesn't beat worst.
                 // Accept if (a) integer mask is set, (b) obj is within tolerance of
                 // best, and (c) solution is sufficiently diverse from all entries.
@@ -195,7 +222,8 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                 if (gap <= threshold) {
                     if (scanned && scanned_generation == generation_) {
                         // The scan describes these very entries: decide.
-                        const int victim = diversity_victim(dists, num_integers_);
+                        const int victim =
+                            diversity_victim(dists, static_cast<int>(integer_mask_->index.size()));
                         if (victim > 0) {
                             // Replace the most similar entry other than the best.
                             evicted = std::move(entries_[victim].solution);
@@ -248,15 +276,23 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             stale_mask.reset();
             mask_changed = false;
         }
-        dists.resize(scan.size());
-        for (size_t idx = 0; idx < scan.size(); ++idx) {
-            const auto& entry = scan[idx].solution;
+        //
+        // One entry the offer is too close to refuses it whatever the others
+        // measure, so the scan stops there and `dists` ends with it: the
+        // verdict over that prefix is the verdict over all of them.
+        const int num_integers = static_cast<int>(mask->index.size());
+        dists.clear();
+        for (const EntryRef& ref : scan) {
+            const auto& entry = ref.solution;
             auto hit = std::ranges::find(seen, entry, &std::pair<SolutionPtr, int>::first);
             if (hit != seen.end()) {
-                dists[idx] = hit->second;
+                dists.push_back(hit->second);
             } else {
-                dists[idx] = hamming_distance(*mask, *sol, *entry);
-                seen.emplace_back(entry, dists[idx]);
+                dists.push_back(hamming_distance(mask->index, *sol, *entry));
+                seen.emplace_back(entry, dists.back());
+            }
+            if (!far_enough(dists.back(), num_integers)) {
+                break;
             }
         }
         scanned = true;
@@ -376,10 +412,10 @@ bool SolutionPool::get_restart(Rng& rng, std::vector<double>& out, RestartPolicy
 
     switch (strategy) {
         case Strategy::kGuided:
-            guided_crossover(*mask, *first, *second, rng, out);
+            guided_crossover(mask->mask, *first, *second, rng, out);
             break;
         case Strategy::kNeighborhood:
-            neighborhood_crossover(*mask, *first, *second, rng, out);
+            neighborhood_crossover(mask->mask, *first, *second, rng, out);
             break;
         case Strategy::kCopy:
             out = *first;
