@@ -148,8 +148,9 @@ public:
     // Rehfeldt, Sect. 2.3) restarts its local search "from the best
     // incumbent in the pool".  The policy is the caller's to pass:
     // LocalMIP's own fallback to its sink's pool, when a `RestartSource`
-    // answers false, stays `kMixed`, so a caller wanting best-only on every
-    // restart serves its best from the source whenever it has one.
+    // answers false, is `kMixed` unless `HeuristicBudget::restart` asks
+    // otherwise (#200), and `rebuild_restart_point` passes `kBestOnly` for
+    // FJ and LocalMIP alike.
     enum class RestartPolicy { kMixed, kBestOnly };
 
     // Get a restart solution via one of three strategies (roll order):
@@ -161,8 +162,9 @@ public:
     //
     // Post-crossover repair is handled naturally by the calling heuristic,
     // which treats the restart as an initial solution and runs its own
-    // feasibility restoration. LocalMIP (`src/local_mip.cpp`) is the only
-    // caller left: FPR, fpr_lp and Scylla all called this too until issue
+    // feasibility restoration. LocalMIP (`src/local_mip.cpp`) and
+    // `rebuild_restart_point` are the callers left: FPR, fpr_lp and Scylla
+    // all called this too until issue
     // #122 found that the value they fed as an FPR fix-and-propagate seed
     // was unread on every path and removed those three call sites.
     bool get_restart(Rng& rng, std::vector<double>& out,

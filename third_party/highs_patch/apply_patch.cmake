@@ -584,7 +584,10 @@ foreach(_entry IN LISTS _patch_options)
             "<identifier>:<kind>:<default>:<bound>:<description>.")
     endif()
 
-    string(FIND "${OPTIONS_CONTENT}" "${_opt_ident}" _opt_found)
+    # The member declaration, `;` included: a bare name would also find an
+    # option whose name it prefixes (`mip_heuristic_local_mip_restart` in
+    # `mip_heuristic_local_mip_restart_weights`).
+    string(FIND "${OPTIONS_CONTENT}" " ${_opt_ident};" _opt_found)
     if(NOT _opt_found EQUAL -1)
         message(STATUS "${_opt_ident} option already applied, skipping")
         continue()

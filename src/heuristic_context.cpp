@@ -335,12 +335,18 @@ void hybrid_restart(std::vector<double>& point, const ProblemView& problem, Rng&
         }
         if ((*problem.integrality)[j] == HighsVarType::kContinuous) {
             point[j] = std::uniform_real_distribution<double>(lb, ub)(rng);
-        } else if (ub - lb <= kSafeInt64DoubleRange) {
-            // `make_problem` rounded integer bounds inward, so both are
-            // integral and `ub - lb` is exact.
-            const auto span = static_cast<int64_t>(ub - lb);
+        } else {
+            // The core `make_problem` rounds integer bounds inward; the
+            // adapter's view points at the model's own, which need not be
+            // integral, so round them here as the reference does.
+            const double lo = std::ceil(lb);
+            const double hi = std::floor(ub);
+            if (hi < lo || hi - lo > kSafeInt64DoubleRange) {
+                continue;
+            }
+            const auto span = static_cast<int64_t>(hi - lo);
             point[j] =
-                lb + static_cast<double>(std::uniform_int_distribution<int64_t>(0, span)(rng));
+                lo + static_cast<double>(std::uniform_int_distribution<int64_t>(0, span)(rng));
         }
     }
 }

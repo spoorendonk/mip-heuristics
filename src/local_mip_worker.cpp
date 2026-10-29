@@ -127,11 +127,6 @@ LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContex
     best_solution_.resize(ncol);
 }
 
-// Cognitive complexity 115 (threshold 25).  Kept whole: one LocalMIP attempt: the
-// feasible/infeasible step loop with tabu and constraint-weight updates, restart, and the lift
-// phase. Decomposing it would move work across a worker's inner loop, and the closeout takes no
-// unmeasured performance risk; the standards also rank fidelity to the reference algorithm above
-// mechanical extraction. NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void LocalMipWorker::randomize_weights(Rng& rng) {
     if (!std::bernoulli_distribution(0.5)(rng)) {
         return;
@@ -143,6 +138,11 @@ void LocalMipWorker::randomize_weights(Rng& rng) {
     ctx_.obj_weight = one_or_two(rng);
 }
 
+// Cognitive complexity 115 (threshold 25).  Kept whole: one LocalMIP attempt: the
+// feasible/infeasible step loop with tabu and constraint-weight updates, restart, and the lift
+// phase. Decomposing it would move work across a worker's inner loop, and the closeout takes no
+// unmeasured performance risk; the standards also rank fidelity to the reference algorithm above
+// mechanical extraction. NOLINTNEXTLINE(readability-function-cognitive-complexity)
 AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     if (base_.finished) {
         return {};
