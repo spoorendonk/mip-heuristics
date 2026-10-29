@@ -274,7 +274,7 @@ GPU build (`-DMIP_HEURISTICS_CUDA=ON`, requires `CUDA_HOME`, fails rather than f
 
 ## Architecture map
 
-HiGHS v1.15.1 is fetched at build time and patched from `third_party/highs_patch/`. **Bump `PATCH_VERSION` on any change to inserted text and clean-rebuild**; older patch layouts are refused, not upgraded. Two layers:
+HiGHS v1.15.1 is fetched at build time and patched from `third_party/highs_patch/`. **Bump `PATCH_VERSION` on any change to inserted text and clean-rebuild** (`rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt`, then re-configure); older patch layouts are refused, not upgraded. Two layers:
 
 - **`mip_heuristics_core`** (STATIC): FJ, LocalMIP, FPR's search, `SolutionPool`/`SolutionSink`, the runner scaffold and the model view (`heuristic_context.h`). It needs no `HighsMipSolver`; `core_boundary` and the whole-archive standalone test enforce that. A new core file, headers included, goes in the core target's list.
 - **`mip_heuristics`** (OBJECT, injected into `highs`): the adapter — `mode_dispatch`, `IncumbentSink`, `effort_ledger`, `highs_context.h`, FPR's dispatch, `fpr_lp`, Scylla, `ContestedPdlp`.
