@@ -969,6 +969,27 @@ TEST_CASE("core: the rebuild restart point under each policy", "[core][restart]"
             REQUIRE(drawn[j] == 0);
         }
     }
+    SECTION("kHybrid rounds an integer column's fractional bounds inward") {
+        // The adapter's view reads the model's own bounds, which the core
+        // `make_problem` would have rounded; reach that case by hand.
+        ProblemView view = s.problem;
+        std::vector<double> lower = *view.col_lower;
+        std::vector<double> upper = *view.col_upper;
+        lower[1] = -2.5;
+        upper[1] = 4.7;
+        view.col_lower = &lower;
+        view.col_upper = &upper;
+        bool drawn = false;
+        for (uint64_t seed = 0; seed < 100; ++seed) {
+            Rng rng(seed);
+            REQUIRE(rebuild_restart_point(RestartPoint::kHybrid, none, sink, rng, out, view));
+            REQUIRE(out[1] == std::round(out[1]));
+            REQUIRE(out[1] >= -2.0);
+            REQUIRE(out[1] <= 4.0);
+            drawn = drawn || out[1] != kRestartBest[1];
+        }
+        REQUIRE(drawn);
+    }
     SECTION("an empty pool with no incumbent falls back to the default path") {
         BestSink empty(*s.problem.integrality, 0);
         for (const RestartPoint point : {RestartPoint::kBest, RestartPoint::kHybrid}) {
