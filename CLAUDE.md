@@ -54,6 +54,7 @@ When a complexity warning fires, don't extract methods mechanically. Ask what th
 
 - `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)` for clang-tidy; FetchContent for dependencies; a single root `CMakeLists.txt`.
 - **Consumable as a subproject.** `highs` and `mip_heuristics_core` are the consumer-facing targets and go **above** the early `return()` behind `MIP_HEURISTICS_BUILD_TESTS`; anything development-only goes below it. Set HiGHS's switches as normal variables, never `CACHE FORCE`. A parent's HiGHS patches go through `MIP_HEURISTICS_EXTRA_HIGHS_PATCHES`, and empty must leave the patch command byte-identical. Details: `docs/DEVELOPMENT.md`.
+- `-Werror=unused-result` and `-Werror=switch` go on every library and test target of ours and stay off HiGHS's (why: `docs/RUNTIME.md`, Patience; `docs/ARCHITECTURE.md`, `fpr_lp`).
 
 ## Testing (Catch2 v3)
 
@@ -209,7 +210,7 @@ do not matter; staged and unstaged changes to tracked files do.
 
 - **CLAUDE.md discipline.** When Claude gets something wrong, fix CLAUDE.md in the same commit. It's a living document — update it whenever better instructions would have prevented the mistake. Keep it **forward-looking**: rules and current behaviour, not a change log. Post-mortem detail, measurements of a past run, and "it used to be X" belong in the issue that owns them. Keep it under ~25 KB, since every session loads it whole: a mechanism's detail goes in the `docs/*.md` the Architecture map links, with only the rule here.
 - **Follow the agreed plan.** If a plan should change, stop and discuss — don't silently diverge. Same outside a written plan: if the current approach isn't working, say so rather than quietly switching strategies. Implement everything specified; no TODO placeholders or stubs unless asked.
-- **Match references exactly.** Implementing from papers, pseudocode, or open source: no early exits, iteration limits, size caps, or "optimization" shortcuts that change behaviour. Introduce heuristic approximations only when asked. Implement the edge cases rather than simplifying them away. When in doubt, be faithful and let tests verify. Where the reference is genuinely ambiguous, take a reading, implement it, and record the ambiguity in a comment beside the code (and in `docs/PARAMETERS.md` if it is a parameter) — the deviations recorded below are all of this shape.
+- **Match references exactly.** Implementing from papers, pseudocode, or open source: no early exits, iteration limits, size caps, or "optimization" shortcuts that change behaviour. Introduce heuristic approximations only when asked. Implement the edge cases rather than simplifying them away. When in doubt, be faithful and let tests verify. Where the reference is genuinely ambiguous, take a reading, implement it, and record the ambiguity in a comment beside the code (and in `docs/PARAMETERS.md` if it is a parameter) — the deviations recorded in `docs/ARCHITECTURE.md` are all of this shape.
 - **Don't invent APIs.** Verify functions, flags, and methods exist before using them.
 - **Don't ignore type errors.** If clang-tidy or ruff flags something, fix the root cause — don't suppress.
 - **Don't use deprecated patterns.** Check current docs, not training data.
@@ -278,7 +279,7 @@ HiGHS v1.15.1 is fetched at build time and patched from `third_party/highs_patch
 - **`mip_heuristics_core`** (STATIC): FJ, LocalMIP, FPR's search, `SolutionPool`/`SolutionSink`, the runner scaffold and the model view (`heuristic_context.h`). It needs no `HighsMipSolver`; `core_boundary` and the whole-archive standalone test enforce that. A new core file, headers included, goes in the core target's list.
 - **`mip_heuristics`** (OBJECT, injected into `highs`): the adapter — `mode_dispatch`, `IncumbentSink`, `effort_ledger`, `highs_context.h`, FPR's dispatch, `fpr_lp`, Scylla, `ContestedPdlp`.
 
-The presolve chain is FJ → FPR → LocalMIP → Scylla (`kChain` in `src/mode_dispatch.cpp`), each on continuous parallel workers; `fpr_lp` runs at dive time inside the RENS/RINS LP-iteration envelope. A heuristic runs iff its `mip_heuristic_<name>_effort` is above zero.
+The presolve chain is FJ → FPR → LocalMIP → Scylla (`kChain` in `src/mode_dispatch.cpp`), each on continuous parallel workers; `fpr_lp` runs at dive time inside the RENS/RINS LP-iteration envelope. A heuristic runs only if its `mip_heuristic_<name>_effort` is above zero (FJ also needs upstream's `mip_heuristic_run_feasibility_jump`).
 
 Rules no change may break: workers read `problem.incumbent`, never `mipdata->incumbent`; `compute_var_order` and clique-table reads run on the dispatching thread only; `terminated()` is seat-holder-only while `past_deadline()` is safe on any thread; the effort ledger is charged from the dispatching thread only; headers inserted into HiGHS's own sources (`fpr_lp.h`, `mode_dispatch.h`) stay C++11.
 
@@ -286,7 +287,7 @@ Rules no change may break: workers read `problem.incumbent`, never `mipdata->inc
 
 | Doc | Covers |
 |---|---|
-| `docs/ARCHITECTURE.md` | integration model and core boundary; `fpr`, `fpr_lp`, `fj`, `local_mip`, `scylla`; dispatch and its threading rules; `contested_pdlp`; shared utilities |
+| `docs/ARCHITECTURE.md` | integration model and core boundary; bumping the HiGHS tag (silently rejected option names); `fpr`, `fpr_lp`, `fj`, `local_mip`, `scylla`; dispatch and its threading rules; `contested_pdlp`; shared utilities |
 | `docs/RUNTIME.md` | the patch's HiGHS options and their defaults; patience; the wall-clock deadline; `[Sequential]` / `[Heur]` / `[HeurSol]`; the ~4% anchor a micro-optimization is priced against |
 | `docs/BENCHMARKING.md` | `mipfeas`, the vanilla baseline, killed runs, configs, tuning subsets, the oracle, the release archive |
 | `docs/DEVELOPMENT.md` | the long form of the CMake, testing, workflow and build rules; the GPU build |

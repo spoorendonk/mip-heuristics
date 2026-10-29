@@ -1092,7 +1092,7 @@ endif()
 # the whole of `updateValue` on a HiGHS tag bump, not just the anchored lines.
 #
 # Consequence: our FeasibilityJump is no longer bit-identical to HiGHS's.  See
-# the README and CLAUDE.md `fj` entries, which say so.
+# the README and docs/ARCHITECTURE.md `fj` entries, which say so.
 file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_JUMP)
 # Keyed on the inserted *code*, not on a comment: the comment marker used
 # here at first was "mip-heuristics (#139)", which is a prefix of the
