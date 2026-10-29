@@ -17,6 +17,7 @@
 
 struct HighsLogOptions;
 class LeastViolatedPoint;
+class SolutionSink;
 
 // Common execution scaffold for the four presolve heuristics (issue #94).
 //
@@ -308,6 +309,15 @@ struct ProblemError {
 std::expected<ProblemView, ProblemError> make_problem(const HighsLp& model, ProblemStorage& storage,
                                                       double feastol, double epsilon);
 
+// What a rebuilt FJ or LocalMIP worker restarts from (#200); a slot's first
+// worker is not a restart and ignores it.  `kDefault` is the restart before
+// the option: LocalMIP a pool draw (`RestartPolicy::kMixed`) perturbed, FJ
+// the pool's best.  `kBest` is the best point unperturbed — Local-MIP v2's
+// default `restart = best` and CP-SAT ViolationLS's restart — which for FJ
+// is `kDefault` exactly.  `kHybrid` is Local-MIP v2's `hybrid_restart` on
+// the same point (`hybrid_restart`).  See `rebuild_restart_point`.
+enum class RestartPoint : uint8_t { kDefault, kBest, kHybrid };
+
 // One heuristic's slice of the presolve effort envelope.  `total` used to
 // travel separately as a bare `max_effort` parameter while the other three
 // were fields of `ParallelSetup`; they are one thing and now travel as one.
@@ -344,6 +354,14 @@ struct HeuristicBudget {
     // is seen no sooner than 500000 effort units in, whatever `worker_stale`
     // says (#194; HiGHS's own FJ has the same floor).
     bool fj_stall_ends_run = false;
+
+    // FJ and LocalMIP: the point a rebuilt worker restarts from (#200).
+    RestartPoint restart = RestartPoint::kDefault;
+
+    // LocalMIP only, default off (#200): a rebuilt worker's weights start,
+    // with probability one half, at draws from {1, 2} instead of 1 — CP-SAT's
+    // restart weight draw, on LocalMIP's integer weights.
+    bool randomize_restart_weights = false;
 
     // This heuristic was handed nothing, and must therefore do nothing
     // (issue #106).
@@ -617,6 +635,25 @@ using RestartSource = std::function<bool(Rng& rng, std::vector<double>& out)>;
 // otherwise false, with `out` empty.
 [[nodiscard]] bool take_restart(const RestartSource& source, Rng& rng, std::vector<double>& out,
                                 const ProblemView& problem);
+
+// Local-MIP v2's `hybrid_restart`, in place on `point` (#200; `restart.cpp`
+// at shaowei-cai-group/Local-MIP 3bd2d61): each column keeps its value or,
+// on an even coin, takes its `sample_random_value` — uniform over the
+// column's integers when it is an integer column with both bounds finite,
+// uniform over its interval when it is continuous with both bounds finite,
+// and its value otherwise.  A finite integer range wider than
+// `kSafeInt64DoubleRange` counts as unbounded: no `int64_t` draw covers it.
+void hybrid_restart(std::vector<double>& point, const ProblemView& problem, Rng& rng);
+
+// The point a rebuilt worker restarts from under `policy`, into `out`
+// (#200), or false — with `out` empty and nothing drawn — under
+// `kDefault`, or when there is no base point: then the caller takes its
+// `kDefault` path.  The base is `source`'s point, else the pool's best
+// entry (drawing nothing), else `problem.incumbent`; `kHybrid` then applies
+// `hybrid_restart`.
+[[nodiscard]] bool rebuild_restart_point(RestartPoint policy, const RestartSource& source,
+                                         SolutionSink& sink, Rng& rng, std::vector<double>& out,
+                                         const ProblemView& problem);
 
 // The budget for a `run_until_stopped` slot that only the caller's stop
 // should end: no ceiling on the run or on one worker, no run-level patience,

@@ -2,6 +2,8 @@
 
 #include "lp_data/HConst.h"
 #include "lp_data/HighsLp.h"
+#include "solution_pool.h"
+#include "solution_sink.h"
 #include "util/HighsUtils.h"
 
 #include <algorithm>
@@ -9,6 +11,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -317,4 +320,46 @@ bool take_restart(const RestartSource& source, Rng& rng, std::vector<double>& ou
     }
     out.clear();
     return false;
+}
+
+void hybrid_restart(std::vector<double>& point, const ProblemView& problem, Rng& rng) {
+    std::bernoulli_distribution coin(0.5);
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        if (!coin(rng)) {
+            continue;
+        }
+        const double lb = (*problem.col_lower)[j];
+        const double ub = (*problem.col_upper)[j];
+        if (!std::isfinite(lb) || !std::isfinite(ub)) {
+            continue;
+        }
+        if ((*problem.integrality)[j] == HighsVarType::kContinuous) {
+            point[j] = std::uniform_real_distribution<double>(lb, ub)(rng);
+        } else if (ub - lb <= kSafeInt64DoubleRange) {
+            // `make_problem` rounded integer bounds inward, so both are
+            // integral and `ub - lb` is exact.
+            const auto span = static_cast<int64_t>(ub - lb);
+            point[j] =
+                lb + static_cast<double>(std::uniform_int_distribution<int64_t>(0, span)(rng));
+        }
+    }
+}
+
+bool rebuild_restart_point(RestartPoint policy, const RestartSource& source, SolutionSink& sink,
+                           Rng& rng, std::vector<double>& out, const ProblemView& problem) {
+    out.clear();
+    if (policy == RestartPoint::kDefault) {
+        return false;
+    }
+    if (!take_restart(source, rng, out, problem) &&
+        !sink.get_restart(rng, out, SolutionPool::RestartPolicy::kBestOnly)) {
+        if (problem.incumbent.empty()) {
+            return false;
+        }
+        out = problem.incumbent;
+    }
+    if (policy == RestartPoint::kHybrid) {
+        hybrid_restart(out, problem, rng);
+    }
+    return true;
 }

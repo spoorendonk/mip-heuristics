@@ -55,6 +55,18 @@ public:
     // off the outgoing worker to seed the replacement's `WorkerTrace`.
     [[nodiscard]] size_t traced_effort() const { return trace_.at(ctx_.effort); }
 
+    // CP-SAT's restart weight draw (`LsOptions::Randomize`), on a rebuilt
+    // worker before its first attempt (#200): with probability one half,
+    // every constraint weight and the objective weight start at a uniform
+    // draw from {1, 2} instead of 1.  CP-SAT draws Uniform(1, 2); these
+    // weights are integers, bumped by +1 and smoothed by -1 down to 1, so
+    // {1, 2} is the integer reading.  Nothing caches a weight, so setting
+    // them here needs no rebuild of the worker's state.
+    void randomize_weights(Rng& rng);
+
+    [[nodiscard]] const std::vector<uint64_t>& weights_for_test() const { return ctx_.weight; }
+    [[nodiscard]] uint64_t obj_weight_for_test() const { return ctx_.obj_weight; }
+
 private:
     // Read only for `past_deadline()`, every `kTermCheckWork` counted units of
     // the search loop: one attempt at a large effort option runs far past

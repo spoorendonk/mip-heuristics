@@ -148,7 +148,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 26 adds `mip_heuristic_skip_submip_chain` (#178): a bool record,
 # default false, which `heuristics::run_presolve` reads to return before the
 # chain in a RINS/RENS sub-MIP.  A record is inserted text.
-set(PATCH_VERSION "26")
+#
+# Version 27 adds the rebuild restart options (#200): two int records,
+# `mip_heuristic_fj_restart` and `mip_heuristic_local_mip_restart` (0..2,
+# default 0), and one bool, `mip_heuristic_local_mip_restart_weights`.
+set(PATCH_VERSION "27")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -504,7 +508,10 @@ set(_patch_options
     "mip_heuristic_local_mip_patience:double:3.1943:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_scylla_patience:double:0.0:${kEffortMax}:Patience for the Scylla presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found"
-    "mip_heuristic_skip_submip_chain:bool:false:-:Run no presolve heuristic in a RINS/RENS sub-MIP, which inherits every other option from its parent. The default false runs the chain there as in the top-level solve")
+    "mip_heuristic_skip_submip_chain:bool:false:-:Run no presolve heuristic in a RINS/RENS sub-MIP, which inherits every other option from its parent. The default false runs the chain there as in the top-level solve"
+    "mip_heuristic_fj_restart:int:0:2:Point a rebuilt FeasibilityJump presolve worker restarts from. 0 the default (the pool's best). 1 best (the same for FJ). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
+    "mip_heuristic_local_mip_restart:int:0:2:Point a rebuilt LocalMIP presolve worker restarts from. 0 the default (a pool draw, perturbed). 1 best (the pool's best, unperturbed). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
+    "mip_heuristic_local_mip_restart_weights:bool:false:-:Start a rebuilt LocalMIP presolve worker's weights, with probability one half, at draws from {1, 2} instead of 1 (CP-SAT's restart weight draw)")
 
 # The upstream record block all four record insertions anchor on, spelled
 # once: four copies of a four-line exact-match string is four chances for

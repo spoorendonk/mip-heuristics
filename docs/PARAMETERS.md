@@ -14,7 +14,8 @@ commit.
 For the runtime options a user actually sets (the five
 `mip_heuristic_<name>_effort` budgets, the four
 `mip_heuristic_<name>_patience` gates, `mip_heuristic_presolve_only`,
-`mip_heuristic_skip_submip_chain` and upstream's own `mip_heuristic_effort`),
+`mip_heuristic_skip_submip_chain`, the three rebuild restart options and
+upstream's own `mip_heuristic_effort`),
 see the closing section of this file
 and `README.md`. **Heuristic selection is those effort options and nothing
 else**: a value at or below zero means the heuristic does not run. For what is and is not reproducible when
@@ -2092,6 +2093,74 @@ effort-gap distribution).
 - **Side effects**: no root LP means no dual bound (`mip_dual_bound` is
   `-inf`), no B&B nodes, no LP iterations, and no dive-time heuristics —
   `fpr_lp` never runs under this option, and neither do RENS/RINS.
+
+---
+
+## Rebuild Restart (issue #200)
+
+What a FJ or LocalMIP worker restarts from when the runner rebuilds it — a
+worker that retired by itself, stalled past its patience, or was asked to
+restart by a `run_until_stopped` caller's `restart_now`. A slot's **first**
+worker is not a restart, and starts as before under every value. The
+defaults leave every trajectory unchanged, draw for draw; the arms exist so
+the reference local searches' restarts can be measured (#201).
+
+### `RestartPoint` — the restart point a rebuild takes
+
+- **File**: `src/heuristic_context.h` (`HeuristicBudget::restart`, `rebuild_restart_point`, `hybrid_restart`)
+- **Values**:
+  - `kDefault` — before #200. LocalMIP takes the caller's `RestartSource`,
+    else the pool's `kMixed` draw (a crossover or a biased copy), else the
+    view's incumbent, else a fresh construction, and then perturbs it
+    (`kPerturbBinaryFraction`). FJ takes the source, else the pool's best,
+    else the incumbent.
+  - `kBest` — the source's point, else the pool's best entry (drawing
+    nothing), else the incumbent, **unperturbed**: Local-MIP v2's default
+    `restart = best` and CP-SAT ViolationLS's restart. For FJ this is
+    `kDefault` exactly, since FJ already restarts from the best as it is.
+  - `kHybrid` — the same base, then Local-MIP v2's `hybrid_restart`
+    ([`restart.cpp`](https://github.com/shaowei-cai-group/Local-MIP/blob/3bd2d61/src/local_search/restart/restart.cpp)):
+    each column keeps the base's value or takes a random one, 50/50. The
+    random value follows its `sample_random_value`: uniform over the
+    column's integers when it is an integer column with both bounds finite
+    (a binary is 0 or 1, a fixed column its bound), uniform over its
+    interval when it is continuous with both bounds finite, and the base's
+    value otherwise. No further perturbation.
+- With no base point at all (no source, an empty pool, no incumbent) every
+  value takes the `kDefault` path, as Local-MIP v2 falls back to a random
+  start before its first feasible solution.
+- **Deviation**: an integer column whose finite range exceeds
+  `kSafeInt64DoubleRange` keeps the base's value, as an unbounded one does,
+  rather than drawing over a range no `int64_t` holds.
+
+### `mip_heuristic_fj_restart` — FJ's rebuild restart point
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `0`
+- **Meaning**: `RestartPoint` for FJ's rebuilds in the presolve chain: `0`
+  default, `1` best, `2` hybrid. `1` is `0` for FJ (see above).
+
+### `mip_heuristic_local_mip_restart` — LocalMIP's rebuild restart point
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `0`
+- **Meaning**: `RestartPoint` for LocalMIP's rebuilds in the presolve
+  chain: `0` default, `1` best, `2` hybrid.
+
+### `mip_heuristic_local_mip_restart_weights` — LocalMIP's restart weight draw
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false`
+- **Meaning**: `HeuristicBudget::randomize_restart_weights`. At a rebuild,
+  with probability ½ every constraint weight and the objective weight start
+  at a uniform draw from {1, 2} instead of 1 — CP-SAT's weight draw at a
+  restart (`LsOptions::Randomize`, `ortools/sat/feasibility_jump.cc`),
+  which starts them at Uniform(1, 2).
+- **Deviation**: LocalMIP's weights are integers, bumped by +1 and smoothed
+  by −1 down to 1, so a real-valued draw has no direct analogue; {1, 2} is
+  the integer reading. Every draw sits behind the flag, so the default
+  stream does not move. FJ has no weight arm: its weights live in
+  upstream's `feasibilityjump.hh`.
 
 ---
 

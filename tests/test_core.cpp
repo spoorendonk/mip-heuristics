@@ -793,3 +793,213 @@ TEST_CASE("core: fj_stall_ends_run ends the run when FJ stalls", "[core][until_s
         REQUIRE(source_calls > 1);
     }
 }
+
+namespace {
+
+// What one `run_until_stopped` slot on egout reports with a rebuild forced
+// every 16th attempt: every rebuild after the first find takes the pool path, which is the
+// one the restart options change.
+struct Trajectory {
+    size_t accepted = 0;
+    double objective = 0.0;
+    size_t effort = 0;
+    bool operator==(const Trajectory&) const = default;
+};
+
+template <typename Run>
+Trajectory forced_rebuild_trajectory(Run run) {
+    Highs highs;
+    read(highs, "egout.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    ExecutionContext exec = s.exec;
+    int asked = 0;
+    exec.restart_now = [&asked] { return ++asked % 16 == 0; };
+    BestSink sink(*s.problem.integrality, 0);
+    const size_t effort = run(s.problem, exec, sink);
+    REQUIRE(sink.found);
+    return {sink.accepted(), sink.objective, effort};
+}
+
+HeuristicBudget forced_rebuild_budget() {
+    HeuristicBudget budget =
+        make_until_stopped_budget(/*attempt_cap=*/kAttemptBudget, /*patience=*/0);
+    budget.total = kAttemptBudget * 512;
+    return budget;
+}
+
+Trajectory local_mip_trajectory(const HeuristicBudget& budget) {
+    return forced_rebuild_trajectory(
+        [&budget](const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink) {
+            return local_mip::run_until_stopped(problem, budget, exec, /*worker=*/0,
+                                                RestartSource{}, sink);
+        });
+}
+
+Trajectory fj_trajectory(const HeuristicBudget& budget) {
+    return forced_rebuild_trajectory([&budget](const ProblemView& problem,
+                                               const ExecutionContext& exec, SolutionSink& sink) {
+        return fj::run_until_stopped(problem, budget, exec, /*worker=*/0, RestartSource{}, sink);
+    });
+}
+
+}  // namespace
+
+TEST_CASE("core: the default rebuild draws what it drew before the restart options",
+          "[core][until_stopped][restart]") {
+    // Measured on the commit before #200's options existed.  A change to
+    // either heuristic's search moves these too: re-measure on the parent
+    // commit then, and pin what it reports.
+    const Trajectory lm = local_mip_trajectory(forced_rebuild_budget());
+    REQUIRE(lm.accepted == 66);
+    REQUIRE(lm.effort == 33555021);
+    REQUIRE(lm.objective == Catch::Approx(680.351).margin(1e-3));
+    const Trajectory fj = fj_trajectory(forced_rebuild_budget());
+    REQUIRE(fj.accepted == 9);
+    REQUIRE(fj.effort == 33595767);
+    REQUIRE(fj.objective == Catch::Approx(734.144).margin(1e-3));
+}
+
+TEST_CASE("core: the restart options reach a rebuilt worker", "[core][until_stopped][restart]") {
+    const Trajectory lm_default = local_mip_trajectory(forced_rebuild_budget());
+    const Trajectory fj_default = fj_trajectory(forced_rebuild_budget());
+    for (const RestartPoint point : {RestartPoint::kBest, RestartPoint::kHybrid}) {
+        HeuristicBudget budget = forced_rebuild_budget();
+        budget.restart = point;
+        INFO("restart point " << static_cast<int>(point));
+        REQUIRE(local_mip_trajectory(budget) != lm_default);
+        // FJ already restarts from the best as it is.
+        REQUIRE((fj_trajectory(budget) == fj_default) == (point == RestartPoint::kBest));
+    }
+    HeuristicBudget weights = forced_rebuild_budget();
+    weights.randomize_restart_weights = true;
+    REQUIRE(local_mip_trajectory(weights) != lm_default);
+}
+
+namespace {
+
+// One column of each kind `hybrid_restart` tells apart, in one row.
+//   x0 binary, x1 integer in [-3, 5], x2 continuous in [0.5, 2.5],
+//   x3 integer in [0, inf), x4 continuous fixed at 1, x5 free continuous.
+HighsLp restart_model() {
+    HighsLp lp;
+    lp.num_col_ = 6;
+    lp.num_row_ = 1;
+    lp.col_cost_.assign(6, 0.0);
+    lp.col_lower_ = {0.0, -3.0, 0.5, 0.0, 1.0, -kHighsInf};
+    lp.col_upper_ = {1.0, 5.0, 2.5, kHighsInf, 1.0, kHighsInf};
+    lp.integrality_ = {HighsVarType::kInteger,    HighsVarType::kInteger,
+                       HighsVarType::kContinuous, HighsVarType::kInteger,
+                       HighsVarType::kContinuous, HighsVarType::kContinuous};
+    lp.row_lower_ = {-kHighsInf};
+    lp.row_upper_ = {100.0};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
+    lp.a_matrix_.start_ = {0, 1, 2, 3, 4, 5, 6};
+    lp.a_matrix_.index_ = {0, 0, 0, 0, 0, 0};
+    lp.a_matrix_.value_ = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+    return lp;
+}
+
+const std::vector<double> kRestartBest = {1.0, 2.0, 1.5, 7.0, 1.0, -4.25};
+const std::vector<double> kRestartWorse = {0.0, -3.0, 0.5, 0.0, 1.0, 0.0};
+
+}  // namespace
+
+TEST_CASE("core: the rebuild restart point under each policy", "[core][restart]") {
+    const HighsLp lp = restart_model();
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+    BestSink sink(*s.problem.integrality, 0);
+    REQUIRE(sink.offer(2.0, kRestartWorse, WorkerTrace{0, 0}, 0).accepted);
+    REQUIRE(sink.offer(1.0, kRestartBest, WorkerTrace{0, 0}, 0).accepted);
+    const RestartSource none;
+    std::vector<double> out;
+
+    SECTION("kDefault chooses nothing and draws nothing") {
+        Rng rng(7);
+        Rng untouched(7);
+        REQUIRE_FALSE(
+            rebuild_restart_point(RestartPoint::kDefault, none, sink, rng, out, s.problem));
+        REQUIRE(out.empty());
+        REQUIRE(rng() == untouched());
+    }
+    SECTION("kBest is the pool's best exactly, and draws nothing") {
+        Rng rng(7);
+        Rng untouched(7);
+        REQUIRE(rebuild_restart_point(RestartPoint::kBest, none, sink, rng, out, s.problem));
+        REQUIRE(out == kRestartBest);
+        REQUIRE(rng() == untouched());
+    }
+    SECTION("a source that answers wins over the pool") {
+        const RestartSource source = [](Rng& /*rng*/, std::vector<double>& point) {
+            point = kRestartWorse;
+            return true;
+        };
+        Rng rng(7);
+        REQUIRE(rebuild_restart_point(RestartPoint::kBest, source, sink, rng, out, s.problem));
+        REQUIRE(out == kRestartWorse);
+    }
+    SECTION("kHybrid takes each column from the best or within its bounds") {
+        std::vector<int> from_best(6, 0);
+        std::vector<int> drawn(6, 0);
+        for (uint64_t seed = 0; seed < 200; ++seed) {
+            Rng rng(seed);
+            REQUIRE(rebuild_restart_point(RestartPoint::kHybrid, none, sink, rng, out, s.problem));
+            REQUIRE(out.size() == kRestartBest.size());
+            for (size_t j = 0; j < out.size(); ++j) {
+                REQUIRE(out[j] >= lp.col_lower_[j]);
+                REQUIRE(out[j] <= lp.col_upper_[j]);
+                if (lp.integrality_[j] == HighsVarType::kInteger) {
+                    REQUIRE(out[j] == std::round(out[j]));
+                }
+                (out[j] == kRestartBest[j] ? from_best : drawn)[j] += 1;
+            }
+        }
+        // Bounded columns: both halves occur.  Unbounded ones (x3, x5) keep
+        // the best's value, as does the fixed x4, whose one value is it.
+        for (const size_t j : {0, 1, 2}) {
+            INFO("column " << j);
+            REQUIRE(from_best[j] > 0);
+            REQUIRE(drawn[j] > 0);
+        }
+        for (const size_t j : {3, 4, 5}) {
+            INFO("column " << j);
+            REQUIRE(drawn[j] == 0);
+        }
+    }
+    SECTION("an empty pool with no incumbent falls back to the default path") {
+        BestSink empty(*s.problem.integrality, 0);
+        for (const RestartPoint point : {RestartPoint::kBest, RestartPoint::kHybrid}) {
+            Rng rng(7);
+            REQUIRE_FALSE(rebuild_restart_point(point, none, empty, rng, out, s.problem));
+            REQUIRE(out.empty());
+        }
+    }
+}
+
+TEST_CASE("core: the restart weight draw sets 1 or 2, half the time", "[core][restart]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    BestSink sink(*s.problem.integrality, 0);
+    int unchanged = 0;
+    int drawn = 0;
+    for (uint64_t seed = 0; seed < 40; ++seed) {
+        local_mip_detail::LocalMipWorker worker(s.problem, s.exec, sink, kBudget, kBudget,
+                                                /*seed=*/0, /*initial_solution=*/nullptr,
+                                                WorkerTrace{0, 0});
+        Rng rng(seed);
+        worker.randomize_weights(rng);
+        const std::vector<uint64_t>& w = worker.weights_for_test();
+        REQUIRE(w.size() == static_cast<size_t>(s.problem.nrow));
+        const bool all_one = std::ranges::all_of(w, [](uint64_t v) { return v == 1; }) &&
+                             worker.obj_weight_for_test() == 1;
+        REQUIRE(std::ranges::all_of(w, [](uint64_t v) { return v == 1 || v == 2; }));
+        REQUIRE((worker.obj_weight_for_test() == 1 || worker.obj_weight_for_test() == 2));
+        (all_one ? unchanged : drawn) += 1;
+    }
+    REQUIRE(unchanged > 0);
+    REQUIRE(drawn > 0);
+}

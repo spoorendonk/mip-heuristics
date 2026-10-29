@@ -320,16 +320,37 @@ struct Slots {
             trace};
     }
 
-    // Replace the slot's worker: restart from the caller's source, the
-    // pool, the incumbent, or fresh construction (cold-start), with fresh
+    // Replace the slot's worker: restart from the point `budget.restart`
+    // chooses (#200), or by default from the caller's source, the pool, the
+    // incumbent, or fresh construction (cold-start), with fresh
     // perturbation.
     void rebuild(LmState& state, Rng& rng) {
         // Retire the outgoing occupant's charge into the slot's trace base
         // before it is destroyed (#106).
         retire_trace(state.worker, state.trace);
         std::vector<double> restart_sol;
-        if (!take_restart(source, rng, restart_sol, problem) &&
-            !sink.get_restart(rng, restart_sol)) {
+        if (!rebuild_restart_point(budget.restart, source, sink, rng, restart_sol, problem)) {
+            // A source that just declined is not asked twice.
+            if (budget.restart == RestartPoint::kDefault) {
+                default_restart(state, rng, restart_sol, source);
+            } else {
+                default_restart(state, rng, restart_sol, RestartSource{});
+            }
+        }
+        auto seed = static_cast<uint32_t>(rng());
+        state.worker = std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
+                                                        budget.worker_stale, seed,
+                                                        restart_sol.data(), state.trace);
+        if (budget.randomize_restart_weights) {
+            state.worker->randomize_weights(rng);
+        }
+    }
+
+    // The restart before #200, into `restart_sol`, from `from` ahead of the
+    // pool.
+    void default_restart(LmState& state, Rng& rng, std::vector<double>& restart_sol,
+                         const RestartSource& from) {
+        if (!take_restart(from, rng, restart_sol, problem) && !sink.get_restart(rng, restart_sol)) {
             // The dispatch's snapshot, not HiGHS's live incumbent: this runs
             // on a worker thread while peers submit (#98).  The pool is
             // empty on this branch, so no submission has happened and the
@@ -359,10 +380,6 @@ struct Slots {
         }
         perturb_solution(restart_sol, problem.binary.data(), *problem.integrality,
                          *problem.col_lower, *problem.col_upper, problem.ncol, rng);
-        auto seed = static_cast<uint32_t>(rng());
-        state.worker = std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
-                                                        budget.worker_stale, seed,
-                                                        restart_sol.data(), state.trace);
     }
 };
 

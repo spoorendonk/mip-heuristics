@@ -113,6 +113,8 @@ Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside t
 
 `mip_heuristic_skip_submip_chain` (bool, default `false`) runs no presolve heuristic inside a RINS/RENS sub-MIP, which otherwise inherits the parent's options and runs the whole chain again on the sub-problem (#178). The default keeps today's behaviour; whether turning it on helps the primal integral is not yet measured.
 
+`mip_heuristic_fj_restart` and `mip_heuristic_local_mip_restart` (int, default `0`) choose what a FJ or LocalMIP worker restarts from when the runner rebuilds it (#200): `0` is today's restart (LocalMIP: a pool draw, perturbed; FJ: the pool's best); `1` is the pool's best, unperturbed, as Local-MIP v2's default and CP-SAT's violation local search restart; `2` is Local-MIP v2's `hybrid` restart, each column the best's value or a random one within its bounds, 50/50. `mip_heuristic_local_mip_restart_weights` (bool, default `false`) starts a rebuilt LocalMIP worker's weights, with probability ½, at a draw from {1, 2} instead of 1, after CP-SAT's restart weight draw. The defaults leave every run unchanged; which arm to ship is measured in #201. `docs/PARAMETERS.md` has the details and references.
+
 `mip_heuristic_effort` keeps **vanilla semantics and its vanilla default of 0.05**: it is upstream's B&B dive-heuristic envelope, which gates RENS/RINS and `fpr_lp` alike. A patched binary at default options matches vanilla's B&B heuristic budget exactly.
 
 ### Reproducible runs

@@ -132,6 +132,17 @@ LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContex
 // phase. Decomposing it would move work across a worker's inner loop, and the closeout takes no
 // unmeasured performance risk; the standards also rank fidelity to the reference algorithm above
 // mechanical extraction. NOLINTNEXTLINE(readability-function-cognitive-complexity)
+void LocalMipWorker::randomize_weights(Rng& rng) {
+    if (!std::bernoulli_distribution(0.5)(rng)) {
+        return;
+    }
+    std::uniform_int_distribution<uint64_t> one_or_two(1, 2);
+    for (uint64_t& w : ctx_.weight) {
+        w = one_or_two(rng);
+    }
+    ctx_.obj_weight = one_or_two(rng);
+}
+
 AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     if (base_.finished) {
         return {};

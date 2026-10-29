@@ -97,6 +97,11 @@ struct HeuristicConfig {
     // each other.
     // **0 means no gate at all** — see `patience_threshold`.
     double HighsOptionsStruct::* patience;
+    // `mip_heuristic_<name>_restart`, a `RestartPoint`, for the two
+    // heuristics whose workers the runner rebuilds from a point (#200); null
+    // for FPR and Scylla.  `restart_weights` is LocalMIP's alone.
+    HighsInt HighsOptionsStruct::* restart;
+    bool HighsOptionsStruct::* restart_weights;
     DispatchOutcome (*run)(HighsMipSolver&, const ProblemView&, const HeuristicBudget&,
                            ExecutionContext&, SolutionSink&);
 };
@@ -115,14 +120,17 @@ DispatchOutcome without_solver(HighsMipSolver& /*mipsolver*/, const ProblemView&
 constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HighsOptionsStruct::mip_heuristic_fj_effort,
      &HighsOptionsStruct::mip_heuristic_run_feasibility_jump, true,
-     &HighsOptionsStruct::mip_heuristic_fj_patience, &without_solver<&fj::run>},
+     &HighsOptionsStruct::mip_heuristic_fj_patience, &HighsOptionsStruct::mip_heuristic_fj_restart,
+     nullptr, &without_solver<&fj::run>},
     {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
-     &HighsOptionsStruct::mip_heuristic_fpr_patience, &fpr::run},
+     &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HighsOptionsStruct::mip_heuristic_local_mip_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience,
+     &HighsOptionsStruct::mip_heuristic_local_mip_restart,
+     &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights,
      &without_solver<&local_mip::run>},
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
-     false, &HighsOptionsStruct::mip_heuristic_scylla_patience, &scylla::run},
+     false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, &scylla::run},
 });
 
 // Whether `h` runs at all under `options` (#167).
@@ -284,8 +292,15 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         const double patience_per_base =
             h.budget_is_per_worker ? patience_option * static_cast<double>(exec.num_workers)
                                    : patience_option;
-        const HeuristicBudget slice = make_budget(
+        HeuristicBudget slice = make_budget(
             total, exec.num_workers, patience_threshold(problem.nnz, patience_per_base, total));
+        if (h.restart != nullptr) {
+            // The record bounds the option to the enum's range.
+            slice.restart = static_cast<RestartPoint>(options.*h.restart);
+        }
+        if (h.restart_weights != nullptr) {
+            slice.randomize_restart_weights = options.*h.restart_weights;
+        }
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {
             return h.run(mipsolver, problem, slice, exec, sink);

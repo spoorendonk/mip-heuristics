@@ -37,6 +37,9 @@ FjState make_state(const ExecutionContext& exec, int worker_idx) {
 void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
                   const HeuristicBudget& budget, const ExecutionContext& exec, SolutionSink& sink,
                   const RestartSource& source) {
+    // A slot's first worker is not a restart, so `budget.restart` is not
+    // read for it (#200).
+    const bool restart = !state.first_creation;
     uint32_t seed;
     if (state.first_creation) {
         seed = state.initial_seed;
@@ -54,9 +57,16 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
     // every accept goes through it) and `copy_best` takes its own lock, so
     // this reads the same material without racing a concurrent
     // `addIncumbent`.
+    //
+    // `kBest` is this order already, so only `kHybrid` changes the point;
+    // with no point at all it falls back to it, as `kDefault` would.
     std::vector<double> start;
-    if (!take_restart(source, rng, start, problem) && !sink.copy_best(start)) {
-        start = problem.incumbent;
+    if (!restart || !rebuild_restart_point(budget.restart, source, sink, rng, start, problem)) {
+        // A source that just declined is not asked twice.
+        const bool ask_source = !restart || budget.restart == RestartPoint::kDefault;
+        if (!(ask_source && take_restart(source, rng, start, problem)) && !sink.copy_best(start)) {
+            start = problem.incumbent;
+        }
     }
     // Carry the outgoing worker's charge into the replacement's trace base,
     // so the `[HeurSol] effort_at` of this slot keeps rising instead of
