@@ -80,6 +80,8 @@ A push is a clean build and the full suite in a fresh worktree under `~/.cache/l
 
 Trunk-based, linear history on main. Commit directly to main and push when local gates pass.
 
+**Local CI is the gate**; GitHub Actions run at most weekly (`schedule` + `workflow_dispatch`, no `push` / `pull_request`). Nothing waits on a GitHub run.
+
 Feature branches are optional for larger changes: always branch from main (`git checkout main && git pull` first), never from another feature branch, keep them short-lived, and rebase or squash merge — no merge commits on main.
 
 After a successful push:

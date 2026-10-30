@@ -1,17 +1,15 @@
 name: CI
 
-# Until the closeout this workflow was `workflow_dispatch`-only, so it never
-# ran unless someone pressed the button in the Actions tab.  It is now on by
-# default, which is what makes the lint gates and the Python tests mean
-# anything.
+# A weekly check-up, not a gate.  Landing is gated by the local CI the
+# pre-push hook runs (CLAUDE.md, Build & Test); nothing waits on this run.
+# No push or pull_request trigger, and no schedule more often than weekly.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  schedule:
+    - cron: '17 4 * * 1'  # Mondays 04:17 UTC
   workflow_dispatch:
 
-# A cold HiGHS build is about five minutes.  Only the tip of a ref has to be
-# green, so supersede an in-flight run rather than paying for both.
+# A cold HiGHS build is about five minutes.  A manual run started while the
+# scheduled one is in flight supersedes it rather than paying for both.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
