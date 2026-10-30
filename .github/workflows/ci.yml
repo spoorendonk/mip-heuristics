@@ -3,6 +3,9 @@ name: CI
 # A weekly check-up, not a gate.  Landing is gated by the local CI the
 # pre-push hook runs (CLAUDE.md, Build & Test); nothing waits on this run.
 # No push or pull_request trigger, and no schedule more often than weekly.
+# Two costs of weekly, accepted: the HiGHS cache below is evicted after 7
+# days unused, so the scheduled run usually builds cold; and GitHub disables
+# a schedule after 60 days without repository activity.
 on:
   schedule:
     - cron: '17 4 * * 1'  # Mondays 04:17 UTC
@@ -89,11 +92,11 @@ jobs:
       # Test runs BEFORE Lint deliberately.  A failing step skips the rest of
       # the job, so linting first would mean the bench test suite never
       # executes in CI at all — the exact silent-skip this workflow exists to
-      # end.  Both gate; ordering only decides which failure you see first.
+      # end.  Both fail the job; ordering only decides which failure you see first.
       - name: Test
         run: pytest bench
 
-      # Gating, not advisory.  The rule set is pinned in pyproject.toml's
+      # Fails the job, not advisory.  The rule set is pinned in pyproject.toml's
       # `[tool.ruff.lint] select` rather than inherited from ruff's defaults,
       # so this check answers to the repository and not to ruff's release
       # notes — which is what makes it safe to fail the build on.

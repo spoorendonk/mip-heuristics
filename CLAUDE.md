@@ -168,9 +168,9 @@ xk lock -- git push --atomic origin "$sha:refs/heads/$branch" "refs/reviews/$sha
 ```
 
 The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
-travels with the push, so a CI step can check every commit that reaches the
-trunk — including one pushed with `--no-verify`, or from a clone whose hooks
-never ran. wcp's README has the step to paste into the project's CI.
+travels with the push, so a later check (here, the weekly `ci.yml` run, if it
+adds wcp's receipt step) can audit every commit on the trunk — including one
+pushed with `--no-verify`, or from a clone whose hooks never ran.
 `--atomic` lands the branch and its receipt together or not at all.
 
 **Push the reviewed sha by name, and commit nothing until the push returns.**
