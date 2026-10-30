@@ -36,7 +36,8 @@ target-version = "py310"
 # the historical E4/E7/E9/F, which turned CI red on `bench/` code nobody
 # had touched.  A lint gate whose rule set moves underneath it is a gate
 # that fails for reasons unrelated to the change under review, so the set
-# is stated here and the CI job pins the ruff version to match.
+# is stated here, the dev group pins ruff for pre-commit, and the weekly
+# GitHub run pins the same version.
 #
 # This is the union of ruff's own defaults and every family that was
 # firing when the gate was made mandatory; the tree is clean against it.

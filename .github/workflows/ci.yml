@@ -11,11 +11,10 @@ on:
     - cron: '17 4 * * 1'  # Mondays 04:17 UTC
   workflow_dispatch:
 
-# A cold HiGHS build is about five minutes.  A manual run started while the
-# scheduled one is in flight supersedes it rather than paying for both.
+# Queue, never cancel: a manual run must not cost the week's scheduled one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-test:

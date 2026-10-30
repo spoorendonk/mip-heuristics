@@ -80,7 +80,7 @@ A push is a clean build and the full suite in a fresh worktree under `~/.cache/l
 
 Trunk-based, linear history on main. Commit directly to main and push when local gates pass.
 
-**Local CI is the gate**; GitHub Actions run at most weekly (`schedule` + `workflow_dispatch`, no `push` / `pull_request`). Nothing waits on a GitHub run.
+**Local gates decide landing**; GitHub Actions is a weekly check-up nothing waits on (`docs/DEVELOPMENT.md`).
 
 Feature branches are optional for larger changes: always branch from main (`git checkout main && git pull` first), never from another feature branch, keep them short-lived, and rebase or squash merge — no merge commits on main.
 
@@ -168,9 +168,9 @@ xk lock -- git push --atomic origin "$sha:refs/heads/$branch" "refs/reviews/$sha
 ```
 
 The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
-travels with the push, so a later check (here, the weekly `ci.yml` run, if it
-adds wcp's receipt step) can audit every commit on the trunk — including one
-pushed with `--no-verify`, or from a clone whose hooks never ran.
+travels with the push, so a later check can audit every commit on the trunk —
+including one pushed with `--no-verify`, or from a clone whose hooks never ran.
+wcp's README has such a step; this repo's `ci.yml` does not run one.
 `--atomic` lands the branch and its receipt together or not at all.
 
 **Push the reviewed sha by name, and commit nothing until the push returns.**
