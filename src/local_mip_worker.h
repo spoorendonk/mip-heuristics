@@ -92,6 +92,9 @@ private:
     // restarts it too and takes the count then (0, being feasible).
     const bool stall_on_violations_;
     size_t violations_at_reset_ = 0;
+    // On a cut, restarts the counter and moves `effort_at_last_improvement`
+    // (`run_attempt`'s) to now.
+    void note_violation_cut(size_t& effort_at_last_improvement);
 
     // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
     const WorkerTrace trace_;

@@ -210,16 +210,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             max_pass = std::max(max_pass, spent() - pass_start);
             pass_start = spent();
         }
-        if (stall_on_violations_) {
-            // SCIP localsearch's 10% cut, against the count at the last
-            // restart (#203).  A count of 0 is never a cut below 0.
-            const size_t violated = ctx_.violated.elements.size();
-            if (violated < violations_at_reset_ && 10 * violated <= 9 * violations_at_reset_) {
-                violations_at_reset_ = violated;
-                base_.reset_staleness();
-                effort_at_last_improvement = ctx_.effort;
-            }
-        }
+        note_violation_cut(effort_at_last_improvement);
         // Off, this reads the whole attempt's effort even after an
         // incumbent move inside it: the default gate, kept as it was.  On,
         // the effort since the counter's last restart, which can be inside
@@ -499,6 +490,8 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
 
     retain_if_least_violated();
     publish_retained();
+    // The last step's cut, before the tail's stale check reads the counter.
+    note_violation_cut(effort_at_last_improvement);
 
     size_t attempt_effort = ctx_.effort - effort_start;
     if constexpr (local_mip::kInstrumented) {
@@ -522,6 +515,20 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
     attempt.effort = attempt_effort;
 
     return attempt;
+}
+
+// SCIP localsearch's 10% cut, against the count at the last restart
+// (#203).  A count of 0 is never a cut below 0.
+void LocalMipWorker::note_violation_cut(size_t& effort_at_last_improvement) {
+    if (!stall_on_violations_) {
+        return;
+    }
+    const size_t violated = ctx_.violated.elements.size();
+    if (violated < violations_at_reset_ && 10 * violated <= 9 * violations_at_reset_) {
+        violations_at_reset_ = violated;
+        base_.reset_staleness();
+        effort_at_last_improvement = ctx_.effort;
+    }
 }
 
 // Uncharged, so a run that retains a point searches exactly as one that

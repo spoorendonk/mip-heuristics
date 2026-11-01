@@ -356,7 +356,8 @@ struct HeuristicBudget {
     bool fj_stall_ends_run = false;
 
     // LocalMIP's counterpart (#203), default off; the presolve dispatch
-    // never sets it.  When set, a worker's patience counter — effort since
+    // never sets it.  (`local_mip::run` would apply its counter but never
+    // end a run on it.)  When set, a worker's patience counter — effort since
     // the sink's best moved — also restarts whenever its violated-row count
     // falls to at most 90% of the count at the counter's last restart, and a
     // worker that retires (that counter crossing `worker_stale`, `per_worker`
@@ -592,8 +593,8 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // O(nnz) pass) poll nothing, as in the presolve dispatch.  A worker is
 // rebuilt when it stalls (`budget.worker_stale`; for FJ against its own
 // `effortSinceLastImprovement`, for LocalMIP against effort since the
-// sink's best moved, or since a 10% cut in violated rows under
-// `local_mip_stall_ends_run`) or spends `budget.per_worker`.
+// sink's best moved) or spends `budget.per_worker`, unless a
+// `*_stall_ends_run` above ends the run instead.
 //
 // `exec.num_workers` is not read; `worker` picks the slot's seed
 // (`exec.worker_seed(worker)`) and its trace identity, and for LocalMIP a
