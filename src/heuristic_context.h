@@ -610,7 +610,8 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //   - `exec.terminator`, every other attempt: this thread holds the poller
 //     seat for the whole run;
 //   - `*exec.stop`, a relaxed load, from inside attempts and between them;
-//   - `exec.restart_now`, when set, before every attempt;
+//   - `exec.restart_now`, when set, before every attempt but the one a
+//     retired worker under a `*_stall_ends_run` ends the run at;
 //   - `*exec.least_violated`, when set: a lock-free read every step and an
 //     `offer` at most every deadline poll (LocalMIP only).
 // Several threads may each run a slot against one `sink`, `source`, `exec`
