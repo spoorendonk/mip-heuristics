@@ -796,6 +796,114 @@ TEST_CASE("core: fj_stall_ends_run ends the run when FJ stalls", "[core][until_s
 
 namespace {
 
+// SCIP's localsearch as a `run_until_stopped` budget (#203): one LocalMIP
+// worker, ended by `patience` of effort without a 10% cut in violated rows
+// or an incumbent move.
+HeuristicBudget local_mip_one_run_budget(size_t patience, size_t fuse) {
+    HeuristicBudget budget =
+        make_until_stopped_budget(std::max<size_t>(patience / 10, 1), patience);
+    budget.local_mip_stall_ends_run = true;
+    budget.total = fuse;
+    return budget;
+}
+
+}  // namespace
+
+TEST_CASE("core: local_mip_stall_ends_run counts a 10% cut in violations as progress",
+          "[core][until_stopped]") {
+    // From a zero start with no incumbent, every LocalMIP move fixes one
+    // violated row, so its violations fall all the way to the one feasible
+    // point.  `source` hands out that start; `stop_on_rebuild` makes the
+    // second call, a rebuild, stop the run.
+    constexpr HighsInt kRows = 4096;
+    const HighsLp lp = falling_violations_model(kRows);
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+    std::atomic<bool> stop{false};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    int source_calls = 0;
+    bool stop_on_rebuild = false;
+    const RestartSource source = [&](Rng& /*rng*/, std::vector<double>& out) {
+        if (++source_calls > 1 && stop_on_rebuild) {
+            stop.store(true);
+        }
+        out.assign(kRows, 0.0);
+        return true;
+    };
+    auto run = [&](const HeuristicBudget& budget, SolutionSink& sink) {
+        stop.store(false);
+        source_calls = 0;
+        return local_mip::run_until_stopped(s.problem, budget, exec, /*worker=*/0, source, sink);
+    };
+
+    // The effort to the first solution with no patience gate, and a
+    // patience a quarter of it: the first 10% cut costs about a tenth.
+    FirstSink calibrate(*s.problem.integrality, stop);
+    const size_t to_first = run(local_mip_one_run_budget(kBudget, kBudget), calibrate);
+    REQUIRE_FALSE(calibrate.first.empty());
+    const size_t patience = to_first / 4;
+    REQUIRE(patience > 0);
+
+    SECTION("set: the run goes on past one patience while violations fall") {
+        FirstSink sink(*s.problem.integrality, stop);
+        const size_t effort = run(local_mip_one_run_budget(patience, kBudget), sink);
+        REQUIRE(effort > 2 * patience);
+        REQUIRE(source_calls == 1);
+        REQUIRE_FALSE(sink.first.empty());
+        REQUIRE(is_feasible(lp, sink.first));
+    }
+    SECTION("unset: the worker retires at one patience with violations still falling") {
+        HeuristicBudget budget = local_mip_one_run_budget(patience, kBudget);
+        budget.local_mip_stall_ends_run = false;
+        stop_on_rebuild = true;
+        FirstSink sink(*s.problem.integrality, stop);
+        const size_t effort = run(budget, sink);
+        REQUIRE(effort < 2 * patience);
+        REQUIRE(source_calls == 2);
+        REQUIRE(sink.first.empty());
+    }
+}
+
+TEST_CASE("core: local_mip_stall_ends_run ends the run when LocalMIP stalls",
+          "[core][until_stopped]") {
+    // The one violated row never goes, so nothing restarts the counter.
+    const HighsLp lp = unsatisfiable_model();
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    const Setup s(lp, highs.getOptions().log_options);
+    int source_calls = 0;
+    const RestartSource source = [&source_calls](Rng& /*rng*/, std::vector<double>& /*out*/) {
+        ++source_calls;
+        return false;
+    };
+    constexpr size_t kStallFuse = size_t{1} << 22;
+    constexpr size_t kPatience = 1024;
+
+    SECTION("set: one worker, ended by its stall") {
+        SolutionSink sink(*s.problem.integrality, 0);
+        const size_t effort =
+            local_mip::run_until_stopped(s.problem, local_mip_one_run_budget(kPatience, kStallFuse),
+                                         s.exec, /*worker=*/0, source, sink);
+        REQUIRE(effort > kPatience);
+        REQUIRE(effort < kStallFuse / 4);
+        REQUIRE(source_calls == 1);
+        REQUIRE(sink.accepted() == 0);
+    }
+    SECTION("unset: the stalled worker is rebuilt until the fuse") {
+        HeuristicBudget budget = local_mip_one_run_budget(kPatience, kStallFuse);
+        budget.local_mip_stall_ends_run = false;
+        SolutionSink sink(*s.problem.integrality, 0);
+        const size_t effort =
+            local_mip::run_until_stopped(s.problem, budget, s.exec, /*worker=*/0, source, sink);
+        REQUIRE(effort >= kStallFuse);
+        REQUIRE(source_calls > 1);
+    }
+}
+
+namespace {
+
 // What one `run_until_stopped` slot on egout reports with a rebuild forced
 // every 16th attempt: every rebuild after the first find takes the pool path, which is the
 // one the restart options change.

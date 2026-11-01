@@ -81,8 +81,14 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
 
 LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec,
                                SolutionSink& sink, size_t total_budget, size_t stale_budget,
-                               uint32_t seed, const double* initial_solution, WorkerTrace trace)
-    : exec_(exec), sink_(sink), rng_(seed), trace_(trace), ctx_(problem) {
+                               uint32_t seed, const double* initial_solution, WorkerTrace trace,
+                               bool stall_on_violations)
+    : exec_(exec),
+      sink_(sink),
+      rng_(seed),
+      stall_on_violations_(stall_on_violations),
+      trace_(trace),
+      ctx_(problem) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
     // Nothing to search, and an attempt would charge no effort; see the
@@ -123,6 +129,7 @@ LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContex
 
     ctx_.track_violation = exec_.least_violated != nullptr;
     ctx_.rebuild_state();
+    violations_at_reset_ = ctx_.violated.elements.size();
     best_objective_ = std::numeric_limits<double>::infinity();
     best_solution_.resize(ncol);
 }
@@ -203,7 +210,22 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             max_pass = std::max(max_pass, spent() - pass_start);
             pass_start = spent();
         }
-        if (base_.stale(spent())) {
+        if (stall_on_violations_) {
+            // SCIP localsearch's 10% cut, against the count at the last
+            // restart (#203).  A count of 0 is never a cut below 0.
+            const size_t violated = ctx_.violated.elements.size();
+            if (violated < violations_at_reset_ && 10 * violated <= 9 * violations_at_reset_) {
+                violations_at_reset_ = violated;
+                base_.reset_staleness();
+                effort_at_last_improvement = ctx_.effort;
+            }
+        }
+        // Off, this reads the whole attempt's effort even after an
+        // incumbent move inside it: the default gate, kept as it was.  On,
+        // the effort since the counter's last restart, which can be inside
+        // this attempt.
+        if (base_.stale(stall_on_violations_ ? ctx_.effort - effort_at_last_improvement
+                                             : spent())) {
             base_.finished = true;
             break;
         }
@@ -298,6 +320,7 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                     // offer that moved nothing would silently forgive that
                     // effort.
                     effort_at_last_improvement = ctx_.effort;
+                    violations_at_reset_ = ctx_.violated.elements.size();
                 }
             }
 

@@ -2027,6 +2027,18 @@ effort-gap distribution).
   improving its own solution without beating the pool's worst-of-ten now
   retires and is rebuilt from a pool restart, so it is redirected rather
   than killed. Whether that trade wins is a #106 question.
+- **`HeuristicBudget::local_mip_stall_ends_run`** (#203; core
+  `run_until_stopped` only, default off, never set by the presolve
+  dispatch, so it moves nothing here): SCIP localsearch's rule, one run
+  ended by effort without cutting the violated rows by 10% or improving the
+  objective. The worker's counter is the same effort since the sink's best
+  moved, also restarted when the violated-row count falls to at most 90% of
+  **the count at the counter's last restart** — not of the fewest seen, so
+  a worker's internal restart (`kRestartInterval`), which raises the count,
+  must cut below that reference again. An incumbent move restarts it and
+  takes the count then, which is 0, so from then on only the objective
+  counts. Its patience is the caller's (`worker_stale`); a retired worker
+  ends the run instead of being rebuilt, as `fj_stall_ends_run` does for FJ.
 - **Suggested range**: 1–16, plus `0` for no gate. Values above
   `effort / 4` are clamped down to it.
 

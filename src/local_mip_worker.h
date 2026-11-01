@@ -39,10 +39,13 @@ public:
     // (issue #98), and a dead one: the caller only passes null when its
     // resolved start is empty, which by `resolve_worker_start`'s ordering
     // means the pool and the incumbent were empty too.
-    // `problem` must outlive the worker.
+    // `problem` must outlive the worker.  `stall_on_violations` is
+    // `HeuristicBudget::local_mip_stall_ends_run`: the patience counter
+    // also restarts on a 10% cut in violated rows (#203).
     LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
-                   const double* initial_solution, WorkerTrace trace);
+                   const double* initial_solution, WorkerTrace trace,
+                   bool stall_on_violations = false);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
@@ -82,6 +85,13 @@ private:
     // quarter of an allowance grows with the allowance and so can never
     // stop a heuristic from spending all of it.
     WorkerBudgetState base_;
+
+    // SCIP localsearch's progress rule (#203), read only when set: the
+    // violated-row count when `base_`'s patience counter last restarted.  A
+    // count at most 90% of it restarts the counter again; an incumbent move
+    // restarts it too and takes the count then (0, being feasible).
+    const bool stall_on_violations_;
+    size_t violations_at_reset_ = 0;
 
     // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
     const WorkerTrace trace_;

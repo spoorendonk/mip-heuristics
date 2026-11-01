@@ -314,10 +314,10 @@ struct Slots {
         // the worker's zeroed `ctx_.effort` continues the slot's count
         // instead of restarting below the value already emitted.
         const WorkerTrace trace{worker_idx, construction};
-        return LmState{
-            std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
-                                             budget.worker_stale, seed, start.data(), trace),
-            trace};
+        return LmState{std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
+                                                        budget.worker_stale, seed, start.data(),
+                                                        trace, budget.local_mip_stall_ends_run),
+                       trace};
     }
 
     // Replace the slot's worker: restart from the point `budget.restart`
@@ -338,9 +338,9 @@ struct Slots {
             }
         }
         auto seed = static_cast<uint32_t>(rng());
-        state.worker = std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
-                                                        budget.worker_stale, seed,
-                                                        restart_sol.data(), state.trace);
+        state.worker = std::make_unique<LocalMipWorker>(
+            problem, exec, sink, budget.per_worker, budget.worker_stale, seed, restart_sol.data(),
+            state.trace, budget.local_mip_stall_ends_run);
         if (budget.randomize_restart_weights) {
             state.worker->randomize_weights(rng);
         }
@@ -502,6 +502,10 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             return slots.occupy(worker_idx, seed, std::move(start), construction, rng);
         },
         [&](LmState& state, Rng& rng, size_t run_cap) -> AttemptResult {
+            // A retired worker ends the run: zero effort retires the slot.
+            if (budget.local_mip_stall_ends_run && state.worker->finished()) {
+                return {};
+            }
             auto rebuild = [&] { slots.rebuild(state, rng); };
             if (exec.restart_now && exec.restart_now()) {
                 rebuild();

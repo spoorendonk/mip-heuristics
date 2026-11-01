@@ -355,6 +355,17 @@ struct HeuristicBudget {
     // says (#194; HiGHS's own FJ has the same floor).
     bool fj_stall_ends_run = false;
 
+    // LocalMIP's counterpart (#203), default off; the presolve dispatch
+    // never sets it.  When set, a worker's patience counter — effort since
+    // the sink's best moved — also restarts whenever its violated-row count
+    // falls to at most 90% of the count at the counter's last restart, and a
+    // worker that retires (that counter crossing `worker_stale`, `per_worker`
+    // spent, or its feasible random walks used up) ends the
+    // `run_until_stopped` run instead of being rebuilt: SCIP's localsearch,
+    // one run ended by effort without cutting violations by 10% or improving
+    // the objective.
+    bool local_mip_stall_ends_run = false;
+
     // FJ and LocalMIP: the point a rebuilt worker restarts from (#200).
     RestartPoint restart = RestartPoint::kDefault;
 
@@ -571,14 +582,18 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //     built with `HIGHSINT64`, which never searches.
 //   - for FJ under `budget.fj_stall_ends_run`, the worker retiring: its
 //     `effortSinceLastImprovement` crossing `budget.worker_stale`, or its
-//     spending `budget.per_worker`, ends the run instead of a rebuild.
+//     spending `budget.per_worker`, ends the run instead of a rebuild;
+//   - for LocalMIP under `budget.local_mip_stall_ends_run`, likewise its
+//     worker retiring, with its patience counter also restarted by every
+//     10% cut in its violated rows.
 // `make_until_stopped_budget` lifts `total` and `stale`.  So a stop is seen
 // within one poll interval, except while a worker is being built: FJ's
 // solver construction and LocalMIP's cold-start construction sweep (one
 // O(nnz) pass) poll nothing, as in the presolve dispatch.  A worker is
 // rebuilt when it stalls (`budget.worker_stale`; for FJ against its own
 // `effortSinceLastImprovement`, for LocalMIP against effort since the
-// sink's best moved) or spends `budget.per_worker`.
+// sink's best moved, or since a 10% cut in violated rows under
+// `local_mip_stall_ends_run`) or spends `budget.per_worker`.
 //
 // `exec.num_workers` is not read; `worker` picks the slot's seed
 // (`exec.worker_seed(worker)`) and its trace identity, and for LocalMIP a
