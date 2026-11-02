@@ -12,6 +12,7 @@
 #include "parallel/HighsParallel.h"
 #include "pump_common.h"
 #include "rng.h"
+#include "scylla.h"
 #include "scylla_worker.h"
 #include "test_common.h"
 #include "util/HighsInt.h"
@@ -543,4 +544,36 @@ TEST_CASE("Scylla objective cut: no rounded offer above the cutoff in force",
     if (rounded == 0) {
         SKIP("no rounded offer under the cut on this platform");
     }
+}
+
+TEST_CASE("Scylla objective cut: off, or on with an empty pool, Scylla is unchanged",
+          "[objective-cut][scylla]") {
+    // Through `scylla::run`, whose gate builds no objective row while the
+    // pool is empty at dispatch; cut off is main by construction (no row
+    // reaches the workers), and the empty-pool run must match it.
+    struct Out {
+        std::vector<double> objectives;
+        size_t effort = 0;
+    };
+    const auto dispatch = [](ObjectiveCutParams cut) {
+        highs::parallel::initialize_scheduler();
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        HighsCallback cb(&highs);
+        auto mipsolver = build_bare_mipsolver(highs, cb, "gt2.mps");
+        CscMatrix csc;
+        const ProblemView problem = make_problem(*mipsolver, csc);
+        ExecutionContext exec = make_exec(*mipsolver);
+        exec.num_workers = 1;
+        RecordingSink sink(*problem.integrality, kSolutionSourceHeuristic);
+        constexpr size_t kBudget = size_t{1} << 22;
+        HeuristicBudget budget = make_budget(kBudget, exec.num_workers, kBudget);
+        budget.objective_cut = cut;
+        const DispatchOutcome out = scylla::run(*mipsolver, problem, budget, exec, sink);
+        return Out{sink.objectives, out.effort};
+    };
+    const Out off = dispatch({});
+    const Out on_empty = dispatch(kCutOn);
+    REQUIRE(on_empty.objectives == off.objectives);
+    REQUIRE(on_empty.effort == off.effort);
 }
