@@ -1182,6 +1182,28 @@ measured rate.
 
 ---
 
+## Recombination (`recombine`, #209)
+
+After cuOpt's bound-prop recombiner (`bound_prop_recombiner_t`, with its
+`bp_recombiner_config_t`): two pool points are recombined by fixing what
+they agree on and leaving at most a limited number of the columns where
+they differ free for FPR to complete.
+
+### `kBpInitialVarsFromOther`, `kBpMinVarsFromOther`, `kBpMaxVarsFromOther`, `kBpVarsIncreaseFactor`, `kBpVarsDecreaseFactor` — the limit on free columns
+
+- **File**: `src/recombine.h`
+- **Default**: `200`, `20`, `10000`, `1.1`, `0.99` (cuOpt's)
+- **Meaning**: Of the integer columns where the parents differ, at most
+  `max_vars_from_other` stay free; the rest are fixed at the guiding
+  parent's value. The limit starts at 200 and adapts only after a
+  recombination whose parents differed on more columns than it allowed:
+  an offspring equal to a parent on the integer columns grows it to
+  `min(ceil(m * 1.1), 10000)`, any other shrinks it to `max(floor(m *
+  0.99), 20)` (`next_max_vars_from_other`). One limit per recombiner,
+  so per worker.
+
+---
+
 ## Solution Pool and Parallel Runner
 
 ### `kPoolCapacity` — solution pool size

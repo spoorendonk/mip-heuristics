@@ -1,0 +1,174 @@
+#include "recombine.h"
+
+#include "heuristic_common.h"
+
+#include <algorithm>
+#include <cmath>
+#include <span>
+
+namespace recombine {
+
+size_t next_max_vars_from_other(size_t current, bool same_as_parent) {
+    // Neither factor is exact in binary, so `200 * 1.1` is a hair above 220:
+    // the rounding allows for that, or an exact product would round past
+    // itself.
+    constexpr double kSlack = 1e-9;
+    const double m = static_cast<double>(current);
+    if (same_as_parent) {
+        return std::min(static_cast<size_t>(std::ceil((m * kBpVarsIncreaseFactor) - kSlack)),
+                        kBpMaxVarsFromOther);
+    }
+    return std::max(static_cast<size_t>(std::floor((m * kBpVarsDecreaseFactor) + kSlack)),
+                    kBpMinVarsFromOther);
+}
+
+BoundPropRecombiner::BoundPropRecombiner(const ProblemView& problem)
+    : problem_(problem),
+      restricted_(problem),
+      col_lower_(*problem.col_lower),
+      col_upper_(*problem.col_upper),
+      midpoint_(static_cast<size_t>(problem.ncol), 0.0),
+      is_free_(static_cast<size_t>(problem.ncol), 0) {
+    restricted_.incumbent.clear();
+    restricted_.col_lower = &col_lower_;
+    restricted_.col_upper = &col_upper_;
+    restricted_.uplocks = &no_locks_;
+    restricted_.downlocks = &no_locks_;
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        if (is_integer(*problem.integrality, j)) {
+            integer_cols_.push_back(j);
+        }
+    }
+    differing_.reserve(integer_cols_.size());
+    if (!problem.degenerate()) {
+        fixer_.emplace(problem.ncol, problem.nrow, problem.ar_start->data(),
+                       problem.ar_index->data(), problem.ar_value->data(), *problem.csc,
+                       col_lower_.data(), col_upper_.data(), problem.row_lower->data(),
+                       problem.row_upper->data(), problem.integrality->data(), problem.feastol);
+    }
+}
+
+size_t BoundPropRecombiner::fix_and_propagate(const std::vector<double>& guiding, size_t num_free,
+                                              const Deadline& deadline) {
+    std::copy(problem_.col_lower->begin(), problem_.col_lower->end(), col_lower_.begin());
+    std::copy(problem_.col_upper->begin(), problem_.col_upper->end(), col_upper_.begin());
+    for (size_t k = 0; k < num_free; ++k) {
+        is_free_[differing_[k]] = 1;
+    }
+    for (const HighsInt j : integer_cols_) {
+        if (is_free_[j] == 0) {
+            const double v = std::clamp(std::round(guiding[j]), col_lower_[j], col_upper_[j]);
+            col_lower_[j] = v;
+            col_upper_[j] = v;
+        }
+    }
+    PropEngine& fixer = *fixer_;
+    fixer.reset();
+    for (const HighsInt j : integer_cols_) {
+        if (is_free_[j] == 0) {
+            fixer.seed_worklist(j);
+        }
+    }
+    for (size_t k = 0; k < num_free; ++k) {
+        is_free_[differing_[k]] = 0;
+    }
+    fixer.set_deadline(deadline);
+    // A truncated fixpoint is sound, so its tightenings are kept; only a
+    // proven infeasibility leaves the bounds at the bare fixings, for FPR's
+    // own search and repair to make what they can of.
+    if (fixer.propagate(-1) != PropResult::kInfeasible) {
+        for (HighsInt j = 0; j < problem_.ncol; ++j) {
+            col_lower_[j] = fixer.var(j).lb;
+            col_upper_[j] = fixer.var(j).ub;
+        }
+    }
+    return fixer.effort();
+}
+
+Offspring BoundPropRecombiner::recombine(const std::vector<double>& a, double obj_a,
+                                         const std::vector<double>& b, double obj_b,
+                                         size_t max_effort, const Deadline& deadline, Rng& rng,
+                                         std::vector<double>& out) {
+    out.clear();
+    Offspring offspring;
+    if (problem_.degenerate()) {
+        return offspring;
+    }
+    const auto ncol = static_cast<size_t>(problem_.ncol);
+    offspring.effort = ncol;
+    const bool a_guides = obj_a <= obj_b;
+    const std::vector<double>& guiding = a_guides ? a : b;
+    const std::vector<double>& other = a_guides ? b : a;
+
+    differing_.clear();
+    for (const HighsInt j : integer_cols_) {
+        if (std::round(guiding[j]) != std::round(other[j])) {
+            differing_.push_back(j);
+        }
+    }
+    // One shuffle serves both the random subset (step 3) and the random
+    // probe order: cuOpt probes in its own order, FPR's `kLR` would probe in
+    // formulation order, and a fixed order would bias every recombination
+    // of the same pair the same way (a deviation, recorded in the header).
+    std::shuffle(differing_.begin(), differing_.end(), rng);
+    const size_t num_differing = differing_.size();
+    const size_t num_free = std::min(num_differing, max_vars_from_other_);
+    const size_t num_fixed = integer_cols_.size() - num_free;
+    if (num_free == 0 || num_fixed == 0) {
+        return offspring;
+    }
+
+    offspring.effort += fix_and_propagate(guiding, num_free, deadline);
+
+    for (size_t j = 0; j < ncol; ++j) {
+        midpoint_[j] = 0.5 * (a[j] + b[j]);
+    }
+    // cuOpt completes the free columns by probing each at one parent's
+    // value, with the other's as the fallback, and solves an LP over the
+    // continuous ones.  Here FPR's DFS does the probing: `kLp` on the
+    // midpoint rounds a column where the parents differ by one to either
+    // value on a fair coin, and `compute_alt` gives a binary the other
+    // parent's value as its alternative.  A general integer's alternative
+    // is the domain's other end rather than the other parent's value, and
+    // FPR's fill and WalkSAT repair stand in for the LP: deviations, as is
+    // the effort cap in place of cuOpt's two-second limit.  Only the free
+    // columns are ranked, so FPR's `ncol + 1` node limit is all theirs; the
+    // fixed ones fill at their singleton bounds in Phase 2.5.
+    const FprConfig cfg{
+        .max_effort = max_effort,
+        .cont_fallback = midpoint_.data(),
+        .mode = FrameworkMode::kDfsrep,
+        .strategy = &kStratLRLp,
+        .lp_ref = midpoint_.data(),
+        .precomputed_var_order = differing_.data(),
+        .precomputed_var_order_size = static_cast<HighsInt>(num_free),
+        .scratch = &scratch_,
+    };
+    HeuristicResult result = fpr_attempt(restricted_, deadline, cfg, rng, 0);
+    offspring.effort += result.effort;
+    if (result.solution.size() != ncol) {
+        return offspring;
+    }
+    out = std::move(result.solution);
+
+    bool same_as_guiding = true;
+    bool same_as_other = true;
+    for (const HighsInt j : integer_cols_) {
+        const double v = std::round(out[j]);
+        same_as_guiding = same_as_guiding && v == std::round(guiding[j]);
+        same_as_other = same_as_other && v == std::round(other[j]);
+    }
+    const bool same = same_as_guiding || same_as_other;
+    if (num_differing > max_vars_from_other_) {
+        max_vars_from_other_ = next_max_vars_from_other(max_vars_from_other_, same);
+    }
+    offspring.feasible = result.found_feasible;
+    if (offspring.feasible) {
+        offspring.objective = result.objective;
+    }
+    offspring.success =
+        (offspring.feasible && offspring.objective < std::min(obj_a, obj_b)) || !same;
+    return offspring;
+}
+
+}  // namespace recombine
