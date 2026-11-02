@@ -157,9 +157,15 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap,
     highs_.passModel(std::move(lp));
 
     // The objective cut as one more row (#225).  Its entries are the costs
-    // that are exactly nonzero, as `ObjectiveRowStorage`'s are, so the row is
-    // the cut and not a relaxation of it.  Added free: `run_locked_with_accounting`
-    // writes its bound before every solve, so cuPDLP-C never sees it free.
+    // that are exactly nonzero, as `ObjectiveRowStorage`'s are.  `addRow`
+    // runs them through HiGHS's matrix assessment, which drops an entry of
+    // magnitude at most `small_matrix_value` (1e-9) with a warning, relaxing
+    // the cut by a negligible amount, and refuses one of at least
+    // `large_matrix_value` (1e15) with an error, adding nothing.  On that
+    // error the LP is left without the row, as with the cut off: a cut the
+    // LP cannot hold is not worth the solver.  Added free:
+    // `run_locked_with_accounting` writes its bound before every solve, so
+    // cuPDLP-C never sees it free.
     if (objective != nullptr) {
         const std::vector<double>& cost = *objective->col_cost;
         std::vector<HighsInt> index;
@@ -173,13 +179,11 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap,
             }
         }
         if (highs_.addRow(-kHighsInf, kHighsInf, static_cast<HighsInt>(index.size()), index.data(),
-                          value.data()) != HighsStatus::kOk) {
-            std::fprintf(stderr, "ContestedPdlp: HiGHS rejected the objective row.\n");
-            std::abort();
+                          value.data()) != HighsStatus::kError) {
+            objective_row_ = nrow_;
+            objective_offset_ = objective->offset;
+            nrow_ += 1;
         }
-        objective_row_ = nrow_;
-        objective_offset_ = objective->offset;
-        nrow_ += 1;
     }
 
     initialized_ = true;

@@ -139,6 +139,19 @@ bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsI
         base_.finished = true;
         return true;
     }
+    // cuPDLP-C's infeasibility detection exits with `INFEASIBLE_OR_UNBOUNDED`
+    // (`cupdlp_solver.c`), not `INFEASIBLE`, which the wrapper maps to this
+    // status with a valid-looking iterate, so the check above does not catch it.  Under the
+    // objective row (#225) that is the cut's doing — the relaxation of a MIP the pool holds a point
+    // of is feasible, and the row's bound only tightens — so the LP stays empty for the dispatch
+    // and the chain retires rather than round against the detection iterate.  Without the row the
+    // status keeps its old meaning here (the pump's modified cost can leave the LP unbounded), and
+    // so its old handling.
+    if (result.model_status == HighsModelStatus::kUnboundedOrInfeasible &&
+        pdlp_.has_objective_row()) {
+        base_.finished = true;
+        return true;
+    }
     iters_out = result.pdlp_iters;
     if (iters_out == 0) {
         ++pdlp_stall_count_;
@@ -223,10 +236,10 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // still produces useful FPR work while another chain holds the
         // mutex.  After kMaxStaleRounds consecutive stale iterations we
         // force a blocking solve() to guarantee forward progress.
-        // The cutoff in force for this round, read once (it takes the pool
-        // lock): the PDLP solve's objective row (#225) and the rounding's
-        // propagated row (#233) both take it, so `x_bar` and its rounding
-        // answer to the same cut.  `kHighsInf` when this dispatch has no cut.
+        // The cutoff for this round's PDLP solve, the objective row's bound
+        // (#225), read here (it takes the pool lock).  `kHighsInf` when this
+        // dispatch has no cut.  The rounding re-reads the pool before it
+        // runs, since the solve can wait on a peer's for its whole length.
         const double cutoff =
             cut_view_.has_value() ? objective_cut_target(sink_.best_objective(), cut_) : kHighsInf;
 
@@ -461,10 +474,12 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // `SolutionPool::get_restart`), so this chain's RNG stream moves
         // from the point of removal onward, independent of and in addition
         // to the shift from #122's seeding-block deletion.
-        // The round's cutoff, read at its top; nothing else moves the row
-        // bound until the next rounding.
+        // The cutoff in force for this rounding: the pool's best now, read
+        // once (it takes the pool lock), so never looser than the solve's,
+        // since the pool only improves; nothing else moves the row bound
+        // until the next rounding.
         if (cut_view_.has_value()) {
-            cut_view_->set_cutoff(cutoff);
+            cut_view_->set_cutoff(objective_cut_target(sink_.best_objective(), cut_));
         }
         HeuristicResult rounded = fpr_attempt(rounding_problem_, exec_.deadline, cfg, rng_, 0);
 

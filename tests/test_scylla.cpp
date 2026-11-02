@@ -629,13 +629,18 @@ TEST_CASE("ContestedPdlp objective row: a solve stays under each solve's cutoff"
     const auto tol = [](double cutoff) { return 1e-6 * (1.0 + std::abs(cutoff)); };
     REQUIRE(obj_hi > first + tol(first));
 
+    REQUIRE(cut.has_objective_row());
     const auto r1 = cut.solve(up, empty, empty, false, pump::kEpsilonFloor, first);
+    INFO("first solve: model status " << static_cast<int>(r1.model_status));
+    REQUIRE(r1.model_status == HighsModelStatus::kOptimal);
     REQUIRE(r1.value_valid);
     REQUIRE(r1.col_value.size() == static_cast<size_t>(problem.ncol));
     REQUIRE(r1.row_dual.size() == static_cast<size_t>(problem.nrow) + 1);
     CHECK(problem.objective(r1.col_value) <= first + tol(first));
 
     const auto r2 = cut.solve(up, r1.col_value, r1.row_dual, true, pump::kEpsilonFloor, second);
+    INFO("second solve: model status " << static_cast<int>(r2.model_status));
+    REQUIRE(r2.model_status == HighsModelStatus::kOptimal);
     REQUIRE(r2.value_valid);
     CHECK(problem.objective(r2.col_value) <= second + tol(second));
 }

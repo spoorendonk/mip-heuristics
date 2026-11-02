@@ -95,7 +95,8 @@ public:
     // whatever the model's sense.  The row's bound is written from each
     // solve's `cutoff` (see `solve`), so the row is never free when cuPDLP-C
     // sees it.  Row duals then come back `nrow + 1` long, and a warm start's
-    // `row_dual` must be that long too.  Null leaves the LP the model's.
+    // `row_dual` must be that long too.  Null leaves the LP the model's, and
+    // so does a row HiGHS refuses (`has_objective_row()`).
     ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap,
                   const ProblemView* objective = nullptr);
 
@@ -107,6 +108,9 @@ public:
     bool initialized() const { return initialized_; }
     size_t nnz_lp() const { return nnz_lp_; }
     HighsInt num_col() const { return ncol_; }
+    // Whether the LP carries the objective row: asked for at construction
+    // and accepted by HiGHS (see the constructor).
+    bool has_objective_row() const { return objective_row_ >= 0; }
 
     // Solve PDLP with the caller's objective and warm-start.  The mutex
     // is held for the full changeColsCost + setSolution + run +
