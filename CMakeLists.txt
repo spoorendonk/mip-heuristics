@@ -136,6 +136,8 @@ add_library(mip_heuristics_core STATIC
     src/local_mip_search.cpp
     src/local_mip_worker.cpp
     src/local_mip_worker.h
+    src/objective_row.cpp
+    src/objective_row.h
     src/opportunistic_runner.h
     src/prop_engine.cpp
     src/prop_engine.h
@@ -401,7 +403,7 @@ catch_discover_tests(mip_heuristics_tests
 # reads a clock.
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
     tests/test_paths.cpp tests/test_ruin_repair.cpp tests/test_fj_objective_cut.cpp
-    tests/test_local_mip_objective_cut.cpp)
+    tests/test_local_mip_objective_cut.cpp tests/test_objective_row.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})
