@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
-#include <tuple>
 #include <vector>
 
 using namespace core_test;
@@ -149,15 +148,25 @@ TEST_CASE("LocalMIP objective cut: a tightening keeps the weights, and the attem
 // "Off is main" is not pinned here: an off worker's cutoff is infinite, so
 // the search's target reduces to the worker's own best exactly, and the
 // deterministic LocalMIP tests elsewhere in the suite run that path.  What
-// this pins is that the search reads the cutoff at all: the same seed from
-// an empty pool makes the same first offer either way (nothing to cut
-// against yet), and differs after it, once the cutoff lies a step below the
-// worker's own best — the breakthrough delta is computed from the target
-// itself.  Constraint weights cannot show it: the random walk resets them.
+// this pins is that the search reads the cutoff at all, once the worker has
+// finds of its own: the same seed from an empty pool makes the same first
+// offer either way (nothing to cut against yet), and after the last offer
+// the search is handed a target a step below the worker's own best, where
+// without the cut it is handed that best.  Whether the lower target changes
+// a later step is not asserted: it reaches only `infeasible_step`'s
+// breakthrough scores, so whether a run diverges depends on the random
+// stream, which differs between standard libraries (it does on libc++ and
+// does not on libstdc++).
 TEST_CASE("LocalMIP objective cut: the search reads the cutoff", "[objective_cut][local_mip]") {
     Model m;
     const Setup s(m.highs.getLp(), m.highs.getOptions().log_options);
-    const auto offers = [&](ObjectiveCutParams cut) {
+    struct Run {
+        std::vector<double> objectives;
+        std::vector<size_t> efforts;
+        double search_target = 0.0;
+        double epsilon = 0.0;
+    };
+    const auto run = [&](ObjectiveCutParams cut) {
         RecordingSink sink(*s.problem.integrality, 0);
         LocalMipWorker worker = make_worker(s, sink, cut);
         // Short attempts: the cutoff is read at an attempt's first poll,
@@ -166,16 +175,20 @@ TEST_CASE("LocalMIP objective cut: the search reads the cutoff", "[objective_cut
         for (int k = 0; k < kShortAttempts && !worker.finished(); ++k) {
             static_cast<void>(worker.run_attempt(kShortAttempt));
         }
-        std::vector<uint64_t> state = worker.weights_for_test();
-        state.push_back(worker.obj_weight_for_test());
-        state.push_back(worker.traced_effort());
-        return std::tuple{sink.objectives, sink.efforts, state};
+        REQUIRE(worker.search_has_target_for_test());
+        return Run{sink.objectives, sink.efforts, worker.search_target_for_test(),
+                   worker.epsilon_for_test()};
     };
-    const auto plain = offers({});
-    const auto cut = offers(kCutOn);
-    REQUIRE_FALSE(std::get<0>(plain).empty());
-    REQUIRE_FALSE(std::get<0>(cut).empty());
-    REQUIRE(std::get<0>(cut)[0] == std::get<0>(plain)[0]);
-    REQUIRE(std::get<1>(cut)[0] == std::get<1>(plain)[0]);
-    REQUIRE(cut != plain);
+    const Run plain = run({});
+    const Run cut = run(kCutOn);
+    REQUIRE_FALSE(plain.objectives.empty());
+    REQUIRE_FALSE(cut.objectives.empty());
+    REQUIRE(cut.objectives[0] == plain.objectives[0]);
+    REQUIRE(cut.efforts[0] == plain.efforts[0]);
+    // Without the cut, the target is the worker's own best.
+    REQUIRE(plain.search_target == plain.objectives.back());
+    // With it, the cut's own row below the pool's best, which is the
+    // worker's own: a step lower.
+    REQUIRE(cut.search_target == objective_cut_target(cut.objectives.back(), kCutOn) + cut.epsilon);
+    REQUIRE(cut.search_target < cut.objectives.back());
 }
