@@ -58,8 +58,7 @@ TEST_CASE("core: the view over an original model matches the model", "[core]") {
     REQUIRE_FALSE(s.problem.degenerate());
 }
 
-TEST_CASE("core: FJ and LocalMIP find feasible solutions on an original model",
-          "[core][libstdcxx-stream]") {
+TEST_CASE("core: FJ and LocalMIP find feasible solutions on an original model", "[core]") {
     Highs highs;
     read(highs, "egout.mps");
     const HighsLp& lp = highs.getLp();
@@ -245,7 +244,7 @@ TEST_CASE("core: LocalMIP on a caller's thread stops at its next poll after the 
 }
 
 TEST_CASE("core: FJ on a caller's thread stops in the callback that saw the stop flag",
-          "[core][until_stopped][libstdcxx-stream]") {
+          "[core][until_stopped]") {
     Highs highs;
     read(highs, "egout.mps");
     const HighsLp& lp = highs.getLp();
@@ -968,8 +967,7 @@ TEST_CASE("core: the default rebuild draws what it drew before the restart optio
     REQUIRE(fj.objective == Catch::Approx(734.144).margin(1e-3));
 }
 
-TEST_CASE("core: the restart options reach a rebuilt worker",
-          "[core][until_stopped][restart][libstdcxx-stream]") {
+TEST_CASE("core: the restart options reach a rebuilt worker", "[core][until_stopped][restart]") {
     const Trajectory lm_default = local_mip_trajectory(forced_rebuild_budget());
     const Trajectory fj_default = fj_trajectory(forced_rebuild_budget());
     for (const RestartPoint point : {RestartPoint::kBest, RestartPoint::kHybrid}) {

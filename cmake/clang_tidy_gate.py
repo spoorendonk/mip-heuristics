@@ -112,9 +112,15 @@ def main() -> int:
     # that follows is noise.  clang reads the SDK from SDKROOT, as Apple's
     # own driver does from xcrun; Linux never takes this branch.
     if sys.platform == "darwin" and "SDKROOT" not in os.environ:
-        sdk = subprocess.run(
-            ["xcrun", "--show-sdk-path"], capture_output=True, text=True, check=False
-        ).stdout.strip()
+        try:
+            sdk = subprocess.run(
+                ["xcrun", "--show-sdk-path"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+        except OSError:
+            sdk = ""
         if sdk:
             os.environ["SDKROOT"] = sdk
 

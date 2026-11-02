@@ -186,9 +186,18 @@ add_library(mip_heuristics OBJECT
 # switch presently in `src/` and `tests/` either covers its enum
 # exhaustively or carries an explicit `default:`, so this costs nothing
 # today; it is meant to catch the next one that doesn't.
+# `-ffp-contract=off` on every target of ours: a compiler may fuse a
+# multiply and an add into one FMA, rounded once, and on a target that has
+# the instruction (arm64; x86-64 only with `-march` beyond the baseline)
+# GCC and clang both do so by default.  FJ's incremental row activities
+# then drift from what a solve elsewhere computes, enough that on egout it
+# found no feasible point at all on arm64 (#214).  On baseline x86-64 there
+# is no FMA to fuse into, so the flag changes nothing there.
+set(_mip_fp_flags -ffp-contract=off)
 foreach(_target mip_heuristics_core mip_heuristics)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(${_target} PRIVATE -Werror=unused-result -Werror=switch)
+        target_compile_options(${_target} PRIVATE -Werror=unused-result -Werror=switch
+                                                       ${_mip_fp_flags})
     endif()
     if(MIP_HEURISTICS_INSTRUMENT)
         target_compile_definitions(${_target} PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
@@ -299,7 +308,8 @@ add_executable(mip_heuristics_tests
 # would model the bug rather than catch it. `-Werror=switch` joins it for
 # the same reason as the `mip_heuristics` target: see that target's comment.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mip_heuristics_tests PRIVATE -Werror=unused-result -Werror=switch)
+    target_compile_options(mip_heuristics_tests PRIVATE -Werror=unused-result -Werror=switch
+                                                       ${_mip_fp_flags})
 endif()
 
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -355,8 +365,8 @@ endif()
 # list should not have to work out which call won.
 #
 # `[libstdcxx-stream]` marks the cases that pin what one seed draws: the
-# engine is our own, but the `std::` distributions over it are
-# implementation-defined, and libc++ (macOS) draws other values.  Where the
+# engine is our own, but `std::uniform_int_distribution` and `std::shuffle`
+# over it are implementation-defined, and libc++ (macOS) draws other values.  Where the
 # standard library is libc++ those cases are left out of both specs, and of
 # the core tests' below; with libstdc++ (Linux, the gate) everything runs.
 include(CheckCXXSymbolExists)
@@ -382,7 +392,8 @@ catch_discover_tests(mip_heuristics_tests
 # reads a clock.
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_paths.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch)
+    target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
+                                                            ${_mip_fp_flags})
 endif()
 target_link_libraries(mip_heuristics_core_tests PRIVATE mip_heuristics_core Catch2::Catch2WithMain)
 if(MIP_HEURISTICS_INSTRUMENT)
@@ -444,7 +455,8 @@ else()
     add_dependencies(mip_heuristics_core_standalone_tests mip_heuristics_core highs_without_mip)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(mip_heuristics_core_standalone_tests PRIVATE -Werror=unused-result
-                                                                            -Werror=switch)
+                                                                            -Werror=switch
+                                                                            ${_mip_fp_flags})
     endif()
     target_include_directories(mip_heuristics_core_standalone_tests PRIVATE
         $<TARGET_PROPERTY:mip_heuristics_core,INTERFACE_INCLUDE_DIRECTORIES>)
