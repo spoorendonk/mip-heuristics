@@ -200,7 +200,7 @@ constexpr std::array<Fixture, 3> kFixtures = {{
     // predecessors have already filled with better solutions, so its 25
     // offers on gt2 became 25 rejected ones and it vanished from the trace.
     // Running it alone leaves the pool empty at its first offer, which
-    // `SolutionPool::try_add` admits unconditionally while filling.
+    // `SolutionPool::try_add` admits unconditionally.
     {"gt2.mps", "scylla", 80.0},
     {"bell5.mps", "fpr_lp", -1.0},
 }};

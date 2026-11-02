@@ -63,6 +63,32 @@ int SolutionPool::hamming_distance(const std::vector<int>& index, const std::vec
 
 namespace {
 
+// Whether `a` and `b` round alike on every integer column `index` lists:
+// Hamming distance zero, without counting past the first difference.
+bool same_integer_part(const std::vector<int>& index, const std::vector<double>& a,
+                       const std::vector<double>& b) {
+    const auto n = std::min(a.size(), b.size());
+    for (const int j : index) {
+        if (std::cmp_greater_equal(j, n)) {
+            break;  // ascending, as in `hamming_distance`
+        }
+        if (round_half_away(a[j]) != round_half_away(b[j])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// `obj` is better than `than` by more than `kImprovementObjMargin`,
+// relative with an absolute floor of the same size.
+bool clears_margin(double obj, double than) {
+    return obj < than - (kImprovementObjMargin * std::max(1.0, std::abs(than)));
+}
+
+// A twin scan's stand-in for a distance it did not count: the offer
+// differs from the entry somewhere, by how much nobody measured.
+constexpr int kNonzeroUnmeasured = -1;
+
 // Whether an offer at Hamming distance `dist` from an entry is diverse
 // enough from it.  One spelling, for the verdict and for the scan that stops
 // at the first entry failing it.
@@ -118,9 +144,9 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
     return try_add(obj, std::make_shared<const std::vector<double>>(sol), source);
 }
 
-// Cognitive complexity over the threshold.  Kept whole because capacity, dominance and
-// diversity replacement are one decision, taken at one hold of the pool spin-lock: the
-// diversity scan alone leaves the lock, and the loop around it exists to re-take that one
+// Cognitive complexity over the threshold.  Kept whole because capacity, dominance, twin
+// and diversity replacement are one decision, taken at one hold of the pool spin-lock: the
+// scan alone leaves the lock, and the loop around it exists to re-take that one
 // decision when the pool moved during the scan.  Splitting the decision would thread the
 // lock and the scan's state through helpers.  Not a hot path for the lock's sake: the
 // argument is lock scope, not throughput.
@@ -150,9 +176,11 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
     bool mask_changed = false;
     std::uint64_t scanned_generation = 0;
     bool scanned = false;
+    bool diversity_scan = false;
     // Sized here so the snapshot taken under the lock never allocates.
     scan.reserve(capacity_ > 0 ? capacity_ : 0);
     dists.reserve(capacity_ > 0 ? capacity_ : 0);
+    seen.reserve(capacity_ > 0 ? capacity_ : 0);
 
     for (;;) {
         AddResult result;
@@ -183,12 +211,7 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             // and that is where the shipped patience defaults were measured.
             //
             // The margin mirrors that same function; see `kImprovementObjMargin`.
-            if (!has_best_seen_) {
-                result.improved_best = true;
-            } else {
-                const double margin = kImprovementObjMargin * std::max(1.0, std::abs(best_seen_));
-                result.improved_best = obj < best_seen_ - margin;
-            }
+            result.improved_best = !has_best_seen_ || clears_margin(obj, best_seen_);
 
             // Find insertion point (entries_ kept sorted, best first)
             // Heterogeneous (const EntryRef&, double) on purpose.  That is
@@ -202,50 +225,88 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                 entries_.insert(pos, EntryRef{obj, source, std::move(sol)});
                 result.accepted = true;
             };
-
-            if (std::cmp_less(entries_.size(), capacity_)) {
+            // Evict entry `idx` for the offer.
+            auto replace = [&](std::ptrdiff_t idx) {
+                evicted = std::move(entries_[idx].solution);
+                entries_.erase(entries_.begin() + idx);
                 insert_sorted();
-            } else if (obj < entries_.back().objective) {
-                // Standard path: improves on worst — replace worst.
-                evicted = std::move(entries_.back().solution);
-                entries_.pop_back();
-                insert_sorted();
-            } else if (!integer_mask_->index.empty() && !entries_.empty()) {
-                // Diversity-aware path: pool is full and obj doesn't beat worst.
-                // Accept if (a) integer mask is set, (b) obj is within tolerance of
-                // best, and (c) solution is sufficiently diverse from all entries.
-                double best_obj = entries_.front().objective;
-                double gap = std::abs(obj - best_obj);
-                // Continuous fallback: fraction of |best_obj|, floored to avoid
-                // a discontinuous jump near zero.
-                double threshold = std::max(kDiversityObjTolerance * std::abs(best_obj),
-                                            kDiversityObjTolerance * 1e-6);
+            };
 
-                if (gap <= threshold) {
-                    if (scanned && scanned_generation == generation_) {
-                        // The scan describes these very entries: decide.
-                        const int victim =
-                            diversity_victim(dists, static_cast<int>(integer_mask_->index.size()));
-                        if (victim > 0) {
-                            // Replace the most similar entry other than the best:
-                            // the front must stay monotone (see the watermark).
-                            evicted = std::move(entries_[victim].solution);
-                            entries_.erase(entries_.begin() + victim);
-                            insert_sorted();
-                        }
-                    } else {
-                        // Measure outside the lock, then decide again.
-                        scan.assign(entries_.begin(), entries_.end());
-                        if (mask != integer_mask_) {
-                            // Distances measured under another mask do not
-                            // stand: `seen` is emptied after the unlock.
-                            stale_mask = std::exchange(mask, integer_mask_);
-                            mask_changed = true;
-                        }
-                        scanned_generation = generation_;
-                        need_scan = true;
+            const bool full = !std::cmp_less(entries_.size(), capacity_);
+            // Full and not beating the worst entry: only the diversity path
+            // can admit it.
+            const bool dominated = full && !(obj < entries_.back().objective);
+            // Without a mask there are no integer columns to compare, so
+            // neither the twin rule nor the diversity path applies.
+            const bool masked = !integer_mask_->index.empty() && !entries_.empty();
+            bool in_band = true;
+            if (dominated) {
+                // Diversity band around the best: a fraction of |best_obj|,
+                // floored to avoid a discontinuous jump near zero.
+                const double best_obj = entries_.front().objective;
+                const double threshold = std::max(kDiversityObjTolerance * std::abs(best_obj),
+                                                  kDiversityObjTolerance * 1e-6);
+                in_band = std::abs(obj - best_obj) <= threshold;
+            }
+
+            if (!masked) {
+                if (!full) {
+                    insert_sorted();
+                } else if (!dominated) {
+                    // Standard path: improves on worst — replace worst.
+                    replace(std::ssize(entries_) - 1);
+                }
+            } else if (dominated && !in_band) {
+                // Refused without a scan: no path below can admit it.
+            } else if (scanned && scanned_generation == generation_) {
+                // The scan describes these very entries: decide.
+                //
+                // The twin rule first (#204), on every path: an offer whose
+                // integer part matches an entry's replaces that entry if it
+                // is better by more than `kImprovementObjMargin`, and is
+                // refused otherwise, so copies of one integer assignment
+                // cannot fill the slots.  It only ever replaces an entry
+                // with a better one, so the front stays monotone (see the
+                // watermark).  A diversity scan's `dists` may be
+                // a prefix ending at the first entry too close to the offer;
+                // a twin past it cannot matter, since a dominated offer
+                // never clears the margin against an entry it does not beat
+                // and the diversity verdict refuses it anyway.
+                const auto twin = std::ranges::find(dists, 0);
+                if (twin != dists.end()) {
+                    const auto idx = twin - dists.begin();
+                    if (clears_margin(obj, entries_[idx].objective)) {
+                        replace(idx);
+                    }
+                } else if (!full) {
+                    insert_sorted();
+                } else if (!dominated) {
+                    replace(std::ssize(entries_) - 1);  // the standard path
+                } else {
+                    // Diversity-aware path: accept if the offer is
+                    // sufficiently diverse from every entry.
+                    const int victim =
+                        diversity_victim(dists, static_cast<int>(integer_mask_->index.size()));
+                    if (victim > 0) {
+                        // Replace the most similar entry other than the best:
+                        // the front must stay monotone (see the watermark).
+                        replace(victim);
                     }
                 }
+            } else {
+                // Measure outside the lock, then decide again.  A dominated
+                // offer needs the diversity scan's distances; any other one
+                // only whether it has a twin.
+                scan.assign(entries_.begin(), entries_.end());
+                if (mask != integer_mask_) {
+                    // Distances measured under another mask do not
+                    // stand: `seen` is emptied after the unlock.
+                    stale_mask = std::exchange(mask, integer_mask_);
+                    mask_changed = true;
+                }
+                diversity_scan = dominated;
+                scanned_generation = generation_;
+                need_scan = true;
             }
 
             if (result.accepted) {
@@ -280,21 +341,37 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             mask_changed = false;
         }
         //
-        // One entry the offer is too close to refuses it whatever the others
-        // measure, so the scan stops there and `dists` ends with it: the
-        // verdict over that prefix is the verdict over all of them.
+        // Two scans, by what the decision needs.  The diversity scan
+        // counts every distance, and stops at the first entry the offer is
+        // too close to: that entry refuses it whatever the others measure,
+        // so `dists` ends with it and the verdict over that prefix is the
+        // verdict over all of them.  The twin scan asks only whether a
+        // distance is zero, so it stops counting an entry at the first
+        // differing column (`kNonzeroUnmeasured`), and stops at the first
+        // twin.  A cached unmeasured distance is counted if a later
+        // diversity scan needs it.
         const int num_integers = static_cast<int>(mask->index.size());
         dists.clear();
         for (const EntryRef& ref : scan) {
             const auto& entry = ref.solution;
             auto hit = std::ranges::find(seen, entry, &std::pair<SolutionPtr, int>::first);
-            if (hit != seen.end()) {
-                dists.push_back(hit->second);
+            if (hit == seen.end() || (diversity_scan && hit->second == kNonzeroUnmeasured)) {
+                int dist = 0;
+                if (diversity_scan) {
+                    dist = hamming_distance(mask->index, *sol, *entry);
+                } else if (!same_integer_part(mask->index, *sol, *entry)) {
+                    dist = kNonzeroUnmeasured;
+                }
+                if (hit == seen.end()) {
+                    seen.emplace_back(entry, dist);
+                } else {
+                    hit->second = dist;
+                }
+                dists.push_back(dist);
             } else {
-                dists.push_back(hamming_distance(mask->index, *sol, *entry));
-                seen.emplace_back(entry, dists.back());
+                dists.push_back(hit->second);
             }
-            if (!far_enough(dists.back(), num_integers)) {
+            if (diversity_scan ? !far_enough(dists.back(), num_integers) : dists.back() == 0) {
                 break;
             }
         }

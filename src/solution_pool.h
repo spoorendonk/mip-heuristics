@@ -39,9 +39,10 @@ inline constexpr double kImprovementObjMargin = 1e-9;
 // pays every copy as lock wait on every operation.
 // Supports restart strategies: guided crossover, neighborhood crossover,
 // and biased copy.  When an integer mask is set, insertion is
-// diversity-aware: solutions that don't improve the worst objective can
-// still enter the pool if they are structurally different from existing
-// entries (measured by Hamming distance on integer variables).
+// diversity-aware: an offer whose integer part matches an entry's can only
+// replace that entry (#204), and solutions that don't improve the worst
+// objective can still enter the pool if they are structurally different
+// from existing entries (measured by Hamming distance on integer variables).
 class SolutionPool {
 public:
     struct Snapshot {
@@ -87,8 +88,8 @@ public:
     // watermark rather than as its own front entry (see `try_add`).
     //
     // `accepted && !improved_best` is the ordinary case, not an edge one:
-    // the pool admits its first `capacity_` offers unconditionally while
-    // it fills, and structurally diverse near-best solutions afterwards.
+    // the pool admits every offer with a new integer part while it fills,
+    // and structurally diverse near-best solutions afterwards.
     // Measured over 233 instances at 16 workers, FPR earns ~3.3 M
     // acceptances against 590 incumbent improvements.  So a staleness gate
     // reading `accepted` is reading the admission policy rather than the
@@ -97,7 +98,9 @@ public:
     // `[HeurSol] accepted` keep reporting `accepted`.
     //
     // `improved_best` implies `accepted`: an offer that beats the best
-    // beats the worst too, so it takes the standard replacement path.
+    // beats the worst too, so it takes the standard replacement path, and
+    // clears the margin against any twin, whose objective is no better than
+    // the watermark.
     struct AddResult {
         bool accepted = false;
         bool improved_best = false;
@@ -107,7 +110,13 @@ public:
     // pool is `SolutionSink::on_accept`'s business, outside this lock.
     // `source` is one of the kSolutionSource* constants and is stored on
     // the inserted entry for later provenance-aware flushing.
-    // Insertion policy (when pool is full):
+    // Insertion policy, with an integer mask set, full or not:
+    //   0. If the offer's rounded integer columns match an entry's (a twin,
+    //      #204): replace that entry if obj is better than it by more than
+    //      `kImprovementObjMargin`, else refuse.  So copies of one integer
+    //      assignment, ulp-lower ones included, cannot fill the slots, while
+    //      a real improvement on an assignment still lands.
+    // Otherwise, while the pool is filling, insert; when it is full:
     //   1. If obj improves on worst: replace worst (standard).
     //   2. Else if obj is within kDiversityObjTolerance of best and Hamming
     //      diversity exceeds kDiversityMinHammingFrac: replace the most
@@ -127,8 +136,10 @@ public:
     // front entry, so the pool's best objective goes backwards where the
     // solve's never does.
     //
-    // The diversity path's Hamming scan runs outside the lock, on a pointer
-    // snapshot of the entries, and its verdict is applied only if the pool
+    // Without a mask, rule 0 and rule 2 do not apply.
+    //
+    // The scan for twins, or for rule 2 the full Hamming scan, runs outside
+    // the lock, on a pointer snapshot of the entries, and its verdict is applied only if the pool
     // has not changed since (`generation_`); otherwise the decision is taken
     // again against the new entries, rescanning only the ones the earlier
     // scan has not seen.  So each offer is decided exactly as one hold of
@@ -189,7 +200,7 @@ public:
 
     int size();
 
-    // Test seam: called by `try_add` between a diversity scan and the hold
+    // Test seam: called by `try_add` between a scan and the hold
     // of the lock that applies it, on the offering thread with no lock
     // held, so a test can move the pool mid-scan deterministically and
     // check the verdict is re-decided.  Set it before any concurrent use;
@@ -236,7 +247,7 @@ private:
     // the one it took.
     MaskPtr integer_mask_;
     // Bumped on every change to `entries_` or `integer_mask_`, so a
-    // diversity scan taken outside the lock can tell whether it still
+    // scan taken outside the lock can tell whether it still
     // describes the pool (see `try_add`).
     std::uint64_t generation_ = 0;
     std::function<void()> scan_hook_;

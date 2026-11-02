@@ -228,7 +228,9 @@ void seed_three(SolutionPool& pool) {
     std::vector<double> best(kRedecideNcol, 0.0);
     std::vector<double> mid(kRedecideNcol, 1.0);
     std::vector<double> worst(kRedecideNcol, 1.0);
-    worst[0] = 0.0;
+    // Off `mid` in a column every mask in these tests marks integer, so the
+    // two are never twins (#204).
+    worst[kRedecideNcol - 1] = 0.0;
     REQUIRE(pool.try_add(100.0, best, kSourceA).accepted);
     REQUIRE(pool.try_add(101.0, mid, kSourceA).accepted);
     REQUIRE(pool.try_add(102.0, worst, kSourceA).accepted);
@@ -303,7 +305,8 @@ TEST_CASE("SolutionPool: entries changed mid-scan are rescanned before the decis
         }
     });
     const auto moved = pool.try_add(102.0, near_best_offer(), kSourceB);
-    REQUIRE(hook_calls == 2);  // scanned, then rescanned against the new entries
+    // Scanned; the peer's own twin scan; rescanned against the new entries.
+    REQUIRE(hook_calls == 3);
 
     SolutionPool reference(/*capacity=*/3);
     reference.set_integer_mask(std::vector<bool>(kRedecideNcol, true));
@@ -348,7 +351,8 @@ namespace {
 
 // The diversity rule as it stood before #195 made the scan fast, kept here
 // as the reference the pool is held to: every entry measured, `std::round`
-// on every column the flag array marks.
+// on every column the flag array marks.  The twin rule (#204) the same way,
+// ahead of every other path: the first entry at distance zero decides.
 class ReferencePool {
 public:
     ReferencePool(int capacity, std::vector<bool> mask)
@@ -359,6 +363,22 @@ public:
     }
 
     bool try_add(double obj, const std::vector<double>& sol) {
+        if (num_integers_ > 0) {
+            for (int idx = 0; std::cmp_less(idx, entries_.size()); ++idx) {
+                if (distance(sol, entries_[idx].second) != 0) {
+                    continue;
+                }
+                const double twin = entries_[idx].first;
+                if (obj < twin - (kImprovementObjMargin * std::max(1.0, std::abs(twin)))) {
+                    ++twin_replaces_;
+                    entries_.erase(entries_.begin() + idx);
+                    insert(obj, sol);
+                    return true;
+                }
+                ++twin_refusals_;
+                return false;
+            }
+        }
         if (std::cmp_less(entries_.size(), capacity_)) {
             insert(obj, sol);
             return true;
@@ -379,12 +399,7 @@ public:
         int evict_dist = std::numeric_limits<int>::max();
         int victim = -1;
         for (int idx = 0; std::cmp_less(idx, entries_.size()); ++idx) {
-            int dist = 0;
-            for (int j = 0; std::cmp_less(j, sol.size()); ++j) {
-                if (mask_[j] && std::round(sol[j]) != std::round(entries_[idx].second[j])) {
-                    ++dist;
-                }
-            }
+            const int dist = distance(sol, entries_[idx].second);
             min_dist = std::min(min_dist, dist);
             if (idx > 0 && dist < evict_dist) {
                 evict_dist = dist;
@@ -403,12 +418,24 @@ public:
 
     [[nodiscard]] int diversity_offers() const { return diversity_offers_; }
     [[nodiscard]] int diversity_accepts() const { return diversity_accepts_; }
+    [[nodiscard]] int twin_replaces() const { return twin_replaces_; }
+    [[nodiscard]] int twin_refusals() const { return twin_refusals_; }
 
     [[nodiscard]] const std::vector<std::pair<double, std::vector<double>>>& entries() const {
         return entries_;
     }
 
 private:
+    [[nodiscard]] int distance(const std::vector<double>& a, const std::vector<double>& b) const {
+        int dist = 0;
+        for (int j = 0; std::cmp_less(j, a.size()); ++j) {
+            if (mask_[j] && std::round(a[j]) != std::round(b[j])) {
+                ++dist;
+            }
+        }
+        return dist;
+    }
+
     void insert(double obj, const std::vector<double>& sol) {
         // NOLINTNEXTLINE(modernize-use-ranges)
         auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj,
@@ -421,6 +448,8 @@ private:
     int num_integers_ = 0;
     int diversity_offers_ = 0;
     int diversity_accepts_ = 0;
+    int twin_replaces_ = 0;
+    int twin_refusals_ = 0;
     std::vector<std::pair<double, std::vector<double>>> entries_;
 };
 
@@ -432,8 +461,10 @@ TEST_CASE("SolutionPool: the diversity scan decides every offer as the full std:
     // ties, negative ones included, so the distances depend on how a value
     // rounds and on which columns count; objectives in a band narrow enough
     // that most offers take the diversity path, where the scan stops at the
-    // first entry too close to the offer.
-    constexpr int kNcol = 30;
+    // first entry too close to the offer.  Sixty integer columns, so the
+    // diversity threshold is three: an offer one or two columns from an
+    // entry is refused by the diversity rule, not by the twin rule (#204).
+    constexpr int kNcol = 90;
     constexpr int kOffers = 3000;
     std::vector<bool> mask(kNcol);
     for (int j = 0; j < kNcol; ++j) {
@@ -470,6 +501,10 @@ TEST_CASE("SolutionPool: the diversity scan decides every offer as the full std:
     // Both diversity verdicts were reached, many times over.
     REQUIRE(reference.diversity_accepts() > 50);
     REQUIRE(reference.diversity_offers() - reference.diversity_accepts() > 50);
+    INFO("twin replaces " << reference.twin_replaces() << ", refusals "
+                          << reference.twin_refusals());
+    REQUIRE(reference.twin_replaces() > 20);
+    REQUIRE(reference.twin_refusals() > 20);
     const auto entries = pool.sorted_entries();
     REQUIRE(entries.size() == reference.entries().size());
     for (size_t i = 0; i < entries.size(); ++i) {
@@ -526,4 +561,121 @@ TEST_CASE("SolutionPool: a column's Hamming term is std::round's verdict at ever
                     (std::round(x) != std::round(y)));
         }
     }
+}
+
+// ── Twins: an offer matching an entry's integer part (#204) ──
+
+namespace {
+
+// Four integer columns and a continuous one.  `twin_of(k, c)` rounds to
+// entry `k`'s integer part with continuous value `c`, so it differs from the
+// entry's own vector and the pool can tell which one it holds.
+constexpr int kTwinNcol = 5;
+
+std::vector<double> integer_part(int k) {
+    std::vector<double> sol(kTwinNcol, 0.0);
+    for (int j = 0; j < kTwinNcol - 1; ++j) {
+        sol[j] = static_cast<double>((k >> j) & 1);
+    }
+    return sol;
+}
+
+std::vector<double> twin_of(int k, double continuous) {
+    auto sol = integer_part(k);
+    sol[0] += 0.25;  // rounds to the same value
+    sol.back() = continuous;
+    return sol;
+}
+
+// Four integer columns, the last one continuous.
+std::vector<bool> twin_mask() {
+    std::vector<bool> mask(kTwinNcol, true);
+    mask.back() = false;
+    return mask;
+}
+
+}  // namespace
+
+TEST_CASE("SolutionPool: a twin replaces its entry only if better by the margin, filling or full",
+          "[pool]") {
+    // Capacity 4: three entries is the filling path, four the full one.
+    for (const int seeded : {3, 4}) {
+        INFO("entries before the offer: " << seeded);
+        // Entry k has objective 10 + k; the offers twin entry 1 (objective 11).
+        auto seed = [&](SolutionPool& pool) {
+            for (int k = 0; k < seeded; ++k) {
+                REQUIRE(pool.try_add(10.0 + k, integer_part(k), kSourceA).accepted);
+            }
+        };
+
+        SECTION("better by more than the margin: replaces the twin, not the worst") {
+            SolutionPool pool(/*capacity=*/4);
+            pool.set_integer_mask(twin_mask());
+            seed(pool);
+            const auto r = pool.try_add(10.5, twin_of(1, 7.0), kSourceB);
+            REQUIRE(r.accepted);
+            REQUIRE_FALSE(r.improved_best);
+            const auto e = pool.sorted_entries();
+            REQUIRE(std::cmp_equal(e.size(), seeded));
+            REQUIRE(e[1].objective == 10.5);
+            REQUIRE(e[1].source == kSourceB);
+            REQUIRE(e[1].solution == twin_of(1, 7.0));
+            for (const auto& entry : e) {
+                REQUIRE(entry.objective != 11.0);  // the twin is gone
+            }
+            REQUIRE(e.back().objective == 10.0 + (seeded - 1));  // the worst stays
+        }
+        SECTION("a twin of the best that improves on it is a new best") {
+            SolutionPool pool(/*capacity=*/4);
+            pool.set_integer_mask(twin_mask());
+            seed(pool);
+            const auto r = pool.try_add(9.0, twin_of(0, 7.0), kSourceB);
+            REQUIRE(r.accepted);
+            REQUIRE(r.improved_best);
+            const auto e = pool.sorted_entries();
+            REQUIRE(std::cmp_equal(e.size(), seeded));
+            REQUIRE(e[0].objective == 9.0);
+            REQUIRE(e[1].objective == 11.0);
+        }
+        SECTION("equal, worse, within the margin or an ulp lower: refused") {
+            SolutionPool pool(/*capacity=*/4);
+            pool.set_integer_mask(twin_mask());
+            seed(pool);
+            const double within = 11.0 - (0.5 * kImprovementObjMargin * 11.0);
+            for (const double obj :
+                 {11.0, 11.5, within,
+                  std::nextafter(11.0, -std::numeric_limits<double>::infinity())}) {
+                INFO("obj = " << std::hexfloat << obj);
+                const auto r = pool.try_add(obj, twin_of(1, 7.0), kSourceB);
+                REQUIRE_FALSE(r.accepted);
+                REQUIRE_FALSE(r.improved_best);
+            }
+            // Its own vector again, too.
+            REQUIRE_FALSE(pool.try_add(11.0, integer_part(1), kSourceB).accepted);
+            const auto e = pool.sorted_entries();
+            REQUIRE(std::cmp_equal(e.size(), seeded));
+            REQUIRE(e[1].objective == 11.0);
+            REQUIRE(e[1].solution == integer_part(1));
+        }
+        SECTION("room in the pool, or beating its worst, does not admit a worse twin") {
+            SolutionPool pool(/*capacity=*/4);
+            pool.set_integer_mask(twin_mask());
+            seed(pool);
+            // 11.5 is worse than its twin (11) but better than the worst
+            // entry of a full pool (13), and the filling pool has a slot.
+            REQUIRE_FALSE(pool.try_add(11.5, twin_of(1, 7.0), kSourceB).accepted);
+            const auto e = pool.sorted_entries();
+            REQUIRE(std::cmp_equal(e.size(), seeded));
+            REQUIRE(e.back().objective == 10.0 + (seeded - 1));
+        }
+    }
+}
+
+TEST_CASE("SolutionPool: a pool without a mask keeps twins", "[pool]") {
+    // No integer columns to compare: the twin rule does not apply.
+    SolutionPool pool(/*capacity=*/3);
+    REQUIRE(pool.try_add(10.0, integer_part(1), kSourceA).accepted);
+    REQUIRE(pool.try_add(10.0, integer_part(1), kSourceA).accepted);
+    REQUIRE(pool.try_add(11.0, integer_part(1), kSourceA).accepted);
+    REQUIRE(pool.size() == 3);
 }

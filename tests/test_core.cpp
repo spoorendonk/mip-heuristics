@@ -955,14 +955,15 @@ Trajectory fj_trajectory(const HeuristicBudget& budget) {
 TEST_CASE("core: the default rebuild draws what it drew before the restart options",
           "[core][until_stopped][restart][libstdcxx-stream]") {
     // Measured on the commit before #200's options existed.  A change to
-    // either heuristic's search moves these too: re-measure on the parent
-    // commit then, and pin what it reports.
+    // either heuristic's search, or to what the pool admits (#204 refuses
+    // twins), moves these too: re-measure on the parent commit then, and
+    // pin what it reports.
     const Trajectory lm = local_mip_trajectory(forced_rebuild_budget());
-    REQUIRE(lm.accepted == 66);
-    REQUIRE(lm.effort == 33555021);
+    REQUIRE(lm.accepted == 13);
+    REQUIRE(lm.effort == 33554978);
     REQUIRE(lm.objective == Catch::Approx(680.351).margin(1e-3));
     const Trajectory fj = fj_trajectory(forced_rebuild_budget());
-    REQUIRE(fj.accepted == 9);
+    REQUIRE(fj.accepted == 7);
     REQUIRE(fj.effort == 33595767);
     REQUIRE(fj.objective == Catch::Approx(734.144).margin(1e-3));
 }

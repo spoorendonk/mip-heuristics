@@ -1189,8 +1189,12 @@ measured rate.
 - **File**: `src/solution_pool.h`
 - **Default**: `10`
 - **Meaning**: Maximum number of distinct solutions stored in the shared
-  `SolutionPool`. When full, a new solution replaces the worst entry
-  (if better) or, if within `kDiversityObjTolerance` of the best and
+  `SolutionPool`. With an integer mask set, an offer whose rounded
+  integer columns match an entry's (a *twin*) replaces that entry if it
+  is better by more than `kImprovementObjMargin`, and is refused
+  otherwise, full pool or not (#204), so copies of one integer assignment
+  cannot fill the slots. When full, any other solution replaces the worst
+  entry (if better) or, if within `kDiversityObjTolerance` of the best and
   sufficiently diverse, the most similar entry **other than the best**,
   which is never evicted.
 - **Suggested range**: 5–50. Larger pools provide more restart
@@ -1209,6 +1213,9 @@ measured rate.
   accepted. **Deliberately not a re-use of `kDiversityObjTolerance`**,
   which is an *admission* band: reading that one as an improvement test
   would call a 9%-worse solution an improvement.
+- **It is also the twin margin** (#204): an offer whose integer part
+  matches a pool entry's replaces that entry only if it is better by more
+  than this, so an ulp-lower copy is refused.
 - **It is the definition the shipped patience defaults were measured
   under.** `bench/analyze_presolve_probe.py`'s `improving_offers`
   reconstructs its improvement trajectory with the same margin on purpose,
