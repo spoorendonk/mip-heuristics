@@ -101,6 +101,9 @@ RowStructure detect_structure(const ProblemView& problem) {
         const RowEntries e = scan_row(problem, start[row], start[row + 1]);
         if (e.uniform_binary) {
             kind = uniform_binary_kind(lower, upper, e.a, width);
+            // `uniform_binary_kind`'s binding lower side.
+            const bool binds_lower = has_lower && lower > kExactKTol * std::max(1.0, e.a);
+            out.lower_bound_rows += kind != RowKind::kGeneral && binds_lower ? 1 : 0;
             // cuOpt's exact-k row: an equality whose count side lies in
             // `[0, width]`, `k = 0` included.
             const auto k =

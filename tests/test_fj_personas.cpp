@@ -106,6 +106,9 @@ TEST_CASE("personas: every row kind is detected", "[core][fj_personas]") {
     CHECK(structure.count_of(RowKind::kPrecedence) == 1);
     CHECK(structure.count_of(RowKind::kFlowConservation) == 1);
     CHECK(structure.count_of(RowKind::kGeneral) == 4);
+    // Partitioning, covering and the `= 4` row bind from below; packing and
+    // the `<= 2` row do not.
+    CHECK(structure.lower_bound_rows == 3);
     REQUIRE(structure.exact_k.size() == 2);
     CHECK(structure.exact_k[0].row == 0);
     CHECK(structure.exact_k[0].k == 1);
@@ -183,8 +186,15 @@ TEST_CASE("personas: slots take what the structure supports, slot 0 always seede
     RowStructure none;
     CHECK(assign_personas(none, 10, 4) == std::vector<P>(4, P::kSeeded));
 
+    // Packing and `<= k` rows hold at the bound start: no covering slot.
+    RowStructure packing;
+    packing.count[static_cast<size_t>(RowKind::kPacking)] = 3;
+    packing.count[static_cast<size_t>(RowKind::kCardinality)] = 2;
+    CHECK(assign_personas(packing, 10, 4) == std::vector<P>(4, P::kSeeded));
+
     RowStructure cover;
     cover.count[static_cast<size_t>(RowKind::kCovering)] = 3;
+    cover.lower_bound_rows = 3;
     CHECK(assign_personas(cover, 10, 4) ==
           std::vector<P>{P::kSeeded, P::kCovering, P::kSeeded, P::kSeeded});
 

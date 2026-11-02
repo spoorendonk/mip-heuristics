@@ -1,5 +1,6 @@
 #include "fj_personas.h"
 
+#include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "structure.h"
 
@@ -48,7 +49,7 @@ void collect_repair_moves(const ProblemView& problem, HighsInt row, double direc
     out.clear();
     for (HighsInt p = (*problem.ar_start)[row]; p < (*problem.ar_start)[row + 1]; ++p) {
         const HighsInt var = (*problem.ar_index)[p];
-        if ((*problem.integrality)[var] == HighsVarType::kContinuous) {
+        if (!is_integer(*problem.integrality, var)) {
             continue;
         }
         const double coeff = (*problem.ar_value)[p];
@@ -89,7 +90,9 @@ struct Violation {
 std::optional<Violation> violated_side(double lb, double ub, double sum, double tol) {
     const bool has_lb = std::isfinite(lb);
     const bool has_ub = std::isfinite(ub);
-    const bool is_equality = has_lb && has_ub && std::abs(lb - ub) < tol;
+    // `detect_structure`'s equality test, so an exact-k row is an equality
+    // here too whatever the feasibility tolerance.
+    const bool is_equality = has_lb && has_ub && std::abs(lb - ub) <= kExactKTol;
     if (is_equality && std::abs(sum - lb) > tol) {
         return Violation{sum < lb ? 1.0 : -1.0, lb};
     }
@@ -134,11 +137,10 @@ void covering_pass(const ProblemView& problem, const std::vector<HighsInt>& orde
 HighsInt count_violated_rows(const ProblemView& problem, const std::vector<double>& x) {
     HighsInt violated = 0;
     for (HighsInt row = 0; row < problem.nrow; ++row) {
-        const double sum = row_activity(problem, row, x);
-        if (sum < (*problem.row_lower)[row] - problem.feastol ||
-            sum > (*problem.row_upper)[row] + problem.feastol) {
-            ++violated;
-        }
+        violated += is_row_violated(row_activity(problem, row, x), (*problem.row_lower)[row],
+                                    (*problem.row_upper)[row], problem.feastol)
+                        ? 1
+                        : 0;
     }
     return violated;
 }
@@ -226,9 +228,7 @@ std::vector<FjPersona> assign_personas(const RowStructure& structure, size_t nnz
         return out;
     }
     std::vector<FjPersona> supported;
-    if (structure.count_of(RowKind::kCovering) + structure.count_of(RowKind::kPartitioning) +
-            structure.count_of(RowKind::kCardinality) >
-        0) {
+    if (structure.lower_bound_rows > 0) {
         supported.push_back(FjPersona::kCovering);
     }
     if (!structure.exact_k.empty()) {

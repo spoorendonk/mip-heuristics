@@ -47,6 +47,11 @@ struct ExactKRow {
 
 struct RowStructure {
     std::array<HighsInt, kNumRowKinds> count{};
+    // Uniform binary rows with a binding lower side: the covering and
+    // partitioning rows, and the `= k` / `>= k` cardinality ones.  The
+    // covering start only acts on these from the bound start; a `<= k`
+    // row is satisfied there already.
+    HighsInt lower_bound_rows = 0;
     // In row order.
     std::vector<ExactKRow> exact_k;
 

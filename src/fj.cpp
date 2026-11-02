@@ -41,7 +41,8 @@ FjState make_state(const ExecutionContext& exec, int worker_idx,
 }
 
 // The persona of every slot, and the structure their starts read: all
-// seeded, with no detection pass, unless `budget.fj_personas` (#206).  Run
+// seeded, with no detection pass, unless `budget.fj_personas` (#206) and
+// some slot can take a persona.  Run
 // on the dispatching thread, ahead of the parallel region.
 struct Personas {
     RowStructure structure;
@@ -51,7 +52,9 @@ struct Personas {
 Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget,
                        const ExecutionContext& exec) {
     Personas out;
-    if (!budget.fj_personas) {
+    // Where `assign_personas` would seed every slot anyway, skip the O(nnz)
+    // detection pass too.
+    if (!budget.fj_personas || exec.num_workers < 2 || problem.nnz > kPersonaNnzLimit) {
         out.of_slot.assign(exec.num_workers, FjPersona::kSeeded);
         return out;
     }

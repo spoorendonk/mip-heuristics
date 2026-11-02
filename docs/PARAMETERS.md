@@ -2183,7 +2183,7 @@ portfolio (`feasibility_jump/cpu/portfolio.cpp`,
 `apply_lane_diversification`; starts in `cpu/starts/covering.cpp` and
 `cpu/starts/cardinality.cpp`). Slot 0 stays seeded (vanilla FJ's seed);
 slots 1.. take the personas the model's rows support, in order — the
-covering start when a covering, partitioning or cardinality row exists,
+covering start when a covering, partitioning, `= k` or `>= k` row exists,
 the exact-k start then the covering start (cuOpt's lane 8) when an exact-k
 row exists — and the rest stay seeded copies. Only a slot's first worker
 takes its persona; rebuilds restart from the pool as before. Each start

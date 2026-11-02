@@ -35,9 +35,9 @@ inline constexpr int kCoveringPasses = 2;
 
 // The persona of each of `num_workers` slots.  Slot 0 is always seeded: it
 // carries vanilla FJ's seed.  Slots 1.. take the personas `structure`
-// supports, in the order above — covering when a covering, partitioning or
-// cardinality row exists, exact-k when an exact-k row does — and the rest
-// stay seeded.  All seeded above `kPersonaNnzLimit`.
+// supports, in the order above — covering when a uniform binary row binds
+// from below (`RowStructure::lower_bound_rows`), exact-k when an exact-k
+// row does — and the rest stay seeded.  All seeded above `kPersonaNnzLimit`.
 std::vector<FjPersona> assign_personas(const RowStructure& structure, size_t nnz,
                                        size_t num_workers);
 
