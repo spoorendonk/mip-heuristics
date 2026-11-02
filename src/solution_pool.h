@@ -99,8 +99,7 @@ public:
     //
     // `improved_best` implies `accepted`: an offer that beats the best
     // beats the worst too, so it takes the standard replacement path, and
-    // clears the margin against any twin, whose objective is no better than
-    // the watermark.
+    // an offer that moves the watermark replaces its twin, if it has one.
     struct AddResult {
         bool accepted = false;
         bool improved_best = false;
@@ -113,7 +112,8 @@ public:
     // Insertion policy, with an integer mask set, full or not:
     //   0. If the offer's rounded integer columns match an entry's (a twin,
     //      #204): replace that entry if obj is better than it by more than
-    //      `kImprovementObjMargin`, else refuse.  So copies of one integer
+    //      `kImprovementObjMargin`, or moves the watermark (`improved_best`
+    //      below), else refuse.  So copies of one integer
     //      assignment, ulp-lower ones included, cannot fill the slots, while
     //      a real improvement on an assignment still lands.
     // Otherwise, while the pool is filling, insert; when it is full:

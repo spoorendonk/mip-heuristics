@@ -2100,9 +2100,10 @@ effort-gap distribution).
   bit-reproducible at `threads=1`, and p0548 over seeds 0–9 is a
   continuous 20.7M–92.7M with three seeds at the ceiling — LocalMIP is
   legitimately earning acceptances wherever the ratio stays high. The
-  residual is pool-fill and diversity accepts: `kPoolCapacity` offers are
+  residual is pool-fill and diversity accepts: offers were then
   admitted unconditionally
-  while the pool fills, and structurally diverse near-best solutions
+  while the pool filled (since #204 a copy of an entry's integer part
+  is refused unless it improves on that entry), and structurally diverse near-best solutions
   afterwards, both of which used to reset the gate. **#116 closed exactly
   that**: the gate now resets only on an offer that moved the incumbent,
   so those acceptances no longer clear staleness. The numbers above were

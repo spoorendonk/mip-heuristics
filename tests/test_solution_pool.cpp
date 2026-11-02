@@ -352,7 +352,8 @@ namespace {
 // The diversity rule as it stood before #195 made the scan fast, kept here
 // as the reference the pool is held to: every entry measured, `std::round`
 // on every column the flag array marks.  The twin rule (#204) the same way,
-// ahead of every other path: the first entry at distance zero decides.
+// ahead of every other path: the first entry at distance zero decides, and
+// an offer moving the best-ever watermark replaces it.
 class ReferencePool {
 public:
     ReferencePool(int capacity, std::vector<bool> mask)
@@ -369,7 +370,8 @@ public:
                     continue;
                 }
                 const double twin = entries_[idx].first;
-                if (obj < twin - (kImprovementObjMargin * std::max(1.0, std::abs(twin)))) {
+                if (obj < twin - (kImprovementObjMargin * std::max(1.0, std::abs(twin))) ||
+                    improves_best(obj)) {
                     ++twin_replaces_;
                     entries_.erase(entries_.begin() + idx);
                     insert(obj, sol);
@@ -436,7 +438,15 @@ private:
         return dist;
     }
 
+    [[nodiscard]] bool improves_best(double obj) const {
+        return best_seen_ == std::numeric_limits<double>::infinity() ||
+               obj < best_seen_ - (kImprovementObjMargin * std::max(1.0, std::abs(best_seen_)));
+    }
+
     void insert(double obj, const std::vector<double>& sol) {
+        if (improves_best(obj)) {
+            best_seen_ = obj;
+        }
         // NOLINTNEXTLINE(modernize-use-ranges)
         auto pos = std::lower_bound(entries_.begin(), entries_.end(), obj,
                                     [](const auto& e, double v) { return e.first < v; });
@@ -449,6 +459,7 @@ private:
     int diversity_offers_ = 0;
     int diversity_accepts_ = 0;
     int twin_replaces_ = 0;
+    double best_seen_ = std::numeric_limits<double>::infinity();
     int twin_refusals_ = 0;
     std::vector<std::pair<double, std::vector<double>>> entries_;
 };
@@ -669,6 +680,25 @@ TEST_CASE("SolutionPool: a twin replaces its entry only if better by the margin,
             REQUIRE(e.back().objective == 10.0 + (seeded - 1));
         }
     }
+}
+
+TEST_CASE("SolutionPool: a twin that moves the watermark replaces its entry", "[pool]") {
+    // The watermark is 100; entry 1 sits below it by less than the margin
+    // (1e-7 here), so it was kept without moving the watermark.  Its twin
+    // at 100 - 1.2e-7 clears the margin against the watermark but not
+    // against entry 1: it is an improvement, so it must be kept.
+    SolutionPool pool(/*capacity=*/4);
+    pool.set_integer_mask(twin_mask());
+    REQUIRE(pool.try_add(100.0, integer_part(0), kSourceA).improved_best);
+    const auto near = pool.try_add(100.0 - 5e-8, integer_part(1), kSourceA);
+    REQUIRE(near.accepted);
+    REQUIRE_FALSE(near.improved_best);
+    const auto twin = pool.try_add(100.0 - 1.2e-7, twin_of(1, 7.0), kSourceB);
+    REQUIRE(twin.accepted);
+    REQUIRE(twin.improved_best);
+    const auto e = pool.sorted_entries();
+    REQUIRE(e.size() == 2);
+    REQUIRE(e[0].solution == twin_of(1, 7.0));
 }
 
 TEST_CASE("SolutionPool: a pool without a mask keeps twins", "[pool]") {

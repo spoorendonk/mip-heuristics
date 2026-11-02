@@ -180,7 +180,6 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
     // Sized here so the snapshot taken under the lock never allocates.
     scan.reserve(capacity_ > 0 ? capacity_ : 0);
     dists.reserve(capacity_ > 0 ? capacity_ : 0);
-    seen.reserve(capacity_ > 0 ? capacity_ : 0);
 
     for (;;) {
         AddResult result;
@@ -275,7 +274,11 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                 const auto twin = std::ranges::find(dists, 0);
                 if (twin != dists.end()) {
                     const auto idx = twin - dists.begin();
-                    if (clears_margin(obj, entries_[idx].objective)) {
+                    // An offer that moves the watermark replaces its twin
+                    // too: an entry may sit below the watermark by less
+                    // than the margin, so clearing the margin against the
+                    // watermark need not clear it against the twin.
+                    if (result.improved_best || clears_margin(obj, entries_[idx].objective)) {
                         replace(idx);
                     }
                 } else if (!full) {
@@ -325,7 +328,8 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
         if (!need_scan) {
             // `improved_best` implies `accepted` in every branch above — an
             // offer that beats the best beats the worst too, so it takes the
-            // standard replacement path — but tie them together rather than
+            // standard replacement path, and it replaces any twin — but tie
+            // them together rather than
             // leaving that to a reader of the admission policy: a staleness
             // gate must never reset on a solution the pool did not keep.
             result.improved_best = result.improved_best && result.accepted;
@@ -335,6 +339,9 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
         // The scan, outside the lock.  Entries are immutable, so a pointer
         // seen before is the same vector and its distance stands — under the
         // same mask, which is why a mask change empties the cache.
+        if (seen.capacity() == 0) {
+            seen.reserve(capacity_);  // here, so an offer that never scans never allocates it
+        }
         if (mask_changed) {
             seen.clear();
             stale_mask.reset();
