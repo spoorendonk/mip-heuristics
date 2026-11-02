@@ -8,6 +8,7 @@
 #include "util/HighsInt.h"
 #include "worker_base.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -41,11 +42,13 @@ public:
     // means the pool and the incumbent were empty too.
     // `problem` must outlive the worker.  `stall_on_violations` is
     // `HeuristicBudget::local_mip_stall_ends_run`: the patience counter
-    // also restarts on a 10% cut in violated rows (#203).
+    // also restarts on a 10% cut in violated rows (#203).  `objective_cut`
+    // is #208's cut (#223): when on, the search targets the pool's cutoff
+    // (`refresh_objective_cut`), not only this worker's own best.
     LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
                    const double* initial_solution, WorkerTrace trace,
-                   bool stall_on_violations = false);
+                   bool stall_on_violations = false, ObjectiveCutParams objective_cut = {});
 
     AttemptResult run_attempt(size_t attempt_budget);
 
@@ -69,6 +72,20 @@ public:
 
     [[nodiscard]] const std::vector<uint64_t>& weights_for_test() const { return ctx_.weight; }
     [[nodiscard]] uint64_t obj_weight_for_test() const { return ctx_.obj_weight; }
+
+    // The objective cut (#208, #223): re-reads the sink's best and sets the
+    // search's cutoff to `objective_cut_target` of it.  LocalMIP is already
+    // objective-guided — its objective weight, lift moves, breakthrough
+    // moves and aspiration all compare against a best objective — so the
+    // cut is that best, lowered to the pool's cutoff, rather than a dense
+    // row every move would pay for.  Nothing is rebuilt: the constraint and
+    // objective weights are kept, and only the random walk's
+    // `reset_weights` clears them, as without the cut.  Called at
+    // construction and on the deadline poll's cadence inside
+    // `run_attempt`; with the cut off the cutoff stays infinite and the
+    // search is the one without it.
+    void refresh_objective_cut();
+    [[nodiscard]] double cut_target_for_test() const { return cut_target_; }
 
 private:
     // Read only for `past_deadline()`, every `kTermCheckWork` counted units of
@@ -106,6 +123,22 @@ private:
     bool best_feasible_ = false;
     double best_objective_ = 0.0;
     std::vector<double> best_solution_;
+
+    // `refresh_objective_cut`'s state.  `cut_target_` is the pool's cutoff,
+    // `kHighsInf` while the cut is off or the pool empty.  The search reads
+    // the two below instead of `best_feasible_` / `best_objective_`, which
+    // stay this worker's own: they decide what it offers and restarts from.
+    const ObjectiveCutParams objective_cut_;
+    double cut_target_ = kHighsInf;
+    [[nodiscard]] bool search_has_target() const {
+        return best_feasible_ || cut_target_ < kHighsInf;
+    }
+    // The search compares against `best - epsilon` (Local-MIP's objective
+    // row, `m_best_obj - m_opt_tolerance`); `+ epsilon` makes that row the
+    // cut's own, `objective <= cut_target_`.
+    [[nodiscard]] double search_target() const {
+        return std::min(best_objective_, cut_target_ + ctx_.epsilon);
+    }
 
     HighsInt steps_since_improvement_ = 0;
     HighsInt restart_count_ = 0;

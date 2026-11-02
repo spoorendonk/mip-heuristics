@@ -314,10 +314,11 @@ struct Slots {
         // the worker's zeroed `ctx_.effort` continues the slot's count
         // instead of restarting below the value already emitted.
         const WorkerTrace trace{worker_idx, construction};
-        return LmState{std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
-                                                        budget.worker_stale, seed, start.data(),
-                                                        trace, budget.local_mip_stall_ends_run),
-                       trace};
+        return LmState{
+            std::make_unique<LocalMipWorker>(problem, exec, sink, budget.per_worker,
+                                             budget.worker_stale, seed, start.data(), trace,
+                                             budget.local_mip_stall_ends_run, budget.objective_cut),
+            trace};
     }
 
     // Replace the slot's worker: restart from the point `budget.restart`
@@ -340,7 +341,7 @@ struct Slots {
         auto seed = static_cast<uint32_t>(rng());
         state.worker = std::make_unique<LocalMipWorker>(
             problem, exec, sink, budget.per_worker, budget.worker_stale, seed, restart_sol.data(),
-            state.trace, budget.local_mip_stall_ends_run);
+            state.trace, budget.local_mip_stall_ends_run, budget.objective_cut);
         if (budget.randomize_restart_weights) {
             state.worker->randomize_weights(rng);
         }
