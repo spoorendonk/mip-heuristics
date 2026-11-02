@@ -9,16 +9,14 @@
 namespace recombine {
 
 size_t next_max_vars_from_other(size_t current, bool same_as_parent) {
-    // Neither factor is exact in binary, so `200 * 1.1` is a hair above 220:
-    // the rounding allows for that, or an exact product would round past
-    // itself.
-    constexpr double kSlack = 1e-9;
-    const double m = static_cast<double>(current);
+    // cuOpt's rounding, inexact factors and all: `200 * 1.1` is a hair above
+    // 220 in double, so 200 grows to 221, as it does there.
+    const auto m = static_cast<double>(current);
     if (same_as_parent) {
-        return std::min(static_cast<size_t>(std::ceil((m * kBpVarsIncreaseFactor) - kSlack)),
+        return std::min(static_cast<size_t>(std::ceil(m * kBpVarsIncreaseFactor)),
                         kBpMaxVarsFromOther);
     }
-    return std::max(static_cast<size_t>(std::floor((m * kBpVarsDecreaseFactor) + kSlack)),
+    return std::max(static_cast<size_t>(std::floor(m * kBpVarsDecreaseFactor)),
                     kBpMinVarsFromOther);
 }
 
@@ -48,10 +46,10 @@ BoundPropRecombiner::BoundPropRecombiner(const ProblemView& problem)
     }
 }
 
-size_t BoundPropRecombiner::fix_and_propagate(const std::vector<double>& guiding, size_t num_free,
-                                              const Deadline& deadline) {
-    std::copy(problem_.col_lower->begin(), problem_.col_lower->end(), col_lower_.begin());
-    std::copy(problem_.col_upper->begin(), problem_.col_upper->end(), col_upper_.begin());
+size_t BoundPropRecombiner::fix_and_propagate(PropEngine& fixer, const std::vector<double>& guiding,
+                                              size_t num_free, const Deadline& deadline) {
+    std::ranges::copy(*problem_.col_lower, col_lower_.begin());
+    std::ranges::copy(*problem_.col_upper, col_upper_.begin());
     for (size_t k = 0; k < num_free; ++k) {
         is_free_[differing_[k]] = 1;
     }
@@ -62,7 +60,6 @@ size_t BoundPropRecombiner::fix_and_propagate(const std::vector<double>& guiding
             col_upper_[j] = v;
         }
     }
-    PropEngine& fixer = *fixer_;
     fixer.reset();
     for (const HighsInt j : integer_cols_) {
         if (is_free_[j] == 0) {
@@ -91,14 +88,16 @@ Offspring BoundPropRecombiner::recombine(const std::vector<double>& a, double ob
                                          std::vector<double>& out) {
     out.clear();
     Offspring offspring;
-    if (problem_.degenerate()) {
+    // `fixer_` is built for every view that is not degenerate.
+    if (!fixer_.has_value()) {
         return offspring;
     }
     const auto ncol = static_cast<size_t>(problem_.ncol);
     offspring.effort = ncol;
-    const bool a_guides = obj_a <= obj_b;
-    const std::vector<double>& guiding = a_guides ? a : b;
-    const std::vector<double>& other = a_guides ? b : a;
+    // cuOpt's rule with both parents feasible: `a` guides, whatever the
+    // objectives, and the caller's draw decides the order.
+    const std::vector<double>& guiding = a;
+    const std::vector<double>& other = b;
 
     differing_.clear();
     for (const HighsInt j : integer_cols_) {
@@ -118,7 +117,7 @@ Offspring BoundPropRecombiner::recombine(const std::vector<double>& a, double ob
         return offspring;
     }
 
-    offspring.effort += fix_and_propagate(guiding, num_free, deadline);
+    offspring.effort += fix_and_propagate(*fixer_, guiding, num_free, deadline);
 
     for (size_t j = 0; j < ncol; ++j) {
         midpoint_[j] = 0.5 * (a[j] + b[j]);

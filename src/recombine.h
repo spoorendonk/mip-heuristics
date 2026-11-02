@@ -32,10 +32,12 @@ inline constexpr double kBpVarsDecreaseFactor = 0.99;
 // `kBpMinVarsFromOther`).
 [[nodiscard]] size_t next_max_vars_from_other(size_t current, bool same_as_parent);
 
-// What one recombination produced.  `success` is cuOpt's verdict: the
-// offspring is feasible and strictly better than both parents, or it
-// differs from both on the integer columns.  `objective` is set only when
-// `feasible`.
+// What one recombination produced.  `success` is cuOpt's verdict, the
+// offspring is better than both parents or differs from both on the
+// integer columns, with "better" meaning feasible and of strictly lower
+// objective: cuOpt compares a weighted quality that can rank an infeasible
+// offspring above feasible parents, and there are no weights here (a
+// deviation).  `objective` is set only when `feasible`.
 struct Offspring {
     bool success = false;
     bool feasible = false;
@@ -45,10 +47,10 @@ struct Offspring {
 
 // cuOpt's bound-prop recombiner (`bound_prop_recombiner_t::recombine`,
 // feasible-guiding branch), with FPR as the completion:
-//   1. The guiding parent is the one with the lower objective (the first
-//      on a tie); the other is the other.  Both are taken to be feasible,
-//      as every pool entry is: cuOpt's branch for an infeasible guiding
-//      parent is not carried over.
+//   1. `a` guides, whatever the objectives, as in cuOpt when both parents
+//      are feasible: the caller's draw decides the order.  Both are taken
+//      to be feasible, as every pool entry is: cuOpt's branch for an
+//      infeasible guiding parent is not carried over.
 //   2. Integer columns where the rounded values agree are fixed there.
 //   3. Of the `d` columns where they differ, at most
 //      `max_vars_from_other()` stay free, a random subset when `d` is
@@ -100,7 +102,7 @@ public:
 private:
     // Fix the columns step 3 leaves fixed, propagate, and write the result
     // into the restricted bounds.  Returns the propagation's effort.
-    size_t fix_and_propagate(const std::vector<double>& guiding, size_t num_free,
+    size_t fix_and_propagate(PropEngine& fixer, const std::vector<double>& guiding, size_t num_free,
                              const Deadline& deadline);
 
     const ProblemView& problem_;
