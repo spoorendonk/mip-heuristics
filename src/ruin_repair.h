@@ -17,19 +17,20 @@ class SolutionSink;
 // Each attempt of a worker:
 //   1. reads the population's best point — the caller's `RestartSource`
 //      under `run_until_stopped`, else the sink's pool — and checks it is
-//      feasible;
+//      feasible, falling back to the worker's own best when that point is
+//      unusable;
 //   2. adopts it when it beats the worker's own best by `kObjectiveEpsilon`
 //      (or the worker has none), and then makes the *guidance pool* the
-//      integer columns where the worker's current point disagrees with it;
+//      integer columns where the worker's old best disagrees with it;
 //      otherwise restarts from its own best;
 //   3. ruins `ruin_size(...)` non-fixed integer columns, from the shuffled
 //      guidance pool first and then uniformly: each takes, on an even coin,
 //      the population best's value, or else a uniform integer in its bounds;
 //   4. repairs with a fresh `FjWorker` from the ruined point, every column
 //      free, under the objective cutoff `best - kCutoffMarginFeastols *
-//      feastol`, for `repair_budget(...)` FJ effort units; any point FJ
-//      reports is strictly better than the worker's best and goes to the
-//      sink as FJ finds it.
+//      max(feastol, |best| * DBL_EPSILON)`, for `repair_budget(...)` FJ
+//      effort units; any point FJ reports is strictly better than the
+//      worker's best and goes to the sink as FJ finds it.
 // A repair that finds nothing counts towards the ruin size's growth.
 //
 // Deviations from cuOpt, each because HiGHS's FJ or this runner differs:
@@ -38,14 +39,21 @@ class SolutionSink;
 //   - the objective bound is a hard row in FJ's model, not cuOpt's
 //     objective-weighted scoring against its best, which HiGHS's FJ lacks;
 //   - cuOpt's bound-aware "geometric" repair for disjunctive models
-//     (`configure_cpufj_lns_geometry`) is not carried over.
+//     (`configure_cpufj_lns_geometry`) is not carried over;
+//   - guidance and the coin's population branch compare against the
+//     worker's best, not FJ's current assignment, which a fresh FJ per
+//     repair does not keep.  The population's best is usually the worker's
+//     own best (its improvements reach the pool first), so both act only
+//     after a peer's or the source's better point is adopted; otherwise
+//     about half the ruin set keeps its value (see `ruin` in the .cpp).
 namespace ruin_repair {
 
 // cuOpt's `OBJECTIVE_EPSILON`: how much a population point has to beat a
 // worker's own best by to be adopted.
 inline constexpr double kObjectiveEpsilon = 1e-7;
 
-// The objective cutoff sits this many `feastol` below the worker's best.
+// The objective cutoff sits this many `feastol` below the worker's best
+// (this many ulps of the best, if larger).
 // FJ calls a row satisfied within `feastol` of its bound, so a margin of
 // one would let FJ report a point equal to the best; two make every point
 // it reports better by at least `feastol`.

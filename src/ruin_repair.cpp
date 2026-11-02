@@ -156,6 +156,22 @@ bool next_population_point(const ProblemView& problem, Slot& slot, Fetch& fetch,
     return true;
 }
 
+// Into `slot.population`, the point to ruin from: the population's best if
+// it is usable, else the worker's own best.  A pool point that fails
+// `is_feasible` (the pool admits without checking) must not idle a slot
+// that already holds a feasible point of its own.
+template <typename Fetch>
+bool next_start_point(const ProblemView& problem, Slot& slot, Fetch& fetch, size_t& effort) {
+    if (next_population_point(problem, slot, fetch, effort)) {
+        return true;
+    }
+    if (slot.best.empty()) {
+        return false;
+    }
+    slot.population = slot.best;
+    return true;
+}
+
 // The ruined start, into `slot.start`, from the worker's best and the
 // population point in `slot.population`.  Adopts the population point first
 // if it beats the worker's best.
@@ -167,6 +183,14 @@ void ruin(const ProblemView& problem, const Shared& shared, Slot& slot, Rng& rng
         // we read the comment: the current assignment is FJ's internal state
         // at the end of the last repair, which the repair step here does not
         // expose.  On the first adoption there is no best and so no guidance.
+        // What that reading costs: every improvement a slot makes is offered
+        // to the sink first, so the population's best is usually this slot's
+        // own best.  Then there is no adoption, `guidance` keeps what the
+        // last adoption left (empty under one worker after the first), and
+        // the coin's population branch below rewrites a column to the value
+        // it already has, so about half the ruin set stays as it was.  Only
+        // a peer's better point (or the source's, in `run_until_stopped`)
+        // differs from the best and makes both mechanisms act.
         slot.guidance.clear();
         if (!slot.best.empty()) {
             for (const HighsInt j : shared.integer_cols) {
@@ -212,7 +236,13 @@ void ruin(const ProblemView& problem, const Shared& shared, Slot& slot, Rng& rng
 AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                      Slot& slot, Rng& rng, size_t run_cap) {
     const size_t budget = std::min(repair_budget(problem.nnz, slot.ruin_set.size()), run_cap);
-    const double cutoff = slot.best_objective - (kCutoffMarginFeastols * problem.feastol);
+    // The margin is relative once the objective is large: an absolute
+    // `feastol` below the objective's ulp would round away and let FJ
+    // repair back to an equal objective.
+    const double margin = kCutoffMarginFeastols *
+                          std::max(problem.feastol, std::abs(slot.best_objective) *
+                                                        std::numeric_limits<double>::epsilon());
+    const double cutoff = slot.best_objective - margin;
     FjWorker fj(problem, exec, sink, budget, std::numeric_limits<size_t>::max(),
                 static_cast<uint32_t>(rng()), slot.start, slot.trace, cutoff);
     AttemptResult result = fj.run_attempt(budget);
@@ -222,10 +252,16 @@ AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, S
     bool improved = false;
     if (!found.empty() && fj.best_found_objective() + kObjectiveEpsilon < slot.best_objective) {
         result.effort += problem.nnz;
+        slot.trace.effort_base += problem.nnz;
         if (is_feasible(problem, found)) {
-            slot.best = found;
-            slot.best_objective = fj.best_found_objective();
-            improved = true;
+            // Recomputed rather than FJ's incrementally maintained value, so
+            // its drift does not feed the next cutoff.
+            const double objective = problem.objective(found);
+            if (objective + kObjectiveEpsilon < slot.best_objective) {
+                slot.best = found;
+                slot.best_objective = objective;
+                improved = true;
+            }
         }
     }
     slot.no_improve = improved ? 0 : slot.no_improve + 1;
@@ -238,6 +274,7 @@ AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, S
 AttemptResult ruin_and_repair(const ProblemView& problem, const Shared& shared,
                               const ExecutionContext& exec, SolutionSink& sink, Slot& slot,
                               Rng& rng, size_t run_cap, size_t check_effort) {
+    slot.trace.effort_base += check_effort;
     ruin(problem, shared, slot, rng);
     AttemptResult result = repair(problem, exec, sink, slot, rng, run_cap);
     result.effort += check_effort;
@@ -260,11 +297,12 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                 exec, budget,
                 [&problem](int worker_idx, Rng& /*rng*/) { return make_slot(problem, worker_idx); },
                 [&](Slot& slot, Rng& rng, size_t run_cap) -> AttemptResult {
-                    // No usable point charges at most one check and then
-                    // nothing, which retires the slot: a dispatch whose pool
-                    // holds no feasible point has nothing to ruin.
+                    // No usable point and no best of its own charges at most
+                    // one check and then nothing, which retires the slot: a
+                    // dispatch whose pool holds no feasible point has nothing
+                    // to ruin.
                     size_t effort = 0;
-                    if (!next_population_point(problem, slot, fetch, effort)) {
+                    if (!next_start_point(problem, slot, fetch, effort)) {
                         return {.effort = effort, .found_improvement = false};
                     }
                     return ruin_and_repair(problem, shared, exec, sink, slot, rng, run_cap, effort);
@@ -289,10 +327,11 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
                 return take_restart(source, rng, out, problem) || sink.copy_best(out);
             };
             // Wait for a usable point, as cuOpt's worker does, rather than
-            // return zero effort, which would end the run.
+            // return zero effort, which would end the run.  This thread
+            // holds the poller seat, so the wait polls the terminator too.
             size_t effort = 0;
-            while (!next_population_point(problem, slot, fetch, effort)) {
-                if (exec.past_deadline()) {
+            while (!next_start_point(problem, slot, fetch, effort)) {
+                if (exec.terminated()) {
                     return {.effort = effort, .found_improvement = false};
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(kWaitForSeedMs));

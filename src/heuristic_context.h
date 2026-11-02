@@ -42,9 +42,9 @@ class SolutionSink;
 // entry point.  Per-worker effort/staleness bookkeeping lives in
 // `WorkerBudgetState` (worker_base.h); `HeuristicBudget` holds the
 // *derived* values each worker's base struct receives on construction.
-// All four heuristics' budgets come from their own
+// Every chain heuristic's budget come from their own
 // `mip_heuristic_<name>_effort` option; FJ's sizes `per_worker` and lets
-// `total` scale with the pool, the other three size `total` and are
+// `total` scale with the pool, the others size `total` and are
 // divided across it (see mode_dispatch.cpp).
 
 // The uniform runner contract every presolve heuristic implements:
@@ -559,7 +559,7 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
                            .worker_stale = std::max<size_t>(stale / num_workers, 1)};
 }
 
-// The second runner contract (#171).  FJ and LocalMIP also expose
+// The second runner contract (#171).  FJ, LocalMIP and ruin also expose
 //
 //     size_t <ns>::run_until_stopped(const ProblemView &problem, const HeuristicBudget &budget,
 //                                    const ExecutionContext &exec, int worker,
@@ -609,7 +609,8 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // Thread-safety.  Everything runs on the calling thread, and the calls into
 // the caller's code are:
 //   - `source`, when the slot's first worker is built and whenever a
-//     stalled one is rebuilt;
+//     stalled one is rebuilt; for ruin, before every attempt and every
+//     `kWaitForSeedMs` while a slot waits for its first feasible point;
 //   - `sink`'s `on_accept`, for every offer the sink's pool accepts, on
 //     this thread and outside the pool lock;
 //   - `exec.terminator`, every other attempt: this thread holds the poller

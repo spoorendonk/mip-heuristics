@@ -78,7 +78,7 @@ scheduling.** Which worker wins a race, which solution reaches the pool first,
 and how much a heuristic overshoots its effort slice are all scheduling facts.
 
 The *wall-clock* limit is a separate axis and is bounded at every worker count,
-including `threads=1` (#114). Each of the four presolve heuristics polls
+including `threads=1` (#114). Each presolve heuristic polls
 `ExecutionContext::past_deadline()` from inside its own inner loop, on a cadence
 of its own — FeasibilityJump per upstream callback (every 500 000 effort units),
 LocalMIP every `kTermCheckWork` counted units, FPR per inner attempt and then
@@ -405,7 +405,7 @@ launcher checks by refusing a binary without the patch marker.
 
 ## Zeroing every heuristic is an ablation, not a vanilla baseline
 
-Setting all five `mip_heuristic_<name>_effort` options to `0` disables our four
+Setting every `mip_heuristic_<name>_effort` option to `0` disables our
 presolve heuristics and the dive-time `fpr_lp`. That makes it the reference row
 for "what does the chain contribute on this binary?", and that is the only
 thing it is. `bench/run_benchmark.py` spells it as the config `off`.

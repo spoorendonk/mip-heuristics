@@ -18,7 +18,7 @@ namespace fj {
 // (`budget_is_per_worker` in mode_dispatch's `kChain`).  The
 // runner-level gate is therefore `num_workers` times this, and the
 // worker-level gate is the value itself.  FJ is the only entry with that
-// scope; the other three size a whole dispatch and are divided across
+// scope; the others size a whole dispatch and are divided across
 // the pool.
 //
 // The default is 0, which disables the gate entirely (#107).  `nnz << 8`

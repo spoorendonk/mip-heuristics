@@ -1139,7 +1139,10 @@ measured rate.
 - **Meaning**: The repair's objective row is `cost . x <= best - 2 *
   feastol`. FJ counts a row satisfied within `feastol`, so one feastol
   would let it report a point equal to the best; two make every point it
-  reports better by at least one feastol.
+  reports better by at least one feastol. Once `|best| * DBL_EPSILON`
+  exceeds `feastol` (|best| above about 1e10 at `feastol = 1e-6`) the unit
+  is that instead, since an absolute margin below the objective's ulp would
+  round away.
 
 ---
 
@@ -1271,8 +1274,7 @@ FJ budget (#116 — the earlier `nnz << 12` scaled by `value / 0.05` is
 retired; `vanilla_effort_budget` is where that anchor survives, for
 upstream's own `mip_heuristic_effort`). The options are registered by
 `third_party/highs_patch/apply_patch.cmake` — which nothing compiles, so
-`tests/test_smoke.cpp` pins all five effort defaults and all four patience
-defaults — and are documented for users in the closing section of this
+`tests/test_smoke.cpp` pins every effort and patience default — and are documented for users in the closing section of this
 file.
 
 They are independent by construction: there is no shared envelope, so
@@ -1435,7 +1437,8 @@ itself is driven by a tracked target runner rather than by config names.
 - **Meaning**: Whole-dispatch budget for the ruin-and-repair LNS, the last
   chain entry, in FJ step units (each repair is a fresh FJ). Divided across
   the workers like FPR's. A dispatch whose pool holds no feasible point
-  charges nothing and ends at once.
+  ends at once, having charged at most one feasibility check (`nnz`) per
+  worker.
 - **Suggested range**: 0.1–3.
 
 ---
@@ -1511,7 +1514,7 @@ improving, 115 were still improving) and its quality argues against giving it
 more.
 
 Both are valid only at the worker count they were measured at. FJ's budget is
-per worker while the other three are per dispatch, so changing the count
+per worker while the others are per dispatch, so changing the count
 **reallocates** budget between heuristics rather than rescaling it.
 
 ---
@@ -2156,8 +2159,11 @@ effort-gap distribution).
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
 - **Default**: `0.0` — no gate; the heuristic itself ships off.
 - **Meaning**: FJ step units without an incumbent improvement, as a
-  multiple of `nnz << 10`, **whole dispatch**. One attempt charges at most
-  one repair (`repair_budget`), so the gate's floor is one repair per worker.
+  multiple of `nnz << 10`, **whole dispatch**. One attempt is one repair of
+  at most `repair_budget`, capped by the attempt cap, but FJ checks its
+  budget only at its callback (every 500000 effort units or found point), so
+  on a small model one repair can overshoot that cap several times over and
+  the gate fires in coarser steps than the formula suggests.
 - **Suggested range**: 0.1–1, plus `0` for no gate. Values above
   `effort / 4` are clamped down to it.
 
@@ -2578,11 +2584,11 @@ to `0.30` and overloaded as the presolve budget — that overload was split
 out into a presolve-only option, which in turn became the four
 per-heuristic options below.
 
-The custom patch-added options are exactly eleven: the five effort budgets
-below, the four `mip_heuristic_<name>_patience` gates documented above,
-`mip_heuristic_presolve_only` and `mip_heuristic_skip_submip_chain`. There is
-no twelfth — heuristic selection is the zero-pattern of the five effort
-options.
+The custom patch-added options are the effort budgets below, the
+`mip_heuristic_<name>_patience` gates documented above, the restart and
+persona options of FJ and LocalMIP, `mip_heuristic_presolve_only` and
+`mip_heuristic_skip_submip_chain`. There is no selection option — heuristic
+selection is the zero-pattern of the effort options.
 
 `mip_heuristic_skip_submip_chain` (bool, default `false`) makes
 `heuristics::run_presolve` return before anything else in a sub-MIP
@@ -2598,7 +2604,7 @@ open benchmark question, not a measured default.
   `mip_heuristic_scylla_effort` (`0.0`, i.e. disabled) — one effort budget multiplier
   per presolve heuristic, each a double in `[0.0, 1e6]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
-  per worker, the other three are per dispatch.
+  per worker, the others are per dispatch.
 - `mip_heuristic_fpr_lp_effort` (default `0.0`, i.e. `fpr_lp` ships **off**) — the dive-time `fpr_lp`'s
   budget, a double in `[0.0, 1e6]` and **not in the same unit as the four
   above** (#164). `fpr_lp` draws from upstream's RENS/RINS LP-iteration

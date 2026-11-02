@@ -21,8 +21,8 @@ namespace heuristics {
 
 namespace {
 
-// Per-heuristic effort options (#110).  Each of the four presolve
-// heuristics reads its own `mip_heuristic_<name>_effort` multiplier —
+// Per-heuristic effort options (#110).  Each presolve
+// heuristic reads its own `mip_heuristic_<name>_effort` multiplier —
 // registered by `third_party/highs_patch/apply_patch.cmake`, defaults
 // documented in `docs/PARAMETERS.md` — and turns it into a budget with
 // `heuristic_effort_budget(nnz, value)`: `nnz << 10` effort units per
@@ -289,7 +289,7 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         // `patience_threshold`.
         //
         // FJ's option is per worker, like its effort option, so the
-        // runner-level gate is it times the pool size; the other three are
+        // runner-level gate is it times the pool size; the others are
         // dispatch-scoped and `make_budget` divides them back down.  The
         // product is taken in `double` and `heuristic_effort_budget`
         // saturates on the way to `size_t`, so the top of the option range

@@ -227,6 +227,58 @@ TEST_CASE("ruin_repair: a caller's slot without a seed waits and returns at the 
     CHECK(sink.accepted() == 0);
 }
 
+TEST_CASE("ruin_repair: a caller's waiting slot returns at the terminator",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    ExecutionContext exec = s.exec;
+    // No stop flag: only the terminator can end the wait.
+    int polls = 0;
+    exec.terminator = [&polls] { return ++polls > 3; };
+    BestSink sink(*s.problem.integrality, 0);
+    const size_t effort =
+        ruin_repair::run_until_stopped(s.problem, make_until_stopped_budget(kBudget, kBudget), exec,
+                                       /*worker=*/0, RestartSource{}, sink);
+    CHECK(effort == 0);
+    CHECK(polls > 3);
+}
+
+TEST_CASE("ruin_repair: an infeasible population point leaves a slot ruining its own best",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const HighsLp& lp = highs.getLp();
+    const Setup s(lp, highs.getOptions().log_options);
+    const std::vector<double> seed = first_fj_point(s);
+    const double seed_objective = s.problem.objective(seed);
+    // The lower bounds, which `take_restart` keeps as they are.
+    const std::vector<double> bad = lp.col_lower_;
+    REQUIRE_FALSE(is_feasible(lp, bad));
+    std::atomic<bool> stop{false};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    BestSink sink(*s.problem.integrality, 0);
+
+    // The seed once, then only the infeasible point, until the first
+    // improvement or a fixed number of attempts.
+    constexpr int kMaxSourceCalls = 200;
+    int calls = 0;
+    const RestartSource source = [&](Rng& /*rng*/, std::vector<double>& out) {
+        if (sink.found || ++calls > kMaxSourceCalls) {
+            stop.store(true);
+            return false;
+        }
+        out = calls == 1 ? seed : bad;
+        return true;
+    };
+    static_cast<void>(ruin_repair::run_until_stopped(
+        s.problem, make_until_stopped_budget(kBudget, kBudget), exec, /*worker=*/0, source, sink));
+    REQUIRE(sink.found);
+    CHECK(sink.objective < seed_objective);
+    CHECK(is_feasible(lp, sink.solution));
+}
+
 TEST_CASE("ruin_repair: a caller's slot ruins the source's point", "[ruin_repair][until_stopped]") {
     Highs highs;
     read(highs, "egout.mps");
