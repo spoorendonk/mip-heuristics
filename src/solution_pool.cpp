@@ -329,9 +329,8 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             // `improved_best` implies `accepted` in every branch above — an
             // offer that beats the best beats the worst too, so it takes the
             // standard replacement path, and it replaces any twin — but tie
-            // them together rather than
-            // leaving that to a reader of the admission policy: a staleness
-            // gate must never reset on a solution the pool did not keep.
+            // them together rather than leaving that to a reader of the admission policy: a
+            // staleness gate must never reset on a solution the pool did not keep.
             result.improved_best = result.improved_best && result.accepted;
             return result;
         }

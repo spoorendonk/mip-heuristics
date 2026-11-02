@@ -336,15 +336,15 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
     // top of the shift from deleting the seeding block itself.
 
     // 32 attempts × 1 offer (`sink_.offer`, only on a feasible verdict) ×
-    // N workers is a theoretical upper bound on offers per outer attempt;
-    // an offer with an integer mask takes the pool mutex at least twice,
-    // around its twin or diversity scan (#204) (down from 2 before issue #122 removed the
-    // per-attempt `get_restart` pull above).  In practice the cap is rarely approached: each
-    // attempt's begin charges O(nnz) coefficient accesses (initial propagate), and the per-call
-    // slice is sized so an instance with non-trivial DFS spends most of the slice inside step
-    // rather than restarting attempts.  HighsSpinMutex critical sections in `try_add` are
-    // sub-microsecond (lower_bound over <= kPoolCapacity entries plus a pointer snapshot of them);
-    // the scans and copies run outside it.  Even worst-case, total mutex-time per attempt is
+    // N workers is a theoretical upper bound on offers per outer attempt
+    // (down from 2 pool operations before issue #122 removed the
+    // per-attempt `get_restart` pull above); an offer takes the pool mutex
+    // up to twice, around its twin or diversity scan (#204).  In practice the cap is rarely
+    // approached: each attempt's begin charges O(nnz) coefficient accesses (initial propagate), and
+    // the per-call slice is sized so an instance with non-trivial DFS spends most of the slice
+    // inside step rather than restarting attempts.  HighsSpinMutex critical sections in `try_add`
+    // are sub-microsecond (lower_bound over <= kPoolCapacity entries plus a pointer snapshot of
+    // them); the scans and copies run outside it.  Even worst-case, total mutex-time per attempt is
     // bounded ms (review R2 U-1 / Finding 3).
     constexpr int kMaxAttemptsPerCall = 32;
     int attempts_started = 0;
