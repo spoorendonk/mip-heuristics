@@ -61,8 +61,8 @@ public:
     // shared `IncumbentSink` accepted at least one of its solutions.
     //
     // The `nnz` reported on the `[Heur]` line is read from the solver
-    // rather than passed in, so no call site had to grow an argument for
-    // it; see `book`.
+    // (`presolved_nnz`) rather than passed in, so no call site had to grow
+    // an argument for it; see `book`.
     //
     // `abandoned_setup` is `DispatchOutcome::abandoned_setup`: this
     // dispatch never searched, because its sequential setup found the
@@ -95,12 +95,23 @@ public:
     void charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
                      size_t nnz, double t0_s, double t1_s, bool abandoned_setup);
 
+    // A heuristic on the original model while presolve ran (`EarlyFj`,
+    // #205): booked like a chain entry, `phase=presolve`, but with the
+    // original model's `nnz` on the `[Heur]` line, since that is the
+    // matrix it searched and its budget's unit.  It never sets up on the
+    // dispatching thread, so it never abandons a setup.
+    void charge_early(const char* name, size_t effort, bool found, size_t nnz, double t0_s,
+                      double t1_s);
+
 private:
     // Deliberately not `const`: it holds `HighsMipSolver&`, so it leaves
     // the ledger object untouched while mutating solver state.  The
     // suppression lives at the definition.
-    void book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
-              double t1_s, bool abandoned_setup);
+    void book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
+              double t0_s, double t1_s, bool abandoned_setup);
+
+    // The post-presolve MIP matrix's nonzero count; see `book`.
+    [[nodiscard]] size_t presolved_nnz() const;
 
     HighsMipSolver& mipsolver_;
 };

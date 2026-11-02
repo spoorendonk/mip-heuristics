@@ -155,7 +155,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 28 moves `~HighsMipWorker()` out of line (HighsMipWorker.h/.cpp),
 # so that our C++23 sources build against libc++; see that block below.
-set(PATCH_VERSION "28")
+#
+# Version 29 adds `mip_heuristic_early_fj_effort` (#205): a double record,
+# default 0, and the `heuristics::EarlyFj` call site around `runMipPresolve`
+# in HighsMipSolver.cpp (Patch A0).
+set(PATCH_VERSION "29")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -514,7 +518,8 @@ set(_patch_options
     "mip_heuristic_skip_submip_chain:bool:false:-:Run no presolve heuristic in a RINS/RENS sub-MIP, which inherits every other option from its parent. The default false runs the chain there as in the top-level solve"
     "mip_heuristic_fj_restart:int:0:2:Point a rebuilt FeasibilityJump presolve worker restarts from. 0 the default (the pool's best). 1 best (the same for FJ). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
     "mip_heuristic_local_mip_restart:int:0:2:Point a rebuilt LocalMIP presolve worker restarts from. 0 the default (a pool draw, perturbed). 1 best (the pool's best, unperturbed). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
-    "mip_heuristic_local_mip_restart_weights:bool:false:-:Start a rebuilt LocalMIP presolve worker's weights, with probability one half, at draws from {1, 2} instead of 1 (CP-SAT's restart weight draw)")
+    "mip_heuristic_local_mip_restart_weights:bool:false:-:Start a rebuilt LocalMIP presolve worker's weights, with probability one half, at draws from {1, 2} instead of 1 (CP-SAT's restart weight draw)"
+    "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it")
 
 # The upstream record block all four record insertions anchor on, spelled
 # once: four copies of a four-line exact-match string is four chances for
@@ -1359,7 +1364,24 @@ if(_found EQUAL -1)
     # Add includes at top (after existing includes)
     string(REPLACE
       "#include \"mip/HighsMipSolver.h\""
-      "#include \"mip/HighsMipSolver.h\"\n#include \"fpr_lp.h\"\n#include \"mode_dispatch.h\""
+      "#include \"mip/HighsMipSolver.h\"\n#include \"early_heuristics.h\"\n#include \"fpr_lp.h\"\n#include \"mode_dispatch.h\""
+      CONTENT "${CONTENT}")
+
+    # Patch A0: FeasibilityJump on the original model while presolve runs
+    # (#205).  The RAII object starts the worker thread just before
+    # `runMipPresolve` (a no-op unless `mip_heuristic_early_fj_effort` is
+    # above zero) and `finish()` stops it, joins it and hands its best
+    # solution to `solution_`, HiGHS's original-space incumbent, which
+    # `runSetup` then crushes into the presolved space as a MIP start.
+    # `finish()` sits behind the time-limit check that follows presolve, so
+    # it sees that verdict too; the destructor joins on every other return.
+    string(REPLACE
+      "  profiling_->start(kMipClockRunPresolve);\n"
+      "  profiling_->start(kMipClockRunPresolve);\n  heuristics::EarlyFj early_fj(*this);  // mip-heuristics (#205)\n"
+      CONTENT "${CONTENT}")
+    string(REPLACE
+      "      timer_.read() >= options_mip_->time_limit)\n    modelstatus_ = HighsModelStatus::kTimeLimit;\n"
+      "      timer_.read() >= options_mip_->time_limit)\n    modelstatus_ = HighsModelStatus::kTimeLimit;\n  early_fj.finish();  // mip-heuristics (#205)\n"
       CONTENT "${CONTENT}")
 
     # Patch A: retire upstream's standalone FeasibilityJump call site.
@@ -1448,11 +1470,19 @@ if(_found EQUAL -1)
     string(FIND "${CONTENT}" "heuristics::run_presolve" _presolve_check)
     string(FIND "${CONTENT}" "the native call site never runs" _fj_off_check)
     string(FIND "${CONTENT}" "mip_heuristic_presolve_only" _presolve_only_check)
-    if(_presolve_check EQUAL -1 OR _fj_off_check EQUAL -1 OR _presolve_only_check EQUAL -1)
+    # A0's two halves miss quietly too, and differently: without the
+    # constructor `early_fj` is undeclared and the build fails, but without
+    # `finish()` the worker runs until the destructor and its solution is
+    # never handed over — an option that costs a thread and returns nothing.
+    string(FIND "${CONTENT}" "heuristics::EarlyFj early_fj" _early_start_check)
+    string(FIND "${CONTENT}" "early_fj.finish()" _early_finish_check)
+    if(_presolve_check EQUAL -1 OR _fj_off_check EQUAL -1 OR _presolve_only_check EQUAL -1
+       OR _early_start_check EQUAL -1 OR _early_finish_check EQUAL -1)
         message(FATAL_ERROR
             "HighsMipSolver.cpp presolve patch failed "
             "(run_presolve=${_presolve_check}, fj_disable=${_fj_off_check}, "
-            "presolve_only=${_presolve_only_check}). "
+            "presolve_only=${_presolve_only_check}, early_start=${_early_start_check}, "
+            "early_finish=${_early_finish_check}). "
             "Upstream HiGHS likely restructured the pre-root-node heuristics "
             "block so an exact-string anchor no longer matches. "
             "Please update Patch A/A2 in third_party/highs_patch/apply_patch.cmake. "

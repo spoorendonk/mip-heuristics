@@ -12,7 +12,28 @@ double EffortLedger::now_s() const {
 
 void EffortLedger::charge_presolve(const char* name, size_t effort, bool found, double t0_s,
                                    double t1_s, bool abandoned_setup) {
-    book(name, "presolve", effort, found, t0_s, t1_s, abandoned_setup);
+    book(name, "presolve", effort, found, presolved_nnz(), t0_s, t1_s, abandoned_setup);
+}
+
+void EffortLedger::charge_early(const char* name, size_t effort, bool found, size_t nnz,
+                                double t0_s, double t1_s) {
+    book(name, "presolve", effort, found, nnz, t0_s, t1_s, false);
+}
+
+// The model's constraint-matrix nonzero count, taken from the same buffer
+// `make_problem` reads (`ProblemView::nnz`).  It is on the `[Heur]` line
+// because it is the denominator every effort and patience option is
+// expressed in — both count multiples of `nnz << 10` — and because **no
+// other line of a presolve-only log carries it**.  HiGHS prints `MIP <name>
+// has <r> rows; <c> cols; <n> nonzeros;` on entry to branch and bound, which
+// is exactly what `mip_heuristic_presolve_only` exits before, and the two
+// size figures such a log does carry are both the wrong matrix: `Nonzeros :
+// N` is the *original* model and `<r> rows, <c> cols, <n> nonzeros` is the
+// post-presolve *LP*.  This is the post-presolve *MIP* matrix, which is the
+// one the chain actually searches.  Derived here rather than passed in so no
+// chain call site had to change.
+size_t EffortLedger::presolved_nnz() const {
+    return mipsolver_.mipdata_->ARindex_.size();
 }
 
 void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
@@ -29,12 +50,12 @@ void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int6
     const int64_t charged = setup_lp_iters + static_cast<int64_t>(nnz == 0 ? 0 : effort / nnz);
     mipdata->heuristic_lp_iterations += charged;
     mipdata->total_lp_iterations += charged;
-    book(name, "dive", effort, found, t0_s, t1_s, abandoned_setup);
+    book(name, "dive", effort, found, presolved_nnz(), t0_s, t1_s, abandoned_setup);
 }
 
 // NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
-void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, double t0_s,
-                        double t1_s, bool abandoned_setup) {
+void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
+                        double t0_s, double t1_s, bool abandoned_setup) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;
 
     // Two lines per observation, deliberately:
@@ -54,21 +75,8 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // parse failure, so anything aggregating these lines should filter
     // `effort_per_ms <= 0` rather than average it in.  The `%.3f` format
     // preserves precision for slow heuristics whose rate would otherwise
-    // round to 0.
-    // The model's constraint-matrix nonzero count, taken from the same
-    // buffer `make_problem` reads (`ProblemView::nnz`).  It is on this
-    // line because it is the denominator every effort and patience option
-    // is expressed in — both count multiples of `nnz << 10` — and because
-    // **no other line of a presolve-only log
-    // carries it**.  HiGHS prints `MIP <name> has <r> rows; <c> cols;
-    // <n> nonzeros;` on entry to branch and bound, which is exactly what
-    // `mip_heuristic_presolve_only` exits before, and the two size figures
-    // such a log does carry are both the wrong matrix: `Nonzeros : N` is
-    // the *original* model and `<r> rows, <c> cols, <n> nonzeros` is the
-    // post-presolve *LP*.  This is the post-presolve *MIP* matrix, which
-    // is the one the heuristics actually search.  Derived here rather than
-    // passed in so no call site had to change.
-    const size_t nnz = mipsolver_.mipdata_->ARindex_.size();
+    // round to 0.  `nnz` is the matrix the heuristic searched
+    // (`presolved_nnz` for the chain and the dive).
     const double wall_ms = (t1_s - t0_s) * 1000.0;
     const double effort_per_ms =
         (effort > 0 && wall_ms > 0.0) ? static_cast<double>(effort) / wall_ms : 0.0;

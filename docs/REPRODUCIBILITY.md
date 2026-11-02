@@ -98,6 +98,13 @@ presolve chain finishes long inside any usable limit — but it does mean a
 measurement run at a large effort option must be given a limit the chain does
 not reach, or it measures the machine.
 
+**Early FJ (`mip_heuristic_early_fj_effort > 0`, #205) is not reproducible at
+any thread count.** It runs on its own thread while HiGHS presolves and is
+stopped when presolve returns, so how far it got, and whether it hands B&B a
+start at all, depends on how long presolve took on that machine. It is off by
+default, so every reproducible configuration above is unchanged; a run that
+turns it on is compared by spread over seeds, like a `threads > 1` run.
+
 ## Why `threads=1` is not the benchmark configuration
 
 It collapses each heuristic to a single worker. That is the right setting for a
