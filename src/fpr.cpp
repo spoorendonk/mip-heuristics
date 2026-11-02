@@ -7,6 +7,7 @@
 #include "heuristic_context.h"
 #include "highs_context.h"
 #include "mip/HighsMipSolver.h"
+#include "objective_row.h"
 #include "opportunistic_runner.h"
 #include "solution_sink.h"
 #include "worker_base.h"
@@ -14,9 +15,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -81,8 +84,11 @@ namespace {
 // a paused attempt returns without a solution every time.
 class FprWorker {
 public:
-    // `problem` must outlive the worker.
-    FprWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
+    // `problem` must outlive the worker, and so must `objective_rows` when
+    // it is non-null: the worker then searches its own copy of that view,
+    // whose objective row it bounds by `cut` before each attempt (#232).
+    FprWorker(const ProblemView& problem, const ObjectiveRowStorage* objective_rows,
+              ObjectiveCutParams cut, const ExecutionContext& exec, SolutionSink& sink,
               const VarOrderTable& var_orders, int worker_idx, uint32_t seed, size_t stale_budget);
 
     AttemptResult run_attempt(size_t attempt_budget);
@@ -104,6 +110,10 @@ private:
     // what makes the gate independent of how an attempt was sliced.
     void charge(const AttemptResult& attempt);
 
+    // The objective cut (#232): engaged when `fpr::run` built the objective
+    // row, and declared before `problem_`, which points at its view then.
+    std::optional<ObjectiveRowView> cut_view_;
+    const ObjectiveCutParams cut_;
     const ProblemView& problem_;
     const ExecutionContext& exec_;
     SolutionSink& sink_;
@@ -228,10 +238,25 @@ bool precompute_var_orders(HighsMipSolver& mipsolver, const Deadline& deadline,
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
-FprWorker::FprWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
+namespace {
+
+// A prvalue, so the non-movable view is built in place.
+std::optional<ObjectiveRowView> make_cut_view(const ObjectiveRowStorage* objective_rows) {
+    if (objective_rows == nullptr) {
+        return std::nullopt;
+    }
+    return std::optional<ObjectiveRowView>(std::in_place, *objective_rows);
+}
+
+}  // namespace
+
+FprWorker::FprWorker(const ProblemView& problem, const ObjectiveRowStorage* objective_rows,
+                     ObjectiveCutParams cut, const ExecutionContext& exec, SolutionSink& sink,
                      const VarOrderTable& var_orders, int worker_idx, uint32_t seed,
                      size_t stale_budget)
-    : problem_(problem),
+    : cut_view_(make_cut_view(objective_rows)),
+      cut_(cut),
+      problem_(cut_view_.has_value() ? cut_view_->view() : problem),
       exec_(exec),
       sink_(sink),
       var_orders_(var_orders),
@@ -425,6 +450,12 @@ AttemptResult FprWorker::run_attempt(size_t attempt_budget) {
         cfg.scratch = &scratch_;
 
         if (!attempt_alive()) {
+            // The cutoff in force for this whole attempt: the pool's best
+            // now, read once (it takes the pool lock).  The engine reads the
+            // row bound live, and nothing else moves it until the next begin.
+            if (cut_view_.has_value()) {
+                cut_view_->set_cutoff(objective_cut_target(sink_.best_objective(), cut_));
+            }
             fpr_attempt_begin(attempt_state_, problem_, deadline, cfg, rng_, attempt_idx_);
             // `attempt_state_.phase` is now `kDfs` (or `kReadyToFinish`
             // if Phase 1 already produced a complete fixing); either way
@@ -511,6 +542,20 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         return DispatchOutcome::abandoned();
     }
 
+    // The objective cut as a propagated row (#224, #232), built here on the
+    // dispatching thread.  Only when the pool already holds a solution:
+    // the pool's best never returns to infinity, so every worker's cutoff
+    // is then finite from its first attempt, and a dispatch that starts
+    // with an empty pool searches the base view — no dense row that bounds
+    // nothing, propagated on every fix of a column with a cost.  The cost of
+    // that choice: a dispatch that starts empty keeps no cut when a peer
+    // finds a solution mid-dispatch.
+    std::optional<ObjectiveRowStorage> objective_rows;
+    if (budget.objective_cut.on && std::isfinite(sink.best_objective())) {
+        objective_rows.emplace(problem);
+    }
+    const ObjectiveRowStorage* rows = objective_rows.has_value() ? &*objective_rows : nullptr;
+
     std::vector<std::unique_ptr<FprWorker>> workers;
     workers.reserve(exec.num_workers);
     for (size_t w = 0; w < exec.num_workers; ++w) {
@@ -521,8 +566,9 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         // sized Phase 3's repair/WalkSAT sub-budgets, and issue #156
         // removed those — an attempt spans calls, so `PropEngine::effort()`
         // outgrows any such number and the cap it produced arrived as 0.
-        workers.push_back(std::make_unique<FprWorker>(
-            problem, exec, sink, var_orders, static_cast<int>(w), seed, budget.worker_stale));
+        workers.push_back(std::make_unique<FprWorker>(problem, rows, budget.objective_cut, exec,
+                                                      sink, var_orders, static_cast<int>(w), seed,
+                                                      budget.worker_stale));
     }
 
     struct FprOppState {
