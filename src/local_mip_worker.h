@@ -75,8 +75,9 @@ public:
 
     // The objective cut (#208, #223): re-reads the sink's best and sets the
     // search's cutoff to `objective_cut_target` of it.  LocalMIP is already
-    // objective-guided — its objective weight, lift moves, breakthrough
-    // moves and aspiration all compare against a best objective — so the
+    // objective-guided — its objective-weight update, breakthrough moves,
+    // candidate scores and aspiration all compare against a best objective
+    // (the lift phase takes none, so the cut does not touch it) — so the
     // cut is that best, lowered to the pool's cutoff, rather than a dense
     // row every move would pay for.  Nothing is rebuilt: the constraint and
     // objective weights are kept, and only the random walk's
@@ -86,6 +87,10 @@ public:
     // search is the one without it.
     void refresh_objective_cut();
     [[nodiscard]] double cut_target_for_test() const { return cut_target_; }
+    // What `infeasible_step` is handed.
+    [[nodiscard]] bool search_has_target_for_test() const { return search_has_target(); }
+    [[nodiscard]] double search_target_for_test() const { return search_target(); }
+    [[nodiscard]] double epsilon_for_test() const { return ctx_.epsilon; }
 
 private:
     // Read only for `past_deadline()`, every `kTermCheckWork` counted units of

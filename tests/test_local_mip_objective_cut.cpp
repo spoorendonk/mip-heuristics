@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <tuple>
 #include <vector>
 
 using namespace core_test;
@@ -24,23 +25,8 @@ namespace {
 
 constexpr ObjectiveCutParams kCutOn{.on = true, .rel = 1e-3, .abs = 1e-7};
 constexpr size_t kTotal = size_t{1} << 25;
-
-// Every accepted offer, in order, with the slot's traced effort.
-class RecordingSink : public SolutionSink {
-public:
-    using SolutionSink::SolutionSink;
-    std::mutex mtx;
-    std::vector<double> objectives;
-    std::vector<size_t> efforts;
-
-private:
-    void on_accept(double obj, const std::vector<double>& /*x*/, int /*source*/,
-                   const WorkerTrace& trace, size_t effort_at) override {
-        std::scoped_lock guard(mtx);
-        objectives.push_back(obj);
-        efforts.push_back(trace.at(effort_at));
-    }
-};
+constexpr size_t kShortAttempt = 1024;
+constexpr int kShortAttempts = 1 << 17;
 
 struct Model {
     Highs highs;
@@ -68,6 +54,23 @@ PeerFind peer_find(const Setup& s) {
     return {sink.objective, sink.solution};
 }
 
+// Every accepted offer, in order, with the slot's traced effort.
+class RecordingSink : public SolutionSink {
+public:
+    using SolutionSink::SolutionSink;
+    std::mutex mtx;
+    std::vector<double> objectives;
+    std::vector<size_t> efforts;
+
+private:
+    void on_accept(double obj, const std::vector<double>& /*x*/, int /*source*/,
+                   const WorkerTrace& trace, size_t effort_at) override {
+        std::scoped_lock guard(mtx);
+        objectives.push_back(obj);
+        efforts.push_back(trace.at(effort_at));
+    }
+};
+
 LocalMipWorker make_worker(const Setup& s, SolutionSink& sink, ObjectiveCutParams cut) {
     return {s.problem,
             s.exec,
@@ -75,7 +78,7 @@ LocalMipWorker make_worker(const Setup& s, SolutionSink& sink, ObjectiveCutParam
             kTotal,
             kTotal,
             /*seed=*/0,
-            nullptr,
+            /*initial_solution=*/nullptr,
             WorkerTrace{0, 0},
             /*stall_on_violations=*/false,
             cut};
@@ -96,9 +99,15 @@ TEST_CASE("LocalMIP objective cut: a rebuilt worker targets the pool's cutoff",
     const LocalMipWorker on = make_worker(s, sink, kCutOn);
     REQUIRE(on.cut_target_for_test() == objective_cut_target(peer.objective, kCutOn));
     REQUIRE(on.cut_target_for_test() < peer.objective);
-    // Off, whatever the steps say, it has no cutoff.
+    // And that is what the search is handed, from its first step: a target
+    // whose `best - epsilon` row is the cut's own, though this worker has
+    // found nothing yet.
+    REQUIRE(on.search_has_target_for_test());
+    REQUIRE(on.search_target_for_test() == on.cut_target_for_test() + on.epsilon_for_test());
+    // Off, whatever the steps say, it has no cutoff and no target.
     const LocalMipWorker off = make_worker(s, sink, {.on = false, .rel = 1e-3, .abs = 1e-7});
     REQUIRE(off.cut_target_for_test() == kHighsInf);
+    REQUIRE_FALSE(off.search_has_target_for_test());
 }
 
 TEST_CASE("LocalMIP objective cut: a tightening keeps the weights, and the attempt picks it up",
@@ -137,19 +146,36 @@ TEST_CASE("LocalMIP objective cut: a tightening keeps the weights, and the attem
     }
 }
 
-TEST_CASE("LocalMIP objective cut: off searches as without it", "[objective_cut][local_mip]") {
+// "Off is main" is not pinned here: an off worker's cutoff is infinite, so
+// the search's target reduces to the worker's own best exactly, and the
+// deterministic LocalMIP tests elsewhere in the suite run that path.  What
+// this pins is that the search reads the cutoff at all: the same seed from
+// an empty pool makes the same first offer either way (nothing to cut
+// against yet), and differs after it, once the cutoff lies a step below the
+// worker's own best — the breakthrough delta is computed from the target
+// itself.  Constraint weights cannot show it: the random walk resets them.
+TEST_CASE("LocalMIP objective cut: the search reads the cutoff", "[objective_cut][local_mip]") {
     Model m;
     const Setup s(m.highs.getLp(), m.highs.getOptions().log_options);
     const auto offers = [&](ObjectiveCutParams cut) {
         RecordingSink sink(*s.problem.integrality, 0);
         LocalMipWorker worker = make_worker(s, sink, cut);
-        for (int k = 0; k < kMaxAttempts && !worker.finished(); ++k) {
-            static_cast<void>(worker.run_attempt(kAttemptBudget));
+        // Short attempts: the cutoff is read at an attempt's first poll,
+        // and p0548's improvements come ~2000 effort apart, inside one
+        // default attempt, the last of them shortly before it retires.
+        for (int k = 0; k < kShortAttempts && !worker.finished(); ++k) {
+            static_cast<void>(worker.run_attempt(kShortAttempt));
         }
-        return std::vector<std::vector<double>>{
-            sink.objectives, std::vector<double>(sink.efforts.begin(), sink.efforts.end())};
+        std::vector<uint64_t> state = worker.weights_for_test();
+        state.push_back(worker.obj_weight_for_test());
+        state.push_back(worker.traced_effort());
+        return std::tuple{sink.objectives, sink.efforts, state};
     };
     const auto plain = offers({});
-    REQUIRE_FALSE(plain[0].empty());
-    REQUIRE(offers({.on = false, .rel = 1e-3, .abs = 1e-7}) == plain);
+    const auto cut = offers(kCutOn);
+    REQUIRE_FALSE(std::get<0>(plain).empty());
+    REQUIRE_FALSE(std::get<0>(cut).empty());
+    REQUIRE(std::get<0>(cut)[0] == std::get<0>(plain)[0]);
+    REQUIRE(std::get<1>(cut)[0] == std::get<1>(plain)[0]);
+    REQUIRE(cut != plain);
 }
