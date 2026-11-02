@@ -32,7 +32,8 @@
 //   rows: a reader of `model` (FJ's row-wise copy) must take the base view,
 //   never this one.  `degenerate()` is decided on the base view too: a model
 //   with no rows has one here.  Everything else — bounds, costs, offset, integrality,
-//   tolerances and both snapshots — is the base view's.
+//   tolerances — is the base view's; the two snapshots (`incumbent`,
+//   `binary`) are held by value, so they are copies of the base view's.
 class ObjectiveRowStorage {
 public:
     explicit ObjectiveRowStorage(const ProblemView& base);
@@ -61,10 +62,10 @@ private:
 
 // One worker's copy of `ObjectiveRowStorage::view()`, whose `row_upper`
 // points at a vector this object owns, so the worker can move the cutoff
-// without touching a peer's.  Everything else is shared with the storage,
-// which must outlive it.  The pointer stays the same for the object's life,
-// so a `PropEngine` cached on this view (`acquire_engine`'s pointer-identity
-// check) is reused across attempts, and the engine reads the bound live:
+// without touching a peer's.  Every other pointer is the storage's, which
+// must outlive it; the two snapshots are copied, O(ncol) once per worker.  The pointer stays the
+// same for the object's life, so a `PropEngine` cached on this view (`acquire_engine`'s
+// pointer-identity check) is reused across attempts, and the engine reads the bound live:
 // `set_cutoff` before an attempt is all a worker does.
 class ObjectiveRowView {
 public:

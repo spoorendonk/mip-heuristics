@@ -170,9 +170,9 @@ TEST_CASE("Objective row: propagation fixes the columns the cutoff forces", "[ob
     const ObjectiveRowStorage storage(s.problem);
     ObjectiveRowView worker(storage);
 
-    // Objective <= 12.5 is `3 x0 + 2 x1 + x2 <= 2.5`.  With x2 = 0 the
-    // objective row rules x0 out (3 > 2.5), and the cover row then forces
-    // x1 = 1.
+    // Objective <= 12.5 is `3 x0 + 2 x1 + x2 <= 2.5`.  Fixing x2 = 0
+    // propagates both rows: the objective row rules x0 out (3 > 2.5), and
+    // the cover row then forces x1 = 1.
     worker.set_cutoff(12.5);
     PropEngine cut = make_engine(worker.view());
     REQUIRE(cut.fix(2, 0.0));
