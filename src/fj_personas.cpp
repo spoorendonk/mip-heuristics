@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <optional>
 #include <utility>
 
 // Deviations from cuOpt's starts (`cpu/starts/covering.cpp`,
@@ -77,6 +78,30 @@ HighsInt row_width(const ProblemView& problem, HighsInt row) {
     return (*problem.ar_start)[row + 1] - (*problem.ar_start)[row];
 }
 
+// The side a row with activity `sum` violates: the direction to move its
+// activity in (+1 up, -1 down) and the side to reach, or nothing when the
+// row holds.  An equality is driven to its side from either direction.
+struct Violation {
+    double direction;
+    double target;
+};
+
+std::optional<Violation> violated_side(double lb, double ub, double sum, double tol) {
+    const bool has_lb = std::isfinite(lb);
+    const bool has_ub = std::isfinite(ub);
+    const bool is_equality = has_lb && has_ub && std::abs(lb - ub) < tol;
+    if (is_equality && std::abs(sum - lb) > tol) {
+        return Violation{sum < lb ? 1.0 : -1.0, lb};
+    }
+    if (has_lb && sum < lb - tol) {
+        return Violation{1.0, lb};
+    }
+    if (has_ub && sum > ub + tol) {
+        return Violation{-1.0, ub};
+    }
+    return std::nullopt;
+}
+
 // One covering pass over `order`: each row violated at `x` repaired by
 // cuOpt's greedy one-step moves, equalities driven to their side.
 void covering_pass(const ProblemView& problem, const std::vector<HighsInt>& order,
@@ -86,29 +111,13 @@ void covering_pass(const ProblemView& problem, const std::vector<HighsInt>& orde
         if (row_width(problem, row) == 0) {
             continue;
         }
-        const double lb = (*problem.row_lower)[row];
-        const double ub = (*problem.row_upper)[row];
-        const bool has_lb = std::isfinite(lb);
-        const bool has_ub = std::isfinite(ub);
-        if (!has_lb && !has_ub) {
-            continue;
-        }
         double sum = row_activity(problem, row, x);
-        const bool is_equality = has_lb && has_ub && std::abs(lb - ub) < tol;
-        double direction = 0;
-        double target = 0;
-        if (is_equality && std::abs(sum - lb) > tol) {
-            direction = sum < lb ? 1.0 : -1.0;
-            target = lb;
-        } else if (has_lb && sum < lb - tol) {
-            direction = 1;
-            target = lb;
-        } else if (has_ub && sum > ub + tol) {
-            direction = -1;
-            target = ub;
-        } else {
+        const auto violation =
+            violated_side((*problem.row_lower)[row], (*problem.row_upper)[row], sum, tol);
+        if (!violation) {
             continue;
         }
+        const auto [direction, target] = *violation;
         collect_repair_moves(problem, row, direction, x, candidates);
         for (const RepairMove& m : candidates) {
             if (direction > 0 ? sum >= target - tol : sum <= target + tol) {
@@ -138,7 +147,7 @@ bool greedy_covering_start(const ProblemView& problem, std::vector<double>& x) {
     const HighsInt baseline = count_violated_rows(problem, x);
     std::vector<double> candidate = x;
     std::vector<HighsInt> order(static_cast<size_t>(problem.nrow));
-    std::iota(order.begin(), order.end(), HighsInt{0});
+    std::ranges::iota(order, HighsInt{0});
     std::ranges::stable_sort(order, [&](HighsInt a, HighsInt b) {
         return row_width(problem, a) < row_width(problem, b);
     });
@@ -186,7 +195,7 @@ bool exact_k_start(const ProblemView& problem, std::span<const ExactKRow> rows,
             }
         }
         const HighsInt needed = r.k - selected;
-        if (needed < 0 || static_cast<HighsInt>(free_vars.size()) < needed) {
+        if (needed < 0 || std::cmp_less(free_vars.size(), needed)) {
             continue;
         }
         std::ranges::stable_sort(free_vars,
