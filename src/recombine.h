@@ -146,10 +146,12 @@ inline constexpr double kBanditTieTolerance = 1e-9;
 // `|off - best| / (|best| + 1)`), the work-normalised
 // `max(kRewardWorkFloor, kRewardWorkCeiling - effort / kRewardNominalEffort)`.
 // "Better" is by more than `max(kRewardMarginAbs, kRewardMarginRel * |best|)`.
-// cuOpt normalises by wall clock, `4 - ms / 2000` ("normal recombiners take
-// 2000 ms"); here by effort, 2 s at FJ's laptop rate
-// (`ruin_repair::kRepairEffortPerSecond`), since FJ's repair dominates the
-// operator's work and a clock would break the same-seed replay (a
+// `effort` is the recombiner's alone, not the local search after it, as
+// cuOpt times only the recombiner.  cuOpt normalises by wall clock,
+// `4 - ms / 2000` ("normal recombiners take 2000 ms"); here by effort, since
+// a clock would break the same-seed replay, with 2 s at FJ's laptop rate
+// (`ruin_repair::kRepairEffortPerSecond`) standing in for 2 s of any
+// recombiner: FPR's rate, the bound-prop arm's unit, is not measured (a
 // deviation).
 inline constexpr double kRewardBeatsBest = 8.0;
 inline constexpr double kRewardNearBest = 0.2;

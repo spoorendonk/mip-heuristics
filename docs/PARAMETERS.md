@@ -1225,10 +1225,11 @@ they differ free for FPR to complete.
   `max(0.1, 4 - effort / 4e8)`; anything else, a failed recombination
   included, earns 0.
 - **Deviation**: cuOpt normalises by wall clock, `max(0.1, 4 - ms /
-  2000)` ("normal recombiners take 2000 ms"). Here it is by effort:
-  `4e8` is 2 s at FJ's laptop rate (`kRepairEffortPerSecond`), since FJ's
-  repair dominates the operator's work, and a clock would break the
-  same-seed replay.
+  2000)` ("normal recombiners take 2000 ms"), timing the recombiner
+  alone, not the local search after it. Here it is by the recombiner's
+  effort, since a clock would break the same-seed replay: `4e8` is 2 s at
+  FJ's laptop rate (`kRepairEffortPerSecond`), standing in for 2 s of any
+  recombiner, as FPR's rate (the bound-prop arm's unit) is not measured.
 
 ---
 

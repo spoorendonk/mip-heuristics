@@ -258,8 +258,10 @@ TEST_CASE("recombine: with equal pulls, UCB picks the arm of larger q", "[recomb
 
 TEST_CASE("recombine: UCB breaks ties at random, the same way from the same seed", "[recombine]") {
     using recombine::RecombinerArm;
-    // Every reward equals the initial q, so all arms stay tied at equal
-    // pulls: each round of three selections is a tie-break.
+    // Every reward equals the initial q, so q never moves and the UCB bonus
+    // alone decides: the first pick of each round of three (after the
+    // initial pulls) is a three-way tie, the second a two-way tie, the third
+    // forced.
     auto sequence = [](uint64_t seed) {
         recombine::RecombinerBandit bandit(seed);
         std::vector<RecombinerArm> arms;
@@ -272,10 +274,11 @@ TEST_CASE("recombine: UCB breaks ties at random, the same way from the same seed
     };
     const std::vector<RecombinerArm> first = sequence(3);
     CHECK(first == sequence(3));
-    // After the initial pulls, every arm is drawn by the tie-break, not
-    // just the first.
+    // The three-way ties do not all go one way, as a constant pick (say,
+    // the lowest index) would make them.
     std::vector<size_t> drawn(recombine::kNumRecombinerArms, 0);
-    for (size_t i = recombine::kNumRecombinerArms; i < first.size(); ++i) {
+    for (size_t i = recombine::kNumRecombinerArms; i < first.size();
+         i += recombine::kNumRecombinerArms) {
         ++drawn[static_cast<size_t>(first[i])];
     }
     for (const size_t count : drawn) {
