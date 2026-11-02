@@ -148,7 +148,7 @@ void EarlyFj::finish(bool run_to_budget) {
     if (bound_violation > tol || row_violation > tol || integrality_violation > tol) {
         return;
     }
-    const double objective = double(quad_objective);
+    const auto objective = static_cast<double>(quad_objective);
     const auto sense = static_cast<double>(static_cast<int>(model.sense_));
     if (current_solution_feasible(mipsolver_) &&
         sense * mipsolver_.solution_objective_ <= sense * objective) {
