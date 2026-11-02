@@ -189,6 +189,12 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
             return ScyllaOppState{worker_idx, WorkerTrace{worker_idx, 0}};
         },
         [&](ScyllaOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
+            // The cut has emptied the LP (#225): no chain can solve again,
+            // so the slot stops (a zero-effort attempt ends it) rather than
+            // rebuild workers that only round stale snapshots.
+            if (pdlp.cut_emptied()) {
+                return {};
+            }
             auto& worker = workers[state.worker_idx];
             auto attempt = attempt_with_rebuild(worker, run_cap, [&]() {
                 // Harvest the retired worker's overlap counters before

@@ -644,3 +644,50 @@ TEST_CASE("ContestedPdlp objective row: a solve stays under each solve's cutoff"
     REQUIRE(r2.value_valid);
     CHECK(problem.objective(r2.col_value) <= second + tol(second));
 }
+
+TEST_CASE("ContestedPdlp objective row: an LP the cut empties stops solving",
+          "[objective-cut][scylla][contested_pdlp]") {
+    // A cutoff below the LP's minimum leaves no feasible point.  Detection is
+    // cuPDLP-C's to make within the iteration cap, so a platform where it
+    // does not report `kUnboundedOrInfeasible` skips; once it does, the
+    // contract is exact.
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "gt2.mps");
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+
+    // Minimise the view's objective in the LP's own sense, as the case above.
+    const double pull = mipsolver->model_->sense_ == ObjSense::kMinimize ? 1.0 : -1.0;
+    std::vector<double> down(static_cast<size_t>(problem.ncol));
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        down[j] = pull * (*problem.col_cost)[j];
+    }
+    const std::vector<double> empty;
+    constexpr HighsInt kIterCap = 1000000;
+
+    ContestedPdlp plain(*mipsolver, kIterCap);
+    const auto lo = plain.solve(down, empty, empty, false, pump::kEpsilonFloor);
+    REQUIRE(lo.value_valid);
+    const double obj_lo = problem.objective(lo.col_value);
+    const double below = obj_lo - (1.0 + std::abs(obj_lo));
+
+    ContestedPdlp cut(*mipsolver, kIterCap, &problem);
+    REQUIRE(cut.has_objective_row());
+    const auto first = cut.solve(down, empty, empty, false, pump::kEpsilonFloor, below);
+    if (!cut.cut_emptied()) {
+        INFO("model status " << static_cast<int>(first.model_status));
+        SKIP("cuPDLP-C did not detect the emptied LP on this platform");
+    }
+    // The detecting solve is neither handed back nor published.
+    CHECK(first.status == HighsStatus::kError);
+    CHECK_FALSE(first.value_valid);
+    CHECK(cut.snapshot_generation() == 0);
+    // And no later solve runs.
+    const auto again = cut.solve(down, empty, empty, false, pump::kEpsilonFloor, below);
+    CHECK(again.status == HighsStatus::kError);
+    CHECK(again.pdlp_iters == 0);
+    CHECK(cut.snapshot_generation() == 0);
+}

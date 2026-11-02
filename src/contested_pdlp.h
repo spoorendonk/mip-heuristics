@@ -111,6 +111,12 @@ public:
     // Whether the LP carries the objective row: asked for at construction
     // and accepted by HiGHS (see the constructor).
     bool has_objective_row() const { return objective_row_ >= 0; }
+    // Whether a solve found the objective row's LP empty, confirmed by a
+    // zero-cost solve (see `run_locked_with_accounting`).  Sticky: the cutoff
+    // only tightens.  From then on every solve returns an empty `SolveResult`
+    // without solving, which retires the chain, and Scylla's dispatch stops
+    // its slots on it.  Safe on any thread.
+    bool cut_emptied() const { return cut_emptied_.load(std::memory_order_relaxed); }
 
     // Solve PDLP with the caller's objective and warm-start.  The mutex
     // is held for the full changeColsCost + setSolution + run +
@@ -356,6 +362,8 @@ private:
     SnapshotSlot snapshot_;
 #endif
 
+    // Written under `mu_`, read anywhere (`cut_emptied`).
+    std::atomic<bool> cut_emptied_{false};
     std::atomic<int> in_flight_count_{0};
     std::atomic<int> peak_in_flight_{0};
     std::atomic<uint64_t> snapshot_generation_{0};

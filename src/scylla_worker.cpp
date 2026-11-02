@@ -139,19 +139,6 @@ bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsI
         base_.finished = true;
         return true;
     }
-    // cuPDLP-C's infeasibility detection exits with `INFEASIBLE_OR_UNBOUNDED`
-    // (`cupdlp_solver.c`), not `INFEASIBLE`, which the wrapper maps to this
-    // status with a valid-looking iterate, so the check above does not catch it.  Under the
-    // objective row (#225) that is the cut's doing — the relaxation of a MIP the pool holds a point
-    // of is feasible, and the row's bound only tightens — so the LP stays empty for the dispatch
-    // and the chain retires rather than round against the detection iterate.  Without the row the
-    // status keeps its old meaning here (the pump's modified cost can leave the LP unbounded), and
-    // so its old handling.
-    if (result.model_status == HighsModelStatus::kUnboundedOrInfeasible &&
-        pdlp_.has_objective_row()) {
-        base_.finished = true;
-        return true;
-    }
     iters_out = result.pdlp_iters;
     if (iters_out == 0) {
         ++pdlp_stall_count_;

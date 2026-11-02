@@ -536,7 +536,8 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     // solve: an empty `SolveResult` keeps its `kError` default, which
     // `ScyllaWorker::absorb_fresh_solve` turns into a retired chain.
     const double time_limit = deadline_.remaining();
-    if (time_limit <= 0.0) {
+    // An LP the cut has emptied stays empty (see `cut_emptied`): no solve.
+    if (time_limit <= 0.0 || cut_emptied_.load(std::memory_order_relaxed)) {
         return {};
     }
 
@@ -593,6 +594,33 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
 
     auto result = solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
                                warm_start_valid, epsilon, time_limit);
+
+    // cuPDLP-C's infeasibility detection exits with `INFEASIBLE_OR_UNBOUNDED`
+    // (`PDHG_Check_Infeasibility` in `cupdlp_solver.c` flags primal and dual
+    // infeasibility alike), never `INFEASIBLE`, and the wrapper hands that
+    // back with a valid-looking iterate.  Under the objective row it has two
+    // causes.  Either the cut has emptied the LP — the uncut relaxation holds
+    // the pool's point, and the bound only tightens, so it stays empty for the
+    // dispatch — or the pump's cost is unbounded along a ray the row does not
+    // close (a general integer with an infinite bound and a cost pushed
+    // negative).  A zero-cost solve cannot be unbounded, so it tells the two
+    // apart: if it too reports no feasible point, the LP is empty, the flag is
+    // set, nothing is published, and every later solve returns at once.  An
+    // unconfirmed status keeps its old meaning, rounded through as before.
+    if (objective_row_ >= 0 && result.model_status == HighsModelStatus::kUnboundedOrInfeasible) {
+        const double confirm_limit = deadline_.remaining();
+        if (confirm_limit > 0.0) {
+            const std::vector<double> zero_cost(static_cast<size_t>(ncol_), 0.0);
+            const std::vector<double> none;
+            const SolveResult feasibility =
+                solve_locked(zero_cost, none, none, false, epsilon, confirm_limit);
+            if (feasibility.model_status == HighsModelStatus::kUnboundedOrInfeasible ||
+                feasibility.model_status == HighsModelStatus::kInfeasible) {
+                cut_emptied_.store(true, std::memory_order_relaxed);
+                return {};
+            }
+        }
+    }
     publish_snapshot_locked(result);
     return result;
 }
