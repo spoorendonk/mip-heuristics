@@ -30,7 +30,8 @@
 //   not the cut's.
 // - `model` still points at the base model, whose `a_matrix_` has `nrow`
 //   rows: a reader of `model` (FJ's row-wise copy) must take the base view,
-//   never this one.  Everything else — bounds, costs, offset, integrality,
+//   never this one.  `degenerate()` is decided on the base view too: a model
+//   with no rows has one here.  Everything else — bounds, costs, offset, integrality,
 //   tolerances and both snapshots — is the base view's.
 class ObjectiveRowStorage {
 public:

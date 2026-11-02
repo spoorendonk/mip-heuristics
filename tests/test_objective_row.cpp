@@ -202,23 +202,31 @@ TEST_CASE("Objective row: uncut, it propagates as the base view", "[objective-cu
     PropEngine plain = make_engine(base);
     PropEngine with_row = make_engine(storage.view());
 
-    // Fix every fourth integer column to its lower bound, propagating each,
+    // Fix every fourth integer column to its upper bound, propagating each,
     // until the base view's engine stops at an infeasibility or runs out.
-    int fixed = 0;
+    // Upper bounds, so p0548's knapsack rows have something to propagate.
+    std::vector<char> decided(static_cast<size_t>(base.ncol), 0);
     for (HighsInt j = 0; j < base.ncol; j += 4) {
         if (!is_integer(*base.integrality, j) || plain.var(j).fixed) {
             continue;
         }
-        const double value = plain.var(j).lb;
+        const double value = plain.var(j).ub;
         REQUIRE(plain.fix(j, value) == with_row.fix(j, value));
+        decided[j] = 1;
         const PropResult result = plain.propagate(j);
         REQUIRE(with_row.propagate(j) == result);
-        ++fixed;
         if (result != PropResult::kFixpoint) {
             break;
         }
     }
-    REQUIRE(fixed > 0);
+    // Propagation itself moved some column no decision fixed, so the
+    // comparison below exercises the rows rather than only the decisions.
+    bool propagated = false;
+    for (HighsInt j = 0; j < base.ncol; ++j) {
+        propagated = propagated || (decided[j] == 0 && (plain.var(j).lb != (*base.col_lower)[j] ||
+                                                        plain.var(j).ub != (*base.col_upper)[j]));
+    }
+    REQUIRE(propagated);
     for (HighsInt j = 0; j < base.ncol; ++j) {
         REQUIRE(plain.var(j).fixed == with_row.var(j).fixed);
         REQUIRE(plain.var(j).lb == with_row.var(j).lb);
