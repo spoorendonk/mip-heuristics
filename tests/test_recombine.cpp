@@ -191,22 +191,36 @@ TEST_CASE("recombine: past the limit the rest differ only where left free, and t
     }
     REQUIRE(num_integer > recombine::kBpInitialVarsFromOther);
 
-    recombine::BoundPropRecombiner recombiner(s.problem);
-    Rng rng(0);
-    std::vector<double> out;
-    static_cast<void>(recombiner.recombine(a, s.problem.objective(a), b, s.problem.objective(b),
-                                           kBudget, Deadline{}, rng, out));
-    REQUIRE(out.size() == static_cast<size_t>(lp.num_col_));
-    size_t moved = 0;
-    for (HighsInt j = 0; j < lp.num_col_; ++j) {
-        if (is_integer(lp.integrality_, j) && out[j] != std::round(a[j])) {
-            ++moved;
+    const double obj_a = s.problem.objective(a);
+    const double obj_b = s.problem.objective(b);
+    REQUIRE(obj_b > obj_a);
+
+    // Whichever is passed first guides, whatever the objectives: the worse
+    // one too.  The integer columns differ from the guiding parent's only
+    // where left free, and the limit moves the way the offspring says.
+    const auto check = [&](const std::vector<double>& guiding, double obj_guiding,
+                           const std::vector<double>& other, double obj_other) {
+        recombine::BoundPropRecombiner recombiner(s.problem);
+        Rng rng(0);
+        std::vector<double> out;
+        static_cast<void>(recombiner.recombine(guiding, obj_guiding, other, obj_other, kBudget,
+                                               Deadline{}, rng, out));
+        REQUIRE(out.size() == static_cast<size_t>(lp.num_col_));
+        size_t moved = 0;
+        bool same_as_guiding = true;
+        bool same_as_other = true;
+        for (HighsInt j = 0; j < lp.num_col_; ++j) {
+            if (is_integer(lp.integrality_, j)) {
+                moved += out[j] != std::round(guiding[j]) ? 1 : 0;
+                same_as_guiding = same_as_guiding && out[j] == std::round(guiding[j]);
+                same_as_other = same_as_other && out[j] == std::round(other[j]);
+            }
         }
-    }
-    CHECK(moved <= recombine::kBpInitialVarsFromOther);
-    const size_t limit = recombiner.max_vars_from_other();
-    CHECK(
-        (limit == recombine::next_max_vars_from_other(recombine::kBpInitialVarsFromOther, true) ||
-         limit == recombine::next_max_vars_from_other(recombine::kBpInitialVarsFromOther, false)));
-    CHECK(limit != recombine::kBpInitialVarsFromOther);
+        CHECK(moved <= recombine::kBpInitialVarsFromOther);
+        CHECK(recombiner.max_vars_from_other() ==
+              recombine::next_max_vars_from_other(recombine::kBpInitialVarsFromOther,
+                                                  same_as_guiding || same_as_other));
+    };
+    check(a, obj_a, b, obj_b);
+    check(b, obj_b, a, obj_a);
 }
