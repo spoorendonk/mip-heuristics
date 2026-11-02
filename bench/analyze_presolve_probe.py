@@ -107,13 +107,13 @@ DEFAULT_INSTANCES = os.path.join(BENCH_DIR, "instances_mipfeas.txt")
 # is the dive-time heuristic, it runs on the far side of the root LP that a
 # presolve-only run never reaches, and an offer it makes is not evidence that
 # a presolve screen can see the instance.
-PRESOLVE_HEURISTICS: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla")
+PRESOLVE_HEURISTICS: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla", "ruin")
 
 # The display source codes `apply_patch.cmake` assigns to the chain: A=FPR,
-# M=LocalMIP, G=Scylla, J=FJ.  `D` (fpr_lp) is excluded for the same reason
+# M=LocalMIP, G=Scylla, J=FJ, N=ruin.  `D` (fpr_lp) is excluded for the same reason
 # `fpr_lp` is absent above.  Everything else on a display row — `l`/`p`/`u`/
 # `z` (HiGHS's trivial heuristics), `X`/`Y`, `T`, `B` — is not ours.
-CHAIN_SOURCES = frozenset("AMGJ")
+CHAIN_SOURCES = frozenset("AMGJN")
 
 # `SolutionSink::offer` tags an offer made off any worker slot with this,
 # for LocalMIP's cold-start publish on the dispatching thread.  Such an offer
@@ -128,6 +128,7 @@ OFF_SLOT_WORKER = -1
 #             and `make_budget` divides it back, so the worker sees `per_nnz`.
 #   fpr       whole-dispatch scope; `make_budget` divides by N, so the worker
 #   local_mip sees `per_nnz / N` and the option must be N times a worker gap.
+#   ruin      (likewise).
 #   scylla    whole-dispatch scope, but it takes the dispatch-level threshold
 #             as its *worker* threshold too, because its per-worker counter is
 #             already charged the PDLP cost divided by N.
@@ -139,11 +140,12 @@ PATIENCE_SCALES_WITH_WORKERS: dict[str, bool] = {
     "fpr": True,
     "local_mip": True,
     "scylla": False,
+    "ruin": True,
 }
 
 # Whether a heuristic's effort option sizes one worker's allowance rather
 # than a whole dispatch.  FJ is the only one, flagged `budget_is_per_worker`
-# in `kChain`; the other three are divided by N in `make_budget`.  It is
+# in `kChain`; the others are divided by N in `make_budget`.  It is
 # here for the same reason `PATIENCE_SCALES_WITH_WORKERS` is: a measured
 # dispatch total is only comparable to an option value through this.
 BUDGET_IS_PER_WORKER: dict[str, bool] = {
@@ -151,6 +153,7 @@ BUDGET_IS_PER_WORKER: dict[str, bool] = {
     "fpr": False,
     "local_mip": False,
     "scylla": False,
+    "ruin": False,
 }
 
 # `heuristic_effort_budget`'s base, from `src/heuristic_common.h`: since
@@ -176,6 +179,7 @@ SHIPPED_EFFORT: dict[str, float] = {
     "fpr": 7.672,
     "local_mip": 29.232,
     "scylla": 1.136,
+    "ruin": 0.0,
 }
 
 # The quantile the proposed effort is read off.  The median, not a tail:

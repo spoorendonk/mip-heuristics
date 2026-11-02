@@ -279,6 +279,40 @@ TEST_CASE("ruin_repair: an infeasible population point leaves a slot ruining its
     CHECK(is_feasible(lp, sink.solution));
 }
 
+TEST_CASE("ruin_repair: an infeasible source point falls back to the pool's",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const HighsLp& lp = highs.getLp();
+    const Setup s(lp, highs.getOptions().log_options);
+    const std::vector<double> seed = first_fj_point(s);
+    const double seed_objective = s.problem.objective(seed);
+    const std::vector<double> bad = lp.col_lower_;
+    REQUIRE_FALSE(is_feasible(lp, bad));
+    std::atomic<bool> stop{false};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    BestSink sink(*s.problem.integrality, 0);
+    static_cast<void>(sink.offer(seed_objective, seed, WorkerTrace{0, 0}, 0));
+
+    // Only ever the infeasible point, until the pool improves or a fixed
+    // number of attempts.
+    constexpr int kMaxSourceCalls = 200;
+    int calls = 0;
+    const RestartSource source = [&](Rng& /*rng*/, std::vector<double>& out) {
+        if (sink.objective < seed_objective || ++calls > kMaxSourceCalls) {
+            stop.store(true);
+            return false;
+        }
+        out = bad;
+        return true;
+    };
+    static_cast<void>(ruin_repair::run_until_stopped(
+        s.problem, make_until_stopped_budget(kBudget, kBudget), exec, /*worker=*/0, source, sink));
+    CHECK(sink.objective < seed_objective);
+    CHECK(is_feasible(lp, sink.solution));
+}
+
 TEST_CASE("ruin_repair: a caller's slot ruins the source's point", "[ruin_repair][until_stopped]") {
     Highs highs;
     read(highs, "egout.mps");

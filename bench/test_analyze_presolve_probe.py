@@ -742,7 +742,7 @@ def test_single_worker_flag_filters_out_multiworker_logs():
 
 
 def test_chain_sources_are_the_ones_the_patch_assigns():
-    assert set("AMGJ") == CHAIN_SOURCES  # FPR / LocalMIP / Scylla / FJ
+    assert set("AMGJN") == CHAIN_SOURCES  # FPR / LocalMIP / Scylla / FJ / ruin
     assert "D" not in CHAIN_SOURCES  # fpr_lp is dive-time
     assert not CHAIN_SOURCES & set("lpuzXYTB")  # HiGHS's own
 

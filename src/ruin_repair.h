@@ -109,9 +109,10 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
 
 // One worker on the calling thread until `exec` says stop (#171's contract,
 // beside `RestartSource` in heuristic_context.h).  The population best is
-// `source`'s point, else the sink's pool's; while neither gives a feasible
-// point the slot waits, `kWaitForSeedMs` at a time, polling the stop flag
-// and the deadline.
+// `source`'s point if feasible, else the sink's pool's if feasible, else
+// the worker's own best; while there is none the slot waits,
+// `kWaitForSeedMs` at a time, polling the stop flag, the deadline and the
+// terminator.
 [[nodiscard]] size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,
                                        const ExecutionContext& exec, int worker,
                                        const RestartSource& source, SolutionSink& sink);

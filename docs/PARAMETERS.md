@@ -1140,7 +1140,7 @@ measured rate.
   feastol`. FJ counts a row satisfied within `feastol`, so one feastol
   would let it report a point equal to the best; two make every point it
   reports better by at least one feastol. Once `|best| * DBL_EPSILON`
-  exceeds `feastol` (|best| above about 1e10 at `feastol = 1e-6`) the unit
+  exceeds `feastol` (|best| above about 4.5e9 at `feastol = 1e-6`) the unit
   is that instead, since an absolute margin below the objective's ulp would
   round away.
 
@@ -1438,7 +1438,11 @@ itself is driven by a tracked target runner rather than by config names.
   chain entry, in FJ step units (each repair is a fresh FJ). Divided across
   the workers like FPR's. A dispatch whose pool holds no feasible point
   ends at once, having charged at most one feasibility check (`nnz`) per
-  worker.
+  worker. Every repair is a fresh FJ, which checks its budget only at its
+  first callback (500000 effort units or a found point), so a repair costs
+  at least that much: on a small model (nnz of a few thousand) and many
+  workers a dispatch can spend several times this budget. The ledger
+  charges what was spent.
 - **Suggested range**: 0.1–3.
 
 ---

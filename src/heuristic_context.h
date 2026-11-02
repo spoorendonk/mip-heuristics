@@ -42,7 +42,7 @@ class SolutionSink;
 // entry point.  Per-worker effort/staleness bookkeeping lives in
 // `WorkerBudgetState` (worker_base.h); `HeuristicBudget` holds the
 // *derived* values each worker's base struct receives on construction.
-// Every chain heuristic's budget come from their own
+// Every chain heuristic's budget comes from their own
 // `mip_heuristic_<name>_effort` option; FJ's sizes `per_worker` and lets
 // `total` scale with the pool, the others size `total` and are
 // divided across it (see mode_dispatch.cpp).
@@ -585,7 +585,9 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //   - `budget.stale`, the run-level patience;
 //   - a worker that charges nothing even when freshly rebuilt, which
 //     retires the slot: a degenerate view (returned at once, as 0), or FJ
-//     built with `HIGHSINT64`, which never searches.
+//     built with `HIGHSINT64`, which never searches.  Ruin also returns 0
+//     at once under `HIGHSINT64`, or with no cost or no non-fixed integer
+//     column; it reads no `restart_now`.
 //   - for FJ under `budget.fj_stall_ends_run`, the worker retiring: its
 //     `effortSinceLastImprovement` crossing `budget.worker_stale`, or its
 //     spending `budget.per_worker`, ends the run instead of a rebuild;
@@ -613,8 +615,9 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //     `kWaitForSeedMs` while a slot waits for its first feasible point;
 //   - `sink`'s `on_accept`, for every offer the sink's pool accepts, on
 //     this thread and outside the pool lock;
-//   - `exec.terminator`, every other attempt: this thread holds the poller
-//     seat for the whole run;
+//   - `exec.terminator`, every other attempt (ruin: also every
+//     `kWaitForSeedMs` while waiting for a point): this thread holds the
+//     poller seat for the whole run;
 //   - `*exec.stop`, a relaxed load, from inside attempts and between them;
 //   - `exec.restart_now`, when set, before every attempt but the one a
 //     retired worker under a `*_stall_ends_run` ends the run at;

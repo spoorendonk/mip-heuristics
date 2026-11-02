@@ -91,6 +91,15 @@ bool is_feasible(const ProblemView& problem, const std::vector<double>& x) {
 
 namespace {
 
+// Whether a repair can search at all: `FjWorker::run_attempt` returns at
+// once under 64-bit `HighsInt`, and a slot whose attempts still charge a
+// feasibility check would never retire.
+#ifdef HIGHSINT64
+constexpr bool kRepairSearches = false;
+#else
+constexpr bool kRepairSearches = true;
+#endif
+
 // What every slot of a dispatch shares, built once on the calling thread.
 struct Shared {
     // Integer columns whose bounds leave more than `feastol` of room: the
@@ -121,9 +130,11 @@ struct Slot {
     std::vector<double> best;
     double best_objective = std::numeric_limits<double>::infinity();
     std::vector<double> population;
-    // The last population point that failed `is_feasible`, so the same point
-    // is not checked again on every attempt (cuOpt's `rejected_seed`).
+    // The last point from each population source (the pool; the caller's
+    // `RestartSource`) that failed `is_feasible`, so the same point is not
+    // checked again on every attempt (cuOpt's `rejected_seed`).
     std::vector<double> rejected;
+    std::vector<double> rejected_source;
     std::vector<double> start;
     std::vector<HighsInt> guidance;
     std::vector<HighsInt> ruin_set;
@@ -139,30 +150,33 @@ Slot make_slot(const ProblemView& problem, int worker) {
     return slot;
 }
 
-// Into `slot.population`, the population's best point if it is usable:
-// `fetch` found one and it is feasible.  `effort` is charged `nnz` for a
-// feasibility check.
+// Into `slot.population`, the point `fetch` gives if it is usable: found
+// and feasible.  `rejected` is that source's last infeasible point.
+// `effort` is charged `nnz` for a feasibility check.
 template <typename Fetch>
-bool next_population_point(const ProblemView& problem, Slot& slot, Fetch& fetch, size_t& effort) {
-    if (!fetch(slot.population) || slot.population == slot.rejected) {
+bool usable_point(const ProblemView& problem, Slot& slot, Fetch& fetch,
+                  std::vector<double>& rejected, size_t& effort) {
+    if (!fetch(slot.population) || slot.population == rejected) {
         return false;
     }
     effort += problem.nnz;
     if (!is_feasible(problem, slot.population)) {
-        slot.rejected = slot.population;
+        rejected = slot.population;
         return false;
     }
-    slot.rejected.clear();
+    rejected.clear();
     return true;
 }
 
-// Into `slot.population`, the point to ruin from: the population's best if
-// it is usable, else the worker's own best.  A pool point that fails
-// `is_feasible` (the pool admits without checking) must not idle a slot
-// that already holds a feasible point of its own.
-template <typename Fetch>
-bool next_start_point(const ProblemView& problem, Slot& slot, Fetch& fetch, size_t& effort) {
-    if (next_population_point(problem, slot, fetch, effort)) {
+// Into `slot.population`, the point to ruin from: the caller's source's if
+// usable, else the pool's best if usable, else the worker's own best.  An
+// infeasible point (the pool admits without checking; a source may hand out
+// anything) must not idle a slot when a feasible one is to hand.
+template <typename FromSource, typename FromPool>
+bool next_start_point(const ProblemView& problem, Slot& slot, FromSource& from_source,
+                      FromPool& from_pool, size_t& effort) {
+    if (usable_point(problem, slot, from_source, slot.rejected_source, effort) ||
+        usable_point(problem, slot, from_pool, slot.rejected, effort)) {
         return true;
     }
     if (slot.best.empty()) {
@@ -289,10 +303,11 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         return {};
     }
     const Shared shared = make_shared_state(problem);
-    if (shared.integer_cols.empty() || !shared.has_cost) {
+    if (!kRepairSearches || shared.integer_cols.empty() || !shared.has_cost) {
         return {};
     }
-    auto fetch = [&sink](std::vector<double>& out) { return sink.copy_best(out); };
+    auto no_source = [](std::vector<double>& /*out*/) { return false; };
+    auto from_pool = [&sink](std::vector<double>& out) { return sink.copy_best(out); };
     return {.effort = run_opportunistic_loop(
                 exec, budget,
                 [&problem](int worker_idx, Rng& /*rng*/) { return make_slot(problem, worker_idx); },
@@ -302,7 +317,7 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                     // dispatch whose pool holds no feasible point has nothing
                     // to ruin.
                     size_t effort = 0;
-                    if (!next_start_point(problem, slot, fetch, effort)) {
+                    if (!next_start_point(problem, slot, no_source, from_pool, effort)) {
                         return {.effort = effort, .found_improvement = false};
                     }
                     return ruin_and_repair(problem, shared, exec, sink, slot, rng, run_cap, effort);
@@ -316,21 +331,22 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
         return 0;
     }
     const Shared shared = make_shared_state(problem);
-    if (shared.integer_cols.empty() || !shared.has_cost) {
+    if (!kRepairSearches || shared.integer_cols.empty() || !shared.has_cost) {
         return 0;
     }
     return run_on_caller_thread(
         exec, budget, worker,
         [&problem](int worker_idx, Rng& /*rng*/) { return make_slot(problem, worker_idx); },
         [&](Slot& slot, Rng& rng, size_t run_cap) -> AttemptResult {
-            auto fetch = [&](std::vector<double>& out) {
-                return take_restart(source, rng, out, problem) || sink.copy_best(out);
+            auto from_source = [&](std::vector<double>& out) {
+                return take_restart(source, rng, out, problem);
             };
+            auto from_pool = [&sink](std::vector<double>& out) { return sink.copy_best(out); };
             // Wait for a usable point, as cuOpt's worker does, rather than
             // return zero effort, which would end the run.  This thread
             // holds the poller seat, so the wait polls the terminator too.
             size_t effort = 0;
-            while (!next_start_point(problem, slot, fetch, effort)) {
+            while (!next_start_point(problem, slot, from_source, from_pool, effort)) {
                 if (exec.terminated()) {
                     return {.effort = effort, .found_improvement = false};
                 }
