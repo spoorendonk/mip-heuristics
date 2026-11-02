@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <cstddef>
 #include <mutex>
 #include <vector>
@@ -50,9 +51,31 @@ struct Run {
     size_t effort = 0;
 };
 
+// `x` with every column whose cost is positive raised to its upper bound,
+// when the result stays feasible: a point far worse than `x`, so a cutoff
+// below it is loose for anything FPR finds unseeded.  Empty when it is not
+// feasible (on egout, a fixed-charge network, raising a charge keeps it so).
+std::vector<double> inflate(const ProblemView& problem, std::vector<double> x) {
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        if ((*problem.col_cost)[j] > 0.0 && std::isfinite((*problem.col_upper)[j])) {
+            x[j] = (*problem.col_upper)[j];
+        }
+    }
+    for (HighsInt i = 0; i < problem.nrow; ++i) {
+        double act = 0.0;
+        for (HighsInt k = (*problem.ar_start)[i]; k < (*problem.ar_start)[i + 1]; ++k) {
+            act += (*problem.ar_value)[k] * x[(*problem.ar_index)[k]];
+        }
+        if (act > (*problem.row_upper)[i] + kRowTol || act < (*problem.row_lower)[i] - kRowTol) {
+            return {};
+        }
+    }
+    return x;
+}
+
 // One FPR dispatch on a fresh solver, one worker, the pool seeded with
-// `seed` when it is non-empty.
-Run run_fpr(ObjectiveCutParams cut, const std::vector<double>& seed, double seed_obj) {
+// `seed` when it is non-empty (with `inflate(seed)` when `inflated`).
+Run run_fpr(ObjectiveCutParams cut, const std::vector<double>& seed, bool inflated = false) {
     highs::parallel::initialize_scheduler();
     Highs highs;
     highs.setOptionValue("output_flag", false);
@@ -65,7 +88,9 @@ Run run_fpr(ObjectiveCutParams cut, const std::vector<double>& seed, double seed
     exec.num_workers = 1;
     RecordingSink sink(*problem.integrality, kSolutionSourceHeuristic);
     if (!seed.empty()) {
-        REQUIRE(sink.offer(seed_obj, seed, WorkerTrace{0, 0}, 0).accepted);
+        const std::vector<double> x = inflated ? inflate(problem, seed) : seed;
+        REQUIRE(!x.empty());
+        REQUIRE(sink.offer(problem.objective(x), x, WorkerTrace{0, 0}, 0).accepted);
     }
     HeuristicBudget budget = make_budget(kBudget, exec.num_workers, kBudget);
     budget.objective_cut = cut;
@@ -77,17 +102,19 @@ Run run_fpr(ObjectiveCutParams cut, const std::vector<double>& seed, double seed
 }  // namespace
 
 TEST_CASE("FPR objective cut: no offer above the cutoff in force", "[objective-cut][fpr]") {
-    const Run plain = run_fpr({}, {}, 0.0);
+    const Run plain = run_fpr({}, {});
     REQUIRE(!plain.objectives.empty());
 
-    // Seed with the worst point the uncut run accepted, so the cut leaves
-    // room below it.
-    const auto worst = std::ranges::max_element(plain.objectives) - plain.objectives.begin();
-    const double seed_obj = plain.objectives[worst];
-    const Run cut = run_fpr(kCutOn, plain.solutions[worst], seed_obj);
+    // Seed with a point far worse than the uncut run's first.  Its cutoff
+    // is loose for that point, and a row that bounds nothing tightens
+    // nothing, so the cut run searches as the uncut run did until it reaches
+    // that point, and offers it: the loop checks something on any platform,
+    // whatever FPR's random streams do there.
+    const Run cut = run_fpr(kCutOn, plain.solutions.front(), /*inflated=*/true);
     REQUIRE(cut.effort > 0);
-    REQUIRE(cut.objectives.front() == seed_obj);
-    REQUIRE(cut.objectives.size() > 1);  // the loop below checks something
+    const double seed_obj = cut.objectives.front();
+    REQUIRE(objective_cut_target(seed_obj, kCutOn) > plain.objectives.front());
+    REQUIRE(cut.objectives.size() > 1);
 
     // One worker: an attempt starts after the previous one's offer, so the
     // cutoff in force for offer k is the target of the best accepted before it.
@@ -102,9 +129,12 @@ TEST_CASE("FPR objective cut: no offer above the cutoff in force", "[objective-c
 
 TEST_CASE("FPR objective cut: off, or on with an empty pool, FPR is unchanged",
           "[objective-cut][fpr]") {
-    const Run off = run_fpr({}, {}, 0.0);
-    // With the pool empty at dispatch no objective row is built.
-    const Run on_empty = run_fpr(kCutOn, {}, 0.0);
+    // Cut off is main by construction: with no objective row built
+    // (`fpr::run` passes the workers none), the worker searches the base
+    // view on main's path.  With the pool empty at dispatch no row is built
+    // either, so the cut on must match it.
+    const Run off = run_fpr({}, {});
+    const Run on_empty = run_fpr(kCutOn, {});
     REQUIRE(on_empty.objectives == off.objectives);
     REQUIRE(on_empty.effort == off.effort);
 }
