@@ -186,8 +186,8 @@ ScyllaProbe round_once(HighsMipSolver& mipsolver, const ProblemView& problem,
     }
     ScyllaProbe p;
     for (HighsInt j = 0; j < ncol; ++j) {
-        p.fixed.push_back(scratch.prop_engine->var(j).fixed ? 1 : 0);
-        p.sol.push_back(scratch.prop_engine->sol_data()[j]);
+        p.fixed.push_back(require_engaged(scratch.prop_engine).var(j).fixed ? 1 : 0);
+        p.sol.push_back(require_engaged(scratch.prop_engine).sol_data()[j]);
     }
     return p;
 }

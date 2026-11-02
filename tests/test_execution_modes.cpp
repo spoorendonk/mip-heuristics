@@ -299,7 +299,7 @@ TEST_CASE("instrumentation: no heuristic lines at suite=off", "[mode-matrix][obs
 }
 
 TEST_CASE("instrumentation: the dive-time fpr_lp dispatch is reported too",
-          "[mode-matrix][observability]") {
+          "[mode-matrix][observability][libstdcxx-stream]") {
     // fpr_lp used to do real work and report nothing.  bell5 is the
     // instance whose dive reliably dispatches it (see test_fpr_lp.cpp).
     //

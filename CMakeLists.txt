@@ -353,12 +353,25 @@ endif()
 # nothing in this project reads either variable.  Keep them distinct anyway
 # — the default is `<target>_TESTS` for both, and a future reader of the
 # list should not have to work out which call won.
+#
+# `[libstdcxx-stream]` marks the cases that pin what one seed draws: the
+# engine is our own, but the `std::` distributions over it are
+# implementation-defined, and libc++ (macOS) draws other values.  Where the
+# standard library is libc++ those cases are left out of both specs, and of
+# the core tests' below; with libstdc++ (Linux, the gate) everything runs.
+include(CheckCXXSymbolExists)
+check_cxx_symbol_exists(_LIBCPP_VERSION "version" MIP_HEURISTICS_LIBCXX)
+set(_stream_spec "")
+if(MIP_HEURISTICS_LIBCXX)
+    set(_stream_spec "~[libstdcxx-stream]")
+    message(STATUS "libc++: skipping the [libstdcxx-stream] test cases")
+endif()
 catch_discover_tests(mip_heuristics_tests
-    TEST_SPEC "[serial]"
+    TEST_SPEC "[serial]${_stream_spec}"
     TEST_LIST mip_heuristics_tests_SERIAL
     PROPERTIES RUN_SERIAL TRUE)
 catch_discover_tests(mip_heuristics_tests
-    TEST_SPEC "~[serial]"
+    TEST_SPEC "~[serial]${_stream_spec}"
     TEST_LIST mip_heuristics_tests_PARALLEL)
 
 # The heuristic core on its own (#170): links `mip_heuristics_core` and
@@ -375,7 +388,13 @@ target_link_libraries(mip_heuristics_core_tests PRIVATE mip_heuristics_core Catc
 if(MIP_HEURISTICS_INSTRUMENT)
     target_compile_definitions(mip_heuristics_core_tests PRIVATE MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
 endif()
-catch_discover_tests(mip_heuristics_core_tests TEST_LIST mip_heuristics_core_tests_ALL)
+if(MIP_HEURISTICS_LIBCXX)
+    catch_discover_tests(mip_heuristics_core_tests
+        TEST_SPEC "${_stream_spec}"
+        TEST_LIST mip_heuristics_core_tests_ALL)
+else()
+    catch_discover_tests(mip_heuristics_core_tests TEST_LIST mip_heuristics_core_tests_ALL)
+endif()
 
 # The core linked against a libhighs with the MIP solver and the adapter
 # taken out: every member built from `highs/mip/*.cpp`, and every object of
@@ -576,26 +595,35 @@ if(_bench_py)
     # lives in the MIP solver or the adapter.  Standard library only, like
     # the docs check above.  The shared C++ runtime is passed in so what it
     # exports is not charged to whichever member carries a copy.
-    execute_process(
-        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
-        OUTPUT_VARIABLE _cxx_runtime
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    add_test(
-        NAME core_boundary
-        COMMAND ${_bench_py} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_boundary.py
-                --nm ${CMAKE_NM}
-                --core-lib $<TARGET_FILE:mip_heuristics_core>
-                --highs-lib $<TARGET_FILE:highs>
-                --cxx-runtime ${_cxx_runtime}
-                --highs-mip-dir ${highs_SOURCE_DIR}/highs/mip
-                --src-dir ${CMAKE_CURRENT_SOURCE_DIR}/src
-                --compile-commands ${CMAKE_BINARY_DIR}/compile_commands.json
-                --core-sources $<TARGET_PROPERTY:mip_heuristics_core,SOURCES>
-                --adapter-sources $<TARGET_PROPERTY:mip_heuristics,SOURCES>
-        COMMAND_EXPAND_LISTS
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    )
+    #
+    # Its archive half names members after their sources, so on a unity
+    # build of libhighs (upstream's default on Apple) it can match nothing
+    # and would pass whatever the core needed: skipped there, as the
+    # standalone test above is.
+    if(_highs_unity)
+        message(STATUS "libhighs is a unity build: skipping core_boundary")
+    else()
+        execute_process(
+            COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
+            OUTPUT_VARIABLE _cxx_runtime
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        add_test(
+            NAME core_boundary
+            COMMAND ${_bench_py} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_boundary.py
+                    --nm ${CMAKE_NM}
+                    --core-lib $<TARGET_FILE:mip_heuristics_core>
+                    --highs-lib $<TARGET_FILE:highs>
+                    --cxx-runtime ${_cxx_runtime}
+                    --highs-mip-dir ${highs_SOURCE_DIR}/highs/mip
+                    --src-dir ${CMAKE_CURRENT_SOURCE_DIR}/src
+                    --compile-commands ${CMAKE_BINARY_DIR}/compile_commands.json
+                    --core-sources $<TARGET_PROPERTY:mip_heuristics_core,SOURCES>
+                    --adapter-sources $<TARGET_PROPERTY:mip_heuristics,SOURCES>
+            COMMAND_EXPAND_LISTS
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+    endif()
 endif()
 
 # --- Lint gates ---

@@ -149,6 +149,7 @@ TEST_CASE("SolutionPool: concurrent try_add and get_restart", "[pool][thread-saf
     constexpr int kNumThreads = 4;
     constexpr int kOpsPerThread = 200;
     std::vector<std::thread> threads;
+    threads.reserve(kNumThreads);
 
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&pool, t]() {
@@ -238,6 +239,7 @@ TEST_CASE("SolutionSink: on_accept under concurrent offers", "[pool][thread-safe
     constexpr int kOpsPerThread = 50;
     std::atomic<int> accepted_count{0};
     std::vector<std::thread> threads;
+    threads.reserve(kNumThreads);
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < kOpsPerThread; ++i) {

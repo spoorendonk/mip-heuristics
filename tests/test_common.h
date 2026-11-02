@@ -22,6 +22,8 @@
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +37,17 @@
 template <typename T>
 inline void require_option(Highs& h, const std::string& name, const T& value) {
     REQUIRE(h.setOptionValue(name, value) == HighsStatus::kOk);
+}
+
+// The value an optional holds, failing the case when it holds none.  An
+// explicit throw rather than `REQUIRE(opt.has_value())`: clang-tidy's
+// unchecked-optional-access does not see a Catch2 assertion as a guard.
+template <typename T>
+inline T& require_engaged(std::optional<T>& opt) {
+    if (!opt.has_value()) {
+        throw std::logic_error("require_engaged: the optional is empty");
+    }
+    return *opt;
 }
 
 // Makes a `threads=N` pin work regardless of what else ran first in this

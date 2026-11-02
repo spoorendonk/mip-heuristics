@@ -500,7 +500,8 @@ StallRun run_stall_model(const StallModel& m, const CscMatrix& csc, HighsInt pro
 
 }  // namespace
 
-TEST_CASE("RepairSearch: the progress threshold decides the search", "[repair-search][progress]") {
+TEST_CASE("RepairSearch: the progress threshold decides the search",
+          "[repair-search][progress][libstdcxx-stream]") {
     constexpr unsigned kSeed = 52;
     const StallModel m;
     CscMatrix csc =

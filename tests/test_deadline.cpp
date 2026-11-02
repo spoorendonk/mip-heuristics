@@ -982,8 +982,8 @@ TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just t
     // Without this the node assertion at the end is vacuous: a
     // non-propagating mode never calls `propagate` from the DFS at all.
     REQUIRE(first.do_propagate);
-    CHECK(scratch.prop_engine->deadline().timer == &mipsolver->timer_);
-    CHECK(scratch.prop_engine->deadline().limit == kLiveLimit);
+    CHECK(require_engaged(scratch.prop_engine).deadline().timer == &mipsolver->timer_);
+    CHECK(require_engaged(scratch.prop_engine).deadline().limit == kLiveLimit);
 
     // Run it out, so the next `begin` sees a genuinely reused engine
     // rather than one abandoned mid-DFS.
@@ -1002,8 +1002,8 @@ TEST_CASE("deadline: the cached FPR engine is armed on every attempt, not just t
     set_var_order(cfg, var_order, *mipsolver, rng);
     fpr_attempt_begin(second, problem, deadline_of(*mipsolver), cfg, rng, 1);
     REQUIRE(scratch.prop_engine.has_value());
-    CHECK(scratch.prop_engine->deadline().timer == &mipsolver->timer_);
-    CHECK(scratch.prop_engine->deadline().limit == kExpiredLimit);
+    CHECK(require_engaged(scratch.prop_engine).deadline().timer == &mipsolver->timer_);
+    CHECK(require_engaged(scratch.prop_engine).deadline().limit == kExpiredLimit);
 
     // And the expiry reaches the DFS: the first propagating node's
     // fixpoint returns `kDeadlineExpired` and `step` breaks out at once,

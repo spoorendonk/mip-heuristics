@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import os
 import pathlib
 import re
 import subprocess
@@ -105,6 +106,17 @@ def main() -> int:
         .stdout.strip()
         .replace("\n", " ")
     )
+
+    # The pinned clang-tidy from PyPI is not Apple's driver: on macOS it finds
+    # no SDK, so every standard header is "file not found" and the analysis
+    # that follows is noise.  clang reads the SDK from SDKROOT, as Apple's
+    # own driver does from xcrun; Linux never takes this branch.
+    if sys.platform == "darwin" and "SDKROOT" not in os.environ:
+        sdk = subprocess.run(
+            ["xcrun", "--show-sdk-path"], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        if sdk:
+            os.environ["SDKROOT"] = sdk
 
     jobs = args.jobs or None
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:

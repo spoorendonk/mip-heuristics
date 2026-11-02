@@ -397,7 +397,8 @@ TEST_CASE("heursol: effort_at is monotone within a worker slot", "[heursol]") {
 // `kTracedNames` to a subset would retire the guard the fixture set exists
 // to provide.  The tag is the honest remaining option, not a pretence that
 // the race is gone.
-TEST_CASE("heursol: the fixture set covers every heuristic that can offer", "[heursol][serial]") {
+TEST_CASE("heursol: the fixture set covers every heuristic that can offer",
+          "[heursol][serial][libstdcxx-stream]") {
     std::set<std::string> covered;
     for (const Fixture& fixture : kFixtures) {
         INFO("fixture " << fixture.instance);

@@ -265,7 +265,7 @@ TEST_CASE("fpr_lp: select_ref returns the pointer its LpRefClass names", "[fpr_l
 // the narrowest configuration that enables it — since #164 it has its own
 // effort option, and selecting `fpr` runs presolve FPR and nothing else.
 TEST_CASE("fpr_lp: emits a [Sequential] line for its dive-time spend",
-          "[fpr_lp][mode-matrix][observability]") {
+          "[fpr_lp][mode-matrix][observability][libstdcxx-stream]") {
     fpr_lp::reset_dispatch_counts();
     const std::vector<std::string> lines = solve_capturing_log("bell5.mps", [](Highs& h) {
         h.setOptionValue("log_dev_level", 3);

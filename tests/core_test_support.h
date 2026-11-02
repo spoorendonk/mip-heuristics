@@ -70,6 +70,9 @@ struct Setup {
                .deadline = Deadline{},
                .log_options = log_options,
                .terminator = {}} {}
+    // The view borrows the model's `integrality_` and `col_cost_`, so a
+    // temporary would leave it dangling.
+    Setup(HighsLp&& lp, const HighsLogOptions& log_options) = delete;
 
     static ProblemView make_view(const HighsLp& lp, ProblemStorage& storage) {
         auto made = make_problem(lp, storage, kFeasTol, kEpsilon);

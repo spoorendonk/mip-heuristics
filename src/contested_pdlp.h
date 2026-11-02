@@ -303,7 +303,7 @@ private:
     // `std::atomic<std::shared_ptr<T>>` partial specialisation rather
     // than the deprecated free-function overloads so the release /
     // acquire happens in one call.
-#if defined(__cpp_lib_atomic_shared_ptr)
+#ifdef __cpp_lib_atomic_shared_ptr
     std::atomic<std::shared_ptr<const Snapshot>> snapshot_;
 #else
     // libc++ (Apple clang) has no `std::atomic<std::shared_ptr<T>>`, so a
@@ -313,11 +313,11 @@ private:
     class SnapshotSlot {
     public:
         std::shared_ptr<const Snapshot> load(std::memory_order /*order*/) const {
-            const std::lock_guard<std::mutex> lock(mu_);
+            const std::scoped_lock lock(mu_);
             return ptr_;
         }
         void store(std::shared_ptr<const Snapshot> ptr, std::memory_order /*order*/) {
-            const std::lock_guard<std::mutex> lock(mu_);
+            const std::scoped_lock lock(mu_);
             ptr_ = std::move(ptr);
         }
 

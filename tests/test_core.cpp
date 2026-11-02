@@ -58,7 +58,8 @@ TEST_CASE("core: the view over an original model matches the model", "[core]") {
     REQUIRE_FALSE(s.problem.degenerate());
 }
 
-TEST_CASE("core: FJ and LocalMIP find feasible solutions on an original model", "[core]") {
+TEST_CASE("core: FJ and LocalMIP find feasible solutions on an original model",
+          "[core][libstdcxx-stream]") {
     Highs highs;
     read(highs, "egout.mps");
     const HighsLp& lp = highs.getLp();
@@ -244,7 +245,7 @@ TEST_CASE("core: LocalMIP on a caller's thread stops at its next poll after the 
 }
 
 TEST_CASE("core: FJ on a caller's thread stops in the callback that saw the stop flag",
-          "[core][until_stopped]") {
+          "[core][until_stopped][libstdcxx-stream]") {
     Highs highs;
     read(highs, "egout.mps");
     const HighsLp& lp = highs.getLp();
@@ -425,8 +426,8 @@ TEST_CASE("core: take_restart rounds, clamps and refuses a source's point",
     Rng rng(0);
     std::vector<double> taken;
 
-    const Setup binaries(two_cover_model(HighsVarType::kInteger, 1.0),
-                         highs.getOptions().log_options);
+    const HighsLp binary_lp = two_cover_model(HighsVarType::kInteger, 1.0);
+    const Setup binaries(binary_lp, highs.getOptions().log_options);
     // Clamped into [0, 1] and rounded: 2 -> 1, -1 -> 0, 0.5 -> 1.
     served = {2.0, -1.0, 0.5};
     REQUIRE(take_restart(source, rng, taken, binaries.problem));
@@ -442,8 +443,8 @@ TEST_CASE("core: take_restart rounds, clamps and refuses a source's point",
 
     // An infinity is refused even where the bound it would clamp to is
     // infinite too.
-    const Setup unbounded(two_cover_model(HighsVarType::kContinuous, kHighsInf),
-                          highs.getOptions().log_options);
+    const HighsLp unbounded_lp = two_cover_model(HighsVarType::kContinuous, kHighsInf);
+    const Setup unbounded(unbounded_lp, highs.getOptions().log_options);
     REQUIRE((*unbounded.problem.col_upper)[0] == kHighsInf);
     served = {kHighsInf, 0.0, 0.0};
     REQUIRE_FALSE(take_restart(source, rng, taken, unbounded.problem));
@@ -953,7 +954,7 @@ Trajectory fj_trajectory(const HeuristicBudget& budget) {
 }  // namespace
 
 TEST_CASE("core: the default rebuild draws what it drew before the restart options",
-          "[core][until_stopped][restart]") {
+          "[core][until_stopped][restart][libstdcxx-stream]") {
     // Measured on the commit before #200's options existed.  A change to
     // either heuristic's search moves these too: re-measure on the parent
     // commit then, and pin what it reports.
@@ -967,7 +968,8 @@ TEST_CASE("core: the default rebuild draws what it drew before the restart optio
     REQUIRE(fj.objective == Catch::Approx(734.144).margin(1e-3));
 }
 
-TEST_CASE("core: the restart options reach a rebuilt worker", "[core][until_stopped][restart]") {
+TEST_CASE("core: the restart options reach a rebuilt worker",
+          "[core][until_stopped][restart][libstdcxx-stream]") {
     const Trajectory lm_default = local_mip_trajectory(forced_rebuild_budget());
     const Trajectory fj_default = fj_trajectory(forced_rebuild_budget());
     for (const RestartPoint point : {RestartPoint::kBest, RestartPoint::kHybrid}) {

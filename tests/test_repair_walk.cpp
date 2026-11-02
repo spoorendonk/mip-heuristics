@@ -606,10 +606,10 @@ TEST_CASE("FPR diveprop: a mid-dive propagation failure is repaired, not fatal (
     REQUIRE(h.state.found_complete);
     // x0 was decided to 1 and refuted; the repair slid its singleton
     // domain to 0 in the tree, and the dive then carried on and fixed x1.
-    REQUIRE(h.scratch.prop_engine->var(0).fixed);
-    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
-    REQUIRE(h.scratch.prop_engine->var(1).fixed);
-    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).fixed);
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).val == Catch::Approx(0.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(1).fixed);
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(1).val == Catch::Approx(1.0));
 
     const HeuristicResult result =
         fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
@@ -634,8 +634,8 @@ TEST_CASE("FPR dive: a fixing that violates a row is repaired, not dived past (#
     h.dive(rng);
 
     REQUIRE(h.state.found_complete);
-    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
-    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).val == Catch::Approx(0.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(1).val == Catch::Approx(1.0));
 
     const HeuristicResult result =
         fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
@@ -656,7 +656,7 @@ TEST_CASE("FPR dfsrep: repair runs in a backtracking mode too (#124)",
     h.dive(rng);
 
     REQUIRE(h.state.found_complete);
-    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).val == Catch::Approx(0.0));
 
     const HeuristicResult result =
         fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
@@ -734,7 +734,7 @@ TEST_CASE("FPR diveprop: an in-tree repair leaves the attempt resumable (#77 x #
     // reason: the leaf-time WalkSAT would otherwise cover for a repair
     // that never ran.
     REQUIRE(h.state.found_complete);
-    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).val == Catch::Approx(0.0));
 
     const HeuristicResult sliced =
         fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
@@ -1012,8 +1012,8 @@ TEST_CASE("FPR diveprop: a propagation-only refutation triggers the repair (#124
     REQUIRE(h.state.found_complete);
     // The repair undid the decision propagation refuted and lifted y with
     // it, and the dive then completed feasibly on top of that.
-    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
-    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).val == Catch::Approx(0.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(1).val == Catch::Approx(1.0));
 
     const HeuristicResult result =
         fpr_attempt_finish(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng);
@@ -1038,8 +1038,8 @@ TEST_CASE("FPR diveprop: a child node starts from the repaired state, not the re
     REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
     static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
                                        /*effort_remaining=*/1));
-    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
-    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).val == Catch::Approx(0.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(1).val == Catch::Approx(1.0));
 
     REQUIRE(h.state.phase == FprAttemptState::Phase::kDfs);
     static_cast<void>(fpr_attempt_step(h.state, h.problem, deadline_of(*h.mipsolver), h.cfg, rng,
@@ -1048,9 +1048,9 @@ TEST_CASE("FPR diveprop: a child node starts from the repaired state, not the re
     // Node 2 fixed z and nothing else; x0 and y still carry what node 1's
     // repair decided.  Marks taken before the repair would show x0 back at
     // the refuted 1 and y back at propagation's 0.
-    REQUIRE(h.scratch.prop_engine->var(2).fixed);
-    REQUIRE(h.scratch.prop_engine->var(0).val == Catch::Approx(0.0));
-    REQUIRE(h.scratch.prop_engine->var(1).val == Catch::Approx(1.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(2).fixed);
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(0).val == Catch::Approx(0.0));
+    REQUIRE(require_engaged(h.scratch.prop_engine).var(1).val == Catch::Approx(1.0));
 }
 
 namespace {
@@ -1235,7 +1235,7 @@ TEST_CASE(
     // `cfg.max_effort - total_prop_work` cap arrive as 0.
     REQUIRE(h.state.effort_consumed > h.cfg.max_effort);
 
-    const size_t effort_before_finish = h.scratch.prop_engine->effort();
+    const size_t effort_before_finish = require_engaged(h.scratch.prop_engine).effort();
     const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
     const HeuristicResult result =
@@ -1267,7 +1267,7 @@ TEST_CASE(
     REQUIRE(h.state.found_complete);
     REQUIRE(h.state.effort_consumed > h.cfg.max_effort);
 
-    const size_t effort_before_finish = h.scratch.prop_engine->effort();
+    const size_t effort_before_finish = require_engaged(h.scratch.prop_engine).effort();
     const auto nnz = static_cast<size_t>(h.problem.ar_index->size());
 
     const HeuristicResult result =
