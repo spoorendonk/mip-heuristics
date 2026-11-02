@@ -109,8 +109,14 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         return {};
     }
 
+    // The objective cut, for the rounding's propagation (#224, #233) and the
+    // PDLP LP alike (#225): on only when the pool already holds a solution at
+    // dispatch, for the reason `fpr::run`'s is (#232).  The pool never empties,
+    // so every solve's cutoff is then finite, which the LP row requires.
+    const bool cut_rows = budget.objective_cut.on && std::isfinite(sink.best_objective());
+
     const HighsInt pdlp_iter_cap = compute_pdlp_iter_cap(budget.total, problem.nnz);
-    ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
+    ContestedPdlp pdlp(mipsolver, pdlp_iter_cap, cut_rows ? &problem : nullptr);
     // A plain zero, not an abandoned setup: the shared LP copy failed to
     // build, which is a Scylla-specific declination and not the clock
     // cutting a dispatch short.  Only the deadline bail below reports one
@@ -140,11 +146,10 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         return DispatchOutcome::abandoned();
     }
 
-    // The objective cut as a propagated row for the rounding (#224, #233),
-    // built here on the dispatching thread, and only when the pool already
-    // holds a solution — for the reason `fpr::run`'s is (#232).
+    // The objective cut as a propagated row for the rounding, built here on
+    // the dispatching thread under the same gate as the LP's row.
     std::optional<ObjectiveRowStorage> objective_rows;
-    if (budget.objective_cut.on && std::isfinite(sink.best_objective())) {
+    if (cut_rows) {
         objective_rows.emplace(problem);
     }
     const ObjectiveRowStorage* rows = objective_rows.has_value() ? &*objective_rows : nullptr;

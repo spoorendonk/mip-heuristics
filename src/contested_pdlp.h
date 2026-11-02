@@ -15,6 +15,7 @@
 #include <version>
 
 class HighsMipSolver;
+struct ProblemView;
 
 // Thread-safe wrapper around a single PDLP `Highs` instance shared by N
 // Scylla workers.  One mutex guards the entire `changeColsCost →
@@ -87,7 +88,16 @@ public:
     // Builds the shared PDLP Highs instance from the presolved MIP
     // relaxation.  `initialized()==false` when the instance has no
     // rows / no nonzeros; callers should short-circuit.
-    ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap);
+    //
+    // `objective`, when given, appends the objective cut as one more LP row
+    // (#208, #225): `col_cost . x <= cutoff - offset`, with the costs and
+    // offset taken from the view, which holds them in minimisation form
+    // whatever the model's sense.  The row's bound is written from each
+    // solve's `cutoff` (see `solve`), so the row is never free when cuPDLP-C
+    // sees it.  Row duals then come back `nrow + 1` long, and a warm start's
+    // `row_dual` must be that long too.  Null leaves the LP the model's.
+    ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap,
+                  const ProblemView* objective = nullptr);
 
     virtual ~ContestedPdlp() = default;
 
@@ -122,13 +132,21 @@ public:
     // call after the deadline gets an empty `SolveResult` and no solve at
     // all, which is what retires it in `absorb_fresh_solve`.
     //
+    // `cutoff` is the objective cut in force for this solve, in the pool's
+    // form (offset included; `objective_cut_target`'s result).  It is read
+    // only by an instance built with the objective row, and there it must be
+    // finite: cuPDLP-C turns a free row into an extra column and prints a
+    // warning to stdout, so a non-finite cutoff on such an instance aborts as
+    // a caller bug.  Scylla builds the row only when the pool is non-empty at
+    // dispatch, and the pool never empties, so its cutoff is always finite.
+    //
     // On success, publishes the result as the latest Snapshot so that
     // other workers hitting `try_solve_or_snapshot` can round against
     // it concurrently.
     SolveResult solve(const std::vector<double>& modified_cost,
                       const std::vector<double>& warm_start_col_value,
                       const std::vector<double>& warm_start_row_dual, bool warm_start_valid,
-                      double epsilon);
+                      double epsilon, double cutoff = kHighsInf);
 
     // Non-blocking variant: `try_lock` the PDLP mutex.
     //
@@ -144,7 +162,8 @@ public:
     TrySolveResult try_solve_or_snapshot(const std::vector<double>& modified_cost,
                                          const std::vector<double>& warm_start_col_value,
                                          const std::vector<double>& warm_start_row_dual,
-                                         bool warm_start_valid, double epsilon);
+                                         bool warm_start_valid, double epsilon,
+                                         double cutoff = kHighsInf);
 
     // Latest completed Snapshot (shared ownership) or null if no solve
     // has completed yet.  Read via `std::atomic<std::shared_ptr<>>`
@@ -279,7 +298,7 @@ private:
     SolveResult run_locked_with_accounting(const std::vector<double>& modified_cost,
                                            const std::vector<double>& warm_start_col_value,
                                            const std::vector<double>& warm_start_row_dual,
-                                           bool warm_start_valid, double epsilon);
+                                           bool warm_start_valid, double epsilon, double cutoff);
 
     // Publish the result of a just-completed solve as the latest
     // Snapshot.  Only called while `mu_` is held, so publications are
@@ -296,7 +315,12 @@ private:
     bool initialized_ = false;
     size_t nnz_lp_ = 0;
     HighsInt ncol_ = 0;
+    // The LP's row count, the objective row included when there is one.
     HighsInt nrow_ = 0;
+    // The objective row's index (the model's `num_row_`), or -1 for none;
+    // `objective_offset_` is the view's offset its bound is shifted by.
+    HighsInt objective_row_ = -1;
+    double objective_offset_ = 0.0;
 
     // Atomic shared_ptr slot.  Written only by the mutex holder,
     // concurrent with lock-free stale readers.  Using the C++20

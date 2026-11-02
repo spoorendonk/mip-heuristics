@@ -7,6 +7,7 @@
 #include "pump_common.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -48,7 +49,8 @@ void set_option_or_die(Highs& highs, const char* name, T value) {
 
 }  // namespace
 
-ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
+ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap,
+                             const ProblemView* objective)
     : deadline_(deadline_of(mipsolver)) {
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();
@@ -153,6 +155,32 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
     set_option_or_die(highs_, "pdlp_iteration_limit",
                       pdlp_iter_cap > kMinPdlpIterCap ? pdlp_iter_cap : kMinPdlpIterCap);
     highs_.passModel(std::move(lp));
+
+    // The objective cut as one more row (#225).  Its entries are the costs
+    // that are exactly nonzero, as `ObjectiveRowStorage`'s are, so the row is
+    // the cut and not a relaxation of it.  Added free: `run_locked_with_accounting`
+    // writes its bound before every solve, so cuPDLP-C never sees it free.
+    if (objective != nullptr) {
+        const std::vector<double>& cost = *objective->col_cost;
+        std::vector<HighsInt> index;
+        std::vector<double> value;
+        index.reserve(cost.size());
+        value.reserve(cost.size());
+        for (HighsInt j = 0; j < ncol_; ++j) {
+            if (cost[j] != 0.0) {
+                index.push_back(j);
+                value.push_back(cost[j]);
+            }
+        }
+        if (highs_.addRow(-kHighsInf, kHighsInf, static_cast<HighsInt>(index.size()), index.data(),
+                          value.data()) != HighsStatus::kOk) {
+            std::fprintf(stderr, "ContestedPdlp: HiGHS rejected the objective row.\n");
+            std::abort();
+        }
+        objective_row_ = nrow_;
+        objective_offset_ = objective->offset;
+        nrow_ += 1;
+    }
 
     initialized_ = true;
 }
@@ -493,7 +521,8 @@ HighsPresolveStatus ContestedPdlp::presolve_status_for_test() const {
 
 ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
-    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon) {
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
+    double cutoff) {
     // The solve's time limit, read here rather than by the caller (#117).
     // `solve()` blocks on `mu_` for as long as a peer's whole solve takes,
     // and a limit computed before that wait is stale by exactly it — the
@@ -542,6 +571,20 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
                      "is unsafe under overlap; aborting to avoid corrupt results.\n",
                      observed);
         std::abort();
+    }
+
+    // The objective row's bound for this solve (#225), written here under
+    // `mu_` rather than in `solve_locked`, so a test double overriding that
+    // still sees the instance's one write path.  A non-finite cutoff would
+    // leave the row free, which cuPDLP-C reformulates with an extra column
+    // and a stdout warning: a caller bug, so abort as the tripwire above does.
+    if (objective_row_ >= 0) {
+        if (!std::isfinite(cutoff)) {
+            std::fprintf(stderr,
+                         "ContestedPdlp: a solve on the objective-row LP was given no cutoff.\n");
+            std::abort();
+        }
+        highs_.changeRowBounds(objective_row_, -kHighsInf, cutoff - objective_offset_);
     }
 
     auto result = solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
@@ -605,7 +648,8 @@ void ContestedPdlp::publish_snapshot_for_test(Snapshot snap) {
 ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double>& modified_cost,
                                                 const std::vector<double>& warm_start_col_value,
                                                 const std::vector<double>& warm_start_row_dual,
-                                                bool warm_start_valid, double epsilon) {
+                                                bool warm_start_valid, double epsilon,
+                                                double cutoff) {
     SolveResult result;
     if (!initialized_) {
         return result;
@@ -615,12 +659,13 @@ ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double>& modif
 
     std::scoped_lock lock(mu_);
     return run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                      warm_start_valid, epsilon);
+                                      warm_start_valid, epsilon, cutoff);
 }
 
 ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
     const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
-    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon) {
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
+    double cutoff) {
     TrySolveResult out;
     if (!initialized_) {
         out.stale_snapshot = latest_snapshot();
@@ -640,7 +685,7 @@ ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
     }
 
     out.solve = run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                           warm_start_valid, epsilon);
+                                           warm_start_valid, epsilon, cutoff);
     out.fresh = true;
     return out;
 }

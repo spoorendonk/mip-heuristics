@@ -22,6 +22,7 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -320,8 +321,9 @@ std::unique_ptr<HighsMipSolver> bare_mipsolver_on_parity(Highs& highs, HighsCall
 // `ScyllaWorker`'s constructor retires on it.
 class RecordingPdlp : public ContestedPdlp {
 public:
-    RecordingPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
-        : ContestedPdlp(mipsolver, pdlp_iter_cap) {}
+    RecordingPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap,
+                  const ProblemView* objective = nullptr)
+        : ContestedPdlp(mipsolver, pdlp_iter_cap, objective) {}
 
     struct Call {
         std::vector<double> modified_cost;
@@ -480,7 +482,9 @@ ScyllaCutRun run_scylla_worker(ObjectiveCutParams cut, const std::vector<double>
         rows.emplace(problem);
     }
 
-    RecordingPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000);
+    // The LP takes the objective row exactly when the rounding does, as in
+    // `scylla::run` (#225).
+    RecordingPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000, rows.has_value() ? &problem : nullptr);
     REQUIRE(pdlp.initialized());
     // Dispatching-thread var orders, as the #155 case above builds them.
     std::vector<std::vector<HighsInt>> var_orders;
@@ -524,8 +528,10 @@ TEST_CASE("Scylla objective cut: no rounded offer above the cutoff in force",
     const ScyllaCutRun cut = run_scylla_worker(kCutOn, plain.solutions.front());
     REQUIRE(cut.objectives.front() == plain.objectives.front());
 
-    // The PDLP fast path offers `x_bar` itself, unrounded and out of the
-    // cut's scope (#233): an offer equal to a solve's primal is that path's.
+    // The PDLP fast path offers `x_bar` itself, unrounded: the LP's objective
+    // row (#225) holds it only to PDLP's epsilon, far looser than `kRowTol`
+    // early in the schedule, so an offer equal to a solve's primal is that
+    // path's and is not held to the bound below.
     // Any other is a rounding, and the cutoff in force at it is the target of
     // the best accepted before it.
     double best = cut.objectives.front();
@@ -576,4 +582,60 @@ TEST_CASE("Scylla objective cut: off, or on with an empty pool, Scylla is unchan
     const Out on_empty = dispatch(kCutOn);
     REQUIRE(on_empty.objectives == off.objectives);
     REQUIRE(on_empty.effort == off.effort);
+}
+
+TEST_CASE("ContestedPdlp objective row: a solve stays under each solve's cutoff",
+          "[objective-cut][scylla][contested_pdlp]") {
+    // Real PDLP solves on gt2's relaxation, pushed *up* the objective so the
+    // row is what holds them: without it the solve lands above the cutoff.
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "gt2.mps");
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+
+    // The LP keeps the model's sense and the view's costs are in
+    // minimisation form, so maximising the view's objective is minimising
+    // `-c` on a minimisation model and maximising `c` on a maximisation one.
+    const double push = mipsolver->model_->sense_ == ObjSense::kMinimize ? -1.0 : 1.0;
+    std::vector<double> up(static_cast<size_t>(problem.ncol));
+    std::vector<double> down(up.size());
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        up[j] = push * (*problem.col_cost)[j];
+        down[j] = -up[j];
+    }
+    const std::vector<double> empty;
+    constexpr HighsInt kIterCap = 1000000;
+
+    ContestedPdlp plain(*mipsolver, kIterCap);
+    REQUIRE(plain.initialized());
+    const auto hi = plain.solve(up, empty, empty, false, pump::kEpsilonFloor);
+    const auto lo = plain.solve(down, empty, empty, false, pump::kEpsilonFloor);
+    REQUIRE(hi.value_valid);
+    REQUIRE(lo.value_valid);
+    const double obj_hi = problem.objective(hi.col_value);
+    const double obj_lo = problem.objective(lo.col_value);
+    INFO("LP objective range [" << obj_lo << ", " << obj_hi << "]");
+    REQUIRE(obj_hi - obj_lo > 1.0);
+
+    ContestedPdlp cut(*mipsolver, kIterCap, &problem);
+    REQUIRE(cut.initialized());
+    // Two cutoffs, the second tighter and warm-started from the first, so
+    // the bound is seen to move between solves rather than stay as built.
+    const double first = 0.5 * (obj_lo + obj_hi);
+    const double second = 0.5 * (obj_lo + first);
+    const auto tol = [](double cutoff) { return 1e-6 * (1.0 + std::abs(cutoff)); };
+    REQUIRE(obj_hi > first + tol(first));
+
+    const auto r1 = cut.solve(up, empty, empty, false, pump::kEpsilonFloor, first);
+    REQUIRE(r1.value_valid);
+    REQUIRE(r1.col_value.size() == static_cast<size_t>(problem.ncol));
+    REQUIRE(r1.row_dual.size() == static_cast<size_t>(problem.nrow) + 1);
+    CHECK(problem.objective(r1.col_value) <= first + tol(first));
+
+    const auto r2 = cut.solve(up, r1.col_value, r1.row_dual, true, pump::kEpsilonFloor, second);
+    REQUIRE(r2.value_valid);
+    CHECK(problem.objective(r2.col_value) <= second + tol(second));
 }

@@ -223,6 +223,13 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // still produces useful FPR work while another chain holds the
         // mutex.  After kMaxStaleRounds consecutive stale iterations we
         // force a blocking solve() to guarantee forward progress.
+        // The cutoff in force for this round, read once (it takes the pool
+        // lock): the PDLP solve's objective row (#225) and the rounding's
+        // propagated row (#233) both take it, so `x_bar` and its rounding
+        // answer to the same cut.  `kHighsInf` when this dispatch has no cut.
+        const double cutoff =
+            cut_view_.has_value() ? objective_cut_target(sink_.best_objective(), cut_) : kHighsInf;
+
         bool fresh = false;
         HighsInt iters_this_round = 0;
         // x_bar_source refers to whichever vector we round against this
@@ -239,7 +246,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             // "live on a stale snapshot that never matches my objective"
             // regime.
             auto solve_res = pdlp_.solve(modified_cost_, warm_start_col_value_,
-                                         warm_start_row_dual_, warm_start_valid_, epsilon_);
+                                         warm_start_row_dual_, warm_start_valid_, epsilon_, cutoff);
             if (absorb_fresh_solve(solve_res, iters_this_round, x_bar_ptr)) {
                 break;
             }
@@ -254,9 +261,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                 last_seen_snapshot_gen_ = stale_snapshot_->generation;
             }
         } else {
-            auto try_res =
-                pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
-                                            warm_start_row_dual_, warm_start_valid_, epsilon_);
+            auto try_res = pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
+                                                       warm_start_row_dual_, warm_start_valid_,
+                                                       epsilon_, cutoff);
             if (try_res.fresh) {
                 if (absorb_fresh_solve(try_res.solve, iters_this_round, x_bar_ptr)) {
                     break;
@@ -454,11 +461,10 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // `SolutionPool::get_restart`), so this chain's RNG stream moves
         // from the point of removal onward, independent of and in addition
         // to the shift from #122's seeding-block deletion.
-        // The cutoff in force for this rounding: the pool's best now, read
-        // once (it takes the pool lock); nothing else moves the row bound
-        // until the next rounding.
+        // The round's cutoff, read at its top; nothing else moves the row
+        // bound until the next rounding.
         if (cut_view_.has_value()) {
-            cut_view_->set_cutoff(objective_cut_target(sink_.best_objective(), cut_));
+            cut_view_->set_cutoff(cutoff);
         }
         HeuristicResult rounded = fpr_attempt(rounding_problem_, exec_.deadline, cfg, rng_, 0);
 
