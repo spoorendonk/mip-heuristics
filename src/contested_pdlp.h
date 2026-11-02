@@ -10,7 +10,9 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
+#include <version>
 
 class HighsMipSolver;
 
@@ -301,7 +303,30 @@ private:
     // `std::atomic<std::shared_ptr<T>>` partial specialisation rather
     // than the deprecated free-function overloads so the release /
     // acquire happens in one call.
+#if defined(__cpp_lib_atomic_shared_ptr)
     std::atomic<std::shared_ptr<const Snapshot>> snapshot_;
+#else
+    // libc++ (Apple clang) has no `std::atomic<std::shared_ptr<T>>`, so a
+    // build there takes this stand-in: the same `load` / `store` under a
+    // mutex of its own.  It exists so the suite builds on macOS; Linux
+    // (libstdc++) never compiles it and keeps the atomic above.
+    class SnapshotSlot {
+    public:
+        std::shared_ptr<const Snapshot> load(std::memory_order /*order*/) const {
+            const std::lock_guard<std::mutex> lock(mu_);
+            return ptr_;
+        }
+        void store(std::shared_ptr<const Snapshot> ptr, std::memory_order /*order*/) {
+            const std::lock_guard<std::mutex> lock(mu_);
+            ptr_ = std::move(ptr);
+        }
+
+    private:
+        mutable std::mutex mu_;
+        std::shared_ptr<const Snapshot> ptr_;
+    };
+    SnapshotSlot snapshot_;
+#endif
 
     std::atomic<int> in_flight_count_{0};
     std::atomic<int> peak_in_flight_{0};

@@ -389,48 +389,58 @@ catch_discover_tests(mip_heuristics_core_tests TEST_LIST mip_heuristics_core_tes
 # target, because the target's `$<LINK_ONLY:highs>` would bring the whole of
 # libhighs back.  Its cases build their model by hand: the `Highs` class
 # itself reaches the MIP solver.
-file(GLOB _mip_sources ${highs_SOURCE_DIR}/highs/mip/*.cpp)
-get_target_property(_adapter_sources mip_heuristics SOURCES)
-get_target_property(_core_cpp mip_heuristics_core SOURCES)
-list(FILTER _core_cpp INCLUDE REGEX "\\.cpp$")
-set(_drop "")
-# The core's own copies go too (libhighs carries them; see `target_sources`
-# on `highs`), so the whole-archive core below is the only one linked.
-foreach(_source IN LISTS _mip_sources _adapter_sources _core_cpp)
-    get_filename_component(_name ${_source} NAME)
-    list(APPEND _drop "${_name}.o")
-endforeach()
-list(JOIN _drop "|" _drop)
-set(_highs_without_mip ${CMAKE_CURRENT_BINARY_DIR}/libhighs_without_mip.a)
-add_custom_command(
-    OUTPUT ${_highs_without_mip}
-    COMMAND ${CMAKE_COMMAND} -DAR=${CMAKE_AR} -DIN=$<TARGET_FILE:highs>
-            -DOUT=${_highs_without_mip} -DDROP=${_drop}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
-    DEPENDS highs ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
-    COMMENT "libhighs without the MIP solver and the adapter"
-    VERBATIM)
-add_custom_target(highs_without_mip DEPENDS ${_highs_without_mip})
+#
+# Upstream unity-builds `highs` on Apple (8 sources per member), so a
+# `highs/mip/` source has no member of its own to drop there.  The check is
+# skipped on such a build rather than worked around: Linux, where it runs,
+# is the platform this project gates on.
+get_target_property(_highs_unity highs UNITY_BUILD)
+if(_highs_unity)
+    message(STATUS "libhighs is a unity build: skipping mip_heuristics_core_standalone_tests")
+else()
+    file(GLOB _mip_sources ${highs_SOURCE_DIR}/highs/mip/*.cpp)
+    get_target_property(_adapter_sources mip_heuristics SOURCES)
+    get_target_property(_core_cpp mip_heuristics_core SOURCES)
+    list(FILTER _core_cpp INCLUDE REGEX "\\.cpp$")
+    set(_drop "")
+    # The core's own copies go too (libhighs carries them; see `target_sources`
+    # on `highs`), so the whole-archive core below is the only one linked.
+    foreach(_source IN LISTS _mip_sources _adapter_sources _core_cpp)
+        get_filename_component(_name ${_source} NAME)
+        list(APPEND _drop "${_name}.o")
+    endforeach()
+    list(JOIN _drop "|" _drop)
+    set(_highs_without_mip ${CMAKE_CURRENT_BINARY_DIR}/libhighs_without_mip.a)
+    add_custom_command(
+        OUTPUT ${_highs_without_mip}
+        COMMAND ${CMAKE_COMMAND} -DAR=${CMAKE_AR} -DIN=$<TARGET_FILE:highs>
+                -DOUT=${_highs_without_mip} -DDROP=${_drop}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
+        DEPENDS highs ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
+        COMMENT "libhighs without the MIP solver and the adapter"
+        VERBATIM)
+    add_custom_target(highs_without_mip DEPENDS ${_highs_without_mip})
 
-add_executable(mip_heuristics_core_standalone_tests tests/test_core_standalone.cpp)
-add_dependencies(mip_heuristics_core_standalone_tests mip_heuristics_core highs_without_mip)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mip_heuristics_core_standalone_tests PRIVATE -Werror=unused-result
-                                                                        -Werror=switch)
+    add_executable(mip_heuristics_core_standalone_tests tests/test_core_standalone.cpp)
+    add_dependencies(mip_heuristics_core_standalone_tests mip_heuristics_core highs_without_mip)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(mip_heuristics_core_standalone_tests PRIVATE -Werror=unused-result
+                                                                            -Werror=switch)
+    endif()
+    target_include_directories(mip_heuristics_core_standalone_tests PRIVATE
+        $<TARGET_PROPERTY:mip_heuristics_core,INTERFACE_INCLUDE_DIRECTORIES>)
+    find_package(Threads REQUIRED)
+    target_link_libraries(mip_heuristics_core_standalone_tests PRIVATE
+        $<LINK_LIBRARY:WHOLE_ARCHIVE,$<TARGET_FILE:mip_heuristics_core>> ${_highs_without_mip}
+        Threads::Threads ${CMAKE_DL_LIBS}
+        Catch2::Catch2WithMain)
+    if(MIP_HEURISTICS_INSTRUMENT)
+        target_compile_definitions(mip_heuristics_core_standalone_tests PRIVATE
+            MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
+    endif()
+    catch_discover_tests(mip_heuristics_core_standalone_tests
+        TEST_LIST mip_heuristics_core_standalone_tests_ALL)
 endif()
-target_include_directories(mip_heuristics_core_standalone_tests PRIVATE
-    $<TARGET_PROPERTY:mip_heuristics_core,INTERFACE_INCLUDE_DIRECTORIES>)
-find_package(Threads REQUIRED)
-target_link_libraries(mip_heuristics_core_standalone_tests PRIVATE
-    $<LINK_LIBRARY:WHOLE_ARCHIVE,$<TARGET_FILE:mip_heuristics_core>> ${_highs_without_mip}
-    Threads::Threads ${CMAKE_DL_LIBS}
-    Catch2::Catch2WithMain)
-if(MIP_HEURISTICS_INSTRUMENT)
-    target_compile_definitions(mip_heuristics_core_standalone_tests PRIVATE
-        MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
-endif()
-catch_discover_tests(mip_heuristics_core_standalone_tests
-    TEST_LIST mip_heuristics_core_standalone_tests_ALL)
 
 # The pool's own tests again, under ThreadSanitizer (#180): the pool shares
 # immutable solution vectors across threads by `shared_ptr` and scans them

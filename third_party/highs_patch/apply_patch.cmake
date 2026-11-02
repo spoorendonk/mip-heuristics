@@ -152,7 +152,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 27 adds the rebuild restart options (#200): two int records,
 # `mip_heuristic_fj_restart` and `mip_heuristic_local_mip_restart` (0..2,
 # default 0), and one bool, `mip_heuristic_local_mip_restart_weights`.
-set(PATCH_VERSION "27")
+#
+# Version 28 moves `~HighsMipWorker()` out of line (HighsMipWorker.h/.cpp),
+# so that our C++23 sources build against libc++; see that block below.
+set(PATCH_VERSION "28")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -736,6 +739,49 @@ if(_clq_acc_found EQUAL -1)
     message(STATUS "Applied raw clique-list accessors to HighsCliqueTable.h")
 else()
     message(STATUS "Clique-list accessors already applied, skipping")
+endif()
+
+# ── Patch HighsMipWorker.h/.cpp: define the destructor out of line ──
+#
+# Upstream defines `~HighsMipWorker()` inline, resetting a
+# `std::unique_ptr<HighsSearch>` while `HighsSearch` is only forward-declared
+# there.  At HiGHS's own C++11 that is fine: the deleter is instantiated at
+# the end of the translation unit, by which point `HighsMipSolverData.h` has
+# included `HighsSearch.h`.  Our sources are C++23, where libc++ (Apple
+# clang) makes `unique_ptr` constexpr and instantiates the deleter on the
+# spot, so every one of our files that reaches `HighsMipSolverData.h` fails
+# with "invalid application of 'sizeof' to an incomplete type".  No include
+# order helps: `HighsSearch.h` itself includes `HighsMipWorker.h`.  Moving
+# the two-line body into `HighsMipWorker.cpp`, where both types are complete,
+# changes nothing a solve does; it is how libstdc++ builds see it already.
+file(READ "${MIP_DIR}/HighsMipWorker.h" WORKER_H)
+file(READ "${MIP_DIR}/HighsMipWorker.cpp" WORKER_CPP)
+string(FIND "${WORKER_H}" "~HighsMipWorker();  // mip-heuristics" _worker_dtor_found)
+if(_worker_dtor_found EQUAL -1)
+    string(REPLACE
+      "  ~HighsMipWorker() {\n    search_ptr_.reset();\n    sepa_ptr_.reset();\n  }\n"
+      "  ~HighsMipWorker();  // mip-heuristics: out of line, see HighsMipWorker.cpp\n"
+      WORKER_H "${WORKER_H}")
+    string(REPLACE
+      "void HighsMipWorker::resetSearch() {"
+      "// mip-heuristics: out of line so a C++23 libc++ includer of the header\n// never instantiates unique_ptr<HighsSearch>'s deleter on an incomplete type.\nHighsMipWorker::~HighsMipWorker() {\n  search_ptr_.reset();\n  sepa_ptr_.reset();\n}\n\nvoid HighsMipWorker::resetSearch() {"
+      WORKER_CPP "${WORKER_CPP}")
+
+    string(FIND "${WORKER_H}" "~HighsMipWorker();  // mip-heuristics" _worker_h_ok)
+    string(FIND "${WORKER_CPP}" "HighsMipWorker::~HighsMipWorker()" _worker_cpp_ok)
+    if(_worker_h_ok EQUAL -1 OR _worker_cpp_ok EQUAL -1)
+        message(FATAL_ERROR
+            "HighsMipWorker destructor patch failed "
+            "(header=${_worker_h_ok}, source=${_worker_cpp_ok}). "
+            "Upstream HiGHS likely changed ~HighsMipWorker() or "
+            "HighsMipWorker::resetSearch(). "
+            "${CLEAN_REBUILD}")
+    endif()
+    file(WRITE "${MIP_DIR}/HighsMipWorker.h" "${WORKER_H}")
+    file(WRITE "${MIP_DIR}/HighsMipWorker.cpp" "${WORKER_CPP}")
+    message(STATUS "Applied out-of-line ~HighsMipWorker to HighsMipWorker.h/.cpp")
+else()
+    message(STATUS "Out-of-line ~HighsMipWorker already applied, skipping")
 endif()
 
 # ── Patch HighsMipSolverData.cpp: add source strings + fix key display ──
