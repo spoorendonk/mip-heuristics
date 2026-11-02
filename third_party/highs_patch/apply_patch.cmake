@@ -169,6 +169,9 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 32 adds the objective cut options (#208): one bool record,
 # `mip_heuristic_objective_cut` (default false), and two doubles,
 # `mip_heuristic_objective_cut_rel` (1e-3) and `_abs` (1e-7).
+# Version 33 inserts FJ's objective cut into `feasibilityjump.hh` (#222):
+# `FeasibilityJumpSolver::setObjectiveCut`, `Problem::refreshConstraint` and
+# the `solveInitialized` flag `init` sets.
 set(PATCH_VERSION "33")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
@@ -1341,7 +1344,11 @@ endif()
 # moves of the row's variables.  That is enough because a move's jump value
 # and score depend only on the rows its variable is in, and `JumpMove` keeps
 # one move per variable and nothing per row.  Every weight is kept, the
-# objective weight included.  Pinned by `tests/test_objective_cut.cpp`.
+# objective weight included.  A row added after `init` starts at weight 1
+# while the others may have been bumped far above it, so FJ first leans on
+# it lightly; the bumps raise it as it stays violated.  Kept: rescaling it
+# would be a rule of our own, and #226 measures the cut as is.  Pinned by
+# `tests/test_fj_objective_cut.cpp`.
 file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_CUT)
 string(FIND "${FJ_CUT}" "void setObjectiveCut(double rhs)" _fj_cut_found)
 if(_fj_cut_found EQUAL -1)

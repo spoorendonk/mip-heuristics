@@ -26,20 +26,23 @@ constexpr ObjectiveCutParams kCutOn{.on = true, .rel = 1e-3, .abs = 1e-7};
 // instance below, small enough to keep the case fast.
 constexpr size_t kTotal = size_t{1} << 25;
 
-// Every accepted offer, in order, with the slot's traced effort.
+// Every accepted offer, in order, with the slot's traced effort and the
+// point itself: the in-place cut refresh is checked against the model too.
 class RecordingSink : public SolutionSink {
 public:
     using SolutionSink::SolutionSink;
     std::mutex mtx;
     std::vector<double> objectives;
     std::vector<size_t> efforts;
+    std::vector<std::vector<double>> solutions;
 
 private:
-    void on_accept(double obj, const std::vector<double>& /*x*/, int /*source*/,
+    void on_accept(double obj, const std::vector<double>& x, int /*source*/,
                    const WorkerTrace& trace, size_t effort_at) override {
         std::scoped_lock guard(mtx);
         objectives.push_back(obj);
         efforts.push_back(trace.at(effort_at));
+        solutions.push_back(x);
     }
 };
 
@@ -86,6 +89,10 @@ TEST_CASE("FJ objective cut: each offer honours the cutoff in force, one worker"
         INFO("offer " << k << ": " << sink.objectives[k] << " after " << sink.objectives[k - 1]);
         REQUIRE(honours(sink.objectives[k], objective_cut_target(sink.objectives[k - 1], kCutOn)));
     }
+    // A stale cut row would let FJ report a point that breaks a model row.
+    for (const auto& x : sink.solutions) {
+        REQUIRE(is_feasible(m.highs.getLp(), x));
+    }
 }
 
 TEST_CASE("FJ objective cut: a peer's solution is applied on resume", "[objective_cut][fj]") {
@@ -109,9 +116,13 @@ TEST_CASE("FJ objective cut: a peer's solution is applied on resume", "[objectiv
                 .improved_incumbent);
     const double cutoff = objective_cut_target(peer_sink.objective, kCutOn);
     run(fj);
+    // The worker must still find something under the peer's cutoff, or the
+    // loop below would check nothing.
+    REQUIRE(sink.objectives.size() > before + 1);
     for (size_t k = before + 1; k < sink.objectives.size(); ++k) {
         INFO("offer " << k << ": " << sink.objectives[k]);
         REQUIRE(honours(sink.objectives[k], cutoff));
+        REQUIRE(is_feasible(m.highs.getLp(), sink.solutions[k]));
     }
 }
 

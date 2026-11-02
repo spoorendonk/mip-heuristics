@@ -194,10 +194,6 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 improved_incumbent = true;
             }
         }
-        // The objective cut (#222), at FJ's own callback cadence and after
-        // each offer, so a solution this worker just offered is cut off
-        // before the next move.  FJ resumes from the same point and weights.
-        apply_cut();
 
         // The solve's wall-clock deadline (issue #114).  Every other gate
         // here is denominated in effort units, and the runner checks the
@@ -250,6 +246,13 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         if (status.totalEffort > base_.total_budget) {
             return CallbackControlFlow::Terminate;
         }
+        // The objective cut (#222), at FJ's own callback cadence and after
+        // each offer, so a solution this worker just offered is cut off
+        // before the next move.  FJ resumes from the same point and weights.
+        // After every way out: a callback that ends the attempt leaves the
+        // cut to the next attempt's pre-solve call, so the refresh neither
+        // runs past the deadline nor charges effort the attempt never sees.
+        apply_cut();
         return CallbackControlFlow::Continue;
     };
 
