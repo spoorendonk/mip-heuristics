@@ -1,11 +1,15 @@
 #include "fj.h"
 
+#include "fj_personas.h"
 #include "fj_worker.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
+#include "io/HighsIO.h"
 #include "opportunistic_runner.h"
 #include "solution_sink.h"
+#include "structure.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -20,23 +24,57 @@ struct FjState {
     bool first_creation = true;
     // Trace-only slot identity, carried across rebuilds (#106).
     WorkerTrace trace;
+    // The start the slot's first worker takes (#206); rebuilds ignore it.
+    FjPersona persona = FjPersona::kSeeded;
 };
 
 // Slot `worker_idx`, with no worker built yet.  Its first worker is pinned
 // to `random_seed + worker_idx`, so worker 0 matches vanilla FJ's seed.
-FjState make_state(const ExecutionContext& exec, int worker_idx) {
+FjState make_state(const ExecutionContext& exec, int worker_idx,
+                   FjPersona persona = FjPersona::kSeeded) {
     // The `random_seed` option itself: `base_seed` is it plus
     // `kBaseSeedOffset` (`heuristic_base_seed`), so this is the exact
     // inverse, in the same modular `uint32_t` arithmetic.
     const uint32_t random_seed_opp = exec.base_seed - kBaseSeedOffset;
     return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx), true,
-                   WorkerTrace{worker_idx, 0}};
+                   WorkerTrace{worker_idx, 0}, persona};
+}
+
+// The persona of every slot, and the structure their starts read: all
+// seeded, with no detection pass, unless `budget.fj_personas` (#206).  Run
+// on the dispatching thread, ahead of the parallel region.
+struct Personas {
+    RowStructure structure;
+    std::vector<FjPersona> of_slot;
+};
+
+Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget,
+                       const ExecutionContext& exec) {
+    Personas out;
+    if (!budget.fj_personas) {
+        out.of_slot.assign(exec.num_workers, FjPersona::kSeeded);
+        return out;
+    }
+    out.structure = detect_structure(problem);
+    out.of_slot = assign_personas(out.structure, problem.nnz, exec.num_workers);
+    const auto slots_with = [&](FjPersona p) {
+        return static_cast<int>(std::ranges::count(out.of_slot, p));
+    };
+    const auto kind = [&](RowKind k) { return static_cast<int>(out.structure.count_of(k)); };
+    highsLogDev(exec.log_options, HighsLogType::kVerbose,
+                "[FjPersonas] partitioning=%d packing=%d covering=%d cardinality=%d "
+                "precedence=%d flow=%d exact_k=%d slots_covering=%d slots_exact_k=%d\n",
+                kind(RowKind::kPartitioning), kind(RowKind::kPacking), kind(RowKind::kCovering),
+                kind(RowKind::kCardinality), kind(RowKind::kPrecedence),
+                kind(RowKind::kFlowConservation), static_cast<int>(out.structure.exact_k.size()),
+                slots_with(FjPersona::kCovering), slots_with(FjPersona::kExactK));
+    return out;
 }
 
 // Put a fresh worker in the slot, replacing a finished one.
 void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
                   const HeuristicBudget& budget, const ExecutionContext& exec, SolutionSink& sink,
-                  const RestartSource& source) {
+                  const RestartSource& source, const RowStructure* structure = nullptr) {
     // A slot's first worker is not a restart, so `budget.restart` is not
     // read for it (#200).
     const bool restart = !state.first_creation;
@@ -68,6 +106,10 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
             start = problem.incumbent;
         }
     }
+    // A persona rewrites the first worker's start only (#206).
+    if (!restart && state.persona != FjPersona::kSeeded && structure != nullptr) {
+        apply_persona(state.persona, problem, *structure, start);
+    }
     // Carry the outgoing worker's charge into the replacement's trace base,
     // so the `[HeurSol] effort_at` of this slot keeps rising instead of
     // restarting with the fresh `WorkerBudgetState` (#106).  Nothing about
@@ -93,6 +135,7 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     }
 
     const RestartSource no_source;
+    const Personas personas = plan_personas(problem, budget, exec);
 
     // No setup to abandon, so this dispatch can only ever report a plain
     // effort count.  MakeState below builds no worker at all — it returns
@@ -102,17 +145,21 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // poll.  So an already-expired dispatch never constructs one: FJ has
     // nothing ahead of that gate to give up on, where FPR and Scylla
     // precompute variable orders ahead of it and therefore can (#117).
-    // This does not touch the narrower standing caveat that once
-    // construction has begun nothing bounds it — the deadline is polled
-    // between attempts, not inside `FjWorker`'s constructor.
+    // The persona plan above (#206) is the one exception, and not worth a
+    // bail: one O(nnz) classification pass, and only with
+    // `mip_heuristic_fj_personas` on; the persona starts themselves run
+    // in `build_worker`, behind the gate.  This does not touch the narrower standing caveat that
+    // once construction has begun nothing bounds it — the deadline is polled between attempts, not
+    // inside `FjWorker`'s constructor.
     return {.effort = run_opportunistic_loop(
                 exec, budget,
-                [&exec](int worker_idx, Rng& /*rng*/) -> FjState {
-                    return make_state(exec, worker_idx);
+                [&exec, &personas](int worker_idx, Rng& /*rng*/) -> FjState {
+                    return make_state(exec, worker_idx, personas.of_slot[worker_idx]);
                 },
                 [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
                     if (!state.worker || state.worker->finished()) {
-                        build_worker(state, rng, problem, budget, exec, sink, no_source);
+                        build_worker(state, rng, problem, budget, exec, sink, no_source,
+                                     &personas.structure);
                     }
                     return state.worker->run_attempt(run_cap);
                 })};

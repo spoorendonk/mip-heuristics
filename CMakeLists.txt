@@ -113,6 +113,8 @@ add_library(mip_heuristics_core STATIC
     src/deadline.h
     src/fj.cpp
     src/fj.h
+    src/fj_personas.cpp
+    src/fj_personas.h
     src/fj_worker.cpp
     src/fj_worker.h
     src/fpr_core.cpp
@@ -146,6 +148,8 @@ add_library(mip_heuristics_core STATIC
     src/solution_pool.h
     src/solution_sink.cpp
     src/solution_sink.h
+    src/structure.cpp
+    src/structure.h
     src/walksat.cpp
     src/walksat.h
     src/worker_base.h
@@ -392,7 +396,8 @@ catch_discover_tests(mip_heuristics_tests
 # separate executable so that the link line, not only the source, is the
 # one a caller of the core would have.  No `[serial]` case: nothing here
 # reads a clock.
-add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_paths.cpp)
+add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
+    tests/test_paths.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})

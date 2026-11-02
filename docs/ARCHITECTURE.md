@@ -97,6 +97,8 @@ Pinned by `tests/test_fj_jump_value.cpp` (which drives `JumpMove` directly as we
 
 The patch also **drops FJ's per-bump `Reached a local minimum.` log line**, which was ~99.8% of a `log_dev_level=3` run's log volume and made a clock-bound traced FJ dispatch a different heuristic from an untraced one. What remains at level 3 is FJ's periodic table and our own two lines — closer, but still not the same run, which is why `run_benchmark.py` leaves level 3 off behind `--dev-log`. A patched binary's FJ output no longer matches vanilla's at level 3, one of the reasons `off` is an ablation and not a vanilla proxy.
 
+**Personas** (`fj_personas`, `structure`; option `mip_heuristic_fj_personas`, default off, #206): with the option on, `fj::run` classifies every row once on the dispatching thread (`detect_structure`: partitioning, packing, covering, cardinality, precedence, flow conservation, plus cuOpt's exact-k rows) and gives slots 1.. a start persona the rows support — cuOpt's greedy covering start, or its exact-k start followed by it — applied to the slot's first worker's start only. Starts only: FJ's moves are upstream's, so cuOpt's compound moves (cardinality exchange, 2-opt) and its CDCL SAT lanes are not here. Rules and deviations: `docs/PARAMETERS.md` (FJ Personas).
+
 **FJ's per-worker solver construction is unbounded** — `createRowwise` plus `addVar`/`addConstraint` plus `init`'s `resetMoves`, before the first callback can fire — and is deliberately out of scope; a deadline in the callback cannot bound it.
 
 ### `local_mip` — weighted local search

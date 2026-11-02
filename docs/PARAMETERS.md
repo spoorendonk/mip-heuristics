@@ -2176,6 +2176,59 @@ the reference local searches' restarts can be measured (#201).
 
 ---
 
+## FJ Personas (issue #206)
+
+Structural start personas for FJ's presolve workers, after cuOpt's CPU FJ
+portfolio (`feasibility_jump/cpu/portfolio.cpp`,
+`apply_lane_diversification`; starts in `cpu/starts/covering.cpp` and
+`cpu/starts/cardinality.cpp`). Slot 0 stays seeded (vanilla FJ's seed);
+slots 1.. take the personas the model's rows support, in order — the
+covering start when a covering, partitioning or cardinality row exists,
+the exact-k start then the covering start (cuOpt's lane 8) when an exact-k
+row exists — and the rest stay seeded copies. Only a slot's first worker
+takes its persona; rebuilds restart from the pool as before. Each start
+keeps its result only if it leaves fewer violated rows than it found, so a
+feasible start passes through unchanged. The starts are not charged to
+FJ's effort: they are one pass of detection plus O(passes · nnz log width)
+per persona slot, gated by `kPersonaNnzLimit`. With the option on, a
+`[FjPersonas]` verbose line gives the row counts and slot assignment.
+
+**Deviations** (beside the code in `src/fj_personas.cpp`): no wall-clock
+start budget (cuOpt: 0.4 s covering, 0.5 s exact-k), so the start is
+reproducible; stable sorts; `feastol` where cuOpt hard-codes `1e-6`; a
+plain rather than compensated row sum.
+
+### `mip_heuristic_fj_personas` — FJ's structural personas
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false`
+- **Meaning**: `HeuristicBudget::fj_personas`, read by `fj::run` only
+  (`run_until_stopped` is one slot 0, which is always seeded).
+
+### `kPersonaNnzLimit`
+
+- **File**: `src/fj_personas.h`
+- **Default**: `8'000'000`
+- **Meaning**: cuOpt's `start_nnz_limit`: above it every slot is seeded.
+
+### `kCoveringPasses`
+
+- **File**: `src/fj_personas.h`
+- **Default**: `2`
+- **Meaning**: cuOpt's `max_passes` of the greedy covering start: passes
+  over the rows, shortest first.
+
+### `kExactKTol`, `kCountTol`, `kExactKMaxWidth`
+
+- **File**: `src/structure.h`
+- **Default**: `1e-6`, `1e-4`, `20000`
+- **Meaning**: cuOpt's `exact_k_tol` (equality and uniform-coefficient
+  agreement), its integrality tolerance on a count side `s / a`, and its
+  `exact_k_max_width`. Row classification (`detect_structure`) uses the
+  same tests, so a partitioning row is an exact-k row with `k = 1`.
+
+---
+
 ## Repair Walk (`repair_walk`)
 
 The in-tree repair of paper Fig. 1 lines 7-8, on the partial assignment

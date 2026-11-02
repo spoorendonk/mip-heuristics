@@ -102,6 +102,8 @@ struct HeuristicConfig {
     // for FPR and Scylla.  `restart_weights` is LocalMIP's alone.
     HighsInt HighsOptionsStruct::* restart;
     bool HighsOptionsStruct::* restart_weights;
+    // `mip_heuristic_fj_personas` (#206), FJ's alone; null for the rest.
+    bool HighsOptionsStruct::* personas;
     DispatchOutcome (*run)(HighsMipSolver&, const ProblemView&, const HeuristicBudget&,
                            ExecutionContext&, SolutionSink&);
 };
@@ -121,16 +123,17 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HighsOptionsStruct::mip_heuristic_fj_effort,
      &HighsOptionsStruct::mip_heuristic_run_feasibility_jump, true,
      &HighsOptionsStruct::mip_heuristic_fj_patience, &HighsOptionsStruct::mip_heuristic_fj_restart,
-     nullptr, &without_solver<&fj::run>},
+     nullptr, &HighsOptionsStruct::mip_heuristic_fj_personas, &without_solver<&fj::run>},
     {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
-     &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, &fpr::run},
+     &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, nullptr, &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HighsOptionsStruct::mip_heuristic_local_mip_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience,
      &HighsOptionsStruct::mip_heuristic_local_mip_restart,
-     &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights,
+     &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights, nullptr,
      &without_solver<&local_mip::run>},
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
-     false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, &scylla::run},
+     false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, nullptr,
+     &scylla::run},
 });
 
 // Whether `h` runs at all under `options` (#167).
@@ -300,6 +303,9 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         }
         if (h.restart_weights != nullptr) {
             slice.randomize_restart_weights = options.*h.restart_weights;
+        }
+        if (h.personas != nullptr) {
+            slice.fj_personas = options.*h.personas;
         }
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {

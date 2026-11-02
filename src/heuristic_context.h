@@ -375,6 +375,11 @@ struct HeuristicBudget {
     // restart weight draw, on LocalMIP's integer weights.
     bool randomize_restart_weights = false;
 
+    // FJ in `fj::run` only, default off (#206): slots 1.. start from the
+    // structural personas the model supports (`assign_personas`) instead of
+    // only another seed.
+    bool fj_personas = false;
+
     // This heuristic was handed nothing, and must therefore do nothing
     // (issue #106).
     //

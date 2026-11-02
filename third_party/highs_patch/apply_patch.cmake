@@ -159,7 +159,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 29 adds `mip_heuristic_early_fj_effort` (#205): a double record,
 # default 0, and the `heuristics::EarlyFj` call site around `runMipPresolve`
 # in HighsMipSolver.cpp (Patch A0).
-set(PATCH_VERSION "29")
+#
+# Version 30 adds `mip_heuristic_fj_personas` (#206): a bool record,
+# default false.
+set(PATCH_VERSION "30")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -519,6 +522,7 @@ set(_patch_options
     "mip_heuristic_fj_restart:int:0:2:Point a rebuilt FeasibilityJump presolve worker restarts from. 0 the default (the pool's best). 1 best (the same for FJ). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
     "mip_heuristic_local_mip_restart:int:0:2:Point a rebuilt LocalMIP presolve worker restarts from. 0 the default (a pool draw, perturbed). 1 best (the pool's best, unperturbed). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
     "mip_heuristic_local_mip_restart_weights:bool:false:-:Start a rebuilt LocalMIP presolve worker's weights, with probability one half, at draws from {1, 2} instead of 1 (CP-SAT's restart weight draw)"
+    "mip_heuristic_fj_personas:bool:false:-:Start FeasibilityJump presolve workers after the first from structural personas the model supports (cuOpt's greedy covering start, and its exact-k start followed by the covering start) instead of only from another seed"
     "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it")
 
 # The upstream record block all four record insertions anchor on, spelled
