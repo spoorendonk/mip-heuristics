@@ -85,6 +85,9 @@ TEST_CASE("Objective cut: target is best - max(rel*|best|, abs)", "[objective_cu
     REQUIRE(objective_cut_target(10000.0, coarse) == Catch::Approx(9990.0));
     // An empty pool (`best_objective()` infinite) cuts nothing.
     REQUIRE(objective_cut_target(kHighsInf, params) == kHighsInf);
+    // The cut off cuts nothing, whatever the steps say.
+    const ObjectiveCutParams off{.on = false, .rel = 1e-3, .abs = 1e-7};
+    REQUIRE(objective_cut_target(1000.0, off) == kHighsInf);
 }
 
 TEST_CASE("Objective cut: a zero objective disables the cut", "[objective_cut]") {
@@ -113,11 +116,11 @@ TEST_CASE("Objective cut: option on leaves the solve unchanged", "[objective_cut
     // must still reach the optimum; each heuristic's own tests pin what it
     // does with the cut.
     Highs h;
-    h.setOptionValue("output_flag", false);
+    require_option(h, "output_flag", false);
     require_option(h, "mip_heuristic_objective_cut", true);
     REQUIRE(h.readModel(instances_dir() + "/flugpl.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj = 0.0;
-    h.getInfoValue("objective_function_value", obj);
+    REQUIRE(h.getInfoValue("objective_function_value", obj) == HighsStatus::kOk);
     REQUIRE(obj == Catch::Approx(1201500.0).epsilon(1e-6));
 }

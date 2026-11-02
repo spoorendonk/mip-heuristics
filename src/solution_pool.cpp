@@ -169,15 +169,16 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             // pool from the incumbent at construction — so any offer improves
             // on it.
             //
-            // A *watermark* and not `entries_.front()`, which is not the same
-            // thing: the diversity path below replaces the entry most similar
-            // to the offer, and that can be the front one, so the pool's best
-            // objective goes backwards while the solve's does not (HiGHS keeps
-            // whatever `addIncumbent` was given).  Reading the front entry
-            // would then call the next offer to clear the degraded value an
-            // improvement, handing a patience gate a free reset for a solution
-            // the incumbent already dominates — which is the very thing #116
-            // exists to stop.  A monotone watermark is also exactly what
+            // A *watermark* and not `entries_.front()`.  The diversity path
+            // below never evicts the front entry (`victim > 0`), so the front
+            // is monotone too — and `SolutionSink::best_objective`, which the
+            // objective cut (#208) tightens from, relies on that: evicting the
+            // best would loosen every heuristic's cutoff.  The watermark keeps
+            // #116's gate independent of that rule anyway, since a
+            // non-monotone best would call the next offer to clear the
+            // degraded value an improvement, handing a patience gate a free
+            // reset for a solution the incumbent already dominates.  A
+            // monotone watermark is also exactly what
             // `improving_offers` in `bench/analyze_presolve_probe.py` tracks,
             // and that is where the shipped patience defaults were measured.
             //
@@ -226,7 +227,8 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                         const int victim =
                             diversity_victim(dists, static_cast<int>(integer_mask_->index.size()));
                         if (victim > 0) {
-                            // Replace the most similar entry other than the best.
+                            // Replace the most similar entry other than the best:
+                            // the front must stay monotone (see the watermark).
                             evicted = std::move(entries_[victim].solution);
                             entries_.erase(entries_.begin() + victim);
                             insert_sorted();

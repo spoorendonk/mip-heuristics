@@ -255,13 +255,6 @@ bool run_sequential(HighsMipSolver& mipsolver) {
                                ledger.now_s(), outcome.abandoned_setup);
     };
 
-    // Each heuristic's inner loops also poll the deadline, but their own
-    // setup (precompute_var_orders, ContestedPdlp construction) runs before
-    // that first inner poll; re-checking here skips it once the budget is
-    // exhausted.  `exec.terminated()` is safe to call from this sequential
-    // outer loop — the previous heuristic's parallel region has already
-    // joined, so there is no concurrent access.
-    //
     // The objective cut (#208) is one setting for the whole chain, and off
     // for a model without an objective whatever the option says.
     const ObjectiveCutParams objective_cut{
@@ -269,6 +262,13 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         .rel = options.mip_heuristic_objective_cut_rel,
         .abs = options.mip_heuristic_objective_cut_abs,
     };
+
+    // Each heuristic's inner loops also poll the deadline, but their own
+    // setup (precompute_var_orders, ContestedPdlp construction) runs before
+    // that first inner poll; re-checking here skips it once the budget is
+    // exhausted.  `exec.terminated()` is safe to call from this sequential
+    // outer loop — the previous heuristic's parallel region has already
+    // joined, so there is no concurrent access.
     for (const HeuristicConfig& h : kChain) {
         // A skipped heuristic emits no `[Sequential]` / `[Heur]` line at
         // all, which is what "skipped" has always meant here — the line is
