@@ -42,6 +42,8 @@ const char* name_for_source(int source) {
             return "local_mip";
         case kSolutionSourceScylla:
             return "scylla";
+        case kSolutionSourceRuin:
+            return "ruin";
         case kSolutionSourceFprLp:
             return "fpr_lp";
         default:

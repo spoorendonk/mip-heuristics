@@ -1114,6 +1114,71 @@ Three things to carry forward.
 
 ---
 
+## Ruin-and-Repair LNS (`ruin_repair`, #207)
+
+After cuOpt's CPU LNS worker (`run_cpufj_lns_ruin_repair`): ruin some
+integer columns of the best point, repair with FeasibilityJump under an
+objective cutoff. The schedule constants are cuOpt's; the repair is bounded
+by FJ effort rather than seconds, so it converts cuOpt's seconds at a
+measured rate.
+
+### `kObjectiveEpsilon` — what counts as a better population point
+
+- **File**: `src/ruin_repair.h`
+- **Default**: `1e-7` (cuOpt's `OBJECTIVE_EPSILON`)
+- **Meaning**: A population point is adopted only if it beats the
+  worker's own best by more than this; a repair's result is kept only if
+  it does.
+
+---
+
+### `kCutoffMarginFeastols` — the cutoff row's margin below the best
+
+- **File**: `src/ruin_repair.h`
+- **Default**: `2.0`
+- **Meaning**: The repair's objective row is `cost . x <= best - 2 *
+  feastol`. FJ counts a row satisfied within `feastol`, so one feastol
+  would let it report a point equal to the best; two make every point it
+  reports better by at least one feastol.
+
+---
+
+### `kRuinBaseDivisor`, `kRuinBaseMin`, `kRuinBaseMax`, `kRuinGrowthPeriod`, `kRuinGrowthMax` — the ruin size
+
+- **File**: `src/ruin_repair.h`
+- **Default**: `200`, `6`, `40`, `6`, `6` (cuOpt's)
+- **Meaning**: `ruin_size` = `clamp(|I| / 200, 6, 40) * (1 + min(no_improve
+  / 6, 6))`, at most `|I|`, where `I` is the non-fixed integer columns and
+  `no_improve` the worker's failed repairs in a row.
+
+---
+
+### `kRepairSecondsBase`, `kRepairSecondsPerRuined`, `kRepairSecondsMax`, `kRepairEffortPerSecond` — the repair budget
+
+- **File**: `src/ruin_repair.h`
+- **Default**: `0.15`, `0.02`, `2.0` (cuOpt's seconds), `2.0e8`
+- **Meaning**: `repair_budget` = `nnz + min(2, 0.15 + 0.02 * ruined) *
+  2e8` FJ effort units, further capped by the runner's per-attempt cap.
+  `nnz` pays for FJ building its start.
+- **Derivation of `kRepairEffortPerSecond`**: FJ alone (`threads=1`,
+  `mip_heuristic_fj_effort=1`, presolve only), `[Sequential] heur=fj
+  effort_per_ms` on eight instances of `bench/instances_small.txt` (mas76,
+  neos5, timtab1, swath3, pk1, mzzv11, n5-3, tr12-30), laptop, 2026-11-02:
+  geomean 2.0e5 per ms, range 1.25e5–2.77e5. Laptop timings are noisy;
+  the constant converts cuOpt's schedule, it does not have to be exact.
+
+---
+
+### `kWaitForSeedMs` — a caller's slot waiting for a seed
+
+- **File**: `src/ruin_repair.h`
+- **Default**: `1`
+- **Meaning**: `run_until_stopped` sleeps this long between polls while
+  neither its source nor the pool gives a feasible point, as cuOpt's
+  worker does.
+
+---
+
 ## Solution Pool and Parallel Runner
 
 ### `kPoolCapacity` — solution pool size
@@ -1359,6 +1424,19 @@ itself is driven by a tracked target runner rather than by config names.
   stale rounds usually bound a Scylla dispatch before the budget does.
 - **Suggested range**: 0.01–1.0. The record's ceiling is `1e6`; see
   "A budget that cannot bind" below.
+
+---
+
+### `mip_heuristic_ruin_effort` — ruin-and-repair LNS budget
+
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
+- **Default**: `0.0` — ships off until its A/B against the chain without it
+  is measured (#207).
+- **Meaning**: Whole-dispatch budget for the ruin-and-repair LNS, the last
+  chain entry, in FJ step units (each repair is a fresh FJ). Divided across
+  the workers like FPR's. A dispatch whose pool holds no feasible point
+  charges nothing and ends at once.
+- **Suggested range**: 0.1–3.
 
 ---
 
@@ -2070,6 +2148,18 @@ effort-gap distribution).
 - **Suggested range**: 0.12–2, plus `0` for no gate — though on Scylla
   `0` and any value below one PDLP solve are observationally the same,
   for the reason above. Values above `effort / 4` are clamped down to it.
+
+---
+
+### `mip_heuristic_ruin_patience` — ruin-and-repair patience
+
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
+- **Default**: `0.0` — no gate; the heuristic itself ships off.
+- **Meaning**: FJ step units without an incumbent improvement, as a
+  multiple of `nnz << 10`, **whole dispatch**. One attempt charges at most
+  one repair (`repair_budget`), so the gate's floor is one repair per worker.
+- **Suggested range**: 0.1–1, plus `0` for no gate. Values above
+  `effort / 4` are clamped down to it.
 
 ---
 

@@ -30,7 +30,7 @@ class SequentialSample:
     budgets, so a consumer comparing rates should say which it means.
     """
 
-    heuristic: str  # fj, fpr, local_mip, scylla, fpr_lp
+    heuristic: str  # fj, fpr, local_mip, scylla, ruin, fpr_lp
     effort: int
     wall_ms: float
     effort_per_ms: float
@@ -48,7 +48,7 @@ class HeuristicSample:
     (`found`).
     """
 
-    name: str  # fj, fpr, local_mip, scylla, fpr_lp
+    name: str  # fj, fpr, local_mip, scylla, ruin, fpr_lp
     phase: str  # presolve | dive
     start_s: float
     end_s: float
@@ -108,7 +108,7 @@ class HeurSolSample:
     not restart the count.  Units are *not* comparable across heuristics.
     """
 
-    name: str  # fj, fpr, local_mip, scylla, fpr_lp
+    name: str  # fj, fpr, local_mip, scylla, ruin, fpr_lp
     dispatch: int  # process-global; unique per dispatch, not dense per solve
     worker: int  # worker slot index; -1 for an offer made off any slot
     effort_at: int
@@ -143,6 +143,7 @@ class HeurSolSample:
 #   fpr       — whole-dispatch option, `worker_stale = nnz * per_nnz / N`.
 #               A per-worker gap is N times smaller than the option value.
 #   local_mip — same as fpr.
+#   ruin      — same as fpr.
 #   scylla    — its worker gate is armed with the *dispatch* value directly
 #               (`budget.stale`, not `worker_stale`), because its per-worker
 #               counter is charged the PDLP cost already divided by N.  So a
@@ -162,6 +163,7 @@ _GAP_SCALES_WITH_WORKERS = {
     "fpr": True,
     "local_mip": True,
     "scylla": False,
+    "ruin": True,
 }
 
 # Whether a heuristic's per-worker `effort_at` counter is in the same unit
@@ -185,6 +187,7 @@ _EFFORT_AT_IN_DISPATCH_UNITS = {
     "fpr": True,
     "local_mip": True,
     "scylla": False,
+    "ruin": True,
     "fpr_lp": True,
 }
 

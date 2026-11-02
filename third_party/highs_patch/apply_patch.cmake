@@ -162,7 +162,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 30 adds `mip_heuristic_fj_personas` (#206): a bool record,
 # default false.
-set(PATCH_VERSION "30")
+#
+# Version 31 adds `mip_heuristic_ruin_effort` and `mip_heuristic_ruin_patience`
+# (#207): double records, default 0, and `kSolutionSourceRuin` (letter `N`).
+set(PATCH_VERSION "31")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -512,11 +515,13 @@ set(_patch_options
     "mip_heuristic_fpr_effort:double:3.161:${kEffortMax}:Effort budget multiplier for the FPR presolve heuristic"
     "mip_heuristic_local_mip_effort:double:3.2865:${kEffortMax}:Effort budget multiplier for the LocalMIP presolve heuristic"
     "mip_heuristic_scylla_effort:double:0.0:${kEffortMax}:Effort budget multiplier for the Scylla presolve heuristic. The default 0 disables it, on the evidence in #107: it produced zero accepted incumbents across ~380 runs on 233 instances while dispatching on every solve, and it is absent from all 14 survivors of that issue's configuration search. Raise it to re-enable the heuristic, which needs no rebuild"
+    "mip_heuristic_ruin_effort:double:0.0:${kEffortMax}:Effort budget multiplier for the ruin-and-repair LNS presolve heuristic, last in the chain, which ruins the pool's best point and repairs it with FeasibilityJump under an objective cutoff. The default 0 disables it"
     "mip_heuristic_fpr_lp_effort:double:0.0:${kEffortMax}:Effort budget multiplier for the dive-time fpr_lp heuristic, as a share of the lesser of the remaining RENS/RINS LP-iteration headroom and heuristic_effort_budget(nnz, mip_heuristic_effort). The default 0 disables fpr_lp, which ships off because Ablation C measured it: it is dominated by RENS/RINS inside the shared envelope, costing primal integral on the instances where it engages without producing a solution. 1.0 takes the whole slice and larger values take more"
     "mip_heuristic_fj_patience:double:0.0:${kEffortMax}:Per-worker patience for the FeasibilityJump presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_fpr_patience:double:0.3372:${kEffortMax}:Patience for the FPR presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_local_mip_patience:double:3.1943:${kEffortMax}:Patience for the LocalMIP presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_scylla_patience:double:0.0:${kEffortMax}:Patience for the Scylla presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
+    "mip_heuristic_ruin_patience:double:0.0:${kEffortMax}:Patience for the ruin-and-repair LNS presolve heuristic: improvement-free effort tolerated before it gives up, as a multiple of nnz<<10, the same unit as this heuristic's effort option, clamped to a quarter of it (0 disables the gate)"
     "mip_heuristic_presolve_only:bool:false:-:Exit the solve after the presolve heuristic chain, before the root LP, keeping the incumbent it found"
     "mip_heuristic_skip_submip_chain:bool:false:-:Run no presolve heuristic in a RINS/RENS sub-MIP, which inherits every other option from its parent. The default false runs the chain there as in the top-level solve"
     "mip_heuristic_fj_restart:int:0:2:Point a rebuilt FeasibilityJump presolve worker restarts from. 0 the default (the pool's best). 1 best (the same for FJ). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
@@ -695,7 +700,7 @@ string(FIND "${MIPDATA_H}" "kSolutionSourceFprLp" _src_enum_found)
 if(_src_enum_found EQUAL -1)
     string(REPLACE
       "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceCleanup,"
-      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceFprLp,               // D (LP-dependent FPR, B&B dive)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceCleanup,"
+      "  kSolutionSourceTrivialZ,            // z\n  kSolutionSourceFPR,                 // A (fix-propagate-repair)\n  kSolutionSourceFprLp,               // D (LP-dependent FPR, B&B dive)\n  kSolutionSourceLocalMIP,            // M (local MIP search)\n  kSolutionSourceScylla,              // G (Scylla)\n  kSolutionSourceFJ,                  // J (feasibility jump)\n  kSolutionSourceRuin,                // N (ruin-and-repair LNS)\n  kSolutionSourceCleanup,"
       MIPDATA_H "${MIPDATA_H}")
 
     # Sanity check: the source-enum insert must produce exactly one occurrence
@@ -819,13 +824,13 @@ if(_src_cpp_found EQUAL -1)
     # Add source-to-string entries before kSolutionSourceCleanup
     string(REPLACE
       "} else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
-      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceFprLp) {\n    if (code) return \"D\";\n    return \"FPR LP\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
+      "} else if (solution_source == kSolutionSourceFPR) {\n    if (code) return \"A\";\n    return \"FPR\";\n  } else if (solution_source == kSolutionSourceFprLp) {\n    if (code) return \"D\";\n    return \"FPR LP\";\n  } else if (solution_source == kSolutionSourceLocalMIP) {\n    if (code) return \"M\";\n    return \"Local MIP\";\n  } else if (solution_source == kSolutionSourceScylla) {\n    if (code) return \"G\";\n    return \"Scylla\";\n  } else if (solution_source == kSolutionSourceFJ) {\n    if (code) return \"J\";\n    return \"FJ\";\n  } else if (solution_source == kSolutionSourceRuin) {\n    if (code) return \"N\";\n    return \"Ruin\";\n  } else if (solution_source == kSolutionSourceCleanup) {\n    if (code) return \" \";\n    return \"\";"
       MIPDATA_CPP "${MIPDATA_CPP}")
 
-    # Our five solution sources need one extra group in the printed legend,
+    # Our six solution sources need one extra group in the printed legend,
     # and that group is dropped again when none of them can appear.
     #
-    # The condition is `heuristics::any_enabled`, i.e. every one of the five
+    # The condition is `heuristics::any_enabled`, i.e. every one of the six
     # `mip_heuristic_<name>_effort` options at or below zero (with FJ also
     # honouring `mip_heuristic_run_feasibility_jump`).  It used to be
     # `mip_heuristic_suite == "off"`, a verbatim string compare; #167 retired
@@ -834,18 +839,18 @@ if(_src_cpp_found EQUAL -1)
     # which heuristics are live.
     #
     # Why the group is dropped at all: a legend advertising FPR / FPR LP /
-    # Local MIP / Scylla / FJ when the configuration can produce none of them
+    # Local MIP / Scylla / FJ / Ruin when the configuration can produce none of them
     # names solution sources the run cannot emit.  Dropping it keeps the
     # printed key equal to upstream's, which is in turn what lets the
     # patch-overhead comparison — every effort zeroed plus
     # `mip_heuristic_run_feasibility_jump=false`, the configuration
     # `bench/check_vanilla_equivalence.py` diffs against an unpatched binary
     # — compare whole logs rather than a filtered subset of them.  (Zeroing
-    # our five is the ablation with our heuristics disabled, not a vanilla
+    # our six is the ablation with our heuristics disabled, not a vanilla
     # baseline; see docs/REPRODUCIBILITY.md.)
     #
     # The literal {4, 9, 14, 19} is deliberate — reusing `last_enum` here
-    # would print [14, 24) and list the five custom sources in the *third*
+    # would print [14, 24) and list the six custom sources in the *third*
     # group instead.  With the literal, the printed key is byte-identical to
     # vanilla's: same four groups over indices 0..18, same trailing-semicolon
     # logic (limits.size() is 4 in both).  The enum values themselves stay

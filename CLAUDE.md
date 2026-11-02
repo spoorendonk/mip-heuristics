@@ -278,10 +278,10 @@ GPU build (`-DMIP_HEURISTICS_CUDA=ON`, requires `CUDA_HOME`, fails rather than f
 
 HiGHS v1.15.1 is fetched at build time and patched from `third_party/highs_patch/`. **Bump `PATCH_VERSION` on any change to inserted text and clean-rebuild** (`rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt`, then re-configure); older patch layouts are refused, not upgraded. Two layers:
 
-- **`mip_heuristics_core`** (STATIC): FJ, LocalMIP, FPR's search, `SolutionPool`/`SolutionSink`, the runner scaffold and the model view (`heuristic_context.h`). It needs no `HighsMipSolver`; `core_boundary` and the whole-archive standalone test enforce that. A new core file, headers included, goes in the core target's list.
+- **`mip_heuristics_core`** (STATIC): FJ, LocalMIP, ruin-and-repair, FPR's search, `SolutionPool`/`SolutionSink`, the runner scaffold and the model view (`heuristic_context.h`). It needs no `HighsMipSolver`; `core_boundary` and the whole-archive standalone test enforce that. A new core file, headers included, goes in the core target's list.
 - **`mip_heuristics`** (OBJECT, injected into `highs`): the adapter — `mode_dispatch`, `IncumbentSink`, `effort_ledger`, `highs_context.h`, FPR's dispatch, `fpr_lp`, Scylla, `ContestedPdlp`.
 
-The presolve chain is FJ → FPR → LocalMIP → Scylla (`kChain` in `src/mode_dispatch.cpp`), each on continuous parallel workers; `fpr_lp` runs at dive time inside the RENS/RINS LP-iteration envelope. A heuristic runs only if its `mip_heuristic_<name>_effort` is above zero (FJ also needs upstream's `mip_heuristic_run_feasibility_jump`).
+The presolve chain is FJ → FPR → LocalMIP → Scylla → ruin (`kChain` in `src/mode_dispatch.cpp`), each on continuous parallel workers; `fpr_lp` runs at dive time inside the RENS/RINS LP-iteration envelope. A heuristic runs only if its `mip_heuristic_<name>_effort` is above zero (FJ also needs upstream's `mip_heuristic_run_feasibility_jump`).
 
 Rules no change may break: workers read `problem.incumbent`, never `mipdata->incumbent`; `compute_var_order` and clique-table reads run on the dispatching thread only; `terminated()` is seat-holder-only while `past_deadline()` is safe on any thread; the effort ledger is charged from the dispatching thread only; headers inserted into HiGHS's own sources (`fpr_lp.h`, `mode_dispatch.h`) stay C++11.
 
@@ -289,7 +289,7 @@ Rules no change may break: workers read `problem.incumbent`, never `mipdata->inc
 
 | Doc | Covers |
 |---|---|
-| `docs/ARCHITECTURE.md` | integration model and core boundary; bumping the HiGHS tag (silently rejected option names); `fpr`, `fpr_lp`, `fj`, `local_mip`, `scylla`; dispatch and its threading rules; `contested_pdlp`; shared utilities |
+| `docs/ARCHITECTURE.md` | integration model and core boundary; bumping the HiGHS tag (silently rejected option names); `fpr`, `fpr_lp`, `fj`, `local_mip`, `scylla`, `ruin_repair`; dispatch and its threading rules; `contested_pdlp`; shared utilities |
 | `docs/RUNTIME.md` | the patch's HiGHS options and their defaults; patience; the wall-clock deadline; `[Sequential]` / `[Heur]` / `[HeurSol]`; the ~4% anchor a micro-optimization is priced against |
 | `docs/BENCHMARKING.md` | `mipfeas`, the vanilla baseline, killed runs, configs, tuning subsets, the oracle, the release archive |
 | `docs/DEVELOPMENT.md` | the long form of the CMake, testing, workflow and build rules; the GPU build |

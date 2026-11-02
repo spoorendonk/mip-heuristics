@@ -66,11 +66,13 @@ mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heu
 
 **Scylla** — PDLP-based feasibility pump: alternates approximate LP solves (PDLP) with FPR rounding, progressive objective blending, and cycling perturbation. N independent pump chains share one mutex-guarded PDLP instance; workers that lose the lock round against the most-recent stale snapshot to stay productive. Based on Mexi et al., *OR Proceedings 2023* ([doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9)); same concept as cuOpt (arXiv:2510.20499). This is a CPU/HiGHS reference implementation — no novelty claim, but it is the only publicly available CPU implementation.
 
+**ruin** — ruin-and-repair large-neighbourhood search: takes the pool's best point, resets a few integer columns (those where the newest incumbent differs from the worker's own best first), and repairs with a fresh FeasibilityJump under an objective cutoff, so anything it reports improves the incumbent. Runs last in the chain, on what the others found. After the CPU LNS worker in NVIDIA cuOpt (read for technique, no code copied). Ships off until measured (#207).
+
 Reference PDFs are in `docs/`.
 
 ## Configuration
 
-The four presolve heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla, each with its own **effort** budget and its own **patience** — the improvement-free effort it tolerates before giving up — so one can be tuned without moving the others. Both are multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so `effort = 1.0` is exactly one vanilla FJ budget and `patience < effort` reads on its face. Each heuristic parallelises the same way: continuous workers that self-terminate, with no barrier between them and no bit-identical guarantee across runs.
+The presolve heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla → ruin, each with its own **effort** budget and its own **patience** — the improvement-free effort it tolerates before giving up — so one can be tuned without moving the others. Both are multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so `effort = 1.0` is exactly one vanilla FJ budget and `patience < effort` reads on its face. Each heuristic parallelises the same way: continuous workers that self-terminate, with no barrier between them and no bit-identical guarantee across runs.
 
 | heuristic | effort option | default | patience option | default | |
 |---|---|---|---|---|---|
@@ -78,10 +80,11 @@ The four presolve heuristics always run as the fixed chain FJ → FPR → LocalM
 | `fpr` | `mip_heuristic_fpr_effort` | 3.1610 | `mip_heuristic_fpr_patience` | 0.3372 | |
 | `local_mip` | `mip_heuristic_local_mip_effort` | 3.2865 | `mip_heuristic_local_mip_patience` | 3.1943 | above its own ceiling, so the clamp `effort/4` = 0.8216 applies |
 | `scylla` | `mip_heuristic_scylla_effort` | **0.0** | `mip_heuristic_scylla_patience` | 0.0 | **disabled** |
+| `ruin` | `mip_heuristic_ruin_effort` | **0.0** | `mip_heuristic_ruin_patience` | 0.0 | **off** until measured (#207) |
 | `fpr_lp` | `mip_heuristic_fpr_lp_effort` | **0.0** | — | — | **disabled**; a share of a different envelope, see below |
 | `early_fj` | `mip_heuristic_early_fj_effort` | **0.0** | `mip_heuristic_fj_patience` | 0.0 | **off**; FJ on the original model while presolve runs, see below |
 
-**What ships is three of the five.** The defaults are `B'-mix-cheapest`, the configuration the joint search selected and held-out validation confirmed ([stage 3](#reproducing)).
+**What ships is three of the six.** The defaults are `B'-mix-cheapest`, the configuration the joint search selected and held-out validation confirmed ([stage 3](#reproducing)).
 
 **Scylla ships disabled, and that is a measurement.** It produced zero accepted incumbents across ~380 runs on 233 instances while dispatching on every solve, and it is absent from all 14 survivors of the configuration search. The implementation is maintained and tested; it is the *budget* that is zero, so raising the option re-enables the heuristic with no rebuild.
 
@@ -89,18 +92,18 @@ The four presolve heuristics always run as the fixed chain FJ → FPR → LocalM
 
 ### Selecting heuristics
 
-**A heuristic runs iff its effort option is above zero.** There is no separate selector: the effort option is both the budget and the switch, and a value at or below zero skips the heuristic entirely — no dispatch, no setup, no `[Heur]` trace line. Every subset of the five is therefore expressible as a zero-pattern:
+**A heuristic runs iff its effort option is above zero.** There is no separate selector: the effort option is both the budget and the switch, and a value at or below zero skips the heuristic entirely — no dispatch, no setup, no `[Heur]` trace line. Every subset of the six is therefore expressible as a zero-pattern:
 
 | To run | Set |
 |--------|-----|
-| the shipped default | nothing — `fj`, `fpr` and `local_mip` are on, `scylla` and `fpr_lp` ship at `0` |
+| the shipped default | nothing — `fj`, `fpr` and `local_mip` are on, `scylla`, `ruin` and `fpr_lp` ship at `0` |
 | FJ alone | `fpr`, `local_mip` efforts to `0` |
 | presolve FPR alone | `fj`, `local_mip` efforts to `0` |
 | Scylla alone | `fj`, `fpr`, `local_mip` to `0`, and `mip_heuristic_scylla_effort` above `0` |
-| `fpr_lp` alone | the four presolve efforts to `0`, and `mip_heuristic_fpr_lp_effort` above `0` |
-| nothing of ours | all five to `0` |
+| `fpr_lp` alone | the presolve efforts to `0`, and `mip_heuristic_fpr_lp_effort` above `0` |
+| nothing of ours | all six to `0` |
 
-Because `scylla` and `fpr_lp` ship at `0`, enabling either takes a positive value rather than merely leaving it alone. `bench/run_benchmark.py` wraps this as config *names* — `fj+fpr`, `all`, `off` — which zero the efforts a name does not list; see [`bench/README.md`](bench/README.md).
+Because `scylla`, `ruin` and `fpr_lp` ship at `0`, enabling one takes a positive value rather than merely leaving it alone. `bench/run_benchmark.py` wraps this as config *names* — `fj+fpr`, `all`, `off` — which zero the efforts a name does not list; see [`bench/README.md`](bench/README.md). `ruin` has no config name yet: pass `--extra-options mip_heuristic_ruin_effort=<value>`.
 
 `mip_heuristic_run_feasibility_jump` is upstream's own switch and keeps its meaning: `false` disables FeasibilityJump entirely, the same thing `mip_heuristic_fj_effort = 0` does. The one configuration that contradicts itself — a positive `mip_heuristic_fj_effort` with `mip_heuristic_run_feasibility_jump = false` and nothing else enabled — warns, because it asks for FJ and then takes it away, leaving a run with no heuristic at all while being spelled like an "FJ isolated" row. `bench/run_benchmark.py` greps for that warning and discards the run rather than filing it under a configuration it did not honour.
 

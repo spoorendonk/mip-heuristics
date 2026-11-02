@@ -11,6 +11,7 @@
 #include "local_mip.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "ruin_repair.h"
 #include "scylla.h"
 
 #include <algorithm>
@@ -53,7 +54,7 @@ namespace {
 // measurements (#106).
 
 // One heuristic's entry in the fixed FJ -> FPR -> LocalMIP -> Scylla
-// chain.  `run_sequential` is a filtered loop over the table below; the
+// -> ruin chain.  `run_sequential` is a filtered loop over the table below; the
 // four near-identical `if (enabled && !deadline) { ... }` blocks it
 // replaced were the last place a fifth heuristic would have had to be
 // wired in by hand.
@@ -99,7 +100,7 @@ struct HeuristicConfig {
     double HighsOptionsStruct::* patience;
     // `mip_heuristic_<name>_restart`, a `RestartPoint`, for the two
     // heuristics whose workers the runner rebuilds from a point (#200); null
-    // for FPR and Scylla.  `restart_weights` is LocalMIP's alone.
+    // for FPR, Scylla and ruin.  `restart_weights` is LocalMIP's alone.
     HighsInt HighsOptionsStruct::* restart;
     bool HighsOptionsStruct::* restart_weights;
     // `mip_heuristic_fj_personas` (#206), FJ's alone; null for the rest.
@@ -134,6 +135,10 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
      false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, nullptr,
      &scylla::run},
+    // Last, so its population is everything the four before it found (#207).
+    {"ruin", kSolutionSourceRuin, &HighsOptionsStruct::mip_heuristic_ruin_effort, nullptr, false,
+     &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr,
+     &without_solver<&ruin_repair::run>},
 });
 
 // Whether `h` runs at all under `options` (#167).
@@ -148,8 +153,8 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
 // the suite value added on top was the ability to say the same thing twice,
 // and a string HiGHS does not validate, so a typo inside it ran a
 // configuration nobody asked for.  What it is *not* is a loss of
-// expressiveness: every subset of the five is still selectable, as the
-// zero-pattern of five continuous options, which is the form #107's search
+// expressiveness: every subset of them is still selectable, as the
+// zero-pattern of their continuous options, which is the form #107's search
 // already used.
 //
 // `enable_switch`, when the entry names one, is ANDed on top: upstream's
@@ -319,7 +324,7 @@ bool run_sequential(HighsMipSolver& mipsolver) {
 }  // namespace
 
 bool any_enabled(const HighsOptions& options) {
-    // The four presolve entries, then the one heuristic that is not a chain
+    // The presolve entries, then the one heuristic that is not a chain
     // entry.  `fpr_lp` runs during the B&B dive and reads its own option in
     // `fpr_lp::run`; it is included here because this predicate answers
     // "can a solution of ours appear in this log", and an `FPR LP` display
@@ -361,7 +366,7 @@ bool run_presolve(HighsMipSolver& mipsolver) {
     // upstream's `mip_heuristic_run_feasibility_jump`, with nothing else
     // enabled to take its place.  That run is heuristic-free while being
     // spelled like an "FJ isolated" row, which is the one contradiction the
-    // five effort options can express — every other way of running nothing
+    // six effort options can express — every other way of running nothing
     // is spelled as running nothing.
     if (options.mip_heuristic_fj_effort > 0.0 && !options.mip_heuristic_run_feasibility_jump &&
         !any_enabled(options)) {

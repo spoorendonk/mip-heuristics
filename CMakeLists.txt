@@ -144,6 +144,8 @@ add_library(mip_heuristics_core STATIC
     src/repair_walk.cpp
     src/repair_walk.h
     src/rng.h
+    src/ruin_repair.cpp
+    src/ruin_repair.h
     src/solution_pool.cpp
     src/solution_pool.h
     src/solution_sink.cpp
@@ -397,7 +399,7 @@ catch_discover_tests(mip_heuristics_tests
 # one a caller of the core would have.  No `[serial]` case: nothing here
 # reads a clock.
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
-    tests/test_paths.cpp)
+    tests/test_paths.cpp tests/test_ruin_repair.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})

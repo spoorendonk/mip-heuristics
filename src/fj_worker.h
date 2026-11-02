@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -30,15 +31,29 @@ public:
     // `mipdata->incumbent` is what issue #98 was about, and a reference to
     // a caller local would dangle.
     // `problem` must outlive the worker.
+    //
+    // `objective_cutoff`, when finite, adds one row to FJ's model,
+    // `col_cost . x <= objective_cutoff - offset`, so FJ counts a point
+    // feasible only if its objective (offset included) is at most the
+    // cutoff, up to FJ's absolute violation tolerance `feastol`.  The ruin
+    // and repair LNS (#207) repairs under its incumbent's objective this
+    // way.  No row when every cost is zero: no point could improve.
     FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
              size_t total_budget, size_t stale_budget, uint32_t seed, std::vector<double> start,
-             WorkerTrace trace);
+             WorkerTrace trace, double objective_cutoff = std::numeric_limits<double>::infinity());
     ~FjWorker();
 
     // Run FJ for up to attempt_budget effort, then pause via callback.
     AttemptResult run_attempt(size_t attempt_budget);
 
     [[nodiscard]] bool finished() const { return base_.finished; }
+
+    // The best feasible point this worker's FJ reported over its lifetime
+    // and its objective (offset included), or empty and +infinity.  FJ
+    // reports a point only when it beats its own previous one, so this is
+    // the last one reported.
+    [[nodiscard]] const std::vector<double>& best_found() const { return best_found_; }
+    [[nodiscard]] double best_found_objective() const { return best_found_objective_; }
 
     // Monotone charged effort for the `[HeurSol]` trace (#106): this
     // worker's own counter plus what the slot's retired occupants spent.
@@ -59,6 +74,9 @@ private:
     SolutionSink& sink_;
     const std::vector<double> start_;
     const uint32_t seed_;
+    const double objective_cutoff_;
+    std::vector<double> best_found_;
+    double best_found_objective_ = std::numeric_limits<double>::infinity();
 
     // Effort / finished bookkeeping.  Both budgets come from the caller:
     // FJ's patience has always been an absolute `nnz << 8` rather than a

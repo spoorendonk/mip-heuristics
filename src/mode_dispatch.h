@@ -6,7 +6,7 @@ class HighsOptions;
 namespace heuristics {
 
 // The `[Heur] name=` tag the dive-time `fpr_lp` books its dispatch under.
-// One spelling, for the reason the four presolve heuristics take theirs
+// One spelling, for the reason the presolve heuristics take theirs
 // from `kChain`'s own `name` field: the name a user reads in the trace has
 // exactly one definition.  `fpr_lp` cannot take it from that table because
 // it is not a chain entry — it runs during the B&B dive, not in presolve —
@@ -23,12 +23,12 @@ namespace heuristics {
 constexpr const char* kFprLpName = "fpr_lp";
 
 // Whether any heuristic of ours can produce a solution under `options` —
-// that is, whether any of the five `mip_heuristic_<name>_effort` options is
+// that is, whether any of the six `mip_heuristic_<name>_effort` options is
 // above zero, with FJ additionally honouring upstream's own
 // `mip_heuristic_run_feasibility_jump`.
 //
 // It exists for one caller outside this translation unit: the patched
-// `printSolutionSourceKey` drops the group advertising our five solution
+// `printSolutionSourceKey` drops the group advertising our six solution
 // sources when none of them can appear, which is what keeps the printed
 // legend byte-identical to an unpatched binary's and so lets
 // `bench/check_vanilla_equivalence.py` diff whole logs rather than a
@@ -40,7 +40,7 @@ constexpr const char* kFprLpName = "fpr_lp";
 bool any_enabled(const HighsOptions& options);
 
 // Top-level presolve heuristic dispatch. Reads mip_heuristic_* options
-// and runs the fixed FJ -> FPR -> LocalMIP -> Scylla chain, each on
+// and runs the fixed FJ -> FPR -> LocalMIP -> Scylla -> ruin chain, each on
 // continuous parallel workers.  Returns true if the model was proven
 // infeasible.
 //

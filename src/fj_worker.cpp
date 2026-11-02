@@ -28,12 +28,13 @@ struct FjWorker::Impl {
 
 FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
-                   std::vector<double> start, WorkerTrace trace)
+                   std::vector<double> start, WorkerTrace trace, double objective_cutoff)
     : problem_(problem),
       exec_(exec),
       sink_(sink),
       start_(std::move(start)),
       seed_(seed),
+      objective_cutoff_(objective_cutoff),
       trace_(trace) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
@@ -138,6 +139,22 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 }
             }
         }
+
+        if (std::isfinite(objective_cutoff_)) {
+            std::vector<HighsInt> cost_index;
+            std::vector<double> cost_value;
+            for (HighsInt col = 0; col < model->num_col_; ++col) {
+                if (col_cost[col] != 0.0) {
+                    cost_index.push_back(col);
+                    cost_value.push_back(col_cost[col]);
+                }
+            }
+            if (!cost_index.empty()) {
+                impl_->solver.addConstraint(RowType::Lte, objective_cutoff_ - problem_.offset,
+                                            static_cast<int>(cost_index.size()), cost_index.data(),
+                                            cost_value.data(), 0);
+            }
+        }
     }
 
     if (!impl_) {
@@ -150,7 +167,6 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     size_t attempt_effort_consumed = 0;
     bool improved_incumbent = false;
     bool stalled = false;
-    std::vector<double> best_sol;
 
     auto callback = [&](FJStatus status) -> CallbackControlFlow {
         attempt_effort_consumed = status.totalEffort - base_.total_effort;
@@ -179,9 +195,10 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         // cumulative charge, which is exactly what the trailing offer used
         // to reconstruct as `base_.total_effort + attempt_effort_consumed`.
         if (status.solution != nullptr) {
-            best_sol.assign(status.solution, status.solution + status.numVars);
+            best_found_.assign(status.solution, status.solution + status.numVars);
             const double obj = problem_.offset + status.solutionObjectiveValue;
-            if (sink_.offer(obj, best_sol, trace_, trace_.at(status.totalEffort))
+            best_found_objective_ = obj;
+            if (sink_.offer(obj, best_found_, trace_, trace_.at(status.totalEffort))
                     .improved_incumbent) {
                 improved_incumbent = true;
             }

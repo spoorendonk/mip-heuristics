@@ -1400,6 +1400,7 @@ CUSTOM_SOURCE_LABELS: dict[str, str] = {
     "M": "LocalMIP",
     "G": "Scylla",
     "J": "FJ",
+    "N": "Ruin",
 }
 
 # Order used when printing attribution rows (custom heuristics first, then the
@@ -1410,6 +1411,7 @@ ATTRIBUTION_ORDER: list[str] = [
     "LocalMIP",
     "Scylla",
     "FJ",
+    "Ruin",
     "HiGHS/other",
 ]
 
