@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace {
@@ -13,7 +14,10 @@ namespace {
 std::optional<HighsInt> count_side(double side, double coefficient) {
     const double count = side / coefficient;
     const double rounded = std::round(count);
-    if (std::abs(count - rounded) > kCountTol) {
+    // Out of HighsInt's range, the cast below is undefined; such a count
+    // exceeds every row's width anyway.
+    if (std::abs(count - rounded) > kCountTol ||
+        std::abs(rounded) > static_cast<double>(std::numeric_limits<HighsInt>::max())) {
         return std::nullopt;
     }
     return static_cast<HighsInt>(rounded);

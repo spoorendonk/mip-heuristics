@@ -16,7 +16,9 @@ struct ExactKRow;
 // `apply_lane_diversification`): a slot's first worker starts from a point
 // built for the structure the model has, instead of only from another
 // seed.  Starts only — the moves are upstream FJ's.  Rebuilt workers
-// restart from the pool as before.
+// restart from the pool as before.  Building a start is not charged to FJ's
+// effort and polls no deadline: it is a few passes over the rows, capped by
+// `kPersonaNnzLimit`.
 enum class FjPersona : uint8_t {
     // The plain start: the resolved point, else each column's bound.
     kSeeded,
