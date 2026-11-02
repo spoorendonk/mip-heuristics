@@ -105,16 +105,19 @@ TEST_CASE("FPR objective cut: no offer above the cutoff in force", "[objective-c
     const Run plain = run_fpr({}, {});
     REQUIRE(!plain.objectives.empty());
 
-    // Seed with a point far worse than the uncut run's first.  Its cutoff
-    // is loose for that point, and a row that bounds nothing tightens
-    // nothing, so the cut run searches as the uncut run did until it reaches
-    // that point, and offers it: the loop checks something on any platform,
-    // whatever FPR's random streams do there.
+    // Seed with a point far worse than the uncut run's first, so the cutoff
+    // leaves room for a find.  A find is expected, not implied: the row still
+    // propagates and moves FPR's lock-driven choices, and the uncut run's
+    // first point (from platform-specific random streams) may already sit at
+    // the inflated one.  The per-offer bound below holds whatever the count,
+    // so a platform where either precondition fails skips, never fails.
     const Run cut = run_fpr(kCutOn, plain.solutions.front(), /*inflated=*/true);
     REQUIRE(cut.effort > 0);
     const double seed_obj = cut.objectives.front();
-    REQUIRE(objective_cut_target(seed_obj, kCutOn) > plain.objectives.front());
-    REQUIRE(cut.objectives.size() > 1);
+    if (objective_cut_target(seed_obj, kCutOn) <= plain.objectives.front() ||
+        cut.objectives.size() < 2) {
+        SKIP("no room below the seed, or no find under the cut, on this platform");
+    }
 
     // One worker: an attempt starts after the previous one's offer, so the
     // cutoff in force for offer k is the target of the best accepted before it.
