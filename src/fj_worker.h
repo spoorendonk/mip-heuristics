@@ -39,8 +39,9 @@ public:
     // way.  No row when every cost is zero: no point could improve.
     //
     // `objective_cut`, when on, is the objective cut of #208 (#222): the
-    // worker polls `sink.best_objective()` before each attempt, at FJ's
-    // callback cadence and after each of its own offers, and tightens the
+    // worker polls `sink.best_objective()` before each attempt and at every
+    // FJ callback that lets the solve continue (its own offers' included;
+    // one that ends the attempt leaves it to the next), and tightens the
     // same row to `objective_cut_target` of it in place — no rebuild, every
     // FJ weight kept (`FeasibilityJumpSolver::setObjectiveCut`, patched
     // in).  The row is added at the first finite cutoff, so a worker with
