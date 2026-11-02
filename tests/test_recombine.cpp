@@ -224,3 +224,85 @@ TEST_CASE("recombine: past the limit the rest differ only where left free, and t
     check(a, obj_a, b, obj_b);
     check(b, obj_b, a, obj_a);
 }
+
+TEST_CASE("recombine: the bandit pulls every arm once, in order, first", "[recombine]") {
+    using recombine::RecombinerArm;
+    recombine::RecombinerBandit bandit(7);
+    // An arm counts as pulled once rewarded, as in cuOpt.
+    CHECK(bandit.select() == RecombinerArm::kBoundProp);
+    CHECK(bandit.select() == RecombinerArm::kBoundProp);
+    bandit.reward(RecombinerArm::kBoundProp, 0.0);
+    CHECK(bandit.select() == RecombinerArm::kGuidedCrossover);
+    bandit.reward(RecombinerArm::kGuidedCrossover, 0.0);
+    CHECK(bandit.select() == RecombinerArm::kNeighborhoodCrossover);
+    bandit.reward(RecombinerArm::kNeighborhoodCrossover, 0.0);
+    for (const auto arm : {RecombinerArm::kBoundProp, RecombinerArm::kGuidedCrossover,
+                           RecombinerArm::kNeighborhoodCrossover}) {
+        CHECK(bandit.pulls(arm) == 1);
+    }
+}
+
+TEST_CASE("recombine: with equal pulls, UCB picks the arm of larger q", "[recombine]") {
+    using recombine::RecombinerArm;
+    for (const auto winner : {RecombinerArm::kBoundProp, RecombinerArm::kGuidedCrossover,
+                              RecombinerArm::kNeighborhoodCrossover}) {
+        recombine::RecombinerBandit bandit(11);
+        for (int i = 0; i < 3; ++i) {
+            const RecombinerArm arm = bandit.select();
+            bandit.reward(arm, arm == winner ? recombine::kRewardBeatsBest : 0.0);
+        }
+        CHECK(bandit.q(winner) == 0.5 + (recombine::kBanditAlpha * (8.0 - 0.5)));
+        CHECK(bandit.select() == winner);
+    }
+}
+
+TEST_CASE("recombine: UCB breaks ties at random, the same way from the same seed", "[recombine]") {
+    using recombine::RecombinerArm;
+    // Every reward equals the initial q, so all arms stay tied at equal
+    // pulls: each round of three selections is a tie-break.
+    auto sequence = [](uint64_t seed) {
+        recombine::RecombinerBandit bandit(seed);
+        std::vector<RecombinerArm> arms;
+        for (int i = 0; i < 60; ++i) {
+            const RecombinerArm arm = bandit.select();
+            arms.push_back(arm);
+            bandit.reward(arm, recombine::kBanditInitialQ);
+        }
+        return arms;
+    };
+    const std::vector<RecombinerArm> first = sequence(3);
+    CHECK(first == sequence(3));
+    // After the initial pulls, every arm is drawn by the tie-break, not
+    // just the first.
+    std::vector<size_t> drawn(recombine::kNumRecombinerArms, 0);
+    for (size_t i = recombine::kNumRecombinerArms; i < first.size(); ++i) {
+        ++drawn[static_cast<size_t>(first[i])];
+    }
+    for (const size_t count : drawn) {
+        CHECK(count > 0);
+    }
+}
+
+TEST_CASE("recombine: the reward is cuOpt's, normalised by effort", "[recombine]") {
+    using recombine::recombination_reward;
+    // Beats the best known by more than the margin: 8, whatever the work.
+    CHECK(recombination_reward(110.0, 100.0, 99.0, 0) == 8.0);
+    CHECK(recombination_reward(110.0, 100.0, 99.0, 4'000'000'000) == 8.0);
+    // Within the margin (1e-4 * 100 = 0.01) of the best is not better.
+    CHECK(recombination_reward(110.0, 100.0, 99.995, 0) == 4.0);
+    // Beats the better parent, within 20% of the best: 4 - effort / 4e8.
+    CHECK(recombination_reward(110.0, 100.0, 105.0, 0) == 4.0);
+    CHECK(recombination_reward(110.0, 100.0, 105.0, 400'000'000) == 3.0);
+    // Floored at 0.1.
+    CHECK(recombination_reward(110.0, 100.0, 105.0, 4'000'000'000) == 0.1);
+    // Beats the better parent, but 20% or more from the best: 0.
+    CHECK(recombination_reward(200.0, 100.0, 150.0, 0) == 0.0);
+    // Does not beat the better parent: 0.
+    CHECK(recombination_reward(105.0, 100.0, 105.0, 0) == 0.0);
+    CHECK(recombination_reward(105.0, 100.0, 120.0, 0) == 0.0);
+    // A failed recombination: 0.
+    CHECK(recombination_reward(105.0, 100.0, kHighsInf, 0) == 0.0);
+    // Near zero, the margin is the absolute 1e-6.
+    CHECK(recombination_reward(1.0, 0.0, -2e-6, 0) == 8.0);
+    CHECK(recombination_reward(1.0, 0.0, -0.5e-6, 0) == 4.0);
+}

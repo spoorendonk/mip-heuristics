@@ -4,7 +4,9 @@
 #include "prop_engine.h"
 #include "rng.h"
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -123,6 +125,77 @@ private:
     std::optional<PropEngine> fixer_;
     FprScratch scratch_;
     size_t max_vars_from_other_ = kBpInitialVarsFromOther;
+};
+
+// The recombiners a `RecombinerBandit` chooses among: the bound-prop
+// recombiner above and the pool's two crossovers.  cuOpt's sub-MIP arm has
+// no counterpart in the core (HiGHS's RENS/RINS live outside it).
+enum class RecombinerArm : uint8_t { kBoundProp, kGuidedCrossover, kNeighborhoodCrossover };
+inline constexpr size_t kNumRecombinerArms = 3;
+
+// cuOpt's `mab_t` with UCB (`diversity/multi_armed_bandit.cu`): the step
+// size of the recency-weighted average, an arm's initial estimate, and the
+// tolerance within which two UCB values tie.
+inline constexpr double kBanditAlpha = 0.05;
+inline constexpr double kBanditInitialQ = 0.5;
+inline constexpr double kBanditTieTolerance = 1e-9;
+
+// cuOpt's recombiner reward (`mab_t::add_mab_reward`): `kRewardBeatsBest`
+// for an offspring better than the best known; for one better than the
+// better parent and within `kRewardNearBest` of the best (relative,
+// `|off - best| / (|best| + 1)`), the work-normalised
+// `max(kRewardWorkFloor, kRewardWorkCeiling - effort / kRewardNominalEffort)`.
+// "Better" is by more than `max(kRewardMarginAbs, kRewardMarginRel * |best|)`.
+// cuOpt normalises by wall clock, `4 - ms / 2000` ("normal recombiners take
+// 2000 ms"); here by effort, 2 s at FJ's laptop rate
+// (`ruin_repair::kRepairEffortPerSecond`), since FJ's repair dominates the
+// operator's work and a clock would break the same-seed replay (a
+// deviation).
+inline constexpr double kRewardBeatsBest = 8.0;
+inline constexpr double kRewardNearBest = 0.2;
+inline constexpr double kRewardWorkCeiling = 4.0;
+inline constexpr double kRewardWorkFloor = 0.1;
+inline constexpr double kRewardNominalEffort = 4.0e8;
+inline constexpr double kRewardMarginAbs = 1e-6;
+inline constexpr double kRewardMarginRel = 1e-4;
+
+// The reward for an offspring of objective `offspring` (minimisation form;
+// `kHighsInf` for none, or an infeasible one), whose better parent has
+// `best_of_parents`, against the best known `best`, after `effort` spent.
+// A failed recombination is a 0 reward: pass `kHighsInf`.
+[[nodiscard]] double recombination_reward(double best_of_parents, double best, double offspring,
+                                          size_t effort);
+
+// UCB with exponential recency weighting over the recombiners, as cuOpt's
+// `mab_t`: every arm is pulled once first, in index order; then the arm of
+// largest `q + sqrt(2 ln t / n)`, where `t` counts `select` calls and `n`
+// counts `reward` calls on the arm, ties broken at random.  Each reward
+// moves `q` by `kBanditAlpha (r - q)`.
+//
+// One per worker, no lock: cuOpt's single bandit lives on one host loop,
+// while the operator runs on parallel workers here, where a shared bandit's
+// arm sequence would depend on thread interleaving and a worker would no
+// longer replay from its seed (#234).
+class RecombinerBandit {
+public:
+    explicit RecombinerBandit(uint64_t seed) : rng_(seed) {}
+
+    [[nodiscard]] RecombinerArm select();
+    void reward(RecombinerArm arm, double r);
+
+    [[nodiscard]] size_t pulls(RecombinerArm arm) const { return arms_[index(arm)].pulls; }
+    [[nodiscard]] double q(RecombinerArm arm) const { return arms_[index(arm)].q; }
+
+private:
+    struct Arm {
+        size_t pulls = 0;
+        double q = kBanditInitialQ;
+    };
+    static size_t index(RecombinerArm arm) { return static_cast<size_t>(arm); }
+
+    std::array<Arm, kNumRecombinerArms> arms_{};
+    size_t steps_ = 0;
+    Rng rng_;
 };
 
 }  // namespace recombine

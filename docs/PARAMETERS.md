@@ -1202,6 +1202,34 @@ they differ free for FPR to complete.
   0.99), 20)` (`next_max_vars_from_other`). One limit per recombiner,
   so per worker.
 
+### `kBanditAlpha`, `kBanditInitialQ`, `kBanditTieTolerance` — the recombiner bandit
+
+- **File**: `src/recombine.h`
+- **Default**: `0.05`, `0.5`, `1e-9` (cuOpt's `mab_t`)
+- **Meaning**: `RecombinerBandit` chooses among the bound-prop recombiner
+  and the pool's two crossovers by UCB with exponential recency
+  weighting: each arm is pulled once first, in index order, then the arm
+  of largest `q + sqrt(2 ln t / n)` is chosen, arms within `1e-9` of the
+  largest tying and the tie broken at random. Every arm's `q` starts at
+  `0.5` and each reward `r` moves it by `0.05 (r - q)`. One bandit per
+  worker, so a worker's arm sequence replays from its seed.
+
+### `kRewardBeatsBest`, `kRewardNearBest`, `kRewardWorkCeiling`, `kRewardWorkFloor`, `kRewardNominalEffort`, `kRewardMarginAbs`, `kRewardMarginRel` — the recombiner reward
+
+- **File**: `src/recombine.h`
+- **Default**: `8`, `0.2`, `4`, `0.1`, `4e8`, `1e-6`, `1e-4`
+- **Meaning**: cuOpt's recombiner reward (`recombination_reward`). An
+  offspring better than the best known by more than `max(1e-6, 1e-4
+  |best|)` earns 8. One better than the better parent by that margin and
+  within 20% of the best (`|off - best| / (|best| + 1) < 0.2`) earns
+  `max(0.1, 4 - effort / 4e8)`; anything else, a failed recombination
+  included, earns 0.
+- **Deviation**: cuOpt normalises by wall clock, `max(0.1, 4 - ms /
+  2000)` ("normal recombiners take 2000 ms"). Here it is by effort:
+  `4e8` is 2 s at FJ's laptop rate (`kRepairEffortPerSecond`), since FJ's
+  repair dominates the operator's work, and a clock would break the
+  same-seed replay.
+
 ---
 
 ## Solution Pool and Parallel Runner

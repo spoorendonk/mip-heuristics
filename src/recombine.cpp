@@ -1,6 +1,7 @@
 #include "recombine.h"
 
 #include "heuristic_common.h"
+#include "ruin_repair.h"
 
 #include <algorithm>
 #include <cmath>
@@ -168,6 +169,62 @@ Offspring BoundPropRecombiner::recombine(const std::vector<double>& a, double ob
     offspring.success =
         (offspring.feasible && offspring.objective < std::min(obj_a, obj_b)) || !same;
     return offspring;
+}
+
+// Two seconds of FJ, the unit `kRewardNominalEffort` stands for.
+static_assert(kRewardNominalEffort == 2.0 * ruin_repair::kRepairEffortPerSecond);
+
+double recombination_reward(double best_of_parents, double best, double offspring, size_t effort) {
+    const double margin = std::max(kRewardMarginAbs, kRewardMarginRel * std::abs(best));
+    if (offspring + margin < best) {
+        return kRewardBeatsBest;
+    }
+    if (!(offspring + margin < best_of_parents)) {
+        return 0.0;
+    }
+    // cuOpt multiplies the work-normalised value by a factor of 1 near the
+    // best and 0 elsewhere.
+    if (!(std::abs(offspring - best) / (std::abs(best) + 1.0) < kRewardNearBest)) {
+        return 0.0;
+    }
+    return std::max(kRewardWorkFloor,
+                    kRewardWorkCeiling - (static_cast<double>(effort) / kRewardNominalEffort));
+}
+
+RecombinerArm RecombinerBandit::select() {
+    ++steps_;
+    for (size_t i = 0; i < kNumRecombinerArms; ++i) {
+        if (arms_[i].pulls == 0) {
+            return static_cast<RecombinerArm>(i);
+        }
+    }
+    const double log_t = std::log(static_cast<double>(steps_));
+    double max_ucb = -kHighsInf;
+    std::array<size_t, kNumRecombinerArms> best{};
+    size_t num_best = 0;
+    for (size_t i = 0; i < kNumRecombinerArms; ++i) {
+        const double ucb =
+            arms_[i].q + std::sqrt(2.0 * log_t / static_cast<double>(arms_[i].pulls));
+        if (ucb > max_ucb + kBanditTieTolerance) {
+            max_ucb = ucb;
+            num_best = 0;
+            best[num_best++] = i;
+        } else if (std::abs(ucb - max_ucb) < kBanditTieTolerance) {
+            best[num_best++] = i;
+        }
+    }
+    // A multiply-shift draw on the bandit's own stream, not
+    // `std::uniform_int_distribution`, whose stream differs across standard
+    // libraries.
+    const auto pick =
+        static_cast<size_t>((static_cast<unsigned __int128>(rng_()) * num_best) >> 64U);
+    return static_cast<RecombinerArm>(best[pick]);
+}
+
+void RecombinerBandit::reward(RecombinerArm arm, double r) {
+    Arm& a = arms_[index(arm)];
+    ++a.pulls;
+    a.q += kBanditAlpha * (r - a.q);
 }
 
 }  // namespace recombine
