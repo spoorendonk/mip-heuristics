@@ -143,7 +143,8 @@ inline void run_both(const Setup& s, Found& found) {
     run_until_found(fj, found.fj);
     local_mip_detail::LocalMipWorker local_mip(s.problem, s.exec, found.local_mip, kBudget, kBudget,
                                                /*seed=*/0,
-                                               /*initial_solution=*/nullptr, WorkerTrace{0, 0});
+                                               /*initial_solution=*/nullptr, WorkerTrace{0, 0},
+                                               /*stall_on_violations=*/false, ObjectiveCutParams{});
     run_until_found(local_mip, found.local_mip);
 }
 

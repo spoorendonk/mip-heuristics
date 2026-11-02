@@ -44,11 +44,13 @@ public:
     // `HeuristicBudget::local_mip_stall_ends_run`: the patience counter
     // also restarts on a 10% cut in violated rows (#203).  `objective_cut`
     // is #208's cut (#223): when on, the search targets the pool's cutoff
-    // (`refresh_objective_cut`), not only this worker's own best.
+    // (`refresh_objective_cut`), not only this worker's own best.  Neither
+    // has a default, so a construction site cannot drop the budget's value
+    // unnoticed: the dispatch's rebuild path is the one the cut is for.
     LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
-                   const double* initial_solution, WorkerTrace trace,
-                   bool stall_on_violations = false, ObjectiveCutParams objective_cut = {});
+                   const double* initial_solution, WorkerTrace trace, bool stall_on_violations,
+                   ObjectiveCutParams objective_cut);
 
     AttemptResult run_attempt(size_t attempt_budget);
 
