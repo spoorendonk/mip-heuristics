@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -318,6 +319,39 @@ std::expected<ProblemView, ProblemError> make_problem(const HighsLp& model, Prob
 // the same point (`hybrid_restart`).  See `rebuild_restart_point`.
 enum class RestartPoint : uint8_t { kDefault, kBest, kHybrid };
 
+// The objective cut (#208, after cuOpt's `save_solution_and_add_cutting_plane`):
+// once the shared pool holds a solution of objective `best`, a heuristic
+// that honours the cut searches under `objective <= objective_cut_target`,
+// so a feasibility heuristic keeps going as an improvement heuristic.  Each
+// heuristic integrates the row its own way (#222-#225); this is the part
+// they share.  Off by default (`mip_heuristic_objective_cut`), and off for
+// a model without an objective whatever the option says (`has_objective`).
+struct ObjectiveCutParams {
+    bool on = false;
+    // The step below `best`: `max(rel * |best|, abs)`.  cuOpt's are 1e-3
+    // and its `OBJECTIVE_EPSILON`, 1e-7, which the options default to.
+    double rel = 0.0;
+    double abs = 0.0;
+};
+
+// The cutoff for an incumbent of objective `best`, in the view's
+// minimisation form (offset included, like every pool objective): a point
+// must reach this objective or lower to honour the cut.  Tightens with
+// every improvement because it is recomputed from the pool's best rather
+// than stored.
+[[nodiscard]] inline double objective_cut_target(double best, const ObjectiveCutParams& params) {
+    return best - std::max(params.rel * std::abs(best), params.abs);
+}
+
+// Some column has a cost above the matrix's `epsilon` in magnitude.  Without
+// one every feasible point has the same objective and a cut could only make
+// the model infeasible, so the cut stays off.  O(ncol); called once per
+// dispatch on the dispatching thread.
+[[nodiscard]] inline bool has_objective(const ProblemView& problem) {
+    return std::ranges::any_of(*problem.col_cost,
+                               [&](double c) { return std::abs(c) > problem.epsilon; });
+}
+
 // One heuristic's slice of the presolve effort envelope.  `total` used to
 // travel separately as a bare `max_effort` parameter while the other three
 // were fields of `ParallelSetup`; they are one thing and now travel as one.
@@ -379,6 +413,10 @@ struct HeuristicBudget {
     // structural personas the model supports (`assign_personas`) instead of
     // only another seed.
     bool fj_personas = false;
+
+    // The objective cut (#208): `on` only with the option set and
+    // `has_objective` true.  Every heuristic gets the same params.
+    ObjectiveCutParams objective_cut;
 
     // This heuristic was handed nothing, and must therefore do nothing
     // (issue #106).

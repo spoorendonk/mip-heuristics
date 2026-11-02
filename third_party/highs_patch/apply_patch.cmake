@@ -165,7 +165,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 31 adds `mip_heuristic_ruin_effort` and `mip_heuristic_ruin_patience`
 # (#207): double records, default 0, and `kSolutionSourceRuin` (letter `N`).
-set(PATCH_VERSION "31")
+#
+# Version 32 adds the objective cut options (#208): one bool record,
+# `mip_heuristic_objective_cut` (default false), and two doubles,
+# `mip_heuristic_objective_cut_rel` (1e-3) and `_abs` (1e-7).
+set(PATCH_VERSION "32")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -528,6 +532,9 @@ set(_patch_options
     "mip_heuristic_local_mip_restart:int:0:2:Point a rebuilt LocalMIP presolve worker restarts from. 0 the default (a pool draw, perturbed). 1 best (the pool's best, unperturbed). 2 hybrid (Local-MIP v2's hybrid restart, each column the best's value or a random one within its bounds, 50/50)"
     "mip_heuristic_local_mip_restart_weights:bool:false:-:Start a rebuilt LocalMIP presolve worker's weights, with probability one half, at draws from {1, 2} instead of 1 (CP-SAT's restart weight draw)"
     "mip_heuristic_fj_personas:bool:false:-:Start FeasibilityJump presolve workers after the first from structural personas the model supports (cuOpt's greedy covering start, and its exact-k start followed by the covering start) instead of only from another seed"
+    "mip_heuristic_objective_cut:bool:false:-:Once the presolve heuristics hold a solution, have them search under the objective cut objective <= best - max(rel*|best|, abs), tightened with every improvement, so they keep improving rather than stop at feasible (cuOpt's objective cutting plane). Ignored for a model without an objective"
+    "mip_heuristic_objective_cut_rel:double:1e-3:1.0:Relative step of the presolve heuristics' objective cut below the best objective (see mip_heuristic_objective_cut)"
+    "mip_heuristic_objective_cut_abs:double:1e-7:1e20:Absolute step of the presolve heuristics' objective cut below the best objective, the floor under the relative one (see mip_heuristic_objective_cut)"
     "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it")
 
 # The upstream record block all four record insertions anchor on, spelled

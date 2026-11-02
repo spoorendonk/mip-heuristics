@@ -261,6 +261,14 @@ bool run_sequential(HighsMipSolver& mipsolver) {
     // exhausted.  `exec.terminated()` is safe to call from this sequential
     // outer loop — the previous heuristic's parallel region has already
     // joined, so there is no concurrent access.
+    //
+    // The objective cut (#208) is one setting for the whole chain, and off
+    // for a model without an objective whatever the option says.
+    const ObjectiveCutParams objective_cut{
+        .on = options.mip_heuristic_objective_cut && has_objective(problem),
+        .rel = options.mip_heuristic_objective_cut_rel,
+        .abs = options.mip_heuristic_objective_cut_abs,
+    };
     for (const HeuristicConfig& h : kChain) {
         // A skipped heuristic emits no `[Sequential]` / `[Heur]` line at
         // all, which is what "skipped" has always meant here — the line is
@@ -312,6 +320,7 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         if (h.personas != nullptr) {
             slice.fj_personas = options.*h.personas;
         }
+        slice.objective_cut = objective_cut;
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {
             return h.run(mipsolver, problem, slice, exec, sink);

@@ -125,6 +125,14 @@ public:
     }
     bool copy_best(std::vector<double>& out) { return pool_.copy_best(out); }
 
+    // The pool's best objective, or `kHighsInf` while it holds nothing:
+    // what an objective cut (#208) is computed from.  Thread-safe (the pool
+    // lock), so poll it at a heuristic's own polling cadence, not per step.
+    [[nodiscard]] double best_objective() {
+        const SolutionPool::Snapshot snap = pool_.snapshot();
+        return snap.has_solution ? snap.best_objective : kHighsInf;
+    }
+
 protected:
     // Called once per accepted offer, on the offering worker's thread,
     // after the pool lock is released and before `offer` returns — so
