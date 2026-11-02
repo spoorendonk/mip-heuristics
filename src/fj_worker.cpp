@@ -28,13 +28,15 @@ struct FjWorker::Impl {
 
 FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
-                   std::vector<double> start, WorkerTrace trace, double objective_cutoff)
+                   std::vector<double> start, WorkerTrace trace, double objective_cutoff,
+                   ObjectiveCutParams objective_cut)
     : problem_(problem),
       exec_(exec),
       sink_(sink),
       start_(std::move(start)),
       seed_(seed),
       objective_cutoff_(objective_cutoff),
+      objective_cut_(objective_cut),
       trace_(trace) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
@@ -139,28 +141,17 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 }
             }
         }
-
-        if (std::isfinite(objective_cutoff_)) {
-            std::vector<HighsInt> cost_index;
-            std::vector<double> cost_value;
-            for (HighsInt col = 0; col < model->num_col_; ++col) {
-                if (col_cost[col] != 0.0) {
-                    cost_index.push_back(col);
-                    cost_value.push_back(col_cost[col]);
-                }
-            }
-            if (!cost_index.empty()) {
-                impl_->solver.addConstraint(RowType::Lte, objective_cutoff_ - problem_.offset,
-                                            static_cast<int>(cost_index.size()), cost_index.data(),
-                                            cost_value.data(), 0);
-            }
-        }
     }
 
     if (!impl_) {
         base_.finished = true;
         return {};
     }
+
+    // Before the solve: on the first attempt this adds the row ahead of
+    // FJ's `init`, which then computes its LHS with every other row's; on a
+    // resumed one it applies what peers found while this worker was paused.
+    apply_cut();
 
     // Capture state for the callback closure.
     const bool resume = first_solve_done_;
@@ -203,6 +194,10 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 improved_incumbent = true;
             }
         }
+        // The objective cut (#222), at FJ's own callback cadence and after
+        // each offer, so a solution this worker just offered is cut off
+        // before the next move.  FJ resumes from the same point and weights.
+        apply_cut();
 
         // The solve's wall-clock deadline (issue #114).  Every other gate
         // here is denominated in effort units, and the runner checks the
@@ -285,4 +280,17 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     }
 
     return result;
+}
+
+void FjWorker::apply_cut() {
+    // The pool is read only with the cut on: its lock is cheap at this
+    // cadence, but the fixed cutoff alone needs no read at all.
+    const double polled = objective_cut_.on
+                              ? objective_cut_target(sink_.best_objective(), objective_cut_)
+                              : kHighsInf;
+    const double target = std::min(objective_cutoff_, polled);
+    if (target < cut_in_force_) {
+        cut_in_force_ = target;
+        impl_->solver.setObjectiveCut(target - problem_.offset);
+    }
 }

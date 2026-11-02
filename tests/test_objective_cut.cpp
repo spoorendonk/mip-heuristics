@@ -111,10 +111,10 @@ TEST_CASE("Objective cut: sink best_objective follows accepts", "[objective_cut]
     REQUIRE(sink.best_objective() == 3.0);
 }
 
-TEST_CASE("Objective cut: option on leaves the solve unchanged", "[objective_cut]") {
-    // No heuristic reads the cut yet (#222-#225), so a solve with it on
-    // must still reach the optimum; each heuristic's own tests pin what it
-    // does with the cut.
+TEST_CASE("Objective cut: option on still reaches the optimum", "[objective_cut]") {
+    // The cut only narrows what a heuristic searches for, so a solve with
+    // it on must still reach the optimum; each heuristic's own tests pin
+    // what it does with the cut (FJ: `test_fj_objective_cut.cpp`).
     Highs h;
     require_option(h, "output_flag", false);
     require_option(h, "mip_heuristic_objective_cut", true);
