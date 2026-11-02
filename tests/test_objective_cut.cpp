@@ -66,6 +66,9 @@ TEST_CASE("Objective cut: options registered with their defaults", "[objective_c
     require_option(h, "mip_heuristic_objective_cut_rel", 0.01);
     require_option(h, "mip_heuristic_objective_cut_abs", 1.0);
     REQUIRE(h.setOptionValue("mip_heuristic_objective_cut_rel", -1.0) != HighsStatus::kOk);
+    REQUIRE(h.setOptionValue("mip_heuristic_objective_cut_rel", 1.5) != HighsStatus::kOk);
+    REQUIRE(h.setOptionValue("mip_heuristic_objective_cut_abs", -1.0) != HighsStatus::kOk);
+    REQUIRE(h.setOptionValue("mip_heuristic_objective_cut_abs", 1e21) != HighsStatus::kOk);
 }
 
 TEST_CASE("Objective cut: target is best - max(rel*|best|, abs)", "[objective_cut]") {
@@ -80,6 +83,8 @@ TEST_CASE("Objective cut: target is best - max(rel*|best|, abs)", "[objective_cu
     const ObjectiveCutParams coarse{.on = true, .rel = 1e-3, .abs = 5.0};
     REQUIRE(objective_cut_target(1000.0, coarse) == Catch::Approx(995.0));
     REQUIRE(objective_cut_target(10000.0, coarse) == Catch::Approx(9990.0));
+    // An empty pool (`best_objective()` infinite) cuts nothing.
+    REQUIRE(objective_cut_target(kHighsInf, params) == kHighsInf);
 }
 
 TEST_CASE("Objective cut: a zero objective disables the cut", "[objective_cut]") {
@@ -103,10 +108,10 @@ TEST_CASE("Objective cut: sink best_objective follows accepts", "[objective_cut]
     REQUIRE(sink.best_objective() == 3.0);
 }
 
-TEST_CASE("Objective cut: the option reaches a solve", "[objective_cut]") {
-    // No heuristic reads the cut yet (#222-#225), so a solve with it on is
-    // the solve with it off; this pins that the option is read without
-    // disturbing the chain.
+TEST_CASE("Objective cut: option on leaves the solve unchanged", "[objective_cut]") {
+    // No heuristic reads the cut yet (#222-#225), so a solve with it on
+    // must still reach the optimum; each heuristic's own tests pin what it
+    // does with the cut.
     Highs h;
     h.setOptionValue("output_flag", false);
     require_option(h, "mip_heuristic_objective_cut", true);

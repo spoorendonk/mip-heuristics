@@ -2,6 +2,7 @@
 
 #include "deadline.h"
 #include "heuristic_common.h"
+#include "lp_data/HConst.h"
 #include "lp_data/HighsLp.h"
 #include "util/HighsInt.h"
 
@@ -338,8 +339,13 @@ struct ObjectiveCutParams {
 // minimisation form (offset included, like every pool objective): a point
 // must reach this objective or lower to honour the cut.  Tightens with
 // every improvement because it is recomputed from the pool's best rather
-// than stored.
+// than stored.  An empty pool's best is infinite and so is its target — no
+// cut — rather than the `inf - inf` NaN the formula would give, which every
+// comparison would read as "violated" or "satisfied" depending on its sign.
 [[nodiscard]] inline double objective_cut_target(double best, const ObjectiveCutParams& params) {
+    if (!std::isfinite(best)) {
+        return kHighsInf;
+    }
     return best - std::max(params.rel * std::abs(best), params.abs);
 }
 

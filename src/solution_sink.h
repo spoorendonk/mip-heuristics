@@ -128,10 +128,7 @@ public:
     // The pool's best objective, or `kHighsInf` while it holds nothing:
     // what an objective cut (#208) is computed from.  Thread-safe (the pool
     // lock), so poll it at a heuristic's own polling cadence, not per step.
-    [[nodiscard]] double best_objective() {
-        const SolutionPool::Snapshot snap = pool_.snapshot();
-        return snap.has_solution ? snap.best_objective : kHighsInf;
-    }
+    [[nodiscard]] double best_objective() { return pool_.snapshot().best_objective; }
 
 protected:
     // Called once per accepted offer, on the offering worker's thread,
