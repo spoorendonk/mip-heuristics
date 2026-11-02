@@ -14,6 +14,7 @@ TEST_CASE("FJ standalone: flugpl", "[heuristic][fj]") {
 
 TEST_CASE("FJ personas: p0548 keeps its optimum and logs its row structure",
           "[heuristic][fj][fj_personas]") {
+    const ScopedThreadPin pin;
     double objective = 0.0;
     const auto lines = solve_capturing_log(
         "p0548.mps",
@@ -33,6 +34,7 @@ TEST_CASE("FJ personas: a partitioning model gets a covering and an exact-k slot
           "[heuristic][fj][fj_personas]") {
     // issue-2095 keeps 23 `= 1` binary rows through presolve: partitioning,
     // so exact-k, rows that bind from below.
+    const ScopedThreadPin pin;
     const auto lines = solve_capturing_log("issue-2095.mps", [](Highs& h) {
         select_heuristics(h, "fj");
         require_option(h, "mip_heuristic_fj_personas", true);

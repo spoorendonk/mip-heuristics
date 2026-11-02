@@ -2185,7 +2185,7 @@ portfolio (`feasibility_jump/cpu/portfolio.cpp`,
 slots 1.. take the personas the model's rows support, in order — the
 covering start when a covering, partitioning, `= k` or `>= k` row exists,
 the exact-k start then the covering start (cuOpt's lane 8) when an exact-k
-row exists — and the rest stay seeded copies. Only a slot's first worker
+row with `k >= 1` exists — and the rest stay seeded copies. Only a slot's first worker
 takes its persona; rebuilds restart from the pool as before. Each start
 keeps its result only if it leaves fewer violated rows than it found, so a
 feasible start passes through unchanged. The starts are not charged to

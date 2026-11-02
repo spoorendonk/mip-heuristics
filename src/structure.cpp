@@ -17,7 +17,7 @@ std::optional<HighsInt> count_side(double side, double coefficient) {
     // Out of HighsInt's range, the cast below is undefined; such a count
     // exceeds every row's width anyway.
     if (std::abs(count - rounded) > kCountTol ||
-        std::abs(rounded) > static_cast<double>(std::numeric_limits<HighsInt>::max())) {
+        std::abs(rounded) >= static_cast<double>(std::numeric_limits<HighsInt>::max())) {
         return std::nullopt;
     }
     return static_cast<HighsInt>(rounded);

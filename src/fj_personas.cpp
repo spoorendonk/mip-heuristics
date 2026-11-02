@@ -231,7 +231,8 @@ std::vector<FjPersona> assign_personas(const RowStructure& structure, size_t nnz
     if (structure.lower_bound_rows > 0) {
         supported.push_back(FjPersona::kCovering);
     }
-    if (!structure.exact_k.empty()) {
+    // A `k = 0` row only re-fixes what the bound start already has at zero.
+    if (std::ranges::any_of(structure.exact_k, [](const ExactKRow& r) { return r.k >= 1; })) {
         supported.push_back(FjPersona::kExactK);
     }
     for (size_t i = 0; i < supported.size() && i + 1 < out.size(); ++i) {

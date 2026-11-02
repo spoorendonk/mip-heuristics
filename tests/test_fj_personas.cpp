@@ -198,6 +198,12 @@ TEST_CASE("personas: slots take what the structure supports, slot 0 always seede
     CHECK(assign_personas(cover, 10, 4) ==
           std::vector<P>{P::kSeeded, P::kCovering, P::kSeeded, P::kSeeded});
 
+    // Only `= 0` exact-k rows: nothing for the exact-k start to set.
+    RowStructure zero_k = cover;
+    zero_k.exact_k.push_back({0, 0});
+    CHECK(assign_personas(zero_k, 10, 4) ==
+          std::vector<P>{P::kSeeded, P::kCovering, P::kSeeded, P::kSeeded});
+
     RowStructure both = cover;
     both.exact_k.push_back({0, 1});
     CHECK(assign_personas(both, 10, 4) ==
