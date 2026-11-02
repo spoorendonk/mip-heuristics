@@ -3,6 +3,8 @@
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 
+#include <optional>
+#include <utility>
 #include <vector>
 
 // The objective cut as a model row (#208, #224), for the heuristics that read
@@ -92,3 +94,14 @@ private:
     std::vector<double> row_upper_;
     ProblemView view_;
 };
+
+// A worker's view of `storage`, or none when the dispatch built no objective
+// row.  A prvalue, so the non-movable view is built in place in the member
+// it initialises.
+[[nodiscard]] inline std::optional<ObjectiveRowView> make_objective_row_view(
+    const ObjectiveRowStorage* storage) {
+    if (storage == nullptr) {
+        return std::nullopt;
+    }
+    return std::optional<ObjectiveRowView>(std::in_place, *storage);
+}

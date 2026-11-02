@@ -7,6 +7,8 @@
 #include "incumbent_sink.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "objective_cut_test_util.h"
+#include "objective_row.h"
 #include "parallel/HighsParallel.h"
 #include "pump_common.h"
 #include "rng.h"
@@ -24,6 +26,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <regex>
 #include <string>
 #include <utility>
@@ -323,6 +326,8 @@ public:
         std::vector<double> modified_cost;
         std::vector<double> warm_start_col_value;
         bool warm_start_valid = false;
+        // What the solve returned: the `x_bar` the PDLP fast path offers.
+        std::vector<double> primal;
     };
 
     // Written under `mu_` (the caller holds it across `solve_locked`), and
@@ -340,9 +345,12 @@ protected:
                              const std::vector<double>& warm_start_col_value,
                              const std::vector<double>& warm_start_row_dual, bool warm_start_valid,
                              double epsilon, double time_limit) override {
-        calls.push_back({modified_cost, warm_start_col_value, warm_start_valid});
-        return ContestedPdlp::solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                           warm_start_valid, epsilon, time_limit);
+        calls.push_back({modified_cost, warm_start_col_value, warm_start_valid, {}});
+        SolveResult result =
+            ContestedPdlp::solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
+                                        warm_start_valid, epsilon, time_limit);
+        calls.back().primal = result.col_value;
+        return result;
     }
 };
 
@@ -379,7 +387,8 @@ TEST_CASE("Scylla: the pump advances on a failed FPR rounding (#155)",
     // One worker, so every round takes the mutex uncontended and is
     // `fresh` — the guard the pump-state block sits behind.
     constexpr size_t kBudget = size_t{1} << 20;
-    ScyllaWorker worker(*mipsolver, problem, exec, pdlp, sink, var_orders,
+    ScyllaWorker worker(*mipsolver, problem, /*objective_rows=*/nullptr, ObjectiveCutParams{}, exec,
+                        pdlp, sink, var_orders,
                         /*total_budget=*/kBudget,
                         /*stale_budget=*/std::numeric_limits<size_t>::max(),
                         /*seed=*/7, /*worker_idx=*/0, /*num_workers=*/1, WorkerTrace{0, 0});
@@ -437,4 +446,101 @@ TEST_CASE("Scylla: the pump advances on a failed FPR rounding (#155)",
     CHECK(worker.cycle_history_size_for_test() ==
           std::min<size_t>(static_cast<size_t>(worker.fresh_solves()), pump::kCycleWindow));
     CHECK(worker.cycle_history_size_for_test() >= 2);
+}
+
+namespace {
+
+struct ScyllaCutRun {
+    std::vector<double> objectives;  // accepted offers, the seed's first if any
+    std::vector<std::vector<double>> solutions;
+    std::vector<std::vector<double>> pdlp_primals;  // every solve's `x_bar`
+};
+
+// One Scylla worker on a fresh gt2 solver (one where it rounds to feasible
+// points within a single attempt), the pool seeded with `seed` when it is
+// non-empty, and the worker given an objective row (built here, as
+// `scylla::run` builds it) when `cut.on`.
+ScyllaCutRun run_scylla_worker(ObjectiveCutParams cut, const std::vector<double>& seed) {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "gt2.mps");
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    RecordingSink sink(*problem.integrality, kSolutionSourceHeuristic);
+    if (!seed.empty()) {
+        REQUIRE(sink.offer(problem.objective(seed), seed, WorkerTrace{0, 0}, 0).accepted);
+    }
+    std::optional<ObjectiveRowStorage> rows;
+    if (cut.on) {
+        rows.emplace(problem);
+    }
+
+    RecordingPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000);
+    REQUIRE(pdlp.initialized());
+    // Dispatching-thread var orders, as the #155 case above builds them.
+    std::vector<std::vector<HighsInt>> var_orders;
+    var_orders.reserve(kNumFprConfigs);
+    Rng order_rng(11);
+    for (int i = 0; i < kNumFprConfigs; ++i) {
+        var_orders.push_back(
+            compute_var_order(*mipsolver, kFprConfigs[i].strat.var_strategy, order_rng, nullptr));
+    }
+
+    // One worker: every round is fresh and an offer precedes the next
+    // rounding, so the cutoff in force at a rounding is known.
+    constexpr size_t kBudget = size_t{1} << 22;
+    ScyllaWorker worker(*mipsolver, problem, rows.has_value() ? &*rows : nullptr, cut, exec, pdlp,
+                        sink, var_orders, /*total_budget=*/kBudget,
+                        /*stale_budget=*/std::numeric_limits<size_t>::max(),
+                        /*seed=*/7, /*worker_idx=*/0, /*num_workers=*/1, WorkerTrace{0, 0});
+    static_cast<void>(worker.run_attempt(kBudget));
+
+    ScyllaCutRun run{sink.objectives, sink.solutions, {}};
+    for (auto& call : pdlp.calls) {
+        run.pdlp_primals.push_back(std::move(call.primal));
+    }
+    return run;
+}
+
+}  // namespace
+
+TEST_CASE("Scylla objective cut: no rounded offer above the cutoff in force",
+          "[objective-cut][scylla]") {
+    // Seed with the uncut run's first point, so the cutoff leaves room for
+    // its later finds.  A find under the cut is expected, not implied (the
+    // row moves the rounding's choices, and FPR's random streams are the
+    // platform's), so a platform without a point to seed from, or without a
+    // rounded offer under the cut, skips: the bound below holds whatever the
+    // count.
+    const ScyllaCutRun plain = run_scylla_worker({}, {});
+    if (plain.objectives.empty()) {
+        SKIP("the uncut worker found no point to seed from on this platform");
+    }
+    const ScyllaCutRun cut = run_scylla_worker(kCutOn, plain.solutions.front());
+    REQUIRE(cut.objectives.front() == plain.objectives.front());
+
+    // The PDLP fast path offers `x_bar` itself, unrounded and out of the
+    // cut's scope (#233): an offer equal to a solve's primal is that path's.
+    // Any other is a rounding, and the cutoff in force at it is the target of
+    // the best accepted before it.
+    double best = cut.objectives.front();
+    size_t rounded = 0;
+    for (size_t k = 1; k < cut.objectives.size(); ++k) {
+        const bool fast_path =
+            std::ranges::find(cut.pdlp_primals, cut.solutions[k]) != cut.pdlp_primals.end();
+        if (!fast_path) {
+            const double cutoff = objective_cut_target(best, kCutOn);
+            INFO("offer " << k << ": objective " << cut.objectives[k] << ", cutoff " << cutoff);
+            REQUIRE(cut.objectives[k] <= cutoff + kRowTol);
+            ++rounded;
+        }
+        best = std::min(best, cut.objectives[k]);
+    }
+    if (rounded == 0) {
+        SKIP("no rounded offer under the cut on this platform");
+    }
 }

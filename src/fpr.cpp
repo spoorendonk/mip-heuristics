@@ -238,23 +238,11 @@ bool precompute_var_orders(HighsMipSolver& mipsolver, const Deadline& deadline,
 // FprWorker implementation
 // ---------------------------------------------------------------------------
 
-namespace {
-
-// A prvalue, so the non-movable view is built in place.
-std::optional<ObjectiveRowView> make_cut_view(const ObjectiveRowStorage* objective_rows) {
-    if (objective_rows == nullptr) {
-        return std::nullopt;
-    }
-    return std::optional<ObjectiveRowView>(std::in_place, *objective_rows);
-}
-
-}  // namespace
-
 FprWorker::FprWorker(const ProblemView& problem, const ObjectiveRowStorage* objective_rows,
                      ObjectiveCutParams cut, const ExecutionContext& exec, SolutionSink& sink,
                      const VarOrderTable& var_orders, int worker_idx, uint32_t seed,
                      size_t stale_budget)
-    : cut_view_(make_cut_view(objective_rows)),
+    : cut_view_(make_objective_row_view(objective_rows)),
       cut_(cut),
       problem_(cut_view_.has_value() ? cut_view_->view() : problem),
       exec_(exec),

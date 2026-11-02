@@ -40,6 +40,7 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 }  // namespace
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem,
+                           const ObjectiveRowStorage* objective_rows, ObjectiveCutParams cut,
                            const ExecutionContext& exec, ContestedPdlp& pdlp, SolutionSink& sink,
                            const std::vector<std::vector<HighsInt>>& var_orders,
                            size_t total_budget, size_t stale_budget, uint32_t seed, int worker_idx,
@@ -47,6 +48,9 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem
                            std::atomic<uint64_t>* improvement_gen)
     : mipsolver_(mipsolver),
       problem_(problem),
+      cut_view_(make_objective_row_view(objective_rows)),
+      cut_(cut),
+      rounding_problem_(cut_view_.has_value() ? cut_view_->view() : problem),
       exec_(exec),
       pdlp_(pdlp),
       sink_(sink),
@@ -450,7 +454,13 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // `SolutionPool::get_restart`), so this chain's RNG stream moves
         // from the point of removal onward, independent of and in addition
         // to the shift from #122's seeding-block deletion.
-        HeuristicResult rounded = fpr_attempt(problem_, exec_.deadline, cfg, rng_, 0);
+        // The cutoff in force for this rounding: the pool's best now, read
+        // once (it takes the pool lock); nothing else moves the row bound
+        // until the next rounding.
+        if (cut_view_.has_value()) {
+            cut_view_->set_cutoff(objective_cut_target(sink_.best_objective(), cut_));
+        }
+        HeuristicResult rounded = fpr_attempt(rounding_problem_, exec_.deadline, cfg, rng_, 0);
 
         base_.total_effort += rounded.effort;
         base_.effort_since_improvement += rounded.effort;

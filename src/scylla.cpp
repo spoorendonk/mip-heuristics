@@ -8,14 +8,17 @@
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "objective_row.h"
 #include "opportunistic_runner.h"
 #include "scylla_worker.h"
 #include "solution_sink.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace scylla {
 
@@ -137,6 +140,15 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         return DispatchOutcome::abandoned();
     }
 
+    // The objective cut as a propagated row for the rounding (#224, #233),
+    // built here on the dispatching thread, and only when the pool already
+    // holds a solution — for the reason `fpr::run`'s is (#232).
+    std::optional<ObjectiveRowStorage> objective_rows;
+    if (budget.objective_cut.on && std::isfinite(sink.best_objective())) {
+        objective_rows.emplace(problem);
+    }
+    const ObjectiveRowStorage* rows = objective_rows.has_value() ? &*objective_rows : nullptr;
+
     // Pre-construct workers outside the parallel region so MakeState
     // can hand them back by index without racing on std::make_unique.
     const int n = static_cast<int>(exec.num_workers);
@@ -148,8 +160,8 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         // counter is charged the amortised (÷N) PDLP cost, which is where
         // its share of the pool is already taken (issue #111).
         workers.push_back(std::make_unique<ScyllaWorker>(
-            mipsolver, problem, exec, pdlp, sink, var_orders, budget.total, budget.stale, seed, w,
-            n, WorkerTrace{w, 0}, &improvement_gen));
+            mipsolver, problem, rows, budget.objective_cut, exec, pdlp, sink, var_orders,
+            budget.total, budget.stale, seed, w, n, WorkerTrace{w, 0}, &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -190,8 +202,9 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
                 // reinitialized from scratch but the underlying LP stays.
                 auto new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
-                    mipsolver, problem, exec, pdlp, sink, var_orders, budget.total, budget.stale,
-                    new_seed, state.worker_idx, n, state.trace, &improvement_gen);
+                    mipsolver, problem, rows, budget.objective_cut, exec, pdlp, sink, var_orders,
+                    budget.total, budget.stale, new_seed, state.worker_idx, n, state.trace,
+                    &improvement_gen);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has
