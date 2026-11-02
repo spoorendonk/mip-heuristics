@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -47,9 +48,13 @@ private:
 };
 
 // One worker until it retires or spends `kTotal`, attempt by attempt.
-void run(FjWorker& fj) {
-    for (int attempt = 0; attempt < kMaxAttempts && !fj.finished(); ++attempt) {
-        static_cast<void>(fj.run_attempt(kAttemptBudget));
+// `attempt` below FJ's 500000-effort callback period ends every attempt at
+// its first periodic callback, so the cut is then tightened between
+// attempts; above it, FJ continues past its callbacks and the cut is
+// tightened mid-solve, inside the callback.
+void run(FjWorker& fj, size_t attempt = kAttemptBudget) {
+    for (int k = 0; k < kMaxAttempts && !fj.finished(); ++k) {
+        static_cast<void>(fj.run_attempt(attempt));
     }
 }
 
@@ -76,7 +81,9 @@ TEST_CASE("FJ objective cut: each offer honours the cutoff in force, one worker"
     RecordingSink sink(*s.problem.integrality, 0);
     FjWorker fj(s.problem, s.exec, sink, kTotal, kTotal, /*seed=*/0, /*start=*/{},
                 WorkerTrace{0, 0}, std::numeric_limits<double>::infinity(), kCutOn);
-    run(fj);
+    // Between attempts, or within one long attempt, inside FJ's callback.
+    const size_t attempt = GENERATE(kAttemptBudget, kTotal);
+    run(fj, attempt);
 
     // (b) Several tightenings, all in this one worker: nothing here can
     // rebuild it, and its traced effort rises across them.
