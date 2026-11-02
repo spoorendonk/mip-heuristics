@@ -216,6 +216,53 @@ TEST_CASE("early FJ: a presolve that ran out of time still reports the solution"
     REQUIRE(ms.mipdata_->upper_bound + ms.model_->offset_ == Catch::Approx(ms.solution_objective_));
 }
 
+// The fallback: when the search finds nothing better, `cleanupSolve`
+// reports the handed-over point.  The node queue stays empty here, so this
+// is the run's end with B&B having found nothing.
+TEST_CASE("early FJ: with nothing better found, cleanupSolve reports it", "[early-fj]") {
+    Harness harness;
+    HighsMipSolver& ms = *harness.mipsolver;
+    heuristics::EarlyFj early(ms);
+    harness.presolve();
+    REQUIRE(ms.modelstatus_ == HighsModelStatus::kNotset);
+    early.finish(true);
+    REQUIRE(harness.solution_feasible());
+    const std::vector<double> handed_over = ms.solution_;
+    const double objective = ms.solution_objective_;
+
+    ms.mipdata_->runSetup();
+    ms.cleanupSolve();
+    REQUIRE(ms.solution_ == handed_over);
+    REQUIRE(ms.solution_objective_ == objective);
+    REQUIRE(ms.primal_bound_ == Catch::Approx(objective));
+    REQUIRE(ms.modelstatus_ == HighsModelStatus::kOptimal);
+}
+
+TEST_CASE("early FJ: after a presolve time-out, cleanupSolve reports it in its own sense",
+          "[early-fj]") {
+    Harness harness(/*maximise=*/true);
+    // `options_mip_` is `highs`'s own options, so this reaches the solver.
+    require_option(harness.highs, "mip_improving_solution_save", true);
+    HighsMipSolver& ms = *harness.mipsolver;
+    heuristics::EarlyFj early(ms);
+    harness.presolve();
+    // As at the patch's call site: presolve's time-limit check, then
+    // `finish`, then straight to `cleanupSolve` without `runSetup`.
+    ms.modelstatus_ = HighsModelStatus::kTimeLimit;
+    early.finish(true);
+    REQUIRE(harness.solution_feasible());
+    const double objective = ms.solution_objective_;
+    REQUIRE(objective <= -kOptimum + 1e-3);
+    // Reported as an improving solution, as `runSetup` would a MIP start.
+    REQUIRE(ms.saved_objective_and_solution_.size() == 1);
+    REQUIRE(ms.saved_objective_and_solution_[0].objective == objective);
+
+    ms.cleanupSolve();
+    REQUIRE(ms.modelstatus_ == HighsModelStatus::kTimeLimit);
+    REQUIRE(ms.solution_objective_ == objective);
+    REQUIRE(ms.primal_bound_ == Catch::Approx(objective));
+}
+
 TEST_CASE("early FJ: never in a sub-MIP", "[early-fj]") {
     Harness harness;
     HighsMipSolver& ms = *harness.mipsolver;

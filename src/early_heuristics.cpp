@@ -48,10 +48,9 @@ struct EarlyFj::Run {
                 return;
             }
             problem.emplace(*view);
-            const size_t total = heuristic_effort_budget(problem->nnz, effort_option);
+            const size_t total = heuristic_effort_budget(nnz, effort_option);
             HeuristicBudget budget = make_budget(
-                total, 1,
-                patience_threshold(problem->nnz, options.mip_heuristic_fj_patience, total));
+                total, 1, patience_threshold(nnz, options.mip_heuristic_fj_patience, total));
             // The record bounds the option to the enum's range.
             budget.restart = static_cast<RestartPoint>(options.mip_heuristic_fj_restart);
             sink.emplace(*problem->integrality, kSolutionSourceFJ);
@@ -64,6 +63,9 @@ struct EarlyFj::Run {
     const HighsLp& model;
     const HighsOptions& options;
     double effort_option;
+    // The original model's nnz, the unit of the budget and of the `[Heur]`
+    // line both: read off the model, since the view may never be built.
+    size_t nnz = static_cast<size_t>(model.a_matrix_.numNz());
     std::atomic<bool> stop{false};
     ExecutionContext exec;
     ProblemStorage storage;
@@ -103,6 +105,60 @@ bool current_solution_feasible(const HighsMipSolver& mipsolver) {
            mipsolver.integrality_violation_ <= tol && mipsolver.row_violation_ <= tol;
 }
 
+// Hands `best` to `solution_` as `finish()` describes; whether it did.
+bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
+    // Presolve's own verdict decides whether there is anything to hand
+    // over: an optimal, infeasible or unbounded model, or one presolve ran
+    // out of memory on, keeps what presolve concluded.
+    const HighsModelStatus status = mipsolver.modelstatus_;
+    if (status != HighsModelStatus::kNotset && status != HighsModelStatus::kTimeLimit) {
+        return false;
+    }
+
+    // Checked on the original model with HiGHS's own test, which is what
+    // `cleanupSolve` will judge `solution_` by.
+    const HighsLp& model = *mipsolver.orig_model_;
+    double bound_violation = 0.0;
+    double row_violation = 0.0;
+    double integrality_violation = 0.0;
+    HighsCDouble quad_objective = 0.0;
+    mipsolver.solutionFeasible(&model, best, nullptr, bound_violation, row_violation,
+                               integrality_violation, quad_objective);
+    const double tol = mipsolver.options_mip_->mip_feasibility_tolerance;
+    if (bound_violation > tol || row_violation > tol || integrality_violation > tol) {
+        return false;
+    }
+    const auto objective = static_cast<double>(quad_objective);
+    const auto sense = static_cast<double>(static_cast<int>(model.sense_));
+    if (current_solution_feasible(mipsolver) &&
+        sense * mipsolver.solution_objective_ <= sense * objective) {
+        return false;
+    }
+
+    mipsolver.solution_ = std::move(best);
+    mipsolver.solution_objective_ = objective;
+    mipsolver.bound_violation_ = bound_violation;
+    mipsolver.row_violation_ = row_violation;
+    mipsolver.integrality_violation_ = integrality_violation;
+    highsLogUser(mipsolver.options_mip_->log_options, HighsLogType::kInfo,
+                 "Early FeasibilityJump on the original model: objective %.12g, passed on as "
+                 "the MIP start\n",
+                 objective);
+
+    // Presolve stopped on the time limit, so there is no `runSetup` to take
+    // the bound from `solution_`.  `upper_bound` is still in the original
+    // minimisation space here and `cleanupSolve` adds the presolved
+    // model's offset to it, so this is what makes the run report the
+    // solution's objective as its primal bound.  The improving-solution
+    // callback, the saved list and the file are reported as upstream's
+    // presolve-optimal exit reports its solution.
+    if (status == HighsModelStatus::kTimeLimit) {
+        mipsolver.mipdata_->upper_bound = (sense * objective) - mipsolver.model_->offset_;
+        mipsolver.mipdata_->saveReportMipSolution();
+    }
+    return true;
+}
+
 }  // namespace
 
 void EarlyFj::finish(bool run_to_budget) {
@@ -119,60 +175,11 @@ void EarlyFj::finish(bool run_to_budget) {
 
     std::vector<double> best;
     const bool found = run_->sink.has_value() && run_->sink->copy_best(best);
+    // Booked as found only when it was handed over, so `found=1` means the
+    // run's answer can be this worker's.
+    const bool installed = found && install(mipsolver_, best);
     EffortLedger ledger(mipsolver_);
-    // Read off the model, not the view: the view may never have been built.
-    const auto nnz = static_cast<size_t>(mipsolver_.orig_model_->a_matrix_.numNz());
-    ledger.charge_early("early_fj", run_->effort, found, nnz, run_->t0_s, ledger.now_s());
-    if (!found) {
-        return;
-    }
-
-    // Presolve's own verdict decides whether there is anything to hand
-    // over: an optimal, infeasible or unbounded model, or one presolve ran
-    // out of memory on, keeps what presolve concluded.
-    const HighsModelStatus status = mipsolver_.modelstatus_;
-    if (status != HighsModelStatus::kNotset && status != HighsModelStatus::kTimeLimit) {
-        return;
-    }
-
-    // Checked on the original model with HiGHS's own test, which is what
-    // `cleanupSolve` will judge `solution_` by.
-    const HighsLp& model = *mipsolver_.orig_model_;
-    double bound_violation = 0.0;
-    double row_violation = 0.0;
-    double integrality_violation = 0.0;
-    HighsCDouble quad_objective = 0.0;
-    mipsolver_.solutionFeasible(&model, best, nullptr, bound_violation, row_violation,
-                                integrality_violation, quad_objective);
-    const double tol = mipsolver_.options_mip_->mip_feasibility_tolerance;
-    if (bound_violation > tol || row_violation > tol || integrality_violation > tol) {
-        return;
-    }
-    const auto objective = static_cast<double>(quad_objective);
-    const auto sense = static_cast<double>(static_cast<int>(model.sense_));
-    if (current_solution_feasible(mipsolver_) &&
-        sense * mipsolver_.solution_objective_ <= sense * objective) {
-        return;
-    }
-
-    mipsolver_.solution_ = std::move(best);
-    mipsolver_.solution_objective_ = objective;
-    mipsolver_.bound_violation_ = bound_violation;
-    mipsolver_.row_violation_ = row_violation;
-    mipsolver_.integrality_violation_ = integrality_violation;
-    highsLogUser(mipsolver_.options_mip_->log_options, HighsLogType::kInfo,
-                 "Early FeasibilityJump on the original model: objective %.12g, passed on as "
-                 "the MIP start\n",
-                 objective);
-
-    // Presolve stopped on the time limit, so there is no `runSetup` to take
-    // the bound from `solution_`.  `upper_bound` is still in the original
-    // minimisation space here and `cleanupSolve` adds the presolved
-    // model's offset to it, so this is what makes the run report the
-    // solution's objective as its primal bound.
-    if (status == HighsModelStatus::kTimeLimit) {
-        mipsolver_.mipdata_->upper_bound = (sense * objective) - mipsolver_.model_->offset_;
-    }
+    ledger.charge_early("early_fj", run_->effort, installed, run_->nnz, run_->t0_s, ledger.now_s());
 }
 
 }  // namespace heuristics
