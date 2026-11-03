@@ -18,6 +18,11 @@ namespace heuristics {
 // limit.  Patience and the rebuild restart point are FJ's own
 // (`mip_heuristic_fj_patience`, `mip_heuristic_fj_restart`).
 //
+// Each improving point that passes HiGHS's own feasibility test on the
+// original model is logged from the worker when found (`objective ... found
+// at ...s`, #240).  Nothing else reaches the solve before `finish()`: that
+// includes the improving-solution callback, which `runSetup` fires.
+//
 // `finish()`, called on the solving thread right after presolve returns,
 // stops and joins the worker, books it as one `[Heur] name=early_fj` line,
 // and hands its best solution to HiGHS's own original-space incumbent,

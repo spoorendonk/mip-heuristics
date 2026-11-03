@@ -7,8 +7,14 @@
 #include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
+#include <functional>
+#include <iterator>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 
 // ===================================================================
@@ -34,12 +40,27 @@ constexpr double kOptimum = 1120.0;
 // Ten budgets (~3e6 units): at 1.0 the budget (`nnz << 10`, ~3e5 units) is
 // under FJ's first callback (5e5 units, #194), a single short window.
 constexpr double kEffort = 10.0;
+constexpr const char* kFoundLine = "Early FeasibilityJump on the original model: objective ";
+// Only how long a failing case takes to fail: a passing one leaves the wait as
+// soon as the line is there.
+constexpr auto kFoundLineWait = std::chrono::seconds(60);
+
+// The objective a `found at` line carries.
+double found_objective(const std::string& line) {
+    return std::stod(line.substr(std::string_view(kFoundLine).size()));
+}
 
 // `HighsMipSolver::run` up to the point the early worker is started, with
 // presolve on (unlike `build_bare_mipsolver`): the solution `finish` hands
 // over is in original columns and `runSetup` has a real postsolve stack to
 // crush it with.
 struct Harness {
+    // Declared before `highs` so the log callback cannot outlive it.
+    struct LogCapture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+    };
+    LogCapture log;
     Highs highs;
     HighsCallback cb{&highs};
     // `Highs` hands the MIP solver its profiling clocks, and presolve's
@@ -49,13 +70,28 @@ struct Harness {
     HighsProfiling profiling;
     std::unique_ptr<HighsMipSolver> mipsolver;
 
-    explicit Harness(bool maximise = false) {
+    explicit Harness(bool maximise = false, bool capture_log = false) {
         // `HighsMipSolverData::init` reads `parallel::num_threads()`, as at
         // every `build_bare_mipsolver` call site.  At one thread, the
         // `threads` option below: a solve later in the same process refuses
         // a scheduler of another width.
         highs::parallel::initialize_scheduler(1);
-        highs.setOptionValue("output_flag", false);
+        highs.setOptionValue("output_flag", capture_log);
+        highs.setOptionValue("log_to_console", false);
+        if (capture_log) {
+            auto log_cb = [](int callback_type, const std::string& message,
+                             const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                             void* user_data) {
+                if (callback_type != kCallbackLogging) {
+                    return;
+                }
+                auto* cap = static_cast<LogCapture*>(user_data);
+                std::scoped_lock lock(cap->mtx);
+                cap->lines.emplace_back(message);
+            };
+            REQUIRE(highs.setCallback(HighsCallbackFunctionType(log_cb), &log) == HighsStatus::kOk);
+            REQUIRE(highs.startCallback(kCallbackLogging) == HighsStatus::kOk);
+        }
         require_option(highs, "threads", 1);
         require_option(highs, "random_seed", 0);
         require_option(highs, "mip_heuristic_early_fj_effort", kEffort);
@@ -85,6 +121,16 @@ struct Harness {
 
     void presolve() const {
         mipsolver->mipdata_->runMipPresolve(mipsolver->options_mip_->presolve_reduction_limit);
+    }
+
+    // The worker's `found at` lines, in the order they were logged.
+    [[nodiscard]] std::vector<std::string> found_lines() {
+        std::scoped_lock lock(log.mtx);
+        std::vector<std::string> found;
+        std::ranges::copy_if(log.lines, std::back_inserter(found), [](const std::string& line) {
+            return line.starts_with(kFoundLine) && line.contains(" found at ");
+        });
+        return found;
     }
 
     // Whether `solution_` is feasible by the test `cleanupSolve` applies.
@@ -131,6 +177,42 @@ TEST_CASE("early FJ: its solution becomes the MIP start presolve crushes", "[ear
     // `cleanupSolve` reports unless the search finds better.
     REQUIRE(ms.solution_ == handed_over);
     REQUIRE(ms.solution_objective_ == objective);
+}
+
+TEST_CASE("early FJ: a point is logged when found, before presolve returns", "[early-fj]") {
+    Harness harness(/*maximise=*/false, /*capture_log=*/true);
+    HighsMipSolver& ms = *harness.mipsolver;
+    // Neither presolve nor `finish` has run while this waits, so the line can
+    // only have come from the worker.
+    heuristics::EarlyFj early(ms);
+    const auto give_up = std::chrono::steady_clock::now() + kFoundLineWait;
+    while (harness.found_lines().empty() && std::chrono::steady_clock::now() < give_up) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE_FALSE(harness.found_lines().empty());
+
+    early.finish(true);
+    // Non-increasing (the lines round to 12 digits), and the last is what was
+    // handed over.
+    std::vector<double> objectives;
+    for (const std::string& line : harness.found_lines()) {
+        objectives.push_back(found_objective(line));
+    }
+    REQUIRE(std::ranges::is_sorted(objectives, std::ranges::greater{}));
+    REQUIRE(harness.solution_feasible());
+    REQUIRE(objectives.back() == Catch::Approx(ms.solution_objective_));
+}
+
+TEST_CASE("early FJ: a found point is logged in the model's own sense", "[early-fj]") {
+    Harness harness(/*maximise=*/true, /*capture_log=*/true);
+    HighsMipSolver& ms = *harness.mipsolver;
+    heuristics::EarlyFj early(ms);
+    early.finish(true);
+    const auto lines = harness.found_lines();
+    REQUIRE_FALSE(lines.empty());
+    // Negated costs: every feasible point is at or below the optimum's value.
+    REQUIRE(found_objective(lines.back()) <= -kOptimum + 1e-3);
+    REQUIRE(found_objective(lines.back()) == Catch::Approx(ms.solution_objective_));
 }
 
 TEST_CASE("early FJ: a maximisation hands over the objective in its own sense", "[early-fj]") {

@@ -22,11 +22,63 @@
 
 namespace heuristics {
 
+namespace {
+
+// Logs each improving point when the worker finds it (#240), since presolve
+// may hold the handover back for many seconds.  One worker offers into it, so
+// `on_accept` never runs concurrently and `best_logged_` needs no lock.
+//
+// What the worker thread touches of the solve is read-only for its whole
+// length: `orig_model_` (presolve works on its own copy), the options, clock 0
+// of `timer_`.  `solutionFeasible` is const and keeps its row values in a
+// local.  The log line is one `highsLogUser` call, as `[HeurSol]` is one
+// `highsLogDev` call from a worker.  The improving-solution callback is not
+// called here: it writes `callback_->data_out`, which the solving thread
+// uses too, and a user callback does not expect a second thread.
+// `runSetup` fires it for the handed-over point.
+class ReportingSink final : public SolutionSink {
+public:
+    ReportingSink(const std::vector<HighsVarType>& integrality, int source,
+                  const HighsMipSolver& mipsolver)
+        : SolutionSink(integrality, source), mipsolver_(mipsolver) {}
+
+protected:
+    void on_accept(double objective, const std::vector<double>& solution, int /*source*/,
+                   const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
+        if (objective >= best_logged_) {
+            return;
+        }
+        // The test `finish()` will apply, so the line never names a point
+        // the handover would refuse.  `objective` is the view's minimisation
+        // form; the line carries the model's own sense.
+        double bound_violation = 0.0;
+        double row_violation = 0.0;
+        double integrality_violation = 0.0;
+        HighsCDouble quad_objective = 0.0;
+        if (!mipsolver_.solutionFeasible(mipsolver_.orig_model_, solution, nullptr, bound_violation,
+                                         row_violation, integrality_violation, quad_objective)) {
+            return;
+        }
+        best_logged_ = objective;
+        highsLogUser(mipsolver_.options_mip_->log_options, HighsLogType::kInfo,
+                     "Early FeasibilityJump on the original model: objective %.12g found at "
+                     "%.3fs\n",
+                     static_cast<double>(quad_objective), mipsolver_.timer_.read());
+    }
+
+private:
+    const HighsMipSolver& mipsolver_;
+    double best_logged_ = kHighsInf;
+};
+
+}  // namespace
+
 // Everything the worker thread owns.  `storage`, `problem` and `sink` are
 // built on that thread and read by `finish()` only after the join.
 struct EarlyFj::Run {
     Run(HighsMipSolver& mipsolver, double effort)
-        : model(*mipsolver.orig_model_),
+        : solver(mipsolver),
+          model(*mipsolver.orig_model_),
           options(*mipsolver.options_mip_),
           effort_option(effort),
           exec{.num_workers = 1,
@@ -60,13 +112,14 @@ struct EarlyFj::Run {
                 .rel = options.mip_heuristic_objective_cut_rel,
                 .abs = options.mip_heuristic_objective_cut_abs,
             };
-            sink.emplace(*problem->integrality, kSolutionSourceFJ);
+            sink.emplace(*problem->integrality, kSolutionSourceFJ, solver);
             effort = fj::run_until_stopped(*problem, budget, exec, 0, RestartSource{}, *sink);
         } catch (...) {
             error = std::current_exception();
         }
     }
 
+    const HighsMipSolver& solver;
     const HighsLp& model;
     const HighsOptions& options;
     double effort_option;
@@ -77,7 +130,7 @@ struct EarlyFj::Run {
     ExecutionContext exec;
     ProblemStorage storage;
     std::optional<ProblemView> problem;
-    std::optional<SolutionSink> sink;
+    std::optional<ReportingSink> sink;
     size_t effort = 0;
     std::exception_ptr error;
     double t0_s = 0.0;
@@ -147,8 +200,9 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     mipsolver.bound_violation_ = bound_violation;
     mipsolver.row_violation_ = row_violation;
     mipsolver.integrality_violation_ = integrality_violation;
-    // The time is here because HiGHS prints no display row for a MIP start, and
-    // this line is the run's only default-level record of when it had one.
+    // The time is here because HiGHS prints no display row for a MIP start:
+    // this is when HiGHS can first use the point, and the worker's `found at`
+    // lines say when it existed.
     highsLogUser(mipsolver.options_mip_->log_options, HighsLogType::kInfo,
                  "Early FeasibilityJump on the original model: objective %.12g at %.3fs, passed "
                  "on as the MIP start\n",

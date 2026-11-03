@@ -110,6 +110,30 @@ def test_early_fj_mip_start_dated_by_its_own_line():
     assert result.time_to_first_feasible == 0.7
 
 
+def test_early_fj_dated_when_found_not_at_the_handover():
+    """A `found at` line dates the point when it existed; the handover repeating
+    the last one adds nothing."""
+    log = (
+        "Early FeasibilityJump on the original model: objective 20 found at 0.100s\n"
+        "Early FeasibilityJump on the original model: objective 12.5 found at 0.400s\n"
+        "Early FeasibilityJump on the original model: objective 12.5 at 17.200s, passed on as the MIP start\n"
+        "J       0       0         0   0.00%   0               11                 Large      0      0      0         0   18.0s\n"
+    )
+    result = parse_log(log)
+    assert [(i.time, i.objective) for i in result.incumbents] == [
+        (0.1, 20.0),
+        (0.4, 12.5),
+        (18.0, 11.0),
+    ]
+    assert result.time_to_first_feasible == 0.1
+
+
+def test_early_fj_found_without_handover_still_counts():
+    """A presolve verdict or a kill leaves no handover line; the point existed."""
+    log = "Early FeasibilityJump on the original model: objective 20 found at 0.100s\n"
+    assert parse_log(log).time_to_first_feasible == 0.1
+
+
 def test_presolve_optimal_space_source_recorded():
     """When presolve solves the model to optimality (empty B&B), the single
     log line has a space source.  It must be recorded as incumbent 'P' so

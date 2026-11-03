@@ -729,9 +729,14 @@ _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 # the run was not stopped by a limit anyone set.
 _KILLED_RE = re.compile(r"^TIMEOUT: process killed (?:after ([\d.]+)s|by signal (\d+))")
 
-# Early FJ's handover to the MIP start (`EarlyFj::finish`).  HiGHS prints no
-# display row for a MIP start, so this line is the record of the incumbent, and
-# its time, the end of presolve, is when HiGHS can first use the point.
+# Early FJ's points.  HiGHS prints no display row for a MIP start, so these lines
+# are the record.  `found at` is the worker's, one per improving point, dated
+# when it existed (#240).  `at ...s, passed on` is the handover
+# (`EarlyFj::finish`), dated at the end of presolve: it adds an incumbent only
+# when it repeats no `found at` line, as in a log written before #240.
+_EARLY_FJ_FOUND_RE = re.compile(
+    r"^Early FeasibilityJump on the original model: objective (\S+) found at ([\d.]+)s"
+)
 _EARLY_FJ_RE = re.compile(
     r"^Early FeasibilityJump on the original model: objective (\S+) at ([\d.]+)s,"
 )
@@ -974,16 +979,21 @@ def parse_log(log_text: str) -> SolveResult:
             result.killed_after = float(m.group(1)) if m.group(1) else None
             continue
 
-        m = _EARLY_FJ_RE.match(line)
+        m = _EARLY_FJ_FOUND_RE.match(line) or _EARLY_FJ_RE.match(line)
         if m:
-            result.incumbents.append(
-                Incumbent(
-                    time=float(m.group(2)),
-                    objective=_parse_float_or_inf(m.group(1)),
-                    source="J",
-                    nodes=0,
-                )
+            objective = _parse_float_or_inf(m.group(1))
+            repeats_found = m.re is _EARLY_FJ_RE and any(
+                inc.objective == objective for inc in result.incumbents
             )
+            if not repeats_found:
+                result.incumbents.append(
+                    Incumbent(
+                        time=float(m.group(2)),
+                        objective=objective,
+                        source="J",
+                        nodes=0,
+                    )
+                )
             continue
 
         # Solving report lines
