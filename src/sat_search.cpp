@@ -13,6 +13,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <span>
 #include <utility>
@@ -96,7 +97,10 @@ private:
     size_t clauses_ = 0;
     size_t aux_vars_ = 0;
     size_t work_ = 0;
-    std::vector<std::vector<Result>> levels_;
+    // Keyed by each interval's `lo`.  A map because a hard weighted row reaches
+    // a level's capacities in no useful order, which makes a sorted vector's
+    // inserts quadratic; this path runs once per search, not per step.
+    std::vector<std::map<std::int64_t, Result>> levels_;
     std::vector<std::int64_t> suffix_;
     std::vector<Frame> stack_;
     std::vector<Lit> clause_;
@@ -181,9 +185,9 @@ bool RowEncoder::lookup(size_t pos, std::int64_t capacity, Result& out) const {
         return true;
     }
     const auto& level = levels_[pos];
-    const auto it = std::ranges::lower_bound(level, capacity, std::greater{}, &Result::lo);
-    if (it != level.end() && it->hi >= capacity) {
-        out = *it;
+    const auto it = level.upper_bound(capacity);
+    if (it != level.begin() && std::prev(it)->second.hi >= capacity) {
+        out = std::prev(it)->second;
         return true;
     }
     return false;
@@ -216,13 +220,7 @@ bool RowEncoder::make_node(const Frame& frame, const Item& item, const Result& l
         }
         out.node = node;
     }
-    auto& level = levels_[frame.pos];
-    // Descending, because the walk takes the low child first and so reaches a
-    // level's capacities largest first: an insert lands near the end and shifts
-    // little.  Ascending, a hard knapsack row would move terabytes.
-    const auto at = std::ranges::lower_bound(level, out.lo, std::greater{}, &Result::lo);
-    work_ += static_cast<size_t>(level.end() - at);
-    level.insert(at, out);
+    levels_[frame.pos].emplace(out.lo, out);
     return true;
 }
 

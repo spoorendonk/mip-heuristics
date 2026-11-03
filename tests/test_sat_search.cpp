@@ -383,7 +383,7 @@ TEST_CASE("sat_search refuses what it cannot encode", "[sat]") {
         CHECK(result.status == SatSearchStatus::kRefused);
         CHECK(result.refusal == sat::SatRefusal::kNotPureBinary);
     }
-    SECTION("a weight past an int64, refused before it is cast") {
+    SECTION("a weight past an int64") {
         const HighsLp lp = binary_model(2, {{{1e13, 1e-6}, -kInf, 1}});
         const auto result = search(lp, point);
         CHECK(result.status == SatSearchStatus::kRefused);
@@ -425,9 +425,8 @@ TEST_CASE("sat_search stops when told, while encoding", "[sat]") {
 }
 
 TEST_CASE("sat_search stops inside one hard weighted row", "[sat]") {
-    // One knapsack row whose diagram alone would run into the clause cap, so a
-    // poll between rows would never come.  Weights are odd multiples of a large
-    // spread, so capacities rarely share a node.
+    // One knapsack row with weights this spread out, so capacities rarely share
+    // a node and the diagram is large: a poll only between rows would never come.
     constexpr HighsInt kN = 40;
     Rng rng(17);
     std::uniform_int_distribution<int> weight(100000, 1000000);
@@ -459,6 +458,50 @@ TEST_CASE("sat_search stops inside one hard weighted row", "[sat]") {
         CHECK(result.effort >= 1000);
         CHECK(result.effort < 2000);
     }
+}
+
+TEST_CASE("The solver gets only what encoding left of the effort budget", "[sat]") {
+    // Pigeonhole as rows: encoding is cheap and the search is not.
+    constexpr HighsInt kHoles = 5;
+    constexpr HighsInt kPigeons = kHoles + 1;
+    constexpr HighsInt kCols = kPigeons * kHoles;
+    std::vector<Row> rows;
+    for (HighsInt p = 0; p < kPigeons; ++p) {
+        std::vector<double> a(kCols, 0.0);
+        for (HighsInt h = 0; h < kHoles; ++h) {
+            a[(p * kHoles) + h] = 1.0;
+        }
+        rows.push_back({a, 1.0, kInf});
+    }
+    for (HighsInt h = 0; h < kHoles; ++h) {
+        std::vector<double> a(kCols, 0.0);
+        for (HighsInt p = 0; p < kPigeons; ++p) {
+            a[(p * kHoles) + h] = 1.0;
+        }
+        rows.push_back({a, -kInf, 1.0});
+    }
+    const HighsLp lp = binary_model(kCols, rows);
+    std::vector<double> point;
+
+    // No conflicts allowed stops the solver before it spends anything, which
+    // leaves the encoding's own work.
+    sat::SatSearchConfig encode_only;
+    encode_only.limits.max_conflicts = 0;
+    const auto encoding = search(lp, point, encode_only);
+    REQUIRE(encoding.status == SatSearchStatus::kStopped);
+    REQUIRE(encoding.effort > 0);
+
+    sat::SatSearchConfig exact;
+    exact.limits.max_effort = encoding.effort;
+    const auto result = search(lp, point, exact);
+    CHECK(result.status == SatSearchStatus::kStopped);
+    CHECK(result.effort == encoding.effort);
+    CHECK(result.conflicts == 0);
+
+    // Without the budget the search does spend more.
+    const auto full = search(lp, point);
+    CHECK(full.status == SatSearchStatus::kInfeasible);
+    CHECK(full.effort > encoding.effort);
 }
 
 TEST_CASE("sat_search on a pure-binary model from HiGHS's own instances", "[sat]") {

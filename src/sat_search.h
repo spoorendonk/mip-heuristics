@@ -54,8 +54,7 @@ struct SatSearchResult {
     size_t clauses = 0;
     size_t aux_vars = 0;
     size_t conflicts = 0;
-    // Row coefficients read, diagram nodes built and level entries shifted, plus
-    // the solver's effort.
+    // Row coefficients read and diagram nodes built, plus the solver's effort.
     size_t effort = 0;
 };
 
