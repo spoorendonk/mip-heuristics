@@ -235,6 +235,11 @@ struct RecombineStep {
 //      offspring beside it); then FJ runs from it for `ls_budget` effort,
 //      offering what it finds to the sink.  FJ for cuOpt's local search,
 //      since the crossovers' offspring are not repaired.
+//      cuOpt's LP over the continuous columns after the local search, and
+//      the LP offspring it yields, are not carried over: a feasible
+//      offspring's continuous columns are not re-optimised, so its objective
+//      and the arm's reward can be worse than cuOpt's on the same integer
+//      assignment (a deviation).
 //   4. The arm is rewarded with `recombination_reward` on the parents'
 //      better objective, the pool's best at the draw, the step's best
 //      objective, and the recombiner's effort.  The pool's best at the draw,

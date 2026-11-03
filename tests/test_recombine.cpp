@@ -325,18 +325,21 @@ public:
 
     std::mutex mtx;
     std::vector<std::pair<double, std::vector<double>>> accepted_points;
+    std::vector<size_t> accepted_efforts;
 
 private:
     void on_accept(double obj, const std::vector<double>& x, int /*source*/,
-                   const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
+                   const WorkerTrace& /*trace*/, size_t effort_at) override {
         std::scoped_lock guard(mtx);
         accepted_points.emplace_back(obj, x);
+        accepted_efforts.push_back(effort_at);
     }
 };
 
 struct OperatorRun {
     std::vector<recombine::RecombinerArm> arms;
     std::vector<double> accepted;
+    std::vector<std::vector<double>> accepted_points;
     size_t seeded = 0;
 };
 
@@ -371,6 +374,12 @@ OperatorRun run_operator(const Setup& s, uint64_t seed, size_t steps) {
         CHECK(ruin_repair::is_feasible(s.problem, x));
         CHECK(std::abs(obj - s.problem.objective(x)) <= 1e-6 * (1.0 + std::abs(obj)));
         run.accepted.push_back(obj);
+        run.accepted_points.push_back(x);
+        // The slot's charged effort only rises, the raw offspring's offers
+        // and FJ's alike.
+        if (k > run.seeded) {
+            CHECK(sink.accepted_efforts[k] >= sink.accepted_efforts[k - 1]);
+        }
     }
     return run;
 }
@@ -393,6 +402,7 @@ TEST_CASE("recombine: the operator offers feasible points, and replays from its 
     const OperatorRun again = run_operator(s, 5, 30);
     CHECK(again.arms == first.arms);
     CHECK(again.accepted == first.accepted);
+    CHECK(again.accepted_points == first.accepted_points);
 }
 
 TEST_CASE("recombine: the operator takes no step on a pool of one", "[recombine]") {

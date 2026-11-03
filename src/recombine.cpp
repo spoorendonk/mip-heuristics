@@ -327,8 +327,10 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
     }
     if (feasible) {
         result.objective = objective;
-        // The pool's verdict feeds no gate here: the reward reads objectives.
-        static_cast<void>(sink_.offer(objective, offspring_, trace_, 0));
+        // FJ reports a feasible start too, where it runs at all, and is then
+        // refused as a twin; this reaches the pool whatever FJ does.  The
+        // verdict feeds no gate here: the reward reads objectives.
+        static_cast<void>(sink_.offer(objective, offspring_, trace_, trace_.at(0)));
     }
 
     FjWorker fj(problem_, exec_, sink_, ls_budget, std::numeric_limits<size_t>::max(),
