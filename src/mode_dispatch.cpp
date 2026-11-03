@@ -136,7 +136,7 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
      false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, nullptr,
      &scylla::run},
-    // Last, so its population is everything the four before it found (#207).
+    // After the four whose finds make up its population (#207).
     {"ruin", kSolutionSourceRuin, &HighsOptionsStruct::mip_heuristic_ruin_effort, nullptr, false,
      &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr,
      &without_solver<&ruin_repair::run>},

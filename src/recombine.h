@@ -287,8 +287,12 @@ public:
                                                     const Deadline& deadline);
 
     // `source`'s point offered to the sink's pool if it is feasible, as cuOpt
-    // adds its external solutions to the population before a step.  A point
-    // equal to the last one `source` gave is skipped, feasible or not.
+    // adds its external solutions to the population before a step.  cuOpt also
+    // runs local search on each and recombines it with every population member
+    // under every recombiner (`recombine_and_ls_with_all`); here it only joins
+    // the pool, so it is a parent when drawn, and never if the pool refuses it
+    // (a deviation).  A point equal to the last one `source` gave is skipped,
+    // feasible or not.
     // Returns the effort charged.
     [[nodiscard]] size_t take_external(const RestartSource& source);
 

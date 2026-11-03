@@ -530,6 +530,8 @@ struct ExecutionContext {
     // thread may poll it, and it is polled wherever the deadline is — inside
     // an attempt as well as between attempts, which is what bounds a stop's
     // latency by a worker's poll cadence rather than by one attempt's budget.
+    // A sub-algorithm given a `Deadline` does not see it: recombine's bound-prop
+    // arm is the one such case under `run_until_stopped` (see that contract).
     const std::atomic<bool>* stop = nullptr;
 
     // Where LocalMIP's workers retain their least-violated infeasible point
@@ -646,9 +648,7 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //     at once under `HIGHSINT64`, or with no cost or no non-fixed integer
 //     column; it reads no `restart_now`.  Recombine returns 0 at once without
 //     an objective or a non-fixed integer column, reads no `restart_now` and
-//     has no worker to rebuild, so it reads no `worker_stale`; its bound-prop
-//     recombiner polls only the wall clock, so a stop can wait out up to one
-//     recombiner's effort (`attempt_cap`, at most `kRewardNominalEffort`).
+//     has no worker to rebuild, so it reads no `worker_stale`.
 //   - for FJ under `budget.fj_stall_ends_run`, the worker retiring: its
 //     `effortSinceLastImprovement` crossing `budget.worker_stale`, or its
 //     spending `budget.per_worker`, ends the run instead of a rebuild;
@@ -658,7 +658,11 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // `make_until_stopped_budget` lifts `total` and `stale`.  So a stop is seen
 // within one poll interval, except while a worker is being built: FJ's
 // solver construction and LocalMIP's cold-start construction sweep (one
-// O(nnz) pass) poll nothing, as in the presolve dispatch.  A worker is
+// O(nnz) pass) poll nothing, as in the presolve dispatch.  The other
+// exception is recombine's bound-prop arm: it takes a `Deadline`, which reads
+// the clock and not the flag, so a stop waits out the recombination in
+// progress.  `attempt_cap`, at most `kRewardNominalEffort`, caps only its DFS,
+// not its propagation or leaf repair, so that wait is no hard bound.  A worker is
 // rebuilt when it stalls (`budget.worker_stale`; for FJ against its own
 // `effortSinceLastImprovement`, for LocalMIP against effort since the
 // sink's best moved) or spends `budget.per_worker`, unless a

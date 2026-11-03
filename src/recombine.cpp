@@ -443,6 +443,11 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             size_t effort = 0;
             while (true) {
                 effort += op.take_external(source);
+                // `source` or `on_accept` may have set the stop just now, and
+                // a recombiner would not see it.
+                if (exec.past_deadline()) {
+                    return {.effort = effort, .found_improvement = false};
+                }
                 const std::optional<RecombineStep> step = capped_step(op, exec, run_cap);
                 if (step.has_value()) {
                     return {.effort = effort + step->effort, .found_improvement = step->improved};
