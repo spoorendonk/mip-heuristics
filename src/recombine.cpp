@@ -333,6 +333,14 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
         static_cast<void>(sink_.offer(objective, offspring_, trace_, trace_.at(0)));
     }
 
+    // cuOpt's local search opens on the same check, with reward 0 and nothing
+    // more to do; FJ would otherwise build its whole model before it first
+    // polled a clock (#114, #117).
+    if (deadline.expired() || exec_.past_deadline()) {
+        bandit_.reward(result.arm, 0.0);
+        return result;
+    }
+
     FjWorker fj(problem_, exec_, sink_, ls_budget, std::numeric_limits<size_t>::max(),
                 static_cast<uint32_t>(rng_()), offspring_, trace_);
     const AttemptResult ls = fj.run_attempt(ls_budget);

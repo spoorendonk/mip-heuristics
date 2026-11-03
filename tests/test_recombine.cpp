@@ -15,6 +15,7 @@
 #include "test_paths.h"
 
 #include <algorithm>
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <cstddef>
@@ -403,6 +404,35 @@ TEST_CASE("recombine: the operator offers feasible points, and replays from its 
     CHECK(again.arms == first.arms);
     CHECK(again.accepted == first.accepted);
     CHECK(again.accepted_points == first.accepted_points);
+}
+
+TEST_CASE("recombine: past the deadline the operator builds no FJ and rewards 0", "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    RecordingSink sink(*s.problem.integrality, 0);
+    for (uint64_t k = 0; k < 4; ++k) {
+        const std::vector<double> x = fj_point(s, k);
+        static_cast<void>(sink.offer(s.problem.objective(x), x, WorkerTrace{0, 0}, 0));
+    }
+    std::atomic<bool> stop{true};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    recombine::RecombineOperator op(s.problem, exec, sink, 5, WorkerTrace{0, 0});
+    // The initial pulls: bound-prop, then the two crossovers, whose effort is
+    // their setup and the feasibility check, with nothing left for an FJ.
+    const auto ncol = static_cast<size_t>(s.problem.ncol);
+    for (size_t k = 0; k < recombine::kNumRecombinerArms; ++k) {
+        const std::optional<recombine::RecombineStep> step = op.step(kBudget, kBudget, Deadline{});
+        if (!step.has_value()) {
+            FAIL("no step on a pool of at least two");
+            break;
+        }
+        CHECK(step->reward == 0.0);
+        if (step->arm != recombine::RecombinerArm::kBoundProp) {
+            CHECK(step->effort <= ncol + s.problem.nnz);
+        }
+    }
 }
 
 TEST_CASE("recombine: the operator takes no step on a pool of one", "[recombine]") {

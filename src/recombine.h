@@ -221,9 +221,15 @@ struct RecombineStep {
 //      (`population_t::get_two_random`) on the best-first pool:
 //      `i = min(U[0, n-1], U[0, n-1])`, `j = min(U[0, n-2], U[0, n-2])`,
 //      `j + 1` when `j >= i`, passed in that order, so `i` guides the
-//      bound-prop recombiner.  cuOpt's reserved slot for the best feasible
-//      point, and its check that the first two drawn are not twins, have no
-//      counterpart: the pool holds feasible points only, and no twins.
+//      bound-prop recombiner.  cuOpt draws over a list that starts with a
+//      reserved slot for the best feasible point, and its range stops short
+//      of the last position, so there the best sits at two positions and the
+//      worst is never drawn.  The pool has no such slot, so here the best
+//      weighs less and the worst can be drawn: on a pool of ten, the first
+//      parent is the best with probability 19% against cuOpt's 36%, and the
+//      worst with 1% against none (a deviation).  cuOpt's check that the
+//      first two drawn are not twins has no counterpart: the pool holds no
+//      twins.
 //   2. The bandit's arm recombines them: bound-prop, or the pool's guided
 //      crossover (`i`, `j`), or its neighborhood crossover (the better of
 //      the two first).  A crossover succeeds when its offspring differs
@@ -233,7 +239,9 @@ struct RecombineStep {
 //   3. A feasible offspring is offered to the sink as it is (cuOpt adds its
 //      offspring to the population after the local search, and its LP
 //      offspring beside it); then FJ runs from it for `ls_budget` effort,
-//      offering what it finds to the sink.  FJ for cuOpt's local search,
+//      offering what it finds to the sink, unless the deadline has passed
+//      by then, which rewards 0 as cuOpt's local search does.  FJ for cuOpt's
+//      local search,
 //      since the crossovers' offspring are not repaired.
 //      cuOpt's LP over the continuous columns after the local search, and
 //      the LP offspring it yields, are not carried over: a feasible
@@ -256,7 +264,12 @@ public:
 
     // One step, with `recombine_effort` capping the bound-prop recombiner's
     // search and `ls_budget` FJ's.  None with fewer than two pool entries,
-    // and then no arm is pulled.
+    // and then no arm is pulled.  `ls_budget` is not a cap below FJ's
+    // callback period: FJ tests it only at a callback, on a reported point or
+    // every 500000 effort, so a step spends up to that much whatever is
+    // passed; `RecombineStep::effort` reports what was spent.  `deadline`
+    // governs the recombiner and the check before FJ, `exec`'s clock FJ
+    // itself, so a `deadline` tighter than `exec`'s does not interrupt FJ.
     [[nodiscard]] std::optional<RecombineStep> step(size_t recombine_effort, size_t ls_budget,
                                                     const Deadline& deadline);
 
