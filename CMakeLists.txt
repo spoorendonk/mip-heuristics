@@ -150,6 +150,10 @@ add_library(mip_heuristics_core STATIC
     src/rng.h
     src/ruin_repair.cpp
     src/ruin_repair.h
+    src/sat_search.cpp
+    src/sat_search.h
+    src/sat_solver.cpp
+    src/sat_solver.h
     src/solution_pool.cpp
     src/solution_pool.h
     src/solution_sink.cpp
@@ -302,6 +306,7 @@ add_executable(mip_heuristics_tests
     tests/test_prop_engine.cpp
     tests/test_repair_search.cpp
     tests/test_repair_walk.cpp
+    tests/test_sat_search.cpp
     tests/test_continuous_loop.cpp
     tests/test_contested_pdlp.cpp
     tests/test_patience_gate.cpp
