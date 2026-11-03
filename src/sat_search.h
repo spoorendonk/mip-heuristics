@@ -29,7 +29,8 @@ enum class SatSearchStatus {
 
 enum class SatRefusal {
     kNone,
-    // A column that is neither fixed nor an integer within [0, 1].
+    // A column that is neither fixed, an integer one at an integral value, nor
+    // an integer with bounds exactly [0, 1].
     kNotPureBinary,
     // A row with a coefficient no power of ten up to `kMaxScale` makes integral,
     // or whose scaled weights are too large to add up exactly.
@@ -53,13 +54,15 @@ struct SatSearchResult {
     size_t clauses = 0;
     size_t aux_vars = 0;
     size_t conflicts = 0;
-    // Row coefficients read and diagram nodes built, plus the solver's effort.
+    // Row coefficients read, diagram nodes built and level entries shifted, plus
+    // the solver's effort.
     size_t effort = 0;
 };
 
-// `stop` is polled on this thread, per row while encoding and as `SatSolver`
-// documents while solving; it may be empty.  `point` is sized `problem.ncol`
-// and written only on `kFeasible`.
+// `stop` is polled on this thread, at least every `kEncodePollWork` units while
+// encoding and as `SatSolver` documents while solving; it may be empty.
+// `config.limits.max_effort` covers encoding and solving together; `max_conflicts`
+// is the solver's.  `point` is sized `problem.ncol` and written only on `kFeasible`.
 SatSearchResult sat_search(const ProblemView& problem, const SatSearchConfig& config,
                            const std::function<bool()>& stop, std::vector<double>& point);
 

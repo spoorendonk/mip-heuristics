@@ -86,21 +86,24 @@ sat::SatSearchResult search(const HighsLp& lp, std::vector<double>& point,
 
 // Checks the encoding against every assignment: with all columns free the search
 // must agree with brute force on whether a point exists, and with each assignment
-// fixed in turn it must accept exactly the feasible ones.
+// pinned in turn it must accept exactly the feasible ones.  Pinned by one-column
+// rows, not by bounds: a fixed column moves to the right-hand side, so bounds
+// would never reach the clauses this is checking.
 void check_against_brute_force(HighsInt ncol, const std::vector<Row>& rows) {
     bool any = false;
-    HighsLp fixed = binary_model(ncol, rows);
     std::vector<double> x(static_cast<size_t>(ncol));
     for (std::uint32_t mask = 0; mask < (1U << ncol); ++mask) {
+        std::vector<Row> pinned = rows;
         for (HighsInt j = 0; j < ncol; ++j) {
             x[j] = ((mask >> j) & 1U) != 0 ? 1.0 : 0.0;
-            fixed.col_lower_[j] = x[j];
-            fixed.col_upper_[j] = x[j];
+            std::vector<double> unit(static_cast<size_t>(ncol), 0.0);
+            unit[j] = 1.0;
+            pinned.push_back({unit, x[j], x[j]});
         }
         const bool feasible = satisfies(rows, x);
         any = any || feasible;
         std::vector<double> point;
-        const auto result = search(fixed, point);
+        const auto result = search(binary_model(ncol, pinned), point);
         CHECK(result.status ==
               (feasible ? SatSearchStatus::kFeasible : SatSearchStatus::kInfeasible));
     }
@@ -167,9 +170,15 @@ TEST_CASE("SAT solver answers hand-built formulas", "[sat]") {
         CHECK(solver.solve({}, {}) == SatResult::kUnsatisfiable);
         CHECK(solver.conflicts() > 0);
     }
+    SECTION("a refutation stays sound across learnt clause reductions") {
+        SatSolver solver(9 * 8, 3);
+        add_pigeonhole(solver, 8);
+        CHECK(solver.solve({}, {}) == SatResult::kUnsatisfiable);
+        CHECK(solver.reductions() > 0);
+    }
 }
 
-TEST_CASE("SAT solver finds models of random 3-SAT, across learnt clause reductions", "[sat]") {
+TEST_CASE("SAT solver finds models of random 3-SAT", "[sat]") {
     // Below the phase transition's ratio of 4.27, so nearly always satisfiable;
     // any model returned is checked, and a refutation would be legitimate.
     constexpr std::int32_t kVars = 250;
@@ -354,6 +363,32 @@ TEST_CASE("sat_search refuses what it cannot encode", "[sat]") {
         CHECK(result.status == SatSearchStatus::kRefused);
         CHECK(result.refusal == sat::SatRefusal::kNotIntegral);
     }
+    SECTION("bounds that are not a binary's, which only a view can carry") {
+        // `make_problem` rounds these inward; the adapter's view need not.
+        const HighsLp lp = binary_model(2, {{{1, 1}, 1, kInf}});
+        ProblemStorage storage;
+        const auto view = make_problem(lp, storage, kFeastol, kEpsilon);
+        REQUIRE(view.has_value());
+        SECTION("a fractional upper bound") {
+            storage.col_upper[0] = 0.5;
+        }
+        SECTION("a fractional lower bound") {
+            storage.col_lower[0] = 0.5;
+        }
+        SECTION("an integer column fixed at a fractional value") {
+            storage.col_lower[0] = 0.5;
+            storage.col_upper[0] = 0.5;
+        }
+        const auto result = sat::sat_search(*view, {}, {}, point);
+        CHECK(result.status == SatSearchStatus::kRefused);
+        CHECK(result.refusal == sat::SatRefusal::kNotPureBinary);
+    }
+    SECTION("a weight past an int64, refused before it is cast") {
+        const HighsLp lp = binary_model(2, {{{1e13, 1e-6}, -kInf, 1}});
+        const auto result = search(lp, point);
+        CHECK(result.status == SatSearchStatus::kRefused);
+        CHECK(result.refusal == sat::SatRefusal::kNotIntegral);
+    }
     SECTION("a model over the clause cap") {
         const HighsLp lp = binary_model(6, {{{1, 1, 1, 1, 1, 1}, 2, 4}});
         sat::SatSearchConfig config;
@@ -387,6 +422,43 @@ TEST_CASE("sat_search stops when told, while encoding", "[sat]") {
     const auto result = sat::sat_search(*view, {}, [] { return true; }, point);
     CHECK(result.status == SatSearchStatus::kStopped);
     CHECK(point.empty());
+}
+
+TEST_CASE("sat_search stops inside one hard weighted row", "[sat]") {
+    // One knapsack row whose diagram alone would run into the clause cap, so a
+    // poll between rows would never come.  Weights are odd multiples of a large
+    // spread, so capacities rarely share a node.
+    constexpr HighsInt kN = 40;
+    Rng rng(17);
+    std::uniform_int_distribution<int> weight(100000, 1000000);
+    Row row{std::vector<double>(kN), -kInf, 0.0};
+    double total = 0.0;
+    for (double& a : row.coefficients) {
+        a = weight(rng);
+        total += a;
+    }
+    row.upper = std::floor(total / 2.0);
+    const HighsLp lp = binary_model(kN, {row});
+    ProblemStorage storage;
+    const auto view = make_problem(lp, storage, kFeastol, kEpsilon);
+    REQUIRE(view.has_value());
+    std::vector<double> point;
+
+    SECTION("on the stop check") {
+        int polls = 0;
+        const auto result = sat::sat_search(*view, {}, [&polls] { return ++polls > 2; }, point);
+        CHECK(result.status == SatSearchStatus::kStopped);
+        CHECK(polls == 3);
+        CHECK(result.conflicts == 0);
+    }
+    SECTION("on the effort budget, which encoding spends from") {
+        sat::SatSearchConfig config;
+        config.limits.max_effort = 1000;
+        const auto result = sat::sat_search(*view, config, {}, point);
+        CHECK(result.status == SatSearchStatus::kStopped);
+        CHECK(result.effort >= 1000);
+        CHECK(result.effort < 2000);
+    }
 }
 
 TEST_CASE("sat_search on a pure-binary model from HiGHS's own instances", "[sat]") {

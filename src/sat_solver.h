@@ -54,6 +54,7 @@ public:
 
     [[nodiscard]] size_t conflicts() const { return conflicts_; }
     [[nodiscard]] size_t effort() const { return effort_; }
+    [[nodiscard]] size_t reductions() const { return reductions_; }
     [[nodiscard]] size_t num_clauses() const { return clauses_.size(); }
 
 private:
@@ -139,6 +140,7 @@ private:
 
     size_t conflicts_ = 0;
     size_t effort_ = 0;
+    size_t reductions_ = 0;
     std::uint64_t seed_state_;
 };
 

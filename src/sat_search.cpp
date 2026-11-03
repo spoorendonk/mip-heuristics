@@ -35,6 +35,9 @@ constexpr std::int64_t kUnbounded = std::int64_t{1} << 62;
 constexpr Lit kTrueNode = -1;
 constexpr Lit kFalseNode = -2;
 
+// Encoding work between polls of the caller's stop check.
+constexpr size_t kEncodePollWork = 1U << 16;
+
 enum class EncodeStatus { kEncoded, kInfeasible, kRefused, kStopped };
 
 struct Item {
@@ -53,14 +56,18 @@ struct Item {
 // al. 2012, monotonic BDDs).
 class RowEncoder {
 public:
-    RowEncoder(SatSolver& solver, size_t max_clauses)
-        : solver_(solver), max_clauses_(max_clauses) {}
+    RowEncoder(SatSolver& solver, size_t max_clauses, size_t max_work,
+               const std::function<bool()>& stop)
+        : solver_(solver), max_clauses_(max_clauses), max_work_(max_work), stop_(stop) {}
 
     EncodeStatus encode_leq(std::span<Item> items, std::int64_t bound);
 
     [[nodiscard]] size_t clauses() const { return clauses_; }
     [[nodiscard]] size_t aux_vars() const { return aux_vars_; }
     [[nodiscard]] size_t work() const { return work_; }
+    void charge(size_t work) { work_ += work; }
+    // The work budget, then the caller's stop check once `kEncodePollWork` is up.
+    bool should_stop();
 
 private:
     struct Result {
@@ -76,13 +83,16 @@ private:
     };
 
     bool add(std::span<const Lit> clause);
-    bool build_diagram(std::span<const Item> items, std::int64_t bound, Result& root);
+    EncodeStatus build_diagram(std::span<const Item> items, std::int64_t bound, Result& root);
     bool lookup(size_t pos, std::int64_t capacity, Result& out) const;
     bool make_node(const Frame& frame, const Item& item, const Result& low, const Result& high,
                    Result& out);
 
     SatSolver& solver_;
     size_t max_clauses_;
+    size_t max_work_;
+    const std::function<bool()>& stop_;
+    size_t next_poll_ = 0;
     size_t clauses_ = 0;
     size_t aux_vars_ = 0;
     size_t work_ = 0;
@@ -99,6 +109,17 @@ bool RowEncoder::add(std::span<const Lit> clause) {
     ++clauses_;
     solver_.add_clause(clause);
     return true;
+}
+
+bool RowEncoder::should_stop() {
+    if (work_ >= max_work_) {
+        return true;
+    }
+    if (work_ < next_poll_) {
+        return false;
+    }
+    next_poll_ = work_ + kEncodePollWork;
+    return stop_ && stop_();
 }
 
 EncodeStatus RowEncoder::encode_leq(std::span<Item> items, std::int64_t bound) {
@@ -143,8 +164,9 @@ EncodeStatus RowEncoder::encode_leq(std::span<Item> items, std::int64_t bound) {
         return a.weight != b.weight ? a.weight > b.weight : a.lit < b.lit;
     });
     Result root{};
-    if (!build_diagram(items, bound / divisor, root)) {
-        return EncodeStatus::kRefused;
+    const EncodeStatus built = build_diagram(items, bound / divisor, root);
+    if (built != EncodeStatus::kEncoded) {
+        return built;
     }
     return add({&root.node, 1}) ? EncodeStatus::kEncoded : EncodeStatus::kRefused;
 }
@@ -159,9 +181,9 @@ bool RowEncoder::lookup(size_t pos, std::int64_t capacity, Result& out) const {
         return true;
     }
     const auto& level = levels_[pos];
-    const auto it = std::ranges::upper_bound(level, capacity, {}, &Result::lo);
-    if (it != level.begin() && std::prev(it)->hi >= capacity) {
-        out = *std::prev(it);
+    const auto it = std::ranges::lower_bound(level, capacity, std::greater{}, &Result::lo);
+    if (it != level.end() && it->hi >= capacity) {
+        out = *it;
         return true;
     }
     return false;
@@ -195,14 +217,19 @@ bool RowEncoder::make_node(const Frame& frame, const Item& item, const Result& l
         out.node = node;
     }
     auto& level = levels_[frame.pos];
-    const auto at = std::ranges::upper_bound(level, out.lo, {}, &Result::lo);
+    // Descending, because the walk takes the low child first and so reaches a
+    // level's capacities largest first: an insert lands near the end and shifts
+    // little.  Ascending, a hard knapsack row would move terabytes.
+    const auto at = std::ranges::lower_bound(level, out.lo, std::greater{}, &Result::lo);
+    work_ += static_cast<size_t>(level.end() - at);
     level.insert(at, out);
     return true;
 }
 
 // Iterative because a row can be as long as the model is wide, which a worker
 // thread's stack would not survive as recursion.
-bool RowEncoder::build_diagram(std::span<const Item> items, std::int64_t bound, Result& root) {
+EncodeStatus RowEncoder::build_diagram(std::span<const Item> items, std::int64_t bound,
+                                       Result& root) {
     const size_t n = items.size();
     suffix_.assign(n + 1, 0);
     for (size_t k = n; k > 0; --k) {
@@ -237,15 +264,18 @@ bool RowEncoder::build_diagram(std::span<const Item> items, std::int64_t bound, 
             stack_.push_back({pos + 1, capacity - items[pos].weight, 0, {}});
         } else {
             ++work_;
+            if (should_stop()) {
+                return EncodeStatus::kStopped;
+            }
             const Result high = ret;
             if (!make_node(frame, items[pos], frame.low, high, ret)) {
-                return false;
+                return EncodeStatus::kRefused;
             }
             stack_.pop_back();
         }
     }
     root = ret;
-    return true;
+    return EncodeStatus::kEncoded;
 }
 
 bool is_fixed(double lower, double upper) {
@@ -256,10 +286,11 @@ bool is_pure_binary(const ProblemView& p) {
     for (HighsInt j = 0; j < p.ncol; ++j) {
         const double lower = (*p.col_lower)[j];
         const double upper = (*p.col_upper)[j];
-        if (is_fixed(lower, upper)) {
-            continue;
-        }
-        if ((*p.integrality)[j] == HighsVarType::kContinuous || lower < 0.0 || upper > 1.0) {
+        const bool integer = (*p.integrality)[j] != HighsVarType::kContinuous;
+        // Exact: a bound like 0.5 on an integer column is not a binary's, and the
+        // adapter's view does not round them inward as `make_problem` does.
+        if (is_fixed(lower, upper) ? integer && lower != std::round(lower)
+                                   : !integer || lower != 0.0 || upper != 1.0) {
             return false;
         }
     }
@@ -285,10 +316,11 @@ double integer_scale(std::span<const double> values) {
 
 class ProblemEncoder {
 public:
-    ProblemEncoder(const ProblemView& p, SatSolver& solver, size_t max_clauses)
-        : p_(p), rows_(solver, max_clauses) {}
+    ProblemEncoder(const ProblemView& p, SatSolver& solver, size_t max_clauses, size_t max_work,
+                   const std::function<bool()>& stop)
+        : p_(p), rows_(solver, max_clauses, max_work, stop) {}
 
-    EncodeStatus encode(const std::function<bool()>& stop, SatRefusal& refusal);
+    EncodeStatus encode(SatRefusal& refusal);
 
     [[nodiscard]] const RowEncoder& rows() const { return rows_; }
 
@@ -306,6 +338,7 @@ EncodeStatus ProblemEncoder::encode_side(HighsInt i, double sign, double rhs, Sa
     items_.clear();
     values_.clear();
     double residual = rhs;
+    rows_.charge(static_cast<size_t>((*p_.ar_start)[i + 1] - (*p_.ar_start)[i]));
     for (HighsInt k = (*p_.ar_start)[i]; k < (*p_.ar_start)[i + 1]; ++k) {
         const HighsInt j = (*p_.ar_index)[k];
         const double a = sign * (*p_.ar_value)[k];
@@ -329,16 +362,17 @@ EncodeStatus ProblemEncoder::encode_side(HighsInt i, double sign, double rhs, Sa
     for (size_t k = 0; k < items_.size(); ++k) {
         const double w = std::round(values_[k] * scale);
         weight_sum += std::abs(w);
+        // Before the cast below, which this magnitude would overflow.
+        if (weight_sum >= static_cast<double>(kMaxWeightSum)) {
+            refusal = SatRefusal::kNotIntegral;
+            return EncodeStatus::kRefused;
+        }
         // A negative weight on `x` is a positive one on its negation.
         if (w < 0.0) {
             items_[k].lit ^= 1;
             bound -= w;
         }
         items_[k].weight = static_cast<std::int64_t>(std::abs(w));
-    }
-    if (weight_sum >= static_cast<double>(kMaxWeightSum)) {
-        refusal = SatRefusal::kNotIntegral;
-        return EncodeStatus::kRefused;
     }
     // A bound past the sum of weights says the same as the sum, and any negative
     // one the same as -1, so the cast below cannot overflow on a huge right-hand
@@ -351,10 +385,10 @@ EncodeStatus ProblemEncoder::encode_side(HighsInt i, double sign, double rhs, Sa
     return status;
 }
 
-EncodeStatus ProblemEncoder::encode(const std::function<bool()>& stop, SatRefusal& refusal) {
+EncodeStatus ProblemEncoder::encode(SatRefusal& refusal) {
     constexpr double kInf = std::numeric_limits<double>::infinity();
     for (HighsInt i = 0; i < p_.nrow; ++i) {
-        if (stop && stop()) {
+        if (rows_.should_stop()) {
             return EncodeStatus::kStopped;
         }
         const double upper = (*p_.row_upper)[i];
@@ -399,11 +433,11 @@ SatSearchResult sat_search(const ProblemView& problem, const SatSearchConfig& co
         return result;
     }
     SatSolver solver(static_cast<std::int32_t>(problem.ncol), config.seed);
-    ProblemEncoder encoder(problem, solver, config.max_clauses);
-    const EncodeStatus encoded = encoder.encode(stop, result.refusal);
+    ProblemEncoder encoder(problem, solver, config.max_clauses, config.limits.max_effort, stop);
+    const EncodeStatus encoded = encoder.encode(result.refusal);
     result.clauses = encoder.rows().clauses();
     result.aux_vars = encoder.rows().aux_vars();
-    result.effort = encoder.rows().work() + problem.nnz;
+    result.effort = encoder.rows().work();
     if (encoded == EncodeStatus::kRefused) {
         result.status = SatSearchStatus::kRefused;
         return result;
@@ -412,7 +446,10 @@ SatSearchResult sat_search(const ProblemView& problem, const SatSearchConfig& co
         result.status = SatSearchStatus::kStopped;
         return result;
     }
-    const SatResult solved = solver.solve(config.limits, stop);
+    // `max_effort` covers the whole search, so encoding spends from it.
+    SatLimits limits = config.limits;
+    limits.max_effort -= std::min(limits.max_effort, result.effort);
+    const SatResult solved = solver.solve(limits, stop);
     result.conflicts = solver.conflicts();
     result.effort += solver.effort();
     if (solved == SatResult::kStopped) {

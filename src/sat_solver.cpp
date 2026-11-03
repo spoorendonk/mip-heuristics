@@ -337,9 +337,11 @@ bool SatSolver::decide() {
 
 // Deletes the worst half of the deletable learnt clauses, and rebuilds the arena
 // and the watches without them.  Called at the root at a propagation fixpoint,
-// so no reason refers to a clause anything will read again, and a watched
-// literal that is false has a true partner, which the literal order preserves.
+// so no reason refers to a clause anything will read again, and a clause with a
+// false watched literal is satisfied at the root, so no watch of it matters.
 void SatSolver::reduce_learnts() {
+    ++reductions_;
+    effort_ += arena_.size();
     std::ranges::sort(learnts_, [this](ClauseRef a, ClauseRef b) {
         const std::int32_t la = clause_lbd(a);
         const std::int32_t lb = clause_lbd(b);

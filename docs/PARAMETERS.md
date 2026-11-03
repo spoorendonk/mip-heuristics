@@ -1257,9 +1257,9 @@ A row's coefficients must come within `kIntegralTol` (`1e-9`) of integers at som
 
 At a restart with `kReduceBase` (`2000`) learnt clauses, growing by `kReduceIncrement` (`300`) per reduction, the worse half by LBD then size are deleted, except those of LBD at most `kGlueLbd` (`2`). Glucose's ranking; the schedule is simpler than Glucose's, since the probe's solves needed under 3,000 conflicts.
 
-### `kStopPollEffort` — stop-check cadence
+### `kStopPollEffort`, `kEncodePollWork` — stop-check cadence
 
-`65536` units of effort between polls of the caller's stop check, so it costs nothing next to the propagation between polls.
+`65536` units of effort between polls of the caller's stop check, in the solver and in the encoder respectively, so a poll costs nothing next to the work between polls.
 
 ---
 
