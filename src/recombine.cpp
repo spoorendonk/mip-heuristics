@@ -411,6 +411,13 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     if (budget.disabled() || !can_improve(problem)) {
         return {};
     }
+    // Before any worker builds an operator: nothing else offers during a
+    // chain step, so a pool short of two stays short.
+    std::vector<SolutionPool::EntryRef> entries;
+    sink.entry_refs(entries);
+    if (entries.size() < 2) {
+        return {};
+    }
     return {.effort = run_opportunistic_loop(
                 exec, budget,
                 [&](int worker, Rng& rng) {

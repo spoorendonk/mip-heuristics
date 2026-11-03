@@ -2793,7 +2793,7 @@ open benchmark question, not a measured default.
   `min(headroom x share, cap)`. That spelling shipped first and leaves the
   per-call cap binding however large the share is, so the option could not
   express a budget that never binds — the property the `1e6` ceiling exists
-  for on all six effort options, and the one thing this option was added to
+  for on all seven effort options, and the one thing this option was added to
   make possible. Scaling the `min` is identical at `share == 1.0`, grows
   without bound above it, and below it throttles both terms proportionally,
   which is a truer reading of "share" than throttling one. Overdrawing the
