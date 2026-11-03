@@ -11,11 +11,18 @@ the arms: main against itself at another seed is the noise floor an arm's ratio
 has to clear, which matters at one seed per arm and on a machine in use.
 
 Results land under `bench/results/cuopt-smoke/<host>`, one tree per host, since
-times are never compared across hosts.  `SMOKE_WRAP` runs each solve under a
-wrapper, so a host's lock is held per solve and a build can get in between:
+times are never compared across hosts.  The first `run` copies the binary into
+the tree and every solve uses that copy, so a rebuild cannot put two binaries in
+one comparison; a later `run` with a different binary is refused.
 
-    SMOKE_WRAP="xk lock --"                   Linux
-    SMOKE_WRAP="wcp build --here --jobs 2 --" macOS
+`SMOKE_WRAP` runs each solve under a wrapper, so the host's lock or budget is
+held per solve and a build can run between solves:
+
+    SMOKE_WRAP="xk lock --"                   Linux: the machine lock, exclusive
+    SMOKE_WRAP="wcp build --here --jobs 8 --" macOS: no lock there; a solve charged
+                                              its cores takes all the build budget,
+                                              which reduces overlap with a build
+                                              rather than excluding it
 
 Smoke only: a verdict from these runs is a choice of what to measure properly,
 never a default change.
@@ -24,8 +31,10 @@ never a default change.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -48,6 +57,7 @@ from analyze_results import (
     seed_paired_values,
 )
 from parse_highs_log import SolveResult
+from run_benchmark import existing_log
 
 BENCH = Path(__file__).resolve().parent
 TIME_LIMIT = 60.0
@@ -109,10 +119,6 @@ def noise_seed(seeds: list[int]) -> int:
     return max(seeds) + 1
 
 
-def log_path(out: Path, solve: Solve) -> Path:
-    return out / solve.arm.name / CONFIG / f"seed{solve.seed}" / f"{solve.instance}.log"
-
-
 def plan(instances: list[str], seeds: list[int], arms: tuple[Arm, ...]) -> list[Solve]:
     """Every solve, instance by instance, so a run cut short is still paired."""
     solves: list[Solve] = []
@@ -126,13 +132,27 @@ def plan(instances: list[str], seeds: list[int], arms: tuple[Arm, ...]) -> list[
 
 
 def pending(solves: list[Solve], out: Path) -> list[Solve]:
-    """What is left, by the same test `run_benchmark --skip-existing` applies."""
+    """What is left, by the test `run_benchmark --skip-existing` applies."""
+    return [
+        s
+        for s in solves
+        if not existing_log(str(out / s.arm.name), CONFIG, s.instance, s.seed)
+    ]
 
-    def done(solve: Solve) -> bool:
-        path = log_path(out, solve)
-        return path.exists() and path.stat().st_size > 0
 
-    return [s for s in solves if not done(s)]
+def pin_binary(binary: str, out: Path) -> str:
+    """The tree's own copy of `binary`; raises if the tree holds another build."""
+    pinned = out / "bin" / "highs"
+    if not pinned.exists():
+        pinned.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(binary, pinned)
+    elif not filecmp.cmp(binary, pinned, shallow=False):
+        raise ValueError(
+            f"{out} was run with another binary than {binary}: its arms would pair "
+            "across builds.  Use a fresh --output, or --binary "
+            f"{pinned} to resume."
+        )
+    return str(pinned)
 
 
 def core_hours(runs: int, cores: int) -> float:
@@ -173,8 +193,14 @@ def solve_command(solve: Solve, args: argparse.Namespace) -> list[str]:
 
 
 def run(todo: list[Solve], args: argparse.Namespace) -> int:
-    """Run every pending solve; 3 when the wall cap stopped it, rerun to resume."""
+    """Run every pending solve; rerun to resume.
+
+    3 when the wall cap stopped it.  4 when a solve left no log: run_benchmark
+    exits 0 after a failed solve (`.log.err`) or a missing instance file, and
+    that solve would otherwise only be a smaller n in the report.
+    """
     cap = 1.5 * len(todo) * TIME_LIMIT if args.wall_cap is None else args.wall_cap
+    args.binary = pin_binary(args.binary, args.output)
     start = time.monotonic()
     for i, solve in enumerate(todo, 1):
         if time.monotonic() - start > cap:
@@ -187,13 +213,19 @@ def run(todo: list[Solve], args: argparse.Namespace) -> int:
         code = subprocess.call(solve_command(solve, args))
         if code != 0:
             return code
-    return 0
+    left = pending(todo, args.output)
+    for solve in left:
+        print(f"no log: {solve.arm.name} {solve.instance} seed {solve.seed}")
+    return 4 if left else 0
 
 
 def t_first(run_result: SolveResult, _instance: str) -> float:
-    """Time to the first incumbent, a run without one scored at the limit."""
+    """Time to the first incumbent, capped at the limit, which is also what a run
+    without one scores: a late incumbent must not rank below none, and the primal
+    integral ignores one past the limit too.
+    """
     found = run_result.time_to_first_feasible
-    return TIME_LIMIT if found is None else found
+    return TIME_LIMIT if found is None else min(found, TIME_LIMIT)
 
 
 def table_row(
@@ -239,13 +271,20 @@ def report_rows(
     seeds: list[int],
     instances: list[str],
     integral: Callable[[SolveResult, str], float],
-) -> list[str]:
-    """The table: the noise floor first, then one row per arm with runs."""
+) -> tuple[list[str], list[str]]:
+    """The table's rows, the noise floor first, and what each row left out."""
     shift = integral_shift()
+
+    scope = {arm.name: arm.instances for arm in ARMS}
+    notes: list[str] = []
 
     def row(label: str, tree: Results, arm: str, base: str) -> str:
         pi = seed_paired_values(tree, arm, base, instances, integral, shift)
         t1 = seed_paired_values(tree, arm, base, instances, t_first, T_FIRST_SHIFT)
+        planned = scope.get(arm)
+        missing = [i for i in pi.unpaired if planned is None or i in planned]
+        if missing:
+            notes.append(f"{label}: no paired run on {', '.join(missing)}")
         return table_row(label, pi, t1, feasible_counts(tree, arm, base), shift)
 
     # Main on the first seed as "main", and on the noise seed under seed 0 of
@@ -267,7 +306,7 @@ def report_rows(
         for arm in results
         if arm != BASELINE and results[arm]
     )
-    return rows
+    return rows, notes
 
 
 TABLE_HEADER = (
@@ -301,8 +340,10 @@ def report(args: argparse.Namespace) -> int:
 
     print(f"{args.output}: {TIME_LIMIT:.0f} s, ratios to main, lower is better\n")
     print(TABLE_HEADER)
-    for line in report_rows(results, args.seeds, instances, integral):
-        print(line)
+    rows, notes = report_rows(results, args.seeds, instances, integral)
+    print("\n".join(rows))
+    if notes:
+        print("\n" + "\n".join(notes))
     return 0
 
 
@@ -310,7 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=["size", "run", "report"])
     parser.add_argument("--instances", default=str(BENCH / "instances_small.txt"))
-    parser.add_argument("--binary", default="build/bin/highs")
+    parser.add_argument("--binary", default=str(BENCH.parent / "build/bin/highs"))
     parser.add_argument(
         "--output",
         type=Path,
@@ -345,7 +386,11 @@ def main() -> int:
     instances = read_instance_list(args.instances)
     todo = pending(plan(instances, args.seeds, arms), args.output)
     if args.command == "run":
-        return run(todo, args)
+        try:
+            return run(todo, args)
+        except (ValueError, OSError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
     cores = os.cpu_count() or 1
     print(
         f"{len(todo)} solves x {TIME_LIMIT:.0f} s x {cores} cores: at most "
