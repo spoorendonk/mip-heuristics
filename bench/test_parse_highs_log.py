@@ -85,6 +85,32 @@ def test_custom_source_codes_recorded():
     assert result.incumbents[3].objective == 6.0
 
 
+def test_ruin_and_recombine_source_codes_recorded():
+    """N and O (ruin, recombine) count as incumbents like every other source."""
+    log = (
+        "N       0       0         0   0.00%          0              10              Large      0      0      0       0.0   1.2s\n"
+        "O       0       0         0   0.00%          0               8              Large      0      0      0       0.0   2.5s\n"
+    )
+    assert [inc.source for inc in parse_log(log).incumbents] == ["N", "O"]
+
+
+def test_early_fj_mip_start_dated_at_its_heur_line():
+    """Early FJ's point has no display row of its own: it is an incumbent from
+    the end of presolve, and the row repeating it later is no new one."""
+    log = (
+        "Early FeasibilityJump on the original model: objective 12.5, passed on as the MIP start\n"
+        "[Heur] name=early_fj phase=presolve start_s=0.100 end_s=0.700 effort=10 wall_ms=600.0 effort_per_ms=0.02 found=1 nnz=100\n"
+        "        0       0         0   0.00%   0               12.5               Large      0      0      0         0   3.2s\n"
+        "J       0       0         0   0.00%   0               11                 Large      0      0      0         0   4.0s\n"
+    )
+    result = parse_log(log)
+    assert [(i.time, i.objective, i.source) for i in result.incumbents] == [
+        (0.7, 12.5, "J"),
+        (4.0, 11.0, "J"),
+    ]
+    assert result.time_to_first_feasible == 0.7
+
+
 def test_presolve_optimal_space_source_recorded():
     """When presolve solves the model to optimality (empty B&B), the single
     log line has a space source.  It must be recorded as incumbent 'P' so

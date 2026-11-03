@@ -255,14 +255,18 @@ def table_row(
 
 
 def feasible_counts(results: Results, arm: str, base: str) -> tuple[int, int]:
-    """Runs with an incumbent in each arm, over the runs the two share."""
+    """Runs with an incumbent inside the limit, over the runs the two share."""
+
+    def feasible(r: SolveResult) -> bool:
+        return any(inc.time < TIME_LIMIT for inc in r.incumbents)
+
     in_arm = in_base = 0
     for seed, runs in results[arm].items():
         for instance, r in runs.items():
             other = results[base].get(seed, {}).get(instance)
             if other is not None:
-                in_arm += bool(r.incumbents)
-                in_base += bool(other.incumbents)
+                in_arm += feasible(r)
+                in_base += feasible(other)
     return in_arm, in_base
 
 

@@ -20,7 +20,7 @@ logs with a `REGENERATE.sh` that re-derives every table and diffs it — so
 | `run_headline.sh` | the headline: the shipped configuration at **default options** over the full 233 at 600 s, against the vanilla arm in the same tree. One seed by default -- three is what the stage asks for and is the deliverable, one is the gate, and the script says why. `until 08:00` bounds a window by wall-clock time; `report` prints the three pre-registered tables |
 | `run_ablation_c.sh` | `fpr_lp`'s two stages (#165): `capability` (does it fire, and yield, given every advantage) then `contribution` (the paired campaign metric) |
 | `run_target.py` | scores **one parameter vector** on one instance set — the inner loop of the #107 tuning search |
-| `cuopt_smoke.py` | the smoke A/B of the cuOpt ideas (#238): `size`, `run`, `report`. Each arm is `all` with one option moved, on `instances_small.txt` at 60 s; `main` runs a second seed as the noise floor; one tree per host, `SMOKE_WRAP` holds a host's lock per solve |
+| `cuopt_smoke.py` | the smoke A/B of the cuOpt ideas (#238): `size`, `run`, `report`. Each arm is `all` with one option moved, on `instances_small.txt` at 60 s; `main` runs a second seed as the noise floor; one tree per host, `SMOKE_WRAP` holds a host's lock or budget per solve |
 | `download_miplib.sh` | fetches MIPLIB2017 once per machine (3.5 GB, outside every checkout) |
 
 ## Reading things
