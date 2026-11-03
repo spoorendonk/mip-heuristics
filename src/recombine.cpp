@@ -2,13 +2,16 @@
 
 #include "fj_worker.h"
 #include "heuristic_common.h"
+#include "opportunistic_runner.h"
 #include "ruin_repair.h"
 #include "solution_sink.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <span>
+#include <thread>
 
 namespace recombine {
 
@@ -287,7 +290,27 @@ Offspring RecombineOperator::recombine(RecombinerArm arm, const SolutionPool::En
     return offspring;
 }
 
-std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, size_t ls_budget,
+size_t local_search_budget(size_t nnz, bool feasible) {
+    const double seconds = feasible ? kLsSecondsFeasible : kLsSecondsInfeasible;
+    return nnz + static_cast<size_t>(seconds * ruin_repair::kRepairEffortPerSecond);
+}
+
+size_t RecombineOperator::take_external(const RestartSource& source) {
+    if (!take_restart(source, rng_, external_, problem_) || external_ == last_external_) {
+        return 0;
+    }
+    last_external_ = external_;
+    trace_.effort_base += problem_.nnz;
+    if (ruin_repair::is_feasible(problem_, external_)) {
+        // The caller's point joining the population is no improvement of the
+        // operator's, so the verdict is not read.
+        static_cast<void>(
+            sink_.offer(problem_.objective(external_), external_, trace_, trace_.at(0)));
+    }
+    return problem_.nnz;
+}
+
+std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, size_t ls_cap,
                                                      const Deadline& deadline) {
     sink_.entry_refs(entries_);
     const size_t n = entries_.size();
@@ -328,9 +351,9 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
     if (feasible) {
         result.objective = objective;
         // FJ reports a feasible start too, where it runs at all, and is then
-        // refused as a twin; this reaches the pool whatever FJ does.  The
-        // verdict feeds no gate here: the reward reads objectives.
-        static_cast<void>(sink_.offer(objective, offspring_, trace_, trace_.at(0)));
+        // refused as a twin; this reaches the pool whatever FJ does.
+        result.improved =
+            sink_.offer(objective, offspring_, trace_, trace_.at(0)).improved_incumbent;
     }
 
     // cuOpt's local search opens on the same check, with reward 0 and nothing
@@ -341,10 +364,12 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
         return result;
     }
 
+    const size_t ls_budget = std::min(local_search_budget(problem_.nnz, feasible), ls_cap);
     FjWorker fj(problem_, exec_, sink_, ls_budget, std::numeric_limits<size_t>::max(),
                 static_cast<uint32_t>(rng_()), offspring_, trace_);
     const AttemptResult ls = fj.run_attempt(ls_budget);
     result.effort += ls.effort;
+    result.improved = result.improved || ls.found_improvement;
     trace_.effort_base = fj.traced_effort();
     if (!fj.best_found().empty()) {
         result.objective = std::min(result.objective, fj.best_found_objective());
@@ -353,6 +378,81 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
     result.reward = recombination_reward(best_of_parents, best, result.objective, offspring.effort);
     bandit_.reward(result.arm, result.reward);
     return result;
+}
+
+namespace {
+
+// Whether a recombination can improve anything on `problem`: an objective,
+// and an integer column whose bounds leave room.
+bool can_improve(const ProblemView& problem) {
+    if (problem.degenerate() || !has_objective(problem)) {
+        return false;
+    }
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        if (is_integer(*problem.integrality, j) &&
+            (*problem.col_upper)[j] - (*problem.col_lower)[j] > problem.feastol) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The operator's step within one attempt's `run_cap`.
+std::optional<RecombineStep> capped_step(RecombineOperator& op, const ExecutionContext& exec,
+                                         size_t run_cap) {
+    const size_t recombine_effort = std::min(run_cap, static_cast<size_t>(kRewardNominalEffort));
+    return op.step(recombine_effort, run_cap, exec.deadline);
+}
+
+}  // namespace
+
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, SolutionSink& sink) {
+    if (budget.disabled() || !can_improve(problem)) {
+        return {};
+    }
+    return {.effort = run_opportunistic_loop(
+                exec, budget,
+                [&](int worker, Rng& rng) {
+                    return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker, 0});
+                },
+                [&](RecombineOperator& op, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
+                    // No step charges nothing, which retires the slot.
+                    const std::optional<RecombineStep> step = capped_step(op, exec, run_cap);
+                    return step.has_value() ? AttemptResult{.effort = step->effort,
+                                                            .found_improvement = step->improved}
+                                            : AttemptResult{};
+                })};
+}
+
+size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,
+                         const ExecutionContext& exec, int worker, const RestartSource& source,
+                         SolutionSink& sink) {
+    if (!can_improve(problem)) {
+        return 0;
+    }
+    return run_on_caller_thread(
+        exec, budget, worker,
+        [&](int worker_idx, Rng& rng) {
+            return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker_idx, 0});
+        },
+        [&](RecombineOperator& op, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
+            // Wait for two entries, as a ruin slot waits for its point, rather
+            // than return zero effort, which would end the run.  This thread
+            // holds the poller seat, so the wait polls the terminator too.
+            size_t effort = 0;
+            while (true) {
+                effort += op.take_external(source);
+                const std::optional<RecombineStep> step = capped_step(op, exec, run_cap);
+                if (step.has_value()) {
+                    return {.effort = effort + step->effort, .found_improvement = step->improved};
+                }
+                if (exec.terminated()) {
+                    return {.effort = effort, .found_improvement = false};
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(ruin_repair::kWaitForSeedMs));
+            }
+        });
 }
 
 }  // namespace recombine

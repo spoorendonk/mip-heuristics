@@ -44,6 +44,8 @@ const char* name_for_source(int source) {
             return "scylla";
         case kSolutionSourceRuin:
             return "ruin";
+        case kSolutionSourceRecombine:
+            return "recombine";
         case kSolutionSourceFprLp:
             return "fpr_lp";
         default:

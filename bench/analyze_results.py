@@ -1401,6 +1401,7 @@ CUSTOM_SOURCE_LABELS: dict[str, str] = {
     "G": "Scylla",
     "J": "FJ",
     "N": "Ruin",
+    "O": "Recombine",
 }
 
 # Order used when printing attribution rows (custom heuristics first, then the
@@ -1412,6 +1413,7 @@ ATTRIBUTION_ORDER: list[str] = [
     "Scylla",
     "FJ",
     "Ruin",
+    "Recombine",
     "HiGHS/other",
 ]
 

@@ -154,6 +154,26 @@ TEST_CASE("effort-zero: a zeroed heuristic is absent from the trace", "[effort-z
     }
 }
 
+// Recombination (#229) is off by default and needs two pool entries, so it
+// has its own pair rather than a `kCases` row: at the default no line and no
+// offer, and with an effort its line follows the chain's and it offers points.
+// p0548 gives the chain two entries well before recombination, with a budget
+// that a single-threaded solve spends in moments.
+TEST_CASE("effort-zero: recombination runs only with an effort", "[effort-zero]") {
+    const auto off = trace_solve("p0548.mps", [](Highs& /*h*/) {});
+    const auto off_names = presolve_heur_names(off);
+    CHECK(std::ranges::find(off_names, std::string("recombine")) == off_names.end());
+    CHECK(offers_by(off, "recombine") == 0);
+    CHECK(!source_codes(off).contains('O'));
+
+    const auto on = trace_solve(
+        "p0548.mps", [](Highs& h) { require_option(h, "mip_heuristic_recombine_effort", 1.0); });
+    const auto on_names = presolve_heur_names(on);
+    REQUIRE_FALSE(on_names.empty());
+    CHECK(on_names.back() == "recombine");
+    CHECK(offers_by(on, "recombine") > 0);
+}
+
 // The complement, and the guard against every case above passing because
 // the trace is empty: each heuristic *does* appear when it is the one left
 // enabled.

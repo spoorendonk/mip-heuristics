@@ -615,7 +615,8 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
                            .worker_stale = std::max<size_t>(stale / num_workers, 1)};
 }
 
-// The second runner contract (#171).  FJ, LocalMIP and ruin also expose
+// The second runner contract (#171).  FJ, LocalMIP, ruin and recombine also
+// expose
 //
 //     size_t <ns>::run_until_stopped(const ProblemView &problem, const HeuristicBudget &budget,
 //                                    const ExecutionContext &exec, int worker,
@@ -643,7 +644,11 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 //     retires the slot: a degenerate view (returned at once, as 0), or FJ
 //     built with `HIGHSINT64`, which never searches.  Ruin also returns 0
 //     at once under `HIGHSINT64`, or with no cost or no non-fixed integer
-//     column; it reads no `restart_now`.
+//     column; it reads no `restart_now`.  Recombine returns 0 at once without
+//     an objective or a non-fixed integer column, reads no `restart_now` and
+//     has no worker to rebuild, so it reads no `worker_stale`; its bound-prop
+//     recombiner polls only the wall clock, so a stop can wait out up to one
+//     recombiner's effort (`attempt_cap`, at most `kRewardNominalEffort`).
 //   - for FJ under `budget.fj_stall_ends_run`, the worker retiring: its
 //     `effortSinceLastImprovement` crossing `budget.worker_stale`, or its
 //     spending `budget.per_worker`, ends the run instead of a rebuild;
@@ -668,10 +673,12 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // the caller's code are:
 //   - `source`, when the slot's first worker is built and whenever a
 //     stalled one is rebuilt; for ruin, before every attempt and every
-//     `kWaitForSeedMs` while a slot waits for its first feasible point;
+//     `kWaitForSeedMs` while a slot waits for its first feasible point; for
+//     recombine, before every step and every `kWaitForSeedMs` while a slot
+//     waits for two pool entries;
 //   - `sink`'s `on_accept`, for every offer the sink's pool accepts, on
 //     this thread and outside the pool lock;
-//   - `exec.terminator`, every other attempt (ruin: also every
+//   - `exec.terminator`, every other attempt (ruin and recombine: also every
 //     `kWaitForSeedMs` while waiting for a point): this thread holds the
 //     poller seat for the whole run;
 //   - `*exec.stop`, a relaxed load, from inside attempts and between them;

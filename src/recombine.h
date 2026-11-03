@@ -204,12 +204,24 @@ private:
     Rng rng_;
 };
 
+// cuOpt's limits on the local search after a recombination
+// (`local_search_t::run_local_search`): 1 s from a feasible offspring, 0.5 s
+// from an infeasible one, at FJ's rate (`ruin_repair::kRepairEffortPerSecond`).
+inline constexpr double kLsSecondsFeasible = 1.0;
+inline constexpr double kLsSecondsInfeasible = 0.5;
+
+// The local search's FJ effort from an offspring on a model of `nnz`
+// nonzeros: the nonzeros FJ charges for building its start, plus cuOpt's
+// limit above.
+[[nodiscard]] size_t local_search_budget(size_t nnz, bool feasible);
+
 // What one `RecombineOperator::step` did.  `objective` is the best feasible
 // objective the step produced, the offspring's or FJ's from it, or
-// `kHighsInf`.
+// `kHighsInf`.  `improved` is whether one of its offers moved the sink's best.
 struct RecombineStep {
     RecombinerArm arm = RecombinerArm::kBoundProp;
     bool success = false;
+    bool improved = false;
     double objective = kHighsInf;
     double reward = 0.0;
     size_t effort = 0;
@@ -238,11 +250,11 @@ struct RecombineStep {
 //      cuOpt, which runs no local search then.
 //   3. A feasible offspring is offered to the sink as it is (cuOpt adds its
 //      offspring to the population after the local search, and its LP
-//      offspring beside it); then FJ runs from it for `ls_budget` effort,
-//      offering what it finds to the sink, unless the deadline has passed
-//      by then, which rewards 0 as cuOpt's local search does.  FJ for cuOpt's
-//      local search,
-//      since the crossovers' offspring are not repaired.
+//      offspring beside it); then FJ runs from it for `local_search_budget`
+//      effort, at most `ls_cap`, offering what it finds to the sink, unless
+//      the deadline has passed by then, which rewards 0 as cuOpt's local
+//      search does.  FJ for cuOpt's local search, since the crossovers'
+//      offspring are not repaired.
 //      cuOpt's LP over the continuous columns after the local search, and
 //      the LP offspring it yields, are not carried over: a feasible
 //      offspring's continuous columns are not re-optimised, so its objective
@@ -263,15 +275,22 @@ public:
                       uint64_t seed, WorkerTrace trace);
 
     // One step, with `recombine_effort` capping the bound-prop recombiner's
-    // search and `ls_budget` FJ's.  None with fewer than two pool entries,
-    // and then no arm is pulled.  `ls_budget` is not a cap below FJ's
-    // callback period: FJ tests it only at a callback, on a reported point or
-    // every 500000 effort, so a step spends up to that much whatever is
-    // passed; `RecombineStep::effort` reports what was spent.  `deadline`
-    // governs the recombiner and the check before FJ, `exec`'s clock FJ
-    // itself, so a `deadline` tighter than `exec`'s does not interrupt FJ.
-    [[nodiscard]] std::optional<RecombineStep> step(size_t recombine_effort, size_t ls_budget,
+    // search and `ls_cap` FJ's `local_search_budget`.  None with fewer than
+    // two pool entries, and then no arm is pulled.  `ls_cap` is not a cap
+    // below FJ's callback period: FJ tests its budget only at a callback, on
+    // a reported point or every 500000 effort, so a step spends up to that
+    // much whatever is passed; `RecombineStep::effort` reports what was
+    // spent.  `deadline` governs the recombiner and the check before FJ,
+    // `exec`'s clock FJ itself, so a `deadline` tighter than `exec`'s does
+    // not interrupt FJ.
+    [[nodiscard]] std::optional<RecombineStep> step(size_t recombine_effort, size_t ls_cap,
                                                     const Deadline& deadline);
+
+    // `source`'s point offered to the sink's pool if it is feasible, as cuOpt
+    // adds its external solutions to the population before a step.  A point
+    // equal to the last one `source` gave is skipped, feasible or not.
+    // Returns the effort charged.
+    [[nodiscard]] size_t take_external(const RestartSource& source);
 
     [[nodiscard]] const RecombinerBandit& bandit() const { return bandit_; }
 
@@ -294,6 +313,35 @@ private:
     std::vector<HighsInt> integer_cols_;
     std::vector<SolutionPool::EntryRef> entries_;
     std::vector<double> offspring_;
+    std::vector<double> external_;
+    std::vector<double> last_external_;
 };
+
+// The presolve chain's runner (#229), last in the chain: `exec.num_workers`
+// operators, each stepping until the budget, the patience or the deadline
+// ends the dispatch.  cuOpt's `diversity_step` loops recombine and local
+// search until `max_iterations_without_improvement` rounds pass without an
+// offspring entering the top three of its population, and returns once its
+// population has fewer than two.  Here the patience is effort rather than
+// rounds, and resets only on an offer moving the best, as every patience
+// gate reads it (#116; the pool admits most new points while it fills, so an
+// admission says little): a deviation.  A step takes the recombiner's cuOpt
+// limit (`kRewardNominalEffort`, its 2 s) and `local_search_budget`, each at
+// most the attempt cap.  A dispatch whose pool holds fewer than two points
+// ends at once, as does one on a model without an objective or a non-fixed
+// integer column, where nothing can improve.  The objective cut is not read.
+// Implements the uniform runner contract; see heuristic_context.h.
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, SolutionSink& sink);
+
+// One operator on the calling thread until `exec` says stop (#171's contract,
+// beside `RestartSource` in heuristic_context.h), over the sink's pool, which
+// is the caller's to fill: before every step `source`'s point joins it if
+// feasible (`take_external`), so `on_accept` sees an accepted one too.  With
+// fewer than two entries the slot waits, `ruin_repair::kWaitForSeedMs` at a
+// time, polling the stop flag, the deadline and the terminator.
+[[nodiscard]] size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,
+                                       const ExecutionContext& exec, int worker,
+                                       const RestartSource& source, SolutionSink& sink);
 
 }  // namespace recombine

@@ -17,11 +17,14 @@
 #include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -328,7 +331,7 @@ public:
     std::vector<std::pair<double, std::vector<double>>> accepted_points;
     std::vector<size_t> accepted_efforts;
 
-private:
+protected:
     void on_accept(double obj, const std::vector<double>& x, int /*source*/,
                    const WorkerTrace& /*trace*/, size_t effort_at) override {
         std::scoped_lock guard(mtx);
@@ -447,4 +450,166 @@ TEST_CASE("recombine: the operator takes no step on a pool of one", "[recombine]
     static_cast<void>(sink.offer(s.problem.objective(x), x, WorkerTrace{0, 0}, 0));
     CHECK_FALSE(op.step(1000, 1000, deadline).has_value());
     CHECK(op.bandit().pulls(recombine::RecombinerArm::kBoundProp) == 0);
+}
+
+TEST_CASE("recombine: the local search's budget is cuOpt's seconds at FJ's rate", "[recombine]") {
+    CHECK(recombine::local_search_budget(1000, true) == 1000 + 200'000'000);
+    CHECK(recombine::local_search_budget(1000, false) == 1000 + 100'000'000);
+}
+
+namespace {
+
+// A pool of FJ points on `s`, at least two.
+void fill_pool(const Setup& s, SolutionSink& sink) {
+    for (uint64_t k = 0; k < 4; ++k) {
+        const std::vector<double> x = fj_point(s, k);
+        static_cast<void>(sink.offer(s.problem.objective(x), x, WorkerTrace{0, 0}, 0));
+    }
+}
+
+}  // namespace
+
+TEST_CASE("recombine: a dispatch spends its budget from a pool of points", "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    RecordingSink sink(*s.problem.integrality, 0);
+    fill_pool(s, sink);
+    const size_t seeded = sink.accepted_points.size();
+    REQUIRE(seeded >= 2);
+    ExecutionContext exec = s.exec;
+    constexpr size_t kTotal = 5'000'000;
+    const DispatchOutcome outcome = recombine::run(
+        s.problem, make_budget(kTotal, 1, std::numeric_limits<size_t>::max()), exec, sink);
+    CHECK(outcome.effort >= kTotal);
+    CHECK(sink.accepted_points.size() > seeded);
+    for (size_t k = seeded; k < sink.accepted_points.size(); ++k) {
+        CHECK(ruin_repair::is_feasible(s.problem, sink.accepted_points[k].second));
+    }
+}
+
+// The trigger: with nothing improving, the patience ends the dispatch long
+// before the budget would.  One-sided, so no clock in the fixture: FJ's
+// callback period is the only slack, and the budget is far beyond it.
+TEST_CASE("recombine: the patience ends a dispatch that stops improving", "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    RecordingSink sink(*s.problem.integrality, 0);
+    fill_pool(s, sink);
+    ExecutionContext exec = s.exec;
+    constexpr size_t kTotal = std::numeric_limits<size_t>::max() / 2;
+    constexpr size_t kPatience = 1'000'000;
+    HeuristicBudget budget = make_budget(kTotal, 1, kPatience);
+    budget.attempt_cap = kPatience;
+    const DispatchOutcome outcome = recombine::run(s.problem, budget, exec, sink);
+    CHECK(outcome.effort > 0);
+    CHECK(outcome.effort < kTotal / 2);
+}
+
+TEST_CASE("recombine: a dispatch with fewer than two points, or no budget, does nothing",
+          "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    ExecutionContext exec = s.exec;
+    RecordingSink sink(*s.problem.integrality, 0);
+    CHECK(recombine::run(s.problem, make_budget(kBudget, 1, kBudget), exec, sink).effort == 0);
+    const std::vector<double> x = fj_point(s, 0);
+    static_cast<void>(sink.offer(s.problem.objective(x), x, WorkerTrace{0, 0}, 0));
+    CHECK(recombine::run(s.problem, make_budget(kBudget, 1, kBudget), exec, sink).effort == 0);
+    const std::vector<double> y = fj_point(s, 1);
+    static_cast<void>(sink.offer(s.problem.objective(y), y, WorkerTrace{0, 0}, 0));
+    CHECK(recombine::run(s.problem, HeuristicBudget{}, exec, sink).effort == 0);
+}
+
+TEST_CASE("recombine: a caller's slot on an empty pool waits and returns at the stop",
+          "[recombine][until_stopped]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    std::atomic<bool> stop{false};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    RecordingSink sink(*s.problem.integrality, 0);
+    std::thread stopper([&stop] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        stop.store(true);
+    });
+    const size_t effort =
+        recombine::run_until_stopped(s.problem, make_until_stopped_budget(kBudget, kBudget), exec,
+                                     /*worker=*/0, RestartSource{}, sink);
+    stopper.join();
+    CHECK(effort == 0);
+    CHECK(sink.accepted_points.empty());
+}
+
+// The caller's stop flag ends a run that is finding things, and the source's
+// points are what it recombines: the pool starts empty, the source hands out
+// two feasible points one after the other, and the operator takes its first
+// step only once both are in.
+TEST_CASE("recombine: a caller's slot steps from the source's points until the stop",
+          "[recombine][until_stopped]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    const std::vector<double> a = fj_point(s, 0);
+    const std::vector<double> b = fj_point(s, 1);
+    REQUIRE(a != b);
+
+    std::atomic<bool> stop{false};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    size_t calls = 0;
+    const RestartSource source = [&](Rng& /*rng*/, std::vector<double>& out) {
+        out = ++calls % 2 == 1 ? a : b;
+        return true;
+    };
+    // Stop from the sink's side, so the run ends by the flag and no clock:
+    // once the operator has offered something beyond the source's two.
+    class StoppingSink : public RecordingSink {
+    public:
+        using RecordingSink::RecordingSink;
+        std::atomic<bool>* flag = nullptr;
+        size_t after = 0;
+
+    private:
+        void on_accept(double obj, const std::vector<double>& x, int source, const WorkerTrace& t,
+                       size_t effort_at) override {
+            RecordingSink::on_accept(obj, x, source, t, effort_at);
+            if (accepted_points.size() >= after) {
+                flag->store(true);
+            }
+        }
+    };
+    StoppingSink stopping(*s.problem.integrality, 0);
+    stopping.flag = &stop;
+    stopping.after = 3;
+    const size_t effort =
+        recombine::run_until_stopped(s.problem, make_until_stopped_budget(1'000'000, 0), exec,
+                                     /*worker=*/0, source, stopping);
+    CHECK(effort > 0);
+    REQUIRE(stopping.accepted_points.size() >= 3);
+    CHECK(stopping.accepted_points[0].second == a);
+    CHECK(stopping.accepted_points[1].second == b);
+    CHECK(ruin_repair::is_feasible(s.problem, stopping.accepted_points[2].second));
+}
+
+TEST_CASE("recombine: a source's infeasible point stays out of the pool, and is checked once",
+          "[recombine][until_stopped]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    RecordingSink sink(*s.problem.integrality, 0);
+    recombine::RecombineOperator op(s.problem, s.exec, sink, 1, WorkerTrace{0, 0});
+    // The upper bound on every column violates some row of p0548.
+    std::vector<double> infeasible(*s.problem.col_upper);
+    REQUIRE_FALSE(ruin_repair::is_feasible(s.problem, infeasible));
+    const RestartSource source = [&](Rng& /*rng*/, std::vector<double>& out) {
+        out = infeasible;
+        return true;
+    };
+    CHECK(op.take_external(source) == s.problem.nnz);
+    CHECK(op.take_external(source) == 0);
+    CHECK(sink.accepted_points.empty());
 }

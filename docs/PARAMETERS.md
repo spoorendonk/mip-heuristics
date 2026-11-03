@@ -1231,6 +1231,17 @@ they differ free for FPR to complete.
   FJ's laptop rate (`kRepairEffortPerSecond`), standing in for 2 s of any
   recombiner, as FPR's rate (the bound-prop arm's unit) is not measured.
 
+### `kLsSecondsFeasible`, `kLsSecondsInfeasible` — the local search after a recombination
+
+- **File**: `src/recombine.h`
+- **Default**: `1.0`, `0.5`
+- **Meaning**: `local_search_budget` = `nnz + seconds * kRepairEffortPerSecond`:
+  cuOpt's limit on FJ in `local_search_t::run_local_search`, 1 s from a
+  feasible offspring and 0.5 s from an infeasible one with a feasible parent,
+  which every pair here has. At most the attempt cap, as is the recombiner's
+  `kRewardNominalEffort`, which stands in for cuOpt's
+  `bounds_prop_time_limit` of 2 s.
+
 ---
 
 ## CDCL Search (`sat_search`, #236)
@@ -1514,6 +1525,23 @@ itself is driven by a tracked target runner rather than by config names.
   stale rounds usually bound a Scylla dispatch before the budget does.
 - **Suggested range**: 0.01–1.0. The record's ceiling is `1e6`; see
   "A budget that cannot bind" below.
+
+---
+
+### `mip_heuristic_recombine_effort` — recombination budget
+
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
+- **Default**: `0.0` — ships off until #230 measures it.
+- **Meaning**: Whole-dispatch budget for recombination, the last chain entry
+  (#229). Its effort sums two units, FPR's coefficient accesses in the
+  bound-prop arm and FJ's effort in the local search, equated by
+  `kRewardNominalEffort`. Divided across the workers like FPR's. A dispatch
+  whose pool holds fewer than two points ends at once and charges nothing.
+  Every local search is a fresh FJ, which checks its budget only at its first
+  callback (500000 effort units or a found point), so on a small model and
+  many workers a dispatch can spend several times this budget. The ledger
+  charges what was spent.
+- **Suggested range**: 0.1–3.
 
 ---
 
@@ -2244,6 +2272,22 @@ effort-gap distribution).
 - **Suggested range**: 0.12–2, plus `0` for no gate — though on Scylla
   `0` and any value below one PDLP solve are observationally the same,
   for the reason above. Values above `effort / 4` are clamped down to it.
+
+---
+
+### `mip_heuristic_recombine_patience` — recombination patience
+
+- **File**: `src/mode_dispatch.cpp` (`kChain`)
+- **Default**: `0.0` — no gate; the heuristic itself ships off.
+- **Meaning**: Effort without an incumbent improvement, as a multiple of
+  `nnz << 10`, **whole dispatch**: the "no improvement within a work budget"
+  that ends recombination (#229). cuOpt's `diversity_step` counts rounds and
+  also resets on an offspring entering the top three of its population; here
+  only an offer moving the best resets it, as every patience gate reads it
+  (#116). One attempt is one step, whose FJ checks its budget only at its
+  callback, so the gate fires in steps of at least that much on a small model.
+- **Suggested range**: 0.1–1, plus `0` for no gate. Values above
+  `effort / 4` are clamped down to it.
 
 ---
 

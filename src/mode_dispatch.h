@@ -23,12 +23,12 @@ namespace heuristics {
 constexpr const char* kFprLpName = "fpr_lp";
 
 // Whether any heuristic of ours can produce a solution under `options` —
-// that is, whether any of the six `mip_heuristic_<name>_effort` options is
+// that is, whether any of the seven `mip_heuristic_<name>_effort` options is
 // above zero, with FJ additionally honouring upstream's own
 // `mip_heuristic_run_feasibility_jump`.
 //
 // It exists for one caller outside this translation unit: the patched
-// `printSolutionSourceKey` drops the group advertising our six solution
+// `printSolutionSourceKey` drops the group advertising our seven solution
 // sources when none of them can appear, which is what keeps the printed
 // legend byte-identical to an unpatched binary's and so lets
 // `bench/check_vanilla_equivalence.py` diff whole logs rather than a
@@ -40,7 +40,7 @@ constexpr const char* kFprLpName = "fpr_lp";
 bool any_enabled(const HighsOptions& options);
 
 // Top-level presolve heuristic dispatch. Reads mip_heuristic_* options
-// and runs the fixed FJ -> FPR -> LocalMIP -> Scylla -> ruin chain, each on
+// and runs the fixed FJ -> FPR -> LocalMIP -> Scylla -> ruin -> recombine chain, each on
 // continuous parallel workers.  Returns true if the model was proven
 // infeasible.
 //

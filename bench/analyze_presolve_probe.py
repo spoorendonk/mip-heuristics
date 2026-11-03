@@ -107,13 +107,20 @@ DEFAULT_INSTANCES = os.path.join(BENCH_DIR, "instances_mipfeas.txt")
 # is the dive-time heuristic, it runs on the far side of the root LP that a
 # presolve-only run never reaches, and an offer it makes is not evidence that
 # a presolve screen can see the instance.
-PRESOLVE_HEURISTICS: tuple[str, ...] = ("fj", "fpr", "local_mip", "scylla", "ruin")
+PRESOLVE_HEURISTICS: tuple[str, ...] = (
+    "fj",
+    "fpr",
+    "local_mip",
+    "scylla",
+    "ruin",
+    "recombine",
+)
 
 # The display source codes `apply_patch.cmake` assigns to the chain: A=FPR,
-# M=LocalMIP, G=Scylla, J=FJ, N=ruin.  `D` (fpr_lp) is excluded for the same reason
+# M=LocalMIP, G=Scylla, J=FJ, N=ruin, O=recombine.  `D` (fpr_lp) is excluded for the same reason
 # `fpr_lp` is absent above.  Everything else on a display row — `l`/`p`/`u`/
 # `z` (HiGHS's trivial heuristics), `X`/`Y`, `T`, `B` — is not ours.
-CHAIN_SOURCES = frozenset("AMGJN")
+CHAIN_SOURCES = frozenset("AMGJNO")
 
 # `SolutionSink::offer` tags an offer made off any worker slot with this,
 # for LocalMIP's cold-start publish on the dispatching thread.  Such an offer
@@ -129,6 +136,7 @@ OFF_SLOT_WORKER = -1
 #   fpr       whole-dispatch scope; `make_budget` divides by N, so the worker
 #   local_mip sees `per_nnz / N` and the option must be N times a worker gap.
 #   ruin      (likewise).
+#   recombine (likewise).
 #   scylla    whole-dispatch scope, but it takes the dispatch-level threshold
 #             as its *worker* threshold too, because its per-worker counter is
 #             already charged the PDLP cost divided by N.
@@ -141,6 +149,7 @@ PATIENCE_SCALES_WITH_WORKERS: dict[str, bool] = {
     "local_mip": True,
     "scylla": False,
     "ruin": True,
+    "recombine": True,
 }
 
 # Whether a heuristic's effort option sizes one worker's allowance rather
@@ -154,6 +163,7 @@ BUDGET_IS_PER_WORKER: dict[str, bool] = {
     "local_mip": False,
     "scylla": False,
     "ruin": False,
+    "recombine": False,
 }
 
 # `heuristic_effort_budget`'s base, from `src/heuristic_common.h`: since
@@ -180,6 +190,7 @@ SHIPPED_EFFORT: dict[str, float] = {
     "local_mip": 29.232,
     "scylla": 1.136,
     "ruin": 0.0,
+    "recombine": 0.0,
 }
 
 # The quantile the proposed effort is read off.  The median, not a tail:

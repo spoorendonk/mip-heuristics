@@ -84,6 +84,8 @@ TEST_CASE("Options: effort split defaults", "[options]") {
         {"mip_heuristic_scylla_effort", 0.0},
         // Ruin-and-repair (#207) ships off until its A/B is measured.
         {"mip_heuristic_ruin_effort", 0.0},
+        // Recombination (#229) ships off until #230 measures it.
+        {"mip_heuristic_recombine_effort", 0.0},
         // The dive-time entry (#164).  It is in this loop for its *range*,
         // which is the same `[0, 1e6]`, and not for its unit: it is a share
         // of the RENS/RINS LP-iteration headroom rather than a multiple of
@@ -183,6 +185,7 @@ TEST_CASE("Options: patience defaults", "[options][patience]") {
         {"mip_heuristic_local_mip_patience", 3.1943, 3.2865},
         {"mip_heuristic_scylla_patience", 0.0, 0.0},
         {"mip_heuristic_ruin_patience", 0.0, 0.0},
+        {"mip_heuristic_recombine_patience", 0.0, 0.0},
     });
     for (const auto& [name, expected, effort] : patiences) {
         double value = -1.0;

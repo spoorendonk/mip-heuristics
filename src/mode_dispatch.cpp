@@ -11,6 +11,7 @@
 #include "local_mip.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "recombine.h"
 #include "ruin_repair.h"
 #include "scylla.h"
 
@@ -54,7 +55,7 @@ namespace {
 // measurements (#106).
 
 // One heuristic's entry in the fixed FJ -> FPR -> LocalMIP -> Scylla
-// -> ruin chain.  `run_sequential` is a filtered loop over the table below; the
+// -> ruin -> recombine chain.  `run_sequential` is a filtered loop over the table below; the
 // four near-identical `if (enabled && !deadline) { ... }` blocks it
 // replaced were the last place a fifth heuristic would have had to be
 // wired in by hand.
@@ -100,7 +101,7 @@ struct HeuristicConfig {
     double HighsOptionsStruct::* patience;
     // `mip_heuristic_<name>_restart`, a `RestartPoint`, for the two
     // heuristics whose workers the runner rebuilds from a point (#200); null
-    // for FPR, Scylla and ruin.  `restart_weights` is LocalMIP's alone.
+    // for FPR, Scylla, ruin and recombine.  `restart_weights` is LocalMIP's alone.
     HighsInt HighsOptionsStruct::* restart;
     bool HighsOptionsStruct::* restart_weights;
     // `mip_heuristic_fj_personas` (#206), FJ's alone; null for the rest.
@@ -139,6 +140,11 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"ruin", kSolutionSourceRuin, &HighsOptionsStruct::mip_heuristic_ruin_effort, nullptr, false,
      &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr,
      &without_solver<&ruin_repair::run>},
+    // After ruin, so it runs once the others have stalled, on a pool holding
+    // what they all found (#229).
+    {"recombine", kSolutionSourceRecombine, &HighsOptionsStruct::mip_heuristic_recombine_effort,
+     nullptr, false, &HighsOptionsStruct::mip_heuristic_recombine_patience, nullptr, nullptr,
+     nullptr, &without_solver<&recombine::run>},
 });
 
 // Whether `h` runs at all under `options` (#167).
@@ -375,7 +381,7 @@ bool run_presolve(HighsMipSolver& mipsolver) {
     // upstream's `mip_heuristic_run_feasibility_jump`, with nothing else
     // enabled to take its place.  That run is heuristic-free while being
     // spelled like an "FJ isolated" row, which is the one contradiction the
-    // six effort options can express — every other way of running nothing
+    // seven effort options can express — every other way of running nothing
     // is spelled as running nothing.
     if (options.mip_heuristic_fj_effort > 0.0 && !options.mip_heuristic_run_feasibility_jump &&
         !any_enabled(options)) {
