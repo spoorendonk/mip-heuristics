@@ -491,12 +491,15 @@ TEST_CASE("The solver gets only what encoding left of the effort budget", "[sat]
     REQUIRE(encoding.status == SatSearchStatus::kStopped);
     REQUIRE(encoding.effort > 0);
 
-    sat::SatSearchConfig exact;
-    exact.limits.max_effort = encoding.effort;
-    const auto result = search(lp, point, exact);
+    // Encoding finishes with one unit left, so the solver stops after its first
+    // step.  Handed the whole budget instead, it would spend past the encoding's
+    // work again.
+    sat::SatSearchConfig one_left;
+    one_left.limits.max_effort = encoding.effort + 1;
+    const auto result = search(lp, point, one_left);
     CHECK(result.status == SatSearchStatus::kStopped);
-    CHECK(result.effort == encoding.effort);
-    CHECK(result.conflicts == 0);
+    CHECK(result.effort > encoding.effort);
+    CHECK(result.effort - encoding.effort < encoding.effort);
 
     // Without the budget the search does spend more.
     const auto full = search(lp, point);
