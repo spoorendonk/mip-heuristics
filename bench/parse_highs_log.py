@@ -730,10 +730,10 @@ _LPITERS_RE = re.compile(r"^\s+LP iterations\s+(\d+)$")
 _KILLED_RE = re.compile(r"^TIMEOUT: process killed (?:after ([\d.]+)s|by signal (\d+))")
 
 # Early FJ's handover to the MIP start (`EarlyFj::finish`).  HiGHS prints no
-# display row for a MIP start, so this is the only record of its objective;
-# the `[Heur]` line right after it dates it.
+# display row for a MIP start, so this line is the record of the incumbent, and
+# its time, the end of presolve, is when HiGHS can first use the point.
 _EARLY_FJ_RE = re.compile(
-    r"^Early FeasibilityJump on the original model: objective (\S+),"
+    r"^Early FeasibilityJump on the original model: objective (\S+) at ([\d.]+)s,"
 )
 
 # [Sequential] per-heuristic effort line emitted from
@@ -919,7 +919,6 @@ def parse_log(log_text: str) -> SolveResult:
     # is exact — and, unlike zipping the two lists, it survives a dispatch
     # that offered nothing (which emits `[Heur]` and no `[HeurSol]` at all).
     pending_heursol: dict[str, list[int]] = {}
-    early_fj_objective: float | None = None
 
     for line in log_text.splitlines():
         # Try MIP log data line
@@ -977,7 +976,14 @@ def parse_log(log_text: str) -> SolveResult:
 
         m = _EARLY_FJ_RE.match(line)
         if m:
-            early_fj_objective = _parse_float_or_inf(m.group(1))
+            result.incumbents.append(
+                Incumbent(
+                    time=float(m.group(2)),
+                    objective=_parse_float_or_inf(m.group(1)),
+                    source="J",
+                    nodes=0,
+                )
+            )
             continue
 
         # Solving report lines
@@ -1052,19 +1058,6 @@ def parse_log(log_text: str) -> SolveResult:
             for i in pending_heursol.pop(heur.name, []):
                 result.heursol_samples[i].heur_index = heur_index
             result.heuristic_samples.append(heur)
-            # The first moment HiGHS can use early FJ's point is the end of
-            # presolve, so that is when it counts as an incumbent, and the
-            # display row that later repeats it is no new one.
-            if heur.name == "early_fj" and early_fj_objective is not None:
-                result.incumbents.append(
-                    Incumbent(
-                        time=heur.end_s,
-                        objective=early_fj_objective,
-                        source="J",
-                        nodes=0,
-                    )
-                )
-                early_fj_objective = None
             continue
 
         # Worker counts (first occurrence wins; one block per solve).

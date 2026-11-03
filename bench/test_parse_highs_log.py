@@ -94,12 +94,11 @@ def test_ruin_and_recombine_source_codes_recorded():
     assert [inc.source for inc in parse_log(log).incumbents] == ["N", "O"]
 
 
-def test_early_fj_mip_start_dated_at_its_heur_line():
+def test_early_fj_mip_start_dated_by_its_own_line():
     """Early FJ's point has no display row of its own: it is an incumbent from
-    the end of presolve, and the row repeating it later is no new one."""
+    its log line, which needs no dev level, and the row repeating it is no new one."""
     log = (
-        "Early FeasibilityJump on the original model: objective 12.5, passed on as the MIP start\n"
-        "[Heur] name=early_fj phase=presolve start_s=0.100 end_s=0.700 effort=10 wall_ms=600.0 effort_per_ms=0.02 found=1 nnz=100\n"
+        "Early FeasibilityJump on the original model: objective 12.5 at 0.700s, passed on as the MIP start\n"
         "        0       0         0   0.00%   0               12.5               Large      0      0      0         0   3.2s\n"
         "J       0       0         0   0.00%   0               11                 Large      0      0      0         0   4.0s\n"
     )

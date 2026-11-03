@@ -147,10 +147,12 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     mipsolver.bound_violation_ = bound_violation;
     mipsolver.row_violation_ = row_violation;
     mipsolver.integrality_violation_ = integrality_violation;
+    // The time is here because HiGHS prints no display row for a MIP start, and
+    // this line is the run's only default-level record of when it had one.
     highsLogUser(mipsolver.options_mip_->log_options, HighsLogType::kInfo,
-                 "Early FeasibilityJump on the original model: objective %.12g, passed on as "
-                 "the MIP start\n",
-                 objective);
+                 "Early FeasibilityJump on the original model: objective %.12g at %.3fs, passed "
+                 "on as the MIP start\n",
+                 objective, EffortLedger(mipsolver).now_s());
 
     // Presolve stopped on the time limit, so there is no `runSetup` to take
     // the bound from `solution_`.  `upper_bound` is still in the original
