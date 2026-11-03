@@ -1,10 +1,13 @@
 #include "recombine.h"
 
+#include "fj_worker.h"
 #include "heuristic_common.h"
 #include "ruin_repair.h"
+#include "solution_sink.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <span>
 
 namespace recombine {
@@ -171,6 +174,17 @@ Offspring BoundPropRecombiner::recombine(const std::vector<double>& a, double ob
     return offspring;
 }
 
+namespace {
+
+// A draw in [0, n): multiply-shift on `rng`, not
+// `std::uniform_int_distribution`, whose stream differs across standard
+// libraries.
+size_t draw_below(Rng& rng, size_t n) {
+    return static_cast<size_t>((static_cast<unsigned __int128>(rng()) * n) >> 64U);
+}
+
+}  // namespace
+
 // Two seconds of FJ, the unit `kRewardNominalEffort` stands for.
 static_assert(kRewardNominalEffort == 2.0 * ruin_repair::kRepairEffortPerSecond);
 
@@ -213,18 +227,122 @@ RecombinerArm RecombinerBandit::select() {
             best[num_best++] = i;
         }
     }
-    // A multiply-shift draw on the bandit's own stream, not
-    // `std::uniform_int_distribution`, whose stream differs across standard
-    // libraries.
-    const auto pick =
-        static_cast<size_t>((static_cast<unsigned __int128>(rng_()) * num_best) >> 64U);
-    return static_cast<RecombinerArm>(best[pick]);
+    return static_cast<RecombinerArm>(best[draw_below(rng_, num_best)]);
 }
 
 void RecombinerBandit::reward(RecombinerArm arm, double r) {
     Arm& a = arms_[index(arm)];
     ++a.pulls;
     a.q += kBanditAlpha * (r - a.q);
+}
+
+RecombineOperator::RecombineOperator(const ProblemView& problem, const ExecutionContext& exec,
+                                     SolutionSink& sink, uint64_t seed, WorkerTrace trace)
+    : problem_(problem),
+      exec_(exec),
+      sink_(sink),
+      bound_prop_(problem),
+      // SplitMix64 expands each seed, so neighbouring seeds give unrelated
+      // streams.
+      bandit_(seed + 1),
+      rng_(seed),
+      trace_(trace),
+      integer_mask_(static_cast<size_t>(problem.ncol), false) {
+    for (HighsInt j = 0; j < problem.ncol; ++j) {
+        if ((*problem.integrality)[j] != HighsVarType::kContinuous) {
+            integer_mask_[j] = true;
+            integer_cols_.push_back(j);
+        }
+    }
+    entries_.reserve(kPoolCapacity);
+    offspring_.reserve(static_cast<size_t>(problem.ncol));
+}
+
+Offspring RecombineOperator::recombine(RecombinerArm arm, const SolutionPool::EntryRef& first,
+                                       const SolutionPool::EntryRef& second,
+                                       size_t recombine_effort, const Deadline& deadline) {
+    const std::vector<double>& a = *first.solution;
+    const std::vector<double>& b = *second.solution;
+    if (arm == RecombinerArm::kBoundProp) {
+        return bound_prop_.recombine(a, first.objective, b, second.objective, recombine_effort,
+                                     deadline, rng_, offspring_);
+    }
+    if (arm == RecombinerArm::kGuidedCrossover) {
+        SolutionPool::guided_crossover(integer_mask_, a, b, rng_, offspring_);
+    } else {
+        const bool first_better = first.objective <= second.objective;
+        SolutionPool::neighborhood_crossover(integer_mask_, first_better ? a : b,
+                                             first_better ? b : a, rng_, offspring_);
+    }
+    Offspring offspring;
+    offspring.effort = static_cast<size_t>(problem_.ncol);
+    bool same_as_a = true;
+    bool same_as_b = true;
+    for (const HighsInt j : integer_cols_) {
+        const double v = std::round(offspring_[j]);
+        same_as_a = same_as_a && v == std::round(a[j]);
+        same_as_b = same_as_b && v == std::round(b[j]);
+    }
+    offspring.success = !same_as_a && !same_as_b;
+    return offspring;
+}
+
+std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, size_t ls_budget,
+                                                     const Deadline& deadline) {
+    sink_.entry_refs(entries_);
+    const size_t n = entries_.size();
+    if (n < 2) {
+        return std::nullopt;
+    }
+    // cuOpt's tournament draw, on a pool sorted best first.
+    const size_t i = std::min(draw_below(rng_, n), draw_below(rng_, n));
+    size_t j = std::min(draw_below(rng_, n - 1), draw_below(rng_, n - 1));
+    if (j >= i) {
+        ++j;
+    }
+    const SolutionPool::EntryRef& first = entries_[i];
+    const SolutionPool::EntryRef& second = entries_[j];
+    const double best = entries_.front().objective;
+    const double best_of_parents = std::min(first.objective, second.objective);
+
+    RecombineStep result;
+    result.arm = bandit_.select();
+    const Offspring offspring = recombine(result.arm, first, second, recombine_effort, deadline);
+    result.success = offspring.success && !offspring_.empty();
+    result.effort = offspring.effort;
+    trace_.effort_base += offspring.effort;
+    if (!result.success) {
+        bandit_.reward(result.arm, 0.0);
+        return result;
+    }
+
+    // The crossovers report no feasibility; bound-prop's verdict stands.
+    bool feasible = offspring.feasible;
+    double objective = offspring.objective;
+    if (result.arm != RecombinerArm::kBoundProp) {
+        result.effort += problem_.nnz;
+        trace_.effort_base += problem_.nnz;
+        feasible = ruin_repair::is_feasible(problem_, offspring_);
+        objective = feasible ? problem_.objective(offspring_) : kHighsInf;
+    }
+    if (feasible) {
+        result.objective = objective;
+        // The pool's verdict feeds no gate here: the reward reads objectives.
+        static_cast<void>(sink_.offer(objective, offspring_, trace_, 0));
+    }
+
+    FjWorker fj(problem_, exec_, sink_, ls_budget, std::numeric_limits<size_t>::max(),
+                static_cast<uint32_t>(rng_()), offspring_, trace_);
+    const AttemptResult ls = fj.run_attempt(ls_budget);
+    result.effort += ls.effort;
+    trace_.effort_base = fj.traced_effort();
+    if (!fj.best_found().empty()) {
+        result.objective = std::min(result.objective, fj.best_found_objective());
+    }
+
+    result.reward = recombination_reward(best_of_parents, best, result.objective, offspring.effort);
+    bandit_.reward(result.arm, result.reward);
+    return result;
 }
 
 }  // namespace recombine

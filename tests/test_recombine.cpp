@@ -10,12 +10,18 @@
 #include "Highs.h"
 #include "recombine.h"
 #include "rng.h"
+#include "ruin_repair.h"
+#include "solution_sink.h"
 #include "test_paths.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <optional>
+#include <utility>
 #include <vector>
 
 using namespace core_test;
@@ -308,4 +314,97 @@ TEST_CASE("recombine: the reward is cuOpt's, normalised by effort", "[recombine]
     // Near zero, the margin is the absolute 1e-6.
     CHECK(recombination_reward(1.0, 0.0, -2e-6, 0) == 8.0);
     CHECK(recombination_reward(1.0, 0.0, -0.5e-6, 0) == 4.0);
+}
+
+namespace {
+
+// Every accepted offer, in order.
+class RecordingSink : public SolutionSink {
+public:
+    using SolutionSink::SolutionSink;
+
+    std::mutex mtx;
+    std::vector<std::pair<double, std::vector<double>>> accepted_points;
+
+private:
+    void on_accept(double obj, const std::vector<double>& x, int /*source*/,
+                   const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
+        std::scoped_lock guard(mtx);
+        accepted_points.emplace_back(obj, x);
+    }
+};
+
+struct OperatorRun {
+    std::vector<recombine::RecombinerArm> arms;
+    std::vector<double> accepted;
+    size_t seeded = 0;
+};
+
+// `steps` operator steps on p0548 from a pool of four FJ points.
+OperatorRun run_operator(const Setup& s, uint64_t seed, size_t steps) {
+    RecordingSink sink(*s.problem.integrality, 0);
+    for (uint64_t k = 0; k < 4; ++k) {
+        const std::vector<double> x = fj_point(s, k);
+        static_cast<void>(sink.offer(s.problem.objective(x), x, WorkerTrace{0, 0}, 0));
+    }
+    OperatorRun run;
+    run.seeded = sink.accepted_points.size();
+    REQUIRE(run.seeded >= 2);
+    recombine::RecombineOperator op(s.problem, s.exec, sink, seed, WorkerTrace{0, 0});
+    const Deadline deadline;
+    for (size_t k = 0; k < steps; ++k) {
+        const std::optional<recombine::RecombineStep> step =
+            op.step(1'000'000, 1'000'000, deadline);
+        if (!step.has_value()) {
+            FAIL("no step on a pool of at least two");
+            break;
+        }
+        run.arms.push_back(step->arm);
+    }
+    size_t pulls = 0;
+    for (size_t a = 0; a < recombine::kNumRecombinerArms; ++a) {
+        pulls += op.bandit().pulls(static_cast<recombine::RecombinerArm>(a));
+    }
+    CHECK(pulls == steps);
+    for (size_t k = run.seeded; k < sink.accepted_points.size(); ++k) {
+        const auto& [obj, x] = sink.accepted_points[k];
+        CHECK(ruin_repair::is_feasible(s.problem, x));
+        CHECK(std::abs(obj - s.problem.objective(x)) <= 1e-6 * (1.0 + std::abs(obj)));
+        run.accepted.push_back(obj);
+    }
+    return run;
+}
+
+}  // namespace
+
+TEST_CASE("recombine: the operator offers feasible points, and replays from its seed",
+          "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    const OperatorRun first = run_operator(s, 5, 30);
+    CHECK_FALSE(first.accepted.empty());
+    // Every arm gets its initial pull.
+    for (const auto arm :
+         {recombine::RecombinerArm::kBoundProp, recombine::RecombinerArm::kGuidedCrossover,
+          recombine::RecombinerArm::kNeighborhoodCrossover}) {
+        CHECK(std::ranges::count(first.arms, arm) > 0);
+    }
+    const OperatorRun again = run_operator(s, 5, 30);
+    CHECK(again.arms == first.arms);
+    CHECK(again.accepted == first.accepted);
+}
+
+TEST_CASE("recombine: the operator takes no step on a pool of one", "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    RecordingSink sink(*s.problem.integrality, 0);
+    recombine::RecombineOperator op(s.problem, s.exec, sink, 1, WorkerTrace{0, 0});
+    const Deadline deadline;
+    CHECK_FALSE(op.step(1000, 1000, deadline).has_value());
+    const std::vector<double> x = fj_point(s, 0);
+    static_cast<void>(sink.offer(s.problem.objective(x), x, WorkerTrace{0, 0}, 0));
+    CHECK_FALSE(op.step(1000, 1000, deadline).has_value());
+    CHECK(op.bandit().pulls(recombine::RecombinerArm::kBoundProp) == 0);
 }

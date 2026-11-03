@@ -3,6 +3,8 @@
 #include "heuristic_context.h"
 #include "prop_engine.h"
 #include "rng.h"
+#include "solution_pool.h"
+#include "worker_base.h"
 
 #include <array>
 #include <cstddef>
@@ -11,6 +13,8 @@
 #include <vector>
 
 struct Deadline;
+struct ExecutionContext;
+class SolutionSink;
 
 // Recombination of two solutions (#209, after NVIDIA cuOpt's diversity
 // manager at f3fe1a5, Apache-2.0; read for technique, no code copied).
@@ -198,6 +202,80 @@ private:
     std::array<Arm, kNumRecombinerArms> arms_{};
     size_t steps_ = 0;
     Rng rng_;
+};
+
+// What one `RecombineOperator::step` did.  `objective` is the best feasible
+// objective the step produced, the offspring's or FJ's from it, or
+// `kHighsInf`.
+struct RecombineStep {
+    RecombinerArm arm = RecombinerArm::kBoundProp;
+    bool success = false;
+    double objective = kHighsInf;
+    double reward = 0.0;
+    size_t effort = 0;
+};
+
+// cuOpt's recombine-and-local-search step
+// (`diversity_manager_t::recombine_and_local_search`) over the sink's pool:
+//   1. Two entries, by cuOpt's tournament draw
+//      (`population_t::get_two_random`) on the best-first pool:
+//      `i = min(U[0, n-1], U[0, n-1])`, `j = min(U[0, n-2], U[0, n-2])`,
+//      `j + 1` when `j >= i`, passed in that order, so `i` guides the
+//      bound-prop recombiner.  cuOpt's reserved slot for the best feasible
+//      point, and its check that the first two drawn are not twins, have no
+//      counterpart: the pool holds feasible points only, and no twins.
+//   2. The bandit's arm recombines them: bound-prop, or the pool's guided
+//      crossover (`i`, `j`), or its neighborhood crossover (the better of
+//      the two first).  A crossover succeeds when its offspring differs
+//      from both parents on the integer columns, bound-prop by its own
+//      verdict.  A failure rewards the arm 0 and ends the step, as in
+//      cuOpt, which runs no local search then.
+//   3. A feasible offspring is offered to the sink as it is (cuOpt adds its
+//      offspring to the population after the local search, and its LP
+//      offspring beside it); then FJ runs from it for `ls_budget` effort,
+//      offering what it finds to the sink.  FJ for cuOpt's local search,
+//      since the crossovers' offspring are not repaired.
+//   4. The arm is rewarded with `recombination_reward` on the parents'
+//      better objective, the pool's best at the draw, the step's best
+//      objective, and the recombiner's effort.  The pool's best at the draw,
+//      not at the reward as in cuOpt: FJ offers into the pool during the
+//      local search, so by then the best would include the offspring and
+//      the reward of 8 could never be paid (a deviation).
+//
+// One per worker (its bandit and recombiner are per worker, see
+// `RecombinerBandit`).  `problem` and `sink` must outlive it.
+class RecombineOperator {
+public:
+    RecombineOperator(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
+                      uint64_t seed, WorkerTrace trace);
+
+    // One step, with `recombine_effort` capping the bound-prop recombiner's
+    // search and `ls_budget` FJ's.  None with fewer than two pool entries,
+    // and then no arm is pulled.
+    [[nodiscard]] std::optional<RecombineStep> step(size_t recombine_effort, size_t ls_budget,
+                                                    const Deadline& deadline);
+
+    [[nodiscard]] const RecombinerBandit& bandit() const { return bandit_; }
+
+private:
+    // Run `arm` on the parents into `offspring_`; the recombiner's verdict.
+    Offspring recombine(RecombinerArm arm, const SolutionPool::EntryRef& first,
+                        const SolutionPool::EntryRef& second, size_t recombine_effort,
+                        const Deadline& deadline);
+
+    const ProblemView& problem_;
+    const ExecutionContext& exec_;
+    SolutionSink& sink_;
+    BoundPropRecombiner bound_prop_;
+    RecombinerBandit bandit_;
+    Rng rng_;
+    // Its `effort_base` is everything this operator has spent, what its
+    // offers and FJ's report.
+    WorkerTrace trace_;
+    std::vector<bool> integer_mask_;
+    std::vector<HighsInt> integer_cols_;
+    std::vector<SolutionPool::EntryRef> entries_;
+    std::vector<double> offspring_;
 };
 
 }  // namespace recombine

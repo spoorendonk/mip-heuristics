@@ -207,6 +207,18 @@ public:
     // production never sets it.
     void set_scan_hook_for_test(std::function<void()> hook) { scan_hook_ = std::move(hook); }
 
+    // The restart strategies `get_restart` dispatches between, and two of
+    // the recombination operator's arms (`recombine::RecombineOperator`);
+    // see `get_restart` for the roll ranges.  Called outside the lock, on
+    // vectors whose pointers were taken under it.
+    static void guided_crossover(const std::vector<bool>& mask, const std::vector<double>& sol_a,
+                                 const std::vector<double>& sol_b, Rng& rng,
+                                 std::vector<double>& out);
+    static void neighborhood_crossover(const std::vector<bool>& mask,
+                                       const std::vector<double>& sol_better,
+                                       const std::vector<double>& sol_other, Rng& rng,
+                                       std::vector<double>& out);
+
 private:
     // The integer columns twice: the flag array the crossovers test column
     // by column, and the ascending index list the Hamming scan iterates, so
@@ -227,16 +239,6 @@ private:
     // integrality information behaves).
     [[nodiscard]] static bool is_integer_col(const std::vector<bool>& mask, int j);
 
-    // The restart strategies `get_restart` dispatches between; see its
-    // documentation above for the roll ranges.  Called outside the lock, on
-    // vectors whose pointers were taken under it.
-    static void guided_crossover(const std::vector<bool>& mask, const std::vector<double>& sol_a,
-                                 const std::vector<double>& sol_b, Rng& rng,
-                                 std::vector<double>& out);
-    static void neighborhood_crossover(const std::vector<bool>& mask,
-                                       const std::vector<double>& sol_better,
-                                       const std::vector<double>& sol_other, Rng& rng,
-                                       std::vector<double>& out);
     // The entry index the biased copy draws.  Caller holds mtx_.
     static int biased_index(Rng& rng, int pool_size);
 
