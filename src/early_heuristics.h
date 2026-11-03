@@ -25,7 +25,7 @@ namespace heuristics {
 //
 // `finish()`, called on the solving thread right after presolve returns,
 // stops and joins the worker, books it as one `[Heur] name=early_fj` line,
-// and hands its best solution to HiGHS's own original-space incumbent,
+// and hands the best point it logged to HiGHS's own original-space incumbent,
 // `HighsMipSolver::solution_`, when it is feasible on the original model and
 // beats what is there (a user's MIP start may be).  That is the slot a MIP
 // start occupies, so from there HiGHS does the rest: `runSetup` crushes it

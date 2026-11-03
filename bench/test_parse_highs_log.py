@@ -134,6 +134,32 @@ def test_early_fj_found_without_handover_still_counts():
     assert parse_log(log).time_to_first_feasible == 0.1
 
 
+def test_early_fj_found_then_presolve_verdict_keeps_the_final_row():
+    """Presolve solved it, so no handover: the blank-source row is the answer,
+    and only that one row seeds."""
+    log = (
+        "Early FeasibilityJump on the original model: objective 90 found at 0.100s\n"
+        "         0       0         0   0.00%   81              81                 0.00%        0      0      0          0   3.2s\n"
+        "  Primal bound      81\n"
+    )
+    result = parse_log(log)
+    assert [(i.time, i.objective, i.source) for i in result.incumbents] == [
+        (0.1, 90.0, "J"),
+        (3.2, 81.0, "P"),
+    ]
+    assert result.incumbents[-1].objective == result.primal_bound
+
+
+def test_early_fj_handover_stops_blank_rows_seeding():
+    """After a handover, a periodic row rounding the objective is no new incumbent."""
+    log = (
+        "Early FeasibilityJump on the original model: objective 12.3456 found at 0.100s\n"
+        "Early FeasibilityJump on the original model: objective 12.3456 at 3.000s, passed on as the MIP start\n"
+        "         0       0         0   0.00%   0               12.35              Large      0      0      0         0   3.2s\n"
+    )
+    assert [i.objective for i in parse_log(log).incumbents] == [12.3456]
+
+
 def test_presolve_optimal_space_source_recorded():
     """When presolve solves the model to optimality (empty B&B), the single
     log line has a space source.  It must be recorded as incumbent 'P' so

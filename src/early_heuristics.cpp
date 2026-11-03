@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace heuristics {
@@ -42,15 +43,26 @@ public:
                   const HighsMipSolver& mipsolver)
         : SolutionSink(integrality, source), mipsolver_(mipsolver) {}
 
+    // Moves the best point that passed into `out`; whether there is one.  Only
+    // after the join.
+    [[nodiscard]] bool take_best_checked(std::vector<double>& out) {
+        if (best_logged_ == kHighsInf) {
+            return false;
+        }
+        out = std::move(best_checked_);
+        return true;
+    }
+
 protected:
     void on_accept(double objective, const std::vector<double>& solution, int /*source*/,
                    const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
         if (objective >= best_logged_) {
             return;
         }
-        // The test `finish()` will apply, so the line never names a point
-        // the handover would refuse.  `objective` is the view's minimisation
-        // form; the line carries the model's own sense.
+        // The test `finish()` will apply, and the last point to pass is the
+        // one it hands over, not the pool's best: a better point that fails
+        // here must not cost the run a logged one.  `objective` is the view's
+        // minimisation form; the line carries the model's own sense.
         double bound_violation = 0.0;
         double row_violation = 0.0;
         double integrality_violation = 0.0;
@@ -60,6 +72,7 @@ protected:
             return;
         }
         best_logged_ = objective;
+        best_checked_ = solution;
         highsLogUser(mipsolver_.options_mip_->log_options, HighsLogType::kInfo,
                      "Early FeasibilityJump on the original model: objective %.12g found at "
                      "%.3fs\n",
@@ -69,6 +82,7 @@ protected:
 private:
     const HighsMipSolver& mipsolver_;
     double best_logged_ = kHighsInf;
+    std::vector<double> best_checked_;
 };
 
 }  // namespace
@@ -237,7 +251,7 @@ void EarlyFj::finish(bool run_to_budget) {
     }
 
     std::vector<double> best;
-    const bool found = run_->sink.has_value() && run_->sink->copy_best(best);
+    const bool found = run_->sink.has_value() && run_->sink->take_best_checked(best);
     // Booked as found only when it was handed over, so `found=1` means the
     // run's answer can be this worker's.
     const bool installed = found && install(mipsolver_, best);

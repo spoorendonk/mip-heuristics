@@ -924,6 +924,8 @@ def parse_log(log_text: str) -> SolveResult:
     # is exact — and, unlike zipping the two lists, it survives a dispatch
     # that offered nothing (which emits `[Heur]` and no `[HeurSol]` at all).
     pending_heursol: dict[str, list[int]] = {}
+    # A `found at` line seen, with no handover line or display-row incumbent since.
+    early_fj_unhanded = False
 
     for line in log_text.splitlines():
         # Try MIP log data line
@@ -944,11 +946,14 @@ def parse_log(log_text: str) -> SolveResult:
             # fires), the first and only log line has a space source while
             # BestSol already holds the presolve-found optimal.  Allow a
             # space-source line to seed the first incumbent so that these
-            # instances are not misclassified as infeasible.
+            # instances are not misclassified as infeasible.  Early FJ's `found
+            # at` lines do not count as a first incumbent here while no handover
+            # followed them: a presolve verdict prints none, and its final row
+            # is the answer (#240).
             is_event = src_stripped in _INCUMBENT_SOURCES
             is_presolve_seed = (
                 not src_stripped
-                and not result.incumbents
+                and (not result.incumbents or early_fj_unhanded)
                 and best_sol not in (float("inf"), float("-inf"))
             )
             # Record if objective improved (or first entry)
@@ -956,6 +961,7 @@ def parse_log(log_text: str) -> SolveResult:
                 float("inf"),
                 float("-inf"),
             ):
+                early_fj_unhanded = False
                 prev_obj = (
                     result.incumbents[-1].objective if result.incumbents else None
                 )
@@ -982,6 +988,7 @@ def parse_log(log_text: str) -> SolveResult:
         m = _EARLY_FJ_FOUND_RE.match(line) or _EARLY_FJ_RE.match(line)
         if m:
             objective = _parse_float_or_inf(m.group(1))
+            early_fj_unhanded = m.re is _EARLY_FJ_FOUND_RE
             repeats_found = m.re is _EARLY_FJ_RE and any(
                 inc.objective == objective for inc in result.incumbents
             )
