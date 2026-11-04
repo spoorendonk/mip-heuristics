@@ -1244,6 +1244,33 @@ they differ free for FPR to complete.
 
 ---
 
+## Line-Segment Search (`line_segment`, #213)
+
+After cuOpt's `line_segment_search_t` and `round_nearest` (f3fe1a5): the
+points between two solutions are rounded and repaired by FJ. Deviations: an
+effort budget in place of cuOpt's timer and FJ's iteration and local-minimum
+limits; a lexicographic quality (feasible first, then objective or summed row
+violation) in place of FJ's weighted one; the lowest-index feasible
+configuration in the brute-force rounding.
+
+### `kBruteForceMaxFractional` — when rounding tries every configuration
+
+- **File**: `src/line_segment.h`
+- **Default**: `8`
+- **Meaning**: cuOpt's `brute_force_rounding_threshold`: with at most this
+  many fractional integer columns, `round_nearest` tries all up/down
+  configurations (at most 256) before lock rounding.
+
+### `kMinIntegerDiffs` — when a rounded point is repaired
+
+- **File**: `src/line_segment.h`
+- **Default**: `5`
+- **Meaning**: cuOpt's `min_n_integer_diffs`: a rounded point that differs
+  from the previous one on at most this many integer columns is not repaired
+  by FJ, which would most likely end where it did last time.
+
+---
+
 ## CDCL Search (`sat_search`, #236)
 
 None of these has been tuned: the solver is not yet wired into the chain, and #237 measures it.

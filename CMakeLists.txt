@@ -126,6 +126,8 @@ add_library(mip_heuristics_core STATIC
     src/heuristic_context.cpp
     src/heuristic_context.h
     src/least_violated.h
+    src/line_segment.cpp
+    src/line_segment.h
     src/local_mip.cpp
     src/local_mip.h
     src/local_mip_caches.h
@@ -412,7 +414,7 @@ catch_discover_tests(mip_heuristics_tests
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
     tests/test_paths.cpp tests/test_ruin_repair.cpp tests/test_fj_objective_cut.cpp
     tests/test_local_mip_objective_cut.cpp tests/test_objective_row.cpp
-    tests/test_recombine.cpp tests/test_fj_exchange.cpp)
+    tests/test_recombine.cpp tests/test_fj_exchange.cpp tests/test_line_segment.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})
