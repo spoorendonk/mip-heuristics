@@ -6,9 +6,11 @@
 #include "lp_data/HighsLp.h"
 #include "mip/feasibilityjump.hh"
 #include "solution_sink.h"
+#include "structure.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -29,7 +31,7 @@ struct FjWorker::Impl {
 FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                    size_t total_budget, size_t stale_budget, uint32_t seed,
                    std::vector<double> start, WorkerTrace trace, double objective_cutoff,
-                   ObjectiveCutParams objective_cut)
+                   ObjectiveCutParams objective_cut, std::span<const ExactKRow> exchange_rows)
     : problem_(problem),
       exec_(exec),
       sink_(sink),
@@ -37,6 +39,7 @@ FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, Sol
       seed_(seed),
       objective_cutoff_(objective_cutoff),
       objective_cut_(objective_cut),
+      exchange_rows_(exchange_rows),
       trace_(trace) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
@@ -140,6 +143,22 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                                                 row_value, 0);
                 }
             }
+        }
+
+        // The exchange groups (#218): each exact-k row's columns, all binary.
+        if (!exchange_rows_.empty()) {
+            std::vector<uint32_t> offsets{0};
+            std::vector<uint32_t> members;
+            offsets.reserve(exchange_rows_.size() + 1);
+            const std::vector<HighsInt>& ar_start = *problem_.ar_start;
+            const std::vector<HighsInt>& ar_index = *problem_.ar_index;
+            for (const ExactKRow& r : exchange_rows_) {
+                for (HighsInt p = ar_start[r.row]; p < ar_start[r.row + 1]; ++p) {
+                    members.push_back(static_cast<uint32_t>(ar_index[p]));
+                }
+                offsets.push_back(static_cast<uint32_t>(members.size()));
+            }
+            impl_->solver.setExchangeGroups(offsets, members);
         }
     }
 
@@ -283,6 +302,10 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     }
 
     return result;
+}
+
+size_t FjWorker::exchange_moves() const {
+    return impl_ ? impl_->solver.numExchangeMoves() : 0;
 }
 
 void FjWorker::apply_cut() {

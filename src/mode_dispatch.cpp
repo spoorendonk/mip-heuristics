@@ -104,8 +104,10 @@ struct HeuristicConfig {
     // for FPR, Scylla, ruin and recombine.  `restart_weights` is LocalMIP's alone.
     HighsInt HighsOptionsStruct::* restart;
     bool HighsOptionsStruct::* restart_weights;
-    // `mip_heuristic_fj_personas` (#206), FJ's alone; null for the rest.
+    // `mip_heuristic_fj_personas` (#206) and `mip_heuristic_fj_exchange`
+    // (#218), FJ's alone; null for the rest.
     bool HighsOptionsStruct::* personas;
+    bool HighsOptionsStruct::* exchange;
     DispatchOutcome (*run)(HighsMipSolver&, const ProblemView&, const HeuristicBudget&,
                            ExecutionContext&, SolutionSink&);
 };
@@ -125,26 +127,28 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HighsOptionsStruct::mip_heuristic_fj_effort,
      &HighsOptionsStruct::mip_heuristic_run_feasibility_jump, true,
      &HighsOptionsStruct::mip_heuristic_fj_patience, &HighsOptionsStruct::mip_heuristic_fj_restart,
-     nullptr, &HighsOptionsStruct::mip_heuristic_fj_personas, &without_solver<&fj::run>},
+     nullptr, &HighsOptionsStruct::mip_heuristic_fj_personas,
+     &HighsOptionsStruct::mip_heuristic_fj_exchange, &without_solver<&fj::run>},
     {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
-     &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, nullptr, &fpr::run},
+     &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, nullptr, nullptr,
+     &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HighsOptionsStruct::mip_heuristic_local_mip_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience,
      &HighsOptionsStruct::mip_heuristic_local_mip_restart,
-     &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights, nullptr,
+     &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights, nullptr, nullptr,
      &without_solver<&local_mip::run>},
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
-     false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, nullptr,
+     false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, nullptr, nullptr,
      &scylla::run},
     // After the four whose finds make up its population (#207).
     {"ruin", kSolutionSourceRuin, &HighsOptionsStruct::mip_heuristic_ruin_effort, nullptr, false,
-     &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr,
+     &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr, nullptr,
      &without_solver<&ruin_repair::run>},
     // After ruin, so it runs once the others have stalled, on a pool holding
     // what they all found (#229).
     {"recombine", kSolutionSourceRecombine, &HighsOptionsStruct::mip_heuristic_recombine_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_recombine_patience, nullptr, nullptr,
-     nullptr, &without_solver<&recombine::run>},
+     nullptr, nullptr, &without_solver<&recombine::run>},
 });
 
 // Whether `h` runs at all under `options` (#167).
@@ -325,6 +329,9 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         }
         if (h.personas != nullptr) {
             slice.fj_personas = options.*h.personas;
+        }
+        if (h.exchange != nullptr) {
+            slice.fj_exchange = options.*h.exchange;
         }
         slice.objective_cut = objective_cut;
         sink.set_source(h.source_tag);

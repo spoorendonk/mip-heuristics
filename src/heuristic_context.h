@@ -432,6 +432,11 @@ struct HeuristicBudget {
     // only another seed.
     bool fj_personas = false;
 
+    // FJ in `fj::run` only, default off (#218): the slots on cuOpt's
+    // exchange lanes (`is_exchange_slot`) search with its cardinality
+    // exchange over the model's exact-k rows.
+    bool fj_exchange = false;
+
     // The objective cut (#208): `on` only with the option set and
     // `has_objective` true.  Every heuristic gets the same params.
     ObjectiveCutParams objective_cut;

@@ -2495,6 +2495,55 @@ plain rather than compensated row sum.
   solved for it — the root's at the first dive, a dive node's at later
   ones.
 
+## FJ Exchange (issue #218)
+
+cuOpt's cardinality exchange (`feasibility_jump/cpu/loop.cpp`,
+`find_cardinality_exchange` and `two_opt_compute_pair_score`), patched into
+HiGHS's `FeasibilityJumpSolver`: one binary of an exact-k row from 1 to 0
+and another of the same row from 0 to 1, as one move. The groups are the
+exact-k rows `detect_structure` finds (the same pass the personas read), and
+only the slots cuOpt's lanes name search with them; every worker of such a
+slot does, rebuilds included. An exchange is tried every
+`kExchangePeriod` steps while the worker has no feasible point, taken if it
+scores above 0 and above the scalar move FJ chose, and at every local
+minimum, before and after the weights move. Its score is the weighted
+violation change over the union of both columns' rows, a shared row's two
+deltas summed first, less the objective term as a scalar move's. Scoring is
+charged to FJ's effort per row entry read. Off, the solver is upstream's
+draw for draw. The `[FjPersonas]` line's `slots_exchange=` counts the slots.
+
+**Deviations** (beside the code in `apply_patch.cmake`): HiGHS's FJ has no
+tabu, so cuOpt's tabu filter and its age and objective tie-breaks are gone
+and the first best pair wins; scores are FJ's real-valued ones, not cuOpt's
+integer-weighted ones; a column moves only within its FJ bounds, so a
+column fixed in or out of its row is never exchanged.
+
+### `mip_heuristic_fj_exchange` — FJ's cardinality exchange
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false`
+- **Meaning**: `HeuristicBudget::fj_exchange`, read by `fj::run` only. It
+  needs an exact-k row and a second worker, and is independent of
+  `mip_heuristic_fj_personas`.
+
+### `kExchangeLanePeriod`
+
+- **File**: `src/fj_personas.h`
+- **Default**: `16`
+- **Meaning**: cuOpt's lane count. `is_exchange_slot` reads a slot modulo
+  it and exchanges on lanes 1, 7, 11 and 15, cuOpt's
+  `use_cardinality_exchange` lanes (our reading of the lane table, slot 0
+  being vanilla FJ).
+
+### `kExchangePeriod`, `kExchangeDraws`, `kExchangeViolatedRows`, `kExchangeRowScan`, `kExchangeMaxPairs`
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `32`, `4`, `4`, `128`, `256`
+- **Meaning**: cuOpt's `exchange_period`; the groups drawn per search
+  (`max(4, two_opt_max_rows)`); the consecutive violated rows, from a random
+  one, whose groups are drawn first, and the entries read of each; and
+  `two_opt_max_pairs`, the pairs scored per search.
+
 ---
 
 ## Repair Walk (`repair_walk`)

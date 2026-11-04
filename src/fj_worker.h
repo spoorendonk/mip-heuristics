@@ -7,9 +7,11 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <span>
 #include <vector>
 
 class SolutionSink;
+struct ExactKRow;
 
 // Upstream FJ's `CALLBACK_EFFORT` (`feasibilityjump.hh`): FjWorker reads
 // its budgets, its stall counter and the clock only at FJ's callback, so
@@ -53,10 +55,16 @@ public:
     // in).  The row is added at the first finite cutoff, so a worker with
     // the cut on and an empty pool searches exactly as one with it off.
     // The tighter of the two cutoffs is in force.
+    //
+    // `exchange_rows`, when not empty, are the exact-k rows (#206's
+    // `detect_structure`) whose binary columns FJ may exchange (#218): one
+    // from 1 to 0 and another from 0 to 1 in one step (the patched
+    // `FeasibilityJumpSolver::setExchangeGroups`).  They must outlive the
+    // worker's first attempt.
     FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
              size_t total_budget, size_t stale_budget, uint32_t seed, std::vector<double> start,
              WorkerTrace trace, double objective_cutoff = std::numeric_limits<double>::infinity(),
-             ObjectiveCutParams objective_cut = {});
+             ObjectiveCutParams objective_cut = {}, std::span<const ExactKRow> exchange_rows = {});
     ~FjWorker();
 
     // Run FJ for up to attempt_budget effort, then pause via callback.
@@ -78,6 +86,9 @@ public:
     // across a rebuild.
     [[nodiscard]] size_t traced_effort() const { return trace_.at(base_.total_effort); }
 
+    // Exchanges FJ applied over this worker's lifetime (#218).
+    [[nodiscard]] size_t exchange_moves() const;
+
 private:
     // Set FJ's cutoff row to the tighter of the fixed and the polled
     // cutoff when that is below the one in force.
@@ -96,6 +107,7 @@ private:
     const uint32_t seed_;
     const double objective_cutoff_;
     const ObjectiveCutParams objective_cut_;
+    const std::span<const ExactKRow> exchange_rows_;
     // The cutoff FJ's row carries, offset included; +inf while there is no
     // row.  Only ever lowered.
     double cut_in_force_ = std::numeric_limits<double>::infinity();

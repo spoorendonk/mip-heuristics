@@ -179,7 +179,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 35 adds `mip_heuristic_fj_lp_persona` (#217): a bool record,
 # default false.
-set(PATCH_VERSION "35")
+#
+# Version 36 inserts cuOpt's cardinality exchange into `feasibilityjump.hh`
+# (#218) and adds `mip_heuristic_fj_exchange`: a bool record, default false.
+set(PATCH_VERSION "36")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -545,6 +548,7 @@ set(_patch_options
     "mip_heuristic_local_mip_restart_weights:bool:false:-:Start a rebuilt LocalMIP presolve worker's weights, with probability one half, at draws from {1, 2} instead of 1 (CP-SAT's restart weight draw)"
     "mip_heuristic_fj_personas:bool:false:-:Start FeasibilityJump presolve workers after the first from structural personas the model supports (cuOpt's greedy covering start, and its exact-k start followed by the covering start) instead of only from another seed"
     "mip_heuristic_fj_lp_persona:bool:false:-:Give the last worker of the dive-time fpr_lp heuristic, when it has two or more, to FeasibilityJump started from the dive's LP solution rounded at random (cuOpt's LP start persona) instead of an LP-FPR arm, when its budget holds FJ's callback period (about 488 nonzeros per worker at the default share). Needs mip_heuristic_fpr_lp_effort above 0"
+    "mip_heuristic_fj_exchange:bool:false:-:Give the FeasibilityJump presolve workers on cuOpt's exchange lanes (slots 1, 7, 11 and 15) cuOpt's cardinality exchange, a compound move that sets one member of a uniform binary equality row from 1 to 0 and another from 0 to 1 so the row's count is kept"
     "mip_heuristic_objective_cut:bool:false:-:Once the presolve heuristics hold a solution, have them search under the objective cut objective <= best - max(rel*|best|, abs), tightened with every improvement, so they keep improving rather than stop at feasible (cuOpt's objective cutting plane). Ignored for a model without an objective"
     "mip_heuristic_objective_cut_rel:double:1e-3:1.0:Relative step of the presolve heuristics' objective cut below the best objective (see mip_heuristic_objective_cut)"
     "mip_heuristic_objective_cut_abs:double:1e-7:1e20:Absolute step of the presolve heuristics' objective cut below the best objective, the floor under the relative one (see mip_heuristic_objective_cut)"
@@ -1481,6 +1485,308 @@ if(_fj_cut_found EQUAL -1)
     message(STATUS "Applied objective-cut patch to feasibilityjump.hh")
 else()
     message(STATUS "Objective-cut patch already applied to feasibilityjump.hh, skipping")
+endif()
+
+# ── Patch feasibilityjump.hh: cuOpt's cardinality exchange (#218) ──
+# A compound move on uniform binary equality rows: one member of a group
+# from 1 to 0 and another from 0 to 1, so the row's count is kept where two
+# scalar jumps would each break it.  After NVIDIA cuOpt's CPU FJ
+# (`feasibility_jump/cpu/search/moves.hpp`, `find_cardinality_exchange`, and
+# its two call sites in `cpu/loop.cpp`; Apache-2.0, technique only).
+# `setExchangeGroups` hands the solver its groups (the caller's exact-k
+# rows); with none set the solver is upstream's draw for draw, since every
+# exchange path is behind that test.  Rewrites three pieces of upstream:
+# the step loop skips its scalar move after an exchange, `selectVariable`
+# becomes `selectScalarVariable` behind a wrapper that runs the periodic
+# exchange, and `doVariableMove`'s tail becomes `moveVariable`, which the
+# exchange's two halves share with it.  Pinned by `tests/test_fj_exchange.cpp`.
+file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_EX)
+string(FIND "${FJ_EX}" "void setExchangeGroups(" _fj_ex_found)
+if(_fj_ex_found EQUAL -1)
+    set(_fj_ex_step_anchor [=[
+      uint32_t var = selectVariable();
+      doVariableMove(var);
+]=])
+    set(_fj_ex_select_anchor [=[
+  uint32_t selectVariable() {
+    if (!goodVarsSet.empty()) {
+]=])
+    set(_fj_ex_local_min_anchor [=[
+    // Local minimum, update weights.
+    updateWeights();
+]=])
+    set(_fj_ex_move_anchor [=[
+    totalEffort += problem.setValue(varIdx, newValue, [&](LhsModification mod) {
+      forEachMove(mod.varIdx, [&](Move& m) { modifyMove(mod, problem, m); });
+      updateGoodMoves(mod.varIdx);
+    });
+
+    resetMoves(varIdx);
+  }
+]=])
+    set(_fj_ex_api_anchor [=[
+  bool solveInitialized = false;
+
+ public:
+]=])
+    foreach(_a step select local_min move api)
+        string(FIND "${FJ_EX}" "${_fj_ex_${_a}_anchor}" _fj_ex_${_a}_found)
+    endforeach()
+    if(_fj_ex_step_found EQUAL -1 OR _fj_ex_select_found EQUAL -1
+       OR _fj_ex_local_min_found EQUAL -1 OR _fj_ex_move_found EQUAL -1
+       OR _fj_ex_api_found EQUAL -1)
+        message(FATAL_ERROR
+            "feasibilityjump.hh patch failed: the exchange anchors no longer "
+            "match (step loop: ${_fj_ex_step_found}, selectVariable: "
+            "${_fj_ex_select_found}, local minimum: ${_fj_ex_local_min_found}, "
+            "doVariableMove: ${_fj_ex_move_found}, objective-cut members: "
+            "${_fj_ex_api_found}; -1 means missing). Re-anchor the block. "
+            "${CLEAN_REBUILD}")
+    endif()
+
+    string(REPLACE "${_fj_ex_step_anchor}" [=[
+      uint32_t var = selectVariable();
+      if (var != kExchangeMoved) doVariableMove(var);
+]=] FJ_EX "${FJ_EX}")
+
+    string(REPLACE "${_fj_ex_select_anchor}" [=[
+  // mip-heuristics (#218): cuOpt's periodic exchange, around upstream's
+  // selection.  Every `kExchangePeriod` steps while this solver has no
+  // feasible point, an exchange is taken if its score is positive and above
+  // the scalar move's (`loop.cpp`, `exchange_period`).  At a local minimum
+  // no scalar move scores above 0, so it is tried before the weights move;
+  // `selectScalarVariable` tries again after them, as cuOpt's local-minimum
+  // branch does.  Returns `kExchangeMoved` when an exchange was applied.
+  uint32_t selectVariable() {
+    if (exchangeSeen.empty()) return selectScalarVariable();
+    const bool periodic =
+        bestObjective == std::numeric_limits<double>::infinity() &&
+        exchangeStep % kExchangePeriod == 0;
+    exchangeStep += 1;
+    const bool hadGood = !goodVarsSet.empty();
+    if (periodic && !hadGood && tryExchange(0.0)) return kExchangeMoved;
+    const uint32_t var = selectScalarVariable();
+    if (periodic && hadGood && tryExchange(bestMove(var).score))
+      return kExchangeMoved;
+    return var;
+  }
+
+  uint32_t selectScalarVariable() {
+    if (!goodVarsSet.empty()) {
+]=] FJ_EX "${FJ_EX}")
+
+    string(REPLACE "${_fj_ex_local_min_anchor}" [=[
+    // Local minimum, update weights.
+    updateWeights();
+
+    // mip-heuristics (#218): cuOpt's local-minimum exchange, after the
+    // weights moved and ahead of the scalar fallback.
+    if (!exchangeSeen.empty() && tryExchange(0.0)) return kExchangeMoved;
+]=] FJ_EX "${FJ_EX}")
+
+    string(REPLACE "${_fj_ex_move_anchor}" [=[
+    moveVariable(varIdx, newValue);
+  }
+
+  // Set `varIdx` to `newValue` and update every move it touches: upstream's
+  // `doVariableMove` tail, shared with the exchange (#218).
+  void moveVariable(uint32_t varIdx, double newValue) {
+    totalEffort += problem.setValue(varIdx, newValue, [&](LhsModification mod) {
+      forEachMove(mod.varIdx, [&](Move& m) { modifyMove(mod, problem, m); });
+      updateGoodMoves(mod.varIdx);
+    });
+
+    resetMoves(varIdx);
+  }
+
+  struct ExchangeMove {
+    uint32_t off = UINT_MAX;  // from 1 to 0
+    uint32_t on = UINT_MAX;   // from 0 to 1
+    double score = -std::numeric_limits<double>::infinity();
+  };
+
+  // The score of setting `off` to 0 and `on` to 1 together, in the units of
+  // a scalar move's: the weighted violation change over the union of both
+  // columns' rows, a shared row's two deltas summed first (cuOpt's
+  // `two_opt_compute_pair_score`), less `objectiveWeight` times the change
+  // in objective, as `resetMoves` scores one column.  Charged one effort
+  // unit per row entry read.
+  double exchangeScore(uint32_t off, uint32_t on) {
+    const double offDelta = 0.0 - problem.incumbentAssignment[off];
+    const double onDelta = 1.0 - problem.incumbentAssignment[on];
+    exchangeRowDeltas.clear();
+    for (auto& cell : problem.vars[off].coeffs)
+      exchangeRowDeltas.emplace_back(cell.idx, cell.coeff * offDelta);
+    for (auto& cell : problem.vars[on].coeffs)
+      exchangeRowDeltas.emplace_back(cell.idx, cell.coeff * onDelta);
+    totalEffort += exchangeRowDeltas.size();
+    std::sort(exchangeRowDeltas.begin(), exchangeRowDeltas.end());
+
+    double score = 0.0;
+    for (size_t pos = 0; pos < exchangeRowDeltas.size();) {
+      const uint32_t cIdx = exchangeRowDeltas[pos].first;
+      double lhsDelta = 0.0;
+      do {
+        lhsDelta += exchangeRowDeltas[pos].second;
+        pos += 1;
+      } while (pos < exchangeRowDeltas.size() &&
+               exchangeRowDeltas[pos].first == cIdx);
+      Constraint& c = problem.constraints[cIdx];
+      score += c.weight * (c.score(c.incumbentLhs + lhsDelta) -
+                           c.score(c.incumbentLhs));
+    }
+    score -= objectiveWeight * (problem.vars[off].objectiveCoeff * offDelta +
+                                problem.vars[on].objectiveCoeff * onDelta);
+    return score;
+  }
+
+  // cuOpt's `find_cardinality_exchange`: the groups met by up to
+  // `kExchangeViolatedRows` consecutive violated rows from a random one
+  // (`kExchangeRowScan` entries of each, from a random entry; a column in
+  // two groups names neither), then cyclic groups from a random one, up to
+  // `kExchangeDraws` groups in all; in each, pairs from random offsets, at
+  // most `kExchangeMaxPairs` scored per call.  Deviations: HiGHS's FJ has
+  // no tabu, so cuOpt's tabu filter and its age and objective tie-breaks
+  // are absent and the first best score wins; a column is moved only
+  // within its FJ bounds.  Charged per entry and member scanned.
+  ExchangeMove findCardinalityExchange() {
+    ExchangeMove best;
+    const uint32_t nGroups = static_cast<uint32_t>(exchangeSeen.size());
+    const uint32_t draws = std::min(nGroups, kExchangeDraws);
+    exchangeDraw.clear();
+    const std::vector<uint32_t>& violated = problem.violatedConstraints;
+    if (!violated.empty()) {
+      const size_t first = rng() % violated.size();
+      const size_t rows = std::min(kExchangeViolatedRows, violated.size());
+      for (size_t r = 0; r < rows; r += 1) {
+        const std::vector<IdxCoeff>& coeffs =
+            problem.constraints[violated[(first + r) % violated.size()]].coeffs;
+        const size_t width = coeffs.size();
+        if (width == 0) continue;
+        const size_t scan = std::min(kExchangeRowScan, width);
+        totalEffort += scan;
+        for (size_t q = 0, p = rng() % width; q < scan;
+             q += 1, p = p + 1 == width ? 0 : p + 1) {
+          const int32_t g = exchangeGroupOf[coeffs[p].idx];
+          if (g >= 0 && !exchangeSeen[g]) {
+            exchangeSeen[g] = 1;
+            exchangeDraw.push_back(static_cast<uint32_t>(g));
+          }
+        }
+      }
+    }
+    const uint32_t randomStart = rng() % nGroups;
+    for (uint32_t d = 0; exchangeDraw.size() < draws && d < nGroups; d += 1) {
+      const uint32_t g = (randomStart + d) % nGroups;
+      totalEffort += 1;
+      if (!exchangeSeen[g]) {
+        exchangeSeen[g] = 1;
+        exchangeDraw.push_back(g);
+      }
+    }
+
+    size_t scored = 0;
+    for (uint32_t g : exchangeDraw) {
+      exchangeSeen[g] = 0;
+      if (scored >= kExchangeMaxPairs) continue;
+      const uint32_t begin = exchangeOffsets[g];
+      const uint32_t width = exchangeOffsets[g + 1] - begin;
+      if (width <= 1) continue;
+      const uint32_t offStart = rng() % width;
+      const uint32_t onStart = rng() % width;
+      for (uint32_t pi = 0; pi < width && scored < kExchangeMaxPairs; pi += 1) {
+        const uint32_t off = exchangeMembers[begin + (offStart + pi) % width];
+        totalEffort += 1;
+        if (problem.incumbentAssignment[off] < 0.5 || problem.vars[off].lb > 0.0)
+          continue;
+        for (uint32_t qi = 0; qi < width && scored < kExchangeMaxPairs;
+             qi += 1) {
+          const uint32_t on = exchangeMembers[begin + (onStart + qi) % width];
+          totalEffort += 1;
+          if (on == off || problem.incumbentAssignment[on] >= 0.5 ||
+              problem.vars[on].ub < 1.0)
+            continue;
+          const double score = exchangeScore(off, on);
+          if (score > best.score) {
+            best.off = off;
+            best.on = on;
+            best.score = score;
+          }
+          scored += 1;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Apply the best exchange if it scores above both 0 and `toBeat`.
+  bool tryExchange(double toBeat) {
+    const ExchangeMove m = findCardinalityExchange();
+    if (!(m.score > 0.0 && m.score > toBeat)) return false;
+    moveVariable(m.off, 0.0);
+    moveVariable(m.on, 1.0);
+    nExchangeMoves += 1;
+    return true;
+  }
+]=] FJ_EX "${FJ_EX}")
+
+    string(REPLACE "${_fj_ex_api_anchor}" [=[
+  bool solveInitialized = false;
+
+ public:
+  // mip-heuristics (#218): the exchange groups, as CSR over column indices:
+  // group `g` is `members[offsets[g] .. offsets[g + 1])`, binary columns of
+  // one uniform binary equality row.  Call after the columns are added and
+  // before `solve`; with no group the solver never exchanges.
+  void setExchangeGroups(const std::vector<uint32_t>& offsets,
+                         const std::vector<uint32_t>& members) {
+    exchangeOffsets = offsets;
+    exchangeMembers = members;
+    const uint32_t nGroups =
+        offsets.empty() ? 0 : static_cast<uint32_t>(offsets.size() - 1);
+    exchangeGroupOf.assign(problem.vars.size(), -1);
+    for (uint32_t g = 0; g < nGroups; g += 1)
+      for (uint32_t p = offsets[g]; p < offsets[g + 1]; p += 1) {
+        int32_t& owner = exchangeGroupOf[members[p]];
+        owner = owner == -1 ? static_cast<int32_t>(g)
+                            : (owner == static_cast<int32_t>(g) ? owner : -2);
+      }
+    exchangeSeen.assign(nGroups, 0);
+    exchangeDraw.reserve(nGroups);
+  }
+
+  // Exchanges applied so far (#218).
+  size_t numExchangeMoves() const { return nExchangeMoves; }
+
+ private:
+  // cuOpt's constants: `exchange_period`; `max(4, two_opt_max_rows)` groups
+  // drawn; the violated rows and the entries of each its lookup reads;
+  // `two_opt_max_pairs`.
+  static constexpr uint32_t kExchangePeriod = 32;
+  static constexpr uint32_t kExchangeDraws = 4;
+  static constexpr size_t kExchangeViolatedRows = 4;
+  static constexpr size_t kExchangeRowScan = 128;
+  static constexpr size_t kExchangeMaxPairs = 256;
+  // What `selectVariable` returns when it applied an exchange.
+  static constexpr uint32_t kExchangeMoved = UINT_MAX - 1;
+  std::vector<uint32_t> exchangeOffsets;
+  std::vector<uint32_t> exchangeMembers;
+  // A column's group, -1 for none, -2 for more than one.
+  std::vector<int32_t> exchangeGroupOf;
+  // Per group, set only while a search holds it in `exchangeDraw`.
+  std::vector<uint8_t> exchangeSeen;
+  std::vector<uint32_t> exchangeDraw;
+  std::vector<std::pair<uint32_t, double>> exchangeRowDeltas;
+  size_t exchangeStep = 0;
+  size_t nExchangeMoves = 0;
+
+ public:
+]=] FJ_EX "${FJ_EX}")
+
+    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_EX}")
+    message(STATUS "Applied cardinality-exchange patch to feasibilityjump.hh")
+else()
+    message(STATUS "Cardinality-exchange patch already applied to feasibilityjump.hh, skipping")
 endif()
 
 # Note: upstream's standalone `feasibilityJump()` is *not* patched to charge

@@ -42,6 +42,17 @@ inline constexpr int kCoveringPasses = 2;
 std::vector<FjPersona> assign_personas(const RowStructure& structure, size_t nnz,
                                        size_t num_workers);
 
+// cuOpt's lane count, the period of its lane assignments.
+inline constexpr size_t kExchangeLanePeriod = 16;
+
+// Whether `slot` searches with the cardinality exchange (#218): cuOpt's
+// `use_cardinality_exchange` lanes 1, 7, 11 and 15, read modulo its 16
+// lanes.  Slot 0 never does: it is vanilla FJ.
+constexpr bool is_exchange_slot(size_t slot) {
+    const size_t lane = slot % kExchangeLanePeriod;
+    return lane == 1 || lane == 7 || lane == 11 || lane == 15;
+}
+
 // FJ's own start for a column with no point to take: its lower bound, else
 // its upper, else 0.  `FjWorker` and the personas share it.
 inline double fj_bound_start(double lower, double upper) {

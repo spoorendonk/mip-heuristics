@@ -45,6 +45,21 @@ TEST_CASE("FJ personas: a partitioning model gets a covering and an exact-k slot
     CHECK(log_contains(lines, "slots_covering=1 slots_exact_k=1"));
 }
 
+TEST_CASE("FJ exchange: a partitioning model gets an exchange slot without personas",
+          "[heuristic][fj][fj_exchange]") {
+    // The exchange (#218) needs the detection pass on its own: slot 1 of
+    // four is cuOpt's first exchange lane, and the exact-k slot stays unset.
+    const ScopedThreadPin pin;
+    const auto lines = solve_capturing_log("issue-2095.mps", [](Highs& h) {
+        select_heuristics(h, "fj");
+        require_option(h, "mip_heuristic_fj_exchange", true);
+        require_option(h, "log_dev_level", 3);
+        require_option(h, "threads", 4);
+        require_option(h, "mip_max_nodes", 1);
+    });
+    CHECK(log_contains(lines, "slots_covering=0 slots_exact_k=0 slots_exchange=1"));
+}
+
 TEST_CASE("FJ personas: off by default, with no detection pass", "[heuristic][fj][fj_personas]") {
     const auto lines = solve_capturing_log("p0548.mps", [](Highs& h) {
         select_heuristics(h, "fj");

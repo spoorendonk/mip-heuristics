@@ -10,8 +10,10 @@
 #include "structure.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -27,51 +29,66 @@ struct FjState {
     WorkerTrace trace;
     // The start the slot's first worker takes (#206); rebuilds ignore it.
     FjPersona persona = FjPersona::kSeeded;
+    // Every worker of the slot searches with the exchange (#218).
+    bool exchange = false;
 };
 
 // Slot `worker_idx`, with no worker built yet.  Its first worker is pinned
 // to `random_seed + worker_idx`, so worker 0 matches vanilla FJ's seed.
 FjState make_state(const ExecutionContext& exec, int worker_idx,
-                   FjPersona persona = FjPersona::kSeeded) {
+                   FjPersona persona = FjPersona::kSeeded, bool exchange = false) {
     // The `random_seed` option itself: `base_seed` is it plus
     // `kBaseSeedOffset` (`heuristic_base_seed`), so this is the exact
     // inverse, in the same modular `uint32_t` arithmetic.
     const uint32_t random_seed_opp = exec.base_seed - kBaseSeedOffset;
-    return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx), true,
-                   WorkerTrace{worker_idx, 0}, persona};
+    return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx),
+                   true,    WorkerTrace{worker_idx, 0},
+                   persona, exchange};
 }
 
-// The persona of every slot, and the structure their starts read: all
-// seeded, with no detection pass, unless `budget.fj_personas` (#206) and
-// some slot can take a persona.  Run
-// on the dispatching thread, ahead of the parallel region.
+// The persona of every slot, which slots exchange, and the structure both
+// read: all seeded and none exchanging, with no detection pass, unless
+// `budget.fj_personas` (#206) or `budget.fj_exchange` (#218) and some slot
+// can use it.  Run on the dispatching thread, ahead of the parallel region.
 struct Personas {
     RowStructure structure;
     std::vector<FjPersona> of_slot;
+    std::vector<uint8_t> exchange_of_slot;
 };
 
 Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget,
                        const ExecutionContext& exec) {
     Personas out;
-    // Where `assign_personas` would seed every slot anyway, skip the O(nnz)
-    // detection pass too.
-    if (!budget.fj_personas || exec.num_workers < 2 || problem.nnz > kPersonaNnzLimit) {
-        out.of_slot.assign(exec.num_workers, FjPersona::kSeeded);
+    out.of_slot.assign(exec.num_workers, FjPersona::kSeeded);
+    out.exchange_of_slot.assign(exec.num_workers, 0);
+    // Where `assign_personas` would seed every slot anyway, and slot 1, the
+    // first exchange lane, does not exist, skip the O(nnz) detection pass.
+    const bool personas = budget.fj_personas && problem.nnz <= kPersonaNnzLimit;
+    if (!(personas || budget.fj_exchange) || exec.num_workers < 2) {
         return out;
     }
     out.structure = detect_structure(problem);
-    out.of_slot = assign_personas(out.structure, problem.nnz, exec.num_workers);
+    if (personas) {
+        out.of_slot = assign_personas(out.structure, problem.nnz, exec.num_workers);
+    }
+    if (budget.fj_exchange && !out.structure.exact_k.empty()) {
+        for (size_t slot = 0; slot < out.exchange_of_slot.size(); ++slot) {
+            out.exchange_of_slot[slot] = is_exchange_slot(slot) ? 1 : 0;
+        }
+    }
     const auto slots_with = [&](FjPersona p) {
         return static_cast<int>(std::ranges::count(out.of_slot, p));
     };
     const auto kind = [&](RowKind k) { return static_cast<int>(out.structure.count_of(k)); };
     highsLogDev(exec.log_options, HighsLogType::kVerbose,
                 "[FjPersonas] partitioning=%d packing=%d covering=%d cardinality=%d "
-                "precedence=%d flow=%d exact_k=%d slots_covering=%d slots_exact_k=%d\n",
+                "precedence=%d flow=%d exact_k=%d slots_covering=%d slots_exact_k=%d "
+                "slots_exchange=%d\n",
                 kind(RowKind::kPartitioning), kind(RowKind::kPacking), kind(RowKind::kCovering),
                 kind(RowKind::kCardinality), kind(RowKind::kPrecedence),
                 kind(RowKind::kFlowConservation), static_cast<int>(out.structure.exact_k.size()),
-                slots_with(FjPersona::kCovering), slots_with(FjPersona::kExactK));
+                slots_with(FjPersona::kCovering), slots_with(FjPersona::kExactK),
+                static_cast<int>(std::ranges::count(out.exchange_of_slot, uint8_t{1})));
     return out;
 }
 
@@ -126,10 +143,14 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
     // compute from its own copy of the matrix, now sized once alongside every
     // other heuristic's.
     // The objective cut (#222) is polled from the sink, so a rebuilt worker
-    // starts under the cutoff in force without being told it.
+    // starts under the cutoff in force without being told it.  An exchange
+    // slot's rebuilt workers exchange too (#218): it is a move, not a start.
+    const std::span<const ExactKRow> exchange_rows =
+        state.exchange && structure != nullptr ? std::span<const ExactKRow>(structure->exact_k)
+                                               : std::span<const ExactKRow>();
     state.worker = std::make_unique<FjWorker>(
         problem, exec, sink, budget.per_worker, budget.worker_stale, seed, std::move(start),
-        state.trace, std::numeric_limits<double>::infinity(), budget.objective_cut);
+        state.trace, std::numeric_limits<double>::infinity(), budget.objective_cut, exchange_rows);
 }
 
 }  // namespace
@@ -153,14 +174,15 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // precompute variable orders ahead of it and therefore can (#117).
     // The persona plan above (#206) is the one exception, and not worth a
     // bail: one O(nnz) classification pass, and only with
-    // `mip_heuristic_fj_personas` on; the persona starts themselves run
-    // in `build_worker`, behind the gate.  This does not touch the narrower standing caveat that
-    // once construction has begun nothing bounds it — the deadline is polled between attempts, not
-    // inside `FjWorker`'s constructor.
+    // `mip_heuristic_fj_personas` or `mip_heuristic_fj_exchange` on; the persona starts themselves
+    // run in `build_worker`, behind the gate.  This does not touch the narrower standing caveat
+    // that once construction has begun nothing bounds it — the deadline is polled between attempts,
+    // not inside `FjWorker`'s constructor.
     return {.effort = run_opportunistic_loop(
                 exec, budget,
                 [&exec, &personas](int worker_idx, Rng& /*rng*/) -> FjState {
-                    return make_state(exec, worker_idx, personas.of_slot[worker_idx]);
+                    return make_state(exec, worker_idx, personas.of_slot[worker_idx],
+                                      personas.exchange_of_slot[worker_idx] != 0);
                 },
                 [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
                     if (!state.worker || state.worker->finished()) {
