@@ -10,6 +10,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -252,6 +253,14 @@ TEST_CASE("personas: the LP start gives up where cuOpt drops it", "[core][fj_per
     free_col.col_lower_ = {-kHighsInf};
     const Setup free_setup(free_col, highs.getOptions().log_options);
     CHECK_FALSE(lp_rounded_start(free_setup.problem, std::vector<double>{kHighsInf}, rng, x));
+    // A NaN LP value on a bounded column: the clamp would land it on a bound.
+    HighsLp boxed = model({V::kContinuous}, {kHighsInf}, {{-kHighsInf, 1, {{0, 1}}}});
+    boxed.col_lower_ = {0.0};
+    boxed.col_upper_ = {1.0};
+    const Setup boxed_setup(boxed, highs.getOptions().log_options);
+    CHECK_FALSE(lp_rounded_start(boxed_setup.problem,
+                                 std::vector<double>{std::numeric_limits<double>::quiet_NaN()}, rng,
+                                 x));
     // An integer column with no integral value in its bounds is cuOpt's
     // other give-up, but the core `make_problem` refuses such a model, so
     // no view reaches it here.

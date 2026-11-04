@@ -2480,8 +2480,8 @@ plain rather than compensated row sum.
   its bounds) falls back to FJ's usual start, the pool's best, else the
   incumbent snapshot. Its effort is part of `fpr_lp`'s, charged to the
   RENS/RINS envelope. No persona above `kPersonaNnzLimit`, which is also
-  cuOpt's `lp_start_nnz_limit`, and none while the slot's stale budget
-  (`worker_stale`) is below one FJ callback period, `kFjCallbackEffort`
+  cuOpt's `lp_start_nnz_limit`, and none unless the slot's stale budget
+  (`worker_stale`) is above one FJ callback period, `kFjCallbackEffort`
   (upstream FJ's `CALLBACK_EFFORT`, 500000): FJ reads its budgets only at
   that callback, so a smaller dispatch could not hold FJ to its share. On
   small models (below roughly `488 x workers` nonzeros at the default

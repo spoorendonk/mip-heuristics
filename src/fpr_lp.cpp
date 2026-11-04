@@ -759,16 +759,18 @@ void run(HighsMipSolver& mipsolver) {
         // The FJ LP persona (#217) takes a slot of its own, so it needs a
         // second one: with a single worker the arm keeps it, as FJ's slot 0
         // stays seeded under #206's personas.  No persona above
-        // `kPersonaNnzLimit`, cuOpt's `lp_start_nnz_limit`.  And none when
-        // the slot's stale budget is below one FJ callback period
+        // `kPersonaNnzLimit`, cuOpt's `lp_start_nnz_limit`.  And none unless
+        // the slot's stale budget is above one FJ callback period
         // (`kFjCallbackEffort`): FJ checks its budgets only at the callback,
         // so a smaller dispatch would see one FJ attempt overrun the slot's
         // share of the envelope, trip the dispatch-wide stale stop for every
-        // arm, and stall at its first callback on every rebuild.  At
-        // `worker_stale` >= one period the slot's `per_worker`, four times
-        // it, bounds the overrun to a quarter of the slot.
+        // arm, and stall at its first callback on every rebuild.  Strictly
+        // above, as FJ's stall test is `>`.  With `worker_stale` above one
+        // period the slot's `per_worker`, four times it, bounds the overrun
+        // to a quarter of the slot.  In nonzeros: at the default share
+        // (`nnz << 12` at most) the lane needs about `488 x workers`.
         const bool fj_lane = options.mip_heuristic_fj_lp_persona && exec.num_workers >= 2 &&
-                             nnz <= kPersonaNnzLimit && budget.worker_stale >= kFjCallbackEffort;
+                             nnz <= kPersonaNnzLimit && budget.worker_stale > kFjCallbackEffort;
         worker_effort = run_workers(problem, setup, exec, budget, sink, fj_lane);
         // Read after the worker loop has joined; the sink starts at zero
         // because it is constructed per dispatch.

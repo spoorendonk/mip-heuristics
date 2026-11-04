@@ -253,10 +253,13 @@ bool lp_rounded_start(const ProblemView& problem, std::span<const double> lp_x, 
         // Not `std::clamp`: a column with no integral value inside its
         // bounds has them crossed once rounded inward, which `std::clamp`
         // does not allow; this form lands on `lower` and fails below.
-        double value = std::max(lower, std::min(upper, lp_x[col]));
-        if (!std::isfinite(value)) {
+        // The LP value is tested before the clamp, which would map a NaN
+        // onto `upper` (`std::min` keeps its first argument when the
+        // comparison is false) and so hide it.
+        if (!std::isfinite(lp_x[col])) {
             return false;
         }
+        double value = std::max(lower, std::min(upper, lp_x[col]));
         if (is_integer(*problem.integrality, col)) {
             const double fraction = value - std::floor(value);
             value = coin(rng) < fraction ? std::ceil(value) : std::floor(value);

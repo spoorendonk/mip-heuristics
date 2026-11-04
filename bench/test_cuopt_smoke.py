@@ -197,8 +197,9 @@ def test_lp_persona_reads_against_fpr_lp(monkeypatch):
     assert "lp_persona vs fpr_lp: seed 0 0.500" in lines
     # Without its base's runs the arm has no row.
     del results["fpr_lp"]
-    rows, _notes = report_rows(results, [0], instances, score_by_first_incumbent)
+    rows, notes = report_rows(results, [0], instances, score_by_first_incumbent)
     assert not any("lp_persona" in row for row in rows)
+    assert "lp_persona: no row, its base fpr_lp has no runs" in notes
 
 
 def test_feasible_runs_count_only_the_list():

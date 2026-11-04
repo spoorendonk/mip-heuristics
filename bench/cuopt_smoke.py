@@ -338,9 +338,13 @@ def report_rows(
     # Arms pair on the seeds they ran, so a noise seed of `main`'s takes no part.
     for arm in results:
         base = bases.get(arm, BASELINE)
-        if arm != BASELINE and results[arm] and results.get(base):
-            label = arm if base == BASELINE else f"{arm} vs {base}"
-            rows.append(row(label, results, arm, base))
+        if arm == BASELINE or not results[arm]:
+            continue
+        if not results.get(base):
+            notes.append(f"{arm}: no row, its base {base} has no runs")
+            continue
+        label = arm if base == BASELINE else f"{arm} vs {base}"
+        rows.append(row(label, results, arm, base))
     return rows, notes
 
 
