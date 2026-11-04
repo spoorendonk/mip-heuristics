@@ -2442,7 +2442,8 @@ plain rather than compensated row sum.
 
 - **File**: `src/fj_personas.h`
 - **Default**: `8'000'000`
-- **Meaning**: cuOpt's `start_nnz_limit`: above it every slot is seeded.
+- **Meaning**: cuOpt's `start_nnz_limit`: above it every slot is seeded and
+  none exchanges (#218), and the detection pass does not run.
 
 ### `kCoveringPasses`
 
@@ -2508,8 +2509,9 @@ slot does, rebuilds included. An exchange is tried every
 scores above 0 and above the scalar move FJ chose, and at every local
 minimum, before and after the weights move. Its score is the weighted
 violation change over the union of both columns' rows, a shared row's two
-deltas summed first, less the objective term as a scalar move's. Scoring is
-charged to FJ's effort per row entry read. Off, the solver is upstream's
+deltas summed first, less the objective term as a scalar move's. A search
+reads each drawn group once for its members at 1 and at 0, then scores
+pairs; it is charged to FJ's effort per row entry and member read. Off, the solver is upstream's
 draw for draw. The `[FjPersonas]` line's `slots_exchange=` counts the slots.
 
 **Deviations** (beside the code in `apply_patch.cmake`): HiGHS's FJ has no
@@ -2523,8 +2525,8 @@ column fixed in or out of its row is never exchanged.
 - **File**: `third_party/highs_patch/apply_patch.cmake`
 - **Default**: `false`
 - **Meaning**: `HeuristicBudget::fj_exchange`, read by `fj::run` only. It
-  needs an exact-k row and a second worker, and is independent of
-  `mip_heuristic_fj_personas`.
+  needs an exact-k row, a second worker and `nnz <= kPersonaNnzLimit`, and
+  is independent of `mip_heuristic_fj_personas`.
 
 ### `kExchangeLanePeriod`
 

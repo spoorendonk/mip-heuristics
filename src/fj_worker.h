@@ -86,9 +86,6 @@ public:
     // across a rebuild.
     [[nodiscard]] size_t traced_effort() const { return trace_.at(base_.total_effort); }
 
-    // Exchanges FJ applied over this worker's lifetime (#218).
-    [[nodiscard]] size_t exchange_moves() const;
-
 private:
     // Set FJ's cutoff row to the tighter of the fixed and the polled
     // cutoff when that is below the one in force.

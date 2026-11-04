@@ -114,8 +114,9 @@ Model forced_off(int n) {
     Model m;
     m.columns.resize(static_cast<size_t>(n));
     m.columns[0].start = 1.0;
-    for (int j = 1; j < n; ++j)
+    for (int j = 1; j < n; ++j) {
         m.columns[static_cast<size_t>(j)].cost = j;
+    }
     Row exact{fj::RowType::Equal, 1.0, {}, {}};
     for (int j = 0; j < n; ++j) {
         exact.index.push_back(j);
@@ -128,8 +129,9 @@ Model forced_off(int n) {
 
 double row_activity(const Row& r, const std::vector<double>& x) {
     double lhs = 0.0;
-    for (size_t p = 0; p < r.index.size(); ++p)
+    for (size_t p = 0; p < r.index.size(); ++p) {
         lhs += r.value[p] * x[static_cast<size_t>(r.index[p])];
+    }
     return lhs;
 }
 
@@ -137,7 +139,7 @@ double row_activity(const Row& r, const std::vector<double>& x) {
 
 TEST_CASE("FJ exchange off: no groups and empty groups search alike", "[fj][exchange]") {
     const Model m = forced_off(12);
-    for (uint32_t seed : {0u, 1u, 7u}) {
+    for (uint32_t seed : {0U, 1U, 7U}) {
         const Outcome none = run(m, Groups::kNotSet, seed);
         const Outcome empty = run(m, Groups::kEmpty, seed);
         REQUIRE(none.feasible);
@@ -151,7 +153,7 @@ TEST_CASE("FJ exchange off: no groups and empty groups search alike", "[fj][exch
 
 TEST_CASE("FJ exchange: one exchange keeps the exact-k row whole", "[fj][exchange]") {
     const Model m = forced_off(12);
-    for (uint32_t seed : {0u, 1u, 7u}) {
+    for (uint32_t seed : {0U, 1U, 7U}) {
         const Outcome out = run(m, Groups::kRowZero, seed);
         REQUIRE(out.feasible);
         CHECK(out.exchanges == 1);
@@ -168,7 +170,7 @@ TEST_CASE("FJ exchange: a fixed column is never moved", "[fj][exchange]") {
         {1.0, 1.0, 0.0, 1.0}, {0.0, 1.0, 0.0, 1.0}, {0.0, 0.0, -5.0, 0.0}, {0.0, 1.0, 5.0, 0.0}};
     m.rows.push_back({fj::RowType::Equal, 2.0, {0, 1, 2, 3}, {1.0, 1.0, 1.0, 1.0}});
     m.rows.push_back({fj::RowType::Lte, 0.0, {1}, {1.0}});
-    for (uint32_t seed : {0u, 1u, 7u, 11u}) {
+    for (uint32_t seed : {0U, 1U, 7U, 11U}) {
         const Outcome out = run(m, Groups::kRowZero, seed);
         REQUIRE(out.feasible);
         CHECK(out.exchanges >= 1);

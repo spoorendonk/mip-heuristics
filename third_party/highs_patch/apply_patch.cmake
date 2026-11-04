@@ -1609,32 +1609,40 @@ if(_fj_ex_found EQUAL -1)
   // a scalar move's: the weighted violation change over the union of both
   // columns' rows, a shared row's two deltas summed first (cuOpt's
   // `two_opt_compute_pair_score`), less `objectiveWeight` times the change
-  // in objective, as `resetMoves` scores one column.  Charged one effort
-  // unit per row entry read.
+  // in objective, as `resetMoves` scores one column.  The deltas gather in a
+  // dense per-row scratch with a touched list, so a pair costs its two
+  // columns' entries, which is what it is charged.
   double exchangeScore(uint32_t off, uint32_t on) {
     const double offDelta = 0.0 - problem.incumbentAssignment[off];
     const double onDelta = 1.0 - problem.incumbentAssignment[on];
-    exchangeRowDeltas.clear();
-    for (auto& cell : problem.vars[off].coeffs)
-      exchangeRowDeltas.emplace_back(cell.idx, cell.coeff * offDelta);
-    for (auto& cell : problem.vars[on].coeffs)
-      exchangeRowDeltas.emplace_back(cell.idx, cell.coeff * onDelta);
-    totalEffort += exchangeRowDeltas.size();
-    std::sort(exchangeRowDeltas.begin(), exchangeRowDeltas.end());
+    // The objective cut's row may arrive after the groups do.
+    if (exchangeLhsDelta.size() < problem.constraints.size()) {
+      exchangeLhsDelta.resize(problem.constraints.size(), 0.0);
+      exchangeRowMark.resize(problem.constraints.size(), 0);
+    }
+    const std::pair<uint32_t, double> sides[2] = {{off, offDelta},
+                                                  {on, onDelta}};
+    for (const auto& side : sides) {
+      const std::vector<IdxCoeff>& coeffs = problem.vars[side.first].coeffs;
+      totalEffort += coeffs.size();
+      for (const IdxCoeff& cell : coeffs) {
+        if (!exchangeRowMark[cell.idx]) {
+          exchangeRowMark[cell.idx] = 1;
+          exchangeTouched.push_back(cell.idx);
+        }
+        exchangeLhsDelta[cell.idx] += cell.coeff * side.second;
+      }
+    }
 
     double score = 0.0;
-    for (size_t pos = 0; pos < exchangeRowDeltas.size();) {
-      const uint32_t cIdx = exchangeRowDeltas[pos].first;
-      double lhsDelta = 0.0;
-      do {
-        lhsDelta += exchangeRowDeltas[pos].second;
-        pos += 1;
-      } while (pos < exchangeRowDeltas.size() &&
-               exchangeRowDeltas[pos].first == cIdx);
+    for (const uint32_t cIdx : exchangeTouched) {
       Constraint& c = problem.constraints[cIdx];
-      score += c.weight * (c.score(c.incumbentLhs + lhsDelta) -
+      score += c.weight * (c.score(c.incumbentLhs + exchangeLhsDelta[cIdx]) -
                            c.score(c.incumbentLhs));
+      exchangeLhsDelta[cIdx] = 0.0;
+      exchangeRowMark[cIdx] = 0;
     }
+    exchangeTouched.clear();
     score -= objectiveWeight * (problem.vars[off].objectiveCoeff * offDelta +
                                 problem.vars[on].objectiveCoeff * onDelta);
     return score;
@@ -1644,29 +1652,38 @@ if(_fj_ex_found EQUAL -1)
   // `kExchangeViolatedRows` consecutive violated rows from a random one
   // (`kExchangeRowScan` entries of each, from a random entry; a column in
   // two groups names neither), then cyclic groups from a random one, up to
-  // `kExchangeDraws` groups in all; in each, pairs from random offsets, at
-  // most `kExchangeMaxPairs` scored per call.  Deviations: HiGHS's FJ has
-  // no tabu, so cuOpt's tabu filter and its age and objective tie-breaks
-  // are absent and the first best score wins; a column is moved only
-  // within its FJ bounds.  Charged per entry and member scanned.
+  // `kExchangeDraws` groups in all; in each, its members at 1 and at 0 from
+  // two random offsets, then pairs in that order, at most
+  // `kExchangeMaxPairs` scored per call.  Deviations: HiGHS's FJ has no
+  // tabu, so cuOpt's tabu filter and its age and objective tie-breaks are
+  // absent and the first best score wins; a column is moved only within its
+  // FJ bounds.  Charged per entry and member scanned, so a call costs
+  // O(scanned entries + group widths + pairs' entries).
   ExchangeMove findCardinalityExchange() {
     ExchangeMove best;
+    // Local copies: the header builds as C++11, where binding a
+    // `static constexpr` member to `std::min`'s reference odr-uses it.
+    const uint32_t maxDraws = kExchangeDraws;
+    const size_t maxRows = kExchangeViolatedRows;
+    const size_t maxScan = kExchangeRowScan;
+    const size_t maxPairs = kExchangeMaxPairs;
     const uint32_t nGroups = static_cast<uint32_t>(exchangeSeen.size());
-    const uint32_t draws = std::min(nGroups, kExchangeDraws);
+    const uint32_t draws = std::min(nGroups, maxDraws);
     exchangeDraw.clear();
     const std::vector<uint32_t>& violated = problem.violatedConstraints;
     if (!violated.empty()) {
       const size_t first = rng() % violated.size();
-      const size_t rows = std::min(kExchangeViolatedRows, violated.size());
-      for (size_t r = 0; r < rows; r += 1) {
+      const size_t rows = std::min(maxRows, violated.size());
+      for (size_t r = 0; r < rows && exchangeDraw.size() < draws; r += 1) {
         const std::vector<IdxCoeff>& coeffs =
             problem.constraints[violated[(first + r) % violated.size()]].coeffs;
         const size_t width = coeffs.size();
         if (width == 0) continue;
-        const size_t scan = std::min(kExchangeRowScan, width);
-        totalEffort += scan;
-        for (size_t q = 0, p = rng() % width; q < scan;
+        const size_t scan = std::min(maxScan, width);
+        for (size_t q = 0, p = rng() % width;
+             q < scan && exchangeDraw.size() < draws;
              q += 1, p = p + 1 == width ? 0 : p + 1) {
+          totalEffort += 1;
           const int32_t g = exchangeGroupOf[coeffs[p].idx];
           if (g >= 0 && !exchangeSeen[g]) {
             exchangeSeen[g] = 1;
@@ -1688,33 +1705,37 @@ if(_fj_ex_found EQUAL -1)
     size_t scored = 0;
     for (uint32_t g : exchangeDraw) {
       exchangeSeen[g] = 0;
-      if (scored >= kExchangeMaxPairs) continue;
+      if (scored >= maxPairs) continue;
       const uint32_t begin = exchangeOffsets[g];
       const uint32_t width = exchangeOffsets[g + 1] - begin;
       if (width <= 1) continue;
       const uint32_t offStart = rng() % width;
       const uint32_t onStart = rng() % width;
-      for (uint32_t pi = 0; pi < width && scored < kExchangeMaxPairs; pi += 1) {
-        const uint32_t off = exchangeMembers[begin + (offStart + pi) % width];
-        totalEffort += 1;
-        if (problem.incumbentAssignment[off] < 0.5 || problem.vars[off].lb > 0.0)
-          continue;
-        for (uint32_t qi = 0; qi < width && scored < kExchangeMaxPairs;
-             qi += 1) {
-          const uint32_t on = exchangeMembers[begin + (onStart + qi) % width];
-          totalEffort += 1;
-          if (on == off || problem.incumbentAssignment[on] >= 0.5 ||
-              problem.vars[on].ub < 1.0)
-            continue;
-          const double score = exchangeScore(off, on);
+      // One pass each for the members that may go off and those that may
+      // go on, so a group with no pair costs its width, not its square.
+      exchangeOffs.clear();
+      exchangeOns.clear();
+      totalEffort += 2 * width;
+      for (uint32_t i = 0; i < width; i += 1) {
+        const uint32_t off = exchangeMembers[begin + (offStart + i) % width];
+        if (problem.incumbentAssignment[off] >= 0.5 &&
+            problem.vars[off].lb <= 0.0)
+          exchangeOffs.push_back(off);
+        const uint32_t on = exchangeMembers[begin + (onStart + i) % width];
+        if (problem.incumbentAssignment[on] < 0.5 && problem.vars[on].ub >= 1.0)
+          exchangeOns.push_back(on);
+      }
+      for (size_t i = 0; i < exchangeOffs.size() && scored < maxPairs; i += 1)
+        for (size_t j = 0; j < exchangeOns.size() && scored < maxPairs;
+             j += 1) {
+          const double score = exchangeScore(exchangeOffs[i], exchangeOns[j]);
           if (score > best.score) {
-            best.off = off;
-            best.on = on;
+            best.off = exchangeOffs[i];
+            best.on = exchangeOns[j];
             best.score = score;
           }
           scored += 1;
         }
-      }
     }
     return best;
   }
@@ -1738,21 +1759,30 @@ if(_fj_ex_found EQUAL -1)
   // group `g` is `members[offsets[g] .. offsets[g + 1])`, binary columns of
   // one uniform binary equality row.  Call after the columns are added and
   // before `solve`; with no group the solver never exchanges.
-  void setExchangeGroups(const std::vector<uint32_t>& offsets,
-                         const std::vector<uint32_t>& members) {
-    exchangeOffsets = offsets;
-    exchangeMembers = members;
+  void setExchangeGroups(std::vector<uint32_t> offsets,
+                         std::vector<uint32_t> members) {
+    exchangeOffsets = std::move(offsets);
+    exchangeMembers = std::move(members);
     const uint32_t nGroups =
-        offsets.empty() ? 0 : static_cast<uint32_t>(offsets.size() - 1);
+        exchangeOffsets.empty()
+            ? 0
+            : static_cast<uint32_t>(exchangeOffsets.size() - 1);
     exchangeGroupOf.assign(problem.vars.size(), -1);
-    for (uint32_t g = 0; g < nGroups; g += 1)
-      for (uint32_t p = offsets[g]; p < offsets[g + 1]; p += 1) {
-        int32_t& owner = exchangeGroupOf[members[p]];
+    uint32_t maxWidth = 0;
+    for (uint32_t g = 0; g < nGroups; g += 1) {
+      maxWidth = std::max(maxWidth,
+                          exchangeOffsets[g + 1] - exchangeOffsets[g]);
+      for (uint32_t p = exchangeOffsets[g]; p < exchangeOffsets[g + 1];
+           p += 1) {
+        int32_t& owner = exchangeGroupOf[exchangeMembers[p]];
         owner = owner == -1 ? static_cast<int32_t>(g)
                             : (owner == static_cast<int32_t>(g) ? owner : -2);
       }
+    }
     exchangeSeen.assign(nGroups, 0);
     exchangeDraw.reserve(nGroups);
+    exchangeOffs.reserve(maxWidth);
+    exchangeOns.reserve(maxWidth);
   }
 
   // Exchanges applied so far (#218).
@@ -1776,7 +1806,14 @@ if(_fj_ex_found EQUAL -1)
   // Per group, set only while a search holds it in `exchangeDraw`.
   std::vector<uint8_t> exchangeSeen;
   std::vector<uint32_t> exchangeDraw;
-  std::vector<std::pair<uint32_t, double>> exchangeRowDeltas;
+  // A drawn group's members that may go off and on, in draw order.
+  std::vector<uint32_t> exchangeOffs;
+  std::vector<uint32_t> exchangeOns;
+  // `exchangeScore`'s scratch: per-row delta and mark, all zero between
+  // calls, and the rows it touched.
+  std::vector<double> exchangeLhsDelta;
+  std::vector<uint8_t> exchangeRowMark;
+  std::vector<uint32_t> exchangeTouched;
   size_t exchangeStep = 0;
   size_t nExchangeMoves = 0;
 

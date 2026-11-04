@@ -147,18 +147,23 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
 
         // The exchange groups (#218): each exact-k row's columns, all binary.
         if (!exchange_rows_.empty()) {
+            const std::vector<HighsInt>& ar_start = *problem_.ar_start;
+            const std::vector<HighsInt>& ar_index = *problem_.ar_index;
+            size_t num_members = 0;
+            for (const ExactKRow& r : exchange_rows_) {
+                num_members += static_cast<size_t>(ar_start[r.row + 1] - ar_start[r.row]);
+            }
             std::vector<uint32_t> offsets{0};
             std::vector<uint32_t> members;
             offsets.reserve(exchange_rows_.size() + 1);
-            const std::vector<HighsInt>& ar_start = *problem_.ar_start;
-            const std::vector<HighsInt>& ar_index = *problem_.ar_index;
+            members.reserve(num_members);
             for (const ExactKRow& r : exchange_rows_) {
                 for (HighsInt p = ar_start[r.row]; p < ar_start[r.row + 1]; ++p) {
                     members.push_back(static_cast<uint32_t>(ar_index[p]));
                 }
                 offsets.push_back(static_cast<uint32_t>(members.size()));
             }
-            impl_->solver.setExchangeGroups(offsets, members);
+            impl_->solver.setExchangeGroups(std::move(offsets), std::move(members));
         }
     }
 
@@ -302,10 +307,6 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     }
 
     return result;
-}
-
-size_t FjWorker::exchange_moves() const {
-    return impl_ ? impl_->solver.numExchangeMoves() : 0;
 }
 
 void FjWorker::apply_cut() {

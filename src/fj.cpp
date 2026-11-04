@@ -63,12 +63,14 @@ Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget
     out.exchange_of_slot.assign(exec.num_workers, 0);
     // Where `assign_personas` would seed every slot anyway, and slot 1, the
     // first exchange lane, does not exist, skip the O(nnz) detection pass.
-    const bool personas = budget.fj_personas && problem.nnz <= kPersonaNnzLimit;
-    if (!(personas || budget.fj_exchange) || exec.num_workers < 2) {
+    // `kPersonaNnzLimit` bounds the pass for the exchange as well: it is
+    // uncharged and runs before the deadline is first polled.
+    if (!(budget.fj_personas || budget.fj_exchange) || exec.num_workers < 2 ||
+        problem.nnz > kPersonaNnzLimit) {
         return out;
     }
     out.structure = detect_structure(problem);
-    if (personas) {
+    if (budget.fj_personas) {
         out.of_slot = assign_personas(out.structure, problem.nnz, exec.num_workers);
     }
     if (budget.fj_exchange && !out.structure.exact_k.empty()) {
