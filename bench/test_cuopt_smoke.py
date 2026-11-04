@@ -180,6 +180,27 @@ def test_the_spread_is_per_seed_and_a_short_seed_says_so(monkeypatch):
     assert lines == ["x: seed 0 0.500, seed 1 1.500, seed 2 n/a (range 1.000)"]
 
 
+def test_lp_persona_reads_against_fpr_lp(monkeypatch):
+    monkeypatch.setattr(cuopt_smoke, "integral_shift", lambda: 0.0)
+    instances = ["a", "b"]
+
+    def at(t: float) -> dict:
+        return {0: {name: solved(t) for name in instances}}
+
+    results = {BASELINE: at(8.0), "fpr_lp": at(4.0), "lp_persona": at(2.0)}
+    rows, _notes = report_rows(results, [0], instances, score_by_first_incumbent)
+    labels = [row.split(" | ")[0] for row in rows]
+    assert "| fpr_lp" in labels
+    assert "| lp_persona vs fpr_lp" in labels
+    lines = cuopt_smoke.seed_spread(results, [0], instances, score_by_first_incumbent)
+    assert "fpr_lp: seed 0 0.500" in lines
+    assert "lp_persona vs fpr_lp: seed 0 0.500" in lines
+    # Without its base's runs the arm has no row.
+    del results["fpr_lp"]
+    rows, _notes = report_rows(results, [0], instances, score_by_first_incumbent)
+    assert not any("lp_persona" in row for row in rows)
+
+
 def test_feasible_runs_count_only_the_list():
     runs = {"a": solved(1.0), "off-list": solved(1.0)}
     results = {BASELINE: {0: runs}, "x": {0: runs}}

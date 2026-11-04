@@ -11,6 +11,12 @@
 
 class SolutionSink;
 
+// Upstream FJ's `CALLBACK_EFFORT` (`feasibilityjump.hh`): FjWorker reads
+// its budgets, its stall counter and the clock only at FJ's callback, so
+// no FJ attempt stops sooner than this many effort units.  A caller whose
+// budget is smaller than one period cannot hold FJ to it.
+constexpr size_t kFjCallbackEffort = 500000;
+
 // FeasibilityJump worker.  Owns a FeasibilityJumpSolver
 // and supports pause/resume across attempt boundaries via the `resume`
 // parameter on FJ's solve() method.

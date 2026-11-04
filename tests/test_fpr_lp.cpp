@@ -23,7 +23,8 @@
 // ===================================================================
 
 namespace {
-double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = false) {
+double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = false,
+                    double fpr_lp_effort = 1.0) {
     // Only meaningful when `threads > 0`, but unconditional so the pin
     // and its teardown can never drift apart; a no-op reset is cheap.
     const ScopedThreadPin pin;
@@ -34,7 +35,7 @@ double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = fals
     // the only gate, so a fixture that wants it to dispatch raises it here.
     // `select_heuristics` above only zeroes the heuristics it does *not*
     // name, so this has to come after it.
-    h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
+    h.setOptionValue("mip_heuristic_fpr_lp_effort", fpr_lp_effort);
     // bell5, the instance both callers use, is the one bundled instance
     // whose solve can stop on HiGHS's default `mip_rel_gap` (1e-4) short
     // of the optimum.  Require a proven-optimal solve so the objective
@@ -61,20 +62,35 @@ TEST_CASE("fpr_lp: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]")
 }
 
 // The FJ LP persona (#217): with two workers the second runs FJ from the
-// rounded root LP point, and the solve keeps its optimum.  With one worker
-// the arm keeps the only slot.
+// rounded LP point, and the solve keeps its optimum.  With one worker the
+// arm keeps the only slot.  bell5 (a few hundred nonzeros) is below the
+// lane's budget gate at the default share: a dispatch of at most
+// `nnz << 12` effort units splits to a `worker_stale` of `nnz << 9` at
+// two workers, under one FJ callback period (`kFjCallbackEffort`) below
+// 977 nonzeros; a share of 16 lifts the early dispatches above it.
 TEST_CASE("fpr_lp: the FJ LP persona takes the last slot from two workers",
+          "[fpr_lp][mode-matrix][fj_personas]") {
+    constexpr double kDeepShare = 16.0;
+    fpr_lp::reset_dispatch_counts();
+    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/2, /*fj_lp_persona=*/true, kDeepShare) ==
+            Catch::Approx(8966406.49152).epsilon(1e-4));
+    REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
+    REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds >= 1);
+
+    fpr_lp::reset_dispatch_counts();
+    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/1, /*fj_lp_persona=*/true, kDeepShare) ==
+            Catch::Approx(8966406.49152).epsilon(1e-4));
+    REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
+    REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds == 0);
+}
+
+// The lane's budget gate: at the default share no bell5 dispatch holds one
+// FJ callback period per slot, so the option builds no lane even with two
+// workers.
+TEST_CASE("fpr_lp: the FJ LP persona stays off below one FJ callback period",
           "[fpr_lp][mode-matrix][fj_personas]") {
     fpr_lp::reset_dispatch_counts();
     REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/2, /*fj_lp_persona=*/true) ==
-            Catch::Approx(8966406.49152).epsilon(1e-4));
-    const auto two = fpr_lp::dispatch_counts();
-    REQUIRE(two.dispatches >= 1);
-    // At least one build per dispatch: the slot's first worker.
-    REQUIRE(two.fj_lane_builds >= two.dispatches);
-
-    fpr_lp::reset_dispatch_counts();
-    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/1, /*fj_lp_persona=*/true) ==
             Catch::Approx(8966406.49152).epsilon(1e-4));
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
     REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds == 0);

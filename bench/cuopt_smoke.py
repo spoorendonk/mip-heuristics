@@ -98,6 +98,7 @@ class Arm:
     name: str
     options: tuple[str, ...] = ()
     instances: frozenset[str] | None = None  # None: the whole list
+    base: str = BASELINE  # the arm this one's ratios are taken against
 
 
 ARMS: tuple[Arm, ...] = (
@@ -113,6 +114,7 @@ ARMS: tuple[Arm, ...] = (
     Arm(
         "lp_persona",
         ("mip_heuristic_fpr_lp_effort=1.0", "mip_heuristic_fj_lp_persona=true"),
+        base="fpr_lp",
     ),
 )
 
@@ -300,6 +302,7 @@ def report_rows(
     shift = integral_shift()
 
     scope = {arm.name: arm.instances for arm in ARMS}
+    bases = {arm.name: arm.base for arm in ARMS}
     notes: list[str] = []
 
     def row(label: str, tree: Results, arm: str, base: str) -> str:
@@ -333,11 +336,11 @@ def report_rows(
             label = f"noise floor (main seed {other} vs {first})"
             rows.append(row(label, noise_tree, "noise", BASELINE))
     # Arms pair on the seeds they ran, so a noise seed of `main`'s takes no part.
-    rows.extend(
-        row(arm, results, arm, BASELINE)
-        for arm in results
-        if arm != BASELINE and results[arm]
-    )
+    for arm in results:
+        base = bases.get(arm, BASELINE)
+        if arm != BASELINE and results[arm] and results.get(base):
+            label = arm if base == BASELINE else f"{arm} vs {base}"
+            rows.append(row(label, results, arm, base))
     return rows, notes
 
 
@@ -351,18 +354,20 @@ def seed_spread(
     the noise-floor rows, where an arm's table row averages over its seeds.
     """
     shift = integral_shift()
+    bases = {arm.name: arm.base for arm in ARMS}
     lines: list[str] = []
     for arm in results:
-        if arm == BASELINE:
+        base = bases.get(arm, BASELINE)
+        if arm == BASELINE or not results.get(base):
             continue
         cells: list[str] = []
         ratios: list[float] = []
         for seed in seeds:
             tree: Results = {
                 arm: {seed: results[arm].get(seed, {})},
-                BASELINE: {seed: results[BASELINE].get(seed, {})},
+                base: {seed: results[base].get(seed, {})},
             }
-            pi = seed_paired_values(tree, arm, BASELINE, instances, integral, shift)
+            pi = seed_paired_values(tree, arm, base, instances, integral, shift)
             if len(pi.a) < 2:
                 cells.append(f"seed {seed} n/a")
                 continue
@@ -370,13 +375,14 @@ def seed_spread(
             short = f" (n={len(pi.a)})" if len(pi.a) < len(instances) else ""
             cells.append(f"seed {seed} {ratios[-1]:.3f}{short}")
         spread = f" (range {max(ratios) - min(ratios):.3f})" if len(ratios) > 1 else ""
-        lines.append(f"{arm}: {', '.join(cells)}{spread}")
+        label = arm if base == BASELINE else f"{arm} vs {base}"
+        lines.append(f"{label}: {', '.join(cells)}{spread}")
     return lines
 
 
 TABLE_HEADER = (
     "| arm | n | PI ratio | PI median | PI 95% CI | better/tied/worse | "
-    "feasible runs (arm vs main) | T1st ratio | T1st median | T1st 95% CI | "
+    "feasible runs (arm vs base) | T1st ratio | T1st median | T1st 95% CI | "
     "better/tied/worse |\n"
     "|---|---|---|---|---|---|---|---|---|---|---|"
 )

@@ -519,10 +519,12 @@ private:
 // `fj_lane` (#217, option `mip_heuristic_fj_lp_persona`): the last slot runs
 // FJ from cuOpt's rounded LP start instead of an arm.  Every FJ worker the
 // slot builds, the first and each one replacing a finished one, starts from a
-// fresh rounding of the full-obj LP solution under a new seed, so successive
+// fresh rounding of the full-obj LP solution under new coins, so successive
 // workers try different corners of it; a rounding `lp_rounded_start` gives up
 // on falls back to FJ's usual start, the pool's best, else the incumbent
-// snapshot.
+// snapshot.  Deviation from cuOpt, which rounds the root relaxation's
+// optimum: the LP solution here is the one the dispatch finds, as for every
+// arm's `lp_ptr` — the root's at the first dive, a dive node's at later ones.
 size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
                    const ExecutionContext& exec, const HeuristicBudget& budget, SolutionSink& sink,
                    bool fj_lane) {
@@ -538,8 +540,11 @@ size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
         WorkerTrace trace;
     };
 
-    const auto build_fj = [&](LpFprOppState& state, uint32_t seed) {
-        Rng rng(seed);
+    // One stream per slot, the runner's slot `Rng`: the FJ seed and the
+    // rounding's coins are successive draws from it, so no two builds, and
+    // no build and its own rounding, share a seed.
+    const auto build_fj = [&](LpFprOppState& state, Rng& rng) {
+        const auto seed = static_cast<uint32_t>(rng());
         std::vector<double> start;
         if (!lp_rounded_start(problem, setup.lp_solution, rng, start) && !sink.copy_best(start)) {
             start = problem.incumbent;
@@ -555,25 +560,24 @@ size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
 
     return run_opportunistic_loop(
         exec, budget,
-        [&](int worker_idx, Rng& /*rng*/) -> LpFprOppState {
-            uint32_t seed = exec.worker_seed(worker_idx);
+        [&](int worker_idx, Rng& rng) -> LpFprOppState {
             if (worker_idx == fj_slot) {
                 // Built here, on the slot's own thread: the rounding reads
                 // the view and the LP solution only.
                 LpFprOppState state{nullptr, nullptr, WorkerTrace{worker_idx, 0}};
-                build_fj(state, seed);
+                build_fj(state, rng);
                 return state;
             }
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
+            uint32_t seed = exec.worker_seed(worker_idx);
             return LpFprOppState{std::make_unique<LpFprWorker>(problem, exec, setup, sink, arm,
                                                                seed, WorkerTrace{worker_idx, 0}),
                                  nullptr, WorkerTrace{worker_idx, 0}};
         },
         [&](LpFprOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             if (state.fj) {
-                return attempt_with_rebuild(
-                    state.fj, run_cap, [&]() { build_fj(state, static_cast<uint32_t>(rng())); });
+                return attempt_with_rebuild(state.fj, run_cap, [&]() { build_fj(state, rng); });
             }
             // A retired worker here hit its hard randomisation cap; the
             // replacement draws a fresh arm so the slot keeps contributing.
@@ -750,15 +754,22 @@ void run(HighsMipSolver& mipsolver) {
         // this one — so the argument for an absolute, instance-scaled
         // ceiling has to be made against that envelope, not restated from
         // the presolve chain.
+        const HeuristicBudget budget =
+            make_budget(worker_budget, exec.num_workers, worker_budget >> 2);
         // The FJ LP persona (#217) takes a slot of its own, so it needs a
         // second one: with a single worker the arm keeps it, as FJ's slot 0
         // stays seeded under #206's personas.  No persona above
-        // `kPersonaNnzLimit`, cuOpt's `lp_start_nnz_limit`.
-        const bool fj_lane =
-            options.mip_heuristic_fj_lp_persona && exec.num_workers >= 2 && nnz <= kPersonaNnzLimit;
-        worker_effort = run_workers(
-            problem, setup, exec, make_budget(worker_budget, exec.num_workers, worker_budget >> 2),
-            sink, fj_lane);
+        // `kPersonaNnzLimit`, cuOpt's `lp_start_nnz_limit`.  And none when
+        // the slot's stale budget is below one FJ callback period
+        // (`kFjCallbackEffort`): FJ checks its budgets only at the callback,
+        // so a smaller dispatch would see one FJ attempt overrun the slot's
+        // share of the envelope, trip the dispatch-wide stale stop for every
+        // arm, and stall at its first callback on every rebuild.  At
+        // `worker_stale` >= one period the slot's `per_worker`, four times
+        // it, bounds the overrun to a quarter of the slot.
+        const bool fj_lane = options.mip_heuristic_fj_lp_persona && exec.num_workers >= 2 &&
+                             nnz <= kPersonaNnzLimit && budget.worker_stale >= kFjCallbackEffort;
+        worker_effort = run_workers(problem, setup, exec, budget, sink, fj_lane);
         // Read after the worker loop has joined; the sink starts at zero
         // because it is constructed per dispatch.
         found = sink.accepted() > 0;
