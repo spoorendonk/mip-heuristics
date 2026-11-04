@@ -361,6 +361,14 @@ private:
     Offspring recombine_line_segment(const std::vector<double>& guiding,
                                      const std::vector<double>& other, double best_of_parents,
                                      size_t recombine_effort);
+    // Steps 1 and 2: fills `differing_` and `delta_`, and returns the
+    // number of differing columns, `d`, and the effort of building them.
+    struct LineSegmentDirection {
+        size_t num_different = 0;
+        size_t effort = 0;
+    };
+    LineSegmentDirection line_segment_direction(const std::vector<double>& guiding,
+                                                const std::vector<double>& other);
 
     const ProblemView& problem_;
     const ExecutionContext& exec_;

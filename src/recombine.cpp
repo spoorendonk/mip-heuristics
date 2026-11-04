@@ -272,15 +272,10 @@ RecombineOperator::RecombineOperator(const ProblemView& problem, const Execution
     }
 }
 
-Offspring RecombineOperator::recombine_line_segment(const std::vector<double>& guiding,
-                                                    const std::vector<double>& other,
-                                                    double best_of_parents,
-                                                    size_t recombine_effort) {
-    offspring_.clear();
-    Offspring offspring;
+RecombineOperator::LineSegmentDirection RecombineOperator::line_segment_direction(
+    const std::vector<double>& guiding, const std::vector<double>& other) {
     const auto ncol = static_cast<size_t>(problem_.ncol);
-    offspring.effort = ncol;
-
+    size_t effort = ncol;
     differing_.clear();
     size_t num_with_cost = 0;
     for (const HighsInt j : integer_cols_) {
@@ -305,7 +300,7 @@ Offspring RecombineOperator::recombine_line_segment(const std::vector<double>& g
         for (const HighsInt j : differing_) {
             is_differing_[j] = 0;
         }
-        offspring.effort += objective_cols_.size();
+        effort += objective_cols_.size();
         std::shuffle(padding_.begin(), padding_.end(), rng_);
         for (const HighsInt j : padding_) {
             differing_.push_back(j);
@@ -325,6 +320,18 @@ Offspring RecombineOperator::recombine_line_segment(const std::vector<double>& g
         const HighsInt j = differing_[k];
         delta_[j] = (other[j] - guiding[j]) / steps;
     }
+    return {.num_different = num_different, .effort = effort};
+}
+
+Offspring RecombineOperator::recombine_line_segment(const std::vector<double>& guiding,
+                                                    const std::vector<double>& other,
+                                                    double best_of_parents,
+                                                    size_t recombine_effort) {
+    offspring_.clear();
+    Offspring offspring;
+    const LineSegmentDirection direction = line_segment_direction(guiding, other);
+    const size_t num_different = direction.num_different;
+    offspring.effort = direction.effort;
     trace_.effort_base += offspring.effort;
 
     const line_segment::SearchParams params{

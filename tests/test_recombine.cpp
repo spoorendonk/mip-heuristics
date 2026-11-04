@@ -697,7 +697,10 @@ TEST_CASE("recombine: a line-segment step's feasibility is the arm's own verdict
     size_t feasible = 0;
     for (int k = 0; k < 40; ++k) {
         const std::optional<recombine::RecombineStep> step = op.step(kBudget, kBudget, expired);
-        REQUIRE(step.has_value());
+        if (!step.has_value()) {
+            FAIL("no step on a pool of at least two");
+            break;
+        }
         CHECK(step->reward == 0.0);
         if (step->arm == recombine::RecombinerArm::kLineSegment && step->success &&
             step->objective < kHighsInf) {
