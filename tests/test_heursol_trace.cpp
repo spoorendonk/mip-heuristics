@@ -448,7 +448,12 @@ TEST_CASE("heursol: an accepted offer is what [Heur] reports as found", "[heurso
 // inside `trySolution` before it writes the offer's `[HeurSol]` line, on
 // the same thread, and at `threads=1` one worker offers at a time — so
 // every accepted line must have a callback since the line before it.
-// Only the first line's span can hold a callback from before the chain.
+// HiGHS's own solutions can still fall into the first line's span, and
+// into the span before each dive-time `fpr_lp` line (RENS/RINS and B&B
+// run between dives), which only weakens the check there.  The check also
+// assumes HiGHS keeps every accepted offer: one that `trySolution` rejects
+// as infeasible at its own tolerance runs no callback and fails it, though
+// the sink is right — the mechanism to look at first if this ever flakes.
 // No sub-MIP may run a chain: it would trace offers, but a sub-MIP never
 // runs the callback.  Most of egout's dozens of acceptances do not improve
 // the incumbent, so a skip that ignored the callback empties most spans.
