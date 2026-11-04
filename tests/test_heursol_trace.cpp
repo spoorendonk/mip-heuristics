@@ -440,17 +440,26 @@ TEST_CASE("heursol: an accepted offer is what [Heur] reports as found", "[heurso
 // cannot beat HiGHS's incumbent — unless the MIP solution callback is
 // active, which `trySolution` runs for every feasible solution, improving
 // or not.  So with it active, every accepted offer must reach the callback.
-// Most of egout's dozens of acceptances do not improve the incumbent, so a
-// skip that ignored the callback would leave far fewer callbacks than
-// lines.  No sub-MIP may run a chain: it would trace offers, but a
-// sub-MIP never runs the callback.
+//
+// A count of callbacks would not show it: HiGHS's own solutions (B&B,
+// RENS/RINS, the trivial heuristics) run the callback too and could make up
+// for skipped offers.  So the callbacks are kept in the log's own order,
+// as marker lines, and checked per offer.  `on_accept` runs the callback
+// inside `trySolution` before it writes the offer's `[HeurSol]` line, on
+// the same thread, and at `threads=1` one worker offers at a time — so
+// every accepted line must have a callback since the line before it.
+// Only the first line's span can hold a callback from before the chain.
+// No sub-MIP may run a chain: it would trace offers, but a sub-MIP never
+// runs the callback.  Most of egout's dozens of acceptances do not improve
+// the incumbent, so a skip that ignored the callback empties most spans.
 TEST_CASE("heursol: the MIP solution callback sees every accepted offer", "[heursol]") {
+    static constexpr std::string_view kMarker = "<mip solution callback>";
     struct Capture {
         std::mutex mtx;
         std::vector<std::string> lines;
-        size_t solutions = 0;
     };
     Capture capture;
+    const ScopedThreadPin pin;
 
     Highs h;
     h.setOptionValue("output_flag", true);
@@ -462,12 +471,13 @@ TEST_CASE("heursol: the MIP solution callback sees every accepted offer", "[heur
         if (callback_type == kCallbackLogging) {
             cap->lines.emplace_back(message);
         } else if (callback_type == kCallbackMipSolution) {
-            ++cap->solutions;
+            cap->lines.emplace_back(kMarker);
         }
     };
     REQUIRE(h.setCallback(HighsCallbackFunctionType(cb), &capture) == HighsStatus::kOk);
     REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
     REQUIRE(h.startCallback(kCallbackMipSolution) == HighsStatus::kOk);
+    require_option(h, "threads", 1);
     require_option(h, "log_dev_level", 3);
     require_option(h, "mip_heuristic_skip_submip_chain", true);
     select_heuristics(h, "all");
@@ -475,11 +485,27 @@ TEST_CASE("heursol: the MIP solution callback sees every accepted offer", "[heur
     REQUIRE(h.run() == HighsStatus::kOk);
 
     std::scoped_lock lock(capture.mtx);
-    const auto accepted = static_cast<size_t>(
-        std::ranges::count_if(offers(capture.lines), [](const Offer& o) { return o.accepted; }));
-    INFO("accepted offers: " << accepted << ", MIP solution callbacks: " << capture.solutions);
+    size_t accepted = 0;
+    size_t without_callback = 0;
+    bool callback_since_line = false;
+    for (const auto& line : capture.lines) {
+        if (line == kMarker) {
+            callback_since_line = true;
+            continue;
+        }
+        const auto offer = offers({line});
+        if (offer.empty()) {
+            continue;
+        }
+        if (offer.front().accepted) {
+            ++accepted;
+            without_callback += callback_since_line ? 0 : 1;
+        }
+        callback_since_line = false;
+    }
+    INFO("accepted offers: " << accepted << ", without a callback: " << without_callback);
     REQUIRE(accepted > 1);
-    CHECK(capture.solutions >= accepted);
+    CHECK(without_callback == 0);
 }
 
 // The line is `kVerbose`, like `[Heur]` and `[Sequential]`, so it must

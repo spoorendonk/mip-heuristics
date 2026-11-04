@@ -70,11 +70,13 @@ private:
     // under `highs_mtx_`, that ends in an `addIncumbent` doing nothing: it
     // stores only `solobj < upper_bound`, and otherwise acts only to run
     // the MIP solution callback or to fill an empty incumbent.  So the call
-    // is skipped exactly when neither can happen and the objective, computed
-    // as `trySolution` computes it, is not below `highs_bound_`.  Which
-    // solutions reach HiGHS's incumbent does not change: `highs_bound_` is
-    // never below HiGHS's bound, only stale above it, and a stale value just
-    // lets a call through.
+    // is skipped only when neither can happen and the objective, computed
+    // as `trySolution` computes it, is at or above `highs_bound_` by more
+    // than rounding could account for.  Which solutions reach HiGHS's
+    // incumbent does not change: `highs_bound_` is never below HiGHS's
+    // bound, only stale above it, and a stale value just lets a call
+    // through.  This mirrors `addIncumbent`'s decision, so a HiGHS tag bump
+    // re-reads it (docs/ARCHITECTURE.md, bumping the tag).
     //
     // Not the pool's `improved_best`: that clears a margin, against a
     // watermark in the worker's objective space, so an offer improving

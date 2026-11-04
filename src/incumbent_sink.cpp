@@ -7,6 +7,7 @@
 #include "util/HighsCDouble.h"
 
 #include <atomic>
+#include <cmath>
 #include <utility>
 
 namespace {
@@ -104,9 +105,10 @@ void IncumbentSink::begin_dispatch(int source) {
     // `system_clock`), so `wall_ms` may come out negative; the bench parser
     // accepts the sign rather than dropping the sample.
     dispatch_start_s_ = mipsolver_.timer_.read();
-    // Re-read at every boundary, not only at construction: a restart moves
-    // `upper_bound` by the new offset, outside any `trySolution`, and the
-    // dispatching thread is the one place that may read it with no lock.
+    // Read here, where no worker runs and `upper_bound` needs no lock.  No
+    // sink outlives a restart (one per `run_sequential`, one per `fpr_lp`
+    // dive), so between here and the last `on_accept` only `trySolution`,
+    // under `highs_mtx_`, moves the bound.
     callback_sees_all_ = !mipsolver_.submip && mipsolver_.callback_->user_callback &&
                          mipsolver_.callback_->active[kCallbackMipSolution];
     sync_highs_bound();
@@ -122,13 +124,24 @@ bool IncumbentSink::reaches_highs(const std::vector<double>& solution) const {
     if (callback_sees_all_ || std::cmp_not_equal(solution.size(), mipsolver_.numCol())) {
         return true;
     }
-    // `trySolution`'s own objective, term for term and in the same order, so
-    // the comparison below is the one `addIncumbent` would make, bit for bit.
+    // `trySolution`'s own objective, term for term and in the same order.
+    // Not bit for bit, though: HiGHS's sources are built without this
+    // project's `-ffp-contract=off`, so a compiler may fuse each product
+    // into its sum there and not here.  Each product then differs by at
+    // most an ulp of itself, so the two sums differ by about 2^-52 of
+    // `magnitude` at most; skipping only past `kSlack` times that (some
+    // 4500 ulps) keeps every offer HiGHS could store.  The negated `>=`
+    // lets a NaN through, as `trySolution` would.
+    constexpr double kSlack = 1e-12;
     HighsCDouble obj = 0;
+    double magnitude = 0.0;
     for (HighsInt i = 0; i != mipsolver_.numCol(); ++i) {
-        obj += mipsolver_.colCost(i) * solution[i];
+        const double term = mipsolver_.colCost(i) * solution[i];
+        obj += term;
+        magnitude += std::abs(term);
     }
-    return static_cast<double>(obj) < highs_bound_.load(std::memory_order_relaxed);
+    const double bound = highs_bound_.load(std::memory_order_relaxed);
+    return !(static_cast<double>(obj) >= bound + (kSlack * magnitude));
 }
 
 void IncumbentSink::on_accept(double objective, const std::vector<double>& solution, int source,
