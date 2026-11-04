@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rng.h"
 #include "util/HighsInt.h"
 
 #include <cmath>
@@ -65,6 +66,19 @@ void apply_persona(FjPersona persona, const ProblemView& problem, const RowStruc
 bool greedy_covering_start(const ProblemView& problem, std::vector<double>& x);
 bool exact_k_start(const ProblemView& problem, std::span<const ExactKRow> rows,
                    std::vector<double>& x);
+
+// cuOpt's LP start (#217): `cpu/setup/lp.cpp` `apply_lp_rounded_start`,
+// whose pump (`cpu/search/fp.cpp` `run_cpu_feasibility_pump`) runs only
+// projection 0 at cuOpt's default `lp_pump_projections = 1`.  Each column of
+// `lp_x` is clamped into its bounds, and an integer column is then rounded up
+// with probability equal to its fractional part, else down.  Returns false,
+// with `out` unspecified, when a value is not finite or an integer column has
+// no integral value within its bounds: cuOpt then drops the LP start.  `lp_x`
+// holds at least `problem.ncol` values.  Reads the view only; safe on any
+// thread.  Not gated here: the caller applies `kPersonaNnzLimit`, which is
+// also cuOpt's `lp_start_nnz_limit`.
+bool lp_rounded_start(const ProblemView& problem, std::span<const double> lp_x, Rng& rng,
+                      std::vector<double>& out);
 
 // Rows of `problem` violated at `x` by more than `feastol`.
 HighsInt count_violated_rows(const ProblemView& problem, const std::vector<double>& x);

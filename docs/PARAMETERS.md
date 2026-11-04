@@ -2460,6 +2460,33 @@ plain rather than compensated row sum.
   `exact_k_max_width`. Row classification (`detect_structure`) uses the
   same tests, so a partitioning row is an exact-k row with `k = 1`.
 
+### `mip_heuristic_fj_lp_persona` — FJ's LP start persona (issue #217)
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false`
+- **Meaning**: cuOpt's LP start (`cpu/setup/lp.cpp`
+  `apply_lp_rounded_start`; at its default `lp_pump_projections = 1` the
+  pump in `cpu/search/fp.cpp` runs projection 0 only). Read by
+  `fpr_lp::run` only, so it needs `mip_heuristic_fpr_lp_effort` above 0: FJ
+  runs in the presolve chain, before any LP point exists, and `fpr_lp`
+  already holds the root LP optimum. With two or more workers, the last
+  `fpr_lp` slot runs `FjWorker` instead of an LP-FPR arm, from
+  `lp_rounded_start`: each column of the root LP solution clamped into its
+  bounds, an integer column rounded up with probability equal to its
+  fractional part, else down. Every FJ worker the slot builds, its
+  replacements included, rounds afresh under a new seed; a rounding that
+  gives up (a non-finite value, an integer column with no integral value in
+  its bounds) falls back to FJ's usual start, the pool's best, else the
+  incumbent snapshot. Its effort is part of `fpr_lp`'s, charged to the
+  RENS/RINS envelope. No persona above `kPersonaNnzLimit`, which is also
+  cuOpt's `lp_start_nnz_limit`.
+- **Deviations**: this is cuOpt's model-objective LP lane (lane 14) only.
+  Its zero-objective LP lanes (4, 10, 11), the deep pump (lane 4: up to 100
+  distance-LP projections and an LP repair of the continuous columns) and
+  the floor rounding of nonnegative integer equality systems are not here.
+  cuOpt solves its own LP inside a time budget; this lane reads the root LP
+  solution `fpr_lp` already has, so no LP is solved for it.
+
 ---
 
 ## Repair Walk (`repair_walk`)

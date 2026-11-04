@@ -6,7 +6,8 @@
     bench/cuopt_smoke.py report            the ratio table, in Markdown
 
 Every arm is `all` at the binary's defaults with one option moved, so each idea
-is measured against main with the others off.  Main against itself at another
+is measured against main with the others off; `lp_persona` moves two, since its
+lane lives in fpr_lp, and reads against the `fpr_lp` arm.  Main against itself at another
 seed is the noise floor an arm's ratio has to clear, which matters at few seeds
 and on a machine in use: at one seed per arm `main` runs one more for it, at
 several its own seeds serve.
@@ -106,6 +107,13 @@ ARMS: tuple[Arm, ...] = (
     Arm("ruin", ("mip_heuristic_ruin_effort=1.0",)),
     Arm("cut", ("mip_heuristic_objective_cut=true",)),
     Arm("recombine", ("mip_heuristic_recombine_effort=1.0",)),
+    # The LP start persona (#217) is a lane of fpr_lp, which ships off, so it
+    # moves two options; `fpr_lp` alone is the arm it is read against.
+    Arm("fpr_lp", ("mip_heuristic_fpr_lp_effort=1.0",)),
+    Arm(
+        "lp_persona",
+        ("mip_heuristic_fpr_lp_effort=1.0", "mip_heuristic_fj_lp_persona=true"),
+    ),
 )
 
 

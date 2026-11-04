@@ -1,6 +1,8 @@
 #include "fpr_lp.h"
 
 #include "effort_ledger.h"
+#include "fj_personas.h"
+#include "fj_worker.h"
 #include "fpr_core.h"
 #include "fpr_lp_arms.h"
 #include "fpr_lp_refs.h"
@@ -25,6 +27,8 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <span>
+#include <utility>
 #include <vector>
 
 namespace fpr_lp {
@@ -162,6 +166,7 @@ namespace {
 // points don't race; relaxed is fine (monotonic, not used for
 // synchronization).
 std::atomic<size_t> g_dispatch_count{0};
+std::atomic<size_t> g_fj_lane_builds{0};
 
 // An arm binds a NamedConfig to the LP reference pointer it requires.
 struct LpArm {
@@ -192,6 +197,10 @@ struct LpFprSetup {
     // fallback is the full-obj LP solution.
     std::vector<double> analytic_center;  // ac_ptr source (Class 2)
     std::vector<double> zero_vertex;      // zv_ptr source (Class 3a)
+    // The full-obj LP solution itself (lp_ptr), which the FJ LP persona's
+    // lane rounds (#217).  The solver's own `col_value`, not a copy: stable
+    // for the dispatch, as `lp_ptr` is.
+    std::span<const double> lp_solution;
 
     size_t budget = 0;
 };
@@ -287,6 +296,7 @@ SetupResult build_setup(HighsMipSolver& mipsolver, size_t max_effort, const Dead
     // solves during LP-FPR).
     const auto& lp_sol = mipdata->getLp().getLpSolver().getSolution().col_value;
     const double* lp_ptr = lp_sol.data();
+    s.lp_solution = lp_sol;
 
     // Zero-obj analytic center (for Class 2 zerocore strategies).  Each
     // solve is itself bounded — it gets what is left of the deadline,
@@ -505,29 +515,66 @@ private:
 // with the presolve heuristics, which have always floored, is the point.
 // Matches the presolve FPR pattern (src/fpr.cpp) where excess workers
 // wrap around the curated config list with distinct seeds for diversity.
+//
+// `fj_lane` (#217, option `mip_heuristic_fj_lp_persona`): the last slot runs
+// FJ from cuOpt's rounded LP start instead of an arm.  Every FJ worker the
+// slot builds, the first and each one replacing a finished one, starts from a
+// fresh rounding of the full-obj LP solution under a new seed, so successive
+// workers try different corners of it; a rounding `lp_rounded_start` gives up
+// on falls back to FJ's usual start, the pool's best, else the incumbent
+// snapshot.
 size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
-                   const ExecutionContext& exec, const HeuristicBudget& budget,
-                   SolutionSink& sink) {
+                   const ExecutionContext& exec, const HeuristicBudget& budget, SolutionSink& sink,
+                   bool fj_lane) {
     g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
+    const int fj_slot = fj_lane ? static_cast<int>(exec.num_workers) - 1 : -1;
 
-    // Per-worker lightweight state: just the LpFprWorker instance.
+    // Per-worker lightweight state: the slot's LpFprWorker, or its FjWorker
+    // in the FJ lane's slot.
     struct LpFprOppState {
         std::unique_ptr<LpFprWorker> worker;
+        std::unique_ptr<FjWorker> fj;
         // Trace-only slot identity, carried across rebuilds (#106).
         WorkerTrace trace;
+    };
+
+    const auto build_fj = [&](LpFprOppState& state, uint32_t seed) {
+        Rng rng(seed);
+        std::vector<double> start;
+        if (!lp_rounded_start(problem, setup.lp_solution, rng, start) && !sink.copy_best(start)) {
+            start = problem.incumbent;
+        }
+        if (state.fj) {
+            state.trace.effort_base = state.fj->traced_effort();
+        }
+        state.fj =
+            std::make_unique<FjWorker>(problem, exec, sink, budget.per_worker, budget.worker_stale,
+                                       seed, std::move(start), state.trace);
+        g_fj_lane_builds.fetch_add(1, std::memory_order_relaxed);
     };
 
     return run_opportunistic_loop(
         exec, budget,
         [&](int worker_idx, Rng& /*rng*/) -> LpFprOppState {
+            uint32_t seed = exec.worker_seed(worker_idx);
+            if (worker_idx == fj_slot) {
+                // Built here, on the slot's own thread: the rounding reads
+                // the view and the LP solution only.
+                LpFprOppState state{nullptr, nullptr, WorkerTrace{worker_idx, 0}};
+                build_fj(state, seed);
+                return state;
+            }
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
-            uint32_t seed = exec.worker_seed(worker_idx);
             return LpFprOppState{std::make_unique<LpFprWorker>(problem, exec, setup, sink, arm,
                                                                seed, WorkerTrace{worker_idx, 0}),
-                                 WorkerTrace{worker_idx, 0}};
+                                 nullptr, WorkerTrace{worker_idx, 0}};
         },
         [&](LpFprOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
+            if (state.fj) {
+                return attempt_with_rebuild(
+                    state.fj, run_cap, [&]() { build_fj(state, static_cast<uint32_t>(rng())); });
+            }
             // A retired worker here hit its hard randomisation cap; the
             // replacement draws a fresh arm so the slot keeps contributing.
             return attempt_with_rebuild(state.worker, run_cap, [&]() {
@@ -703,9 +750,15 @@ void run(HighsMipSolver& mipsolver) {
         // this one — so the argument for an absolute, instance-scaled
         // ceiling has to be made against that envelope, not restated from
         // the presolve chain.
-        worker_effort =
-            run_workers(problem, setup, exec,
-                        make_budget(worker_budget, exec.num_workers, worker_budget >> 2), sink);
+        // The FJ LP persona (#217) takes a slot of its own, so it needs a
+        // second one: with a single worker the arm keeps it, as FJ's slot 0
+        // stays seeded under #206's personas.  No persona above
+        // `kPersonaNnzLimit`, cuOpt's `lp_start_nnz_limit`.
+        const bool fj_lane =
+            options.mip_heuristic_fj_lp_persona && exec.num_workers >= 2 && nnz <= kPersonaNnzLimit;
+        worker_effort = run_workers(
+            problem, setup, exec, make_budget(worker_budget, exec.num_workers, worker_budget >> 2),
+            sink, fj_lane);
         // Read after the worker loop has joined; the sink starts at zero
         // because it is constructed per dispatch.
         found = sink.accepted() > 0;
@@ -731,11 +784,13 @@ SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort) {
 }
 
 DispatchCounts dispatch_counts() {
-    return {g_dispatch_count.load(std::memory_order_relaxed)};
+    return {g_dispatch_count.load(std::memory_order_relaxed),
+            g_fj_lane_builds.load(std::memory_order_relaxed)};
 }
 
 void reset_dispatch_counts() {
     g_dispatch_count.store(0, std::memory_order_relaxed);
+    g_fj_lane_builds.store(0, std::memory_order_relaxed);
 }
 
 std::vector<LpArmInfo> lp_arm_table() {

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <numeric>
 #include <optional>
+#include <random>
 #include <utility>
 
 // Deviations from cuOpt's starts (`cpu/starts/covering.cpp`,
@@ -239,6 +240,33 @@ std::vector<FjPersona> assign_personas(const RowStructure& structure, size_t nnz
         out[i + 1] = supported[i];
     }
     return out;
+}
+
+bool lp_rounded_start(const ProblemView& problem, std::span<const double> lp_x, Rng& rng,
+                      std::vector<double>& out) {
+    const auto ncol = static_cast<size_t>(problem.ncol);
+    out.resize(ncol);
+    std::uniform_real_distribution<double> coin(0.0, 1.0);
+    for (HighsInt col = 0; col < problem.ncol; ++col) {
+        const double lower = (*problem.col_lower)[col];
+        const double upper = (*problem.col_upper)[col];
+        // Not `std::clamp`: a column with no integral value inside its
+        // bounds has them crossed once rounded inward, which `std::clamp`
+        // does not allow; this form lands on `lower` and fails below.
+        double value = std::max(lower, std::min(upper, lp_x[col]));
+        if (!std::isfinite(value)) {
+            return false;
+        }
+        if (is_integer(*problem.integrality, col)) {
+            const double fraction = value - std::floor(value);
+            value = coin(rng) < fraction ? std::ceil(value) : std::floor(value);
+            if (value < lower || value > upper) {
+                return false;
+            }
+        }
+        out[col] = value;
+    }
+    return true;
 }
 
 void apply_persona(FjPersona persona, const ProblemView& problem, const RowStructure& structure,

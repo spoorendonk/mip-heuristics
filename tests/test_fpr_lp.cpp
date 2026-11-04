@@ -23,7 +23,7 @@
 // ===================================================================
 
 namespace {
-double solve_fpr_lp(const char* inst, int threads = 0) {
+double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = false) {
     // Only meaningful when `threads > 0`, but unconditional so the pin
     // and its teardown can never drift apart; a no-op reset is cheap.
     const ScopedThreadPin pin;
@@ -40,6 +40,7 @@ double solve_fpr_lp(const char* inst, int threads = 0) {
     // of the optimum.  Require a proven-optimal solve so the objective
     // assertions are sound.
     h.setOptionValue("mip_rel_gap", 0.0);
+    require_option(h, "mip_heuristic_fj_lp_persona", fj_lp_persona);
     if (threads > 0) {
         h.setOptionValue("threads", threads);
     }
@@ -55,6 +56,28 @@ TEST_CASE("fpr_lp: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]")
     fpr_lp::reset_dispatch_counts();
     REQUIRE(solve_fpr_lp("bell5.mps") == Catch::Approx(8966406.49152).epsilon(1e-4));
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
+    // The FJ LP persona (#217) is off by default.
+    REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds == 0);
+}
+
+// The FJ LP persona (#217): with two workers the second runs FJ from the
+// rounded root LP point, and the solve keeps its optimum.  With one worker
+// the arm keeps the only slot.
+TEST_CASE("fpr_lp: the FJ LP persona takes the last slot from two workers",
+          "[fpr_lp][mode-matrix][fj_personas]") {
+    fpr_lp::reset_dispatch_counts();
+    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/2, /*fj_lp_persona=*/true) ==
+            Catch::Approx(8966406.49152).epsilon(1e-4));
+    const auto two = fpr_lp::dispatch_counts();
+    REQUIRE(two.dispatches >= 1);
+    // At least one build per dispatch: the slot's first worker.
+    REQUIRE(two.fj_lane_builds >= two.dispatches);
+
+    fpr_lp::reset_dispatch_counts();
+    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/1, /*fj_lp_persona=*/true) ==
+            Catch::Approx(8966406.49152).epsilon(1e-4));
+    REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
+    REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds == 0);
 }
 
 // Regression tests for the gate: `mip_heuristic_fpr_lp_effort` at or below

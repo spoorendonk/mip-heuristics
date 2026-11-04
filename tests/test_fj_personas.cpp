@@ -212,3 +212,47 @@ TEST_CASE("personas: slots take what the structure supports, slot 0 always seede
     CHECK(assign_personas(both, 10, 1) == std::vector<P>{P::kSeeded});
     CHECK(assign_personas(both, kPersonaNnzLimit + 1, 4) == std::vector<P>(4, P::kSeeded));
 }
+
+// cuOpt's LP start (#217).  i0 integer in [0, 10], c1 continuous in
+// [0, 10], b2 binary; one row so the model has one.
+TEST_CASE("personas: the LP start clamps, keeps integral values, rounds by fraction",
+          "[core][fj_personas]") {
+    using V = HighsVarType;
+    const HighsLp lp = model({V::kInteger, V::kContinuous, V::kInteger}, {10, 10, 1},
+                             {{-kHighsInf, 20, {{0, 1}, {1, 1}, {2, 1}}}});
+    Highs highs;
+    const Setup s(lp, highs.getOptions().log_options);
+    Rng rng(7);
+    std::vector<double> x;
+    // Clamped into the bounds; the integral value and the continuous one
+    // pass through.
+    REQUIRE(lp_rounded_start(s.problem, std::vector<double>{3.0, 12.5, -0.2}, rng, x));
+    CHECK(x == std::vector<double>{3, 10, 0});
+    // A fractional value rounds to one of its two neighbours, and over many
+    // draws to both: up with probability its fractional part.
+    int up = 0;
+    constexpr int kDraws = 200;
+    for (int i = 0; i < kDraws; ++i) {
+        REQUIRE(lp_rounded_start(s.problem, std::vector<double>{2.25, 4.5, 0.5}, rng, x));
+        REQUIRE((x[0] == 2.0 || x[0] == 3.0));
+        CHECK(x[1] == 4.5);
+        up += x[0] == 3.0 ? 1 : 0;
+    }
+    CHECK(up > 0);
+    CHECK(up < kDraws / 2);
+}
+
+TEST_CASE("personas: the LP start gives up where cuOpt drops it", "[core][fj_personas]") {
+    using V = HighsVarType;
+    Highs highs;
+    Rng rng(7);
+    std::vector<double> x;
+    // A continuous column with no finite bound and an infinite LP value.
+    HighsLp free_col = model({V::kContinuous}, {kHighsInf}, {{-kHighsInf, 1, {{0, 1}}}});
+    free_col.col_lower_ = {-kHighsInf};
+    const Setup free_setup(free_col, highs.getOptions().log_options);
+    CHECK_FALSE(lp_rounded_start(free_setup.problem, std::vector<double>{kHighsInf}, rng, x));
+    // An integer column with no integral value in its bounds is cuOpt's
+    // other give-up, but the core `make_problem` refuses such a model, so
+    // no view reaches it here.
+}
