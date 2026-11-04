@@ -6,9 +6,10 @@
     bench/cuopt_smoke.py report            the ratio table, in Markdown
 
 Every arm is `all` at the binary's defaults with one option moved, so each idea
-is measured against main with the others off.  `main` runs one seed more than
-the arms: main against itself at another seed is the noise floor an arm's ratio
-has to clear, which matters at one seed per arm and on a machine in use.
+is measured against main with the others off.  Main against itself at another
+seed is the noise floor an arm's ratio has to clear, which matters at few seeds
+and on a machine in use: at one seed per arm `main` runs one more for it, at
+several its own seeds serve.
 
 Results land under `bench/results/cuopt-smoke/<host>`, one tree per host, since
 times are never compared across hosts.  The first `run` copies the binary into
@@ -41,6 +42,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 
 from analyze_results import (
@@ -115,8 +117,13 @@ class Solve:
 
 
 def noise_seed(seeds: list[int]) -> int:
-    """The extra seed only `main` runs."""
+    """The extra seed `main` runs when the arms have only one."""
     return max(seeds) + 1
+
+
+def main_seeds(seeds: list[int]) -> list[int]:
+    """`main`'s seeds: two or more already are its noise floor, so none is added."""
+    return seeds if len(seeds) > 1 else [*seeds, noise_seed(seeds)]
 
 
 def plan(instances: list[str], seeds: list[int], arms: tuple[Arm, ...]) -> list[Solve]:
@@ -126,7 +133,7 @@ def plan(instances: list[str], seeds: list[int], arms: tuple[Arm, ...]) -> list[
         for arm in arms:
             if arm.instances is not None and instance not in arm.instances:
                 continue
-            arm_seeds = [*seeds, noise_seed(seeds)] if arm.name == BASELINE else seeds
+            arm_seeds = main_seeds(seeds) if arm.name == BASELINE else seeds
             solves.extend(Solve(arm, instance, s) for s in arm_seeds)
     return solves
 
@@ -291,26 +298,57 @@ def report_rows(
             notes.append(f"{label}: no paired run on {', '.join(missing)}")
         return table_row(label, pi, t1, feasible_counts(tree, arm, base), shift)
 
-    # Main on the first seed as "main", and on the noise seed under seed 0 of
-    # its own name, so the seed pairing compares the two.
-    first, extra = seeds[0], noise_seed(seeds)
+    # Main on one seed as "main", and on a later seed under the same seed number
+    # of its own name, so the seed pairing compares the two.
     main_runs = results.get(BASELINE, {})
     rows: list[str] = []
-    if first in main_runs and extra in main_runs:
-        noise_tree: Results = {
-            "noise": {first: main_runs[extra]},
-            BASELINE: {first: main_runs[first]},
-        }
-        rows.append(
-            row(f"noise floor (main seed {extra})", noise_tree, "noise", BASELINE)
-        )
-    # Arms pair on the seeds they ran, so `main`'s noise seed takes no part.
+    for first, other in combinations(main_seeds(seeds), 2):
+        if first in main_runs and other in main_runs:
+            noise_tree: Results = {
+                "noise": {first: main_runs[other]},
+                BASELINE: {first: main_runs[first]},
+            }
+            label = f"noise floor (main seed {other} vs {first})"
+            rows.append(row(label, noise_tree, "noise", BASELINE))
+    # Arms pair on the seeds they ran, so a noise seed of `main`'s takes no part.
     rows.extend(
         row(arm, results, arm, BASELINE)
         for arm in results
         if arm != BASELINE and results[arm]
     )
     return rows, notes
+
+
+def seed_spread(
+    results: Results,
+    seeds: list[int],
+    instances: list[str],
+    integral: Callable[[SolveResult, str], float],
+) -> list[str]:
+    """Each arm's PI ratio at each seed: one seed against one, the same footing as
+    the noise-floor rows, where an arm's table row averages over its seeds.
+    """
+    shift = integral_shift()
+    lines: list[str] = []
+    for arm in results:
+        if arm == BASELINE:
+            continue
+        cells: list[str] = []
+        ratios: list[float] = []
+        for seed in seeds:
+            tree: Results = {
+                arm: {seed: results[arm].get(seed, {})},
+                BASELINE: {seed: results[BASELINE].get(seed, {})},
+            }
+            pi = seed_paired_values(tree, arm, BASELINE, instances, integral, shift)
+            if len(pi.a) < 2:
+                cells.append(f"seed {seed} n/a")
+                continue
+            ratios.append(paired(pi.a, pi.b, shift).ratio)
+            cells.append(f"seed {seed} {ratios[-1]:.3f}")
+        spread = f" (range {max(ratios) - min(ratios):.3f})" if ratios else ""
+        lines.append(f"{arm}: {', '.join(cells)}{spread}")
+    return lines
 
 
 TABLE_HEADER = (
@@ -348,6 +386,9 @@ def report(args: argparse.Namespace) -> int:
     print("\n".join(rows))
     if notes:
         print("\n" + "\n".join(notes))
+    if len(args.seeds) > 1:
+        print("\nPI ratio to main per seed, against the noise-floor rows:\n")
+        print("\n".join(seed_spread(results, args.seeds, instances, integral)))
     return 0
 
 

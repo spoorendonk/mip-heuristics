@@ -46,6 +46,12 @@ def test_only_main_runs_the_noise_seed():
     assert [s.seed for s in arms["x"]] == [0, 0]
 
 
+def test_several_seeds_add_no_noise_seed():
+    arms = by_arm(plan(["a"], [0, 1, 2], (*ARMS[:1], Arm("x"))))
+    assert [s.seed for s in arms[BASELINE]] == [0, 1, 2]
+    assert [s.seed for s in arms["x"]] == [0, 1, 2]
+
+
 def test_personas_run_only_where_a_persona_fires():
     fires = next(iter(sorted(PERSONA_INSTANCES)))
     arms = by_arm(plan([fires, "no-persona"], [0], ARMS))
@@ -126,13 +132,52 @@ def test_the_table_pairs_arms_on_their_seed_and_the_floor_on_the_noise_seed():
     assert not notes
     assert len(rows) == 2
     floor, arm = rows
-    assert floor.startswith("| noise floor (main seed 1) | 3 | ")
+    assert floor.startswith("| noise floor (main seed 1 vs 0) | 3 | ")
     assert "3 vs 3" in floor
     # T1st: (1 + 1) / (3 + 1) on all three instances of the floor.
     assert " 0.500 | 0.500 | " in floor
     # The arm is against seed 0 only; c has no incumbent, so 2 runs of 3 found one.
     assert arm.startswith("| x | 3 | ")
     assert "2 vs 3" in arm
+
+
+def score_by_first_incumbent(r: SolveResult, _instance: str) -> float:
+    return r.incumbents[0].time
+
+
+def test_several_seeds_floor_every_pair_of_mains_seeds():
+    instances = ["a", "b"]
+    results = {
+        BASELINE: {
+            seed: {name: solved(float(seed + 1)) for name in instances}
+            for seed in (0, 1, 2)
+        },
+    }
+    rows, notes = report_rows(results, [0, 1, 2], instances, score_by_first_incumbent)
+    assert not notes
+    assert [row.split(" | ")[0] for row in rows] == [
+        "| noise floor (main seed 1 vs 0)",
+        "| noise floor (main seed 2 vs 0)",
+        "| noise floor (main seed 2 vs 1)",
+    ]
+
+
+def test_the_spread_is_per_seed_and_a_short_seed_says_so(monkeypatch):
+    monkeypatch.setattr(cuopt_smoke, "integral_shift", lambda: 0.0)
+    instances = ["a", "b"]
+    main = {name: solved(2.0) for name in instances}
+    results = {
+        BASELINE: {0: main, 1: main, 2: main},
+        "x": {
+            0: {name: solved(1.0) for name in instances},
+            1: {name: solved(3.0) for name in instances},
+            2: {"a": solved(1.0)},
+        },
+    }
+    lines = cuopt_smoke.seed_spread(
+        results, [0, 1, 2], instances, score_by_first_incumbent
+    )
+    assert lines == ["x: seed 0 0.500, seed 1 1.500, seed 2 n/a (range 1.000)"]
 
 
 def test_a_pairing_too_small_to_compare_says_so():

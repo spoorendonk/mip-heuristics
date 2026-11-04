@@ -1,0 +1,19 @@
+# The 15 instances of instances_small.txt where main hit the 60 s limit on
+# either seed of the #238 smoke (#244).  Chosen from smoke data: fine for
+# choosing where an arm can move primal integral, and a report on this list has
+# to say so.
+csched008
+gen-ip054
+mas76
+mushroom-best
+mzzv11
+nexp-150-20-8-5
+nw04
+pk1
+qap10
+satellites2-60-fs
+seymour1
+swath3
+tr12-30
+unitcal_7
+wachplan
