@@ -5,11 +5,12 @@
 #
 # Later options win, so a smoke can name its own --instances and --seeds; its own
 # tree goes in UNSOLVED15_OUTPUT, never --output, and under systemd-run through
-# --setenv, since a unit does not inherit the shell's environment.  Each solve
-# holds the machine lock unless SMOKE_WRAP says otherwise.  Stopped or cut short,
-# `run` again resumes.  The tree pins the binary and records, at the first run
-# with a binary to pin, the checkout's commit and that binary's build time: the
-# time is what shows a binary older than the commit.
+# --setenv, since a unit does not inherit the shell's environment.  The binary is
+# build/bin/highs, never --binary, which the record below would not follow.  Each
+# solve holds the machine lock unless SMOKE_WRAP says otherwise.  Stopped or cut
+# short, `run` again resumes.  The tree pins the binary and records, until it is
+# pinned, the checkout's commit and that binary's build time: the time is what
+# shows a binary older than the commit.
 set -euo pipefail
 
 command=${1:?usage: run_unsolved15.sh size|run|report [options]}
@@ -24,7 +25,7 @@ if [ "$command" = run ]; then
   fi
   export SMOKE_WRAP=${SMOKE_WRAP-xk lock --}
   binary=$bench/../build/bin/highs
-  if [ ! -e "$out/commit" ] && [ -e "$binary" ]; then
+  if [ ! -e "$out/bin/highs" ] && [ -e "$binary" ]; then
     mkdir -p "$out"
     {
       git -C "$bench" rev-parse HEAD
