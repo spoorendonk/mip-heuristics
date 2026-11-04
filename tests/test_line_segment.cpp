@@ -189,3 +189,14 @@ TEST_CASE("line segment: recombiner mode counts no point equal to a parent", "[l
         CHECK(again.quality.feasible);
     }
 }
+
+TEST_CASE("line segment: a fractional point counts its integrality violation", "[line_segment]") {
+    Highs highs;
+    const HighsLp lp = one_row_model({1.0, 1.0}, 0.0, 1.0, 2, 0.0, 2.0);
+    const Setup s(lp, highs.getOptions().log_options);
+    size_t effort = 0;
+    const line_segment::Quality q = line_segment::evaluate(s.problem, {0.5, 0.25}, effort);
+    CHECK_FALSE(q.feasible);
+    CHECK(q.value == 0.75);
+    CHECK(effort > 0);
+}

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <random>
 #include <utility>
 
@@ -18,9 +19,13 @@ Quality evaluate(const ProblemView& problem, const std::vector<double>& x, size_
         const double v = x[j];
         const double bound_violation =
             row_violation(v, (*problem.col_lower)[j], (*problem.col_upper)[j]);
-        violation += bound_violation;
-        feasible = feasible && bound_violation <= tol &&
-                   (!is_integer(*problem.integrality, j) || std::abs(v - std::round(v)) <= tol);
+        // A fractional integer column counts as violation too, so a
+        // fractional point never ranks above an integral one that violates
+        // its rows by less.
+        const double integrality_violation =
+            is_integer(*problem.integrality, j) ? std::abs(v - std::round(v)) : 0.0;
+        violation += bound_violation + integrality_violation;
+        feasible = feasible && bound_violation <= tol && integrality_violation <= tol;
     }
     const auto& start = *problem.ar_start;
     const auto& index = *problem.ar_index;
@@ -65,70 +70,100 @@ std::vector<size_t> middle_first_order(size_t n) {
 
 namespace {
 
-// Brute force over the up/down configurations of `frac` (each at its floor
-// in `x` on entry).  Applies the first that makes every row feasible and
-// returns whether there was one.
-bool brute_force(const ProblemView& problem, std::vector<double>& x,
-                 const std::vector<HighsInt>& frac, size_t& effort) {
+// The rows the columns of `frac` touch, and every row's activity at `x`.
+struct TouchedRows {
+    std::vector<double> base;
+    std::vector<HighsInt> rows;
+};
+
+// The rows of `frac`, or nothing when a row no column of `frac` touches is
+// violated at `x`: that row is fixed, and no configuration can be feasible.
+std::optional<TouchedRows> touched_rows(const ProblemView& problem, const std::vector<double>& x,
+                                        const std::vector<HighsInt>& frac, size_t& effort) {
     const CscMatrix& csc = *problem.csc;
     const auto& start = *problem.ar_start;
     const auto& index = *problem.ar_index;
     const auto& value = *problem.ar_value;
-    std::vector<double> base(problem.nrow, 0.0);
+    TouchedRows out{.base = std::vector<double>(problem.nrow, 0.0), .rows = {}};
     for (HighsInt i = 0; i < problem.nrow; ++i) {
         for (HighsInt k = start[i]; k < start[i + 1]; ++k) {
-            base[i] += value[k] * x[index[k]];
+            out.base[i] += value[k] * x[index[k]];
         }
     }
     effort += problem.nnz;
-    // The rows a fractional column touches; any other row is fixed, and one
-    // violated there leaves no configuration feasible.
     std::vector<char> touched(problem.nrow, 0);
-    std::vector<HighsInt> rows;
     for (const HighsInt j : frac) {
         for (HighsInt k = csc.col_start[j]; k < csc.col_start[j + 1]; ++k) {
             const HighsInt i = csc.col_row[k];
             if (touched[i] == 0) {
                 touched[i] = 1;
-                rows.push_back(i);
+                out.rows.push_back(i);
             }
         }
     }
     for (HighsInt i = 0; i < problem.nrow; ++i) {
-        if (touched[i] == 0 && is_row_violated(base[i], (*problem.row_lower)[i],
+        if (touched[i] == 0 && is_row_violated(out.base[i], (*problem.row_lower)[i],
                                                (*problem.row_upper)[i], problem.feastol)) {
-            return false;
+            return std::nullopt;
+        }
+    }
+    return out;
+}
+
+// Whether the configuration `mask` of `frac` (bit b set: `frac[b]` one
+// above its floor) satisfies every touched row.  `lhs` is scratch.
+bool config_feasible(const ProblemView& problem, const std::vector<HighsInt>& frac, size_t mask,
+                     const TouchedRows& touched, std::vector<double>& lhs, size_t& effort) {
+    const CscMatrix& csc = *problem.csc;
+    for (const HighsInt i : touched.rows) {
+        lhs[i] = touched.base[i];
+    }
+    for (size_t b = 0; b < frac.size(); ++b) {
+        if (((mask >> b) & 1U) == 0) {
+            continue;
+        }
+        const HighsInt j = frac[b];
+        for (HighsInt k = csc.col_start[j]; k < csc.col_start[j + 1]; ++k) {
+            lhs[csc.col_row[k]] += csc.col_val[k];
+            ++effort;
+        }
+    }
+    effort += touched.rows.size();
+    return std::ranges::none_of(touched.rows, [&](HighsInt i) {
+        return is_row_violated(lhs[i], (*problem.row_lower)[i], (*problem.row_upper)[i],
+                               problem.feastol);
+    });
+}
+
+// Brute force over the up/down configurations of `frac` (each at its floor
+// in `x` on entry).  Applies the first that makes every row feasible and
+// returns whether there was one.
+bool brute_force(const ProblemView& problem, std::vector<double>& x,
+                 const std::vector<HighsInt>& frac, size_t& effort) {
+    const std::optional<TouchedRows> touched = touched_rows(problem, x, frac, effort);
+    if (!touched) {
+        return false;
+    }
+    // The columns whose next integer is above their (fractional) upper
+    // bound: a configuration rounding one of them up is out of bounds.
+    size_t no_up = 0;
+    for (size_t b = 0; b < frac.size(); ++b) {
+        if (x[frac[b]] + 1.0 > (*problem.col_upper)[frac[b]] + problem.feastol) {
+            no_up |= size_t{1} << b;
         }
     }
     std::vector<double> lhs(problem.nrow);
     const size_t n_configs = size_t{1} << frac.size();
     for (size_t mask = 0; mask < n_configs; ++mask) {
-        for (const HighsInt i : rows) {
-            lhs[i] = base[i];
+        if ((mask & no_up) != 0 || !config_feasible(problem, frac, mask, *touched, lhs, effort)) {
+            continue;
         }
         for (size_t b = 0; b < frac.size(); ++b) {
-            if (((mask >> b) & 1U) == 0) {
-                continue;
-            }
-            const HighsInt j = frac[b];
-            for (HighsInt k = csc.col_start[j]; k < csc.col_start[j + 1]; ++k) {
-                lhs[csc.col_row[k]] += csc.col_val[k];
-                ++effort;
+            if (((mask >> b) & 1U) != 0) {
+                x[frac[b]] += 1.0;
             }
         }
-        effort += rows.size();
-        const bool feasible = std::ranges::none_of(rows, [&](HighsInt i) {
-            return is_row_violated(lhs[i], (*problem.row_lower)[i], (*problem.row_upper)[i],
-                                   problem.feastol);
-        });
-        if (feasible) {
-            for (size_t b = 0; b < frac.size(); ++b) {
-                if (((mask >> b) & 1U) != 0) {
-                    x[frac[b]] += 1.0;
-                }
-            }
-            return true;
-        }
+        return true;
     }
     return false;
 }
@@ -193,7 +228,7 @@ size_t round_nearest(const ProblemView& problem, std::vector<double>& x, Rng& rn
             frac.push_back(j);
         }
     }
-    size_t effort = static_cast<size_t>(problem.ncol);
+    auto effort = static_cast<size_t>(problem.ncol);
     if (frac.empty()) {
         return effort;
     }
@@ -297,6 +332,10 @@ SearchResult search(const ProblemView& problem, const ExecutionContext& exec, So
         previous = x;
         if (diffs <= kMinIntegerDiffs) {
             continue;
+        }
+        // The charge above can spend what was left; FJ gets no budget then.
+        if (out_of_budget()) {
+            break;
         }
         const size_t fj_budget =
             std::min(params.fj_budget_per_point, params.total_budget - result.effort);
