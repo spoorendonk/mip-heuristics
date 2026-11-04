@@ -331,7 +331,8 @@ Offspring RecombineOperator::recombine_line_segment(const std::vector<double>& g
         .n_points = kLineSegmentPoints,
         .fj_budget_per_point =
             static_cast<size_t>(kLineSegmentFjSeconds * ruin_repair::kRepairEffortPerSecond),
-        .total_budget = recombine_effort,
+        // The recombiner's limit covers the setup above too.
+        .total_budget = recombine_effort - std::min(recombine_effort, offspring.effort),
         .mode = line_segment::Mode::kRecombiner,
         .parents = {.a = &guiding,
                     .b = &other,

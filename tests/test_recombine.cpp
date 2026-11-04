@@ -13,6 +13,7 @@
 #include "ruin_repair.h"
 #include "solution_sink.h"
 #include "test_paths.h"
+#include "util/HighsTimer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -444,25 +445,17 @@ TEST_CASE("recombine: the line-segment arm runs, its verdict carrying feasibilit
     const Setup s(highs.getLp(), highs.getOptions().log_options);
     const OperatorRun first = run_operator(s, 5, 30, /*line_segment=*/true);
     size_t pulled = 0;
-    size_t feasible = 0;
     for (const recombine::RecombineStep& step : first.steps) {
         if (step.arm != recombine::RecombinerArm::kLineSegment) {
             continue;
         }
         ++pulled;
         CHECK(step.effort > 0);
-        // A successful line-segment step's objective comes from the search's
-        // own verdict, with no crossover's feasibility check after it; FJ's
-        // local search can only lower it.
-        if (step.success && step.objective < kHighsInf) {
-            ++feasible;
-        }
         if (!step.success) {
             CHECK(step.reward == 0.0);
         }
     }
     CHECK(pulled > 0);
-    CHECK(feasible > 0);
     const OperatorRun again = run_operator(s, 5, 30, /*line_segment=*/true);
     CHECK(again.arms == first.arms);
     CHECK(again.accepted_points == first.accepted_points);
@@ -682,4 +675,35 @@ TEST_CASE("recombine: the line-segment option is registered, default off", "[rec
     REQUIRE(h.getOptionValue("mip_heuristic_line_segment", on) == HighsStatus::kOk);
     REQUIRE(on);
     REQUIRE_FALSE(HeuristicBudget{}.line_segment);
+}
+
+TEST_CASE("recombine: a line-segment step's feasibility is the arm's own verdict", "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    RecordingSink sink(*s.problem.integrality, 0);
+    for (uint64_t k = 0; k < 4; ++k) {
+        const std::vector<double> x = fj_point(s, k);
+        static_cast<void>(sink.offer(s.problem.objective(x), x, WorkerTrace{0, 0}, 0));
+    }
+    recombine::RecombineOperator op(s.problem, s.exec, sink, 5, WorkerTrace{0, 0},
+                                    /*line_segment=*/true);
+    // An expired step deadline skips FJ's local search after the arm, while
+    // the arm's search polls only the run's clock, which has no limit: a
+    // finite objective can come from the arm's verdict alone, with no
+    // feasibility check after it.
+    HighsTimer timer;
+    const Deadline expired{.timer = &timer, .limit = -1.0};
+    size_t feasible = 0;
+    for (int k = 0; k < 40; ++k) {
+        const std::optional<recombine::RecombineStep> step = op.step(kBudget, kBudget, expired);
+        REQUIRE(step.has_value());
+        CHECK(step->reward == 0.0);
+        if (step->arm == recombine::RecombinerArm::kLineSegment && step->success &&
+            step->objective < kHighsInf) {
+            ++feasible;
+        }
+    }
+    CHECK(op.bandit().pulls(recombine::RecombinerArm::kLineSegment) > 0);
+    CHECK(feasible > 0);
 }
