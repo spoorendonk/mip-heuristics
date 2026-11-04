@@ -86,6 +86,21 @@ PERSONA_INSTANCES = frozenset(
     }
 )
 
+# Where #206's scan found an exact-k row, the only rows #218's exchange moves.
+# The arm keeps the personas on, as #218 measures it against them: compare
+# its row with `personas`'s run on a list of just these instances.
+EXCHANGE_INSTANCES = frozenset(
+    {
+        "csched008",
+        "dano3_3",
+        "fiball",
+        "nw04",
+        "qap10",
+        "satellites2-60-fs",
+        "unitcal_7",
+    }
+)
+
 # The shift of the time-to-first-incumbent ratio, in seconds: a difference
 # under about a second is not one a 60 s smoke run can tell from noise.
 T_FIRST_SHIFT = 1.0
@@ -105,6 +120,11 @@ ARMS: tuple[Arm, ...] = (
     Arm(BASELINE),
     Arm("early_fj", ("mip_heuristic_early_fj_effort=1.0",)),
     Arm("personas", ("mip_heuristic_fj_personas=true",), PERSONA_INSTANCES),
+    Arm(
+        "exchange",
+        ("mip_heuristic_fj_personas=true", "mip_heuristic_fj_exchange=true"),
+        EXCHANGE_INSTANCES,
+    ),
     Arm("ruin", ("mip_heuristic_ruin_effort=1.0",)),
     Arm("cut", ("mip_heuristic_objective_cut=true",)),
     Arm("recombine", ("mip_heuristic_recombine_effort=1.0",)),
