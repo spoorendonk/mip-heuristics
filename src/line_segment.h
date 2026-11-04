@@ -27,7 +27,7 @@ inline constexpr size_t kMinIntegerDiffs = 5;
 
 // A point's quality, compared lexicographically: feasible beats infeasible,
 // a feasible point by objective (offset included), an infeasible one by its
-// summed row violation.  cuOpt ranks by FJ's weighted violation plus the
+// summed row, bound and integrality violation.  cuOpt ranks by FJ's weighted violation plus the
 // weighted objective, and there are no FJ weights here (a deviation, the
 // same as `recombine::Offspring`'s).
 struct Quality {

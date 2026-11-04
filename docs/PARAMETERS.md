@@ -1249,8 +1249,8 @@ they differ free for FPR to complete.
 After cuOpt's `line_segment_search_t` and `round_nearest` (f3fe1a5): the
 points between two solutions are rounded and repaired by FJ. Deviations: an
 effort budget in place of cuOpt's timer and FJ's iteration and local-minimum
-limits; a lexicographic quality (feasible first, then objective or summed row
-violation) in place of FJ's weighted one; the lowest-index feasible
+limits; a lexicographic quality (feasible first, then objective or summed row,
+bound and integrality violation) in place of FJ's weighted one; the lowest-index feasible
 configuration in the brute-force rounding.
 
 ### `kBruteForceMaxFractional` — when rounding tries every configuration

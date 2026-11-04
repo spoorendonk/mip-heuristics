@@ -137,25 +137,19 @@ bool config_feasible(const ProblemView& problem, const std::vector<HighsInt>& fr
 
 // Brute force over the up/down configurations of `frac` (each at its floor
 // in `x` on entry).  Applies the first that makes every row feasible and
-// returns whether there was one.
+// returns whether there was one.  No bound is checked: an integer column's
+// bounds are integral in every `ProblemView`, so its floor and the next
+// integer of an in-bounds fractional value are within them.
 bool brute_force(const ProblemView& problem, std::vector<double>& x,
                  const std::vector<HighsInt>& frac, size_t& effort) {
     const std::optional<TouchedRows> touched = touched_rows(problem, x, frac, effort);
     if (!touched) {
         return false;
     }
-    // The columns whose next integer is above their (fractional) upper
-    // bound: a configuration rounding one of them up is out of bounds.
-    size_t no_up = 0;
-    for (size_t b = 0; b < frac.size(); ++b) {
-        if (x[frac[b]] + 1.0 > (*problem.col_upper)[frac[b]] + problem.feastol) {
-            no_up |= size_t{1} << b;
-        }
-    }
     std::vector<double> lhs(problem.nrow);
     const size_t n_configs = size_t{1} << frac.size();
     for (size_t mask = 0; mask < n_configs; ++mask) {
-        if ((mask & no_up) != 0 || !config_feasible(problem, frac, mask, *touched, lhs, effort)) {
+        if (!config_feasible(problem, frac, mask, *touched, lhs, effort)) {
             continue;
         }
         for (size_t b = 0; b < frac.size(); ++b) {
