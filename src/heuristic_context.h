@@ -437,6 +437,10 @@ struct HeuristicBudget {
     // exchange over the model's exact-k rows.
     bool fj_exchange = false;
 
+    // Recombine only, default off (#246): the recombiner gets its
+    // line-segment arm.  Set on every chain entry; only recombine reads it.
+    bool line_segment = false;
+
     // The objective cut (#208): `on` only with the option set and
     // `has_objective` true.  Every heuristic gets the same params.
     ObjectiveCutParams objective_cut;

@@ -613,3 +613,14 @@ TEST_CASE("recombine: a source's infeasible point stays out of the pool, and is 
     CHECK(op.take_external(source) == 0);
     CHECK(sink.accepted_points.empty());
 }
+
+TEST_CASE("recombine: the line-segment option is registered, default off", "[recombine]") {
+    Highs h;
+    bool on = true;
+    REQUIRE(h.getOptionValue("mip_heuristic_line_segment", on) == HighsStatus::kOk);
+    REQUIRE_FALSE(on);
+    REQUIRE(h.setOptionValue("mip_heuristic_line_segment", true) == HighsStatus::kOk);
+    REQUIRE(h.getOptionValue("mip_heuristic_line_segment", on) == HighsStatus::kOk);
+    REQUIRE(on);
+    REQUIRE_FALSE(HeuristicBudget{}.line_segment);
+}

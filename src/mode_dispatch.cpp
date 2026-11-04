@@ -334,6 +334,7 @@ bool run_sequential(HighsMipSolver& mipsolver) {
             slice.fj_exchange = options.*h.exchange;
         }
         slice.objective_cut = objective_cut;
+        slice.line_segment = options.mip_heuristic_line_segment;
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {
             return h.run(mipsolver, problem, slice, exec, sink);
