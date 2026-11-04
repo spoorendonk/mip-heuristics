@@ -180,6 +180,12 @@ def test_the_spread_is_per_seed_and_a_short_seed_says_so(monkeypatch):
     assert lines == ["x: seed 0 0.500, seed 1 1.500, seed 2 n/a (range 1.000)"]
 
 
+def test_feasible_runs_count_only_the_list():
+    runs = {"a": solved(1.0), "off-list": solved(1.0)}
+    results = {BASELINE: {0: runs}, "x": {0: runs}}
+    assert cuopt_smoke.feasible_counts(results, "x", BASELINE, ["a"]) == (1, 1)
+
+
 def test_a_failed_seed_is_named_and_mains_noise_seed_is_not():
     instances = ["a", "b"]
     runs = {name: solved(1.0) for name in instances}

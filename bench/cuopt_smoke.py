@@ -261,17 +261,22 @@ def table_row(
     )
 
 
-def feasible_counts(results: Results, arm: str, base: str) -> tuple[int, int]:
-    """Runs with an incumbent inside the limit, over the runs the two share."""
+def feasible_counts(
+    results: Results, arm: str, base: str, instances: list[str]
+) -> tuple[int, int]:
+    """Runs with an incumbent inside the limit, over the runs the two share on
+    the list.
+    """
 
     def feasible(r: SolveResult) -> bool:
         return any(inc.time < TIME_LIMIT for inc in r.incumbents)
 
     in_arm = in_base = 0
     for seed, runs in results[arm].items():
-        for instance, r in runs.items():
+        for instance in instances:
+            r = runs.get(instance)
             other = results[base].get(seed, {}).get(instance)
-            if other is not None:
+            if r is not None and other is not None:
                 in_arm += feasible(r)
                 in_base += feasible(other)
     return in_arm, in_base
@@ -304,7 +309,8 @@ def report_rows(
         ]
         if short:
             notes.append(f"{label}: fewer paired seeds on {', '.join(short)}")
-        return table_row(label, pi, t1, feasible_counts(tree, arm, base), shift)
+        feasible = feasible_counts(tree, arm, base, instances)
+        return table_row(label, pi, t1, feasible, shift)
 
     # Main on one seed as "main", and on a later seed under the same seed number
     # of its own name, so the seed pairing compares the two.
