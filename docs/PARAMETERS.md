@@ -1288,18 +1288,20 @@ configuration in the brute-force rounding.
 ### `kLineSegmentLanePoints`, `kLineSegmentLaneSeconds`, `kLineSegmentLaneInfeasibleSeconds` — the fpr_lp lane
 
 - **File**: `src/fpr_lp.cpp`
-- **Default**: `5` points; `1.0` s, `0.5` s from an infeasible start
-- **Source**: cuOpt's `run_fj_line_segment`
+- **Default**: `5` points; `1.0` s per FJ repair; `0.25` s for the whole
+  search from an infeasible start
+- **Source**: cuOpt's `run_local_search` around `run_fj_line_segment`
 - **Meaning**: With `mip_heuristic_line_segment` (#247) one `fpr_lp` slot
   searches 5 points from its start toward the LP solution, each step
   `(lp - start) / 6` on every column. The seconds are at FJ's rate
-  (`ruin_repair::kRepairEffortPerSecond`), the limit on each FJ repair and on
-  the whole search, as cuOpt's timer is, and at most the attempt's `run_cap`.
-  Deviation: cuOpt's third limit, 0.25 s for an infeasible start with no
-  feasible solution anywhere, has no counterpart, since the lane's start is
-  infeasible only then; the start is the pool's best or the incumbent
-  snapshot (cuOpt's is the solution being local-searched) before a rounding
-  of the LP solution.
+  (`ruin_repair::kRepairEffortPerSecond`) and at most the attempt's
+  `run_cap`. From a feasible start the whole search has `run_cap`, as cuOpt's
+  runs on its caller's timer; from an infeasible one, 0.25 s, cuOpt's limit
+  when no parent is feasible. The lane's start is infeasible only when no
+  feasible solution exists, so cuOpt's 0.5 s (an infeasible start beside a
+  feasible parent) has no case. The start is the pool's best or the
+  incumbent snapshot (cuOpt's is the solution being local-searched) before a
+  rounding of the LP solution.
 
 ---
 

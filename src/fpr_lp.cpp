@@ -512,37 +512,41 @@ private:
 // Worker dispatch
 // ---------------------------------------------------------------------------
 
-// cuOpt's `run_fj_line_segment` constants: the points on the segment and the
-// search's limit, by whether its start is feasible, in FJ's effort rate
-// (`ruin_repair::kRepairEffortPerSecond`).
+// cuOpt's `run_local_search` limits around `run_fj_line_segment`, in FJ's
+// effort rate (`ruin_repair::kRepairEffortPerSecond`): the points on the
+// segment, each FJ repair's limit, and the whole search's from an infeasible
+// start with no feasible solution anywhere.
 constexpr size_t kLineSegmentLanePoints = 5;
 constexpr double kLineSegmentLaneSeconds = 1.0;
-constexpr double kLineSegmentLaneInfeasibleSeconds = 0.5;
+constexpr double kLineSegmentLaneInfeasibleSeconds = 0.25;
 
 // cuOpt's `run_fj_line_segment`: `line_segment::search` in local-search mode
 // from `p1` toward the LP solution `p2`, `kLineSegmentLanePoints` points at
 // `(p2 - p1) / (n + 1)` steps on every column.  `p1` is the pool's best, else
 // the incumbent snapshot, else a rounding of the LP solution (cuOpt's `p1` is
-// the solution being local-searched, which this lane has none of).  The
-// search has `kLineSegmentLaneSeconds` of FJ effort from a feasible start,
-// `kLineSegmentLaneInfeasibleSeconds` from an infeasible one, at most
-// `run_cap`, for its FJ runs and in all (cuOpt's timer covers both).  cuOpt
-// has a third limit, 0.25 s, for an infeasible start beside no feasible
-// solution at all; a start here is infeasible only when there is none.  FJ
-// offers its own finds; a feasible point the search returns other than the
-// start, a rounding's, is offered here.  An attempt with no start charges
-// nothing, which ends the slot.
+// the solution being local-searched, which this lane has none of).  Each FJ
+// repair has `kLineSegmentLaneSeconds`, at most `run_cap`.  From a feasible
+// start the whole search has `run_cap`, as cuOpt's runs on its caller's
+// timer; from an infeasible one, `kLineSegmentLaneInfeasibleSeconds` at most,
+// cuOpt's limit when no parent is feasible, since a start here is
+// infeasible only when there is no feasible solution at all (cuOpt's 0.5 s,
+// for an infeasible start beside a feasible parent, has no case here).  FJ
+// offers its own finds; the search's result is offered again when feasible
+// and new, the rounded start included (the pool's twin check drops FJ's
+// repeats).  An attempt with no start charges nothing, which ends the slot.
 AttemptResult line_segment_attempt(const ProblemView& problem, std::span<const double> lp_solution,
                                    const ExecutionContext& exec, SolutionSink& sink,
                                    WorkerTrace& trace, Rng& rng, size_t run_cap) {
     const auto ncol = static_cast<size_t>(problem.ncol);
     std::vector<double> p1;
     bool feasible = true;
+    bool rounded = false;
     size_t effort = 0;
     if (!sink.copy_best(p1)) {
         if (!problem.incumbent.empty()) {
             p1 = problem.incumbent;
         } else if (lp_rounded_start(problem, lp_solution, rng, p1)) {
+            rounded = true;
             feasible = line_segment::evaluate(problem, p1, effort).feasible;
         } else {
             return {};
@@ -554,12 +558,14 @@ AttemptResult line_segment_attempt(const ProblemView& problem, std::span<const d
         delta[j] = (lp_solution[j] - p1[j]) / steps;
     }
     effort += ncol;
-    const double seconds = feasible ? kLineSegmentLaneSeconds : kLineSegmentLaneInfeasibleSeconds;
+    const auto at_rate = [](double seconds) {
+        return static_cast<size_t>(seconds * ruin_repair::kRepairEffortPerSecond);
+    };
     const size_t limit =
-        std::min(run_cap, static_cast<size_t>(seconds * ruin_repair::kRepairEffortPerSecond));
+        feasible ? run_cap : std::min(run_cap, at_rate(kLineSegmentLaneInfeasibleSeconds));
     const line_segment::SearchParams params{
         .n_points = kLineSegmentLanePoints,
-        .fj_budget_per_point = limit,
+        .fj_budget_per_point = std::min(run_cap, at_rate(kLineSegmentLaneSeconds)),
         .total_budget = limit - std::min(limit, effort),
         .mode = line_segment::Mode::kLocalSearch,
         .parents = {},
@@ -569,9 +575,9 @@ AttemptResult line_segment_attempt(const ProblemView& problem, std::span<const d
     const line_segment::SearchResult found =
         line_segment::search(problem, exec, sink, trace, rng, p1, delta, params);
     AttemptResult result{.effort = effort + found.effort, .found_improvement = found.improved};
-    if (found.quality.feasible && found.point != p1) {
+    if (found.quality.feasible && (rounded || found.point != p1)) {
         const SolutionSink::OfferResult offered =
-            sink.offer(found.quality.value, found.point, trace, 0);
+            sink.offer(found.quality.value, found.point, trace, trace.at(0));
         result.found_improvement = result.found_improvement || offered.improved_incumbent;
     }
     return result;
