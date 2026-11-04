@@ -43,6 +43,8 @@ struct DispatchCounts {
     // FJ workers the LP persona's lane built (#217,
     // `mip_heuristic_fj_lp_persona`), replacements included.
     size_t fj_lane_builds = 0;
+    // Searches the line-segment lane ran (#247, `mip_heuristic_line_segment`).
+    size_t line_segment_searches = 0;
 };
 DispatchCounts dispatch_counts();
 void reset_dispatch_counts();

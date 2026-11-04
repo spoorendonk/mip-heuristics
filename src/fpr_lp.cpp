@@ -13,11 +13,13 @@
 #include "highs_context.h"
 #include "incumbent_sink.h"
 #include "io/HighsIO.h"
+#include "line_segment.h"
 #include "mip/HighsLpRelaxation.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "mode_dispatch.h"
 #include "opportunistic_runner.h"
+#include "ruin_repair.h"
 #include "worker_base.h"
 
 #include <algorithm>
@@ -167,6 +169,7 @@ namespace {
 // synchronization).
 std::atomic<size_t> g_dispatch_count{0};
 std::atomic<size_t> g_fj_lane_builds{0};
+std::atomic<size_t> g_line_segment_searches{0};
 
 // An arm binds a NamedConfig to the LP reference pointer it requires.
 struct LpArm {
@@ -509,6 +512,71 @@ private:
 // Worker dispatch
 // ---------------------------------------------------------------------------
 
+// cuOpt's `run_fj_line_segment` constants: the points on the segment and the
+// search's limit, by whether its start is feasible, in FJ's effort rate
+// (`ruin_repair::kRepairEffortPerSecond`).
+constexpr size_t kLineSegmentLanePoints = 5;
+constexpr double kLineSegmentLaneSeconds = 1.0;
+constexpr double kLineSegmentLaneInfeasibleSeconds = 0.5;
+
+// cuOpt's `run_fj_line_segment`: `line_segment::search` in local-search mode
+// from `p1` toward the LP solution `p2`, `kLineSegmentLanePoints` points at
+// `(p2 - p1) / (n + 1)` steps on every column.  `p1` is the pool's best, else
+// the incumbent snapshot, else a rounding of the LP solution (cuOpt's `p1` is
+// the solution being local-searched, which this lane has none of).  The
+// search has `kLineSegmentLaneSeconds` of FJ effort from a feasible start,
+// `kLineSegmentLaneInfeasibleSeconds` from an infeasible one, at most
+// `run_cap`, for its FJ runs and in all (cuOpt's timer covers both).  cuOpt
+// has a third limit, 0.25 s, for an infeasible start beside no feasible
+// solution at all; a start here is infeasible only when there is none.  FJ
+// offers its own finds; a feasible point the search returns other than the
+// start, a rounding's, is offered here.  An attempt with no start charges
+// nothing, which ends the slot.
+AttemptResult line_segment_attempt(const ProblemView& problem, std::span<const double> lp_solution,
+                                   const ExecutionContext& exec, SolutionSink& sink,
+                                   WorkerTrace& trace, Rng& rng, size_t run_cap) {
+    const auto ncol = static_cast<size_t>(problem.ncol);
+    std::vector<double> p1;
+    bool feasible = true;
+    size_t effort = 0;
+    if (!sink.copy_best(p1)) {
+        if (!problem.incumbent.empty()) {
+            p1 = problem.incumbent;
+        } else if (lp_rounded_start(problem, lp_solution, rng, p1)) {
+            feasible = line_segment::evaluate(problem, p1, effort).feasible;
+        } else {
+            return {};
+        }
+    }
+    std::vector<double> delta(ncol);
+    const auto steps = static_cast<double>(kLineSegmentLanePoints + 1);
+    for (size_t j = 0; j < ncol; ++j) {
+        delta[j] = (lp_solution[j] - p1[j]) / steps;
+    }
+    effort += ncol;
+    const double seconds = feasible ? kLineSegmentLaneSeconds : kLineSegmentLaneInfeasibleSeconds;
+    const size_t limit =
+        std::min(run_cap, static_cast<size_t>(seconds * ruin_repair::kRepairEffortPerSecond));
+    const line_segment::SearchParams params{
+        .n_points = kLineSegmentLanePoints,
+        .fj_budget_per_point = limit,
+        .total_budget = limit - std::min(limit, effort),
+        .mode = line_segment::Mode::kLocalSearch,
+        .parents = {},
+    };
+    trace.effort_base += effort;
+    g_line_segment_searches.fetch_add(1, std::memory_order_relaxed);
+    const line_segment::SearchResult found =
+        line_segment::search(problem, exec, sink, trace, rng, p1, delta, params);
+    AttemptResult result{.effort = effort + found.effort, .found_improvement = found.improved};
+    if (found.quality.feasible && found.point != p1) {
+        const SolutionSink::OfferResult offered =
+            sink.offer(found.quality.value, found.point, trace, 0);
+        result.found_improvement = result.found_improvement || offered.improved_incumbent;
+    }
+    return result;
+}
+
 // Spawn `exec.num_workers` workers; worker w binds to arm `w % kNumLpArms`.
 // The worker count comes from the shared `make_exec`, which floors at 1 —
 // fpr_lp used to no-op on a hypothetical `num_threads() <= 0`.  Harmonising
@@ -525,19 +593,26 @@ private:
 // snapshot.  Deviation from cuOpt, which rounds the root relaxation's
 // optimum: the LP solution here is the one the dispatch finds, as for every
 // arm's `lp_ptr` — the root's at the first dive, a dive node's at later ones.
+//
+// `line_segment_lane` (#247, option `mip_heuristic_line_segment`): the last
+// slot, or the one before it when the FJ lane takes the last, runs one
+// line-segment search per attempt instead of an arm (`line_segment_attempt`).
 size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
                    const ExecutionContext& exec, const HeuristicBudget& budget, SolutionSink& sink,
-                   bool fj_lane) {
+                   bool fj_lane, bool line_segment_lane) {
     g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
-    const int fj_slot = fj_lane ? static_cast<int>(exec.num_workers) - 1 : -1;
+    const auto last = static_cast<int>(exec.num_workers) - 1;
+    const int fj_slot = fj_lane ? last : -1;
+    const int line_segment_slot = line_segment_lane ? last - static_cast<int>(fj_lane) : -1;
 
-    // Per-worker lightweight state: the slot's LpFprWorker, or its FjWorker
-    // in the FJ lane's slot.
+    // Per-worker lightweight state: the slot's LpFprWorker, its FjWorker in
+    // the FJ lane's slot, or nothing but the trace in the line-segment slot.
     struct LpFprOppState {
         std::unique_ptr<LpFprWorker> worker;
         std::unique_ptr<FjWorker> fj;
         // Trace-only slot identity, carried across rebuilds (#106).
         WorkerTrace trace;
+        bool line_segment = false;
     };
 
     // One stream per slot, the runner's slot `Rng`: the FJ seed and the
@@ -568,6 +643,9 @@ size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
                 build_fj(state, rng);
                 return state;
             }
+            if (worker_idx == line_segment_slot) {
+                return LpFprOppState{nullptr, nullptr, WorkerTrace{worker_idx, 0}, true};
+            }
             // Initial arm is worker_idx modulo the arm pool.
             int arm = worker_idx % kNumLpArms;
             uint32_t seed = exec.worker_seed(worker_idx);
@@ -578,6 +656,10 @@ size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
         [&](LpFprOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
             if (state.fj) {
                 return attempt_with_rebuild(state.fj, run_cap, [&]() { build_fj(state, rng); });
+            }
+            if (state.line_segment) {
+                return line_segment_attempt(problem, setup.lp_solution, exec, sink, state.trace,
+                                            rng, run_cap);
             }
             // A retired worker here hit its hard randomisation cap; the
             // replacement draws a fresh arm so the slot keeps contributing.
@@ -771,7 +853,14 @@ void run(HighsMipSolver& mipsolver) {
         // (`nnz << 12` at most) the lane needs about `488 x workers`.
         const bool fj_lane = options.mip_heuristic_fj_lp_persona && exec.num_workers >= 2 &&
                              nnz <= kPersonaNnzLimit && budget.worker_stale > kFjCallbackEffort;
-        worker_effort = run_workers(problem, setup, exec, budget, sink, fj_lane);
+        // The line-segment lane (#247) likewise takes a slot of its own and
+        // leaves at least one to the arms, and runs FJ under the same
+        // callback-period gate.
+        const size_t lanes = fj_lane ? 2 : 1;
+        const bool line_segment_lane = options.mip_heuristic_line_segment &&
+                                       exec.num_workers > lanes &&
+                                       budget.worker_stale > kFjCallbackEffort;
+        worker_effort = run_workers(problem, setup, exec, budget, sink, fj_lane, line_segment_lane);
         // Read after the worker loop has joined; the sink starts at zero
         // because it is constructed per dispatch.
         found = sink.accepted() > 0;
@@ -798,12 +887,14 @@ SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort) {
 
 DispatchCounts dispatch_counts() {
     return {g_dispatch_count.load(std::memory_order_relaxed),
-            g_fj_lane_builds.load(std::memory_order_relaxed)};
+            g_fj_lane_builds.load(std::memory_order_relaxed),
+            g_line_segment_searches.load(std::memory_order_relaxed)};
 }
 
 void reset_dispatch_counts() {
     g_dispatch_count.store(0, std::memory_order_relaxed);
     g_fj_lane_builds.store(0, std::memory_order_relaxed);
+    g_line_segment_searches.store(0, std::memory_order_relaxed);
 }
 
 std::vector<LpArmInfo> lp_arm_table() {
