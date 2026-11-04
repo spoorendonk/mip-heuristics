@@ -3,10 +3,13 @@
 #
 #     bench/run_unsolved15.sh size | run | report [cuopt_smoke.py options]
 #
-# Later options win, so a smoke can name its own --instances and --seeds, and
-# UNSOLVED15_OUTPUT its own tree.  Each solve holds the machine lock unless
-# SMOKE_WRAP says otherwise.  Stopped or cut short, `run` again resumes; the tree
-# keeps the binary and the commit it started with.
+# Later options win, so a smoke can name its own --instances and --seeds; its own
+# tree goes in UNSOLVED15_OUTPUT, never --output, and under systemd-run through
+# --setenv, since a unit does not inherit the shell's environment.  Each solve
+# holds the machine lock unless SMOKE_WRAP says otherwise.  Stopped or cut short,
+# `run` again resumes.  The tree pins the binary and records, at the first run
+# with a binary to pin, the checkout's commit and that binary's build time: the
+# time is what shows a binary older than the commit.
 set -euo pipefail
 
 command=${1:?usage: run_unsolved15.sh size|run|report [options]}
@@ -20,8 +23,14 @@ if [ "$command" = run ]; then
     exit 2
   fi
   export SMOKE_WRAP=${SMOKE_WRAP-xk lock --}
-  mkdir -p "$out"
-  [ -e "$out/commit" ] || git -C "$bench" rev-parse HEAD >"$out/commit"
+  binary=$bench/../build/bin/highs
+  if [ ! -e "$out/commit" ] && [ -e "$binary" ]; then
+    mkdir -p "$out"
+    {
+      git -C "$bench" rev-parse HEAD
+      stat -c '%y' "$binary"
+    } >"$out/commit"
+  fi
 fi
 
 exec python3 "$bench/cuopt_smoke.py" "$command" \

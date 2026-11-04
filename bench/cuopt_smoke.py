@@ -25,8 +25,8 @@ held per solve and a build can run between solves:
                                               which reduces overlap with a build
                                               rather than excluding it
 
-Smoke only: a verdict from these runs is a choice of what to measure properly,
-never a default change.
+Smoke only at one seed: a verdict from those runs is a choice of what to measure
+properly, never a default change.  `run_unsolved15.sh` is the measured run (#244).
 """
 
 from __future__ import annotations
@@ -296,6 +296,14 @@ def report_rows(
         missing = [i for i in pi.unpaired if planned is None or i in planned]
         if missing:
             notes.append(f"{label}: no paired run on {', '.join(missing)}")
+        # Ignoring a noise seed only `main` runs, which is no failed run.
+        short = [
+            i
+            for i, (ran, base_ran) in pi.differing.items()
+            if (set(ran) ^ set(base_ran)) & set(seeds)
+        ]
+        if short:
+            notes.append(f"{label}: fewer paired seeds on {', '.join(short)}")
         return table_row(label, pi, t1, feasible_counts(tree, arm, base), shift)
 
     # Main on one seed as "main", and on a later seed under the same seed number
@@ -345,8 +353,9 @@ def seed_spread(
                 cells.append(f"seed {seed} n/a")
                 continue
             ratios.append(paired(pi.a, pi.b, shift).ratio)
-            cells.append(f"seed {seed} {ratios[-1]:.3f}")
-        spread = f" (range {max(ratios) - min(ratios):.3f})" if ratios else ""
+            short = f" (n={len(pi.a)})" if len(pi.a) < len(instances) else ""
+            cells.append(f"seed {seed} {ratios[-1]:.3f}{short}")
+        spread = f" (range {max(ratios) - min(ratios):.3f})" if len(ratios) > 1 else ""
         lines.append(f"{arm}: {', '.join(cells)}{spread}")
     return lines
 

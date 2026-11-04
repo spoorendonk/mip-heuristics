@@ -180,6 +180,32 @@ def test_the_spread_is_per_seed_and_a_short_seed_says_so(monkeypatch):
     assert lines == ["x: seed 0 0.500, seed 1 1.500, seed 2 n/a (range 1.000)"]
 
 
+def test_a_failed_seed_is_named_and_mains_noise_seed_is_not():
+    instances = ["a", "b"]
+    runs = {name: solved(1.0) for name in instances}
+    results = {BASELINE: {0: runs, 1: runs, 2: runs}, "x": {0: runs, 1: runs}}
+    _rows, notes = report_rows(results, [0, 1, 2], instances, score_by_first_incumbent)
+    assert notes == ["x: fewer paired seeds on a, b"]
+
+    results = {BASELINE: {0: runs, 1: runs}, "x": {0: runs}}
+    _rows, notes = report_rows(results, [0], instances, score_by_first_incumbent)
+    assert not notes
+
+
+def test_a_lone_ratio_has_no_range_and_a_short_seed_shows_n(monkeypatch):
+    monkeypatch.setattr(cuopt_smoke, "integral_shift", lambda: 0.0)
+    instances = ["a", "b", "c"]
+    main = {name: solved(2.0) for name in instances}
+    results = {
+        BASELINE: {0: main, 1: main},
+        "x": {0: {"a": solved(1.0), "b": solved(1.0)}, 1: {"a": solved(1.0)}},
+    }
+    lines = cuopt_smoke.seed_spread(
+        results, [0, 1], instances, score_by_first_incumbent
+    )
+    assert lines == ["x: seed 0 0.500 (n=2), seed 1 n/a"]
+
+
 def test_a_pairing_too_small_to_compare_says_so():
     results = {BASELINE: {0: {"a": solved(1.0)}}, "x": {0: {"a": solved(1.0)}}}
     rows, _notes = report_rows(results, [0], ["a"], lambda r, i: 1.0)

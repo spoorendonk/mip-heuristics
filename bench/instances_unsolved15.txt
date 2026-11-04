@@ -1,7 +1,8 @@
-# The 15 instances of instances_small.txt where main hit the 60 s limit on
-# either seed of the #238 smoke (#244).  Chosen from smoke data: fine for
-# choosing where an arm can move primal integral, and a report on this list has
-# to say so.
+# The list #244 names and sized, from instances of instances_small.txt where main
+# hit the 60 s limit in the #238 smoke.  It is not every such instance: the
+# laptop's tree also has neos5 and triptim1 at the limit on both seeds.  Chosen
+# from smoke data: fine for choosing where an arm can move primal integral, and a
+# report on this list has to say so.
 csched008
 gen-ip054
 mas76
