@@ -3,16 +3,18 @@
 #include "solution_sink.h"
 #include "worker_base.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <vector>
 
 class HighsMipSolver;
 
 // The `SolutionSink` a presolve chain or an `fpr_lp` dive hands its
-// workers: every solution the pool accepts is submitted to HiGHS at once,
-// and traced.
+// workers: every solution the pool accepts is traced, and submitted to
+// HiGHS at once unless HiGHS could do nothing with it (`reaches_highs`).
 //
 // Owns the mutex that serialises HiGHS's non-thread-safe `trySolution`
 // and the `[HeurSol]` dispatch context; the pool, the tag and the offer
@@ -57,9 +59,32 @@ private:
     // the tag maps to, and stamp the dispatch's start on the solver clock.
     void begin_dispatch(int source);
 
-    // Submit to HiGHS, then emit the `[HeurSol]` line.
+    // Submit to HiGHS if it could change anything there, then emit the
+    // `[HeurSol]` line.
     void on_accept(double objective, const std::vector<double>& solution, int source,
                    const WorkerTrace& trace, size_t effort_at) override;
+
+    // Whether `trySolution` could act on `solution` (#243).  Under a flood
+    // most accepted offers enter the pool's top-K without beating HiGHS's
+    // incumbent, and for those `trySolution` is an O(nnz) feasibility pass,
+    // under `highs_mtx_`, that ends in an `addIncumbent` doing nothing: it
+    // stores only `solobj < upper_bound`, and otherwise acts only to run
+    // the MIP solution callback or to fill an empty incumbent.  So the call
+    // is skipped exactly when neither can happen and the objective, computed
+    // as `trySolution` computes it, is not below `highs_bound_`.  Which
+    // solutions reach HiGHS's incumbent does not change: `highs_bound_` is
+    // never below HiGHS's bound, only stale above it, and a stale value just
+    // lets a call through.
+    //
+    // Not the pool's `improved_best`: that clears a margin, against a
+    // watermark in the worker's objective space, so an offer improving
+    // HiGHS's incumbent by less than the margin would be lost.
+    [[nodiscard]] bool reaches_highs(const std::vector<double>& solution) const;
+
+    // Copy HiGHS's bound into `highs_bound_`: on the dispatching thread with
+    // every parallel region joined, or under `highs_mtx_`, the two places
+    // `upper_bound` may be read.
+    void sync_highs_bound();
 
     // Emit one `[HeurSol]` line.  `const` and lock-free by construction —
     // see the definition for the threading argument.
@@ -70,6 +95,14 @@ private:
     // thread-safe and `on_accept` runs on whichever worker thread produced
     // the solution.
     std::mutex highs_mtx_;
+    // HiGHS's `upper_bound` as of the last `sync_highs_bound`, or +inf while
+    // HiGHS has no incumbent.  Written only under `highs_mtx_` or at a
+    // dispatch boundary; read lock-free by `reaches_highs`.  `upper_bound`
+    // only falls between syncs, so a relaxed read is at worst too high.
+    std::atomic<double> highs_bound_{std::numeric_limits<double>::infinity()};
+    // The MIP solution callback sees every `trySolution` that is feasible,
+    // improving or not, so none may be skipped.  Set with the bound.
+    bool callback_sees_all_ = true;
 
     // `[HeurSol]` dispatch context.  Written only by `begin_dispatch`, i.e.
     // at construction and at `set_source`, both of which run on the

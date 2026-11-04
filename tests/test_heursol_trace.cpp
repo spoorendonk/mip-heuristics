@@ -436,6 +436,52 @@ TEST_CASE("heursol: an accepted offer is what [Heur] reports as found", "[heurso
     }
 }
 
+// #243: `IncumbentSink` skips `trySolution` for an accepted offer that
+// cannot beat HiGHS's incumbent — unless the MIP solution callback is
+// active, which `trySolution` runs for every feasible solution, improving
+// or not.  So with it active, every accepted offer must reach the callback.
+// Most of egout's dozens of acceptances do not improve the incumbent, so a
+// skip that ignored the callback would leave far fewer callbacks than
+// lines.  No sub-MIP may run a chain: it would trace offers, but a
+// sub-MIP never runs the callback.
+TEST_CASE("heursol: the MIP solution callback sees every accepted offer", "[heursol]") {
+    struct Capture {
+        std::mutex mtx;
+        std::vector<std::string> lines;
+        size_t solutions = 0;
+    };
+    Capture capture;
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    auto cb = [](int callback_type, const std::string& message, const HighsCallbackOutput* /*out*/,
+                 HighsCallbackInput* /*in*/, void* user_data) {
+        auto* cap = static_cast<Capture*>(user_data);
+        std::scoped_lock lock(cap->mtx);
+        if (callback_type == kCallbackLogging) {
+            cap->lines.emplace_back(message);
+        } else if (callback_type == kCallbackMipSolution) {
+            ++cap->solutions;
+        }
+    };
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(cb), &capture) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackMipSolution) == HighsStatus::kOk);
+    require_option(h, "log_dev_level", 3);
+    require_option(h, "mip_heuristic_skip_submip_chain", true);
+    select_heuristics(h, "all");
+    REQUIRE(h.readModel(instances_dir() + "/egout.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    std::scoped_lock lock(capture.mtx);
+    const auto accepted = static_cast<size_t>(
+        std::ranges::count_if(offers(capture.lines), [](const Offer& o) { return o.accepted; }));
+    INFO("accepted offers: " << accepted << ", MIP solution callbacks: " << capture.solutions);
+    REQUIRE(accepted > 1);
+    CHECK(capture.solutions >= accepted);
+}
+
 // The line is `kVerbose`, like `[Heur]` and `[Sequential]`, so it must
 // cost a run nothing below `log_dev_level=3`.  Level 2 as well as the
 // default, because `kDetailed` is the level immediately below and is the

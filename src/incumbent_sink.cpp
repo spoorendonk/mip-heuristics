@@ -1,10 +1,13 @@
 #include "incumbent_sink.h"
 
 #include "io/HighsIO.h"
+#include "lp_data/HighsCallback.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "util/HighsCDouble.h"
 
 #include <atomic>
+#include <utility>
 
 namespace {
 
@@ -101,13 +104,39 @@ void IncumbentSink::begin_dispatch(int source) {
     // `system_clock`), so `wall_ms` may come out negative; the bench parser
     // accepts the sign rather than dropping the sample.
     dispatch_start_s_ = mipsolver_.timer_.read();
+    // Re-read at every boundary, not only at construction: a restart moves
+    // `upper_bound` by the new offset, outside any `trySolution`, and the
+    // dispatching thread is the one place that may read it with no lock.
+    callback_sees_all_ = !mipsolver_.submip && mipsolver_.callback_->user_callback &&
+                         mipsolver_.callback_->active[kCallbackMipSolution];
+    sync_highs_bound();
+}
+
+void IncumbentSink::sync_highs_bound() {
+    const HighsMipSolverData& mipdata = *mipsolver_.mipdata_;
+    highs_bound_.store(mipdata.incumbent.empty() ? kHighsInf : mipdata.upper_bound,
+                       std::memory_order_relaxed);
+}
+
+bool IncumbentSink::reaches_highs(const std::vector<double>& solution) const {
+    if (callback_sees_all_ || std::cmp_not_equal(solution.size(), mipsolver_.numCol())) {
+        return true;
+    }
+    // `trySolution`'s own objective, term for term and in the same order, so
+    // the comparison below is the one `addIncumbent` would make, bit for bit.
+    HighsCDouble obj = 0;
+    for (HighsInt i = 0; i != mipsolver_.numCol(); ++i) {
+        obj += mipsolver_.colCost(i) * solution[i];
+    }
+    return static_cast<double>(obj) < highs_bound_.load(std::memory_order_relaxed);
 }
 
 void IncumbentSink::on_accept(double objective, const std::vector<double>& solution, int source,
                               const WorkerTrace& trace, size_t effort_at) {
-    {
+    if (reaches_highs(solution)) {
         std::scoped_lock guard(highs_mtx_);
         mipsolver_.mipdata_->trySolution(solution, source);
+        sync_highs_bound();
     }
     trace_offer(trace, effort_at, objective);
 }
