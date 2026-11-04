@@ -286,9 +286,9 @@ TEST_CASE("recombine: UCB breaks ties at random, the same way from the same seed
     CHECK(first == sequence(3));
     // The three-way ties do not all go one way, as a constant pick (say,
     // the lowest index) would make them.
-    std::vector<size_t> drawn(recombine::kNumRecombinerArms, 0);
-    for (size_t i = recombine::kNumRecombinerArms; i < first.size();
-         i += recombine::kNumRecombinerArms) {
+    std::vector<size_t> drawn(recombine::kNumBaseRecombinerArms, 0);
+    for (size_t i = recombine::kNumBaseRecombinerArms; i < first.size();
+         i += recombine::kNumBaseRecombinerArms) {
         ++drawn[static_cast<size_t>(first[i])];
     }
     for (const size_t count : drawn) {
@@ -342,13 +342,14 @@ protected:
 
 struct OperatorRun {
     std::vector<recombine::RecombinerArm> arms;
+    std::vector<recombine::RecombineStep> steps;
     std::vector<double> accepted;
     std::vector<std::vector<double>> accepted_points;
     size_t seeded = 0;
 };
 
 // `steps` operator steps on p0548 from a pool of four FJ points.
-OperatorRun run_operator(const Setup& s, uint64_t seed, size_t steps) {
+OperatorRun run_operator(const Setup& s, uint64_t seed, size_t steps, bool line_segment = false) {
     RecordingSink sink(*s.problem.integrality, 0);
     for (uint64_t k = 0; k < 4; ++k) {
         const std::vector<double> x = fj_point(s, k);
@@ -357,7 +358,7 @@ OperatorRun run_operator(const Setup& s, uint64_t seed, size_t steps) {
     OperatorRun run;
     run.seeded = sink.accepted_points.size();
     REQUIRE(run.seeded >= 2);
-    recombine::RecombineOperator op(s.problem, s.exec, sink, seed, WorkerTrace{0, 0});
+    recombine::RecombineOperator op(s.problem, s.exec, sink, seed, WorkerTrace{0, 0}, line_segment);
     const Deadline deadline;
     for (size_t k = 0; k < steps; ++k) {
         const std::optional<recombine::RecombineStep> step =
@@ -367,6 +368,7 @@ OperatorRun run_operator(const Setup& s, uint64_t seed, size_t steps) {
             break;
         }
         run.arms.push_back(step->arm);
+        run.steps.push_back(*step);
     }
     size_t pulls = 0;
     for (size_t a = 0; a < recombine::kNumRecombinerArms; ++a) {
@@ -407,6 +409,63 @@ TEST_CASE("recombine: the operator offers feasible points, and replays from its 
     CHECK(again.arms == first.arms);
     CHECK(again.accepted == first.accepted);
     CHECK(again.accepted_points == first.accepted_points);
+    // The option off never pulls the line-segment arm.
+    CHECK(std::ranges::count(first.arms, recombine::RecombinerArm::kLineSegment) == 0);
+}
+
+TEST_CASE("recombine: the line-segment arm is pulled fourth, only with the option", "[recombine]") {
+    using recombine::RecombinerArm;
+    recombine::RecombinerBandit off(7);
+    recombine::RecombinerBandit on(7, /*line_segment=*/true);
+    CHECK(off.num_arms() == recombine::kNumBaseRecombinerArms);
+    CHECK(on.num_arms() == recombine::kNumRecombinerArms);
+    for (const auto arm : {RecombinerArm::kBoundProp, RecombinerArm::kGuidedCrossover,
+                           RecombinerArm::kNeighborhoodCrossover}) {
+        CHECK(off.select() == arm);
+        off.reward(arm, 0.0);
+        CHECK(on.select() == arm);
+        on.reward(arm, 0.0);
+    }
+    CHECK(on.select() == RecombinerArm::kLineSegment);
+    on.reward(RecombinerArm::kLineSegment, 0.0);
+    // After the initial pulls the off bandit never picks the fourth arm.
+    for (int i = 0; i < 50; ++i) {
+        const RecombinerArm arm = off.select();
+        CHECK(arm != RecombinerArm::kLineSegment);
+        off.reward(arm, recombine::kBanditInitialQ);
+    }
+    CHECK(off.pulls(RecombinerArm::kLineSegment) == 0);
+}
+
+TEST_CASE("recombine: the line-segment arm runs, its verdict carrying feasibility, and replays",
+          "[recombine]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    const OperatorRun first = run_operator(s, 5, 30, /*line_segment=*/true);
+    size_t pulled = 0;
+    size_t feasible = 0;
+    for (const recombine::RecombineStep& step : first.steps) {
+        if (step.arm != recombine::RecombinerArm::kLineSegment) {
+            continue;
+        }
+        ++pulled;
+        CHECK(step.effort > 0);
+        // A successful line-segment step's objective comes from the search's
+        // own verdict, with no crossover's feasibility check after it; FJ's
+        // local search can only lower it.
+        if (step.success && step.objective < kHighsInf) {
+            ++feasible;
+        }
+        if (!step.success) {
+            CHECK(step.reward == 0.0);
+        }
+    }
+    CHECK(pulled > 0);
+    CHECK(feasible > 0);
+    const OperatorRun again = run_operator(s, 5, 30, /*line_segment=*/true);
+    CHECK(again.arms == first.arms);
+    CHECK(again.accepted_points == first.accepted_points);
 }
 
 TEST_CASE("recombine: past the deadline the operator builds no FJ and rewards 0", "[recombine]") {
@@ -425,7 +484,7 @@ TEST_CASE("recombine: past the deadline the operator builds no FJ and rewards 0"
     // The initial pulls: bound-prop, then the two crossovers, whose effort is
     // their setup and the feasibility check, with nothing left for an FJ.
     const auto ncol = static_cast<size_t>(s.problem.ncol);
-    for (size_t k = 0; k < recombine::kNumRecombinerArms; ++k) {
+    for (size_t k = 0; k < recombine::kNumBaseRecombinerArms; ++k) {
         const std::optional<recombine::RecombineStep> step = op.step(kBudget, kBudget, Deadline{});
         if (!step.has_value()) {
             FAIL("no step on a pool of at least two");

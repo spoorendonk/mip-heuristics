@@ -1242,6 +1242,22 @@ they differ free for FPR to complete.
   `kRewardNominalEffort`, which stands in for cuOpt's
   `bounds_prop_time_limit` of 2 s.
 
+### `kLineSegmentPoints`, `kLineSegmentFjSeconds`, `kLineSegmentObjectiveShare` — the line-segment arm
+
+- **File**: `src/recombine.h`
+- **Default**: `20`, `1.0`, `0.4` (cuOpt's `ls_recombiner_config_t`,
+  `line_segment_search_t` and `assign_same_integer_values`)
+- **Meaning**: With `mip_heuristic_line_segment` (#246) the bandit gets a
+  fourth arm (`kNumRecombinerArms`; `kNumBaseRecombinerArms` without it).
+  The integer columns where the parents differ, padded at random with
+  integer columns of nonzero cost while fewer than 0.4 of them have one,
+  step towards the other parent by `(other - guiding) / 21`, at most
+  `max_vars_from_other` of them, which adapts by bound-prop's rule and
+  constants (cuOpt's are the same) but per arm. `line_segment::search`
+  walks the 20 points in recombiner mode within the recombiner's
+  `kRewardNominalEffort`, each FJ repair at most 1 s at
+  `kRepairEffortPerSecond`. The reward's effort includes those repairs.
+
 ---
 
 ## Line-Segment Search (`line_segment`, #213)

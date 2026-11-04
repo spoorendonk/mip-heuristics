@@ -2,6 +2,7 @@
 
 #include "fj_worker.h"
 #include "heuristic_common.h"
+#include "line_segment.h"
 #include "opportunistic_runner.h"
 #include "ruin_repair.h"
 #include "solution_sink.h"
@@ -210,7 +211,7 @@ double recombination_reward(double best_of_parents, double best, double offsprin
 
 RecombinerArm RecombinerBandit::select() {
     ++steps_;
-    for (size_t i = 0; i < kNumRecombinerArms; ++i) {
+    for (size_t i = 0; i < num_arms_; ++i) {
         if (arms_[i].pulls == 0) {
             return static_cast<RecombinerArm>(i);
         }
@@ -219,7 +220,7 @@ RecombinerArm RecombinerBandit::select() {
     double max_ucb = -kHighsInf;
     std::array<size_t, kNumRecombinerArms> best{};
     size_t num_best = 0;
-    for (size_t i = 0; i < kNumRecombinerArms; ++i) {
+    for (size_t i = 0; i < num_arms_; ++i) {
         const double ucb =
             arms_[i].q + std::sqrt(2.0 * log_t / static_cast<double>(arms_[i].pulls));
         if (ucb > max_ucb + kBanditTieTolerance) {
@@ -240,14 +241,15 @@ void RecombinerBandit::reward(RecombinerArm arm, double r) {
 }
 
 RecombineOperator::RecombineOperator(const ProblemView& problem, const ExecutionContext& exec,
-                                     SolutionSink& sink, uint64_t seed, WorkerTrace trace)
+                                     SolutionSink& sink, uint64_t seed, WorkerTrace trace,
+                                     bool line_segment)
     : problem_(problem),
       exec_(exec),
       sink_(sink),
       bound_prop_(problem),
       // SplitMix64 expands each seed, so neighbouring seeds give unrelated
       // streams.
-      bandit_(seed + 1),
+      bandit_(seed + 1, line_segment),
       rng_(seed),
       trace_(trace),
       integer_mask_(static_cast<size_t>(problem.ncol), false) {
@@ -255,10 +257,114 @@ RecombineOperator::RecombineOperator(const ProblemView& problem, const Execution
         if ((*problem.integrality)[j] != HighsVarType::kContinuous) {
             integer_mask_[j] = true;
             integer_cols_.push_back(j);
+            if (line_segment && (*problem.col_cost)[j] != 0.0) {
+                objective_cols_.push_back(j);
+            }
         }
     }
     entries_.reserve(kPoolCapacity);
     offspring_.reserve(static_cast<size_t>(problem.ncol));
+    if (line_segment) {
+        differing_.reserve(integer_cols_.size());
+        padding_.reserve(objective_cols_.size());
+        is_differing_.assign(static_cast<size_t>(problem.ncol), 0);
+        delta_.reserve(static_cast<size_t>(problem.ncol));
+    }
+}
+
+Offspring RecombineOperator::recombine_line_segment(const std::vector<double>& guiding,
+                                                    const std::vector<double>& other,
+                                                    double best_of_parents,
+                                                    size_t recombine_effort) {
+    offspring_.clear();
+    Offspring offspring;
+    const auto ncol = static_cast<size_t>(problem_.ncol);
+    offspring.effort = ncol;
+
+    differing_.clear();
+    size_t num_with_cost = 0;
+    for (const HighsInt j : integer_cols_) {
+        if (std::round(guiding[j]) != std::round(other[j])) {
+            differing_.push_back(j);
+            num_with_cost += (*problem_.col_cost)[j] != 0.0 ? 1 : 0;
+        }
+    }
+    // cuOpt's share is of the differing columns before padding, and it
+    // stops as soon as the count reaches it.
+    const double share = kLineSegmentObjectiveShare * static_cast<double>(differing_.size());
+    if (!objective_cols_.empty() && static_cast<double>(num_with_cost) < share) {
+        for (const HighsInt j : differing_) {
+            is_differing_[j] = 1;
+        }
+        padding_.clear();
+        for (const HighsInt j : objective_cols_) {
+            if (is_differing_[j] == 0) {
+                padding_.push_back(j);
+            }
+        }
+        for (const HighsInt j : differing_) {
+            is_differing_[j] = 0;
+        }
+        offspring.effort += objective_cols_.size();
+        std::shuffle(padding_.begin(), padding_.end(), rng_);
+        for (const HighsInt j : padding_) {
+            differing_.push_back(j);
+            if (static_cast<double>(++num_with_cost) >= share) {
+                break;
+            }
+        }
+    }
+    const size_t num_different = differing_.size();
+    const size_t num_from_other = std::min(num_different, ls_max_vars_from_other_);
+    if (num_different > ls_max_vars_from_other_) {
+        std::shuffle(differing_.begin(), differing_.end(), rng_);
+    }
+    delta_.assign(ncol, 0.0);
+    const auto steps = static_cast<double>(kLineSegmentPoints + 1);
+    for (size_t k = 0; k < num_from_other; ++k) {
+        const HighsInt j = differing_[k];
+        delta_[j] = (other[j] - guiding[j]) / steps;
+    }
+    trace_.effort_base += offspring.effort;
+
+    const line_segment::SearchParams params{
+        .n_points = kLineSegmentPoints,
+        .fj_budget_per_point =
+            static_cast<size_t>(kLineSegmentFjSeconds * ruin_repair::kRepairEffortPerSecond),
+        .total_budget = recombine_effort,
+        .mode = line_segment::Mode::kRecombiner,
+        .parents = {.a = &guiding,
+                    .b = &other,
+                    .best = {.feasible = true, .value = best_of_parents},
+                    .both_infeasible = false},
+    };
+    line_segment::SearchResult found =
+        line_segment::search(problem_, exec_, sink_, trace_, rng_, guiding, delta_, params);
+    offspring.effort += found.effort;
+    offspring.improved = found.improved;
+
+    bool same = true;
+    if (!found.point.empty()) {
+        bool same_as_guiding = true;
+        bool same_as_other = true;
+        for (const HighsInt j : integer_cols_) {
+            const double v = std::round(found.point[j]);
+            same_as_guiding = same_as_guiding && v == std::round(guiding[j]);
+            same_as_other = same_as_other && v == std::round(other[j]);
+        }
+        same = same_as_guiding || same_as_other;
+        offspring.feasible = found.quality.feasible;
+        if (offspring.feasible) {
+            offspring.objective = found.quality.value;
+        }
+        offspring_ = std::move(found.point);
+    }
+    if (num_different > ls_max_vars_from_other_) {
+        ls_max_vars_from_other_ = next_max_vars_from_other(ls_max_vars_from_other_, same);
+    }
+    offspring.success = (offspring.feasible && offspring.objective < best_of_parents) ||
+                        (!offspring_.empty() && !same);
+    return offspring;
 }
 
 Offspring RecombineOperator::recombine(RecombinerArm arm, const SolutionPool::EntryRef& first,
@@ -269,6 +375,10 @@ Offspring RecombineOperator::recombine(RecombinerArm arm, const SolutionPool::En
     if (arm == RecombinerArm::kBoundProp) {
         return bound_prop_.recombine(a, first.objective, b, second.objective, recombine_effort,
                                      deadline, rng_, offspring_);
+    }
+    if (arm == RecombinerArm::kLineSegment) {
+        return recombine_line_segment(a, b, std::min(first.objective, second.objective),
+                                      recombine_effort);
     }
     if (arm == RecombinerArm::kGuidedCrossover) {
         SolutionPool::guided_crossover(integer_mask_, a, b, rng_, offspring_);
@@ -333,16 +443,23 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
     const Offspring offspring = recombine(result.arm, first, second, recombine_effort, deadline);
     result.success = offspring.success && !offspring_.empty();
     result.effort = offspring.effort;
-    trace_.effort_base += offspring.effort;
+    result.improved = offspring.improved;
+    // The line-segment arm keeps the trace current itself, its FJ runs'
+    // offers stamped as they go.
+    if (result.arm != RecombinerArm::kLineSegment) {
+        trace_.effort_base += offspring.effort;
+    }
     if (!result.success) {
         bandit_.reward(result.arm, 0.0);
         return result;
     }
 
-    // The crossovers report no feasibility; bound-prop's verdict stands.
+    // The crossovers report no feasibility; bound-prop's and line-segment's
+    // verdicts stand.
     bool feasible = offspring.feasible;
     double objective = offspring.objective;
-    if (result.arm != RecombinerArm::kBoundProp) {
+    if (result.arm == RecombinerArm::kGuidedCrossover ||
+        result.arm == RecombinerArm::kNeighborhoodCrossover) {
         result.effort += problem_.nnz;
         trace_.effort_base += problem_.nnz;
         feasible = ruin_repair::is_feasible(problem_, offspring_);
@@ -353,7 +470,8 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
         // FJ reports a feasible start too, where it runs at all, and is then
         // refused as a twin; this reaches the pool whatever FJ does.
         result.improved =
-            sink_.offer(objective, offspring_, trace_, trace_.at(0)).improved_incumbent;
+            sink_.offer(objective, offspring_, trace_, trace_.at(0)).improved_incumbent ||
+            result.improved;
     }
 
     // cuOpt's local search opens on the same check, with reward 0 and nothing
@@ -421,7 +539,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     return {.effort = run_opportunistic_loop(
                 exec, budget,
                 [&](int worker, Rng& rng) {
-                    return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker, 0});
+                    return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker, 0},
+                                             budget.line_segment);
                 },
                 [&](RecombineOperator& op, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
                     // No step charges nothing, which retires the slot.
@@ -441,7 +560,8 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
     return run_on_caller_thread(
         exec, budget, worker,
         [&](int worker_idx, Rng& rng) {
-            return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker_idx, 0});
+            return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker_idx, 0},
+                                     budget.line_segment);
         },
         [&](RecombineOperator& op, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
             // Wait for two entries, as a ruin slot waits for its point, rather
