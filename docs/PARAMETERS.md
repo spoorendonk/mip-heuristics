@@ -2502,12 +2502,15 @@ cuOpt's cardinality exchange (`feasibility_jump/cpu/loop.cpp`,
 `find_cardinality_exchange` and `two_opt_compute_pair_score`), patched into
 HiGHS's `FeasibilityJumpSolver`: one binary of an exact-k row from 1 to 0
 and another of the same row from 0 to 1, as one move. The groups are the
-exact-k rows `detect_structure` finds (the same pass the personas read), and
-only the slots cuOpt's lanes name search with them; every worker of such a
+exact-k rows `detect_structure` finds (the same pass the personas read),
+less those with `k = 0` or `k` equal to their width, which have no pair; only
+the slots cuOpt's lanes name search with them, and every worker of such a
 slot does, rebuilds included. An exchange is tried every
 `kExchangePeriod` steps while the worker has no feasible point, taken if it
 scores above 0 and above the scalar move FJ chose, and at every local
-minimum, before and after the weights move. Its score is the weighted
+minimum after the weights move, taken if it scores above 0; one step runs at
+most one search. A search stops reading a group once its members at 1 and
+at 0 make the pairs it has left. Its score is the weighted
 violation change over the union of both columns' rows, a shared row's two
 deltas summed first, less the objective term as a scalar move's. A search
 reads each drawn group once for its members at 1 and at 0, then scores

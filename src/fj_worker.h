@@ -1,6 +1,7 @@
 #pragma once
 
 #include "heuristic_context.h"
+#include "structure.h"
 #include "worker_base.h"
 
 #include <cstddef>
@@ -11,7 +12,6 @@
 #include <vector>
 
 class SolutionSink;
-struct ExactKRow;
 
 // Upstream FJ's `CALLBACK_EFFORT` (`feasibilityjump.hh`): FjWorker reads
 // its budgets, its stall counter and the clock only at FJ's callback, so

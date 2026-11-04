@@ -1553,10 +1553,11 @@ if(_fj_ex_found EQUAL -1)
   // mip-heuristics (#218): cuOpt's periodic exchange, around upstream's
   // selection.  Every `kExchangePeriod` steps while this solver has no
   // feasible point, an exchange is taken if its score is positive and above
-  // the scalar move's (`loop.cpp`, `exchange_period`).  At a local minimum
-  // no scalar move scores above 0, so it is tried before the weights move;
-  // `selectScalarVariable` tries again after them, as cuOpt's local-minimum
-  // branch does.  Returns `kExchangeMoved` when an exchange was applied.
+  // the scalar move's (`loop.cpp`, `exchange_period`).  A periodic step at
+  // a local minimum has no scalar move to beat: `selectScalarVariable`'s
+  // local-minimum branch tries the exchange after the weights move, as
+  // cuOpt's does, so one step runs at most one search.  Returns
+  // `kExchangeMoved` when an exchange was applied.
   uint32_t selectVariable() {
     if (exchangeSeen.empty()) return selectScalarVariable();
     const bool periodic =
@@ -1564,7 +1565,6 @@ if(_fj_ex_found EQUAL -1)
         exchangeStep % kExchangePeriod == 0;
     exchangeStep += 1;
     const bool hadGood = !goodVarsSet.empty();
-    if (periodic && !hadGood && tryExchange(0.0)) return kExchangeMoved;
     const uint32_t var = selectScalarVariable();
     if (periodic && hadGood && tryExchange(bestMove(var).score))
       return kExchangeMoved;
@@ -1711,12 +1711,16 @@ if(_fj_ex_found EQUAL -1)
       if (width <= 1) continue;
       const uint32_t offStart = rng() % width;
       const uint32_t onStart = rng() % width;
-      // One pass each for the members that may go off and those that may
-      // go on, so a group with no pair costs its width, not its square.
+      // One joint pass for the members that may go off and those that may
+      // go on, so a group with no pair costs its width, not its square; it
+      // stops once they make the pairs the budget has left.
       exchangeOffs.clear();
       exchangeOns.clear();
-      totalEffort += 2 * width;
-      for (uint32_t i = 0; i < width; i += 1) {
+      const size_t pairsLeft = maxPairs - scored;
+      for (uint32_t i = 0;
+           i < width && exchangeOffs.size() * exchangeOns.size() < pairsLeft;
+           i += 1) {
+        totalEffort += 2;
         const uint32_t off = exchangeMembers[begin + (offStart + i) % width];
         if (problem.incumbentAssignment[off] >= 0.5 &&
             problem.vars[off].lb <= 0.0)
@@ -1781,6 +1785,10 @@ if(_fj_ex_found EQUAL -1)
     }
     exchangeSeen.assign(nGroups, 0);
     exchangeDraw.reserve(nGroups);
+    // Sized for the objective cut's row too, so no search allocates.
+    exchangeLhsDelta.assign(problem.constraints.size() + 1, 0.0);
+    exchangeRowMark.assign(problem.constraints.size() + 1, 0);
+    exchangeTouched.reserve(problem.constraints.size() + 1);
     exchangeOffs.reserve(maxWidth);
     exchangeOns.reserve(maxWidth);
   }

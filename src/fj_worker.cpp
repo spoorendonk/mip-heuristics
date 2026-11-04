@@ -146,18 +146,30 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         }
 
         // The exchange groups (#218): each exact-k row's columns, all binary.
+        // A row with `k = 0` or `k = width` has every column fixed by it, so
+        // no pair: it would only take a draw.
         if (!exchange_rows_.empty()) {
             const std::vector<HighsInt>& ar_start = *problem_.ar_start;
             const std::vector<HighsInt>& ar_index = *problem_.ar_index;
+            const auto exchangeable = [&](const ExactKRow& r) {
+                return r.k >= 1 && r.k < ar_start[r.row + 1] - ar_start[r.row];
+            };
+            size_t num_rows = 0;
             size_t num_members = 0;
             for (const ExactKRow& r : exchange_rows_) {
-                num_members += static_cast<size_t>(ar_start[r.row + 1] - ar_start[r.row]);
+                if (exchangeable(r)) {
+                    ++num_rows;
+                    num_members += static_cast<size_t>(ar_start[r.row + 1] - ar_start[r.row]);
+                }
             }
             std::vector<uint32_t> offsets{0};
             std::vector<uint32_t> members;
-            offsets.reserve(exchange_rows_.size() + 1);
+            offsets.reserve(num_rows + 1);
             members.reserve(num_members);
             for (const ExactKRow& r : exchange_rows_) {
+                if (!exchangeable(r)) {
+                    continue;
+                }
                 for (HighsInt p = ar_start[r.row]; p < ar_start[r.row + 1]; ++p) {
                     members.push_back(static_cast<uint32_t>(ar_index[p]));
                 }
