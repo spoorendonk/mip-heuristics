@@ -7,7 +7,8 @@
 # tree goes in UNSOLVED15_OUTPUT, never --output, and under systemd-run through
 # --setenv, since a unit does not inherit the shell's environment.  The binary is
 # build/bin/highs, never --binary, which the record below would not follow.  Each
-# solve holds the machine lock unless SMOKE_WRAP says otherwise.  Stopped or cut
+# solve holds the machine lock (macOS: the whole build budget) unless SMOKE_WRAP
+# says otherwise.  Stopped or cut
 # short, `run` again resumes.  The tree pins the binary and records, until it is
 # pinned, the checkout's commit and that binary's build time: the time is what
 # shows a binary older than the commit.
@@ -23,13 +24,20 @@ if [ "$command" = run ]; then
     echo "run_unsolved15: uncommitted changes; the tree records a commit" >&2
     exit 2
   fi
-  export SMOKE_WRAP=${SMOKE_WRAP-xk lock --}
+  # xk's machine lock does not run on macOS; there a solve charged all the
+  # build budget keeps builds off it instead (cuopt_smoke.py's docstring).
+  if [ "$(uname -s)" = Darwin ]; then
+    wrap="wcp build --here --jobs 8 --"
+  else
+    wrap="xk lock --"
+  fi
+  export SMOKE_WRAP=${SMOKE_WRAP-$wrap}
   binary=$bench/../build/bin/highs
   if [ ! -e "$out/bin/highs" ] && [ -e "$binary" ]; then
     mkdir -p "$out"
     {
       git -C "$bench" rev-parse HEAD
-      stat -c '%y' "$binary"
+      date -r "$binary" '+%Y-%m-%d %H:%M:%S %z' # GNU and BSD date alike
     } >"$out/commit"
   fi
 fi
