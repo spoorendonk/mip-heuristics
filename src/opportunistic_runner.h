@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
+#include <utility>
 
 // Generic opportunistic (continuous) parallel loop.
 //
@@ -25,6 +27,10 @@
 //     Called repeatedly.  Should execute one heuristic attempt with at
 //     most `run_cap` effort.  When the underlying worker is finished
 //     (stalled), the callback should rebuild/restart the worker in-place.
+//     A callback that also takes `const ContinuousLoopState&` as a fourth
+//     argument gets the loop, for an attempt longer than `run_cap` that
+//     must see the shared stop flag and remaining budget (FJ's CDCL lane,
+//     #237).
 //
 // Thread-safety constraints:
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
@@ -103,7 +109,13 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
             break;
         }
 
-        auto result = run_attempt(state, rng, run_cap);
+        AttemptResult result;
+        if constexpr (std::is_invocable_v<RunAttempt&, decltype(state)&, Rng&, size_t,
+                                          const ContinuousLoopState&>) {
+            result = run_attempt(state, rng, run_cap, std::as_const(loop));
+        } else {
+            result = run_attempt(state, rng, run_cap);
+        }
         ++attempt_counter;
 
         // Guard against workers that make no progress: a zero-effort
@@ -119,7 +131,9 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
             break;
         }
 
-        loop.note_staleness(result.effort, result.found_improvement, budget.stale);
+        if (!result.exempt_from_staleness) {
+            loop.note_staleness(result.effort, result.found_improvement, budget.stale);
+        }
         loop.add_effort(result.effort, budget.total);
     }
 

@@ -8,6 +8,7 @@
 #include "test_paths.h"
 #include "worker_base.h"
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <vector>
@@ -74,9 +75,29 @@ TEST_CASE("CDCL lane: stops within its effort cap", "[core][fj_cdcl]") {
     const Setup s(highs.getLp(), highs.getOptions().log_options);
     BestSink sink(*s.problem.integrality, 0);
     constexpr size_t kCap = 1000;
+    // The encoder checks the cap before each row, so it ends at most one
+    // row's encoding past it (8 units here), where the whole search on
+    // p0548 costs ~3.4e7: a cap that was not passed down would fail this.
+    constexpr size_t kOvershoot = kCap;
     const AttemptResult lane =
         fj::run_cdcl_lane(s.problem, kCap, s.exec, sink, WorkerTrace{1, 0}, /*seed=*/0);
     // The encoder and the solver both stop at their next poll past the cap.
     CHECK(lane.effort > 0);
+    CHECK(lane.effort <= kCap + kOvershoot);
+    CHECK(lane.exempt_from_staleness);
+    CHECK_FALSE(sink.found);
+}
+
+TEST_CASE("CDCL lane: the runner's stop flag ends it", "[core][fj_cdcl]") {
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    BestSink sink(*s.problem.integrality, 0);
+    const std::atomic<bool> stop{true};
+    const AttemptResult lane = fj::run_cdcl_lane(s.problem, kLaneEffort, s.exec, sink,
+                                                 WorkerTrace{1, 0}, /*seed=*/0, &stop);
+    // The encoder polls before its first row, so a raised flag ends the lane
+    // at once, and the slot falls through to FJ.
+    CHECK(lane.effort == 0);
     CHECK_FALSE(sink.found);
 }

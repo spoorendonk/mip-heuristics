@@ -2,6 +2,7 @@
 #include "heuristic_context.h"
 #include "worker_base.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -52,15 +53,17 @@ constexpr bool is_cdcl_slot(size_t slot, size_t num_workers) {
 // point offered to `sink` under `trace`.  It ignores the objective, so it
 // runs only while no feasible point is known (`problem.incumbent` empty and
 // `sink` holding nothing), and it stops as soon as the sink holds one, the
-// deadline passes or `max_effort` (search effort, encoding included) is
-// spent.  Returns the effort spent and whether the offer improved the
-// incumbent; zero effort when it did not run or was refused at once
-// (`sat::SatRefusal::kNotPureBinary`).  Logs one `[FjCdcl]` line at
-// `kVerbose`.  Polls `past_deadline()` only and charges nothing: safe on a
-// worker thread.
+// deadline passes, `loop_stop` (the runner's shared stop flag, when given)
+// is set or `max_effort` (search effort, encoding included) is spent.
+// Returns the effort spent, exempt from the runner's stale counter, and
+// whether the offer improved the incumbent; zero effort when it did not run
+// or was refused at once (`sat::SatRefusal::kNotPureBinary`).  Logs one
+// `[FjCdcl]` line at `kVerbose`.  Polls `past_deadline()` only and charges
+// nothing: safe on a worker thread.
 [[nodiscard]] AttemptResult run_cdcl_lane(const ProblemView& problem, size_t max_effort,
                                           const ExecutionContext& exec, SolutionSink& sink,
-                                          const WorkerTrace& trace, uint64_t seed);
+                                          const WorkerTrace& trace, uint64_t seed,
+                                          const std::atomic<bool>* loop_stop = nullptr);
 
 // One FjWorker slot on the calling thread until `exec` says stop (#171),
 // rebuilt whenever it stalls, from `source` first.  The rebuilt worker
