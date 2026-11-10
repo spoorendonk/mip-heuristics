@@ -185,7 +185,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 37 adds `mip_heuristic_line_segment` (#250): a bool record,
 # default false.
-set(PATCH_VERSION "37")
+#
+# Version 38 adds `mip_heuristic_fj_cdcl` (#237): a bool record, default
+# false.
+set(PATCH_VERSION "38")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -552,6 +555,7 @@ set(_patch_options
     "mip_heuristic_fj_personas:bool:false:-:Start FeasibilityJump presolve workers after the first from structural personas the model supports (cuOpt's greedy covering start, and its exact-k start followed by the covering start) instead of only from another seed"
     "mip_heuristic_fj_lp_persona:bool:false:-:Give the last worker of the dive-time fpr_lp heuristic, when it has two or more, to FeasibilityJump started from the dive's LP solution rounded at random (cuOpt's LP start persona) instead of an LP-FPR arm, when its budget holds FJ's callback period (about 488 nonzeros per worker at the default share). Needs mip_heuristic_fpr_lp_effort above 0"
     "mip_heuristic_fj_exchange:bool:false:-:Give the FeasibilityJump presolve workers on cuOpt's exchange lanes (slots 1, 7, 11 and 15) cuOpt's cardinality exchange, a compound move that sets one member of a uniform binary equality row from 1 to 0 and another from 0 to 1 so the row's count is kept"
+    "mip_heuristic_fj_cdcl:bool:false:-:Run the last FeasibilityJump presolve worker, when there are two or more, as a CDCL SAT search on a pure-binary model with no feasible point known yet. Each row is encoded as clauses, and the point found, which ignores the objective, goes to the pool. The worker runs FeasibilityJump afterwards as the others do"
     "mip_heuristic_line_segment:bool:false:-:Give the recombination presolve heuristic a fourth arm, cuOpt's line-segment recombiner, which walks from the feasible parent towards the other on the integer columns where they differ and runs FeasibilityJump from rounded points along the segment. Needs mip_heuristic_recombine_effort above 0"
     "mip_heuristic_objective_cut:bool:false:-:Once the presolve heuristics hold a solution, have them search under the objective cut objective <= best - max(rel*|best|, abs), tightened with every improvement, so they keep improving rather than stop at feasible (cuOpt's objective cutting plane). Ignored for a model without an objective"
     "mip_heuristic_objective_cut_rel:double:1e-3:1.0:Relative step of the presolve heuristics' objective cut below the best objective (see mip_heuristic_objective_cut)"

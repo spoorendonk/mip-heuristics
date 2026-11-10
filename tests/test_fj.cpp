@@ -68,3 +68,41 @@ TEST_CASE("FJ personas: off by default, with no detection pass", "[heuristic][fj
     CHECK(heuristic_reported_effort(lines, "fj"));
     CHECK_FALSE(log_contains(lines, "[FjPersonas]"));
 }
+
+// ── FJ's CDCL lane (#237): behind `mip_heuristic_fj_cdcl`, default off ──
+
+TEST_CASE("FJ CDCL lane: p0548 keeps its optimum with the lane on",
+          "[heuristic][fj][fj_cdcl][mode-matrix]") {
+    // Whether the lane's search runs or stands down depends on what the
+    // other slots and presolve found first, so the slot is checked, not the
+    // search's status.
+    const ScopedThreadPin pin;
+    double objective = 0.0;
+    const auto lines = solve_capturing_log(
+        "p0548.mps",
+        [](Highs& h) {
+            select_heuristics(h, "fj");
+            require_option(h, "mip_heuristic_fj_cdcl", true);
+            require_option(h, "log_dev_level", 3);
+            // Slot 0 is vanilla FJ: the lane needs a second worker.
+            require_option(h, "threads", 4);
+        },
+        [&](Highs& h) { h.getInfoValue("objective_function_value", objective); });
+    CHECK(objective == Catch::Approx(8691.0).epsilon(1e-6));
+    CHECK(log_contains(lines, "[FjCdcl] slot=3 workers=4"));
+}
+
+TEST_CASE("FJ CDCL lane: off by default", "[heuristic][fj][fj_cdcl][mode-matrix]") {
+    const ScopedThreadPin pin;
+    bool on = true;
+    Highs probe;
+    REQUIRE(probe.getOptionValue("mip_heuristic_fj_cdcl", on) == HighsStatus::kOk);
+    CHECK_FALSE(on);
+    const auto lines = solve_capturing_log("p0548.mps", [](Highs& h) {
+        select_heuristics(h, "fj");
+        require_option(h, "log_dev_level", 3);
+        require_option(h, "threads", 4);
+    });
+    CHECK(heuristic_reported_effort(lines, "fj"));
+    CHECK_FALSE(log_contains(lines, "[FjCdcl]"));
+}

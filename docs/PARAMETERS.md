@@ -1307,7 +1307,16 @@ configuration in the brute-force rounding.
 
 ## CDCL Search (`sat_search`, #236)
 
-None of these has been tuned: the solver is not yet wired into the chain, and #237 measures it.
+None of these has been tuned. The solver runs in the chain as FJ's CDCL lane (#237), behind the option below; #237 measures it.
+
+### `mip_heuristic_fj_cdcl` — FJ's CDCL lane
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false`
+- **Meaning**: `HeuristicBudget::fj_cdcl`, read by `fj::run` only. With two or more workers, the last slot (`is_cdcl_slot`) spends its first attempt on `run_cdcl_lane`: `sat_search` with `max_effort` set to the slot's whole allowance (`HeuristicBudget::per_worker`), its point offered to the pool. The slot runs FJ afterwards, from the pool's best as any rebuilt slot does, so a point the lane found is where its FJ starts.
+- **Once an incumbent exists**: the search ignores the objective, so the lane runs only while no feasible point is known. It is skipped when the dispatch's incumbent snapshot or the pool holds one at its start, and it stops at the solver's next poll once the pool holds one. It runs at most once per dispatch, so `sat_search`'s per-row diagram maps are built once per dispatch, not per restart.
+- **Effort**: the search's effort (coefficients read and diagram nodes built while encoding, then watch visits and clause literals read) is counted in FJ's units, as FJ's steps are an analogue of coefficient accesses. The lane is one attempt that does not resume, so it is capped at the slot's allowance rather than `attempt_cap`: the runner's overshoot past the dispatch total is then at most one allowance plus `attempt_cap` per other worker, instead of `attempt_cap` per worker. Its effort joins the slot's `[HeurSol]` trace base.
+- **Not run**: with one worker, on a model that is not pure binary (refused before any work, so the slot goes straight to FJ), or past `kDefaultMaxClauses`.
 
 ### `kDefaultMaxClauses` — the encoding's size limit
 

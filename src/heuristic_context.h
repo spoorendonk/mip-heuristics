@@ -437,6 +437,11 @@ struct HeuristicBudget {
     // exchange over the model's exact-k rows.
     bool fj_exchange = false;
 
+    // FJ in `fj::run` only, default off (#237): the last slot, with two or
+    // more, first runs `fj::run_cdcl_lane`.  Set on every chain entry; only
+    // FJ reads it.
+    bool fj_cdcl = false;
+
     // Recombine only, default off (#246): the recombiner gets its
     // line-segment arm.  Set on every chain entry; only recombine reads it.
     bool line_segment = false;

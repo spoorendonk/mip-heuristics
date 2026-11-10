@@ -1,0 +1,6 @@
+# #237 smoke: the four pure-binary instances #212 lists as solved by an
+# off-the-shelf CDCL probe and by no presolve heuristic in its seeded run.
+bnatt400
+eilA101-2
+neos-631710
+nw04
