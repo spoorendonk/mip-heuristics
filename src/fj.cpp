@@ -115,21 +115,20 @@ Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget
     out.structure = detect_structure(problem);
     if (budget.fj_personas) {
         out.of_slot = assign_personas(out.structure, problem.nnz, exec.num_workers);
-        // The CDCL lane's slot stays seeded (#237): a persona would rewrite
-        // the start its FJ takes from the pool, the lane's point, and the
-        // two options could not be measured apart.
-        if (budget.fj_cdcl) {
-            for (size_t slot = 0; slot < out.of_slot.size(); ++slot) {
-                if (is_cdcl_slot(slot, out.of_slot.size())) {
-                    out.of_slot[slot] = FjPersona::kSeeded;
-                }
-            }
-        }
     }
     if (budget.fj_exchange && !out.structure.exact_k.empty()) {
         for (size_t slot = 0; slot < out.exchange_of_slot.size(); ++slot) {
             out.exchange_of_slot[slot] = is_exchange_slot(slot) ? 1 : 0;
         }
+    }
+    // The CDCL lane's slot (#237), the last, is plain FJ after the lane: a
+    // persona would rewrite the start it takes from the pool, the lane's
+    // point, and with either it or the exchange the options could not be
+    // measured apart.  Decided before the lane runs, so a model the lane
+    // refuses loses that slot's persona or exchange too.
+    if (budget.fj_cdcl && is_cdcl_slot(exec.num_workers - 1, exec.num_workers)) {
+        out.of_slot.back() = FjPersona::kSeeded;
+        out.exchange_of_slot.back() = 0;
     }
     const auto slots_with = [&](FjPersona p) {
         return static_cast<int>(std::ranges::count(out.of_slot, p));
@@ -311,6 +310,11 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                         state.trace.effort_base += lane.effort;
                         if (lane.effort > 0) {
                             return lane;
+                        }
+                        // Stopped before its first row: the dispatch is
+                        // over, so retire the slot rather than build FJ.
+                        if (loop.stopped() || exec.past_deadline()) {
+                            return {};
                         }
                     }
                     if (!state.worker || state.worker->finished()) {

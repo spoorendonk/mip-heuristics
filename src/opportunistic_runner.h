@@ -40,7 +40,9 @@
 //   - Budget overshoot: concurrent workers can overshoot `budget.total`
 //     by up to `n * budget.attempt_cap` because each worker checks
 //     the atomic total before starting an attempt.  Bounded overshoot
-//     is acceptable for heuristic effort accounting.
+//     is acceptable for heuristic effort accounting.  FJ's CDCL lane
+//     (#237) is the exception: one attempt of up to `budget.per_worker`,
+//     so `per_worker + (n - 1) * attempt_cap` there.
 //
 // (`run_opportunistic_loop` itself is declared below `attempt_with_rebuild`.)
 //
@@ -131,9 +133,10 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
             break;
         }
 
-        if (!result.exempt_from_staleness) {
-            loop.note_staleness(result.effort, result.found_improvement, budget.stale);
-        }
+        // An exempt attempt adds nothing to the stale counter, but its
+        // improvement still resets it, as any other attempt's does.
+        loop.note_staleness(result.exempt_from_staleness ? 0 : result.effort,
+                            result.found_improvement, budget.stale);
         loop.add_effort(result.effort, budget.total);
     }
 
