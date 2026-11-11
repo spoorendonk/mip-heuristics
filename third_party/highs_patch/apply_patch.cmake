@@ -186,8 +186,8 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 37 adds `mip_heuristic_line_segment` (#250): a bool record,
 # default false.
 #
-# Version 38 adds `mip_heuristic_fj_cdcl` (#237): a bool record, default
-# false.
+# Version 38 adds the option of FJ's SAT lane (#237): a bool record,
+# default false.
 #
 # Version 39 removes `mip_heuristic_line_segment` (#254): the line-segment
 # search was measured without gain (#252) and deleted.
@@ -197,7 +197,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # (`setObjectiveCut`, `refreshConstraint`, `solveInitialized`).  The
 # exchange's scratch is sized to the rows present, as no row is added after
 # the groups any more.
-set(PATCH_VERSION "40")
+#
+# Version 41 removes version 38's option record (#257): FJ's SAT lane was
+# measured without gain (#212) and deleted.
+set(PATCH_VERSION "41")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -564,7 +567,6 @@ set(_patch_options
     "mip_heuristic_fj_personas:bool:false:-:Start FeasibilityJump presolve workers after the first from structural personas the model supports (cuOpt's greedy covering start, and its exact-k start followed by the covering start) instead of only from another seed"
     "mip_heuristic_fj_lp_persona:bool:false:-:Give the last worker of the dive-time fpr_lp heuristic, when it has two or more, to FeasibilityJump started from the dive's LP solution rounded at random (cuOpt's LP start persona) instead of an LP-FPR arm, when its budget holds FJ's callback period (about 488 nonzeros per worker at the default share). Needs mip_heuristic_fpr_lp_effort above 0"
     "mip_heuristic_fj_exchange:bool:false:-:Give the FeasibilityJump presolve workers on cuOpt's exchange lanes (slots 1, 7, 11 and 15) cuOpt's cardinality exchange, a compound move that sets one member of a uniform binary equality row from 1 to 0 and another from 0 to 1 so the row's count is kept"
-    "mip_heuristic_fj_cdcl:bool:false:-:Run the last FeasibilityJump presolve worker, when there are two or more, as a CDCL SAT search on a pure-binary model with no feasible point known yet. Each row is encoded as clauses, and the point found, which ignores the objective, goes to the pool. The worker runs FeasibilityJump afterwards as the others do"
     "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it")
 
 # The upstream record block all four record insertions anchor on, spelled

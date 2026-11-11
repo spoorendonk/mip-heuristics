@@ -14,11 +14,6 @@
 struct AttemptResult {
     size_t effort = 0;
     bool found_improvement = false;
-    // Kept out of the runner's stale counter, though not its effort total:
-    // FJ's CDCL lane (#237), one attempt up to a whole worker allowance,
-    // which on its own would cross a patience gate sized for FJ's
-    // `attempt_cap` steps and stop every other slot.
-    bool exempt_from_staleness = false;
 };
 
 // Trace identity of one *worker slot* within a dispatch, for the

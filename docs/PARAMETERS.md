@@ -1244,45 +1244,6 @@ they differ free for FPR to complete.
 
 ---
 
-## CDCL Search (`sat_search`, #236)
-
-None of these has been tuned. The solver runs in the chain as FJ's CDCL lane (#237), behind the option below; #237 measures it.
-
-### `mip_heuristic_fj_cdcl` — FJ's CDCL lane
-
-- **File**: `third_party/highs_patch/apply_patch.cmake`
-- **Default**: `false`
-- **Meaning**: `HeuristicBudget::fj_cdcl`, read by `fj::run` only. With two or more workers, the last slot (`is_cdcl_slot`) spends its first attempt on `run_cdcl_lane`: `sat_search` with `max_effort` set to the slot's whole allowance (`HeuristicBudget::per_worker`, or what is left of the dispatch total if less), its point offered to the pool. The slot runs FJ afterwards, from the pool's best as any rebuilt slot does, so a point the lane found is where its FJ starts; with `mip_heuristic_fj_personas` or `mip_heuristic_fj_exchange` on, that slot gets neither a persona nor the exchange, for the same reason and so the options can be measured apart. That is decided before the lane runs, so the slot loses them on a model the lane then refuses too. A lane stopped before its first row (the runner's stop flag or the deadline) retires the slot instead of building FJ.
-- **Once an incumbent exists**: the search ignores the objective, so the lane runs only while no feasible point is known. It is skipped when the dispatch's incumbent snapshot or the pool holds one at its start, and it stops at the solver's next poll once the pool holds one. It never runs in a RINS/RENS sub-MIP, whose empty pool hides the parent's incumbent and cutoff. It also stops at that poll when the runner's shared stop flag is set (an interrupt, the dispatch total, the patience gate), so the join does not wait out its allowance. It runs at most once per dispatch, so `sat_search`'s per-row diagram maps are built once per dispatch, not per restart.
-- **Effort**: the search's effort (coefficients read and diagram nodes built while encoding, then watch visits and clause literals read) is counted in FJ's units, as FJ's steps are an analogue of coefficient accesses. The lane is one attempt that does not resume, so it is capped at the slot's allowance rather than `attempt_cap`: the runner's overshoot past the dispatch total is then at most one allowance plus `attempt_cap` per other worker, instead of `attempt_cap` per worker. Its effort joins the slot's `[HeurSol]` trace base, and the dispatch total, but not the runner's patience counter (`AttemptResult::exempt_from_staleness`; a lane that improves the incumbent still resets it): one attempt of a whole allowance would cross a gate sized for `attempt_cap` steps on its own and stop every FJ slot.
-- **Not run**: with one worker, on a model that is not pure binary (refused before any work, so the slot goes straight to FJ), or past `kDefaultMaxClauses`.
-
-### `kDefaultMaxClauses` — the encoding's size limit
-
-`5'000'000`. Above this a model is refused. It is the cap of the off-the-shelf probe on #212, where the 4 of 12 models solved needed at most 2.9M clauses and 7 went over it. Those clauses came from a different encoder, so the same models need not go over here.
-
-### `kMaxScale`, `kIntegralTol`, `kMaxWeightSum` — what makes a row encodable
-
-A row's coefficients must come within `kIntegralTol` (`1e-9`) of integers at some power of ten up to `kMaxScale` (`1e6`), and its scaled weights must add up below `kMaxWeightSum` (`2^52`), exact in a double and with room for the diagrams' open intervals.
-
-### `kVarDecay`, `kActivityRescale`, `kInitialActivityMax` — VSIDS
-
-`0.95` per conflict, rescaled at `1e100`, as in MiniSat's defaults. Initial activities are drawn below `1e-5`, so they only break ties, which is all a seed changes.
-
-### `kRestartUnit` — Luby restarts
-
-`100` conflicts in one Luby unit, MiniSat's default.
-
-### `kReduceBase`, `kReduceIncrement`, `kGlueLbd` — learnt clause reduction
-
-At a restart with `kReduceBase` (`2000`) learnt clauses, growing by `kReduceIncrement` (`300`) per reduction, the worse half by LBD then size are deleted, except those of LBD at most `kGlueLbd` (`2`). Glucose's ranking; the schedule is simpler than Glucose's, since the probe's solves needed under 3,000 conflicts.
-
-### `kStopPollEffort`, `kEncodePollWork` — stop-check cadence
-
-`65536` units of effort between polls of the caller's stop check, in the solver and in the encoder respectively, so a poll costs nothing next to the work between polls.
-
----
-
 ## Solution Pool and Parallel Runner
 
 ### `kPoolCapacity` — solution pool size

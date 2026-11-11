@@ -148,10 +148,6 @@ add_library(mip_heuristics_core STATIC
     src/rng.h
     src/ruin_repair.cpp
     src/ruin_repair.h
-    src/sat_search.cpp
-    src/sat_search.h
-    src/sat_solver.cpp
-    src/sat_solver.h
     src/solution_pool.cpp
     src/solution_pool.h
     src/solution_sink.cpp
@@ -304,7 +300,6 @@ add_executable(mip_heuristics_tests
     tests/test_prop_engine.cpp
     tests/test_repair_search.cpp
     tests/test_repair_walk.cpp
-    tests/test_sat_search.cpp
     tests/test_continuous_loop.cpp
     tests/test_contested_pdlp.cpp
     tests/test_patience_gate.cpp
@@ -407,7 +402,7 @@ catch_discover_tests(mip_heuristics_tests
 # reads a clock.
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
     tests/test_paths.cpp tests/test_ruin_repair.cpp tests/test_recombine.cpp
-    tests/test_fj_exchange.cpp tests/test_fj_cdcl.cpp)
+    tests/test_fj_exchange.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})

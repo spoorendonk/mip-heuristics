@@ -325,10 +325,6 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         if (h.exchange != nullptr) {
             slice.fj_exchange = options.*h.exchange;
         }
-        // Not in a RINS/RENS sub-MIP (#237): its empty pool hides the
-        // parent's incumbent and cutoff, so the objective-blind lane would
-        // run there when a feasible point is already known.
-        slice.fj_cdcl = options.mip_heuristic_fj_cdcl && !mipsolver.submip;
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {
             return h.run(mipsolver, problem, slice, exec, sink);

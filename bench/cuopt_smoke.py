@@ -125,8 +125,6 @@ ARMS: tuple[Arm, ...] = (
         ("mip_heuristic_fj_personas=true", "mip_heuristic_fj_exchange=true"),
         EXCHANGE_INSTANCES,
     ),
-    # FJ's CDCL lane (#237): pure-binary models only; elsewhere it is main.
-    Arm("cdcl", ("mip_heuristic_fj_cdcl=true",)),
     Arm("ruin", ("mip_heuristic_ruin_effort=1.0",)),
     Arm("recombine", ("mip_heuristic_recombine_effort=1.0",)),
     # The LP start persona (#217) is a lane of fpr_lp, which ships off, so it

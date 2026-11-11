@@ -9,8 +9,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <type_traits>
-#include <utility>
 
 // Generic opportunistic (continuous) parallel loop.
 //
@@ -27,10 +25,6 @@
 //     Called repeatedly.  Should execute one heuristic attempt with at
 //     most `run_cap` effort.  When the underlying worker is finished
 //     (stalled), the callback should rebuild/restart the worker in-place.
-//     A callback that also takes `const ContinuousLoopState&` as a fourth
-//     argument gets the loop, for an attempt longer than `run_cap` that
-//     must see the shared stop flag and remaining budget (FJ's CDCL lane,
-//     #237).
 //
 // Thread-safety constraints:
 //   - run_attempt must NOT spawn nested `parallel::for_each` regions.
@@ -40,9 +34,7 @@
 //   - Budget overshoot: concurrent workers can overshoot `budget.total`
 //     by up to `n * budget.attempt_cap` because each worker checks
 //     the atomic total before starting an attempt.  Bounded overshoot
-//     is acceptable for heuristic effort accounting.  FJ's CDCL lane
-//     (#237) is the exception: one attempt of up to `budget.per_worker`,
-//     so `per_worker + (n - 1) * attempt_cap` there.
+//     is acceptable for heuristic effort accounting.
 //
 // (`run_opportunistic_loop` itself is declared below `attempt_with_rebuild`.)
 //
@@ -111,13 +103,7 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
             break;
         }
 
-        AttemptResult result;
-        if constexpr (std::is_invocable_v<RunAttempt&, decltype(state)&, Rng&, size_t,
-                                          const ContinuousLoopState&>) {
-            result = run_attempt(state, rng, run_cap, std::as_const(loop));
-        } else {
-            result = run_attempt(state, rng, run_cap);
-        }
+        auto result = run_attempt(state, rng, run_cap);
         ++attempt_counter;
 
         // Guard against workers that make no progress: a zero-effort
@@ -133,10 +119,7 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
             break;
         }
 
-        // An exempt attempt adds nothing to the stale counter, but its
-        // improvement still resets it, as any other attempt's does.
-        loop.note_staleness(result.exempt_from_staleness ? 0 : result.effort,
-                            result.found_improvement, budget.stale);
+        loop.note_staleness(result.effort, result.found_improvement, budget.stale);
         loop.add_effort(result.effort, budget.total);
     }
 

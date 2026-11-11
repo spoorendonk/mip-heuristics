@@ -6,13 +6,11 @@
 #include "heuristic_context.h"
 #include "io/HighsIO.h"
 #include "opportunistic_runner.h"
-#include "sat_search.h"
 #include "solution_sink.h"
 #include "structure.h"
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
@@ -33,60 +31,19 @@ struct FjState {
     FjPersona persona = FjPersona::kSeeded;
     // Every worker of the slot searches with the exchange (#218).
     bool exchange = false;
-    // The slot's first attempt is the CDCL lane (#237); cleared once taken.
-    bool cdcl = false;
 };
 
 // Slot `worker_idx`, with no worker built yet.  Its first worker is pinned
 // to `random_seed + worker_idx`, so worker 0 matches vanilla FJ's seed.
 FjState make_state(const ExecutionContext& exec, int worker_idx,
-                   FjPersona persona = FjPersona::kSeeded, bool exchange = false,
-                   bool cdcl = false) {
+                   FjPersona persona = FjPersona::kSeeded, bool exchange = false) {
     // The `random_seed` option itself: `base_seed` is it plus
     // `kBaseSeedOffset` (`heuristic_base_seed`), so this is the exact
     // inverse, in the same modular `uint32_t` arithmetic.
     const uint32_t random_seed_opp = exec.base_seed - kBaseSeedOffset;
     return FjState{nullptr, random_seed_opp + static_cast<uint32_t>(worker_idx),
                    true,    WorkerTrace{worker_idx, 0},
-                   persona, exchange,
-                   cdcl};
-}
-
-const char* status_name(sat::SatSearchStatus status) {
-    switch (status) {
-        case sat::SatSearchStatus::kFeasible:
-            return "feasible";
-        case sat::SatSearchStatus::kInfeasible:
-            return "infeasible";
-        case sat::SatSearchStatus::kStopped:
-            return "stopped";
-        case sat::SatSearchStatus::kRefused:
-            return "refused";
-    }
-    return "?";
-}
-
-const char* refusal_name(sat::SatRefusal refusal) {
-    switch (refusal) {
-        case sat::SatRefusal::kNone:
-            return "none";
-        case sat::SatRefusal::kNotPureBinary:
-            return "not_pure_binary";
-        case sat::SatRefusal::kNotIntegral:
-            return "not_integral";
-        case sat::SatRefusal::kTooLarge:
-            return "too_large";
-        case sat::SatRefusal::kCheckFailed:
-            return "check_failed";
-    }
-    return "?";
-}
-
-// Whether a feasible point is known: the dispatch's snapshot, or anything
-// the pool holds, which `IncumbentSink` seeds from the incumbent and every
-// accept goes through.
-bool point_known(const ProblemView& problem, SolutionSink& sink) {
-    return !problem.incumbent.empty() || sink.best_objective() < kHighsInf;
+                   persona, exchange};
 }
 
 // The persona of every slot, which slots exchange, and the structure both
@@ -120,15 +77,6 @@ Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget
         for (size_t slot = 0; slot < out.exchange_of_slot.size(); ++slot) {
             out.exchange_of_slot[slot] = is_exchange_slot(slot) ? 1 : 0;
         }
-    }
-    // The CDCL lane's slot (#237), the last, is plain FJ after the lane: a
-    // persona would rewrite the start it takes from the pool, the lane's
-    // point, and with either it or the exchange the options could not be
-    // measured apart.  Decided before the lane runs, so a model the lane
-    // refuses loses that slot's persona or exchange too.
-    if (budget.fj_cdcl && is_cdcl_slot(exec.num_workers - 1, exec.num_workers)) {
-        out.of_slot.back() = FjPersona::kSeeded;
-        out.exchange_of_slot.back() = 0;
     }
     const auto slots_with = [&](FjPersona p) {
         return static_cast<int>(std::ranges::count(out.of_slot, p));
@@ -208,47 +156,6 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
 
 }  // namespace
 
-AttemptResult run_cdcl_lane(const ProblemView& problem, size_t max_effort,
-                            const ExecutionContext& exec, SolutionSink& sink,
-                            const WorkerTrace& trace, uint64_t seed,
-                            const std::atomic<bool>* loop_stop) {
-    // The search ignores the objective, so a point it finds can only be worth
-    // more than one already known if it lands in a better basin by chance;
-    // FJ, which starts from the pool's best, is the better use of the slot
-    // then (#237).
-    if (point_known(problem, sink)) {
-        highsLogDev(exec.log_options, HighsLogType::kVerbose,
-                    "[FjCdcl] skipped: a feasible point is known\n");
-        return {};
-    }
-    sat::SatSearchConfig config;
-    config.seed = seed;
-    config.limits.max_effort = max_effort;
-    // The sink is polled at the solver's cadence (every `kStopPollEffort`
-    // units), under the pool's lock: a peer's find ends the search, for the
-    // reason above.  So does the runner's stop flag, which an interrupt, the
-    // budget or the patience gate sets while the other slots step: the
-    // search is one attempt of up to a whole allowance, so without it the
-    // join would wait that long.
-    const std::function<bool()> stop = [&] {
-        return (loop_stop != nullptr && loop_stop->load(std::memory_order_relaxed)) ||
-               exec.past_deadline() || sink.best_objective() < kHighsInf;
-    };
-    std::vector<double> point;
-    const sat::SatSearchResult found = sat::sat_search(problem, config, stop, point);
-    AttemptResult out{.effort = found.effort, .exempt_from_staleness = true};
-    if (found.status == sat::SatSearchStatus::kFeasible) {
-        out.found_improvement =
-            sink.offer(problem.objective(point), point, trace, found.effort).improved_incumbent;
-    }
-    highsLogDev(exec.log_options, HighsLogType::kVerbose,
-                "[FjCdcl] status=%s refusal=%s clauses=%zu aux_vars=%zu conflicts=%zu "
-                "effort=%zu max_effort=%zu\n",
-                status_name(found.status), refusal_name(found.refusal), found.clauses,
-                found.aux_vars, found.conflicts, found.effort, max_effort);
-    return out;
-}
-
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                     ExecutionContext& exec, SolutionSink& sink) {
     if (problem.degenerate() || budget.disabled()) {
@@ -257,16 +164,6 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
 
     const RestartSource no_source;
     const Personas personas = plan_personas(problem, budget, exec);
-    if (budget.fj_cdcl) {
-        // On the dispatching thread, so it is logged whether or not the
-        // slot reaches its first attempt.
-        const size_t last = exec.num_workers - 1;
-        const int slot = exec.num_workers > 0 && is_cdcl_slot(last, exec.num_workers)
-                             ? static_cast<int>(last)
-                             : -1;
-        highsLogDev(exec.log_options, HighsLogType::kVerbose, "[FjCdcl] slot=%d workers=%d\n", slot,
-                    static_cast<int>(exec.num_workers));
-    }
 
     // No setup to abandon, so this dispatch can only ever report a plain
     // effort count.  MakeState below builds no worker at all — it returns
@@ -284,38 +181,11 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // not inside `FjWorker`'s constructor.
     return {.effort = run_opportunistic_loop(
                 exec, budget,
-                [&exec, &personas, &budget](int worker_idx, Rng& /*rng*/) -> FjState {
-                    return make_state(
-                        exec, worker_idx, personas.of_slot[worker_idx],
-                        personas.exchange_of_slot[worker_idx] != 0,
-                        budget.fj_cdcl &&
-                            is_cdcl_slot(static_cast<size_t>(worker_idx), exec.num_workers));
+                [&exec, &personas](int worker_idx, Rng& /*rng*/) -> FjState {
+                    return make_state(exec, worker_idx, personas.of_slot[worker_idx],
+                                      personas.exchange_of_slot[worker_idx] != 0);
                 },
-                [&](FjState& state, Rng& rng, size_t run_cap,
-                    const ContinuousLoopState& loop) -> AttemptResult {
-                    // The CDCL lane is one attempt, capped at the slot's whole
-                    // allowance (or what is left of the dispatch's) rather than
-                    // `run_cap`: the search does not resume (#237).  Its effort
-                    // joins the slot's trace base, as a retired worker's does,
-                    // and a lane that did not run falls through to FJ, since a
-                    // zero-effort attempt would retire the slot.
-                    if (state.cdcl) {
-                        state.cdcl = false;
-                        const size_t spent = loop.total_effort.load(std::memory_order_relaxed);
-                        const size_t cap = std::min(budget.per_worker,
-                                                    budget.total - std::min(budget.total, spent));
-                        const AttemptResult lane = run_cdcl_lane(
-                            problem, cap, exec, sink, state.trace, state.initial_seed, &loop.stop);
-                        state.trace.effort_base += lane.effort;
-                        if (lane.effort > 0) {
-                            return lane;
-                        }
-                        // Stopped before its first row: the dispatch is
-                        // over, so retire the slot rather than build FJ.
-                        if (loop.stopped() || exec.past_deadline()) {
-                            return {};
-                        }
-                    }
+                [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
                     if (!state.worker || state.worker->finished()) {
                         build_worker(state, rng, problem, budget, exec, sink, no_source,
                                      &personas.structure);
