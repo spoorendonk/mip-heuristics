@@ -49,9 +49,6 @@ struct Offspring {
     bool feasible = false;
     double objective = kHighsInf;
     size_t effort = 0;
-    // An offer the recombiner made itself moved the sink's best (the
-    // line-segment arm's FJ runs offer as they go).
-    bool improved = false;
 };
 
 // cuOpt's bound-prop recombiner (`bound_prop_recombiner_t::recombine`,
@@ -135,33 +132,11 @@ private:
 };
 
 // The recombiners a `RecombinerBandit` chooses among: the bound-prop
-// recombiner above, the pool's two crossovers and, with
-// `HeuristicBudget::line_segment` (#246), cuOpt's line-segment recombiner.
-// cuOpt's sub-MIP arm has no counterpart in the core (HiGHS's RENS/RINS live
-// outside it).  The line-segment arm is last, so a bandit without it is the
-// first `kNumBaseRecombinerArms` arms, draw for draw.
-enum class RecombinerArm : uint8_t {
-    kBoundProp,
-    kGuidedCrossover,
-    kNeighborhoodCrossover,
-    kLineSegment
-};
-inline constexpr size_t kNumBaseRecombinerArms = 3;
-inline constexpr size_t kNumRecombinerArms = 4;
-
-// cuOpt's `ls_recombiner_config_t`: the points searched on the segment, and
-// each FJ repair's limit along it (`line_segment_search_t`'s 1 s), at FJ's
-// rate (`ruin_repair::kRepairEffortPerSecond`).  Its 2 s limit on the whole
-// search is the recombiner's (`kRewardNominalEffort`), and its limit on the
-// columns taken from the other parent adapts by bound-prop's rule and
-// constants, which are cuOpt's for both.
-inline constexpr size_t kLineSegmentPoints = 20;
-inline constexpr double kLineSegmentFjSeconds = 1.0;
-
-// cuOpt's `assign_same_integer_values`: when fewer than this share of the
-// integer columns where the parents differ have a cost, integer columns with
-// a cost are added to them, at random, until that share do.
-inline constexpr double kLineSegmentObjectiveShare = 0.4;
+// recombiner above and the pool's two crossovers.  cuOpt's sub-MIP arm has no
+// counterpart in the core (HiGHS's RENS/RINS live outside it), and its
+// line-segment arm was measured without gain and removed (#252, #254).
+enum class RecombinerArm : uint8_t { kBoundProp, kGuidedCrossover, kNeighborhoodCrossover };
+inline constexpr size_t kNumRecombinerArms = 3;
 
 // cuOpt's `mab_t` with UCB (`diversity/multi_armed_bandit.cu`): the step
 // size of the recency-weighted average, an arm's initial estimate, and the
@@ -208,18 +183,13 @@ inline constexpr double kRewardMarginRel = 1e-4;
 // while the operator runs on parallel workers here, where a shared bandit's
 // arm sequence would depend on thread interleaving and a worker would no
 // longer replay from its seed (#234).
-//
-// `line_segment` enables the arm of that name; without it the bandit is the
-// first `kNumBaseRecombinerArms` arms alone.
 class RecombinerBandit {
 public:
-    explicit RecombinerBandit(uint64_t seed, bool line_segment = false)
-        : num_arms_(line_segment ? kNumRecombinerArms : kNumBaseRecombinerArms), rng_(seed) {}
+    explicit RecombinerBandit(uint64_t seed) : rng_(seed) {}
 
     [[nodiscard]] RecombinerArm select();
     void reward(RecombinerArm arm, double r);
 
-    [[nodiscard]] size_t num_arms() const { return num_arms_; }
     [[nodiscard]] size_t pulls(RecombinerArm arm) const { return arms_[index(arm)].pulls; }
     [[nodiscard]] double q(RecombinerArm arm) const { return arms_[index(arm)].q; }
 
@@ -231,7 +201,6 @@ private:
     static size_t index(RecombinerArm arm) { return static_cast<size_t>(arm); }
 
     std::array<Arm, kNumRecombinerArms> arms_{};
-    size_t num_arms_;
     size_t steps_ = 0;
     Rng rng_;
 };
@@ -276,11 +245,9 @@ struct RecombineStep {
 //      twins.
 //   2. The bandit's arm recombines them: bound-prop, or the pool's guided
 //      crossover (`i`, `j`), or its neighborhood crossover (the better of
-//      the two first), or the line-segment recombiner (`i` guides; see
-//      `recombine_line_segment`).  A crossover succeeds when its offspring
-//      differs from both parents on the integer columns, bound-prop and
-//      line-segment by their own verdicts.  A failure rewards the arm 0 and
-//      ends the step, as in cuOpt, which runs no local search then.
+//      the two first).  A crossover succeeds when its offspring differs from
+//      both parents on the integer columns, bound-prop by its own verdict.  A failure rewards the
+//      arm 0 and ends the step, as in cuOpt, which runs no local search then.
 //   3. A feasible offspring is offered to the sink as it is (cuOpt adds its
 //      offspring to the population after the local search, and its LP
 //      offspring beside it); then FJ runs from it for `local_search_budget`
@@ -295,19 +262,17 @@ struct RecombineStep {
 //      assignment (a deviation).
 //   4. The arm is rewarded with `recombination_reward` on the parents'
 //      better objective, the pool's best at the draw, the step's best
-//      objective, and the recombiner's effort (the line-segment arm's FJ
-//      repairs included: they are its recombiner, as cuOpt times them).  The pool's best at the
+//      objective, and the recombiner's effort.  The pool's best at the
 //      draw, not at the reward as in cuOpt: FJ offers into the pool during the local search, so by
 //      then the best would include the offspring and the reward of 8 could never be paid (a
 //      deviation).
 //
 // One per worker (its bandit and recombiners are per worker, see
 // `RecombinerBandit`).  `problem` and `sink` must outlive it.
-// `line_segment` gives the bandit its line-segment arm.
 class RecombineOperator {
 public:
     RecombineOperator(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
-                      uint64_t seed, WorkerTrace trace, bool line_segment = false);
+                      uint64_t seed, WorkerTrace trace);
 
     // One step, with `recombine_effort` capping the bound-prop recombiner's
     // search and `ls_cap` FJ's `local_search_budget`.  None with fewer than
@@ -339,37 +304,6 @@ private:
                         const SolutionPool::EntryRef& second, size_t recombine_effort,
                         const Deadline& deadline);
 
-    // cuOpt's `line_segment_recombiner_t::recombine` into `offspring_`,
-    // `guiding` guiding: pool entries are feasible, so cuOpt's guiding
-    // parent, the feasible one, is the first drawn.
-    //   1. The integer columns where the parents' rounded values differ,
-    //      padded with integer columns of nonzero cost to
-    //      `kLineSegmentObjectiveShare` of their count when fewer have one
-    //      (cuOpt's `assign_same_integer_values`): `d` columns in all.
-    //   2. At most `ls_max_vars_from_other_` of them, a random subset when
-    //      `d` exceeds it, step towards `other` by `(other - guiding) /
-    //      (kLineSegmentPoints + 1)`; every other column, continuous ones
-    //      included, keeps `guiding`'s value.
-    //   3. `line_segment::search` from `guiding` in recombiner mode, at most
-    //      `recombine_effort` in all; its FJ offers to the sink as it goes.
-    //   4. Success when the result is better than the better parent (no
-    //      parent is infeasible here), or differs from both on the integer
-    //      columns.  Then, only when `d` exceeds the limit, the limit adapts
-    //      by `next_max_vars_from_other`, on whether the result is the same
-    //      as a parent (no result counts as the same).
-    // cuOpt's weighted quality has no counterpart (`Offspring`'s deviation).
-    Offspring recombine_line_segment(const std::vector<double>& guiding,
-                                     const std::vector<double>& other, double best_of_parents,
-                                     size_t recombine_effort);
-    // Steps 1 and 2: fills `differing_` and `delta_`, and returns the
-    // number of differing columns, `d`, and the effort of building them.
-    struct LineSegmentDirection {
-        size_t num_different = 0;
-        size_t effort = 0;
-    };
-    LineSegmentDirection line_segment_direction(const std::vector<double>& guiding,
-                                                const std::vector<double>& other);
-
     const ProblemView& problem_;
     const ExecutionContext& exec_;
     SolutionSink& sink_;
@@ -385,16 +319,6 @@ private:
     std::vector<double> offspring_;
     std::vector<double> external_;
     std::vector<double> last_external_;
-    // The line-segment arm's state: the integer columns of nonzero cost,
-    // ascending, the columns stepped on and the padding's candidates, a
-    // per-column mark, the step, and its own adaptive limit (cuOpt's
-    // `ls_recombiner_config_t`, kept apart from bound-prop's).
-    std::vector<HighsInt> objective_cols_;
-    std::vector<HighsInt> differing_;
-    std::vector<HighsInt> padding_;
-    std::vector<uint8_t> is_differing_;
-    std::vector<double> delta_;
-    size_t ls_max_vars_from_other_ = kBpInitialVarsFromOther;
 };
 
 // The presolve chain's runner (#229), last in the chain: `exec.num_workers`

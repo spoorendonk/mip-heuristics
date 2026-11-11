@@ -130,26 +130,12 @@ ARMS: tuple[Arm, ...] = (
     Arm("ruin", ("mip_heuristic_ruin_effort=1.0",)),
     Arm("cut", ("mip_heuristic_objective_cut=true",)),
     Arm("recombine", ("mip_heuristic_recombine_effort=1.0",)),
-    # One option gives line-segment search both its places (#213): the
-    # recombiner's arm and, with fpr_lp on, fpr_lp's lane.  Each is read
-    # against its host with the option off; recombine and fpr_lp ship off,
-    # so neither arm turns on the other place.
-    Arm(
-        "ls_recombine",
-        ("mip_heuristic_recombine_effort=1.0", "mip_heuristic_line_segment=true"),
-        base="recombine",
-    ),
     # The LP start persona (#217) is a lane of fpr_lp, which ships off, so it
     # moves two options; `fpr_lp` alone is the arm it is read against.
     Arm("fpr_lp", ("mip_heuristic_fpr_lp_effort=1.0",)),
     Arm(
         "lp_persona",
         ("mip_heuristic_fpr_lp_effort=1.0", "mip_heuristic_fj_lp_persona=true"),
-        base="fpr_lp",
-    ),
-    Arm(
-        "ls_lane",
-        ("mip_heuristic_fpr_lp_effort=1.0", "mip_heuristic_line_segment=true"),
         base="fpr_lp",
     ),
 )

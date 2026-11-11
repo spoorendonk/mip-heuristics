@@ -24,7 +24,7 @@
 
 namespace {
 double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = false,
-                    double fpr_lp_effort = 1.0, bool line_segment = false) {
+                    double fpr_lp_effort = 1.0) {
     // Only meaningful when `threads > 0`, but unconditional so the pin
     // and its teardown can never drift apart; a no-op reset is cheap.
     const ScopedThreadPin pin;
@@ -42,7 +42,6 @@ double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = fals
     // assertions are sound.
     h.setOptionValue("mip_rel_gap", 0.0);
     require_option(h, "mip_heuristic_fj_lp_persona", fj_lp_persona);
-    require_option(h, "mip_heuristic_line_segment", line_segment);
     if (threads > 0) {
         h.setOptionValue("threads", threads);
     }
@@ -58,36 +57,8 @@ TEST_CASE("fpr_lp: bell5 finds optimum and dispatches", "[fpr_lp][mode-matrix]")
     fpr_lp::reset_dispatch_counts();
     REQUIRE(solve_fpr_lp("bell5.mps") == Catch::Approx(8966406.49152).epsilon(1e-4));
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
-    // The FJ LP persona (#217) and the line-segment lane (#247) are off by
-    // default.
+    // The FJ LP persona (#217) is off by default.
     REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds == 0);
-    REQUIRE(fpr_lp::dispatch_counts().line_segment_searches == 0);
-}
-
-// The line-segment lane (#247): with two workers it takes the last slot and
-// the solve keeps its optimum; beside the FJ lane it needs a third, so at
-// two it gives way.  The share that lifts bell5 over the FJ callback gate,
-// as for the FJ lane below.
-TEST_CASE("fpr_lp: the line-segment lane takes a slot, leaving one to the arms",
-          "[fpr_lp][mode-matrix]") {
-    constexpr double kDeepShare = 16.0;
-    fpr_lp::reset_dispatch_counts();
-    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/2, /*fj_lp_persona=*/false, kDeepShare,
-                         /*line_segment=*/true) == Catch::Approx(8966406.49152).epsilon(1e-4));
-    REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
-    REQUIRE(fpr_lp::dispatch_counts().line_segment_searches >= 1);
-
-    fpr_lp::reset_dispatch_counts();
-    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/2, /*fj_lp_persona=*/true, kDeepShare,
-                         /*line_segment=*/true) == Catch::Approx(8966406.49152).epsilon(1e-4));
-    REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds >= 1);
-    REQUIRE(fpr_lp::dispatch_counts().line_segment_searches == 0);
-
-    fpr_lp::reset_dispatch_counts();
-    REQUIRE(solve_fpr_lp("bell5.mps", /*threads=*/3, /*fj_lp_persona=*/true, kDeepShare,
-                         /*line_segment=*/true) == Catch::Approx(8966406.49152).epsilon(1e-4));
-    REQUIRE(fpr_lp::dispatch_counts().fj_lane_builds >= 1);
-    REQUIRE(fpr_lp::dispatch_counts().line_segment_searches >= 1);
 }
 
 // The FJ LP persona (#217): with two workers the second runs FJ from the

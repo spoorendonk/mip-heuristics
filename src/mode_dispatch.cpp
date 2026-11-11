@@ -334,7 +334,6 @@ bool run_sequential(HighsMipSolver& mipsolver) {
             slice.fj_exchange = options.*h.exchange;
         }
         slice.objective_cut = objective_cut;
-        slice.line_segment = options.mip_heuristic_line_segment;
         // Not in a RINS/RENS sub-MIP (#237): its empty pool hides the
         // parent's incumbent and cutoff, so the objective-blind lane would
         // run there when a feasible point is already known.
