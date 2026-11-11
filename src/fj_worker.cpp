@@ -144,6 +144,24 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
             }
         }
 
+        // The cutoff row goes in before the exchange groups, which size their
+        // per-row scratch from the rows present.
+        if (std::isfinite(cutoff_)) {
+            std::vector<HighsInt> cost_index;
+            std::vector<double> cost_value;
+            for (HighsInt col = 0; col < model->num_col_; ++col) {
+                if (col_cost[col] != 0.0) {
+                    cost_index.push_back(col);
+                    cost_value.push_back(col_cost[col]);
+                }
+            }
+            if (!cost_index.empty()) {
+                impl_->solver.addConstraint(RowType::Lte, cutoff_ - problem_.offset,
+                                            static_cast<int>(cost_index.size()), cost_index.data(),
+                                            cost_value.data(), 0);
+            }
+        }
+
         // The exchange groups (#218): each exact-k row's columns, all binary.
         // A row with `k = 0` or `k = width` has every column fixed by it, so
         // no pair: it would only take a draw.
@@ -175,22 +193,6 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 offsets.push_back(static_cast<uint32_t>(members.size()));
             }
             impl_->solver.setExchangeGroups(std::move(offsets), std::move(members));
-        }
-
-        if (std::isfinite(cutoff_)) {
-            std::vector<HighsInt> cost_index;
-            std::vector<double> cost_value;
-            for (HighsInt col = 0; col < model->num_col_; ++col) {
-                if (col_cost[col] != 0.0) {
-                    cost_index.push_back(col);
-                    cost_value.push_back(col_cost[col]);
-                }
-            }
-            if (!cost_index.empty()) {
-                impl_->solver.addConstraint(RowType::Lte, cutoff_ - problem_.offset,
-                                            static_cast<int>(cost_index.size()), cost_index.data(),
-                                            cost_value.data(), 0);
-            }
         }
     }
 

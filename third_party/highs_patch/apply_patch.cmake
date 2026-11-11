@@ -192,8 +192,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 39 removes `mip_heuristic_line_segment` (#254): the line-segment
 # search was measured without gain (#252) and deleted.
 #
-# Version 40 removes the objective cut (#255): its three option records and
-# `FeasibilityJumpSolver::setObjectiveCut`, measured worse off by default.
+# Version 40 removes the objective cut (#255), which measured worse on every
+# seed: its three option records and version 33's insertions
+# (`setObjectiveCut`, `refreshConstraint`, `solveInitialized`).  The
+# exchange's scratch is sized to the rows present, as no row is added after
+# the groups any more.
 set(PATCH_VERSION "40")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
@@ -1484,11 +1487,6 @@ if(_fj_ex_found EQUAL -1)
   double exchangeScore(uint32_t off, uint32_t on) {
     const double offDelta = 0.0 - problem.incumbentAssignment[off];
     const double onDelta = 1.0 - problem.incumbentAssignment[on];
-    // A row added after the groups (a cutoff row) may lie past their sizing.
-    if (exchangeLhsDelta.size() < problem.constraints.size()) {
-      exchangeLhsDelta.resize(problem.constraints.size(), 0.0);
-      exchangeRowMark.resize(problem.constraints.size(), 0);
-    }
     const std::pair<uint32_t, double> sides[2] = {{off, offDelta},
                                                   {on, onDelta}};
     for (const auto& side : sides) {
@@ -1655,11 +1653,11 @@ if(_fj_ex_found EQUAL -1)
     }
     exchangeSeen.assign(nGroups, 0);
     exchangeDraw.reserve(nGroups);
-    // Sized one row past the constraints, so a row added after the groups
-    // still fits and no search allocates.
-    exchangeLhsDelta.assign(problem.constraints.size() + 1, 0.0);
-    exchangeRowMark.assign(problem.constraints.size() + 1, 0);
-    exchangeTouched.reserve(problem.constraints.size() + 1);
+    // Sized to the rows present, so no search allocates: every row goes in
+    // before the groups.
+    exchangeLhsDelta.assign(problem.constraints.size(), 0.0);
+    exchangeRowMark.assign(problem.constraints.size(), 0);
+    exchangeTouched.reserve(problem.constraints.size());
     exchangeOffs.reserve(maxWidth);
     exchangeOns.reserve(maxWidth);
   }

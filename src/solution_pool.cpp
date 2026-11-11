@@ -200,11 +200,10 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             // below never evicts the front entry (`victim > 0`), so the front
             // is monotone too, so `SolutionSink::best_objective` never
             // loosens.  The watermark keeps #116's gate independent of that
-            // rule anyway, since a
-            // non-monotone best would call the next offer to clear the
-            // degraded value an improvement, handing a patience gate a free
-            // reset for a solution the incumbent already dominates.  A
-            // monotone watermark is also exactly what
+            // rule anyway, since a non-monotone best would call the next
+            // offer to clear the degraded value an improvement, handing a
+            // patience gate a free reset for a solution the incumbent
+            // already dominates.  A monotone watermark is also exactly what
             // `improving_offers` in `bench/analyze_presolve_probe.py` tracks,
             // and that is where the shipped patience defaults were measured.
             //
