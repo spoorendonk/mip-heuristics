@@ -5,13 +5,27 @@ linked from each entry.
 
 ## v0.1.9 (2026-11-11)
 
+### Added
+
+All off by default, so default runs are unchanged.
+
+- **Recombination** (#209, #227, #229, #234, #235): a presolve chain stage
+  after ruin-and-repair that recombines pool solutions, enabled by
+  `mip_heuristic_recombine_effort` above zero, with
+  `mip_heuristic_recombine_patience` (both default 0).
+- **FJ's LP start persona** (#217): `mip_heuristic_fj_lp_persona` (default
+  `false`); with `fpr_lp` on, its last worker runs FJ from the dive's LP
+  solution, randomly rounded.
+- **FJ's cardinality exchange** (#218): `mip_heuristic_fj_exchange` (default
+  `false`), a compound move on uniform binary equality rows.
+
 ### Removed
 
 - **Line-segment search** (#213, #246, #247; removed in #254): the
   recombiner's line-segment arm and `fpr_lp`'s line-segment lane, together
   with the option `mip_heuristic_line_segment`. It was off by default, and
-  #252 measured no significant gain. Default runs are unchanged; HiGHS now
-  rejects the option name as unknown.
+  #252 measured no significant gain. Added and removed since v0.1.8, so no
+  tagged release accepts the option name.
 - **Objective cut** (#208, #222-#225, #231-#233; removed in #255): the
   presolve heuristics' search under `objective <= best - max(rel*|best|, abs)`
   once the pool held a solution, in FJ, LocalMIP, FPR, Scylla's rounding and
@@ -25,5 +39,5 @@ linked from each entry.
   first attempt while no feasible point was known, together with the
   option `mip_heuristic_fj_cdcl`. It was off by default, and #212
   measured no significant gain (primal integral 0.986 [0.969, 1.003]).
-  Default runs are unchanged; HiGHS now rejects the option name as
-  unknown.
+  Added and removed since v0.1.8, so no tagged release accepts the option
+  name.
