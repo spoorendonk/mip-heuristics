@@ -13,7 +13,6 @@
 #include "ruin_repair.h"
 #include "solution_sink.h"
 #include "test_paths.h"
-#include "util/HighsTimer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -343,7 +342,6 @@ protected:
 
 struct OperatorRun {
     std::vector<recombine::RecombinerArm> arms;
-    std::vector<recombine::RecombineStep> steps;
     std::vector<double> accepted;
     std::vector<std::vector<double>> accepted_points;
     size_t seeded = 0;
@@ -369,7 +367,6 @@ OperatorRun run_operator(const Setup& s, uint64_t seed, size_t steps) {
             break;
         }
         run.arms.push_back(step->arm);
-        run.steps.push_back(*step);
     }
     size_t pulls = 0;
     for (size_t a = 0; a < recombine::kNumRecombinerArms; ++a) {

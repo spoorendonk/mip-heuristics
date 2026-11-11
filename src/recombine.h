@@ -134,7 +134,7 @@ private:
 // The recombiners a `RecombinerBandit` chooses among: the bound-prop
 // recombiner above and the pool's two crossovers.  cuOpt's sub-MIP arm has no
 // counterpart in the core (HiGHS's RENS/RINS live outside it), and its
-// line-segment arm was measured without gain and removed (#252, #254).
+// line-segment arm is not carried over (it measured no gain).
 enum class RecombinerArm : uint8_t { kBoundProp, kGuidedCrossover, kNeighborhoodCrossover };
 inline constexpr size_t kNumRecombinerArms = 3;
 

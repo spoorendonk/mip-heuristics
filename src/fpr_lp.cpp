@@ -18,7 +18,6 @@
 #include "mip/HighsMipSolverData.h"
 #include "mode_dispatch.h"
 #include "opportunistic_runner.h"
-#include "ruin_repair.h"
 #include "worker_base.h"
 
 #include <algorithm>
