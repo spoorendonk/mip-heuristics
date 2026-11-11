@@ -240,6 +240,7 @@ Custom MIP (Mixed-Integer Programming) heuristics integrated into the HiGHS solv
 
 **Reader-facing docs**, kept in sync with this file — update both when the behaviour they describe moves:
 - `README.md` — positioning, the heuristic table and how each one is enabled, recorded benchmark results, build options.
+- `CHANGELOG.md` — notable option and behaviour changes, under `## Unreleased` until a release. **An entry is due in the commit that adds or removes a `mip_heuristic_*` option, changes an option's default, or changes what a default run does**; it links the issues and says what a default run now does. Measurements stay in the issues.
 - `docs/REPRODUCIBILITY.md` — what is reproducible and what is not, and the exact `mipfeas` reproduction protocol.
 - `docs/PARAMETERS.md` — every tunable `constexpr`. **Verified by ctest** (`docs_parameter_references`, via `bench/check_docs_refs.py`): renaming a documented constant fails the suite. Entries name symbols, **never line numbers** — line numbers drift on essentially every refactor. Don't reintroduce them.
 
