@@ -333,7 +333,7 @@ private:
 // limit (`kRewardNominalEffort`, its 2 s) and `local_search_budget`, each at
 // most the attempt cap.  A dispatch whose pool holds fewer than two points
 // ends at once, as does one on a model without an objective or a non-fixed
-// integer column, where nothing can improve.  The objective cut is not read.
+// integer column, where nothing can improve.
 // Implements the uniform runner contract; see heuristic_context.h.
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                     ExecutionContext& exec, SolutionSink& sink);

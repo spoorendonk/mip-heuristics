@@ -198,10 +198,9 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             //
             // A *watermark* and not `entries_.front()`.  The diversity path
             // below never evicts the front entry (`victim > 0`), so the front
-            // is monotone too — and `SolutionSink::best_objective`, which the
-            // objective cut (#208) tightens from, relies on that: evicting the
-            // best would loosen every heuristic's cutoff.  The watermark keeps
-            // #116's gate independent of that rule anyway, since a
+            // is monotone too, so `SolutionSink::best_objective` never
+            // loosens.  The watermark keeps #116's gate independent of that
+            // rule anyway, since a
             // non-monotone best would call the next offer to clear the
             // degraded value an improvement, handing a patience gate a free
             // reset for a solution the incumbent already dominates.  A

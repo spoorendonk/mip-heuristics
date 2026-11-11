@@ -127,9 +127,9 @@ public:
     // The pool's entries by pointer, best first (`SolutionPool::entry_refs`).
     void entry_refs(std::vector<SolutionPool::EntryRef>& out) { pool_.entry_refs(out); }
 
-    // The pool's best objective, or `kHighsInf` while it holds nothing:
-    // what an objective cut (#208) is computed from.  Thread-safe (the pool
-    // lock), so poll it at a heuristic's own polling cadence, not per step.
+    // The pool's best objective, or `kHighsInf` while it holds nothing.
+    // Thread-safe (the pool lock), so poll it at a heuristic's own polling
+    // cadence, not per step.
     [[nodiscard]] double best_objective() { return pool_.snapshot().best_objective; }
 
 protected:
