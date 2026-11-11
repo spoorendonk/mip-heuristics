@@ -8,17 +8,14 @@
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
-#include "objective_row.h"
 #include "opportunistic_runner.h"
 #include "scylla_worker.h"
 #include "solution_sink.h"
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstdint>
 #include <memory>
-#include <optional>
 
 namespace scylla {
 
@@ -109,14 +106,8 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         return {};
     }
 
-    // The objective cut, for the rounding's propagation (#224, #233) and the
-    // PDLP LP alike (#225): on only when the pool already holds a solution at
-    // dispatch, for the reason `fpr::run`'s is (#232).  The pool never empties,
-    // so every solve's cutoff is then finite, which the LP row requires.
-    const bool cut_rows = budget.objective_cut.on && std::isfinite(sink.best_objective());
-
     const HighsInt pdlp_iter_cap = compute_pdlp_iter_cap(budget.total, problem.nnz);
-    ContestedPdlp pdlp(mipsolver, pdlp_iter_cap, cut_rows ? &problem : nullptr);
+    ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
     // A plain zero, not an abandoned setup: the shared LP copy failed to
     // build, which is a Scylla-specific declination and not the clock
     // cutting a dispatch short.  Only the deadline bail below reports one
@@ -146,14 +137,6 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         return DispatchOutcome::abandoned();
     }
 
-    // The objective cut as a propagated row for the rounding, built here on
-    // the dispatching thread under the same gate as the LP's row.
-    std::optional<ObjectiveRowStorage> objective_rows;
-    if (cut_rows) {
-        objective_rows.emplace(problem);
-    }
-    const ObjectiveRowStorage* rows = objective_rows.has_value() ? &*objective_rows : nullptr;
-
     // Pre-construct workers outside the parallel region so MakeState
     // can hand them back by index without racing on std::make_unique.
     const int n = static_cast<int>(exec.num_workers);
@@ -165,8 +148,8 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         // counter is charged the amortised (÷N) PDLP cost, which is where
         // its share of the pool is already taken (issue #111).
         workers.push_back(std::make_unique<ScyllaWorker>(
-            mipsolver, problem, rows, budget.objective_cut, exec, pdlp, sink, var_orders,
-            budget.total, budget.stale, seed, w, n, WorkerTrace{w, 0}, &improvement_gen));
+            mipsolver, problem, exec, pdlp, sink, var_orders, budget.total, budget.stale, seed, w,
+            n, WorkerTrace{w, 0}, &improvement_gen));
     }
 
     struct ScyllaOppState {
@@ -189,12 +172,6 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
             return ScyllaOppState{worker_idx, WorkerTrace{worker_idx, 0}};
         },
         [&](ScyllaOppState& state, Rng& rng, size_t run_cap) -> AttemptResult {
-            // The cut has emptied the LP (#225): no chain can solve again,
-            // so the slot stops (a zero-effort attempt ends it) rather than
-            // rebuild workers that only round stale snapshots.
-            if (pdlp.cut_emptied()) {
-                return {};
-            }
             auto& worker = workers[state.worker_idx];
             auto attempt = attempt_with_rebuild(worker, run_cap, [&]() {
                 // Harvest the retired worker's overlap counters before
@@ -213,9 +190,8 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
                 // reinitialized from scratch but the underlying LP stays.
                 auto new_seed = static_cast<uint32_t>(rng());
                 worker = std::make_unique<ScyllaWorker>(
-                    mipsolver, problem, rows, budget.objective_cut, exec, pdlp, sink, var_orders,
-                    budget.total, budget.stale, new_seed, state.worker_idx, n, state.trace,
-                    &improvement_gen);
+                    mipsolver, problem, exec, pdlp, sink, var_orders, budget.total, budget.stale,
+                    new_seed, state.worker_idx, n, state.trace, &improvement_gen);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has

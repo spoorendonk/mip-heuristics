@@ -320,51 +320,9 @@ std::expected<ProblemView, ProblemError> make_problem(const HighsLp& model, Prob
 // the same point (`hybrid_restart`).  See `rebuild_restart_point`.
 enum class RestartPoint : uint8_t { kDefault, kBest, kHybrid };
 
-// The objective cut (#208, after cuOpt's `save_solution_and_add_cutting_plane`):
-// once the shared pool holds a solution of objective `best`, a heuristic
-// that honours the cut searches under `objective <= objective_cut_target`,
-// so a feasibility heuristic keeps going as an improvement heuristic.  Each
-// heuristic integrates the row its own way (#222-#225); this is the part
-// they share.  Off by default (`mip_heuristic_objective_cut`), and off for
-// a model without an objective whatever the option says (`has_objective`).
-struct ObjectiveCutParams {
-    bool on = false;
-    // The step below `best`: `max(rel * |best|, abs)`.  cuOpt's are 1e-3
-    // and its `OBJECTIVE_EPSILON`, 1e-7, which the options default to.
-    double rel = 0.0;
-    double abs = 0.0;
-};
-
-// The cutoff for an incumbent of objective `best`, in the view's
-// minimisation form (offset included, like every pool objective): a point
-// must reach this objective or lower to honour the cut.  Tightens with
-// every improvement because it is recomputed from the pool's best rather
-// than stored.  `kHighsInf` (no cut) when the cut is off, so a call site
-// cannot forget the guard, and for an empty pool, whose best is infinite,
-// rather than the `inf - inf` NaN the formula would give, which every
-// comparison would read as "violated" or "satisfied" depending on its sign.
-//
-// Ambiguity, recorded rather than resolved: `|best|` includes the view's
-// offset (presolve's constant term), so a large offset over a small
-// variable range makes the relative step coarse — with offset 1e6 and the
-// variable part in [0, 10], the first cut is out of reach.  cuOpt computes
-// the step on its own objective, offset handling unread here; #208 spells
-// the formula on `best` as the pool holds it, which is what this does.
-// #226's measurement decides whether the step should drop the offset.
-[[nodiscard]] inline double objective_cut_target(double best, const ObjectiveCutParams& params) {
-    if (!params.on || !std::isfinite(best)) {
-        return kHighsInf;
-    }
-    return best - std::max(params.rel * std::abs(best), params.abs);
-}
-
 // Some column has a cost above the matrix's `epsilon` in magnitude.  Without
-// one every feasible point has the same objective and a cut could only make
-// the model infeasible, so the cut stays off.  O(ncol); called once per
-// dispatch on the dispatching thread.  Only the all-zero case: an objective
-// whose whole range is below `abs` (costs of 1e-8 on a few binaries) passes
-// this and makes the first cut unreachable, which is a heuristic finding
-// nothing more, not a wrong answer; #208 specifies this test.
+// one every feasible point has the same objective, so there is nothing to
+// improve.  O(ncol); called once per dispatch on the dispatching thread.
 [[nodiscard]] inline bool has_objective(const ProblemView& problem) {
     return std::ranges::any_of(*problem.col_cost,
                                [&](double c) { return std::abs(c) > problem.epsilon; });
@@ -441,10 +399,6 @@ struct HeuristicBudget {
     // more, first runs `fj::run_cdcl_lane`.  Set on every chain entry; only
     // FJ reads it.
     bool fj_cdcl = false;
-
-    // The objective cut (#208): `on` only with the option set and
-    // `has_objective` true.  Every heuristic gets the same params.
-    ObjectiveCutParams objective_cut;
 
     // This heuristic was handed nothing, and must therefore do nothing
     // (issue #106).

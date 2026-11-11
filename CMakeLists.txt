@@ -136,8 +136,6 @@ add_library(mip_heuristics_core STATIC
     src/local_mip_search.cpp
     src/local_mip_worker.cpp
     src/local_mip_worker.h
-    src/objective_row.cpp
-    src/objective_row.h
     src/opportunistic_runner.h
     src/prop_engine.cpp
     src/prop_engine.h
@@ -320,8 +318,6 @@ add_executable(mip_heuristics_tests
     tests/test_fj_objective_sign.cpp
     tests/test_problem_view.cpp
     tests/test_early_fj.cpp
-    tests/test_objective_cut.cpp
-    tests/test_fpr_objective_cut.cpp
 )
 # Same guard as `mip_heuristics` above — a test that drops the verdict
 # would model the bug rather than catch it. `-Werror=switch` joins it for
@@ -410,10 +406,8 @@ catch_discover_tests(mip_heuristics_tests
 # one a caller of the core would have.  No `[serial]` case: nothing here
 # reads a clock.
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
-    tests/test_paths.cpp tests/test_ruin_repair.cpp tests/test_fj_objective_cut.cpp
-    tests/test_local_mip_objective_cut.cpp tests/test_objective_row.cpp
-    tests/test_recombine.cpp tests/test_fj_exchange.cpp
-    tests/test_fj_cdcl.cpp)
+    tests/test_paths.cpp tests/test_ruin_repair.cpp tests/test_recombine.cpp
+    tests/test_fj_exchange.cpp tests/test_fj_cdcl.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})

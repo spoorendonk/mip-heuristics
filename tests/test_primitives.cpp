@@ -262,6 +262,19 @@ TEST_CASE("SolutionSink: on_accept under concurrent offers", "[pool][thread-safe
     REQUIRE(sink.accepted() == static_cast<size_t>(accepted_count.load()));
 }
 
+TEST_CASE("SolutionSink: best_objective follows accepts", "[pool]") {
+    const std::vector<HighsVarType> integrality{HighsVarType::kInteger};
+    SolutionSink sink(integrality, kSolutionSourceFPR);
+    REQUIRE(sink.best_objective() == kHighsInf);
+    REQUIRE(sink.offer(5.0, {5.0}, WorkerTrace{}, 0).improved_incumbent);
+    REQUIRE(sink.best_objective() == 5.0);
+    REQUIRE(sink.offer(3.0, {3.0}, WorkerTrace{}, 0).improved_incumbent);
+    REQUIRE(sink.best_objective() == 3.0);
+    // A worse offer, accepted or not, leaves the best where it is.
+    static_cast<void>(sink.offer(4.0, {4.0}, WorkerTrace{}, 0));
+    REQUIRE(sink.best_objective() == 3.0);
+}
+
 TEST_CASE("SolutionPool: empty pool restart returns false", "[pool][edge]") {
     SolutionPool pool(5);
     Rng rng(42);

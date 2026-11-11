@@ -191,7 +191,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 39 removes `mip_heuristic_line_segment` (#254): the line-segment
 # search was measured without gain (#252) and deleted.
-set(PATCH_VERSION "39")
+#
+# Version 40 removes the objective cut (#255): its three option records and
+# `FeasibilityJumpSolver::setObjectiveCut`, measured worse off by default.
+set(PATCH_VERSION "40")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -559,9 +562,6 @@ set(_patch_options
     "mip_heuristic_fj_lp_persona:bool:false:-:Give the last worker of the dive-time fpr_lp heuristic, when it has two or more, to FeasibilityJump started from the dive's LP solution rounded at random (cuOpt's LP start persona) instead of an LP-FPR arm, when its budget holds FJ's callback period (about 488 nonzeros per worker at the default share). Needs mip_heuristic_fpr_lp_effort above 0"
     "mip_heuristic_fj_exchange:bool:false:-:Give the FeasibilityJump presolve workers on cuOpt's exchange lanes (slots 1, 7, 11 and 15) cuOpt's cardinality exchange, a compound move that sets one member of a uniform binary equality row from 1 to 0 and another from 0 to 1 so the row's count is kept"
     "mip_heuristic_fj_cdcl:bool:false:-:Run the last FeasibilityJump presolve worker, when there are two or more, as a CDCL SAT search on a pure-binary model with no feasible point known yet. Each row is encoded as clauses, and the point found, which ignores the objective, goes to the pool. The worker runs FeasibilityJump afterwards as the others do"
-    "mip_heuristic_objective_cut:bool:false:-:Once the presolve heuristics hold a solution, have them search under the objective cut objective <= best - max(rel*|best|, abs), tightened with every improvement, so they keep improving rather than stop at feasible (cuOpt's objective cutting plane). Ignored for a model without an objective"
-    "mip_heuristic_objective_cut_rel:double:1e-3:1.0:Relative step of the presolve heuristics' objective cut below the best objective (see mip_heuristic_objective_cut)"
-    "mip_heuristic_objective_cut_abs:double:1e-7:1e20:Absolute step of the presolve heuristics' objective cut below the best objective, the floor under the relative one (see mip_heuristic_objective_cut)"
     "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it")
 
 # The upstream record block all four record insertions anchor on, spelled
@@ -1356,147 +1356,6 @@ else()
     message(STATUS "Resume parameter patch already applied to feasibilityjump.hh, skipping")
 endif()
 
-# ── Patch feasibilityjump.hh: an objective cut tightened without a rebuild ──
-# The objective cut (#208, #222): once the pool holds a solution, FJ searches
-# under `c.x <= rhs` and tightens `rhs` with every better pool solution.  The
-# solver's rows, weights and incumbent LHS are private and set up at `init()`,
-# so a row added or changed after it would leave the LHS, the violated list
-# and the jump moves stale.  `setObjectiveCut(rhs)` adds the row over the
-# columns of nonzero cost on its first call and sets its rhs on every call;
-# after `init()` it recomputes the row's LHS and violated-list membership
-# (`Problem::refreshConstraint`, `setValue`'s add/remove logic) and resets the
-# moves of the row's variables.  That is enough because a move's jump value
-# and score depend only on the rows its variable is in, and `JumpMove` keeps
-# one move per variable and nothing per row.  Every weight is kept, the
-# objective weight included.  A row added after `init` starts at weight 1
-# while the others may have been bumped far above it, so FJ first leans on
-# it lightly; the bumps raise it as it stays violated.  Kept: rescaling it
-# would be a rule of our own, and #226 measures the cut as is.  Pinned by
-# `tests/test_fj_objective_cut.cpp`.
-file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_CUT)
-string(FIND "${FJ_CUT}" "void setObjectiveCut(double rhs)" _fj_cut_found)
-if(_fj_cut_found EQUAL -1)
-    set(_fj_cut_problem_anchor [=[
-    return dt;
-  }
-};
-]=])
-    set(_fj_cut_solver_anchor [=[
-    return problem.addConstraint(sense, rhs, numCoeffs, rowVarIdxs, rowCoeffs,
-                                 relax_continuous);
-  }
-]=])
-    set(_fj_cut_init_anchor [=[
-    problem.resetIncumbent(initialValues);
-    jumpMove.init(problem);
-]=])
-    string(FIND "${FJ_CUT}" "${_fj_cut_problem_anchor}" _fj_cut_problem_found)
-    string(FIND "${FJ_CUT}" "${_fj_cut_solver_anchor}" _fj_cut_solver_found)
-    string(FIND "${FJ_CUT}" "${_fj_cut_init_anchor}" _fj_cut_init_found)
-    if(_fj_cut_problem_found EQUAL -1 OR _fj_cut_solver_found EQUAL -1
-       OR _fj_cut_init_found EQUAL -1)
-        message(FATAL_ERROR
-            "feasibilityjump.hh patch failed: the objective-cut anchors no "
-            "longer match (Problem::setValue end: ${_fj_cut_problem_found}, "
-            "addConstraint wrapper: ${_fj_cut_solver_found}, init: "
-            "${_fj_cut_init_found}; -1 means missing). Re-anchor the block. "
-            "${CLEAN_REBUILD}")
-    endif()
-
-    string(REPLACE "${_fj_cut_problem_anchor}" [=[
-    return dt;
-  }
-
-  // mip-heuristics (#222): recompute row `cIdx`'s LHS from the incumbent
-  // and its violated-list membership, with `setValue`'s add/remove logic,
-  // after its rhs changed or it was added past `resetIncumbent`.  Returns
-  // the effort, the row's length.
-  size_t refreshConstraint(uint32_t cIdx) {
-    Constraint& c = constraints[cIdx];
-    c.incumbentLhs = 0.0;
-    for (auto& vc : c.coeffs)
-      c.incumbentLhs += vc.coeff * incumbentAssignment[vc.idx];
-    const bool violated = c.score(c.incumbentLhs) < -violationTolerance;
-    if (violated && c.violatedIdx == -1) {
-      c.violatedIdx = violatedConstraints.size();
-      violatedConstraints.push_back(cIdx);
-    } else if (!violated && c.violatedIdx != -1) {
-      auto lastViolatedIdx = violatedConstraints.size() - 1;
-      auto lastConstraintIdx = violatedConstraints[lastViolatedIdx];
-      auto thisViolatedIdx = c.violatedIdx;
-      std::swap(violatedConstraints[thisViolatedIdx],
-                violatedConstraints[lastViolatedIdx]);
-      constraints[lastConstraintIdx].violatedIdx = thisViolatedIdx;
-      c.violatedIdx = -1;
-      violatedConstraints.pop_back();
-    }
-    return c.coeffs.size();
-  }
-};
-]=] FJ_CUT "${FJ_CUT}")
-
-    string(REPLACE "${_fj_cut_solver_anchor}" [=[
-    return problem.addConstraint(sense, rhs, numCoeffs, rowVarIdxs, rowCoeffs,
-                                 relax_continuous);
-  }
-
-  // mip-heuristics (#222): the objective cut `sum_j c_j x_j <= rhs` over the
-  // columns of nonzero cost, tightened without a rebuild.  The first call
-  // adds the row, every call sets its rhs.  Before `init` that is all:
-  // `resetIncumbent` computes the row's LHS and violation with every other
-  // row's.  After it, the row is refreshed against the incumbent and the
-  // moves of its variables are reset: a move's jump value and score depend
-  // only on the rows its variable is in, and `JumpMove` keeps one move per
-  // variable and nothing per row, so nothing else goes stale.  Every weight
-  // is kept, `objectiveWeight` and the cut row's own included.  Safe from
-  // the solve callback: `user_terminate` holds no reference into `vars` or
-  // `constraints`.  A row is satisfied within `violationTolerance`, so a
-  // point may exceed `rhs` by that much.  No row when every cost is zero.
-  void setObjectiveCut(double rhs) {
-    if (objectiveCutIdx == -1) {
-      std::vector<int> idxs;
-      std::vector<double> coeffs;
-      for (size_t j = 0; j < problem.vars.size(); j += 1) {
-        if (problem.vars[j].objectiveCoeff != 0.0) {
-          idxs.push_back(static_cast<int>(j));
-          coeffs.push_back(problem.vars[j].objectiveCoeff);
-        }
-      }
-      objectiveCutIdx =
-          idxs.empty() ? -2
-                       : problem.addConstraint(
-                             RowType::Lte, rhs, static_cast<int>(idxs.size()),
-                             idxs.data(), coeffs.data(), 0);
-    }
-    if (objectiveCutIdx < 0) return;
-    problem.constraints[objectiveCutIdx].rhs = rhs;
-    if (!solveInitialized) return;
-    totalEffort += problem.refreshConstraint(objectiveCutIdx);
-    for (auto& cell : problem.constraints[objectiveCutIdx].coeffs)
-      resetMoves(cell.idx);
-  }
-
- private:
-  // -1 until `setObjectiveCut` first runs, -2 when no column has a cost.
-  int objectiveCutIdx = -1;
-  // Set by `init`; the moves `setObjectiveCut` resets exist from then on.
-  bool solveInitialized = false;
-
- public:
-]=] FJ_CUT "${FJ_CUT}")
-
-    string(REPLACE "${_fj_cut_init_anchor}" [=[
-    problem.resetIncumbent(initialValues);
-    jumpMove.init(problem);
-    solveInitialized = true;
-]=] FJ_CUT "${FJ_CUT}")
-
-    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_CUT}")
-    message(STATUS "Applied objective-cut patch to feasibilityjump.hh")
-else()
-    message(STATUS "Objective-cut patch already applied to feasibilityjump.hh, skipping")
-endif()
-
 # ── Patch feasibilityjump.hh: cuOpt's cardinality exchange (#218) ──
 # A compound move on uniform binary equality rows: one member of a group
 # from 1 to 0 and another from 0 to 1, so the row's count is kept where two
@@ -1535,9 +1394,9 @@ if(_fj_ex_found EQUAL -1)
   }
 ]=])
     set(_fj_ex_api_anchor [=[
-  bool solveInitialized = false;
-
- public:
+    return problem.addConstraint(sense, rhs, numCoeffs, rowVarIdxs, rowCoeffs,
+                                 relax_continuous);
+  }
 ]=])
     foreach(_a step select local_min move api)
         string(FIND "${FJ_EX}" "${_fj_ex_${_a}_anchor}" _fj_ex_${_a}_found)
@@ -1549,7 +1408,7 @@ if(_fj_ex_found EQUAL -1)
             "feasibilityjump.hh patch failed: the exchange anchors no longer "
             "match (step loop: ${_fj_ex_step_found}, selectVariable: "
             "${_fj_ex_select_found}, local minimum: ${_fj_ex_local_min_found}, "
-            "doVariableMove: ${_fj_ex_move_found}, objective-cut members: "
+            "doVariableMove: ${_fj_ex_move_found}, addConstraint wrapper: "
             "${_fj_ex_api_found}; -1 means missing). Re-anchor the block. "
             "${CLEAN_REBUILD}")
     endif()
@@ -1625,7 +1484,7 @@ if(_fj_ex_found EQUAL -1)
   double exchangeScore(uint32_t off, uint32_t on) {
     const double offDelta = 0.0 - problem.incumbentAssignment[off];
     const double onDelta = 1.0 - problem.incumbentAssignment[on];
-    // The objective cut's row may arrive after the groups do.
+    // A row added after the groups (a cutoff row) may lie past their sizing.
     if (exchangeLhsDelta.size() < problem.constraints.size()) {
       exchangeLhsDelta.resize(problem.constraints.size(), 0.0);
       exchangeRowMark.resize(problem.constraints.size(), 0);
@@ -1766,9 +1625,10 @@ if(_fj_ex_found EQUAL -1)
 ]=] FJ_EX "${FJ_EX}")
 
     string(REPLACE "${_fj_ex_api_anchor}" [=[
-  bool solveInitialized = false;
+    return problem.addConstraint(sense, rhs, numCoeffs, rowVarIdxs, rowCoeffs,
+                                 relax_continuous);
+  }
 
- public:
   // mip-heuristics (#218): the exchange groups, as CSR over column indices:
   // group `g` is `members[offsets[g] .. offsets[g + 1])`, binary columns of
   // one uniform binary equality row.  Call after the columns are added and
@@ -1795,7 +1655,8 @@ if(_fj_ex_found EQUAL -1)
     }
     exchangeSeen.assign(nGroups, 0);
     exchangeDraw.reserve(nGroups);
-    // Sized for the objective cut's row too, so no search allocates.
+    // Sized one row past the constraints, so a row added after the groups
+    // still fits and no search allocates.
     exchangeLhsDelta.assign(problem.constraints.size() + 1, 0.0);
     exchangeRowMark.assign(problem.constraints.size() + 1, 0);
     exchangeTouched.reserve(problem.constraints.size() + 1);

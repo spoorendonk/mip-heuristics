@@ -1135,7 +1135,7 @@ TEST_CASE("LocalMIP: failed lift falls through to a breakthrough move (#129)",
                                             /*total_budget=*/std::numeric_limits<size_t>::max(),
                                             /*stale_budget=*/std::numeric_limits<size_t>::max(),
                                             /*seed=*/1, initial_solution.data(), WorkerTrace{},
-                                            /*stall_on_violations=*/false, ObjectiveCutParams{});
+                                            /*stall_on_violations=*/false);
 
     // Sized below the *pre-fix* code's own cost of even reaching its
     // first plateau-escape attempt -- the discriminating evidence for

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# #244: main, ruin, cut, recombine on the 15 unsolved instances, 3 seeds, 60 s.
+# #244: main, ruin, recombine on the 15 unsolved instances, 3 seeds, 60 s.
 #
 #     bench/run_unsolved15.sh size | run | report [cuopt_smoke.py options]
 #
@@ -45,6 +45,6 @@ fi
 exec python3 "$bench/cuopt_smoke.py" "$command" \
   --instances "$bench/instances_unsolved15.txt" \
   --seeds 0 1 2 \
-  --arms main ruin cut recombine \
+  --arms main ruin recombine \
   --output "$out" \
   "$@"

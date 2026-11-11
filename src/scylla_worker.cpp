@@ -40,7 +40,6 @@ int select_fpr_config(int worker_idx, uint32_t seed) {
 }  // namespace
 
 ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem,
-                           const ObjectiveRowStorage* objective_rows, ObjectiveCutParams cut,
                            const ExecutionContext& exec, ContestedPdlp& pdlp, SolutionSink& sink,
                            const std::vector<std::vector<HighsInt>>& var_orders,
                            size_t total_budget, size_t stale_budget, uint32_t seed, int worker_idx,
@@ -48,9 +47,6 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem
                            std::atomic<uint64_t>* improvement_gen)
     : mipsolver_(mipsolver),
       problem_(problem),
-      cut_view_(make_objective_row_view(objective_rows)),
-      cut_(cut),
-      rounding_problem_(cut_view_.has_value() ? cut_view_->view() : problem),
       exec_(exec),
       pdlp_(pdlp),
       sink_(sink),
@@ -223,13 +219,6 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // still produces useful FPR work while another chain holds the
         // mutex.  After kMaxStaleRounds consecutive stale iterations we
         // force a blocking solve() to guarantee forward progress.
-        // The cutoff for this round's PDLP solve, the objective row's bound
-        // (#225), read here (it takes the pool lock).  `kHighsInf` when this
-        // dispatch has no cut.  The rounding re-reads the pool before it
-        // runs, since the solve can wait on a peer's for its whole length.
-        const double cutoff =
-            cut_view_.has_value() ? objective_cut_target(sink_.best_objective(), cut_) : kHighsInf;
-
         bool fresh = false;
         HighsInt iters_this_round = 0;
         // x_bar_source refers to whichever vector we round against this
@@ -246,7 +235,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             // "live on a stale snapshot that never matches my objective"
             // regime.
             auto solve_res = pdlp_.solve(modified_cost_, warm_start_col_value_,
-                                         warm_start_row_dual_, warm_start_valid_, epsilon_, cutoff);
+                                         warm_start_row_dual_, warm_start_valid_, epsilon_);
             if (absorb_fresh_solve(solve_res, iters_this_round, x_bar_ptr)) {
                 break;
             }
@@ -261,9 +250,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                 last_seen_snapshot_gen_ = stale_snapshot_->generation;
             }
         } else {
-            auto try_res = pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
-                                                       warm_start_row_dual_, warm_start_valid_,
-                                                       epsilon_, cutoff);
+            auto try_res =
+                pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
+                                            warm_start_row_dual_, warm_start_valid_, epsilon_);
             if (try_res.fresh) {
                 if (absorb_fresh_solve(try_res.solve, iters_this_round, x_bar_ptr)) {
                     break;
@@ -461,14 +450,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // `SolutionPool::get_restart`), so this chain's RNG stream moves
         // from the point of removal onward, independent of and in addition
         // to the shift from #122's seeding-block deletion.
-        // The cutoff in force for this rounding: the pool's best now, read
-        // once (it takes the pool lock), so never looser than the solve's,
-        // since the pool only improves; nothing else moves the row bound
-        // until the next rounding.
-        if (cut_view_.has_value()) {
-            cut_view_->set_cutoff(objective_cut_target(sink_.best_objective(), cut_));
-        }
-        HeuristicResult rounded = fpr_attempt(rounding_problem_, exec_.deadline, cfg, rng_, 0);
+        HeuristicResult rounded = fpr_attempt(problem_, exec_.deadline, cfg, rng_, 0);
 
         base_.total_effort += rounded.effort;
         base_.effort_since_improvement += rounded.effort;

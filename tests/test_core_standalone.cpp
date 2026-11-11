@@ -376,9 +376,9 @@ TEST_CASE("core: workers return at once on a degenerate view", "[core][validatio
         REQUIRE(s.problem.degenerate());
         SolutionSink sink(*s.problem.integrality, 0);
         FjWorker fj(s.problem, s.exec, sink, kBudget, kBudget, 0, {}, WorkerTrace{0, 0});
-        local_mip_detail::LocalMipWorker local_mip(
-            s.problem, s.exec, sink, kBudget, kBudget, 0, nullptr, WorkerTrace{0, 0},
-            /*stall_on_violations=*/false, ObjectiveCutParams{});
+        local_mip_detail::LocalMipWorker local_mip(s.problem, s.exec, sink, kBudget, kBudget, 0,
+                                                   nullptr, WorkerTrace{0, 0},
+                                                   /*stall_on_violations=*/false);
         REQUIRE(fj.finished());
         REQUIRE(local_mip.finished());
         REQUIRE(fj.run_attempt(kAttemptBudget).effort == 0);
@@ -417,7 +417,7 @@ TEST_CASE("core: LocalMIP sees its deadline when its steps charge nothing", "[co
     SolutionSink sink(*s.problem.integrality, 0);
     local_mip_detail::LocalMipWorker local_mip(s.problem, s.exec, sink, kBudget, kBudget, 0,
                                                nullptr, WorkerTrace{0, 0},
-                                               /*stall_on_violations=*/false, ObjectiveCutParams{});
+                                               /*stall_on_violations=*/false);
     auto attempt =
         std::async(std::launch::async, [&] { return local_mip.run_attempt(kBudget).effort; });
     if (attempt.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {

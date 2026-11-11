@@ -1120,8 +1120,7 @@ TEST_CASE("core: the restart weight draw sets 1 or 2, half the time", "[core][re
     for (uint64_t seed = 0; seed < 40; ++seed) {
         local_mip_detail::LocalMipWorker worker(s.problem, s.exec, sink, kBudget, kBudget,
                                                 /*seed=*/0, /*initial_solution=*/nullptr,
-                                                WorkerTrace{0, 0}, /*stall_on_violations=*/false,
-                                                ObjectiveCutParams{});
+                                                WorkerTrace{0, 0}, /*stall_on_violations=*/false);
         Rng rng(seed);
         worker.randomize_weights(rng);
         const std::vector<uint64_t>& w = worker.weights_for_test();

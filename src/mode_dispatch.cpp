@@ -265,14 +265,6 @@ bool run_sequential(HighsMipSolver& mipsolver) {
                                ledger.now_s(), outcome.abandoned_setup);
     };
 
-    // The objective cut (#208) is one setting for the whole chain, and off
-    // for a model without an objective whatever the option says.
-    const ObjectiveCutParams objective_cut{
-        .on = options.mip_heuristic_objective_cut && has_objective(problem),
-        .rel = options.mip_heuristic_objective_cut_rel,
-        .abs = options.mip_heuristic_objective_cut_abs,
-    };
-
     // Each heuristic's inner loops also poll the deadline, but their own
     // setup (precompute_var_orders, ContestedPdlp construction) runs before
     // that first inner poll; re-checking here skips it once the budget is
@@ -333,7 +325,6 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         if (h.exchange != nullptr) {
             slice.fj_exchange = options.*h.exchange;
         }
-        slice.objective_cut = objective_cut;
         // Not in a RINS/RENS sub-MIP (#237): its empty pool hides the
         // parent's incumbent and cutoff, so the objective-blind lane would
         // run there when a feasible point is already known.

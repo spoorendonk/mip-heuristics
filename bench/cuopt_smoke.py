@@ -128,7 +128,6 @@ ARMS: tuple[Arm, ...] = (
     # FJ's CDCL lane (#237): pure-binary models only; elsewhere it is main.
     Arm("cdcl", ("mip_heuristic_fj_cdcl=true",)),
     Arm("ruin", ("mip_heuristic_ruin_effort=1.0",)),
-    Arm("cut", ("mip_heuristic_objective_cut=true",)),
     Arm("recombine", ("mip_heuristic_recombine_effort=1.0",)),
     # The LP start persona (#217) is a lane of fpr_lp, which ships off, so it
     # moves two options; `fpr_lp` alone is the arm it is read against.

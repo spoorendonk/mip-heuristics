@@ -119,13 +119,6 @@ struct EarlyFj::Run {
                 total, 1, patience_threshold(nnz, options.mip_heuristic_fj_patience, total));
             // The record bounds the option to the enum's range.
             budget.restart = static_cast<RestartPoint>(options.mip_heuristic_fj_restart);
-            // The objective cut (#222), as the presolve chain sets it, against
-            // this thread's own sink.
-            budget.objective_cut = {
-                .on = options.mip_heuristic_objective_cut && has_objective(*problem),
-                .rel = options.mip_heuristic_objective_cut_rel,
-                .abs = options.mip_heuristic_objective_cut_abs,
-            };
             sink.emplace(*problem->integrality, kSolutionSourceFJ, solver);
             effort = fj::run_until_stopped(*problem, budget, exec, 0, RestartSource{}, *sink);
         } catch (...) {

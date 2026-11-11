@@ -4,7 +4,6 @@
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
-#include "objective_row.h"
 #include "util/HighsInt.h"
 #include "worker_base.h"
 
@@ -15,7 +14,6 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
-#include <optional>
 #include <vector>
 
 class HighsMipSolver;
@@ -102,12 +100,7 @@ public:
     // on the dispatching thread and must outlive the worker: this constructor also runs on a task
     // thread when `scylla::run` rebuilds a retired worker, and computing a var order there would
     // read the live root domain and mutate the clique table under a concurrent `addIncumbent`.
-    //
-    // `objective_rows`, when non-null, must outlive the worker too: the
-    // rounding then searches the worker's own copy of that view, whose
-    // objective row it bounds by `cut` before each `fpr_attempt` (#233).
     ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem,
-                 const ObjectiveRowStorage* objective_rows, ObjectiveCutParams cut,
                  const ExecutionContext& exec, ContestedPdlp& pdlp, SolutionSink& sink,
                  const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
                  size_t stale_budget, uint32_t seed, int worker_idx, int num_workers,
@@ -157,15 +150,8 @@ private:
                             const std::vector<double>*& x_bar_ptr);
 
     HighsMipSolver& mipsolver_;
-    // Must outlive the worker.  The base view: the PDLP fast path checks
-    // its `nrow_` rows, the model's own.
+    // Must outlive the worker.
     const ProblemView& problem_;
-    // The objective cut (#233): engaged when `scylla::run` built the
-    // objective row.  Only the rounding searches it: `rounding_problem_` is
-    // that view then, `problem_` otherwise.
-    std::optional<ObjectiveRowView> cut_view_;
-    const ObjectiveCutParams cut_;
-    const ProblemView& rounding_problem_;
     // The dispatch's deadline, one source of truth with the other three
     // heuristics (issue #114).  Polled through `past_deadline()` like
     // theirs: the pump loop used to want the *scalar* remaining time to

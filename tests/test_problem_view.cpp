@@ -22,6 +22,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 TEST_CASE("problem view: the core builder matches the adapter's view of the model",
@@ -62,4 +63,46 @@ TEST_CASE("problem view: the core builder matches the adapter's view of the mode
         CHECK(core.feastol == adapter.feastol);
         CHECK(core.epsilon == adapter.epsilon);
     }
+}
+
+namespace {
+
+// min c.x  s.t.  x0 + x1 >= 1,  x binary.
+HighsLp two_binaries(std::vector<double> cost) {
+    HighsLp lp;
+    lp.num_col_ = 2;
+    lp.num_row_ = 1;
+    lp.col_cost_ = std::move(cost);
+    lp.col_lower_ = {0.0, 0.0};
+    lp.col_upper_ = {1.0, 1.0};
+    lp.row_lower_ = {1.0};
+    lp.row_upper_ = {kHighsInf};
+    lp.integrality_ = {HighsVarType::kInteger, HighsVarType::kInteger};
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
+    lp.a_matrix_.start_ = {0, 1, 2};
+    lp.a_matrix_.index_ = {0, 0};
+    lp.a_matrix_.value_ = {1.0, 1.0};
+    return lp;
+}
+
+constexpr double kEpsilon = 1e-9;
+
+bool view_has_objective(std::vector<double> cost) {
+    const HighsLp lp = two_binaries(std::move(cost));
+    ProblemStorage storage;
+    const auto made = make_problem(lp, storage, /*feastol=*/1e-6, kEpsilon);
+    REQUIRE(made.has_value());
+    return has_objective(*made);
+}
+
+}  // namespace
+
+TEST_CASE("problem view: has_objective is false for a zero objective", "[problem-view][core]") {
+    REQUIRE_FALSE(view_has_objective({0.0, 0.0}));
+    // Costs at or below the matrix epsilon count as zero.
+    REQUIRE_FALSE(view_has_objective({kEpsilon, -kEpsilon}));
+    REQUIRE(view_has_objective({0.0, 1.0}));
+    REQUIRE(view_has_objective({-2.0, 0.0}));
 }

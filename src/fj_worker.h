@@ -39,22 +39,12 @@ public:
     // a caller local would dangle.
     // `problem` must outlive the worker.
     //
-    // `objective_cutoff`, when finite, adds one row to FJ's model,
-    // `col_cost . x <= objective_cutoff - offset`, so FJ counts a point
+    // `cutoff`, when finite, adds one row to FJ's model,
+    // `col_cost . x <= cutoff - offset`, so FJ counts a point
     // feasible only if its objective (offset included) is at most the
     // cutoff, up to FJ's absolute violation tolerance `feastol`.  The ruin
     // and repair LNS (#207) repairs under its incumbent's objective this
     // way.  No row when every cost is zero: no point could improve.
-    //
-    // `objective_cut`, when on, is the objective cut of #208 (#222): the
-    // worker polls `sink.best_objective()` before each attempt and at every
-    // FJ callback that lets the solve continue (its own offers' included;
-    // one that ends the attempt leaves it to the next), and tightens the
-    // same row to `objective_cut_target` of it in place — no rebuild, every
-    // FJ weight kept (`FeasibilityJumpSolver::setObjectiveCut`, patched
-    // in).  The row is added at the first finite cutoff, so a worker with
-    // the cut on and an empty pool searches exactly as one with it off.
-    // The tighter of the two cutoffs is in force.
     //
     // `exchange_rows`, when not empty, are the exact-k rows (#206's
     // `detect_structure`) whose binary columns FJ may exchange (#218): one
@@ -63,8 +53,8 @@ public:
     // worker's first attempt.
     FjWorker(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
              size_t total_budget, size_t stale_budget, uint32_t seed, std::vector<double> start,
-             WorkerTrace trace, double objective_cutoff = std::numeric_limits<double>::infinity(),
-             ObjectiveCutParams objective_cut = {}, std::span<const ExactKRow> exchange_rows = {});
+             WorkerTrace trace, double cutoff = std::numeric_limits<double>::infinity(),
+             std::span<const ExactKRow> exchange_rows = {});
     ~FjWorker();
 
     // Run FJ for up to attempt_budget effort, then pause via callback.
@@ -87,10 +77,6 @@ public:
     [[nodiscard]] size_t traced_effort() const { return trace_.at(base_.total_effort); }
 
 private:
-    // Set FJ's cutoff row to the tighter of the fixed and the polled
-    // cutoff when that is below the one in force.
-    void apply_cut();
-
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
@@ -102,12 +88,8 @@ private:
     SolutionSink& sink_;
     const std::vector<double> start_;
     const uint32_t seed_;
-    const double objective_cutoff_;
-    const ObjectiveCutParams objective_cut_;
+    const double cutoff_;
     const std::span<const ExactKRow> exchange_rows_;
-    // The cutoff FJ's row carries, offset included; +inf while there is no
-    // row.  Only ever lowered.
-    double cut_in_force_ = std::numeric_limits<double>::infinity();
     std::vector<double> best_found_;
     double best_found_objective_ = std::numeric_limits<double>::infinity();
 

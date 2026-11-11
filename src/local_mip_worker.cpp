@@ -82,14 +82,13 @@ void perturb_solution(std::vector<double>& solution, const uint8_t* binary,
 LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContext& exec,
                                SolutionSink& sink, size_t total_budget, size_t stale_budget,
                                uint32_t seed, const double* initial_solution, WorkerTrace trace,
-                               bool stall_on_violations, ObjectiveCutParams objective_cut)
+                               bool stall_on_violations)
     : exec_(exec),
       sink_(sink),
       rng_(seed),
       stall_on_violations_(stall_on_violations),
       trace_(trace),
-      ctx_(problem),
-      objective_cut_(objective_cut) {
+      ctx_(problem) {
     base_.total_budget = total_budget;
     base_.stale_budget = stale_budget;
     // Nothing to search, and an attempt would charge no effort; see the
@@ -133,13 +132,6 @@ LocalMipWorker::LocalMipWorker(const ProblemView& problem, const ExecutionContex
     violations_at_reset_ = ctx_.violated.elements.size();
     best_objective_ = std::numeric_limits<double>::infinity();
     best_solution_.resize(ncol);
-    refresh_objective_cut();
-}
-
-void LocalMipWorker::refresh_objective_cut() {
-    if (objective_cut_.on) {
-        cut_target_ = objective_cut_target(sink_.best_objective(), objective_cut_);
-    }
 }
 
 void LocalMipWorker::randomize_weights(Rng& rng) {
@@ -240,9 +232,6 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
             if (exec_.past_deadline()) {
                 break;
             }
-            // A peer's find, or this worker's own offer since the last
-            // poll, tightens the cut on the same paced cadence (#223).
-            refresh_objective_cut();
             next_deadline_poll = spent() + kTermCheckWork;
             steps_since_poll = 0;
         }
@@ -347,8 +336,8 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 // unconditional on `best_feasible_`, and its own Phase 4
                 // weight update reads `ctx_.violated` to bump `w(obj)`
                 // rather than the standalone call this replaces.
-                Candidate cand = infeasible_step(ctx_, rng_, step_, search_has_target(),
-                                                 search_target(), costed_vars_, binary_vars_);
+                Candidate cand = infeasible_step(ctx_, rng_, step_, best_feasible_, best_objective_,
+                                                 costed_vars_, binary_vars_);
                 if (cand.var_idx != -1) {
                     ctx_.apply_move_with_tabu(cand.var_idx, cand.new_val, step_, rng_);
                     ++steps_since_improvement_;
@@ -438,8 +427,8 @@ AttemptResult LocalMipWorker::run_attempt(size_t attempt_budget) {
                 }
             }
         } else {
-            Candidate cand = infeasible_step(ctx_, rng_, step_, search_has_target(),
-                                             search_target(), costed_vars_, binary_vars_);
+            Candidate cand = infeasible_step(ctx_, rng_, step_, best_feasible_, best_objective_,
+                                             costed_vars_, binary_vars_);
 
             if (cand.var_idx != -1) {
                 ctx_.apply_move_with_tabu(cand.var_idx, cand.new_val, step_, rng_);

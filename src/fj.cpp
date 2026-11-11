@@ -196,15 +196,14 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
     // absolute patience ceiling (issue #111) — the `nnz << 8` FJ used to
     // compute from its own copy of the matrix, now sized once alongside every
     // other heuristic's.
-    // The objective cut (#222) is polled from the sink, so a rebuilt worker
-    // starts under the cutoff in force without being told it.  An exchange
-    // slot's rebuilt workers exchange too (#218): it is a move, not a start.
+    // An exchange slot's rebuilt workers exchange too (#218): it is a move,
+    // not a start.
     const std::span<const ExactKRow> exchange_rows =
         state.exchange && structure != nullptr ? std::span<const ExactKRow>(structure->exact_k)
                                                : std::span<const ExactKRow>();
     state.worker = std::make_unique<FjWorker>(
         problem, exec, sink, budget.per_worker, budget.worker_stale, seed, std::move(start),
-        state.trace, std::numeric_limits<double>::infinity(), budget.objective_cut, exchange_rows);
+        state.trace, std::numeric_limits<double>::infinity(), exchange_rows);
 }
 
 }  // namespace
