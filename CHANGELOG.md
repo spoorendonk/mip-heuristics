@@ -3,7 +3,7 @@
 Notable changes to options and behaviour. Measurements live in the issues
 linked from each entry.
 
-## Unreleased
+## v0.1.9 (2026-11-11)
 
 ### Removed
 
