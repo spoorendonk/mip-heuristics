@@ -70,11 +70,14 @@ cannot be read as an answer. A count sidesteps that entirely.
 multi-worker B&B, which was not HiGHS's default when these runs were taken
 (v1.15.1), and every log in both stages confirms it (`Using 1 max workers.
 Parallel search off`): `fpr_lp` saw every dive. Since v1.16.0 `parallel=choose`
-grows B&B to `num_threads` workers after its ramp-up and `fpr_lp` skips every
-later dive (#269), so **a rerun passes `parallel=off` in every arm** to measure
-the regime recorded here. `bench/run_ablation_c.sh` does not add it (its
-options stay as run, to pair with the runs on disk): pass it yourself with a
-v1.16+ binary. Still not `threads=1`: that also shrinks `fpr_lp`'s
+grows B&B to `num_threads` workers after each single-worker ramp-up (the
+first, and one after every restart) and `fpr_lp` skips every dive outside
+those (#269), so **a fresh rerun passes `parallel=off` in every arm** to
+measure the regime recorded here. `bench/run_ablation_c.sh` does not add it,
+and its stages set their own options (C0's `opts` array overwrites
+`MIPFEAS_EXTRA_OPTIONS`; C1's arm is a `finalists.json` entry), so a fresh
+rerun edits those. Resuming C1 against the `D-shipped` runs on disk must not
+add it to one arm only, or one paired arm mixes regimes. Still not `threads=1`: that also shrinks `fpr_lp`'s
 own worker team.
 
 ## Stage C0 — capability

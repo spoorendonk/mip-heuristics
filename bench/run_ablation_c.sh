@@ -50,9 +50,11 @@
 # `parallelLockActive()` skipping the heuristic.  As run (HiGHS v1.15.1) the
 # lock was never held at default options — every log reads
 # `Thread count 16 (of 32 threads). Using 1 max workers. Parallel search off`.
-# Since v1.16.0 `parallel=choose` grows B&B to `num_threads` workers after its
-# ramp-up and `fpr_lp` skips every later dive (#269), so **a fresh rerun must
-# pass `parallel=off` in every arm**, or it measures the ramp-up only.  Not
+# Since v1.16.0 `parallel=choose` grows B&B to `num_threads` workers after each
+# single-worker ramp-up (the first, and one after every restart) and `fpr_lp`
+# skips every dive outside those (#269), so **a fresh rerun must pass
+# `parallel=off` in every arm** (C0's `opts`, C1's `finalists.json` entry and
+# its pair), or it measures the ramp-ups only.  Not
 # `threads=1`: that also shrinks `fpr_lp`'s own worker team.  The options
 # below are left as run, because C1 resumes against `D-shipped` runs already
 # on disk and a changed option would mix regimes inside one paired arm.
