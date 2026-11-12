@@ -11,6 +11,7 @@
 #include "test_paths.h"
 
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
+#include "fj_personas.h"
 #include "gpu/climber.h"
 #include "gpu/device_model.h"
 
@@ -353,14 +354,11 @@ void require_state(const gpu_fj::Climber::State& got, const gpu_fj::Climber::Sta
     REQUIRE(got.good_pos == want.good_pos);
 }
 
-// FJ's own start (`fj_bound_start`): each column's lower bound, else its
-// upper, else 0.
+// FJ's own start, `FjWorker`'s with no point to take.
 std::vector<double> bound_start(const gpu_fj::GpuFjModel& m) {
     std::vector<double> x(static_cast<size_t>(m.ncol));
     for (std::int32_t j = 0; j < m.ncol; ++j) {
-        const double lo = m.col_lower[j];
-        const double up = m.col_upper[j];
-        x[j] = std::isfinite(lo) ? lo : (std::isfinite(up) ? up : 0.0);
+        x[j] = fj_bound_start(m.col_lower[j], m.col_upper[j]);
     }
     return x;
 }
