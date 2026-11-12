@@ -84,6 +84,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from parse_highs_log import match_thread_count
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_DIR = Path(__file__).resolve().parent
 
@@ -125,18 +128,12 @@ INSTRUMENTATION_TAGS = ("[Heur] ", "[Sequential] ")
 _INSTRUMENTATION_RE = re.compile("|".join(re.escape(t) for t in INSTRUMENTATION_TAGS))
 
 # The effective worker count, from HiGHS's own "Solving MIP model with:"
-# block.  It is the only record of what a run actually ran at: the harness
-# deliberately does not pin `threads`, so the count is a property of the run
-# host and appears in no options file.  `parse_highs_log.py` reads the same
-# line; the pattern is repeated here because this module streams logs a line
-# at a time rather than parsing them (a --dev-log campaign tree is megabytes
-# per log).  HiGHS v1.16.0 reworded it, so both tags' forms are read; the
-# groups are `pool` (the thread pool, i.e. the worker count) and `hw`.
-_WORKERS_RE = re.compile(
-    r"^\s+Thread count(?::\s+\d+\s+available cores,\s+(?P<hw>\d+)\s+logical "
-    r"processors,\s+using up to\s+\d+\s+workers\s+across\s+(?P<pool>\d+)\s+threads"
-    r"|\s+(?P<pool_v1151>\d+)\s+\(of\s+(?P<hw_v1151>\d+)\s+threads\))"
-)
+# block, through `parse_highs_log.match_thread_count`, which reads both HiGHS
+# tags' wording of the line one line at a time.  It is the only record of
+# what a run actually ran at: the harness deliberately does not pin
+# `threads`, so the count is a property of the run host and appears in no
+# options file.  Its groups are `pool` (the thread pool, i.e. the worker
+# count) and `hw`.
 
 # Provenance sources outside the results tree.
 HIGHS_TAG_RE = re.compile(r"GIT_TAG\s+(\S+)")
@@ -252,10 +249,10 @@ def inspect_log(path: Path) -> LogFacts:
                 facts.patched = True
                 continue
             if facts.workers is None:
-                m = _WORKERS_RE.match(line)
+                m = match_thread_count(line)
                 if m:
-                    facts.workers = int(m["pool"] or m["pool_v1151"])
-                    facts.hardware_threads = int(m["hw"] or m["hw_v1151"])
+                    facts.workers = int(m["pool"])
+                    facts.hardware_threads = int(m["hw"])
                     continue
             if not facts.instrumented and _INSTRUMENTATION_RE.search(line):
                 facts.instrumented = True

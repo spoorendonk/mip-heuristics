@@ -23,6 +23,15 @@
 // ===================================================================
 
 namespace {
+// Since v1.16.0 the default `parallel=choose` grows B&B to several workers
+// after the ramp-up, and fpr_lp skips every dive under the parallel lock
+// (#269), so a dispatch count would rest on bell5 happening to dive during
+// the ramp-up.  `parallel=off` keeps one B&B worker; fpr_lp's own worker
+// count still follows `threads`.
+void one_bnb_worker(Highs& h) {
+    REQUIRE(h.setOptionValue("parallel", "off") == HighsStatus::kOk);
+}
+
 double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = false,
                     double fpr_lp_effort = 1.0) {
     // Only meaningful when `threads > 0`, but unconditional so the pin
@@ -45,6 +54,7 @@ double solve_fpr_lp(const char* inst, int threads = 0, bool fj_lp_persona = fals
     if (threads > 0) {
         h.setOptionValue("threads", threads);
     }
+    one_bnb_worker(h);
     REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     double obj;
@@ -176,6 +186,7 @@ TEST_CASE("fpr_lp: a raised effort dispatches it beside presolve FPR",
     h.setOptionValue("output_flag", false);
     select_heuristics(h, "fpr,fpr_lp");
     h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
+    one_bnb_worker(h);
     REQUIRE(h.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
     REQUIRE(h.run() == HighsStatus::kOk);
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
@@ -311,6 +322,7 @@ TEST_CASE("fpr_lp: emits a [Sequential] line for its dive-time spend",
         h.setOptionValue("mip_rel_gap", 0.0);
         select_heuristics(h, "fpr_lp");
         h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
+        one_bnb_worker(h);
     });
     // Guard against a vacuous pass: no dispatch means nothing to report.
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);
@@ -425,6 +437,7 @@ TEST_CASE("fpr_lp: a small effort share suppresses the dispatch the default make
         select_heuristics(h, "fpr_lp");
         h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
         require_option(h, "mip_heuristic_fpr_lp_effort", share);
+        one_bnb_worker(h);
         REQUIRE(h.readModel(instances_dir() + "/bell5.mps") == HighsStatus::kOk);
         REQUIRE(h.run() == HighsStatus::kOk);
         return fpr_lp::dispatch_counts().dispatches;

@@ -299,10 +299,11 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
 
     // A return the callback did not ask for is FJ ending its own search:
     // since v1.16.0 `solve()` breaks when `selectVariable()` finds no move
-    // (every sampled score `-inf`), and a resume would only break again.
-    // So it retires the worker like a stall, for `fj::run` to rebuild.  The
-    // effort since the last callback is not reported (`totalEffort` is
-    // private), which leaves at most one `CALLBACK_EFFORT` uncharged.
+    // (every sampled score `-inf`).  That can be the luck of one draw — the
+    // local-minimum branch samples a single violated row — but upstream
+    // ends its FJ run there, and so does this worker: it retires like a
+    // stall, for `fj::run` to rebuild.  The attempt is charged from the
+    // solver's own effort, since no callback may have fired in it.
     bool callback_stopped = false;
     const std::function<CallbackControlFlow(FJStatus)> observed = [&](FJStatus status) {
         const CallbackControlFlow flow = callback(status);
@@ -311,6 +312,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     };
     impl_->solver.solve(resume ? nullptr : impl_->col_value.data(), observed, resume);
     first_solve_done_ = true;
+    attempt_effort_consumed = impl_->solver.effort() - base_.total_effort;
     if (!callback_stopped) {
         base_.finished = true;
     }

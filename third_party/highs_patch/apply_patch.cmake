@@ -205,7 +205,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # two FeasibilityJump fixes and the out-of-line `~HighsMipWorker`, so those
 # insertions are gone, and the resume, exchange, early-FJ and fpr_lp
 # insertions are re-anchored on upstream's new text.
-set(PATCH_VERSION "42")
+#
+# Version 43 adds FJ's read-only `effort()` accessor to the resume patch
+# (#270): v1.16's `solve()` can end on "no move" between callbacks, and the
+# worker charges that attempt from the solver's own `totalEffort`.
+set(PATCH_VERSION "43")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -1143,7 +1147,7 @@ string(FIND "${FJ_HH}" "bool resume = false" _fj_resume_found)
 if(_fj_resume_found EQUAL -1)
     string(REPLACE
       "  int solve(double* initialValues,\n            const std::function<CallbackControlFlow(FJStatus)>& callback) {\n    assert(callback);\n    highsLogDev(logOptions, HighsLogType::kInfo,\n                FJ_LOG_PREFIX\n                \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                weightUpdateDecay, problem.usedRelaxContinuous);\n\n    init(initialValues);\n\n    effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    int num_logging_lines_since_header = 0;"
-      "  int solve(double* initialValues,\n            const std::function<CallbackControlFlow(FJStatus)>& callback,\n            bool resume = false) {\n    assert(callback);\n    if (!resume) {\n      highsLogDev(logOptions, HighsLogType::kInfo,\n                  FJ_LOG_PREFIX\n                  \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                  weightUpdateDecay, problem.usedRelaxContinuous);\n      init(initialValues);\n      effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    }\n    int num_logging_lines_since_header = 0;"
+      "  // mip-heuristics (#270): the solver's cumulative effort, read after\n  // solve() returns, so an attempt is charged exactly whether or not a\n  // callback fired in it.\n  size_t effort() const { return totalEffort; }\n\n  int solve(double* initialValues,\n            const std::function<CallbackControlFlow(FJStatus)>& callback,\n            bool resume = false) {\n    assert(callback);\n    if (!resume) {\n      highsLogDev(logOptions, HighsLogType::kInfo,\n                  FJ_LOG_PREFIX\n                  \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                  weightUpdateDecay, problem.usedRelaxContinuous);\n      init(initialValues);\n      effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    }\n    int num_logging_lines_since_header = 0;"
       FJ_HH "${FJ_HH}")
 
     string(FIND "${FJ_HH}" "bool resume = false" _fj_resume_check)

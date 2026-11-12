@@ -362,7 +362,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs
-    ${highs_SOURCE_DIR}/extern ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
 # On `tests/test_paths.cpp` alone, not the target: a `-D` holding the build
 # tree's absolute path is one ccache's `base_dir` does not rewrite, so as a
