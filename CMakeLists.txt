@@ -78,8 +78,9 @@ endif()
 # which are the recompile worth caching -- only inherit it if it is in scope
 # before FetchContent adds their subdirectory.
 #
-# Both languages: HiGHS enables C for cuPDLP after we set these, and the
-# variables still seed the property when that happens.
+# Every language: HiGHS enables C for cuPDLP after we set these, and the
+# variables still seed the property when that happens; CUDA is enabled only
+# in a `MIP_HEURISTICS_CUDA` tree, for cuPDLP and the GPU FJ (#261).
 option(MIP_HEURISTICS_CCACHE
        "Route compilation through ccache when it is installed" ON)
 if(MIP_HEURISTICS_CCACHE)
@@ -87,6 +88,7 @@ if(MIP_HEURISTICS_CCACHE)
     if(CCACHE_EXE)
         set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_EXE}")
         set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_EXE}")
+        set(CMAKE_CUDA_COMPILER_LAUNCHER "${CCACHE_EXE}")
         message(STATUS "ccache: enabled (${CCACHE_EXE})")
     else()
         message(STATUS "ccache: not found, compiling without a cache")
@@ -122,6 +124,9 @@ add_library(mip_heuristics_core STATIC
     src/fpr_strategies.h
     src/fpr_val_select.cpp
     src/fpr_val_select.h
+    src/gpu/gpu_fj_model.h
+    src/gpu/host_model.cpp
+    src/gpu/host_model.h
     src/heuristic_common.h
     src/heuristic_context.cpp
     src/heuristic_context.h
@@ -244,6 +249,35 @@ target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${hi
 target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics> $<TARGET_OBJECTS:mip_heuristics_core>)
 target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# The GPU feasibility jump's device code (#210, #261), in a
+# `MIP_HEURISTICS_CUDA` tree only, injected into `highs` like the adapter.
+# Only what needs `cuda_runtime.h` is here; its host half (`src/gpu/
+# host_model.cpp`) is core and builds, and is tidied, in every tree.  The
+# `.cu` files are not clang-tidied, so nvcc's own warnings are errors.
+# `--fmad=false` is the device side of `-ffp-contract=off` (#214): device
+# row activities stay bitwise the host's.  `native` targets the GPU on the
+# building machine; set the variable to a list (`86`, `75;86`) to build for
+# another.
+if(MIP_HEURISTICS_CUDA)
+    set(MIP_HEURISTICS_CUDA_ARCHITECTURES native CACHE STRING
+        "CUDA architectures for the GPU feasibility jump")
+    find_package(CUDAToolkit REQUIRED)
+    add_library(mip_heuristics_gpu OBJECT
+        src/gpu/device_model.cu
+        src/gpu/device_model.h
+    )
+    set_target_properties(mip_heuristics_gpu PROPERTIES
+        CUDA_ARCHITECTURES "${MIP_HEURISTICS_CUDA_ARCHITECTURES}"
+        CUDA_STANDARD 20
+        CUDA_STANDARD_REQUIRED ON)
+    target_compile_options(mip_heuristics_gpu PRIVATE
+        --fmad=false --Werror=all-warnings
+        -Xcompiler=-Wall,-Wextra,-Werror=unused-result,-Werror=switch,-ffp-contract=off)
+    target_link_libraries(mip_heuristics_gpu PRIVATE CUDA::cudart)
+    target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics_gpu>)
+    target_link_libraries(highs PRIVATE CUDA::cudart)
+endif()
+
 # The core, installed into the export set HiGHS puts `highs` in
 # (`install(EXPORT highs-targets)`, cmake/cpp-highs.cmake upstream, plus the
 # build-tree `highs-targets.cmake`), so a `find_package(highs)` caller gets
@@ -313,6 +347,7 @@ add_executable(mip_heuristics_tests
     tests/test_fj_objective_sign.cpp
     tests/test_problem_view.cpp
     tests/test_early_fj.cpp
+    tests/test_gpu_fj.cpp
 )
 # Same guard as `mip_heuristics` above — a test that drops the verdict
 # would model the bug rather than catch it. `-Werror=switch` joins it for
@@ -386,13 +421,25 @@ if(MIP_HEURISTICS_LIBCXX)
     set(_stream_spec "~[libstdcxx-stream]")
     message(STATUS "libc++: skipping the [libstdcxx-stream] test cases")
 endif()
+#
+# `[gpu]` marks the cases that need a device (#261), compiled only in a
+# `MIP_HEURISTICS_CUDA` tree: serial too, since cases sharing one laptop GPU
+# contend for its memory.  A third spec, so the partition stays exact; in a
+# CPU tree it matches nothing.
 catch_discover_tests(mip_heuristics_tests
     TEST_SPEC "[serial]${_stream_spec}"
     TEST_LIST mip_heuristics_tests_SERIAL
     PROPERTIES RUN_SERIAL TRUE)
 catch_discover_tests(mip_heuristics_tests
-    TEST_SPEC "~[serial]${_stream_spec}"
+    TEST_SPEC "[gpu]~[serial]${_stream_spec}"
+    TEST_LIST mip_heuristics_tests_GPU
+    PROPERTIES RUN_SERIAL TRUE)
+catch_discover_tests(mip_heuristics_tests
+    TEST_SPEC "~[serial]~[gpu]${_stream_spec}"
     TEST_LIST mip_heuristics_tests_PARALLEL)
+if(MIP_HEURISTICS_CUDA)
+    target_compile_definitions(mip_heuristics_tests PRIVATE MIP_HEURISTICS_HAS_GPU_FJ=1)
+endif()
 
 # The heuristic core on its own (#170): links `mip_heuristics_core` and
 # nothing else of ours (HiGHS itself comes with it, for `readModel`), and

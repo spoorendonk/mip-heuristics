@@ -273,7 +273,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_REQUIRE_LINT=ON && cm
 ctest --test-dir build --output-on-failure -j"$(nproc)"
 ```
 
-GPU build (`-DMIP_HEURISTICS_CUDA=ON`, requires `CUDA_HOME`, fails rather than falling back to CPU, separate tree): `docs/DEVELOPMENT.md`.
+GPU build (`-DMIP_HEURISTICS_CUDA=ON`, requires `CUDA_HOME`, fails rather than falling back to CPU, separate tree): `docs/DEVELOPMENT.md`. Pre-push builds only the CPU tree, so **a commit touching `src/gpu/`, a `.cu`/`.cuh` file or the CUDA CMake runs the GPU tree's full suite before review** (the command is in that section) and says so in its commit body. GPU host code that needs no CUDA header is core `.cpp`, tidied in every tree; only what needs `cuda_runtime.h` is `.cu`.
 
 ## Architecture map
 

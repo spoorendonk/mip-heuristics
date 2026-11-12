@@ -15,8 +15,9 @@ endif()
 # is covered without anyone remembering to widen this.
 file(GLOB_RECURSE LINT_FILES
      "${PROJECT_ROOT}/src/*.cpp" "${PROJECT_ROOT}/src/*.h" "${PROJECT_ROOT}/src/*.hpp"
+     "${PROJECT_ROOT}/src/*.cu" "${PROJECT_ROOT}/src/*.cuh"
      "${PROJECT_ROOT}/tests/*.cpp" "${PROJECT_ROOT}/tests/*.h"
-     "${PROJECT_ROOT}/tests/*.hpp")
+     "${PROJECT_ROOT}/tests/*.hpp" "${PROJECT_ROOT}/tests/*.cu" "${PROJECT_ROOT}/tests/*.cuh")
 list(LENGTH LINT_FILES LINT_FILE_COUNT)
 if(LINT_FILE_COUNT EQUAL 0)
     message(FATAL_ERROR "clang-format gate found no first-party sources under ${PROJECT_ROOT}")
@@ -41,8 +42,7 @@ if(NOT CF_RESULT EQUAL 0)
     message(FATAL_ERROR
             "clang-format found unformatted code among the ${LINT_FILE_COUNT} first-party "
             "files listed above (${CF_VERSION}).\n"
-            "Fix with:  ${CLANG_FORMAT_EXE} --style=file -i src/*.cpp src/*.h "
-            "tests/*.cpp tests/*.h")
+            "Fix with:  ${CLANG_FORMAT_EXE} --style=file -i <the files listed above>")
 endif()
 
 message(STATUS "clang-format clean: ${LINT_FILE_COUNT} files (${CF_VERSION})")

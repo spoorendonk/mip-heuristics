@@ -101,3 +101,20 @@ The first build fetches and compiles HiGHS via FetchContent, which dominates it.
 
 GPU acceleration: `-DMIP_HEURISTICS_CUDA=ON` enables CUDA for the PDLP solver used by Scylla. It **requires `CUDA_HOME`** to be exported (HiGHS's `FindCUDAConf.cmake` derives `CMAKE_CUDA_PATH` from it and uses that for the cudart/cublas/cusparse `find_library` hints and for HiGHS's CUDA include directory), and it **fails the configure** if nvcc or `CUDA_HOME` are missing, or if the `HConfig.h` HiGHS generates doesn't come out GPU-enabled — it does *not* fall back to CPU. That's deliberate: GPU vs CPU is a compile-time `#ifdef CUPDLP_CPU` in HiGHS's `CupdlpWrapper.cpp` with no runtime override, so a silent fallback yields a CPU binary indistinguishable from a GPU one at the command line. Build GPU into a separate tree (`cmake -B build-gpu -DMIP_HEURISTICS_CUDA=ON`) and confirm with `ldd build-gpu/bin/highs | grep -E 'cudart|cublas|cusparse'`. Omit the flag for a CPU build.
 
+The same flag builds the GPU feasibility jump's device code (#210): the `mip_heuristics_gpu` OBJECT target, `src/gpu/*.cu`, injected into `highs` like the adapter. Its pieces split by what they need:
+
+- **Host half in the core.** Whatever needs no CUDA header (`src/gpu/host_model.cpp`, which turns a `ProblemView` into the POD `GpuFjModel` and expands rows as `FjWorker` feeds `addConstraint`) is plain C++ in `mip_heuristics_core`, built, tested and clang-tidied in every tree.
+- **Device half in `.cu`.** Only code that needs `cuda_runtime.h` is a `.cu` file, and it includes nothing C++23: `gpu_fj_model.h` and `device_model.h` are its whole interface. `.cu` files are clang-formatted but not clang-tidied (nvcc's flags and the CUDA SDK are outside what the pinned clang-tidy parses), so nvcc's own warnings are errors there (`--Werror=all-warnings`, `-Xcompiler=-Wall,-Wextra`). `--fmad=false` is the device side of `-ffp-contract=off`, so device row activities stay bitwise the host's.
+- **Architectures.** `MIP_HEURISTICS_CUDA_ARCHITECTURES` (default `native`, the building machine's GPU) sets the device code's targets; pass a list such as `86` to build for another machine. HiGHS's cuPDLP sets its own.
+- **Tests.** Device cases are tagged `[gpu]`, compiled only under `MIP_HEURISTICS_HAS_GPU_FJ` (defined on the test target in a GPU tree), registered `RUN_SERIAL` by their own `catch_discover_tests` call, and fail rather than skip without a usable device.
+
+**Pre-push builds only the CPU tree**, so nothing GPU-side gates a push by itself. A commit that touches `src/gpu/`, a `.cu`/`.cuh` file or the `MIP_HEURISTICS_CUDA` CMake runs the GPU tree's full suite before review, and says so in its commit body:
+
+    export CUDA_HOME=/usr/local/cuda
+    xk lock -- cmake -B build-gpu -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_CUDA=ON -DMIP_HEURISTICS_REQUIRE_LINT=ON
+    xk lock -- cmake --build build-gpu -j4
+    xk lock -- ctest --test-dir build-gpu --output-on-failure -j4
+    ldd build-gpu/bin/highs | grep cudart
+
+That suite tidies the `[gpu]` cases, which a CPU tree compiles out.
+
