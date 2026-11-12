@@ -29,9 +29,10 @@ public:
     // `lhs` of `nrow()` values.  Each row is summed in its row-wise order, as
     // a sequential host loop over `row_start..row_start+1` sums it, so with
     // device FMA contraction off (`--fmad=false`) the result is bitwise the
-    // host's.
+    // host's.  Not const: it writes the model's device scratch, so one
+    // model serves one thread at a time.
     [[nodiscard]] bool row_activity(std::span<const double> x, std::span<double> lhs,
-                                    std::string& error) const;
+                                    std::string& error);
 
 private:
     struct Impl;

@@ -19,13 +19,20 @@ class HostModel {
 public:
     // `problem` must outlive this, and the `GpuFjModel` it hands out.
     explicit HostModel(const ProblemView& problem);
+    // `pod_` points into this object's own vectors.
+    HostModel(const HostModel&) = delete;
+    HostModel& operator=(const HostModel&) = delete;
+    HostModel(HostModel&&) = delete;
+    HostModel& operator=(HostModel&&) = delete;
 
     // A view of the problem and of the arrays held here.
     [[nodiscard]] GpuFjModel pod() const { return pod_; }
 
     // False when `FjWorker` would refuse the model at its first attempt: a
     // column whose bounds, rounded as FJ rounds them, are empty, infinite
-    // on the wrong side, or NaN.  `pod()` is still well formed.
+    // on the wrong side, or NaN; and always in a `HIGHSINT64` build, whose
+    // indices the 32-bit model cannot hold, where `pod()` is empty.
+    // Otherwise `pod()` is well formed either way.
     [[nodiscard]] bool legal_bounds() const { return legal_bounds_; }
 
 private:

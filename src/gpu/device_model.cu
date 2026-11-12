@@ -12,12 +12,15 @@ namespace gpu_fj {
 
 namespace {
 
-// Records a failed CUDA call in `error`, naming the call.
+// Records a failed CUDA call in `error`, naming the call, and clears the
+// thread's last error, so a later launch's `cudaGetLastError` does not
+// report this failure as its own.
 bool ok(cudaError_t status, const char* what, std::string& error) {
     if (status == cudaSuccess) {
         return true;
     }
     error = std::string(what) + ": " + cudaGetErrorString(status);
+    static_cast<void>(cudaGetLastError());
     return false;
 }
 
@@ -33,7 +36,6 @@ public:
     // Allocates `count` elements and copies them from `host`.  An empty
     // array allocates nothing and leaves the pointer null.
     bool assign(const T* host, std::size_t count, const char* what, std::string& error) {
-        size_ = count;
         if (count == 0) {
             return true;
         }
@@ -41,7 +43,6 @@ public:
                ok(cudaMemcpy(ptr_, host, count * sizeof(T), cudaMemcpyHostToDevice), what, error);
     }
     bool allocate(std::size_t count, const char* what, std::string& error) {
-        size_ = count;
         if (count == 0) {
             return true;
         }
@@ -49,11 +50,9 @@ public:
     }
 
     [[nodiscard]] T* get() const { return ptr_; }
-    [[nodiscard]] std::size_t size() const { return size_; }
 
 private:
     T* ptr_ = nullptr;
-    std::size_t size_ = 0;
 };
 
 constexpr int kRowActivityThreads = 256;
@@ -126,7 +125,7 @@ std::int32_t DeviceModel::nrow() const {
 }
 
 bool DeviceModel::row_activity(std::span<const double> x, std::span<double> lhs,
-                               std::string& error) const {
+                               std::string& error) {
     if (x.size() != static_cast<std::size_t>(impl_->ncol) ||
         lhs.size() != static_cast<std::size_t>(impl_->nrow)) {
         error = "row_activity: x or lhs has the wrong size";
@@ -140,7 +139,8 @@ bool DeviceModel::row_activity(std::span<const double> x, std::span<double> lhs,
             "row_activity: copy x", error)) {
         return false;
     }
-    const int blocks = (impl_->nrow + kRowActivityThreads - 1) / kRowActivityThreads;
+    const auto blocks = static_cast<unsigned>(
+        (std::int64_t{impl_->nrow} + kRowActivityThreads - 1) / kRowActivityThreads);
     row_activity_kernel<<<blocks, kRowActivityThreads>>>(
         impl_->nrow, impl_->row_start.get(), impl_->row_index.get(), impl_->row_value.get(),
         impl_->x.get(), impl_->lhs.get());

@@ -257,11 +257,12 @@ target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # `--fmad=false` is the device side of `-ffp-contract=off` (#214): device
 # row activities stay bitwise the host's.  `native` targets the GPU on the
 # building machine; set the variable to a list (`86`, `75;86`) to build for
-# another.
+# another.  No cudart link of our own: HiGHS links it into `highs` for
+# cuPDLP (`${CUDA_LIBRARY}`, a plain path, so the export needs no
+# `find_dependency(CUDAToolkit)`), and this tree always has cuPDLP.
 if(MIP_HEURISTICS_CUDA)
     set(MIP_HEURISTICS_CUDA_ARCHITECTURES native CACHE STRING
         "CUDA architectures for the GPU feasibility jump")
-    find_package(CUDAToolkit REQUIRED)
     add_library(mip_heuristics_gpu OBJECT
         src/gpu/device_model.cu
         src/gpu/device_model.h
@@ -272,10 +273,8 @@ if(MIP_HEURISTICS_CUDA)
         CUDA_STANDARD_REQUIRED ON)
     target_compile_options(mip_heuristics_gpu PRIVATE
         --fmad=false --Werror=all-warnings
-        -Xcompiler=-Wall,-Wextra,-Werror=unused-result,-Werror=switch,-ffp-contract=off)
-    target_link_libraries(mip_heuristics_gpu PRIVATE CUDA::cudart)
+        -Xcompiler=-Wall,-Wextra,-Werror,-ffp-contract=off)
     target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics_gpu>)
-    target_link_libraries(highs PRIVATE CUDA::cudart)
 endif()
 
 # The core, installed into the export set HiGHS puts `highs` in

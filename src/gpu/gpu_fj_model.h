@@ -5,10 +5,10 @@
 // includes nothing but <cstdint>: the C++23 headers the rest of the
 // heuristics use (`heuristic_context.h`, `std::expected`) must never reach
 // a `.cu` translation unit.  The host side fills one from a `ProblemView`
-// (`gpu_fj_host.h`); `DeviceModel` copies it to the device.
+// (`host_model.h`); `DeviceModel` copies it to the device.
 //
-// Indices are 32-bit: `FjWorker` refuses a `HIGHSINT64` build, and the
-// host side asserts `HighsInt` is 32 bits wide.
+// Indices are 32-bit: `FjWorker` finishes at once in a `HIGHSINT64` build,
+// and `HostModel` there reports no legal model.
 
 #include <cstdint>
 
@@ -42,7 +42,9 @@ struct GpuFjModel {
     const double* col_cost = nullptr;
     const std::uint8_t* col_is_int = nullptr;
 
-    // The FJ constraints, `ncon` of them, in `FjWorker`'s order.
+    // The FJ constraints, `ncon` of them, in `FjWorker`'s order.  Never the
+    // objective cutoff row `FjWorker` adds under a finite cutoff: no GPU run
+    // takes one yet.
     std::int32_t ncon = 0;
     const std::int32_t* con_row = nullptr;
     const double* con_rhs = nullptr;

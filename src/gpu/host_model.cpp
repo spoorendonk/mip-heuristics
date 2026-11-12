@@ -10,6 +10,10 @@
 
 namespace gpu_fj {
 
+#ifdef HIGHSINT64
+// `FjWorker` finishes at once in this build; so does the GPU model.
+HostModel::HostModel(const ProblemView& /*problem*/) : legal_bounds_(false) {}
+#else
 static_assert(std::is_same_v<HighsInt, std::int32_t>,
               "the GPU model's indices are 32-bit, as FjWorker's are");
 
@@ -78,5 +82,6 @@ HostModel::HostModel(const ProblemView& problem) {
     pod_.con_rhs = con_rhs_.data();
     pod_.con_sense = con_sense_.data();
 }
+#endif
 
 }  // namespace gpu_fj
