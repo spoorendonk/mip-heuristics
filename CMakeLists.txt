@@ -448,13 +448,13 @@ endif()
 
 # The heuristic core on its own (#170): links `mip_heuristics_core` and
 # nothing else of ours (HiGHS itself comes with it, for `readModel`), and
-# runs FJ and LocalMIP on an original model with no `HighsMipSolver`.  A
-# separate executable so that the link line, not only the source, is the
-# one a caller of the core would have.  No `[serial]` case: nothing here
-# reads a clock.
+# runs FJ and LocalMIP on an original model and on hand-built ones, with no
+# `HighsMipSolver`.  A separate executable so that the link line, not only
+# the source, is the one a caller of the core would have.  No `[serial]`
+# case: no clock read here is bounded on both sides.
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
     tests/test_paths.cpp tests/test_ruin_repair.cpp tests/test_recombine.cpp
-    tests/test_fj_exchange.cpp)
+    tests/test_fj_exchange.cpp tests/test_core_standalone.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})
@@ -471,71 +471,16 @@ else()
     catch_discover_tests(mip_heuristics_core_tests TEST_LIST mip_heuristics_core_tests_ALL)
 endif()
 
-# The core linked against a libhighs with the MIP solver and the adapter
-# taken out: every member built from `highs/mip/*.cpp`, and every object of
-# `mip_heuristics` (and of the core itself).  The core archive goes in whole
-# (`WHOLE_ARCHIVE`): an ordinary archive link extracts only the members these
-# cases reach, and a dependency in any other member — the reviewer's
-# `Highs::run` planted in `repair_search.cpp` — would link unseen.  Whole,
-# every core member has to resolve here, so this executable does not link if
-# any of them needs the MIP solver or the adapter, directly or through
-# another libhighs member.  The archive is named as a file, not linked as a
-# target, because the target's `$<LINK_ONLY:highs>` would bring the whole of
-# libhighs back.  Its cases build their model by hand: the `Highs` class
-# itself reaches the MIP solver.
+# No executable links the core against a libhighs with the MIP solver
+# taken out: since v1.16, `HighsLp`'s own constructor reaches `Highs.cpp`
+# (through `HighsSolution`, `HEkk` and `HighsCallback`), and so the MIP
+# solver, for any static caller that builds a model (#274).  `core_boundary`
+# (below) asserts the boundary on the core's own symbols instead.
 #
 # Upstream unity-builds `highs` on Apple (8 sources per member), so a
-# `highs/mip/` source has no member of its own to drop there.  The check is
-# skipped on such a build rather than worked around: Linux, where it runs,
-# is the platform this project gates on.
+# `highs/mip/` source has no member of its own there; `core_boundary` is
+# skipped on such a build: Linux, where it runs, is the gate.
 get_target_property(_highs_unity highs UNITY_BUILD)
-if(_highs_unity)
-    message(STATUS "libhighs is a unity build: skipping mip_heuristics_core_standalone_tests")
-else()
-    file(GLOB _mip_sources ${highs_SOURCE_DIR}/highs/mip/*.cpp)
-    get_target_property(_adapter_sources mip_heuristics SOURCES)
-    get_target_property(_core_cpp mip_heuristics_core SOURCES)
-    list(FILTER _core_cpp INCLUDE REGEX "\\.cpp$")
-    set(_drop "")
-    # The core's own copies go too (libhighs carries them; see `target_sources`
-    # on `highs`), so the whole-archive core below is the only one linked.
-    foreach(_source IN LISTS _mip_sources _adapter_sources _core_cpp)
-        get_filename_component(_name ${_source} NAME)
-        list(APPEND _drop "${_name}.o")
-    endforeach()
-    list(JOIN _drop "|" _drop)
-    set(_highs_without_mip ${CMAKE_CURRENT_BINARY_DIR}/libhighs_without_mip.a)
-    add_custom_command(
-        OUTPUT ${_highs_without_mip}
-        COMMAND ${CMAKE_COMMAND} -DAR=${CMAKE_AR} -DIN=$<TARGET_FILE:highs>
-                -DOUT=${_highs_without_mip} -DDROP=${_drop}
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
-        DEPENDS highs ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strip_archive.cmake
-        COMMENT "libhighs without the MIP solver and the adapter"
-        VERBATIM)
-    add_custom_target(highs_without_mip DEPENDS ${_highs_without_mip})
-
-    add_executable(mip_heuristics_core_standalone_tests tests/test_core_standalone.cpp)
-    add_dependencies(mip_heuristics_core_standalone_tests mip_heuristics_core highs_without_mip)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(mip_heuristics_core_standalone_tests PRIVATE -Werror=unused-result
-                                                                            -Werror=switch
-                                                                            ${_mip_fp_flags})
-    endif()
-    target_include_directories(mip_heuristics_core_standalone_tests PRIVATE
-        $<TARGET_PROPERTY:mip_heuristics_core,INTERFACE_INCLUDE_DIRECTORIES>)
-    find_package(Threads REQUIRED)
-    target_link_libraries(mip_heuristics_core_standalone_tests PRIVATE
-        $<LINK_LIBRARY:WHOLE_ARCHIVE,$<TARGET_FILE:mip_heuristics_core>> ${_highs_without_mip}
-        Threads::Threads ${CMAKE_DL_LIBS}
-        Catch2::Catch2WithMain)
-    if(MIP_HEURISTICS_INSTRUMENT)
-        target_compile_definitions(mip_heuristics_core_standalone_tests PRIVATE
-            MIP_HEURISTICS_INSTRUMENT_ENABLED=1)
-    endif()
-    catch_discover_tests(mip_heuristics_core_standalone_tests
-        TEST_LIST mip_heuristics_core_standalone_tests_ALL)
-endif()
 
 # The pool's own tests again, under ThreadSanitizer (#180): the pool shares
 # immutable solution vectors across threads by `shared_ptr` and scans them
@@ -674,8 +619,7 @@ if(_bench_py)
     #
     # Its archive half names members after their sources, so on a unity
     # build of libhighs (upstream's default on Apple) it can match nothing
-    # and would pass whatever the core needed: skipped there, as the
-    # standalone test above is.
+    # and would pass whatever the core needed: skipped there.
     if(_highs_unity)
         message(STATUS "libhighs is a unity build: skipping core_boundary")
     else()

@@ -3,8 +3,8 @@
 // `HighsMipSolver` anywhere — through `mip_heuristics_core` alone.  This
 // file is `mip_heuristics_core_tests`, which links that target and nothing
 // else of ours and includes only core headers.  The hand-built models are
-// in test_core_standalone.cpp, which links against a libhighs without the
-// MIP solver.  The `[until_stopped]` cases drive the same workers through
+// in test_core_standalone.cpp, in the same executable.  The
+// `[until_stopped]` cases drive the same workers through
 // `run_until_stopped` (#171), on a thread the test owns.
 
 #include "core_test_support.h"

@@ -1,12 +1,8 @@
-// The core on a libhighs without the MIP solver (#170).
-//
-// `mip_heuristics_core_standalone_tests` links `libmip_heuristics_core.a`
-// against a copy of `libhighs.a` with every member built from
-// `highs/mip/*.cpp` and every adapter object removed.  It links at all only
-// if nothing the core needs lives in the MIP solver or the adapter, which is
-// the `core_boundary` claim checked by the linker; and these cases then run
-// FJ and LocalMIP on it.  Nothing here may use the `Highs` class, whose own
-// `run` reaches the MIP solver: the model is built by hand.
+// The core on hand-built models (#170): FJ, LocalMIP and FPR run on a
+// `HighsLp` the test builds itself, through `make_problem` and core headers
+// alone, with no use of the `Highs` class.  These cases run in
+// `mip_heuristics_core_tests`; the boundary itself (the core needs no
+// `HighsMipSolver`) is `core_boundary`'s to check (#274).
 
 #include "core_test_support.h"
 #include "fpr_core.h"

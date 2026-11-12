@@ -3,10 +3,7 @@
 
 The core is meant to run FJ and LocalMIP on a model its caller owns, with no
 MIP solve anywhere, while the HiGHS adapter (`mip_heuristics`) is the only
-code that reaches into the solver.  Two checks here, beside a third the build
-makes (`mip_heuristics_core_standalone_tests` links the core against a
-libhighs without the MIP solver or the adapter, so it does not link at all if
-the core needs either):
+code that reaches into the solver.  Two checks, and the only ones (#274):
 
 1. **Includes, transitively.**  Every header a core translation unit reaches,
    as the compiler itself lists it (`-M`, with the unit's own flags from
@@ -21,8 +18,8 @@ the core needs either):
 2. **Symbols, transitively.**  A simulated whole-archive link of the core
    against `libhighs.a` pulls in no member compiled from `highs/mip/*.cpp`
    and no adapter object, however indirectly (`Highs::run` lives in
-   `Highs.cpp` and reaches the MIP solver from there).  The link test finds
-   the same thing; this names the chain.
+   `Highs.cpp` and reaches the MIP solver from there).  A failure names the
+   chain.
 
 Registered as the ctest `core_boundary`; run standalone with the same
 arguments CMakeLists.txt passes.

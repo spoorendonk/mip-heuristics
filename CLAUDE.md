@@ -279,7 +279,7 @@ GPU build (`-DMIP_HEURISTICS_CUDA=ON`, requires `CUDA_HOME`, fails rather than f
 
 HiGHS v1.16.0 is fetched at build time and patched from `third_party/highs_patch/`. **Bump `PATCH_VERSION` on any change to inserted text and clean-rebuild** (`rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt`, then re-configure); older patch layouts are refused, not upgraded. Two layers:
 
-- **`mip_heuristics_core`** (STATIC): FJ, LocalMIP, ruin-and-repair, recombination, FPR's search, `SolutionPool`/`SolutionSink`, the runner scaffold and the model view (`heuristic_context.h`). It needs no `HighsMipSolver`; `core_boundary` and the whole-archive standalone test enforce that. A new core file, headers included, goes in the core target's list.
+- **`mip_heuristics_core`** (STATIC): FJ, LocalMIP, ruin-and-repair, recombination, FPR's search, `SolutionPool`/`SolutionSink`, the runner scaffold and the model view (`heuristic_context.h`). It needs no `HighsMipSolver`; `core_boundary` enforces that. A new core file, headers included, goes in the core target's list.
 - **`mip_heuristics`** (OBJECT, injected into `highs`): the adapter — `mode_dispatch`, `IncumbentSink`, `effort_ledger`, `highs_context.h`, FPR's dispatch, `fpr_lp`, Scylla, `ContestedPdlp`.
 
 The presolve chain is FJ → FPR → LocalMIP → Scylla → ruin → recombine (`kChain` in `src/mode_dispatch.cpp`), each on continuous parallel workers; `fpr_lp` runs at dive time inside the RENS/RINS LP-iteration envelope. A heuristic runs only if its `mip_heuristic_<name>_effort` is above zero (FJ also needs upstream's `mip_heuristic_run_feasibility_jump`).
