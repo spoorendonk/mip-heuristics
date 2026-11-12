@@ -116,7 +116,7 @@ __device__ double jump_value(const DeviceModelView& m, std::int32_t j, const dou
         const double coeff = m.col_value[p];
         for (std::int32_t c = m.row_con_start[row]; c < m.row_con_start[row + 1]; ++c) {
             // `FjWorker` splits every equality row, so a constraint has one
-            // bound interval, never upstream's three for `Equal`.
+            // bound interval, never upstream's two for `Equal`.
             const double rhs = m.con_rhs[c];
             const bool lte = m.con_sense[c] == ConSense::kLte;
             const double bound_first = lte ? -INFINITY : rhs;
@@ -130,12 +130,11 @@ __device__ double jump_value(const DeviceModelView& m, std::int32_t j, const dou
                 first = second;
                 second = t;
             }
+            // An integer range holding no integer is not skipped: v1.16
+            // dropped v1.15's `validRange.first > validRange.second` skip.
             if (is_int) {
                 first = ceil(first - m.equality_tol);
                 second = floor(second + m.equality_tol);
-            }
-            if (first > second) {
-                continue;
             }
             const double w = weight[c];
             if (first > current_value) {
@@ -703,10 +702,17 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
 
 enum Control : int { kStep = 0, kStop = 1, kSaveBest = 2 };
 
+// The step loop's `var` while the good set is empty; a selection that finds
+// no variable returns -1.
+constexpr std::int32_t kAtMinimum = -2;
+
 // The top of `solve`'s loop, thread 0 only: the effort callback, the
 // improvement bookkeeping, and the feasible-improvement callback.
 __device__ int top_of_loop(const DeviceModelView& m, Scalars& s, std::uint64_t taken,
                            std::uint64_t max_steps) {
+    if (s.finished != 0) {
+        return kStop;  // `solve` returned
+    }
     if (taken >= max_steps) {
         return kStop;
     }
@@ -762,15 +768,23 @@ __global__ void __launch_bounds__(kStepThreads)
             break;
         }
         if (tid == 0) {
-            var = s.n_good > 0 ? select_good(c, s) : -1;
+            var = s.n_good > 0 ? select_good(c, s) : kAtMinimum;
         }
         __syncthreads();
-        if (var < 0) {
+        if (var == kAtMinimum) {
             update_weights(m, c, s, tmp, cells);
             if (tid == 0) {
                 var = select_at_minimum(m, c, s);
             }
             __syncthreads();
+        }
+        if (var < 0) {
+            // v1.16's `selectVariable() == UINT_MAX` break: no score beat
+            // -inf (all NaN), and `solve` returns.
+            if (tid == 0) {
+                s.finished = 1;
+            }
+            break;
         }
         move(m, c, s, tmp, var);
     }

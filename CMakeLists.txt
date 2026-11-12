@@ -259,9 +259,9 @@ target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # `--fmad=false` is the device side of `-ffp-contract=off` (#214): device
 # constraint activities, jump values and scores stay bitwise the host's.  `native` targets the GPU on the
 # building machine; set the variable to a list (`86`, `75;86`) to build for
-# another.  No cudart link of our own: HiGHS links it into `highs` for
-# cuPDLP (`${CUDA_LIBRARY}`, a plain path, so the export needs no
-# `find_dependency(CUDAToolkit)`), and this tree always has cuPDLP.
+# another.  No cudart link of our own: HiGHS links it into `highs` for its
+# GPU PDLP (`${CUDA_LIBRARY}`: `CUDA::cudart`, `cublas`, `cusparse` since
+# v1.16), and this tree always has it.
 if(MIP_HEURISTICS_CUDA)
     set(MIP_HEURISTICS_CUDA_ARCHITECTURES native CACHE STRING
         "CUDA architectures for the GPU feasibility jump")

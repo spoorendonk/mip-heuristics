@@ -278,9 +278,6 @@ private:
             if (m_.col_is_int[j] != 0) {
                 range = {std::ceil(range.first - tol), std::floor(range.second + tol)};
             }
-            if (range.first > range.second) {
-                continue;
-            }
             const double w = state_.weight[cell.con];
             if (range.first > current_value) {
                 current_slope -= w;

@@ -49,7 +49,9 @@ public:
         // `read_best` copies it.
         bool improved = false;
         double objective = 0.0;
-        // No step is left to take: the model has no column.
+        // No step is left to take: the model has no column, or a selection
+        // found no variable (v1.16 `solve`'s `UINT_MAX` break); every later
+        // `run` stops at once.
         bool finished = false;
     };
 
