@@ -624,7 +624,7 @@ TEST_CASE("gpu_fj: a climber finds a feasible point on presolved bundled MIPs", 
         gpu_fj::Climber::Chunk chunk;
         do {
             require_ok(climber->run(~std::uint64_t{0}, chunk, error), error);
-        } while (!chunk.improved && chunk.total_effort < cap);
+        } while (!chunk.improved && !chunk.finished && chunk.total_effort < cap);
         REQUIRE(chunk.improved);
         std::vector<double> best;
         require_ok(climber->read_best(best, error), error);
