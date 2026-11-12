@@ -255,7 +255,7 @@ target_include_directories(highs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # host_model.cpp`) is core and builds, and is tidied, in every tree.  The
 # `.cu` files are not clang-tidied, so nvcc's own warnings are errors.
 # `--fmad=false` is the device side of `-ffp-contract=off` (#214): device
-# row activities stay bitwise the host's.  `native` targets the GPU on the
+# constraint activities, jump values and scores stay bitwise the host's.  `native` targets the GPU on the
 # building machine; set the variable to a list (`86`, `75;86`) to build for
 # another.  No cudart link of our own: HiGHS links it into `highs` for
 # cuPDLP (`${CUDA_LIBRARY}`, a plain path, so the export needs no
@@ -264,6 +264,9 @@ if(MIP_HEURISTICS_CUDA)
     set(MIP_HEURISTICS_CUDA_ARCHITECTURES native CACHE STRING
         "CUDA architectures for the GPU feasibility jump")
     add_library(mip_heuristics_gpu OBJECT
+        src/gpu/climber.cu
+        src/gpu/climber.h
+        src/gpu/device_internal.cuh
         src/gpu/device_model.cu
         src/gpu/device_model.h
     )

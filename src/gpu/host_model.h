@@ -42,6 +42,7 @@ private:
     std::vector<std::int32_t> con_row_;
     std::vector<double> con_rhs_;
     std::vector<ConSense> con_sense_;
+    std::vector<std::int32_t> row_con_start_;
     GpuFjModel pod_;
     bool legal_bounds_ = true;
 };

@@ -1,8 +1,9 @@
-// The GPU feasibility jump's model (#261).  The host half runs in every
-// tree: `HostModel` must hand the device the constraints and bounds
-// `FjWorker` hands upstream FJ.  The `[gpu]` cases, compiled only in a
-// `MIP_HEURISTICS_CUDA` tree, compare the device's row activities with the
-// host's; they fail, never skip, on a machine with no usable device.
+// The GPU feasibility jump's model (#261) and its climbers' initial state
+// (#262).  The host half runs in every tree: `HostModel` must hand the
+// device the constraints and bounds `FjWorker` hands upstream FJ.  The
+// `[gpu]` cases, compiled only in a `MIP_HEURISTICS_CUDA` tree, compare a
+// climber's state after `init` with upstream FJ's, recomputed on the host;
+// they fail, never skip, on a machine with no usable device.
 
 #include "core_test_support.h"
 #include "gpu/host_model.h"
@@ -10,8 +11,12 @@
 #include "test_paths.h"
 
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
+#include "gpu/climber.h"
 #include "gpu/device_model.h"
 
+#include <algorithm>
+#include <memory>
+#include <span>
 #include <string>
 #endif
 
@@ -27,8 +32,10 @@ using namespace core_test;
 
 namespace {
 
-constexpr std::array<const char*, 4> kInstances = {"egout.mps", "flugpl.mps", "bell5.mps",
-                                                   "p0548.mps"};
+// Between them: negative coefficients, general integers, equality and
+// ranged rows (the `[gpu]` case checks the first two are present).
+constexpr std::array<const char*, 6> kInstances = {"egout.mps", "flugpl.mps", "bell5.mps",
+                                                   "p0548.mps", "gt2.mps",    "gesa2.mps"};
 
 void read(Highs& highs, const char* instance) {
     highs.setOptionValue("output_flag", false);
@@ -51,12 +58,16 @@ TEST_CASE("gpu_fj: the host model expands rows as FjWorker does", "[gpu_fj]") {
         REQUIRE(m.nrow == p.nrow);
         REQUIRE(std::cmp_equal(m.nnz, p.nnz));
 
-        // Every finite row bound is one constraint, `>=` before `<=`, in row
-        // order.
+        // Every finite bound of a nonempty row is one constraint, `>=`
+        // before `<=`, in row order.
+        REQUIRE(m.equality_tol == p.epsilon);
+        REQUIRE(m.violation_tol == p.feastol);
         std::int32_t con = 0;
         for (HighsInt row = 0; row < p.nrow; ++row) {
-            const double lower = (*p.row_lower)[row];
-            const double upper = (*p.row_upper)[row];
+            REQUIRE(m.row_con_start[row] == con);
+            const bool empty = (*p.ar_start)[row + 1] == (*p.ar_start)[row];
+            const double lower = empty ? -kHighsInf : (*p.row_lower)[row];
+            const double upper = empty ? kHighsInf : (*p.row_upper)[row];
             if (std::isfinite(lower)) {
                 REQUIRE(con < m.ncon);
                 REQUIRE(m.con_row[con] == row);
@@ -73,6 +84,7 @@ TEST_CASE("gpu_fj: the host model expands rows as FjWorker does", "[gpu_fj]") {
             }
         }
         REQUIRE(con == m.ncon);
+        REQUIRE(m.row_con_start[p.nrow] == con);
 
         for (HighsInt col = 0; col < p.ncol; ++col) {
             const bool is_int = (*p.integrality)[col] != HighsVarType::kContinuous;
@@ -110,53 +122,358 @@ TEST_CASE("gpu_fj: an empty integer domain is not legal for FJ", "[gpu_fj]") {
     REQUIRE_FALSE(host.legal_bounds());
 }
 
+namespace {
+
+// A one-column-per-entry model: `cols` columns with the given bounds,
+// costs and integrality, and `rows` given column-wise as one coefficient
+// per (row, column) pair, `0` for none.
+HighsLp tiny_lp(const std::vector<double>& col_lower, const std::vector<double>& col_upper,
+                const std::vector<double>& cost, const std::vector<double>& row_lower,
+                const std::vector<double>& row_upper,
+                const std::vector<std::vector<double>>& coeff_by_col, bool integer) {
+    HighsLp lp;
+    lp.num_col_ = static_cast<HighsInt>(col_lower.size());
+    lp.num_row_ = static_cast<HighsInt>(row_lower.size());
+    lp.col_lower_ = col_lower;
+    lp.col_upper_ = col_upper;
+    lp.col_cost_ = cost;
+    lp.row_lower_ = row_lower;
+    lp.row_upper_ = row_upper;
+    lp.a_matrix_.format_ = MatrixFormat::kColwise;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    lp.a_matrix_.num_row_ = lp.num_row_;
+    lp.a_matrix_.start_.assign(1, 0);
+    for (const std::vector<double>& col : coeff_by_col) {
+        for (size_t row = 0; row < col.size(); ++row) {
+            if (col[row] != 0.0) {
+                lp.a_matrix_.index_.push_back(static_cast<HighsInt>(row));
+                lp.a_matrix_.value_.push_back(col[row]);
+            }
+        }
+        lp.a_matrix_.start_.push_back(static_cast<HighsInt>(lp.a_matrix_.index_.size()));
+    }
+    lp.integrality_.assign(col_lower.size(),
+                           integer ? HighsVarType::kInteger : HighsVarType::kContinuous);
+    return lp;
+}
+
+}  // namespace
+
+TEST_CASE("gpu_fj: an empty row gives no constraint, as upstream stores none", "[gpu_fj]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    // Row 0 holds x; row 1 is empty, ranged (`make_problem` refuses an
+    // empty row its zero activity violates).
+    const HighsLp lp = tiny_lp({0.0}, {10.0}, {1.0}, {1.0, -1.0}, {5.0, 2.0}, {{1.0, 0.0}}, true);
+    const Setup s(lp, highs.getOptions().log_options);
+    const gpu_fj::HostModel host(s.problem);
+    const gpu_fj::GpuFjModel m = host.pod();
+    REQUIRE(m.ncon == 2);
+    REQUIRE(m.con_row[0] == 0);
+    REQUIRE(m.con_row[1] == 0);
+    REQUIRE(m.row_con_start[1] == 2);
+    REQUIRE(m.row_con_start[2] == 2);
+}
+
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
-TEST_CASE("gpu_fj: device row activities equal the host's", "[gpu]") {
+namespace {
+
+// Upstream FJ's state after `FeasibilityJumpSolver::init`, recomputed on
+// the host from the model as `FjWorker` hands it to upstream: each
+// constraint's cells from the row-wise matrix, a column's cells in
+// constraint order, then `resetIncumbent`, `JumpMove::updateValue` and
+// `resetMoves` transliterated from `feasibilityjump.hh`, both #139 fixes
+// included.
+class Oracle {
+public:
+    Oracle(const gpu_fj::GpuFjModel& m, std::span<const double> start)
+        : m_(m), cells_(static_cast<size_t>(m.ncol)), x_(start.begin(), start.end()) {
+        const auto ncon = static_cast<size_t>(m.ncon);
+        state_.lhs.assign(ncon, 0.0);
+        state_.weight.assign(ncon, 1.0);
+        state_.violated_pos.assign(ncon, -1);
+        for (std::int32_t c = 0; c < m.ncon; ++c) {
+            const std::int32_t row = m.con_row[c];
+            double lhs = 0.0;
+            for (std::int32_t k = m.row_start[row]; k < m.row_start[row + 1]; ++k) {
+                cells_[m.row_index[k]].push_back({c, m.row_value[k]});
+                lhs += m.row_value[k] * x_[m.row_index[k]];
+            }
+            state_.lhs[c] = lhs;
+            if (con_score(c, lhs) < -m.violation_tol) {
+                state_.violated_pos[c] = static_cast<std::int32_t>(state_.violated.size());
+                state_.violated.push_back(c);
+            }
+        }
+        state_.x = x_;
+        reset_moves(0.0);
+    }
+
+    // `init`'s `resetMoves` loop under objective weight `w`.
+    void reset_moves(double w) {
+        const auto ncol = static_cast<size_t>(m_.ncol);
+        state_.objective_weight = w;
+        state_.jump.assign(ncol, 0.0);
+        state_.score.assign(ncol, 0.0);
+        state_.good.clear();
+        state_.good_pos.assign(ncol, -1);
+        for (std::int32_t j = 0; j < m_.ncol; ++j) {
+            const double value = update_value(j);
+            double score = 0.0;
+            score -= w * m_.col_cost[j] * (value - x_[j]);
+            for (const Cell& cell : cells_[j]) {
+                const double lhs = state_.lhs[cell.con];
+                const double candidate = lhs + (cell.coeff * (value - x_[j]));
+                score += state_.weight[cell.con] *
+                         (con_score(cell.con, candidate) - con_score(cell.con, lhs));
+            }
+            state_.jump[j] = value;
+            state_.score[j] = score;
+            if (score > 0.0) {
+                state_.good_pos[j] = static_cast<std::int32_t>(state_.good.size());
+                state_.good.push_back(j);
+            }
+        }
+    }
+
+    [[nodiscard]] const gpu_fj::Climber::State& state() const { return state_; }
+
+private:
+    struct Cell {
+        std::int32_t con;
+        double coeff;
+    };
+
+    [[nodiscard]] double con_score(std::int32_t c, double lhs) const {
+        const double rhs = m_.con_rhs[c];
+        return m_.con_sense[c] == gpu_fj::ConSense::kLte ? -(std::max(0., lhs - rhs))
+                                                         : -(std::max(0., rhs - lhs));
+    }
+
+    static bool eq(double a, double b, double tol) { return std::fabs(a - b) < tol; }
+
+    [[nodiscard]] double update_value(std::int32_t j) {
+        const double tol = m_.equality_tol;
+        const double incumbent = x_[j];
+        const double lower = m_.col_lower[j];
+        const double upper = m_.col_upper[j];
+        double current_value = lower;
+        double current_slope = 0.0;
+        buffer_.clear();
+        for (const Cell& cell : cells_[j]) {
+            const bool lte = m_.con_sense[cell.con] == gpu_fj::ConSense::kLte;
+            const double rhs = m_.con_rhs[cell.con];
+            const std::pair<double, double> bound =
+                lte ? std::pair{-kHighsInf, rhs} : std::pair{rhs, kHighsInf};
+            const double residual = state_.lhs[cell.con] - (cell.coeff * incumbent);
+            std::pair<double, double> range = {(1.0 / cell.coeff) * (bound.first - residual),
+                                               (1.0 / cell.coeff) * (bound.second - residual)};
+            if (cell.coeff < 0.0) {
+                std::swap(range.first, range.second);
+            }
+            if (m_.col_is_int[j] != 0) {
+                range = {std::ceil(range.first - tol), std::floor(range.second + tol)};
+            }
+            if (range.first > range.second) {
+                continue;
+            }
+            const double w = state_.weight[cell.con];
+            if (range.first > current_value) {
+                current_slope -= w;
+                if (range.first < upper) {
+                    buffer_.emplace_back(range.first, w);
+                }
+            }
+            if (range.second <= current_value) {
+                current_slope += w;
+            } else if (range.second < upper) {
+                buffer_.emplace_back(range.second, w);
+            }
+        }
+        if (std::isfinite(lower)) {
+            buffer_.emplace_back(lower, 0);
+        }
+        if (std::isfinite(upper)) {
+            buffer_.emplace_back(upper, 0);
+        }
+        std::ranges::sort(buffer_);
+        double current_score = 0.0;
+        current_value = buffer_.empty() ? incumbent : buffer_[0].first;
+        double best_score = current_score;
+        double best_value = current_value;
+        for (const auto& [value, weight] : buffer_) {
+            current_score += (value - current_value) * current_slope;
+            current_slope += weight;
+            current_value = value;
+            if (eq(best_value, incumbent, tol) ||
+                (!eq(current_value, incumbent, tol) && current_score < best_score)) {
+                best_score = current_score;
+                best_value = current_value;
+            }
+            if (!eq(best_value, incumbent, tol) && current_slope >= 0.) {
+                break;
+            }
+        }
+        return best_value;
+    }
+
+    const gpu_fj::GpuFjModel& m_;
+    std::vector<std::vector<Cell>> cells_;
+    std::vector<double> x_;
+    std::vector<std::pair<double, double>> buffer_;
+    gpu_fj::Climber::State state_;
+};
+
+// Relative tolerance 1e-9; `bitwise` counts the values that differ at all.
+void require_close(const std::vector<double>& got, const std::vector<double>& want,
+                   size_t& bitwise) {
+    REQUIRE(got.size() == want.size());
+    for (size_t i = 0; i < got.size(); ++i) {
+        INFO("index " << i << ": " << got[i] << " vs " << want[i]);
+        REQUIRE(std::fabs(got[i] - want[i]) <=
+                1e-9 * std::max(std::fabs(got[i]), std::fabs(want[i])));
+        bitwise += got[i] == want[i] ? 0 : 1;
+    }
+}
+
+void require_state(const gpu_fj::Climber::State& got, const gpu_fj::Climber::State& want,
+                   size_t& bitwise) {
+    REQUIRE(got.x == want.x);
+    REQUIRE(got.weight == want.weight);
+    REQUIRE(got.objective_weight == want.objective_weight);
+    require_close(got.lhs, want.lhs, bitwise);
+    REQUIRE(got.violated == want.violated);
+    REQUIRE(got.violated_pos == want.violated_pos);
+    require_close(got.jump, want.jump, bitwise);
+    require_close(got.score, want.score, bitwise);
+    REQUIRE(got.good == want.good);
+    REQUIRE(got.good_pos == want.good_pos);
+}
+
+// FJ's own start (`fj_bound_start`): each column's lower bound, else its
+// upper, else 0.
+std::vector<double> bound_start(const gpu_fj::GpuFjModel& m) {
+    std::vector<double> x(static_cast<size_t>(m.ncol));
+    for (std::int32_t j = 0; j < m.ncol; ++j) {
+        const double lo = m.col_lower[j];
+        const double up = m.col_upper[j];
+        x[j] = std::isfinite(lo) ? lo : (std::isfinite(up) ? up : 0.0);
+    }
+    return x;
+}
+
+// A point with no special structure: inside each column's bounds, off
+// their midpoint, integral on integer columns.
+std::vector<double> interior_start(const gpu_fj::GpuFjModel& m) {
+    std::vector<double> x(static_cast<size_t>(m.ncol));
+    for (std::int32_t j = 0; j < m.ncol; ++j) {
+        const double up = m.col_upper[j];
+        double lo = -10.0;
+        if (std::isfinite(m.col_lower[j])) {
+            lo = m.col_lower[j];
+        } else if (std::isfinite(up)) {
+            lo = up - 10.0;
+        }
+        const double hi = std::isfinite(up) ? up : lo + 10.0;
+        const double frac = 0.3 + (0.4 * ((j * 7919) % 13) / 13.0);
+        const double v = lo + ((hi - lo) * frac);
+        x[j] = m.col_is_int[j] != 0 ? std::clamp(std::round(v), lo, hi) : v;
+    }
+    return x;
+}
+
+// A climber's state after `init(start)` and, if `objective_weight` is
+// set, `reset_moves(objective_weight)`.
+gpu_fj::Climber::State device_state(const gpu_fj::GpuFjModel& m, std::span<const double> start,
+                                    double objective_weight = 0.0) {
+    std::string error;
+    auto device = gpu_fj::DeviceModel::upload(m, error);
+    INFO(error);
+    REQUIRE(device != nullptr);
+    auto climber = gpu_fj::Climber::create(*device, error);
+    REQUIRE(climber != nullptr);
+    REQUIRE(climber->init(start, error));
+    if (objective_weight != 0.0) {
+        REQUIRE(climber->reset_moves(objective_weight, error));
+    }
+    gpu_fj::Climber::State state;
+    REQUIRE(climber->read(state, error));
+    return state;
+}
+
+}  // namespace
+
+TEST_CASE("gpu_fj: a climber's init state is upstream FJ's", "[gpu]") {
     std::string error;
     const double init = gpu_fj::init_context_seconds(error);
     INFO(error);
     REQUIRE(init >= 0.0);
     WARN("CUDA context init: " << init << " s");
 
+    size_t negative = 0;
+    size_t general_int = 0;
+    size_t compared = 0;
+    size_t bitwise = 0;
     for (const char* instance : kInstances) {
         INFO(instance);
         Highs highs;
         read(highs, instance);
         const Setup s(highs.getLp(), highs.getOptions().log_options);
-        const ProblemView& p = s.problem;
-        const gpu_fj::HostModel host(p);
+        const gpu_fj::HostModel host(s.problem);
         const gpu_fj::GpuFjModel m = host.pod();
-        auto device = gpu_fj::DeviceModel::upload(m, error);
-        INFO(error);
-        REQUIRE(device != nullptr);
-
-        // A point with no special structure: inside each column's bounds,
-        // off their midpoint, and nonzero wherever a bound allows.
-        std::vector<double> x(static_cast<size_t>(m.ncol));
+        for (std::int64_t k = 0; k < m.nnz; ++k) {
+            negative += m.row_value[k] < 0.0 ? 1 : 0;
+        }
         for (std::int32_t j = 0; j < m.ncol; ++j) {
-            const double up = m.col_upper[j];
-            double lo = -10.0;
-            if (std::isfinite(m.col_lower[j])) {
-                lo = m.col_lower[j];
-            } else if (std::isfinite(up)) {
-                lo = up - 10.0;
-            }
-            const double hi = std::isfinite(up) ? up : lo + 10.0;
-            const double frac = 0.3 + (0.4 * ((j * 7919) % 13) / 13.0);
-            x[j] = lo + ((hi - lo) * frac);
+            general_int +=
+                m.col_is_int[j] != 0 && (m.col_lower[j] != 0.0 || m.col_upper[j] != 1.0) ? 1 : 0;
         }
-        std::vector<double> want(static_cast<size_t>(m.nrow));
-        for (std::int32_t i = 0; i < m.nrow; ++i) {
-            double sum = 0.0;
-            for (std::int32_t k = m.row_start[i]; k < m.row_start[i + 1]; ++k) {
-                sum += m.row_value[k] * x[m.row_index[k]];
-            }
-            want[i] = sum;
+        for (const std::vector<double>& start : {bound_start(m), interior_start(m)}) {
+            Oracle oracle(m, start);
+            require_state(device_state(m, start), oracle.state(), bitwise);
+            // The objective term, which `init`'s zero weight leaves out.
+            oracle.reset_moves(0.5);
+            require_state(device_state(m, start, 0.5), oracle.state(), bitwise);
+            compared += 2 * (static_cast<size_t>(m.ncon) + (2 * static_cast<size_t>(m.ncol)));
         }
-        std::vector<double> got(static_cast<size_t>(m.nrow), std::nan(""));
-        REQUIRE(device->row_activity(x, got, error));
-        // Bitwise: the same additions in the same order, FMA off both sides.
-        REQUIRE(got == want);
     }
+    REQUIRE(negative > 0);
+    REQUIRE(general_int > 0);
+    WARN(bitwise << " of " << compared << " values differ from upstream's bitwise");
+}
+
+TEST_CASE("gpu_fj: a negative coefficient's valid range is swapped (#139)", "[gpu]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    // -x <= -3, x integer in [0, 10], from x = 0: the jump is to 3, the
+    // least move that satisfies the row.  Unswapped, the range comes out
+    // empty, the row is ignored, and x jumps to its upper bound 10.
+    const HighsLp lp = tiny_lp({0.0}, {10.0}, {0.0}, {-kHighsInf}, {-3.0}, {{-1.0}}, true);
+    const Setup s(lp, highs.getOptions().log_options);
+    const gpu_fj::HostModel host(s.problem);
+    const std::vector<double> start = {0.0};
+    const gpu_fj::Climber::State state = device_state(host.pod(), start);
+    REQUIRE(state.violated == std::vector<std::int32_t>{0});
+    REQUIRE(state.jump == std::vector<double>{3.0});
+    // The violation of 3 is removed at weight 1.
+    REQUIRE(state.score == std::vector<double>{3.0});
+    REQUIRE(state.good == std::vector<std::int32_t>{0});
+}
+
+TEST_CASE("gpu_fj: the objective term is subtracted from a move's score (#139)", "[gpu]") {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    // Two unconstrained integers in [0, 10] at 5, minimising +x0 - x1: each
+    // jumps to its lower bound, so x0's move improves the objective by 5
+    // and x1's worsens it by 5.  At objective weight 1 the scores are +5
+    // and -5; upstream's added term gives -5 and +5.
+    const HighsLp lp = tiny_lp({0.0, 0.0}, {10.0, 10.0}, {1.0, -1.0}, {}, {}, {{}, {}}, true);
+    const Setup s(lp, highs.getOptions().log_options);
+    const gpu_fj::HostModel host(s.problem);
+    const std::vector<double> start = {5.0, 5.0};
+    const gpu_fj::Climber::State state = device_state(host.pod(), start, 1.0);
+    REQUIRE(state.jump == std::vector<double>{0.0, 0.0});
+    REQUIRE(state.score == std::vector<double>{5.0, -5.0});
+    REQUIRE(state.good == std::vector<std::int32_t>{0});
 }
 #endif

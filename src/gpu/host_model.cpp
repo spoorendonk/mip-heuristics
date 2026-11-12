@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 
 namespace gpu_fj {
 
@@ -40,30 +41,45 @@ HostModel::HostModel(const ProblemView& problem) {
     }
 
     // The constraints in `FjWorker`'s order: a row's `>=` half, then its
-    // `<=` half, a free row neither.
+    // `<=` half; a free row neither, and an empty row neither, since
+    // upstream's `addConstraint` drops a constraint with no coefficient.
     const std::vector<double>& row_lower = *problem.row_lower;
     const std::vector<double>& row_upper = *problem.row_upper;
+    const std::vector<HighsInt>& row_start = *problem.ar_start;
     const auto nrow = static_cast<size_t>(problem.nrow);
+    const auto halves = [&](size_t row) {
+        if (row_start[row + 1] == row_start[row]) {
+            return std::pair{false, false};
+        }
+        return std::pair{std::isfinite(row_lower[row]), std::isfinite(row_upper[row])};
+    };
     size_t ncon = 0;
     for (size_t row = 0; row < nrow; ++row) {
-        ncon += (std::isfinite(row_lower[row]) ? 1 : 0) + (std::isfinite(row_upper[row]) ? 1 : 0);
+        const auto [gte, lte] = halves(row);
+        ncon += (gte ? 1 : 0) + (lte ? 1 : 0);
     }
     con_row_.reserve(ncon);
     con_rhs_.reserve(ncon);
     con_sense_.reserve(ncon);
+    row_con_start_.reserve(nrow + 1);
     for (size_t row = 0; row < nrow; ++row) {
-        if (std::isfinite(row_lower[row])) {
+        row_con_start_.push_back(static_cast<std::int32_t>(con_row_.size()));
+        const auto [gte, lte] = halves(row);
+        if (gte) {
             con_row_.push_back(static_cast<std::int32_t>(row));
             con_rhs_.push_back(row_lower[row]);
             con_sense_.push_back(ConSense::kGte);
         }
-        if (std::isfinite(row_upper[row])) {
+        if (lte) {
             con_row_.push_back(static_cast<std::int32_t>(row));
             con_rhs_.push_back(row_upper[row]);
             con_sense_.push_back(ConSense::kLte);
         }
     }
+    row_con_start_.push_back(static_cast<std::int32_t>(con_row_.size()));
 
+    pod_.equality_tol = problem.epsilon;
+    pod_.violation_tol = problem.feastol;
     pod_.ncol = problem.ncol;
     pod_.nrow = problem.nrow;
     pod_.nnz = static_cast<std::int64_t>(problem.nnz);
@@ -81,6 +97,7 @@ HostModel::HostModel(const ProblemView& problem) {
     pod_.con_row = con_row_.data();
     pod_.con_rhs = con_rhs_.data();
     pod_.con_sense = con_sense_.data();
+    pod_.row_con_start = row_con_start_.data();
 }
 #endif
 
