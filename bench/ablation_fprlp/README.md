@@ -72,7 +72,9 @@ multi-worker B&B, which was not HiGHS's default when these runs were taken
 Parallel search off`): `fpr_lp` saw every dive. Since v1.16.0 `parallel=choose`
 grows B&B to `num_threads` workers after its ramp-up and `fpr_lp` skips every
 later dive (#269), so **a rerun passes `parallel=off` in every arm** to measure
-the regime recorded here. Still not `threads=1`: that also shrinks `fpr_lp`'s
+the regime recorded here. `bench/run_ablation_c.sh` does not add it (its
+options stay as run, to pair with the runs on disk): pass it yourself with a
+v1.16+ binary. Still not `threads=1`: that also shrinks `fpr_lp`'s
 own worker team.
 
 ## Stage C0 — capability
