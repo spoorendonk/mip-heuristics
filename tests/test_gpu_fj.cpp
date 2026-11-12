@@ -12,11 +12,13 @@
 
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
 #include "fj_personas.h"
+#include "fj_worker.h"
 #include "gpu/climber.h"
 #include "gpu/device_model.h"
 
 #include <algorithm>
 #include <bit>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <string>
@@ -393,7 +395,7 @@ gpu_fj::Climber::State device_state(const gpu_fj::GpuFjModel& m, std::span<const
     REQUIRE(device != nullptr);
     auto climber = gpu_fj::Climber::create(*device, error);
     REQUIRE(climber != nullptr);
-    REQUIRE(climber->init(start, error));
+    REQUIRE(climber->init(start, 0, error));
     if (objective_weight != 0.0) {
         REQUIRE(climber->reset_moves(objective_weight, error));
     }
@@ -476,5 +478,275 @@ TEST_CASE("gpu_fj: the objective term is subtracted from a move's score (#139)",
     REQUIRE(state.jump == std::vector<double>{0.0, 0.0});
     REQUIRE(state.score == std::vector<double>{5.0, -5.0});
     REQUIRE(state.good == std::vector<std::int32_t>{0});
+}
+
+namespace {
+
+// A climber on `m`, set up with `init(start, seed)`.  `device` must
+// outlive it.
+std::unique_ptr<gpu_fj::Climber> climber_on(const gpu_fj::DeviceModel& device,
+                                            std::span<const double> start, std::uint64_t seed) {
+    std::string error;
+    auto climber = gpu_fj::Climber::create(device, error);
+    INFO(error);
+    REQUIRE(climber != nullptr);
+    REQUIRE(climber->init(start, seed, error));
+    return climber;
+}
+
+std::unique_ptr<gpu_fj::DeviceModel> upload(const gpu_fj::GpuFjModel& m) {
+    std::string error;
+    auto device = gpu_fj::DeviceModel::upload(m, error);
+    INFO(error);
+    REQUIRE(device != nullptr);
+    return device;
+}
+
+gpu_fj::Climber::State read_state(const gpu_fj::Climber& climber) {
+    std::string error;
+    gpu_fj::Climber::State state;
+    INFO(error);
+    REQUIRE(climber.read(state, error));
+    return state;
+}
+
+// Upstream's cells: a constraint's are its row's, a column's one per
+// constraint of each of its rows.
+std::int32_t con_cells(const gpu_fj::GpuFjModel& m, std::int32_t c) {
+    const std::int32_t row = m.con_row[c];
+    return m.row_start[row + 1] - m.row_start[row];
+}
+
+std::int32_t col_cells(const gpu_fj::GpuFjModel& m, std::int32_t j) {
+    std::int32_t n = 0;
+    for (std::int32_t p = m.col_start[j]; p < m.col_start[j + 1]; ++p) {
+        const std::int32_t row = m.col_row[p];
+        n += m.row_con_start[row + 1] - m.row_con_start[row];
+    }
+    return n;
+}
+
+double con_score(const gpu_fj::GpuFjModel& m, std::int32_t c, double lhs) {
+    const double d =
+        m.con_sense[c] == gpu_fj::ConSense::kLte ? lhs - m.con_rhs[c] : m.con_rhs[c] - lhs;
+    return -std::max(0.0, d);
+}
+
+// Close up to rounding that grows with the weights' size.
+void require_near(double got, double want, double scale) {
+    INFO(got << " vs " << want << " at scale " << scale);
+    REQUIRE(std::fabs(got - want) <= 1e-7 * (1.0 + scale + std::fabs(want)));
+}
+
+// A climber's state after any number of steps against a recomputation from
+// its point, weights and (stale) jump values: every LHS, the violated set,
+// every score, and the good set as the scores' positive ones.
+void require_consistent(const gpu_fj::GpuFjModel& m, const gpu_fj::Climber::State& got) {
+    const auto ncon = static_cast<size_t>(m.ncon);
+    double max_weight = 1.0;
+    for (const double w : got.weight) {
+        max_weight = std::max(max_weight, w);
+    }
+    std::vector<double> lhs(ncon, 0.0);
+    for (std::int32_t c = 0; c < m.ncon; ++c) {
+        const std::int32_t row = m.con_row[c];
+        double scale = 0.0;
+        for (std::int32_t p = m.row_start[row]; p < m.row_start[row + 1]; ++p) {
+            lhs[c] += m.row_value[p] * got.x[m.row_index[p]];
+            scale += std::fabs(m.row_value[p] * got.x[m.row_index[p]]);
+        }
+        require_near(got.lhs[c], lhs[c], scale);
+        const bool violated = con_score(m, c, got.lhs[c]) < -m.violation_tol;
+        REQUIRE((got.violated_pos[c] != -1) == violated);
+        if (violated) {
+            REQUIRE(got.violated[got.violated_pos[c]] == c);
+        }
+    }
+    REQUIRE(std::ranges::count_if(got.violated_pos, [](std::int32_t p) { return p != -1; }) ==
+            static_cast<std::ptrdiff_t>(got.violated.size()));
+    for (std::int32_t j = 0; j < m.ncol; ++j) {
+        const double shift = got.jump[j] - got.x[j];
+        double score = -got.objective_weight * m.col_cost[j] * shift;
+        double scale = std::fabs(score);
+        for (std::int32_t p = m.col_start[j]; p < m.col_start[j + 1]; ++p) {
+            const std::int32_t row = m.col_row[p];
+            for (std::int32_t c = m.row_con_start[row]; c < m.row_con_start[row + 1]; ++c) {
+                const double term =
+                    got.weight[c] *
+                    (con_score(m, c, lhs[c] + (m.col_value[p] * shift)) - con_score(m, c, lhs[c]));
+                score += term;
+                scale += std::fabs(term) + (max_weight * std::fabs(lhs[c]));
+            }
+        }
+        INFO("column " << j);
+        require_near(got.score[j], score, scale);
+        REQUIRE((got.good_pos[j] != -1) == (got.score[j] > 0.0));
+        if (got.good_pos[j] != -1) {
+            REQUIRE(got.good[got.good_pos[j]] == j);
+        }
+    }
+    REQUIRE(std::ranges::count_if(got.good_pos, [](std::int32_t p) { return p != -1; }) ==
+            static_cast<std::ptrdiff_t>(got.good.size()));
+}
+
+template <typename T>
+bool same_bytes(const std::vector<T>& a, const std::vector<T>& b) {
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0;
+}
+
+}  // namespace
+
+TEST_CASE("gpu_fj: the step loop's chunks end at upstream's callback effort", "[gpu]") {
+    STATIC_REQUIRE(gpu_fj::kCallbackEffort == kFjCallbackEffort);
+}
+
+TEST_CASE("gpu_fj: a climber finds a feasible point on presolved bundled MIPs", "[gpu]") {
+    // The instances `fj::run_until_stopped` must solve at SCIP's patience,
+    // from FJ's own start, one climber with no restart.
+    for (const char* instance : {"egout.mps", "bell5.mps", "lseu.mps", "gt2.mps"}) {
+        INFO(instance);
+        Highs highs;
+        read(highs, instance);
+        REQUIRE(highs.presolve() == HighsStatus::kOk);
+        const HighsLp lp = highs.getPresolvedLp();
+        const Setup s(lp, highs.getOptions().log_options);
+        const gpu_fj::HostModel host(s.problem);
+        const gpu_fj::GpuFjModel m = host.pod();
+        const auto device = upload(m);
+        const auto climber = climber_on(*device, bound_start(m), 0);
+        // SCIP's 128 x nnz (`test_core.cpp`).
+        const std::uint64_t cap = 128 * static_cast<std::uint64_t>(m.nnz);
+        std::string error;
+        gpu_fj::Climber::Chunk chunk;
+        do {
+            INFO(error);
+            REQUIRE(climber->run(~std::uint64_t{0}, chunk, error));
+        } while (!chunk.improved && chunk.total_effort < cap);
+        REQUIRE(chunk.improved);
+        std::vector<double> best;
+        REQUIRE(climber->read_best(best, error));
+        REQUIRE(is_feasible(lp, best));
+        double objective = 0.0;
+        for (std::int32_t j = 0; j < m.ncol; ++j) {
+            objective += m.col_cost[j] * best[j];
+        }
+        // `incumbentObjective` is kept incrementally, so up to rounding.
+        REQUIRE(std::fabs(objective - chunk.objective) <= 1e-9 * (1.0 + std::fabs(objective)));
+    }
+}
+
+TEST_CASE("gpu_fj: after its chunks a climber's state matches a recomputation, per seed", "[gpu]") {
+    constexpr int kChunks = 4;
+    for (const char* instance : kInstances) {
+        INFO(instance);
+        Highs highs;
+        read(highs, instance);
+        const Setup s(highs.getLp(), highs.getOptions().log_options);
+        const gpu_fj::HostModel host(s.problem);
+        const gpu_fj::GpuFjModel m = host.pod();
+        const auto device = upload(m);
+        const std::vector<double> start = interior_start(m);
+        const auto first = climber_on(*device, start, 7);
+        const auto second = climber_on(*device, start, 7);
+        std::string error;
+        // Upstream's `effortAtLastCallback` starts at 0, before `init`'s effort.
+        std::uint64_t last_effort = 0;
+        for (int k = 0; k < kChunks; ++k) {
+            gpu_fj::Climber::Chunk a;
+            gpu_fj::Climber::Chunk b;
+            INFO(error);
+            REQUIRE(first->run(~std::uint64_t{0}, a, error));
+            REQUIRE(second->run(~std::uint64_t{0}, b, error));
+            REQUIRE(a.total_effort == b.total_effort);
+            REQUIRE(a.improved == b.improved);
+            // A chunk with no new best ends at the first step past one
+            // callback period.
+            if (!a.improved) {
+                REQUIRE(a.total_effort - last_effort > gpu_fj::kCallbackEffort);
+            }
+            last_effort = a.total_effort;
+        }
+        const gpu_fj::Climber::State a = read_state(*first);
+        const gpu_fj::Climber::State b = read_state(*second);
+        REQUIRE(a.steps > 0);
+        require_consistent(m, a);
+        // The same seed, the same bytes.
+        REQUIRE(same_bytes(a.x, b.x));
+        REQUIRE(same_bytes(a.lhs, b.lhs));
+        REQUIRE(same_bytes(a.weight, b.weight));
+        REQUIRE(same_bytes(a.jump, b.jump));
+        REQUIRE(same_bytes(a.score, b.score));
+        REQUIRE(a.violated == b.violated);
+        REQUIRE(a.good == b.good);
+        REQUIRE(a.bumps == b.bumps);
+        std::vector<double> best_a;
+        std::vector<double> best_b;
+        REQUIRE(first->read_best(best_a, error));
+        REQUIRE(second->read_best(best_b, error));
+        REQUIRE(same_bytes(best_a, best_b));
+    }
+}
+
+TEST_CASE("gpu_fj: a step's effort is upstream's", "[gpu]") {
+    constexpr int kSteps = 400;
+    std::uint64_t bumps = 0;
+    for (const char* instance : {"p0548.mps", "bell5.mps", "flugpl.mps"}) {
+        INFO(instance);
+        Highs highs;
+        read(highs, instance);
+        const Setup s(highs.getLp(), highs.getOptions().log_options);
+        const gpu_fj::HostModel host(s.problem);
+        const gpu_fj::GpuFjModel m = host.pod();
+        const auto device = upload(m);
+        const auto climber = climber_on(*device, bound_start(m), 3);
+        gpu_fj::Climber::State pre = read_state(*climber);
+        // `init`: `nNonzeros`, then each `resetMoves`'s cells.
+        std::uint64_t cells = 0;
+        for (std::int32_t c = 0; c < m.ncon; ++c) {
+            cells += static_cast<std::uint64_t>(con_cells(m, c));
+        }
+        REQUIRE(pre.total_effort == 2 * cells);
+        std::string error;
+        for (int step = 0; step < kSteps; ++step) {
+            gpu_fj::Climber::Chunk chunk;
+            INFO(error);
+            REQUIRE(climber->run(1, chunk, error));
+            const gpu_fj::Climber::State post = read_state(*climber);
+            if (post.steps == pre.steps) {
+                // Stopped at a callback before the step.
+                REQUIRE(post.total_effort == pre.total_effort);
+                continue;
+            }
+            REQUIRE(post.steps == pre.steps + 1);
+            const std::int32_t v = post.last_var;
+            auto want = static_cast<std::uint64_t>(col_cells(m, v));
+            for (std::int32_t p = m.col_start[v]; p < m.col_start[v + 1]; ++p) {
+                const std::int32_t row = m.col_row[p];
+                for (std::int32_t c = m.row_con_start[row]; c < m.row_con_start[row + 1]; ++c) {
+                    want += static_cast<std::uint64_t>(con_cells(m, c));
+                }
+            }
+            const std::uint64_t got = post.total_effort - pre.total_effort;
+            if (post.bumps != pre.bumps) {
+                ++bumps;
+                REQUIRE(pre.good.empty());
+                auto bump = static_cast<std::uint64_t>(m.ncol);
+                if (!pre.violated.empty()) {
+                    bump = 0;
+                    for (const std::int32_t c : pre.violated) {
+                        bump += static_cast<std::uint64_t>(con_cells(m, c));
+                    }
+                }
+                REQUIRE(got == want + bump);
+            } else {
+                // The sample, unless the step took a random good variable.
+                const auto sample =
+                    static_cast<std::uint64_t>(std::min<size_t>(25, pre.good.size()));
+                REQUIRE((got == want + sample || got == want));
+            }
+            pre = post;
+        }
+    }
+    REQUIRE(bumps > 0);
 }
 #endif
