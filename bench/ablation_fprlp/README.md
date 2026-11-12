@@ -67,8 +67,13 @@ cannot be read as an answer. A count sidesteps that entirely.
 
 **`threads=1` is deliberately not set.** Pinning it would avoid
 `parallelLockActive()` skipping the heuristic, but the lock is held only under
-multi-worker B&B, which is not HiGHS's default, and every log in both stages
-confirms it. Pinning would measure a regime nothing ships in.
+multi-worker B&B, which was not HiGHS's default when these runs were taken
+(v1.15.1), and every log in both stages confirms it (`Using 1 max workers.
+Parallel search off`): `fpr_lp` saw every dive. Since v1.16.0 `parallel=choose`
+grows B&B to `num_threads` workers after its ramp-up and `fpr_lp` skips every
+later dive (#269), so **a rerun passes `parallel=off` in every arm** to measure
+the regime recorded here. Still not `threads=1`: that also shrinks `fpr_lp`'s
+own worker team.
 
 ## Stage C0 — capability
 

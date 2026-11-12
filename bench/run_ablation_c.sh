@@ -47,11 +47,15 @@
 # ── what is deliberately NOT set ────────────────────────────────────────────
 #
 # **No `threads=1`.**  It was in the issue's original design to stop
-# `parallelLockActive()` skipping the heuristic, and that premise is wrong:
-# `src/fpr_lp.cpp` says the lock is held only under multi-worker B&B, which is
-# not HiGHS's default, and both existing arms confirm it — every log reads
+# `parallelLockActive()` skipping the heuristic.  As run (HiGHS v1.15.1) the
+# lock was never held at default options — every log reads
 # `Thread count 16 (of 32 threads). Using 1 max workers. Parallel search off`.
-# Pinning it would have measured a regime nothing ships in.
+# Since v1.16.0 `parallel=choose` grows B&B to `num_threads` workers after its
+# ramp-up and `fpr_lp` skips every later dive (#269), so **a fresh rerun must
+# pass `parallel=off` in every arm**, or it measures the ramp-up only.  Not
+# `threads=1`: that also shrinks `fpr_lp`'s own worker team.  The options
+# below are left as run, because C1 resumes against `D-shipped` runs already
+# on disk and a changed option would mix regimes inside one paired arm.
 #
 # `MIPFEAS_DEV_LOG=1` on C0 and **not** on C1, which is not an oversight in
 # either direction.  C0 needs the `[Heur] name=fpr_lp phase=dive` lines: they
