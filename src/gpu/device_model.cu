@@ -31,7 +31,15 @@ std::unique_ptr<DeviceModel> DeviceModel::upload(const GpuFjModel& host, std::st
     }
     impl->num_breaks = break_start[ncol];
 
+    // The arrays below: row and column starts and index arrays, their
+    // values, the column and constraint data, and the breakpoint starts.
+    constexpr std::size_t kInt = sizeof(std::int32_t);
+    const std::size_t bytes =
+        ((2 * (nrow + 1) + ncol + 1 + (2 * nnz) + ncon) * kInt) + (2 * nnz * sizeof(double)) +
+        (ncol * ((3 * sizeof(double)) + sizeof(std::uint8_t))) +
+        (ncon * (sizeof(double) + sizeof(ConSense))) + ((ncol + 1) * sizeof(std::int64_t));
     const bool uploaded =
+        fits(bytes, 0, 0, "upload: model", error) &&
         impl->row_start.assign(host.row_start, nrow + 1, "row_start", error) &&
         impl->row_index.assign(host.row_index, nnz, "row_index", error) &&
         impl->row_value.assign(host.row_value, nnz, "row_value", error) &&

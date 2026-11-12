@@ -316,6 +316,34 @@ struct ClimberView {
     std::int32_t* work_off;  // each touched constraint's first work id
     std::int32_t* nbr;       // the distinct columns of the touched cells
     Scalars* s;
+
+    // Climber `k`'s arrays in a batch that lays each array out climber
+    // after climber: `ncol`, `ncon` and `nbreaks` long per climber.
+    __host__ __device__ ClimberView slot(std::size_t k, std::size_t ncol, std::size_t ncon,
+                                         std::size_t nbreaks) const {
+        const std::size_t col = k * ncol;
+        const std::size_t con = k * ncon;
+        return ClimberView{x + col,
+                           lhs + con,
+                           weight + con,
+                           jump + col,
+                           score + col,
+                           best_x + col,
+                           violated + con,
+                           violated_pos + con,
+                           good + col,
+                           good_pos + col,
+                           breaks + (k * nbreaks),
+                           touch + con,
+                           owner + col,
+                           list + con,
+                           coef + con,
+                           old_lhs + con,
+                           new_lhs + con,
+                           work_off + con,
+                           nbr + col,
+                           s + k};
+    }
 };
 
 // splitmix64.
@@ -741,9 +769,14 @@ __device__ int top_of_loop(const DeviceModelView& m, Scalars& s, std::uint64_t t
     return kStep;
 }
 
-// `solve`'s loop up to its next callback, or `max_steps` steps.
+// `solve`'s loop up to its next callback, or `max_steps` steps, for the
+// batch's climber `blockIdx.x`.
 __global__ void __launch_bounds__(kStepThreads)
-    step_kernel(DeviceModelView m, ClimberView c, std::uint64_t cells, std::uint64_t max_steps) {
+    step_kernel(DeviceModelView m, ClimberView batch, std::int64_t nbreaks, std::uint64_t cells,
+                std::uint64_t max_steps) {
+    const ClimberView c =
+        batch.slot(blockIdx.x, static_cast<std::size_t>(m.ncol), static_cast<std::size_t>(m.ncon),
+                   static_cast<std::size_t>(nbreaks));
     __shared__ Scalars s;
     __shared__ BlockScan::TempStorage tmp;
     __shared__ int control;
@@ -820,18 +853,62 @@ bool to_host(std::vector<T>& out, const T* device, std::size_t n, const char* wh
            ok(cudaMemcpy(out.data(), device, n * sizeof(T), cudaMemcpyDeviceToHost), what, error);
 }
 
+// Device bytes a batch's arrays take, as `create` allocates them: each
+// climber's, and the `init` scratch the climbers share.
+struct BatchBytes {
+    std::size_t per_climber;
+    std::size_t shared;
+};
+
+BatchBytes batch_bytes(std::size_t ncol, std::size_t ncon, std::size_t nbreaks,
+                       std::size_t scan_temp_bytes) {
+    constexpr std::size_t kInt = sizeof(std::int32_t);
+    constexpr std::size_t kDouble = sizeof(double);
+    return BatchBytes{
+        // x, jump, score, best_x; good, good_pos, nbr, owner.
+        .per_climber = (ncol * ((4 * kDouble) + (4 * kInt))) +
+                       // lhs, weight, coef, old_lhs, new_lhs; violated,
+                       // violated_pos, touch, list, work_off.
+                       (ncon * ((5 * kDouble) + (5 * kInt))) + (nbreaks * sizeof(Break)) +
+                       sizeof(Scalars),
+        // violated_flag, good_flag, offset.
+        .shared = ((ncon + ncol + std::max(ncol, ncon)) * kInt) + scan_temp_bytes,
+    };
+}
+
 }  // namespace
+
+std::int32_t default_climbers(std::string& error) {
+    int device = 0;
+    int sms = 0;
+    if (!ok(cudaGetDevice(&device), "default_climbers", error) ||
+        !ok(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device),
+            "default_climbers", error)) {
+        return 0;
+    }
+    return sms * kClimbersPerSm;
+}
 
 struct Climber::Impl {
     DeviceModelView m{};
     std::uint64_t cells = 0;  // upstream's `nNonzeros`
-    double objective_weight = 0.0;
+    std::int64_t nbreaks = 0;
+    std::int32_t count = 0;
+    // Per climber, on the host: the objective weight, set with the device's
+    // copy in `scalars`, and whether `init` has run.
+    std::vector<double> objective_weight;
+    std::vector<std::uint8_t> initialized;
+    std::vector<Scalars> out;  // `run`'s read-back
+    // Each climber's arrays, laid out climber after climber
+    // (`ClimberView::slot`).
     DeviceBuffer<double> x, lhs, weight, jump, score, best_x, coef, old_lhs, new_lhs;
-    DeviceBuffer<std::int32_t> violated_flag, violated, violated_pos, good_flag, good, good_pos;
-    DeviceBuffer<std::int32_t> offset, touch, list, work_off, nbr;
+    DeviceBuffer<std::int32_t> violated, violated_pos, good, good_pos, touch, list, work_off, nbr;
     DeviceBuffer<std::uint32_t> owner;
     DeviceBuffer<Scalars> scalars;
     DeviceBuffer<Break> breaks;
+    // `init`'s and `reset_moves`' scratch, shared: the host runs them one
+    // climber at a time.
+    DeviceBuffer<std::int32_t> violated_flag, good_flag, offset;
     DeviceBuffer<unsigned char> scan_temp;
     std::size_t scan_temp_bytes = 0;
 
@@ -855,28 +932,15 @@ struct Climber::Impl {
         return ok(cudaGetLastError(), what, error);
     }
 
-    // The objective weight lives in `scalars` on the device; this copy is
-    // the host's, set with it.
-    bool set_objective_weight(double w, std::string& error) {
-        objective_weight = w;
-        return ok(cudaMemcpy(&scalars.get()->objective_weight, &w, sizeof(double),
-                             cudaMemcpyHostToDevice),
-                  "objective weight", error);
-    }
-
-    bool reset_moves(std::string& error) {
-        std::int32_t* n_good = &scalars.get()->n_good;
-        if (m.ncol == 0) {
-            return compact(0, nullptr, nullptr, nullptr, n_good, "reset_moves", error);
+    [[nodiscard]] bool valid(std::int32_t k, const char* what, std::string& error) const {
+        if (k >= 0 && k < count) {
+            return true;
         }
-        return launched(reset_moves_kernel, m.ncol, "reset_moves", error, m, objective_weight,
-                        x.get(), lhs.get(), weight.get(), breaks.get(), jump.get(), score.get(),
-                        good_flag.get()) &&
-               compact(m.ncol, good_flag.get(), good.get(), good_pos.get(), n_good, "good set",
-                       error);
+        error = std::string(what) + ": no climber " + std::to_string(k);
+        return false;
     }
 
-    [[nodiscard]] ClimberView view() const {
+    [[nodiscard]] ClimberView batch() const {
         return ClimberView{x.get(),       lhs.get(),      weight.get(),   jump.get(),
                            score.get(),   best_x.get(),   violated.get(), violated_pos.get(),
                            good.get(),    good_pos.get(), breaks.get(),   touch.get(),
@@ -884,141 +948,224 @@ struct Climber::Impl {
                            new_lhs.get(), work_off.get(), nbr.get(),      scalars.get()};
     }
 
-    bool read_scalars(Scalars& out, std::string& error) const {
-        return ok(cudaMemcpy(&out, scalars.get(), sizeof(Scalars), cudaMemcpyDeviceToHost),
+    [[nodiscard]] ClimberView view(std::int32_t k) const {
+        return batch().slot(static_cast<std::size_t>(k), static_cast<std::size_t>(m.ncol),
+                            static_cast<std::size_t>(m.ncon), static_cast<std::size_t>(nbreaks));
+    }
+
+    // The objective weight lives in `scalars` on the device; this copy is
+    // the host's, set with it.
+    bool set_objective_weight(std::int32_t k, double w, std::string& error) {
+        objective_weight[static_cast<std::size_t>(k)] = w;
+        return ok(
+            cudaMemcpy(&view(k).s->objective_weight, &w, sizeof(double), cudaMemcpyHostToDevice),
+            "objective weight", error);
+    }
+
+    bool reset_moves(std::int32_t k, std::string& error) {
+        const ClimberView c = view(k);
+        std::int32_t* n_good = &c.s->n_good;
+        if (m.ncol == 0) {
+            return compact(0, nullptr, nullptr, nullptr, n_good, "reset_moves", error);
+        }
+        return launched(reset_moves_kernel, m.ncol, "reset_moves", error, m,
+                        objective_weight[static_cast<std::size_t>(k)], c.x, c.lhs, c.weight,
+                        c.breaks, c.jump, c.score, good_flag.get()) &&
+               compact(m.ncol, good_flag.get(), c.good, c.good_pos, n_good, "good set", error);
+    }
+
+    bool read_scalars(std::int32_t k, Scalars& s, std::string& error) const {
+        return ok(cudaMemcpy(&s, view(k).s, sizeof(Scalars), cudaMemcpyDeviceToHost),
                   "read: scalars", error);
+    }
+
+    bool allocate(std::string& error) {
+        const auto ncol = static_cast<std::size_t>(m.ncol);
+        const auto ncon = static_cast<std::size_t>(m.ncon);
+        const auto k = static_cast<std::size_t>(count);
+        const std::size_t kcol = k * ncol;
+        const std::size_t kcon = k * ncon;
+        return x.allocate(kcol, "x", error) && lhs.allocate(kcon, "lhs", error) &&
+               weight.allocate(kcon, "weight", error) && jump.allocate(kcol, "jump", error) &&
+               score.allocate(kcol, "score", error) && best_x.allocate(kcol, "best_x", error) &&
+               violated.allocate(kcon, "violated", error) &&
+               violated_pos.allocate(kcon, "violated_pos", error) &&
+               good.allocate(kcol, "good", error) && good_pos.allocate(kcol, "good_pos", error) &&
+               touch.allocate(kcon, "touch", error) && owner.allocate(kcol, "owner", error) &&
+               list.allocate(kcon, "list", error) && coef.allocate(kcon, "coef", error) &&
+               old_lhs.allocate(kcon, "old_lhs", error) &&
+               new_lhs.allocate(kcon, "new_lhs", error) &&
+               work_off.allocate(kcon, "work_off", error) && nbr.allocate(kcol, "nbr", error) &&
+               scalars.allocate(k, "scalars", error) &&
+               breaks.allocate(k * static_cast<std::size_t>(nbreaks), "breaks", error) &&
+               violated_flag.allocate(ncon, "violated_flag", error) &&
+               good_flag.allocate(ncol, "good_flag", error) &&
+               offset.allocate(std::max(ncol, ncon), "offset", error) &&
+               scan_temp.allocate(scan_temp_bytes, "scan_temp", error);
     }
 };
 
-std::unique_ptr<Climber> Climber::create(const DeviceModel& model, std::string& error) {
+std::unique_ptr<Climber> Climber::create(const DeviceModel& model, std::int32_t climbers,
+                                         std::string& error) {
+    if (climbers < 1) {
+        error = "create: a batch needs at least one climber";
+        return nullptr;
+    }
     auto impl = std::make_unique<Impl>();
-    impl->m = model.impl_->view;
-    const auto ncol = static_cast<std::size_t>(impl->m.ncol);
-    const auto ncon = static_cast<std::size_t>(impl->m.ncon);
+    Impl& s = *impl;
+    s.m = model.impl_->view;
+    s.count = climbers;
+    s.nbreaks = model.impl_->num_breaks;
+    const auto ncol = static_cast<std::size_t>(s.m.ncol);
+    const auto ncon = static_cast<std::size_t>(s.m.ncon);
     const std::size_t nmax = std::max(ncol, ncon);
-    impl->cells = static_cast<std::uint64_t>(model.impl_->num_breaks - (2 * impl->m.ncol)) / 2;
+    s.cells = static_cast<std::uint64_t>(s.nbreaks - (2 * s.m.ncol)) / 2;
     // A step's work ids are 32-bit.
-    if (impl->cells > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+    if (s.cells > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
         error = "create: too many cells for 32-bit work ids";
         return nullptr;
     }
     // The scan's scratch, sized for the longer of the two flag arrays.
     if (nmax > 0 && !ok(cub::DeviceScan::ExclusiveSum(
-                            nullptr, impl->scan_temp_bytes, static_cast<std::int32_t*>(nullptr),
+                            nullptr, s.scan_temp_bytes, static_cast<std::int32_t*>(nullptr),
                             static_cast<std::int32_t*>(nullptr), static_cast<int>(nmax)),
                         "scan size", error)) {
         return nullptr;
     }
-    Impl& s = *impl;
-    const bool allocated =
-        s.x.allocate(ncol, "x", error) && s.lhs.allocate(ncon, "lhs", error) &&
-        s.weight.allocate(ncon, "weight", error) && s.jump.allocate(ncol, "jump", error) &&
-        s.score.allocate(ncol, "score", error) && s.best_x.allocate(ncol, "best_x", error) &&
-        s.violated_flag.allocate(ncon, "violated_flag", error) &&
-        s.violated.allocate(ncon, "violated", error) &&
-        s.violated_pos.allocate(ncon, "violated_pos", error) &&
-        s.good_flag.allocate(ncol, "good_flag", error) && s.good.allocate(ncol, "good", error) &&
-        s.good_pos.allocate(ncol, "good_pos", error) && s.offset.allocate(nmax, "offset", error) &&
-        s.touch.allocate(ncon, "touch", error) && s.owner.allocate(ncol, "owner", error) &&
-        s.list.allocate(ncon, "list", error) && s.coef.allocate(ncon, "coef", error) &&
-        s.old_lhs.allocate(ncon, "old_lhs", error) && s.new_lhs.allocate(ncon, "new_lhs", error) &&
-        s.work_off.allocate(ncon, "work_off", error) && s.nbr.allocate(ncol, "nbr", error) &&
-        s.scalars.allocate(1, "scalars", error) &&
-        s.breaks.allocate(static_cast<std::size_t>(model.impl_->num_breaks), "breaks", error) &&
-        s.scan_temp.allocate(s.scan_temp_bytes, "scan_temp", error);
+    const BatchBytes bytes =
+        batch_bytes(ncol, ncon, static_cast<std::size_t>(s.nbreaks), s.scan_temp_bytes);
+    if (!fits(bytes.shared, bytes.per_climber, static_cast<std::size_t>(climbers),
+              "create: climbers", error) ||
+        !s.allocate(error)) {
+        return nullptr;
+    }
     // The step scratch starts, and is left after every step, unmarked:
     // every byte 0xFF is a `touch` of -1 and an `owner` of `kNoOwner`.
+    const auto k = static_cast<std::size_t>(climbers);
     const bool cleared =
-        allocated &&
         (ncon == 0 ||
-         ok(cudaMemset(s.touch.get(), 0xFF, ncon * sizeof(std::int32_t)), "touch", error)) &&
+         ok(cudaMemset(s.touch.get(), 0xFF, k * ncon * sizeof(std::int32_t)), "touch", error)) &&
         (ncol == 0 ||
-         ok(cudaMemset(s.owner.get(), 0xFF, ncol * sizeof(std::uint32_t)), "owner", error));
+         ok(cudaMemset(s.owner.get(), 0xFF, k * ncol * sizeof(std::uint32_t)), "owner", error));
     if (!cleared) {
         return nullptr;
     }
+    s.objective_weight.assign(k, 0.0);
+    s.initialized.assign(k, 0);
+    s.out.resize(k);
     return std::unique_ptr<Climber>(new Climber(std::move(impl)));
 }
 
 Climber::Climber(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Climber::~Climber() = default;
 
-bool Climber::init(std::span<const double> start, std::uint64_t seed, std::string& error) {
+std::int32_t Climber::count() const {
+    return impl_->count;
+}
+
+bool Climber::init(std::int32_t k, std::span<const double> start, std::uint64_t seed,
+                   std::string& error) {
     Impl& s = *impl_;
+    if (!s.valid(k, "init", error)) {
+        return false;
+    }
     if (start.size() != static_cast<std::size_t>(s.m.ncol)) {
         error = "init: start has the wrong size";
         return false;
     }
-    s.objective_weight = 0.0;
+    const ClimberView c = s.view(k);
+    s.initialized[static_cast<std::size_t>(k)] = 0;
+    s.objective_weight[static_cast<std::size_t>(k)] = 0.0;
     if (!start.empty() &&
-        !ok(cudaMemcpy(s.x.get(), start.data(), start.size_bytes(), cudaMemcpyHostToDevice),
+        !ok(cudaMemcpy(c.x, start.data(), start.size_bytes(), cudaMemcpyHostToDevice),
             "init: copy start", error)) {
         return false;
     }
-    init_scalars_kernel<<<1, 1>>>(s.m, s.x.get(), seed, 2 * s.cells, s.scalars.get());
+    init_scalars_kernel<<<1, 1>>>(s.m, c.x, seed, 2 * s.cells, c.s);
     if (!ok(cudaGetLastError(), "init: scalars", error)) {
         return false;
     }
-    if (s.m.ncon > 0 &&
-        !Impl::launched(init_constraints_kernel, s.m.ncon, "init: constraints", error, s.m,
-                        s.x.get(), s.lhs.get(), s.weight.get(), s.violated_flag.get())) {
+    if (s.m.ncon > 0 && !Impl::launched(init_constraints_kernel, s.m.ncon, "init: constraints",
+                                        error, s.m, c.x, c.lhs, c.weight, s.violated_flag.get())) {
         return false;
     }
-    return s.compact(s.m.ncon, s.violated_flag.get(), s.violated.get(), s.violated_pos.get(),
-                     &s.scalars.get()->n_violated, "violated set", error) &&
-           s.reset_moves(error);
+    const bool built = s.compact(s.m.ncon, s.violated_flag.get(), c.violated, c.violated_pos,
+                                 &c.s->n_violated, "violated set", error) &&
+                       s.reset_moves(k, error);
+    s.initialized[static_cast<std::size_t>(k)] = built ? 1 : 0;
+    return built;
 }
 
-bool Climber::reset_moves(double objective_weight, std::string& error) {
-    return impl_->set_objective_weight(objective_weight, error) && impl_->reset_moves(error);
+bool Climber::reset_moves(std::int32_t k, double objective_weight, std::string& error) {
+    return impl_->valid(k, "reset_moves", error) &&
+           impl_->set_objective_weight(k, objective_weight, error) && impl_->reset_moves(k, error);
 }
 
-bool Climber::run(std::uint64_t max_steps, Chunk& chunk, std::string& error) {
+bool Climber::run(std::uint64_t max_steps, std::span<Chunk> chunks, std::string& error) {
     Impl& s = *impl_;
-    step_kernel<<<1, kStepThreads>>>(s.m, s.view(), s.cells, max_steps);
-    Scalars out{};
-    if (!ok(cudaGetLastError(), "run: launch", error) || !s.read_scalars(out, error)) {
+    if (chunks.size() != s.out.size()) {
+        error = "run: one chunk per climber";
         return false;
     }
-    s.objective_weight = out.objective_weight;
-    chunk.total_effort = out.total_effort;
-    chunk.effort_since_improvement = out.total_effort - out.effort_at_last_improvement;
-    chunk.improved = out.improved != 0;
-    chunk.objective = out.best_objective;
-    chunk.finished = out.finished != 0;
+    if (std::ranges::find(s.initialized, std::uint8_t{0}) != s.initialized.end()) {
+        error = "run: a climber has had no init";
+        return false;
+    }
+    step_kernel<<<static_cast<unsigned>(s.count), kStepThreads>>>(s.m, s.batch(), s.nbreaks,
+                                                                  s.cells, max_steps);
+    if (!ok(cudaGetLastError(), "run: launch", error) ||
+        !ok(cudaMemcpy(s.out.data(), s.scalars.get(), s.out.size() * sizeof(Scalars),
+                       cudaMemcpyDeviceToHost),
+            "run: scalars", error)) {
+        return false;
+    }
+    for (std::size_t k = 0; k < chunks.size(); ++k) {
+        const Scalars& out = s.out[k];
+        Chunk& chunk = chunks[k];
+        s.objective_weight[k] = out.objective_weight;
+        chunk.total_effort = out.total_effort;
+        chunk.effort_since_improvement = out.total_effort - out.effort_at_last_improvement;
+        chunk.improved = out.improved != 0;
+        chunk.objective = out.best_objective;
+        chunk.finished = out.finished != 0;
+    }
     return true;
 }
 
-bool Climber::read_best(std::vector<double>& x, std::string& error) const {
+bool Climber::read_best(std::int32_t k, std::vector<double>& x, std::string& error) const {
     const Impl& s = *impl_;
     Scalars out{};
-    if (!s.read_scalars(out, error)) {
+    if (!s.valid(k, "read_best", error) || !s.read_scalars(k, out, error)) {
         return false;
     }
     if (std::isinf(out.best_objective)) {
         x.clear();
         return true;
     }
-    return to_host(x, s.best_x.get(), static_cast<std::size_t>(s.m.ncol), "read: best", error);
+    return to_host(x, s.view(k).best_x, static_cast<std::size_t>(s.m.ncol), "read: best", error);
 }
 
-bool Climber::read(State& state, std::string& error) const {
+bool Climber::read(std::int32_t k, State& state, std::string& error) const {
     const Impl& s = *impl_;
+    if (!s.valid(k, "read", error)) {
+        return false;
+    }
+    const ClimberView c = s.view(k);
     const auto ncol = static_cast<std::size_t>(s.m.ncol);
     const auto ncon = static_cast<std::size_t>(s.m.ncon);
     Scalars out{};
     std::vector<std::int32_t> violated;
     std::vector<std::int32_t> good;
     const bool copied =
-        s.read_scalars(out, error) && to_host(state.x, s.x.get(), ncol, "read: x", error) &&
-        to_host(state.lhs, s.lhs.get(), ncon, "read: lhs", error) &&
-        to_host(state.weight, s.weight.get(), ncon, "read: weight", error) &&
-        to_host(violated, s.violated.get(), ncon, "read: violated", error) &&
-        to_host(state.violated_pos, s.violated_pos.get(), ncon, "read: violated_pos", error) &&
-        to_host(state.jump, s.jump.get(), ncol, "read: jump", error) &&
-        to_host(state.score, s.score.get(), ncol, "read: score", error) &&
-        to_host(good, s.good.get(), ncol, "read: good", error) &&
-        to_host(state.good_pos, s.good_pos.get(), ncol, "read: good_pos", error);
+        s.read_scalars(k, out, error) && to_host(state.x, c.x, ncol, "read: x", error) &&
+        to_host(state.lhs, c.lhs, ncon, "read: lhs", error) &&
+        to_host(state.weight, c.weight, ncon, "read: weight", error) &&
+        to_host(violated, c.violated, ncon, "read: violated", error) &&
+        to_host(state.violated_pos, c.violated_pos, ncon, "read: violated_pos", error) &&
+        to_host(state.jump, c.jump, ncol, "read: jump", error) &&
+        to_host(state.score, c.score, ncol, "read: score", error) &&
+        to_host(good, c.good, ncol, "read: good", error) &&
+        to_host(state.good_pos, c.good_pos, ncol, "read: good_pos", error);
     if (!copied) {
         return false;
     }

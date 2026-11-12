@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -390,14 +391,14 @@ gpu_fj::Climber::State device_state(const gpu_fj::GpuFjModel& m, std::span<const
     auto device = gpu_fj::DeviceModel::upload(m, error);
     INFO(error);
     REQUIRE(device != nullptr);
-    auto climber = gpu_fj::Climber::create(*device, error);
+    auto climber = gpu_fj::Climber::create(*device, 1, error);
     REQUIRE(climber != nullptr);
-    REQUIRE(climber->init(start, 0, error));
+    REQUIRE(climber->init(0, start, 0, error));
     if (objective_weight != 0.0) {
-        REQUIRE(climber->reset_moves(objective_weight, error));
+        REQUIRE(climber->reset_moves(0, objective_weight, error));
     }
     gpu_fj::Climber::State state;
-    REQUIRE(climber->read(state, error));
+    REQUIRE(climber->read(0, state, error));
     return state;
 }
 
@@ -490,10 +491,10 @@ void require_ok(bool ok, const std::string& error) {
 std::unique_ptr<gpu_fj::Climber> climber_on(const gpu_fj::DeviceModel& device,
                                             std::span<const double> start, std::uint64_t seed) {
     std::string error;
-    auto climber = gpu_fj::Climber::create(device, error);
+    auto climber = gpu_fj::Climber::create(device, 1, error);
     INFO(error);
     REQUIRE(climber != nullptr);
-    require_ok(climber->init(start, seed, error), error);
+    require_ok(climber->init(0, start, seed, error), error);
     return climber;
 }
 
@@ -505,10 +506,10 @@ std::unique_ptr<gpu_fj::DeviceModel> upload(const gpu_fj::GpuFjModel& m) {
     return device;
 }
 
-gpu_fj::Climber::State read_state(const gpu_fj::Climber& climber) {
+gpu_fj::Climber::State read_state(const gpu_fj::Climber& climber, std::int32_t k = 0) {
     std::string error;
     gpu_fj::Climber::State state;
-    require_ok(climber.read(state, error), error);
+    require_ok(climber.read(k, state, error), error);
     return state;
 }
 
@@ -623,11 +624,11 @@ TEST_CASE("gpu_fj: a climber finds a feasible point on presolved bundled MIPs", 
         std::string error;
         gpu_fj::Climber::Chunk chunk;
         do {
-            require_ok(climber->run(~std::uint64_t{0}, chunk, error), error);
+            require_ok(climber->run(~std::uint64_t{0}, {&chunk, 1}, error), error);
         } while (!chunk.improved && !chunk.finished && chunk.total_effort < cap);
         REQUIRE(chunk.improved);
         std::vector<double> best;
-        require_ok(climber->read_best(best, error), error);
+        require_ok(climber->read_best(0, best, error), error);
         REQUIRE(is_feasible(lp, best));
         double objective = 0.0;
         for (std::int32_t j = 0; j < m.ncol; ++j) {
@@ -657,8 +658,8 @@ TEST_CASE("gpu_fj: after its chunks a climber's state matches a recomputation, p
         for (int k = 0; k < kChunks; ++k) {
             gpu_fj::Climber::Chunk a;
             gpu_fj::Climber::Chunk b;
-            require_ok(first->run(~std::uint64_t{0}, a, error), error);
-            require_ok(second->run(~std::uint64_t{0}, b, error), error);
+            require_ok(first->run(~std::uint64_t{0}, {&a, 1}, error), error);
+            require_ok(second->run(~std::uint64_t{0}, {&b, 1}, error), error);
             REQUIRE(a.total_effort == b.total_effort);
             REQUIRE(a.improved == b.improved);
             // A chunk with no new best ends at the first step past one
@@ -683,8 +684,8 @@ TEST_CASE("gpu_fj: after its chunks a climber's state matches a recomputation, p
         REQUIRE(a.bumps == b.bumps);
         std::vector<double> best_a;
         std::vector<double> best_b;
-        require_ok(first->read_best(best_a, error), error);
-        require_ok(second->read_best(best_b, error), error);
+        require_ok(first->read_best(0, best_a, error), error);
+        require_ok(second->read_best(0, best_b, error), error);
         REQUIRE(same_bytes(best_a, best_b));
     }
 }
@@ -711,7 +712,7 @@ TEST_CASE("gpu_fj: a step's effort is upstream's", "[gpu]") {
         std::string error;
         for (int step = 0; step < kSteps; ++step) {
             gpu_fj::Climber::Chunk chunk;
-            require_ok(climber->run(1, chunk, error), error);
+            require_ok(climber->run(1, {&chunk, 1}, error), error);
             const gpu_fj::Climber::State post = read_state(*climber);
             if (post.steps == pre.steps) {
                 // Stopped at a callback before the step.
@@ -749,5 +750,105 @@ TEST_CASE("gpu_fj: a step's effort is upstream's", "[gpu]") {
         }
     }
     REQUIRE(bumps > 0);
+}
+
+TEST_CASE("gpu_fj: climber k of a batch takes a lone climber's steps, bytes and all", "[gpu]") {
+    constexpr std::int32_t kBatch = 4;
+    constexpr int kChunks = 3;
+    for (const char* instance : kInstances) {
+        INFO(instance);
+        Highs highs;
+        read(highs, instance);
+        const Setup s(highs.getLp(), highs.getOptions().log_options);
+        const gpu_fj::HostModel host(s.problem);
+        const gpu_fj::GpuFjModel m = host.pod();
+        const auto device = upload(m);
+        const std::array<std::vector<double>, 2> starts = {bound_start(m), interior_start(m)};
+        auto start_of = [&](std::int32_t k) -> std::span<const double> {
+            return starts[static_cast<size_t>(k % 2)];
+        };
+        auto seed_of = [](std::int32_t k) { return 11 + static_cast<std::uint64_t>(k); };
+        std::string error;
+        auto batch = gpu_fj::Climber::create(*device, kBatch, error);
+        INFO(error);
+        REQUIRE(batch != nullptr);
+        REQUIRE(batch->count() == kBatch);
+        for (std::int32_t k = 0; k < kBatch; ++k) {
+            require_ok(batch->init(k, start_of(k), seed_of(k), error), error);
+        }
+        std::vector<gpu_fj::Climber::Chunk> chunks(kBatch);
+        std::vector<std::vector<gpu_fj::Climber::Chunk>> batch_chunks(kChunks);
+        for (int i = 0; i < kChunks; ++i) {
+            require_ok(batch->run(~std::uint64_t{0}, chunks, error), error);
+            batch_chunks[static_cast<size_t>(i)] = chunks;
+        }
+        for (std::int32_t k = 0; k < kBatch; ++k) {
+            INFO("climber " << k);
+            const auto lone = climber_on(*device, start_of(k), seed_of(k));
+            for (int i = 0; i < kChunks; ++i) {
+                gpu_fj::Climber::Chunk chunk;
+                require_ok(lone->run(~std::uint64_t{0}, {&chunk, 1}, error), error);
+                const gpu_fj::Climber::Chunk& got =
+                    batch_chunks[static_cast<size_t>(i)][static_cast<size_t>(k)];
+                REQUIRE(got.total_effort == chunk.total_effort);
+                REQUIRE(got.effort_since_improvement == chunk.effort_since_improvement);
+                REQUIRE(got.improved == chunk.improved);
+                REQUIRE(std::bit_cast<std::uint64_t>(got.objective) ==
+                        std::bit_cast<std::uint64_t>(chunk.objective));
+                REQUIRE(got.finished == chunk.finished);
+            }
+            const gpu_fj::Climber::State a = read_state(*batch, k);
+            const gpu_fj::Climber::State b = read_state(*lone);
+            REQUIRE(a.steps > 0);
+            REQUIRE(a.steps == b.steps);
+            REQUIRE(same_bytes(a.x, b.x));
+            REQUIRE(same_bytes(a.lhs, b.lhs));
+            REQUIRE(same_bytes(a.weight, b.weight));
+            REQUIRE(same_bytes(a.jump, b.jump));
+            REQUIRE(same_bytes(a.score, b.score));
+            REQUIRE(a.violated == b.violated);
+            REQUIRE(a.good == b.good);
+            REQUIRE(a.bumps == b.bumps);
+            REQUIRE(std::bit_cast<std::uint64_t>(a.objective_weight) ==
+                    std::bit_cast<std::uint64_t>(b.objective_weight));
+            std::vector<double> best_a;
+            std::vector<double> best_b;
+            require_ok(batch->read_best(k, best_a, error), error);
+            require_ok(lone->read_best(0, best_b, error), error);
+            REQUIRE(same_bytes(best_a, best_b));
+        }
+    }
+}
+
+TEST_CASE("gpu_fj: a batch is refused when it does not fit, or is misused", "[gpu]") {
+    std::string error;
+    REQUIRE(gpu_fj::default_climbers(error) > 0);
+    Highs highs;
+    read(highs, "p0548.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    const gpu_fj::HostModel host(s.problem);
+    const gpu_fj::GpuFjModel m = host.pod();
+    const auto device = upload(m);
+    // Hundreds of bytes a climber, two billion climbers: far past any
+    // device, so refused before a byte is allocated.
+    REQUIRE(gpu_fj::Climber::create(*device, std::numeric_limits<std::int32_t>::max(), error) ==
+            nullptr);
+    INFO(error);
+    REQUIRE(error.contains("needs"));
+    REQUIRE(gpu_fj::Climber::create(*device, 0, error) == nullptr);
+
+    auto batch = gpu_fj::Climber::create(*device, 2, error);
+    REQUIRE(batch != nullptr);
+    std::vector<gpu_fj::Climber::Chunk> chunks(2);
+    const std::vector<double> start = bound_start(m);
+    REQUIRE_FALSE(batch->init(2, start, 0, error));
+    require_ok(batch->init(0, start, 0, error), error);
+    // Climber 1 has had no init.
+    REQUIRE_FALSE(batch->run(~std::uint64_t{0}, chunks, error));
+    require_ok(batch->init(1, start, 1, error), error);
+    REQUIRE_FALSE(batch->run(~std::uint64_t{0}, {chunks.data(), 1}, error));
+    require_ok(batch->run(~std::uint64_t{0}, chunks, error), error);
+    gpu_fj::Climber::State state;
+    REQUIRE_FALSE(batch->read(-1, state, error));
 }
 #endif

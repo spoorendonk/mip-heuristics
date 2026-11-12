@@ -26,6 +26,29 @@ inline bool ok(cudaError_t status, const char* what, std::string& error) {
     return false;
 }
 
+// The free device memory an allocation leaves alone: room for the CUDA
+// runtime's own later allocations and for `cudaMalloc`'s rounding.
+inline constexpr std::size_t kMemoryReserve = std::size_t{64} << 20U;
+
+// Whether `fixed` bytes plus `count` times `each` fit in the device's free
+// memory less `kMemoryReserve`.  If not, or if the query fails, `error` says
+// so and names `what`.
+inline bool fits(std::size_t fixed, std::size_t each, std::size_t count, const char* what,
+                 std::string& error) {
+    std::size_t free = 0;
+    std::size_t total = 0;
+    if (!ok(cudaMemGetInfo(&free, &total), what, error)) {
+        return false;
+    }
+    const std::size_t room = free > kMemoryReserve ? free - kMemoryReserve : 0;
+    if (fixed <= room && (count == 0 || each <= (room - fixed) / count)) {
+        return true;
+    }
+    error = std::string(what) + ": needs " + std::to_string(fixed) + " + " + std::to_string(count) +
+            " x " + std::to_string(each) + " bytes, " + std::to_string(room) + " free";
+    return false;
+}
+
 // One device allocation, freed with its owner.
 template <typename T>
 class DeviceBuffer {

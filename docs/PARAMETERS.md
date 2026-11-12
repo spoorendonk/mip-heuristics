@@ -2521,6 +2521,50 @@ column fixed in or out of its row is never exchanged.
 
 ---
 
+## GPU FJ (`src/gpu/`, #210)
+
+A batch of FJ climbers on the GPU, one persistent thread block each
+(`gpu_fj::Climber`, `-DMIP_HEURISTICS_CUDA=ON` only). Upstream's FJ
+constants that the step loop copies (`kMaxMovesToEvaluate`,
+`kRandomVarProbability`, `kRandomCellProbability`,
+`kMinRelativeObjectiveImprovement`, `kWeightUpdateDecay`, `kRescaleAbove`,
+`kRescaleBy`, `kCallbackEffort`) are upstream's values, not tunables, and
+must move with them on a HiGHS bump.
+
+### `kStepThreads` — threads per climber block
+
+- **File**: `src/gpu/climber.cu`
+- **Default**: `256`
+- **Meaning**: the block size of `step_kernel`, one block per climber. The
+  moved variable's (constraint, cell) work and the neighbours' score
+  updates are spread over it; thread 0 takes every decision that draws
+  from the random stream. Also the `cub::BlockScan` width.
+
+### `kThreads` — threads per block in the setup kernels
+
+- **File**: `src/gpu/climber.cu`
+- **Default**: `256`
+- **Meaning**: the block size of `init`'s and `reset_moves`' one-thread-per-
+  constraint or per-column kernels.
+
+### `kClimbersPerSm` — the default batch's climbers per multiprocessor
+
+- **File**: `src/gpu/climber.h`
+- **Default**: `1`
+- **Meaning**: `default_climbers` is the device's multiprocessor count
+  times this. A starting point, to be calibrated (#266).
+
+### `kMemoryReserve` — free device memory a batch leaves alone
+
+- **File**: `src/gpu/device_internal.cuh`
+- **Default**: `64 MiB`
+- **Meaning**: `DeviceModel::upload` and `Climber::create` estimate their
+  bytes and refuse, before allocating, when they do not fit in
+  `cudaMemGetInfo`'s free memory less this: room for the CUDA runtime's own
+  later allocations and `cudaMalloc`'s rounding.
+
+---
+
 ## Repair Walk (`repair_walk`)
 
 The in-tree repair of paper Fig. 1 lines 7-8, on the partial assignment
