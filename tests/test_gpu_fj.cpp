@@ -482,6 +482,12 @@ TEST_CASE("gpu_fj: the objective term is subtracted from a move's score (#139)",
 
 namespace {
 
+// A device call's result, with the error it reported.
+void require_ok(bool ok, const std::string& error) {
+    INFO(error);
+    REQUIRE(ok);
+}
+
 // A climber on `m`, set up with `init(start, seed)`.  `device` must
 // outlive it.
 std::unique_ptr<gpu_fj::Climber> climber_on(const gpu_fj::DeviceModel& device,
@@ -490,7 +496,7 @@ std::unique_ptr<gpu_fj::Climber> climber_on(const gpu_fj::DeviceModel& device,
     auto climber = gpu_fj::Climber::create(device, error);
     INFO(error);
     REQUIRE(climber != nullptr);
-    REQUIRE(climber->init(start, seed, error));
+    require_ok(climber->init(start, seed, error), error);
     return climber;
 }
 
@@ -505,8 +511,7 @@ std::unique_ptr<gpu_fj::DeviceModel> upload(const gpu_fj::GpuFjModel& m) {
 gpu_fj::Climber::State read_state(const gpu_fj::Climber& climber) {
     std::string error;
     gpu_fj::Climber::State state;
-    INFO(error);
-    REQUIRE(climber.read(state, error));
+    require_ok(climber.read(state, error), error);
     return state;
 }
 
@@ -540,7 +545,9 @@ void require_near(double got, double want, double scale) {
 
 // A climber's state after any number of steps against a recomputation from
 // its point, weights and (stale) jump values: every LHS, the violated set,
-// every score, and the good set as the scores' positive ones.
+// every score, and the good set within the scores' positive ones.  Not all
+// of them: upstream's objective-weight bump moves every score and leaves the
+// good set alone, so a positive score joins it only once a move touches it.
 void require_consistent(const gpu_fj::GpuFjModel& m, const gpu_fj::Climber::State& got) {
     const auto ncon = static_cast<size_t>(m.ncon);
     double max_weight = 1.0;
@@ -580,8 +587,8 @@ void require_consistent(const gpu_fj::GpuFjModel& m, const gpu_fj::Climber::Stat
         }
         INFO("column " << j);
         require_near(got.score[j], score, scale);
-        REQUIRE((got.good_pos[j] != -1) == (got.score[j] > 0.0));
         if (got.good_pos[j] != -1) {
+            REQUIRE(got.score[j] > 0.0);
             REQUIRE(got.good[got.good_pos[j]] == j);
         }
     }
@@ -619,12 +626,11 @@ TEST_CASE("gpu_fj: a climber finds a feasible point on presolved bundled MIPs", 
         std::string error;
         gpu_fj::Climber::Chunk chunk;
         do {
-            INFO(error);
-            REQUIRE(climber->run(~std::uint64_t{0}, chunk, error));
+            require_ok(climber->run(~std::uint64_t{0}, chunk, error), error);
         } while (!chunk.improved && chunk.total_effort < cap);
         REQUIRE(chunk.improved);
         std::vector<double> best;
-        REQUIRE(climber->read_best(best, error));
+        require_ok(climber->read_best(best, error), error);
         REQUIRE(is_feasible(lp, best));
         double objective = 0.0;
         for (std::int32_t j = 0; j < m.ncol; ++j) {
@@ -654,9 +660,8 @@ TEST_CASE("gpu_fj: after its chunks a climber's state matches a recomputation, p
         for (int k = 0; k < kChunks; ++k) {
             gpu_fj::Climber::Chunk a;
             gpu_fj::Climber::Chunk b;
-            INFO(error);
-            REQUIRE(first->run(~std::uint64_t{0}, a, error));
-            REQUIRE(second->run(~std::uint64_t{0}, b, error));
+            require_ok(first->run(~std::uint64_t{0}, a, error), error);
+            require_ok(second->run(~std::uint64_t{0}, b, error), error);
             REQUIRE(a.total_effort == b.total_effort);
             REQUIRE(a.improved == b.improved);
             // A chunk with no new best ends at the first step past one
@@ -681,8 +686,8 @@ TEST_CASE("gpu_fj: after its chunks a climber's state matches a recomputation, p
         REQUIRE(a.bumps == b.bumps);
         std::vector<double> best_a;
         std::vector<double> best_b;
-        REQUIRE(first->read_best(best_a, error));
-        REQUIRE(second->read_best(best_b, error));
+        require_ok(first->read_best(best_a, error), error);
+        require_ok(second->read_best(best_b, error), error);
         REQUIRE(same_bytes(best_a, best_b));
     }
 }
@@ -709,8 +714,7 @@ TEST_CASE("gpu_fj: a step's effort is upstream's", "[gpu]") {
         std::string error;
         for (int step = 0; step < kSteps; ++step) {
             gpu_fj::Climber::Chunk chunk;
-            INFO(error);
-            REQUIRE(climber->run(1, chunk, error));
+            require_ok(climber->run(1, chunk, error), error);
             const gpu_fj::Climber::State post = read_state(*climber);
             if (post.steps == pre.steps) {
                 // Stopped at a callback before the step.

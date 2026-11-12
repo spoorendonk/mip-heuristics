@@ -58,6 +58,7 @@ public:
     // it, until the effort since the last callback passes
     // `kFjCallbackEffort` or the point is a new best feasible one by
     // upstream's relative-improvement test, or `max_steps` steps are taken.
+    // `init` must have run first.
     [[nodiscard]] bool run(std::uint64_t max_steps, Chunk& chunk, std::string& error);
 
     // The best feasible point found since `init`, `ncol` values; empty

@@ -253,9 +253,9 @@ __global__ void compact_kernel(std::int64_t n, const std::int32_t* flag, const s
 //   their first cell comes in the moved constraints' cells.  So a score can
 //   differ from upstream's in rounding, and the good list's order differs,
 //   which is why a GPU seed never replays a CPU one's draws.
-// - Where upstream recomputes every move (the objective-weight bump and a
-//   weight rescale) and adds each variable to the good set in turn, the
-//   good set is rebuilt in index order.
+// - Where a weight rescale recomputes every move and upstream adds each
+//   variable to the good set in turn, the good set is rebuilt in index
+//   order.
 // - The random stream is splitmix64, not `std::mt19937`.
 
 constexpr int kStepThreads = 256;
@@ -372,7 +372,8 @@ __device__ std::int32_t scan_each(std::int32_t n, BlockScan::TempStorage& tmp, V
 
 // The column work id `w` names: cell `w - work_off[k]` of the `k`th of the
 // `m` constraints `cons`, found by binary search over `work_off` (cuOpt's
-// work-id mapping, at block scale).  Every constraint has a cell, so the
+// work-id mapping, at block scale).  Every constraint has a cell
+// (`HostModel` gives an empty row none, as `addConstraint` does), so the
 // offsets strictly increase.
 __device__ std::int32_t work_col(const DeviceModelView& m, const ClimberView& c,
                                  const std::int32_t* cons, std::int32_t n, std::int32_t w) {
@@ -491,7 +492,7 @@ __device__ void rebuild_good(const DeviceModelView& m, const ClimberView& c, Sca
 
 // `updateWeights`, every thread.
 __device__ void update_weights(const DeviceModelView& m, const ClimberView& c, Scalars& s,
-                               BlockScan::TempStorage& tmp) {
+                               BlockScan::TempStorage& tmp, std::uint64_t cells) {
     __shared__ int rescale;
     const std::int32_t tid = static_cast<std::int32_t>(threadIdx.x);
     const double inc = s.weight_increment;
@@ -510,8 +511,9 @@ __device__ void update_weights(const DeviceModelView& m, const ClimberView& c, S
         for (std::int32_t j = tid; j < m.ncol; j += kStepThreads) {
             c.score[j] -= inc * m.col_cost[j] * (c.jump[j] - c.x[j]);
         }
+        // Upstream moves only the scores here: the good set, empty at a
+        // local minimum, stays empty until a move touches a variable.
         __syncthreads();
-        rebuild_good(m, c, s, tmp);
         dt = static_cast<std::uint64_t>(m.ncol);
     } else {
         for (std::int32_t k = tid; k < nv; k += kStepThreads) {
@@ -567,7 +569,6 @@ __device__ void update_weights(const DeviceModelView& m, const ClimberView& c, S
         __syncthreads();
         rebuild_good(m, c, s, tmp);
         // `constraints.size()`, then each `resetMoves`'s cells.
-        const auto cells = static_cast<std::uint64_t>(m.break_start[m.ncol] - (2 * m.ncol)) / 2;
         dt += static_cast<std::uint64_t>(m.ncon) + cells;
     }
     if (tid == 0) {
@@ -736,7 +737,7 @@ __device__ int top_of_loop(const DeviceModelView& m, Scalars& s, std::uint64_t t
 
 // `solve`'s loop up to its next callback, or `max_steps` steps.
 __global__ void __launch_bounds__(kStepThreads)
-    step_kernel(DeviceModelView m, ClimberView c, std::uint64_t max_steps) {
+    step_kernel(DeviceModelView m, ClimberView c, std::uint64_t cells, std::uint64_t max_steps) {
     __shared__ Scalars s;
     __shared__ BlockScan::TempStorage tmp;
     __shared__ int control;
@@ -765,7 +766,7 @@ __global__ void __launch_bounds__(kStepThreads)
         }
         __syncthreads();
         if (var < 0) {
-            update_weights(m, c, s, tmp);
+            update_weights(m, c, s, tmp, cells);
             if (tid == 0) {
                 var = select_at_minimum(m, c, s);
             }
@@ -960,7 +961,7 @@ bool Climber::reset_moves(double objective_weight, std::string& error) {
 
 bool Climber::run(std::uint64_t max_steps, Chunk& chunk, std::string& error) {
     Impl& s = *impl_;
-    step_kernel<<<1, kStepThreads>>>(s.m, s.view(), max_steps);
+    step_kernel<<<1, kStepThreads>>>(s.m, s.view(), s.cells, max_steps);
     Scalars out{};
     if (!ok(cudaGetLastError(), "run: launch", error) || !s.read_scalars(out, error)) {
         return false;
