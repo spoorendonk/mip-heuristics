@@ -4,16 +4,17 @@
 // heuristic", MPC 15:365-388, 2023, Sect. 2.6: the score is a *minimized* sum
 // of an objective term and the violation terms.
 //
-// In the vendored code every other part of that sum is improvement-positive —
+// Up to HiGHS v1.15.1, every other part of that sum is improvement-positive —
 // a constraint term is `weight * (score(new) - score(old))` with `score`
 // returning minus the violation, `selectVariable` takes the maximum, and
 // `updateGoodMoves` calls a move good when its score is positive — while the
 // objective term is *added*, over coefficients the HiGHS wrapper has already
 // multiplied by the model sense.  A move that worsens the objective therefore
 // scored positively, and after first feasibility the improving mode steered
-// away from better objectives.  `apply_patch.cmake` negates the term, at both
-// of the two sites that spell it (`resetMoves` recomputes it, `updateWeights`
-// applies it incrementally).
+// away from better objectives.  The patch negated the term at both sites that
+// spell it (`resetMoves` recomputes it, `updateWeights` applies it
+// incrementally); since v1.16.0 upstream does, and this case pins its code.
+// "Upstream" in the table below means v1.15.1's spelling.
 //
 // What this case pins and what it does not, from running each mutation rather
 // than reasoning about it.  Best reported objective, optimum 0:

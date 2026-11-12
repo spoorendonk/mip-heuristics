@@ -8,7 +8,12 @@ linked from each entry.
 ### Changed
 
 - **HiGHS v1.15.1 → v1.16.0** (#267). A default run changes with upstream:
-  its presolve, B&B and `trySolution` changed. FeasibilityJump is now
+  its presolve, B&B and `trySolution` changed, and B&B now searches with
+  up to `threads` workers at the default `parallel=choose` (v1.15.1 ran one
+  unless `parallel=on`). `fpr_lp` (off by default) skips every dive while
+  B&B has more than one worker, so with it on, a multi-core run gets it only
+  during the single-worker ramp-up; `parallel=off` restores every dive.
+  FeasibilityJump is now
   upstream's own: v1.16.0 carries both #139 fixes, so the patch no longer
   makes them, and upstream's version of the negative-coefficient fix also
   drops the empty-interval skip and the equality row's `(rhs, rhs)`

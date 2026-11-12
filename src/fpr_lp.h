@@ -29,9 +29,10 @@ namespace fpr_lp {
 //    total_lp_iterations, mirroring how RENS/RINS book their sub-MIP LP
 //    iterations, so the shared envelope depletes;
 //  - skipped entirely while parallelLockActive() (multi-worker B&B
-//    search under parallel=on): the counters above are shared and fpr_lp
-//    has no worker-local flush infrastructure, so running there would
-//    race.  Never fires on the default single-search-worker runs.
+//    search): the counters above are shared and fpr_lp has no
+//    worker-local flush infrastructure, so running there would race.
+//    Since HiGHS v1.16.0 multi-worker search is the default after the
+//    ramp-up; parallel=off keeps every dive.
 void run(HighsMipSolver& mipsolver);
 
 // Test hook: counter incremented once per fpr_lp dispatch (one bump per

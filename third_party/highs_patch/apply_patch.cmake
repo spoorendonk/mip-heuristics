@@ -1574,7 +1574,10 @@ if(_found EQUAL -1)
     # `runSetup` then crushes into the presolved space as a MIP start.
     # `finish()` sits behind presolve's status verdict (time limit, memory,
     # error) and ahead of the exit that acts on it, so it sees that verdict
-    # too; the destructor joins on every other return.
+    # too; the destructor joins on every other return.  Since v1.16.0 the
+    # time-limit verdict is presolve's own `kTimeout` only: a presolve that
+    # finishes past the clock leaves `kNotset` and goes on to `runSetup`,
+    # as an unpatched binary does.
     string(REPLACE
       "  profiling_->start(kMipClockRunPresolve);\n"
       "  profiling_->start(kMipClockRunPresolve);\n  heuristics::EarlyFj early_fj(*this);  // mip-heuristics (#205)\n"

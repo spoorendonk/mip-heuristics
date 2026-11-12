@@ -596,15 +596,17 @@ size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
 void run(HighsMipSolver& mipsolver) {
     auto* mipdata = mipsolver.mipdata_.get();
 
-    // Parallel-search guard: under `parallel=on` HiGHS spawns concurrent
-    // processNode tasks (runTask with the parallel lock held), so this
+    // Parallel-search guard: with more than one search worker HiGHS spawns
+    // concurrent processNode tasks (runTask with the parallel lock held), so this
     // function would race on the shared mipdata counters it reads and
     // charges below — RENS/RINS avoid that by accumulating worker-locally
     // and flushing at serial sync points, an infrastructure fpr_lp does
     // not have.  Skipping keeps the budget accounting exact and avoids
     // oversubscribing the thread pool with nested fpr_lp worker teams.
-    // parallelLockActive() is false whenever there is a single search
-    // worker (the HiGHS default), so this never fires on default runs.
+    // parallelLockActive() is false while there is a single search worker.
+    // Since v1.16.0 that is no longer HiGHS's default: `parallel=choose`
+    // grows to `num_threads` workers after the ramp-up, so on a multi-core
+    // host this skips every later dive, and only `parallel=off` keeps them.
     if (mipdata->parallelLockActive()) {
         return;
     }

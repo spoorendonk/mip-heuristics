@@ -297,8 +297,23 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         return CallbackControlFlow::Continue;
     };
 
-    impl_->solver.solve(resume ? nullptr : impl_->col_value.data(), callback, resume);
+    // A return the callback did not ask for is FJ ending its own search:
+    // since v1.16.0 `solve()` breaks when `selectVariable()` finds no move
+    // (every sampled score `-inf`), and a resume would only break again.
+    // So it retires the worker like a stall, for `fj::run` to rebuild.  The
+    // effort since the last callback is not reported (`totalEffort` is
+    // private), which leaves at most one `CALLBACK_EFFORT` uncharged.
+    bool callback_stopped = false;
+    const std::function<CallbackControlFlow(FJStatus)> observed = [&](FJStatus status) {
+        const CallbackControlFlow flow = callback(status);
+        callback_stopped = flow == CallbackControlFlow::Terminate;
+        return flow;
+    };
+    impl_->solver.solve(resume ? nullptr : impl_->col_value.data(), observed, resume);
     first_solve_done_ = true;
+    if (!callback_stopped) {
+        base_.finished = true;
+    }
 
     AttemptResult result{};
     result.effort = attempt_effort_consumed;

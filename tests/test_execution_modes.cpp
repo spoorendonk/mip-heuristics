@@ -67,10 +67,10 @@ TEST_CASE("execution-mode: all heuristics disabled still solves", "[mode-matrix]
 //
 // It used to fire at `mip_heuristic_suite == "off"`, on the rationale that
 // the patch-overhead row had to run exactly what an unpatched binary runs.
-// #139 made that false — it corrects two defects in `feasibilityjump.hh`,
-// which both call sites share, so what ran at `off` was *our* FJ at
-// upstream's call site — and #167 retired the option and the restore
-// together.  A regression that revives the native site compiles, links, and
+// #139 made that false — it corrected two defects in `feasibilityjump.hh`,
+// which both call sites share (upstream since v1.16.0), so what ran at `off`
+// was *our* FJ at upstream's call site — and #167 retired the option and the
+// restore together.  A regression that revives the native site compiles, links, and
 // leaves every other case green while silently running FJ twice on every
 // solve that enables it.
 //

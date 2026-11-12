@@ -8,12 +8,12 @@
 //
 // `JumpMove::updateValue` builds a row's valid range for a variable by
 // dividing both endpoints of the row's bound interval by the coefficient.
-// Upstream does not swap the endpoints when the coefficient is negative,
-// which reverses the interval, so `validRange.first > validRange.second`
-// fires and the row is dropped: an Lte row comes out (+inf, t) and a Gte row
-// (t, -inf).  Such a row contributes neither a critical value nor a slope,
-// and the jump value is computed as if it were not there.
-// `apply_patch.cmake` inserts the swap.
+// Up to HiGHS v1.15.1 it did not swap the endpoints when the coefficient is
+// negative, which reversed the interval and dropped the row: an Lte row came
+// out (+inf, t) and a Gte row (t, -inf), contributing neither a critical
+// value nor a slope.  The patch inserted the swap; since v1.16.0 upstream
+// picks the endpoints by the coefficient's sign itself, and these cases pin
+// upstream's code.
 //
 // The cases below drive `JumpMove` directly rather than only through
 // `FeasibilityJumpSolver::solve`, because that is where the defect lives and
