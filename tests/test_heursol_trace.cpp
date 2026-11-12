@@ -174,7 +174,7 @@ std::vector<std::string> traced_solve(int dev_level) {
 // So: `egout` at defaults for FJ / FPR / LocalMIP, `gt2` with Scylla's
 // effort raised (25 offers against 1 at the default), and `bell5` at
 // `suite=fpr_lp` for the dive-time `fpr_lp` — the recipe `test_fpr_lp.cpp`
-// already uses, and the reason it is not `bell5` at defaults: with the
+// already uses (`reach_fpr_lp_dive`, #275), and the reason it is not `bell5` at defaults: with the
 // whole chain enabled the presolve heuristics usually solve bell5 before
 // the dive needs `fpr_lp`, and the offer count came out 0, 0, 520, 0 over
 // four runs.  At `suite=fpr` it was 360-457 over six; that value was the
@@ -214,9 +214,9 @@ std::vector<std::string> traced_fixture(const Fixture& fixture) {
         }
         // `fpr_lp` ships off (effort default 0), so naming its token is not
         // enough to make it offer; a fixture that selects it has to open the
-        // second gate too.
+        // second gate too, and leave its main-MIP dive the envelope.
         if (std::string_view(fixture.suite).contains("fpr_lp")) {
-            require_option(h, "mip_heuristic_fpr_lp_effort", 1.0);
+            reach_fpr_lp_dive(h);
         }
     });
 }

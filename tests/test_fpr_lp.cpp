@@ -321,8 +321,7 @@ TEST_CASE("fpr_lp: emits a [Sequential] line for its dive-time spend",
         h.setOptionValue("log_dev_level", 3);
         h.setOptionValue("mip_rel_gap", 0.0);
         select_heuristics(h, "fpr_lp");
-        h.setOptionValue("mip_heuristic_fpr_lp_effort", 1.0);
-        one_bnb_worker(h);
+        reach_fpr_lp_dive(h);
     });
     // Guard against a vacuous pass: no dispatch means nothing to report.
     REQUIRE(fpr_lp::dispatch_counts().dispatches >= 1);

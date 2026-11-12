@@ -287,6 +287,22 @@ inline void enable_scylla(Highs& h, double effort = kScyllaMeasuredEffort) {
     require_option(h, "mip_heuristic_scylla_effort", effort);
 }
 
+// A solve whose main-MIP dive reaches `fpr_lp`, for a test that asserts on
+// its dive-time trace (#275).  `fpr_lp` runs only inside upstream's dive
+// heuristics, which `moreHeuristicsAllowed()` gates on the shared
+// LP-iteration envelope.  Since HiGHS v1.16, on bell5 with the presolve
+// chain off, the root's RENS sub-MIPs spend more than that whole envelope
+// (13497 heuristic iterations against about 10700 allowed), so no main-MIP
+// dive runs heuristics and the only dispatches are inside RENS's sub-MIPs,
+// whose log is silenced.  Upstream RENS off leaves the envelope to the dive.
+// `parallel=off` keeps one B&B worker: fpr_lp skips every dive under the
+// parallel lock (#269).  Call it after `select_heuristics`.
+inline void reach_fpr_lp_dive(Highs& h) {
+    require_option(h, "mip_heuristic_fpr_lp_effort", 1.0);
+    require_option(h, "mip_heuristic_run_rens", false);
+    require_option(h, "parallel", std::string("off"));
+}
+
 // Solve `inst` with `selection` selected and return the final objective.
 inline double solve_suite(const char* inst, const char* selection) {
     Highs h;
