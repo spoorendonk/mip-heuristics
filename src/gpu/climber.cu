@@ -61,9 +61,11 @@ __device__ void sift_down(Break* a, std::int64_t root, std::int64_t n) {
     }
 }
 
-// Ascending in place.  Equal breakpoints are equal in both fields, so the
-// sorted sequence is the one `std::sort` gives, whatever the sort's
-// stability.
+// Ascending in place.  Breakpoints that compare equal are equal in both
+// fields up to the sign of a zero value, so the sorted sequence is the one
+// `std::sort` gives, whatever either sort's stability, except that a tie
+// of `-0.0` and `+0.0` may come out in either order (and the jump value
+// with it, as the zero of the other sign).
 __device__ void heap_sort(Break* a, std::int64_t n) {
     for (std::int64_t i = n / 2; i-- > 0;) {
         sift_down(a, i, n);

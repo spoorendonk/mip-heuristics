@@ -15,6 +15,7 @@
 #include "gpu/device_model.h"
 
 #include <algorithm>
+#include <bit>
 #include <memory>
 #include <span>
 #include <string>
@@ -324,7 +325,8 @@ private:
     gpu_fj::Climber::State state_;
 };
 
-// Relative tolerance 1e-9; `bitwise` counts the values that differ at all.
+// Relative tolerance 1e-9; `bitwise` counts the values whose bits differ,
+// a zero of the other sign included.
 void require_close(const std::vector<double>& got, const std::vector<double>& want,
                    size_t& bitwise) {
     REQUIRE(got.size() == want.size());
@@ -332,7 +334,8 @@ void require_close(const std::vector<double>& got, const std::vector<double>& wa
         INFO("index " << i << ": " << got[i] << " vs " << want[i]);
         REQUIRE(std::fabs(got[i] - want[i]) <=
                 1e-9 * std::max(std::fabs(got[i]), std::fabs(want[i])));
-        bitwise += got[i] == want[i] ? 0 : 1;
+        bitwise +=
+            std::bit_cast<std::uint64_t>(got[i]) == std::bit_cast<std::uint64_t>(want[i]) ? 0 : 1;
     }
 }
 
