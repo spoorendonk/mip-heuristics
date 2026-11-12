@@ -3,6 +3,20 @@
 Notable changes to options and behaviour. Measurements live in the issues
 linked from each entry.
 
+## v0.1.11 (2026-11-12)
+
+No option was added, removed or changed its default, and a default run is
+unchanged.
+
+### Changed
+
+- **Linux build and test fixes for HiGHS v1.16.0** (#274, #275): the core
+  boundary is checked by `core_boundary` alone, the stripped-archive link
+  that v1.16 broke is gone, and the dive-time `fpr_lp` tests set up their
+  own LP-iteration envelope.
+- **GPU FJ step loop** (#263, GPU build only): a GPU climber takes
+  upstream FJ's `solve` steps. Nothing calls it yet.
+
 ## v0.1.10 (2026-11-12)
 
 ### Changed
