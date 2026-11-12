@@ -298,6 +298,20 @@ def test_worker_counts_are_read_off_the_solving_block():
     assert result.max_workers == 8
 
 
+def test_worker_counts_parse_from_the_v1_16_line():
+    """HiGHS v1.16.0 reworded the line; the three numbers map the same way."""
+    log = (
+        "   Thread count: 8 available cores, 32 logical processors, "
+        "using up to 4 workers across 16 threads.\n"
+    )
+    result = parse_log(log)
+    assert (result.thread_count, result.hardware_threads, result.max_workers) == (
+        16,
+        32,
+        4,
+    )
+
+
 def test_worker_counts_are_none_when_the_line_is_absent():
     result = parse_log("Solving report\n  Status            Optimal\n")
     assert result.thread_count is None

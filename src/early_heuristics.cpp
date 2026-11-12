@@ -63,12 +63,10 @@ protected:
         // one it hands over, not the pool's best: a better point that fails
         // here must not cost the run a logged one.  `objective` is the view's
         // minimisation form; the line carries the model's own sense.
-        double bound_violation = 0.0;
-        double row_violation = 0.0;
-        double integrality_violation = 0.0;
+        MipViolation violation{};
         HighsCDouble quad_objective = 0.0;
-        if (!mipsolver_.solutionFeasible(mipsolver_.orig_model_, solution, nullptr, bound_violation,
-                                         row_violation, integrality_violation, quad_objective)) {
+        if (!mipsolver_.solutionFeasible(mipsolver_.orig_model_, solution, nullptr, violation,
+                                         quad_objective)) {
             return;
         }
         best_logged_ = objective;
@@ -185,14 +183,9 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     // Checked on the original model with HiGHS's own test, which is what
     // `cleanupSolve` will judge `solution_` by.
     const HighsLp& model = *mipsolver.orig_model_;
-    double bound_violation = 0.0;
-    double row_violation = 0.0;
-    double integrality_violation = 0.0;
+    MipViolation violation{};
     HighsCDouble quad_objective = 0.0;
-    mipsolver.solutionFeasible(&model, best, nullptr, bound_violation, row_violation,
-                               integrality_violation, quad_objective);
-    const double tol = mipsolver.options_mip_->mip_feasibility_tolerance;
-    if (bound_violation > tol || row_violation > tol || integrality_violation > tol) {
+    if (!mipsolver.solutionFeasible(&model, best, nullptr, violation, quad_objective)) {
         return false;
     }
     const auto objective = static_cast<double>(quad_objective);
@@ -204,9 +197,8 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
 
     mipsolver.solution_ = std::move(best);
     mipsolver.solution_objective_ = objective;
-    mipsolver.bound_violation_ = bound_violation;
-    mipsolver.row_violation_ = row_violation;
-    mipsolver.integrality_violation_ = integrality_violation;
+    violation.copy(mipsolver.bound_violation_, mipsolver.row_violation_,
+                   mipsolver.integrality_violation_);
     // The time is here because HiGHS prints no display row for a MIP start:
     // this is when HiGHS can first use the point, and the worker's `found at`
     // lines say when it existed.
@@ -221,10 +213,11 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     // model's offset to it, so this is what makes the run report the
     // solution's objective as its primal bound.  The improving-solution
     // callback, the saved list and the file are reported as upstream's
-    // presolve-optimal exit reports its solution.
+    // presolve-optimal exit reports its solution: with `-kHighsInf` as the
+    // new upper limit, so the point always counts as improving.
     if (status == HighsModelStatus::kTimeLimit) {
         mipsolver.mipdata_->upper_bound = (sense * objective) - mipsolver.model_->offset_;
-        mipsolver.mipdata_->saveReportMipSolution();
+        mipsolver.mipdata_->saveReportMipSolution(-kHighsInf);
     }
     return true;
 }

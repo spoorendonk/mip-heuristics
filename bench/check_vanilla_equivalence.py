@@ -13,8 +13,8 @@ It does **not** prove that a fully zeroed patched binary equals vanilla, and it
 is not a licence to use that configuration as a baseline.  Zeroing our five is
 the "our heuristics disabled" ablation on the patched binary; FeasibilityJump
 is excluded from the comparison rather than compared and forgiven, because the
-patch modifies FJ itself (the per-bump `kVerbose` log line is gone, and #139
-corrected two upstream defects in the search).  A benchmark baseline is always
+patch modifies FJ itself (the per-bump `kVerbose` log line is gone, and it
+carries the resume and cardinality-exchange insertions).  A benchmark baseline is always
 a separately built unpatched binary — that is what
 `bench/run_benchmark.py --vanilla-binary` takes, and it refuses a patched one.
 

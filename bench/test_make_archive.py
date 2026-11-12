@@ -166,6 +166,17 @@ def test_inspect_log_reads_the_worker_count(tmp_path: Path):
     assert facts.hardware_threads == 32
 
 
+def test_inspect_log_reads_the_v1_16_worker_count(tmp_path: Path):
+    """HiGHS v1.16.0 reworded the line; an archive spans both tags' logs."""
+    (tmp_path / "egout.log").write_text(
+        BANNER + "   Thread count: 8 available cores, 32 logical processors, "
+        "using up to 4 workers across 16 threads.\n"
+    )
+    facts = inspect_log(tmp_path / "egout.log")
+    assert facts.workers == 16
+    assert facts.hardware_threads == 32
+
+
 def test_inspect_log_survives_a_log_without_a_worker_count(tmp_path: Path):
     write_run(tmp_path, "egout", workers=None)
     facts = inspect_log(tmp_path / "egout.log")
@@ -669,7 +680,7 @@ def test_provenance_document_states_the_facts_a_reader_needs(
     manifest = build(tree, tmp_path / "arch", note="closeout campaign")
     text = render_provenance(manifest)
     assert "closeout campaign" in text
-    assert "HiGHS `v1.15.1`" in text
+    assert "HiGHS `v1.16.0`" in text
     assert "mip-heuristics patch active" in text
     assert "ablation on the patched binary — not a vanilla baseline" in text
     assert "Instrumented (`log_dev_level=3`) | yes" in text
@@ -686,7 +697,7 @@ def test_manifest_json_is_loadable_and_carries_the_table_argv(
     build(tree, archive)
     payload = json.loads((archive / "MANIFEST.json").read_text())
     assert payload["manifest_version"] == MANIFEST_VERSION
-    assert payload["source"]["highs_tag"] == "v1.15.1"
+    assert payload["source"]["highs_tag"] == "v1.16.0"
     assert payload["baseline"]["config"] == "off"
     names = {t["name"]: t for t in payload["tables"]}
     assert "--attribution" in names["attribution"]["argv"]

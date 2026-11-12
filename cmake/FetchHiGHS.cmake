@@ -113,7 +113,7 @@ unset(_script_sha)
 
 FetchContent_Declare(highs
     GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS.git
-    GIT_TAG        v1.15.1
+    GIT_TAG        v1.16.0
     # Depth-1.  The full clone is ~197 MB of which ~178 MB is history we never
     # read, and the pre-push gate re-clones on every clean rebuild.  Safe with
     # a tag: the fetched ref is exactly the commit named above, and HiGHS's own

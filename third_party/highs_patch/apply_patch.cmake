@@ -200,7 +200,12 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 41 removes version 38's option record (#257): FJ's SAT lane was
 # measured without gain (#212) and deleted.
-set(PATCH_VERSION "41")
+#
+# Version 42 is the HiGHS v1.16.0 tree (#267): upstream now carries #139's
+# two FeasibilityJump fixes and the out-of-line `~HighsMipWorker`, so those
+# insertions are gone, and the resume, exchange, early-FJ and fpr_lp
+# insertions are re-anchored on upstream's new text.
+set(PATCH_VERSION "42")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -794,49 +799,6 @@ else()
     message(STATUS "Clique-list accessors already applied, skipping")
 endif()
 
-# ── Patch HighsMipWorker.h/.cpp: define the destructor out of line ──
-#
-# Upstream defines `~HighsMipWorker()` inline, resetting a
-# `std::unique_ptr<HighsSearch>` while `HighsSearch` is only forward-declared
-# there.  At HiGHS's own C++11 that is fine: the deleter is instantiated at
-# the end of the translation unit, by which point `HighsMipSolverData.h` has
-# included `HighsSearch.h`.  Our sources are C++23, where libc++ (Apple
-# clang) makes `unique_ptr` constexpr and instantiates the deleter on the
-# spot, so every one of our files that reaches `HighsMipSolverData.h` fails
-# with "invalid application of 'sizeof' to an incomplete type".  No include
-# order helps: `HighsSearch.h` itself includes `HighsMipWorker.h`.  Moving
-# the two-line body into `HighsMipWorker.cpp`, where both types are complete,
-# changes nothing a solve does; it is how libstdc++ builds see it already.
-file(READ "${MIP_DIR}/HighsMipWorker.h" WORKER_H)
-file(READ "${MIP_DIR}/HighsMipWorker.cpp" WORKER_CPP)
-string(FIND "${WORKER_H}" "~HighsMipWorker();  // mip-heuristics" _worker_dtor_found)
-if(_worker_dtor_found EQUAL -1)
-    string(REPLACE
-      "  ~HighsMipWorker() {\n    search_ptr_.reset();\n    sepa_ptr_.reset();\n  }\n"
-      "  ~HighsMipWorker();  // mip-heuristics: out of line, see HighsMipWorker.cpp\n"
-      WORKER_H "${WORKER_H}")
-    string(REPLACE
-      "void HighsMipWorker::resetSearch() {"
-      "// mip-heuristics: out of line so a C++23 libc++ includer of the header\n// never instantiates unique_ptr<HighsSearch>'s deleter on an incomplete type.\nHighsMipWorker::~HighsMipWorker() {\n  search_ptr_.reset();\n  sepa_ptr_.reset();\n}\n\nvoid HighsMipWorker::resetSearch() {"
-      WORKER_CPP "${WORKER_CPP}")
-
-    string(FIND "${WORKER_H}" "~HighsMipWorker();  // mip-heuristics" _worker_h_ok)
-    string(FIND "${WORKER_CPP}" "HighsMipWorker::~HighsMipWorker()" _worker_cpp_ok)
-    if(_worker_h_ok EQUAL -1 OR _worker_cpp_ok EQUAL -1)
-        message(FATAL_ERROR
-            "HighsMipWorker destructor patch failed "
-            "(header=${_worker_h_ok}, source=${_worker_cpp_ok}). "
-            "Upstream HiGHS likely changed ~HighsMipWorker() or "
-            "HighsMipWorker::resetSearch(). "
-            "${CLEAN_REBUILD}")
-    endif()
-    file(WRITE "${MIP_DIR}/HighsMipWorker.h" "${WORKER_H}")
-    file(WRITE "${MIP_DIR}/HighsMipWorker.cpp" "${WORKER_CPP}")
-    message(STATUS "Applied out-of-line ~HighsMipWorker to HighsMipWorker.h/.cpp")
-else()
-    message(STATUS "Out-of-line ~HighsMipWorker already applied, skipping")
-endif()
-
 # ── Patch HighsMipSolverData.cpp: add source strings + fix key display ──
 file(READ "${MIP_DIR}/HighsMipSolverData.cpp" MIPDATA_CPP)
 
@@ -1144,205 +1106,34 @@ else()
     message(STATUS "FJ per-bump log line already removed, skipping")
 endif()
 
-# ── Patch feasibilityjump.hh: fix the negative-coefficient jump value ──
-# Upstream defect, inherited from the SINTEF reference and present in HiGHS
-# v1.15.1 and on master (#139).  `JumpMove::updateValue` builds a row's valid
-# range for one variable by dividing both endpoints of the row's bound
-# interval by that variable's coefficient — and does not swap them when the
-# coefficient is negative.  Dividing by a negative number reverses the
-# inequality, so the range comes out back to front, `validRange.first >
-# validRange.second` is then true unconditionally, and `continue` drops the
-# row.  For a negative coefficient an Lte row yields (+inf, t) and a Gte row
-# (t, -inf), so *every* such row is dropped: it registers neither a critical
-# value nor a slope, and the variable's jump value is computed as if the row
-# did not exist.  HiGHS emits a Gte and an Lte copy of a two-sided row and
-# both copies are dropped.
-#
-# The paper (Luteberget & Sartor, "Feasibility Jump: an LP-free Lagrangian MIP
-# heuristic", MPC 2023) defines the critical value in eq. (5)/(6) with
-# explicit positive- and negative-coefficient cases, and Algorithm 1
-# accumulates the pre-bound slope by that sign.  One conditional swap restores
-# both.
-#
-# Scope: what degrades is the *move* — the (value, score) pair — and not the
-# scoring rule.  An earlier revision of this comment said "only the candidate
-# value degrades, move scores stay exact, because `resetMoves` recomputes the
-# score over every row rather than reading anything `updateValue` produced".
-# The second half is wrong and the first follows from it: `resetMoves` builds
-# `candidateLhs` from `move.value`, so it scores *the move `updateValue` just
-# chose*.  The score is therefore internally consistent with a wrong value
-# rather than exact, and FeasibilityJump proceeds to evaluate and accept moves
-# it should not have been offered.  The visible consequence is a different
-# reported solution, not merely a different internal trajectory --
-# `tests/test_fj_jump_value.cpp`'s solver-level case fails before this fix,
-# and the issue's own repro reports x0 = 10 against x0 = 3.  Binaries are
-# barely affected (the jump is the opposite bound either way); the damage
-# concentrates on general integers and continuous columns holding negative
-# coefficients in
-# inequality rows.  Pinned by `tests/test_fj_jump_value.cpp`, which drives the
-# vendored solver directly on the same model written with a +1 and a -1
-# coefficient and requires the same critical value from both.
-#
-# One hazard the anchor cannot see: it pins the two `1.0 / cell.coeff` lines
-# and the `VarType::Integer` branch that follows them, so an upstream fix that
-# swapped the endpoints *elsewhere* in `updateValue` — a helper, or a sign
-# branch further down — would leave the anchor matching and this block would
-# then swap a second time, restoring the defect with no diagnostic.  Re-read
-# the whole of `updateValue` on a HiGHS tag bump, not just the anchored lines.
-#
-# Consequence: our FeasibilityJump is no longer bit-identical to HiGHS's.  See
-# the README and docs/ARCHITECTURE.md `fj` entries, which say so.
-file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_JUMP)
-# Keyed on the inserted *code*, not on a comment: the comment marker used
-# here at first was "mip-heuristics (#139)", which is a prefix of the
-# objective-sign block's own marker below.  Harmless at today's ordering,
-# but any future block inserting #139 text ahead of this one would satisfy
-# this FIND and skip the swap silently — and the anchor FATAL_ERROR could
-# not catch it, because it lives inside this branch.  Two disjoint keys,
-# each asking whether its own fix is present.
-string(FIND "${FJ_JUMP}"
-       "if (cell.coeff < 0.0) std::swap(validRange.first, validRange.second);"
-       _fj_swap_found)
-if(_fj_swap_found EQUAL -1)
-    set(_fj_swap_anchor
-      "            ((1.0 / cell.coeff) * (bound.second - residualIncumbent)),\n        };\n\n        if (problem.vars[varIdx].vartype == VarType::Integer)")
-
-    # Fail loudly rather than skipping.  Every other check in this file keys
-    # on text this script inserted, which cannot distinguish "not patched yet"
-    # from "the upstream text moved"; here the anchor is upstream's own text,
-    # so its absence means exactly one thing.  Without this a HiGHS tag bump
-    # that reformats `updateValue` would silently ship the upstream defect
-    # again, and nothing in the build would say so.
-    string(FIND "${FJ_JUMP}" "${_fj_swap_anchor}" _fj_swap_anchor_found)
-    if(_fj_swap_anchor_found EQUAL -1)
-        message(FATAL_ERROR
-            "feasibilityjump.hh patch failed: the JumpMove::updateValue "
-            "valid-range anchor no longer matches (upstream reformat or "
-            "upstream fix?). If upstream fixed the negative-coefficient "
-            "swap, drop this block; otherwise re-anchor it. "
-            "${CLEAN_REBUILD}")
-    endif()
-
-    string(REPLACE "${_fj_swap_anchor}"
-      "            ((1.0 / cell.coeff) * (bound.second - residualIncumbent)),\n        };\n\n        // mip-heuristics (#139): a negative coefficient reverses the\n        // inequality, so dividing both endpoints of the bound interval by\n        // it yields the valid range back to front.  Upstream never swaps\n        // them, and the emptiness test below then discards the row: for a\n        // negative coefficient an Lte row comes out (+inf, t) and a Gte row\n        // (t, -inf), so the row registers neither a critical value nor a\n        // slope and the jump value is computed as if the row were absent.\n        // Paper eq. (5)/(6) give the critical value an explicit\n        // negative-coefficient case, and Algorithm 1 accumulates the\n        // pre-bound slope by that same sign.  The swap is placed before the\n        // integer rounding below so ceil/floor still see the true lower and\n        // upper endpoints.\n        if (cell.coeff < 0.0) std::swap(validRange.first, validRange.second);\n\n        if (problem.vars[varIdx].vartype == VarType::Integer)"
-      FJ_JUMP "${FJ_JUMP}")
-
-    string(FIND "${FJ_JUMP}" "std::swap(validRange.first, validRange.second)"
-           _fj_swap_check)
-    if(_fj_swap_check EQUAL -1)
-        message(FATAL_ERROR
-            "feasibilityjump.hh post-patch sanity check failed: the "
-            "negative-coefficient swap is not present after patching. "
-            "${CLEAN_REBUILD}")
-    endif()
-
-    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_JUMP}")
-    message(STATUS "Applied negative-coefficient jump-value fix to feasibilityjump.hh")
-else()
-    message(STATUS "Negative-coefficient jump-value fix already applied, skipping")
-endif()
-
-# ── Patch feasibilityjump.hh: fix the objective term's sign ────────────
-# The second upstream defect of #139, in the same file and equally present in
-# HiGHS v1.15.1 and on master.  The move score is a Lagrangian: paper
-# Sect. 2.6 extends it to a *minimized* sum of an objective term and the
-# violation terms.  In the code every other part of that sum is
-# improvement-positive — a constraint term is `weight * (score(new) -
-# score(old))` with `score` returning minus the violation, `selectVariable`
-# takes the maximum score, and `updateGoodMoves` calls a move good when its
-# score is positive.  The objective term is added rather than subtracted, and
-# `HighsMipSolverData::feasibilityJump*` hands `addVar` a coefficient already
-# multiplied by the model sense, so the coefficients are always those of a
-# minimization.  A move that *worsens* the objective therefore scores
-# positively, and after first feasibility the improving mode steers away from
-# better objectives.  The same expression appears twice — once recomputed in
-# `resetMoves` and once applied incrementally in `updateWeights` — and both
-# must carry the same sign or a weight bump would drift the scores apart.
-#
-# Nothing bad ever reached the incumbent: FeasibilityJump's improvement
-# callback fires only on strict improvement, so the harm was slower and worse
-# improvement, not wrong output.  It is also partly masked, because with no
-# violated constraint and no good move `selectVariable` falls through to a
-# score-blind random pick whose jump can improve the objective by luck.
-#
-# The paper states the objective "was not taken into account in any of the
-# computational results" (Sect. 2.6), so this path was never benchmarked by
-# its authors either, and the issue asked for a measurement rather than an
-# argument.  Measured on `bench/instances_small.txt` (25 MIPLIB instances,
-# seeds 0-2, `suite=fj`, `presolve_only`, `threads=1`, a 10 s limit and an
-# effort budget too large to bind so the wall clock is the single stopping
-# rule): feasibility is unchanged at 35/75 runs either way, and among the 35
-# runs that found something and have a reference objective the corrected sign
-# wins 29, loses 1 and ties 5, taking the median gap to the reference from
-# 0.535 to 0.112 and the mean from 698 to 0.93.  The one loss is mas76 seed 1
-# at 0.068 against 0.076, inside that instance's seed spread.
-#
-# Pinned by `tests/test_fj_objective_sign.cpp`.
-file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_OBJ)
-# Keyed on the inserted code, disjoint from the swap block's key above.
-string(FIND "${FJ_OBJ}"
+# ── Check feasibilityjump.hh: upstream's own fixes of #139 are present ──
+# Our two corrections to FeasibilityJump (#139) are upstream since HiGHS
+# v1.16.0, so this script no longer edits either; it checks they are still
+# there, since nothing else in the build would notice a tag that lost them.
+#  - `JumpMove::updateValue` picks the bound interval's endpoints by the
+#    coefficient's sign before dividing, so a negative coefficient no longer
+#    yields a back-to-front valid range that drops the row (paper eq. (5)/(6)).
+#  - The objective term is *subtracted* from a move's score in both
+#    `resetMoves` and `updateWeights`, so a move that worsens a minimization
+#    no longer scores positively (paper Sect. 2.6).
+# The behaviour is pinned by `tests/test_fj_jump_value.cpp` and
+# `tests/test_fj_objective_sign.cpp`; this is only a spelling check.
+file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_UPSTREAM)
+string(FIND "${FJ_UPSTREAM}" "boundForValidLower = bound.second;" _fj_swap_upstream)
+string(FIND "${FJ_UPSTREAM}"
        "move.score -= objectiveWeight * problem.vars[varIdx].objectiveCoeff *"
-       _fj_obj_found)
-if(_fj_obj_found EQUAL -1)
-    set(_fj_obj_reset_anchor
-      "      move.score += objectiveWeight * problem.vars[varIdx].objectiveCoeff *\n                    (move.value - problem.incumbentAssignment[varIdx]);")
-    set(_fj_obj_bump_anchor
-      "          move.score += weightUpdateIncrement *\n                        problem.vars[varIdx].objectiveCoeff *\n                        (move.value - problem.incumbentAssignment[varIdx]);")
-
-    # Both anchors are upstream's own text, so absence means the text moved
-    # rather than "already patched" — fail loudly, since a silent skip would
-    # ship the defect again with nothing in the build saying so.  Checked
-    # separately: the two sites are edited independently and a partial match
-    # would leave the two spellings of the same term disagreeing in sign.
-    string(FIND "${FJ_OBJ}" "${_fj_obj_reset_anchor}" _fj_obj_reset_found)
-    string(FIND "${FJ_OBJ}" "${_fj_obj_bump_anchor}" _fj_obj_bump_found)
-    if(_fj_obj_reset_found EQUAL -1 OR _fj_obj_bump_found EQUAL -1)
-        message(FATAL_ERROR
-            "feasibilityjump.hh patch failed: the objective-term anchors no "
-            "longer match (resetMoves found: ${_fj_obj_reset_found}, "
-            "updateWeights found: ${_fj_obj_bump_found}; -1 means missing). "
-            "Upstream reformatted or fixed the sign. If upstream fixed it, "
-            "drop this block; otherwise re-anchor it. ${CLEAN_REBUILD}")
-    endif()
-
-    string(REPLACE "${_fj_obj_reset_anchor}"
-      "      // mip-heuristics (#139): the objective term is *subtracted*.\n      // Upstream adds it, which inverts it against everything around it:\n      // the constraint terms below are improvement-positive (a move that\n      // removes violation raises the score), `selectVariable` takes the\n      // maximum, `updateGoodMoves` calls a move good when its score is\n      // positive, and `addVar` receives objective coefficients already\n      // multiplied by the model sense, i.e. always a minimization.  Added,\n      // the term therefore rewards a move that makes the objective worse.\n      // Paper Sect. 2.6 extends the Lagrangian to a *minimized* sum of the\n      // objective and the violation terms.\n      move.score -= objectiveWeight * problem.vars[varIdx].objectiveCoeff *\n                    (move.value - problem.incumbentAssignment[varIdx]);"
-      FJ_OBJ "${FJ_OBJ}")
-    string(REPLACE "${_fj_obj_bump_anchor}"
-      "          // mip-heuristics (#139): subtracted, matching `resetMoves`.\n          // This is the same term incrementally: the branch runs when no\n          // constraint is violated and it raises `objectiveWeight` by\n          // `weightUpdateIncrement`, so it must move every score by the\n          // same signed quantity `resetMoves` would recompute.\n          move.score -= weightUpdateIncrement *\n                        problem.vars[varIdx].objectiveCoeff *\n                        (move.value - problem.incumbentAssignment[varIdx]);"
-      FJ_OBJ "${FJ_OBJ}")
-
-    # Both sites, and no surviving `+=` spelling of either.  This is a
-    # spelling check, not a test, and it is worth being precise about what it
-    # cannot see: it runs only inside the `EQUAL -1` branch, after a pre-check
-    # that has already asserted both anchors, so it catches a half-applied
-    # patch and nothing subtler.  `move.score -= -weightUpdateIncrement * ...`,
-    # a flipped `objectiveWeight += weightUpdateIncrement`, or a deleted
-    # incremental loop with a `-=` surviving elsewhere all pass it.
-    # `tests/test_fj_objective_sign.cpp` is what covers the behaviour; see its
-    # header for which of the two sites it actually pins.
-    string(FIND "${FJ_OBJ}"
-           "move.score -= objectiveWeight * problem.vars[varIdx].objectiveCoeff *"
-           _fj_obj_reset_check)
-    string(FIND "${FJ_OBJ}" "move.score -= weightUpdateIncrement *"
-           _fj_obj_bump_check)
-    string(FIND "${FJ_OBJ}"
-           "move.score += objectiveWeight * problem.vars[varIdx].objectiveCoeff *"
-           _fj_obj_reset_stale)
-    string(FIND "${FJ_OBJ}" "move.score += weightUpdateIncrement *"
-           _fj_obj_bump_stale)
-    if(_fj_obj_reset_check EQUAL -1 OR _fj_obj_bump_check EQUAL -1
-       OR NOT _fj_obj_reset_stale EQUAL -1 OR NOT _fj_obj_bump_stale EQUAL -1)
-        message(FATAL_ERROR
-            "feasibilityjump.hh post-patch sanity check failed: the objective "
-            "term is not subtracted at both sites after patching. "
-            "${CLEAN_REBUILD}")
-    endif()
-
-    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_OBJ}")
-    message(STATUS "Applied objective-term sign fix to feasibilityjump.hh")
-else()
-    message(STATUS "Objective-term sign fix already applied, skipping")
+       _fj_obj_reset_upstream)
+string(FIND "${FJ_UPSTREAM}" "move.score -= weightUpdateIncrement *"
+       _fj_obj_bump_upstream)
+if(_fj_swap_upstream EQUAL -1 OR _fj_obj_reset_upstream EQUAL -1
+   OR _fj_obj_bump_upstream EQUAL -1)
+    message(FATAL_ERROR
+        "feasibilityjump.hh no longer carries upstream's #139 fixes "
+        "(negative-coefficient range: ${_fj_swap_upstream}, objective sign in "
+        "resetMoves: ${_fj_obj_reset_upstream}, in updateWeights: "
+        "${_fj_obj_bump_upstream}; -1 means missing). Re-read "
+        "JumpMove::updateValue, resetMoves and updateWeights, and restore the "
+        "fix as a patch block if upstream dropped it.")
 endif()
 
 # ── Patch feasibilityjump.hh: add resume parameter to solve() ──
@@ -1351,10 +1142,17 @@ file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_HH)
 string(FIND "${FJ_HH}" "bool resume = false" _fj_resume_found)
 if(_fj_resume_found EQUAL -1)
     string(REPLACE
-      "  int solve(double* initialValues,\n            std::function<CallbackControlFlow(FJStatus)> callback) {\n    assert(callback);\n    highsLogDev(logOptions, HighsLogType::kInfo,\n                FJ_LOG_PREFIX\n                \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                weightUpdateDecay, problem.usedRelaxContinuous);\n\n    init(initialValues);\n\n    effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    int num_logging_lines_since_header = 0;"
-      "  int solve(double* initialValues,\n            std::function<CallbackControlFlow(FJStatus)> callback,\n            bool resume = false) {\n    assert(callback);\n    if (!resume) {\n      highsLogDev(logOptions, HighsLogType::kInfo,\n                  FJ_LOG_PREFIX\n                  \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                  weightUpdateDecay, problem.usedRelaxContinuous);\n      init(initialValues);\n      effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    }\n    int num_logging_lines_since_header = 0;"
+      "  int solve(double* initialValues,\n            const std::function<CallbackControlFlow(FJStatus)>& callback) {\n    assert(callback);\n    highsLogDev(logOptions, HighsLogType::kInfo,\n                FJ_LOG_PREFIX\n                \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                weightUpdateDecay, problem.usedRelaxContinuous);\n\n    init(initialValues);\n\n    effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    int num_logging_lines_since_header = 0;"
+      "  int solve(double* initialValues,\n            const std::function<CallbackControlFlow(FJStatus)>& callback,\n            bool resume = false) {\n    assert(callback);\n    if (!resume) {\n      highsLogDev(logOptions, HighsLogType::kInfo,\n                  FJ_LOG_PREFIX\n                  \"starting solve. weightUpdateDecay=%g, relaxContinuous=%d  \\n\",\n                  weightUpdateDecay, problem.usedRelaxContinuous);\n      init(initialValues);\n      effortAtLastLogging = -kMinEffortToLogging;  // Enabling step=0 logging\n    }\n    int num_logging_lines_since_header = 0;"
       FJ_HH "${FJ_HH}")
 
+    string(FIND "${FJ_HH}" "bool resume = false" _fj_resume_check)
+    if(_fj_resume_check EQUAL -1)
+        message(FATAL_ERROR
+            "feasibilityjump.hh patch failed: the solve() head anchor no "
+            "longer matches (upstream reformat?). Re-anchor the resume "
+            "patch. ${CLEAN_REBUILD}")
+    endif()
     file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_HH}")
     message(STATUS "Applied resume parameter patch to feasibilityjump.hh")
 else()
@@ -1379,6 +1177,9 @@ string(FIND "${FJ_EX}" "void setExchangeGroups(" _fj_ex_found)
 if(_fj_ex_found EQUAL -1)
     set(_fj_ex_step_anchor [=[
       uint32_t var = selectVariable();
+      if (var == UINT_MAX) {
+        break;
+      }
       doVariableMove(var);
 ]=])
     set(_fj_ex_select_anchor [=[
@@ -1420,6 +1221,9 @@ if(_fj_ex_found EQUAL -1)
 
     string(REPLACE "${_fj_ex_step_anchor}" [=[
       uint32_t var = selectVariable();
+      if (var == UINT_MAX) {
+        break;
+      }
       if (var != kExchangeMoved) doVariableMove(var);
 ]=] FJ_EX "${FJ_EX}")
 
@@ -1440,7 +1244,10 @@ if(_fj_ex_found EQUAL -1)
     exchangeStep += 1;
     const bool hadGood = !goodVarsSet.empty();
     const uint32_t var = selectScalarVariable();
-    if (periodic && hadGood && tryExchange(bestMove(var).score))
+    // `UINT_MAX` is upstream's "no move" (a sample of only -inf scores),
+    // which ends the solve; it has no move to score against.
+    if (periodic && hadGood && var != UINT_MAX &&
+        tryExchange(bestMove(var).score))
       return kExchangeMoved;
     return var;
   }
@@ -1765,15 +1572,16 @@ if(_found EQUAL -1)
     # above zero) and `finish()` stops it, joins it and hands its best
     # solution to `solution_`, HiGHS's original-space incumbent, which
     # `runSetup` then crushes into the presolved space as a MIP start.
-    # `finish()` sits behind the time-limit check that follows presolve, so
-    # it sees that verdict too; the destructor joins on every other return.
+    # `finish()` sits behind presolve's status verdict (time limit, memory,
+    # error) and ahead of the exit that acts on it, so it sees that verdict
+    # too; the destructor joins on every other return.
     string(REPLACE
       "  profiling_->start(kMipClockRunPresolve);\n"
       "  profiling_->start(kMipClockRunPresolve);\n  heuristics::EarlyFj early_fj(*this);  // mip-heuristics (#205)\n"
       CONTENT "${CONTENT}")
     string(REPLACE
-      "      timer_.read() >= options_mip_->time_limit)\n    modelstatus_ = HighsModelStatus::kTimeLimit;\n"
-      "      timer_.read() >= options_mip_->time_limit)\n    modelstatus_ = HighsModelStatus::kTimeLimit;\n  early_fj.finish();  // mip-heuristics (#205)\n"
+      "  if (modelstatus_ != HighsModelStatus::kNotset) {\n    HighsModelStatus presolveStatus = modelstatus_;\n"
+      "  early_fj.finish();  // mip-heuristics (#205)\n  if (modelstatus_ != HighsModelStatus::kNotset) {\n    HighsModelStatus presolveStatus = modelstatus_;\n"
       CONTENT "${CONTENT}")
 
     # Patch A: retire upstream's standalone FeasibilityJump call site.
@@ -1890,7 +1698,8 @@ endif()
 # ── Patch C: insert fpr_lp::run after RENS/RINS in the B&B dive heuristics ──
 # Separate idempotency block so it can be applied independently of A/A2.
 # HiGHS 1.15 moved the RENS/RINS block into a runHeuristics() lambda; the
-# anchor is the profiling stop + infeasible() return that ends the lambda.
+# anchor is the profiling stop + infeasible() flag and return that end it
+# (1.16 made the lambda report infeasibility through an out-parameter).
 # The call is deliberately bare: gating and budget
 # derivation (shared RENS/RINS LP-iteration headroom) live inside
 # fpr_lp::run so the patch string stays minimal.
@@ -1913,8 +1722,8 @@ endif()
 string(FIND "${CONTENT}" "fpr_lp::run" _fprlp_found)
 if(_fprlp_found EQUAL -1)
     string(REPLACE
-      "    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
-      "    fpr_lp::run(*this);\n    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    return worker.getGlobalDomain().infeasible();"
+      "    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    if (worker.getGlobalDomain().infeasible()) infeasible = true;\n    return false;"
+      "    fpr_lp::run(*this);\n    if (!mipdata_->parallelLockActive())\n      profiling_->stop(kMipClockDivePrimalHeuristics);\n\n    if (worker.getGlobalDomain().infeasible()) infeasible = true;\n    return false;"
       CONTENT "${CONTENT}")
 
     string(FIND "${CONTENT}" "fpr_lp::run" _fprlp_check)

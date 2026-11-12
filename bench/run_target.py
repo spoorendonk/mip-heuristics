@@ -174,7 +174,7 @@ not part of the environment**.  A vector tuned at one worker count and deployed
 at another is not a configuration with some noise on it, it is a configuration
 for a different machine, and nothing downstream of the score can tell.  Every
 `.json` therefore carries `thread_count`, read from HiGHS's own
-`Thread count N (of M threads)` line — the same quantity `bench/make_archive.py`
+`Thread count` line — the same quantity `bench/make_archive.py`
 derives into `run.workers_observed` and warns about when a tree mixes two values,
 deliberately the same channel rather than a second one.  A run whose log carries
 no such line warns, because an unattributable stamp is worse than a wrong one:
@@ -744,7 +744,7 @@ def score_result(
     # in the record.
     if result.thread_count is None and not result.killed:
         print(
-            f"Warning: {name}: no 'Thread count N (of M threads)' line in the "
+            f"Warning: {name}: no 'Thread count' line in the "
             "log, so this run records no worker count and cannot be checked for "
             "regime mixing against the rest of the tree",
             file=sys.stderr,

@@ -1842,7 +1842,7 @@ identical option values. A vector tuned at one worker count and deployed
 at another allocates the chain differently, and nothing in a score
 reveals it. **Record the worker count alongside any tuned vector**;
 `bench/make_archive.py` already derives it per run from each log's
-`Thread count N (of M threads)` line into `workers_observed` and warns
+`Thread count` line into `workers_observed` and warns
 when a tree mixes two values, so reuse that rather than inventing a
 second channel.
 

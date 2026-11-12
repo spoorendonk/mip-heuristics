@@ -450,7 +450,7 @@ def fake_highs(
     name: str,
     *,
     patched: bool,
-    version: str = "1.15.1",
+    version: str | None = None,
     banner: bool = True,
     githash: str = "04024d701f",
     unknown_options: tuple[str, ...] = (),
@@ -467,6 +467,8 @@ def fake_highs(
     without solving.
     """
     path = tmp_path / name
+    # Default to the tag this tree pins, so a bump needs no fixture edit.
+    version = version or expected_highs_version()
     marker = (
         f'echo "{PATCH_MARKER} (custom MIP presolve heuristics)"' if patched else ":"
     )
@@ -521,7 +523,7 @@ def fake_highs(
 
 def test_expected_highs_version_matches_the_tag_this_tree_builds():
     """One definition of the tag: cmake/FetchHiGHS.cmake, read at run time."""
-    assert expected_highs_version() == "1.15.1"
+    assert expected_highs_version() == "1.16.0"
 
 
 def test_the_two_bench_modules_agree_on_the_shared_constants():
@@ -545,11 +547,11 @@ def test_the_two_bench_modules_agree_on_the_shared_constants():
 
 def test_the_probe_reads_the_banner_and_the_marker(tmp_path: Path):
     patched = probe_binary(str(fake_highs(tmp_path, "patched", patched=True)))
-    assert patched.version == "1.15.1"
+    assert patched.version == expected_highs_version()
     assert patched.githash == "04024d701f"
     assert patched.patched
     unpatched = probe_binary(str(fake_highs(tmp_path, "unpatched", patched=False)))
-    assert unpatched.version == "1.15.1"
+    assert unpatched.version == expected_highs_version()
     assert not unpatched.patched
 
 
@@ -725,7 +727,7 @@ def test_a_vanilla_binary_without_a_git_hash_is_accepted(tmp_path: Path):
         flag="--vanilla-binary",
         expect_patched=False,
     )
-    assert probe.version == "1.15.1"
+    assert probe.version == expected_highs_version()
     assert probe.githash == "n/a"
 
 

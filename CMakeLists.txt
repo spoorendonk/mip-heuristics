@@ -227,6 +227,7 @@ endforeach()
 # below), which they include by the same relative paths.
 target_include_directories(mip_heuristics_core PUBLIC
     $<BUILD_INTERFACE:${highs_SOURCE_DIR}/highs>
+    $<BUILD_INTERFACE:${highs_SOURCE_DIR}/extern>
     $<BUILD_INTERFACE:${highs_BINARY_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:include/highs>
@@ -236,7 +237,8 @@ target_link_libraries(mip_heuristics_core PUBLIC $<LINK_ONLY:highs>)
 # `[[nodiscard]]` structs), so a caller compiling against them needs it too;
 # `CMAKE_CXX_STANDARD` above only reaches this project's own targets.
 target_compile_features(mip_heuristics_core PUBLIC cxx_std_23)
-target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} src)
+target_include_directories(mip_heuristics PRIVATE ${highs_SOURCE_DIR}/highs ${highs_SOURCE_DIR}/extern
+    ${highs_BINARY_DIR} src)
 
 # `libhighs` holds both layers: the adapter's objects, as it always has, and
 # the core's.  Self-contained, so a plain `-lhighs` link (pkg-config, or any
@@ -359,7 +361,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                                                        ${_mip_fp_flags})
 endif()
 
-target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(mip_heuristics_tests PRIVATE ${highs_SOURCE_DIR}/highs
+    ${highs_SOURCE_DIR}/extern ${highs_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mip_heuristics_tests PRIVATE highs Catch2::Catch2WithMain)
 # On `tests/test_paths.cpp` alone, not the target: a `-D` holding the build
 # tree's absolute path is one ccache's `base_dir` does not rewrite, so as a

@@ -323,7 +323,7 @@ class DispatchTrace:
             raise ValueError(
                 f"{self.name}'s patience option is whole-dispatch scoped, so a per-worker "
                 "gap must be scaled by the worker count, and the log carried no "
-                "'Thread count N (of M threads)' line to read it from"
+                "'Thread count' line to read it from"
             )
         return self.workers
 
@@ -370,7 +370,7 @@ class SolveResult:
     num_nonzeros: int | None = None
     num_integer: int | None = None
     num_binary: int | None = None
-    # Parsed from `Thread count N (of M threads). Using K max workers.`, which
+    # Parsed from HiGHS's `Thread count` line (`match_thread_count`), which
     # HiGHS prints once per MIP solve.  `thread_count` is the size of HiGHS's
     # thread pool and therefore **the** worker count our presolve heuristics
     # run at (`ExecutionContext::num_workers` is `highs::parallel::
@@ -873,12 +873,35 @@ def _parse_heursol(line: str) -> HeurSolSample | None:
 
 
 # Worker counts, from HiGHS's own "Solving MIP model with:" block
-# (`HighsMipSolverData.cpp`):
-#   Thread count 16 (of 32 threads). Using 8 max workers. Parallel search on
-_THREADS_RE = re.compile(
-    r"^\s+Thread count\s+(\d+)\s+\(of\s+(\d+)\s+threads\)\.\s+"
-    r"Using\s+(\d+)\s+max workers"
+# (`HighsMipSolverData.cpp`).  HiGHS v1.16.0 reworded the line; logs of both
+# tags are read, since an archived tree may predate the bump.  Each pattern
+# has the named groups `pool` (`highs::parallel::num_threads()`), `hw`
+# (`std::thread::hardware_concurrency()`) and `workers` (B&B's cap).
+#   v1.16.0: Thread count: 8 available cores, 32 logical processors, using up
+#            to 8 workers across 16 threads.
+#   v1.15.1: Thread count 16 (of 32 threads). Using 8 max workers. Parallel
+#            search on
+_THREADS_RES = (
+    re.compile(
+        r"^\s+Thread count:\s+\d+\s+available cores,\s+(?P<hw>\d+)\s+logical "
+        r"processors,\s+using up to\s+(?P<workers>\d+)\s+workers\s+across\s+"
+        r"(?P<pool>\d+)\s+threads"
+    ),
+    re.compile(
+        r"^\s+Thread count\s+(?P<pool>\d+)\s+\(of\s+(?P<hw>\d+)\s+threads\)\.\s+"
+        r"Using\s+(?P<workers>\d+)\s+max workers"
+    ),
 )
+
+
+def match_thread_count(line: str) -> re.Match[str] | None:
+    """The `Thread count` line of either HiGHS tag, or None."""
+    for pattern in _THREADS_RES:
+        m = pattern.match(line)
+        if m:
+            return m
+    return None
+
 
 # Model header emitted by HiGHS right after reading the MPS, e.g.
 #   MIP fhnw-sq2 has 91 rows; 650 cols; 1968 nonzeros; 650 integer variables (625 binary)
@@ -1079,11 +1102,11 @@ def parse_log(log_text: str) -> SolveResult:
 
         # Worker counts (first occurrence wins; one block per solve).
         if result.thread_count is None:
-            m = _THREADS_RE.match(line)
+            m = match_thread_count(line)
             if m:
-                result.thread_count = int(m.group(1))
-                result.hardware_threads = int(m.group(2))
-                result.max_workers = int(m.group(3))
+                result.thread_count = int(m["pool"])
+                result.hardware_threads = int(m["hw"])
+                result.max_workers = int(m["workers"])
                 continue
 
         # Model header line (first occurrence wins; HiGHS prints it once).

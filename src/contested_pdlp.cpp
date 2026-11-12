@@ -188,7 +188,7 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // "As well as" because cuPDLP-C's termination check is a conjunction
     // over all three residuals, so relaxing a subset relaxes nothing.
     //
-    // The mapping, verified against the vendored HiGHS v1.15.1
+    // The mapping, verified against the vendored HiGHS v1.16.0
     // (`highs/pdlp/CupdlpWrapper.cpp`, `getUserParamsFromOptions`):
     //     floatParam[D_PRIMAL_TOL] = options.primal_feasibility_tolerance;
     //     floatParam[D_DUAL_TOL]   = options.dual_feasibility_tolerance;
@@ -422,20 +422,17 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // `run_locked_with_accounting`) — HiGHS reads `time_limit == 0` as *no
     // limit*, so a zero here would be the opposite of what it looks like.
     //
-    // What cuPDLP-C does with it, as of HiGHS v1.15.1:
-    // `getUserParamsFromOptions` (`highs/pdlp/CupdlpWrapper.cpp`, lines
-    // 700-707) computes a remaining-time adjustment and then assigns the
-    // *unadjusted* `options.time_limit` to `floatParam[D_TIME_LIM]` — the
-    // adjustment is dead code.  That used to be load-bearing here in our
-    // favour, because the adjustment subtracts `timer.read()` of the
-    // wrapped instance and that value accumulated: a "fixed" upstream
-    // would have handed a late solve a limit of 0, which cuPDLP-C reads
-    // as "already over" rather than "no limit".  With the clock zeroed
-    // above it is load-bearing no longer — the adjustment would now
-    // subtract only this solve's own elapsed time, which is what it was
-    // written to do — so a HiGHS bump that revives line 707 is no longer
-    // a silent hazard.  Do not read that as licence to stop checking it:
-    // the granularity claim below still needs re-deriving on a bump.
+    // What cuPDLP-C does with it, as of HiGHS v1.16.0:
+    // `getUserParamsFromOptions` (`highs/pdlp/CupdlpWrapper.cpp`) assigns
+    // `floatParam[D_TIME_LIM]` the remaining time, `options.time_limit`
+    // less `timer.read()` of the wrapped instance (v1.15.1 computed that
+    // adjustment and then assigned the unadjusted limit).  With the clock
+    // zeroed above, that subtracts only this solve's own elapsed time
+    // before `PDHG_Solve`, its presolve chiefly, so presolve and PDLP share
+    // the one limit from this solve's start, which is what `remaining()`
+    // means.  Without the zeroing the adjustment would subtract every
+    // earlier solve's time too and hand a late solve a limit of 0, which
+    // cuPDLP-C reads as "already over" rather than "no limit".
     // The solver's own loop honours the limit properly: `PDHG_Solve`
     // recomputes `dSolvingTime` every iteration and its termination check
     // includes `dSolvingTime > dTimeLim` directly, so one PDLP iteration

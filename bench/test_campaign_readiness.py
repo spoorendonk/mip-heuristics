@@ -57,6 +57,7 @@ from run_benchmark import (
     SUITE_ORDER,
     build_arg_parser,
     config_options,
+    expected_highs_version,
 )
 
 BENCH = Path(__file__).resolve().parent
@@ -118,7 +119,7 @@ argv = sys.argv[1:]
 # highsLogHeader.
 if not argv:
     print("Please specify filename in .mps|.lp|.ems format.")
-    print("Running HiGHS 1.15.1 (git hash: 04024d701f): Copyright (c) 2026 HiGHS")
+    print("Running HiGHS @HIGHS_VERSION@ (git hash: 04024d701f): Copyright (c) 2026 HiGHS")
     if "unpatched" not in os.path.basename(sys.argv[0]):
         print("mip-heuristics patch active (custom MIP presolve heuristics)")
     sys.exit(255)
@@ -203,7 +204,7 @@ if instance in env_list("FAKE_HIGHS_FAIL"):
     print("ERROR: could not read the model")
     sys.exit(255)
 
-out = ["Running HiGHS 1.15.1 (git hash: 04024d701f): Copyright (c) 2026 HiGHS"]
+out = ["Running HiGHS @HIGHS_VERSION@ (git hash: 04024d701f): Copyright (c) 2026 HiGHS"]
 # The patch marker is the *only* thing separating a patched build from an
 # unpatched one of the same tag, so a stand-in named `*-unpatched` omits it.
 if "unpatched" not in os.path.basename(sys.argv[0]):
@@ -254,7 +255,8 @@ out.append(
 # harness pins no thread count.
 out.append(
     "Solving MIP model with:\n"
-    "   Thread count 16 (of 32 threads). Using 8 max workers. Parallel search on"
+    "   Thread count: 8 available cores, 32 logical processors, using up to 8 "
+    "workers across 16 threads."
 )
 out.append(
     "Src: B => Branching; H => Heuristic; T => Evaluate node; "
@@ -323,7 +325,7 @@ print("\n".join(out))
 def fake_highs(tmp_path: Path, name: str = "highs") -> Path:
     """Write the stand-in binary; two copies stand in for two builds."""
     path = tmp_path / name
-    path.write_text(FAKE_HIGHS)
+    path.write_text(FAKE_HIGHS.replace("@HIGHS_VERSION@", expected_highs_version()))
     path.chmod(0o755)
     return path
 

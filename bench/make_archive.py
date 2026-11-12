@@ -130,8 +130,13 @@ _INSTRUMENTATION_RE = re.compile("|".join(re.escape(t) for t in INSTRUMENTATION_
 # host and appears in no options file.  `parse_highs_log.py` reads the same
 # line; the pattern is repeated here because this module streams logs a line
 # at a time rather than parsing them (a --dev-log campaign tree is megabytes
-# per log).
-_WORKERS_RE = re.compile(r"^\s+Thread count\s+(\d+)\s+\(of\s+(\d+)\s+threads\)")
+# per log).  HiGHS v1.16.0 reworded it, so both tags' forms are read; the
+# groups are `pool` (the thread pool, i.e. the worker count) and `hw`.
+_WORKERS_RE = re.compile(
+    r"^\s+Thread count(?::\s+\d+\s+available cores,\s+(?P<hw>\d+)\s+logical "
+    r"processors,\s+using up to\s+\d+\s+workers\s+across\s+(?P<pool>\d+)\s+threads"
+    r"|\s+(?P<pool_v1151>\d+)\s+\(of\s+(?P<hw_v1151>\d+)\s+threads\))"
+)
 
 # Provenance sources outside the results tree.
 HIGHS_TAG_RE = re.compile(r"GIT_TAG\s+(\S+)")
@@ -249,8 +254,8 @@ def inspect_log(path: Path) -> LogFacts:
             if facts.workers is None:
                 m = _WORKERS_RE.match(line)
                 if m:
-                    facts.workers = int(m.group(1))
-                    facts.hardware_threads = int(m.group(2))
+                    facts.workers = int(m["pool"] or m["pool_v1151"])
+                    facts.hardware_threads = int(m["hw"] or m["hw_v1151"])
                     continue
             if not facts.instrumented and _INSTRUMENTATION_RE.search(line):
                 facts.instrumented = True
@@ -780,7 +785,7 @@ def render_provenance(manifest: Manifest) -> str:
             "same instances gives `local_mip:scylla = 4.68` at 16 workers and "
             "`2.81` at 6. The `threads` option says what was asked for, which is "
             "deliberately nothing; the observed row says what HiGHS ran at, read "
-            "from each log's `Thread count N (of M threads)` line. More than one "
+            "from each log's `Thread count` line. More than one "
             "value there means the tree mixes machines."
         ),
         "",

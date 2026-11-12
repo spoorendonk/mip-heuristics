@@ -128,7 +128,7 @@ The recorded mipfeas result (233 MIPLIB 2017 instances, 600 s) is in
 design, so what a re-run reproduces is the *result*, not the logs. What is
 reproducible exactly is the protocol.
 
-**Solver version.** HiGHS `v1.15.1`, fetched at configure time by
+**Solver version.** HiGHS `v1.16.0`, fetched at configure time by
 `cmake/FetchHiGHS.cmake` and patched from `third_party/highs_patch/`.
 
 **Scoring and reference objectives.** `bench/analyze_results.py` scores a run
@@ -171,7 +171,7 @@ line either way. The distinguishing marker is printed by a *solve*, on the third
 line of the log header:
 
 ```
-Running HiGHS 1.15.1 (git hash: 04024d701f): Copyright (c) 2026 under MIT licence terms
+Running HiGHS 1.16.0 (git hash: f3f113d23): Copyright (c) 2026 under MIT licence terms
 Includes third-party software components, see THIRD_PARTY_NOTICES.md for full details
 mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heuristics)
 ```

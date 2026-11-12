@@ -5,7 +5,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2609.22938-b31b1b.svg)](https://arxiv.org/abs/2609.22938)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22837481.svg)](https://doi.org/10.5281/zenodo.22837481)
 
-A unified open-source reference implementation and empirical evaluation of four primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant. All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.15.1 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions.
+A unified open-source reference implementation and empirical evaluation of four primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant. All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.16.0 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions.
 
 The implementation accompanying: S. Spoorendonk, [*Presolve heuristics in HiGHS: implementation and computational study*](https://arxiv.org/abs/2609.22938), arXiv:2609.22938, 2026. The four heuristics are the published ones listed under [References](#references).
 
@@ -17,7 +17,7 @@ The contribution is the open implementations and the comparable measurements, no
 
 - **Four presolve heuristics behind one runner contract** — FeasibilityJump, FPR, LocalMIP and Scylla share effort budgeting, a solution pool, a wall-clock deadline and continuous parallel workers, so a comparison between them is a comparison of the algorithms.
 - **A fifth at branch-and-bound dive time** — `fpr_lp`, FPR's LP-guided variant (paper Classes 2–3), drawing from upstream's own RENS/RINS envelope and charging back what it spends.
-- **Compiled into HiGHS, not bolted on** — a patched build of v1.15.1. At default options a patched binary matches vanilla's B&B heuristic budget exactly, and `bench/check_vanilla_equivalence.py` proves the injection perturbs neither presolve, B&B nor the LP path.
+- **Compiled into HiGHS, not bolted on** — a patched build of v1.16.0. At default options a patched binary matches vanilla's B&B heuristic budget exactly, and `bench/check_vanilla_equivalence.py` proves the injection perturbs neither presolve, B&B nor the LP path.
 - **Paper-faithful, with the deviations written down** — every departure is recorded beside the code and in [`docs/PARAMETERS.md`](docs/PARAMETERS.md). Two upstream FeasibilityJump defects are corrected so the search matches its paper.
 - **One budget unit** — effort and patience are both multiples of `nnz << 10`, vanilla HiGHS's own single-thread FJ limit, so `effort = 1.0` means one vanilla FJ budget and `patience < effort` reads on its face.
 - **Selection *is* the budget** — a heuristic runs iff its effort option is above zero, so all thirty-two subsets of the five are a zero-pattern of five doubles. No selector option, no rebuild.
@@ -44,7 +44,7 @@ printf 'mip_heuristic_fj_effort = 0\nmip_heuristic_local_mip_effort = 0\n' > run
 A patched binary says so on the third line of its log header, which is the only thing that distinguishes it from an unpatched build of the same tag:
 
 ```
-Running HiGHS 1.15.1 (git hash: 04024d701f): Copyright (c) 2026 under MIT licence terms
+Running HiGHS 1.16.0 (git hash: f3f113d23): Copyright (c) 2026 under MIT licence terms
 Includes third-party software components, see THIRD_PARTY_NOTICES.md for full details
 mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heuristics)
 ```
@@ -248,7 +248,7 @@ FetchContent_MakeAvailable(mip_heuristics)
 target_link_libraries(my_solver PRIVATE highs)
 ```
 
-`highs` (alias `highs::highs`) is the consumer-facing target: HiGHS v1.15.1 with the patch applied and the heuristics' objects compiled into it — both the core and the HiGHS adapter — built static. Installed, it links on its own: `pkg-config --libs highs` or a plain `-lhighs` needs nothing else of ours. Its interface carries HiGHS's include directories, so `#include "Highs.h"` works as is. As a subproject this project registers nothing of its own: no tests, bench or lint checks in the parent's ctest, no `lint` target, the fetched checkout's git hooks config left alone, and the instrumentation counters compiled out. HiGHS's own extra targets still come along as upstream defines them (`highs-bin`, the `highs_extras` library, CPack and install rules). `BUILD_TESTING`, `BUILD_SHARED_LIBS` and the other HiGHS switches are set only in this project's scope, so the parent's own values stand.
+`highs` (alias `highs::highs`) is the consumer-facing target: HiGHS v1.16.0 with the patch applied and the heuristics' objects compiled into it — both the core and the HiGHS adapter — built static. Installed, it links on its own: `pkg-config --libs highs` or a plain `-lhighs` needs nothing else of ours. Its interface carries HiGHS's include directories, so `#include "Highs.h"` works as is. As a subproject this project registers nothing of its own: no tests, bench or lint checks in the parent's ctest, no `lint` target, the fetched checkout's git hooks config left alone, and the instrumentation counters compiled out. HiGHS's own extra targets still come along as upstream defines them (`highs-bin`, the `highs_extras` library, CPack and install rules). `BUILD_TESTING`, `BUILD_SHARED_LIBS` and the other HiGHS switches are set only in this project's scope, so the parent's own values stand.
 
 `mip_heuristics_core` is the heuristics without the solver: FJ, LocalMIP and FPR's search, the solution pool and the runner scaffold, which need no `HighsMipSolver`. Link it to run those workers on your own threads, on a model you own (for example one read with `Highs::readModel`): `make_problem(const HighsLp&, ProblemStorage&, feastol, epsilon)` in `heuristic_context.h` builds the view they search, or says why it cannot (a malformed model, one infeasible on its face, or a semi-continuous or semi-integer column), rounding integer bounds inward on the way, and a `SolutionSink` subclass receives what they find. To keep one FJ or LocalMIP worker running on a thread you own until you stop it, call `fj::run_until_stopped` or `local_mip::run_until_stopped` with a stop flag in the `ExecutionContext`, a budget from `make_until_stopped_budget`, and an optional `RestartSource` that a stalled worker restarts from before the sink's own pool (contract in `heuristic_context.h`); for FJ, setting the budget's `fj_stall_ends_run` instead ends the run once FJ makes no progress on violations or objective for the worker's patience, one run as in SCIP's feasjump but with HiGHS's own FJ stall rule (any new fewest violated rows restarts it), read at FJ's 500000-effort callback, so no run stalls before 500000 effort units in; for LocalMIP, `local_mip_stall_ends_run` does the same with SCIP localsearch's rule, ending the run once LocalMIP has neither moved the incumbent nor cut its violated rows by 10% for the worker's patience (once a worker is feasible, only the objective counts). The view is always in minimisation form, so for a maximisation model every objective reported is the negated original, offset included. Linking it also links `highs`. Installed (`cmake --install`), it is `highs::mip_heuristics_core` beside `highs::highs` in HiGHS's own `find_package(highs)` package, with its headers under `include/mip_heuristics` (outside CMake, add that directory to the include path and link `-lhighs`, which carries the same objects).
 
@@ -384,7 +384,7 @@ implement it.
 
 ## Related Projects
 
-- [**HiGHS**](https://github.com/ERGO-Code/HiGHS) — the solver these heuristics are compiled into, via a patched build of v1.15.1
+- [**HiGHS**](https://github.com/ERGO-Code/HiGHS) — the solver these heuristics are compiled into, via a patched build of v1.16.0
 - [**cuOpt**](https://github.com/NVIDIA/cuopt) — NVIDIA's GPU solver, with variants of LocalMIP and of the Scylla pump (arXiv:2510.20499)
 
 ## License

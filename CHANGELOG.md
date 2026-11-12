@@ -3,6 +3,17 @@
 Notable changes to options and behaviour. Measurements live in the issues
 linked from each entry.
 
+## Unreleased
+
+### Changed
+
+- **HiGHS v1.15.1 → v1.16.0** (#267). A default run changes with upstream:
+  its presolve, B&B and `trySolution` changed. FeasibilityJump is now
+  upstream's own: v1.16.0 carries both #139 fixes, so the patch no longer
+  makes them, and upstream's version of the negative-coefficient fix also
+  drops the empty-interval skip and the equality row's `(rhs, rhs)`
+  interval. No option was added, removed or changed its default.
+
 ## v0.1.9 (2026-11-11)
 
 ### Added

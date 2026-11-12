@@ -21,7 +21,7 @@ namespace {
 using Kind = ProblemError::Kind;
 
 // HiGHS's defaults for the three options its model assessment reads
-// (`lp_data/HighsOptions.h`, v1.15.1): a bound or cost of this magnitude is
+// (`lp_data/HighsOptions.h`, v1.16.0): a bound or cost of this magnitude is
 // infinite, and a coefficient of this magnitude is refused.
 constexpr double kInfiniteBound = 1e20;
 constexpr double kInfiniteCost = 1e20;
