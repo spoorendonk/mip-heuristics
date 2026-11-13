@@ -251,8 +251,7 @@ __global__ void compact_kernel(std::int64_t n, const std::int32_t* flag, const s
 // set edits (`update_set`) and the moved column's score.  A neighbour's
 // score change is gathered over its own column against the touched
 // constraints in column order, and the moved column's score is a
-// fixed-order block reduction: no sum uses float atomics
-// atomics, so a climber is deterministic.
+// fixed-order block reduction: no sum uses float atomics, so a climber is deterministic.
 //
 // Five deviations from upstream, none in what a step computes:
 // - Upstream adds each `modifyMove` (or weight-bump) term to a neighbour's
@@ -536,19 +535,21 @@ __device__ void update_good(const ClimberView& c, Scalars& s, std::int32_t u) {
 }
 
 // The membership edits of set `list` (`pos`, `size`) for the distinct
-// `items[0..n)`, every thread: item `i` belongs iff `want(i)`, which reads
-// no set.  Upstream (`updateGoodMoves`, `setValue`'s violated-set update)
+// `items[0..n)`, every thread: a non-member joins if `join(i)`, a member
+// leaves if `leave(i)`, the two never both true and neither reading a set;
+// an item that passes neither keeps its membership, as upstream's NaN
+// costs do.  Upstream (`updateGoodMoves`, `setValue`'s violated-set update)
 // edits item by item, swap-removing and appending in turn; here the
 // removals go first, each hole below the shrunk size filled by a survivor
 // from the tail, holes in item order matched to survivors in position
 // order, and then the additions are appended in item order.  The set is
 // upstream's, its order is not.  `hole` holds up to `n` entries.
-template <typename Want>
+template <typename Join, typename Leave>
 __device__ void update_set(std::int32_t* list, std::int32_t* pos, std::int32_t& size,
                            const std::int32_t* items, std::int32_t n, std::int32_t* hole,
-                           BlockScan::TempStorage& tmp, Want want) {
+                           BlockScan::TempStorage& tmp, Join join, Leave leave) {
     const std::int32_t old_size = size;
-    const auto leaves = [&](std::int32_t i) { return pos[items[i]] != -1 && !want(i); };
+    const auto leaves = [&](std::int32_t i) { return pos[items[i]] != -1 && leave(i); };
     const std::int32_t kept =
         old_size - scan_each(
                        n, tmp, [&](std::int32_t i) { return leaves(i) ? 1 : 0; },
@@ -575,7 +576,7 @@ __device__ void update_set(std::int32_t* list, std::int32_t* pos, std::int32_t& 
             }
         });
     const std::int32_t added = scan_each(
-        n, tmp, [&](std::int32_t i) { return pos[items[i]] == -1 && want(i) ? 1 : 0; },
+        n, tmp, [&](std::int32_t i) { return pos[items[i]] == -1 && join(i) ? 1 : 0; },
         [&](std::int32_t i, std::int32_t off, std::int32_t joins) {
             if (joins != 0) {
                 list[kept + off] = items[i];
@@ -654,8 +655,10 @@ __device__ void update_weights(const DeviceModelView& m, const ClimberView& c, S
             });
         }
         __syncthreads();
-        update_set(c.good, c.good_pos, s.n_good, c.nbr, count, c.hole, tmp,
-                   [&](std::int32_t i) { return c.score[c.nbr[i]] > 0.0; });
+        update_set(
+            c.good, c.good_pos, s.n_good, c.nbr, count, c.hole, tmp,
+            [&](std::int32_t i) { return c.score[c.nbr[i]] > 0.0; },
+            [&](std::int32_t i) { return !(c.score[c.nbr[i]] > 0.0); });
         for (std::int32_t k = tid; k < nv; k += kStepThreads) {
             c.touch[c.violated[k]] = -1;
         }
@@ -776,7 +779,8 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
     __syncthreads();
     update_set(
         c.violated, c.violated_pos, s.n_violated, c.list, deg, c.hole, tmp,
-        [&](std::int32_t k) { return score_of(m, c.list[k], c.new_lhs[k]) < -m.violation_tol; });
+        [&](std::int32_t k) { return score_of(m, c.list[k], c.new_lhs[k]) < -m.violation_tol; },
+        [&](std::int32_t k) { return score_of(m, c.list[k], c.new_lhs[k]) >= -m.violation_tol; });
     const std::int32_t total = scan_each(
         deg, tmp, [&](std::int32_t k) { return row_len(m, m.con_row[c.list[k]]); },
         [&](std::int32_t k, std::int32_t off, std::int32_t) { c.work_off[k] = off; });
@@ -796,8 +800,10 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
         });
     }
     __syncthreads();
-    update_set(c.good, c.good_pos, s.n_good, c.nbr, count, c.hole, tmp,
-               [&](std::int32_t i) { return c.score[c.nbr[i]] > 0.0; });
+    update_set(
+        c.good, c.good_pos, s.n_good, c.nbr, count, c.hole, tmp,
+        [&](std::int32_t i) { return c.score[c.nbr[i]] > 0.0; },
+        [&](std::int32_t i) { return !(c.score[c.nbr[i]] > 0.0); });
     // `resetMoves(v)`: the jump value on thread 0 (a sort over its
     // breakpoints), the score over `v`'s cells by the block.
     if (tid == 0) {
