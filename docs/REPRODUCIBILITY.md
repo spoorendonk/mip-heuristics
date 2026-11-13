@@ -61,6 +61,14 @@ commit and this file does not.
 
 ## What is not reproducible
 
+**Any run with `mip_heuristic_fj_gpu=true` in a GPU build, even at `threads=1`**
+(#283). The GPU climbers race the CPU workers into the shared pool on their
+own thread, and the CPU workers restart from what they find, so the run
+depends on timing. A single climber is deterministic per seed per GPU, but
+the race is not. With the option off, the default, nothing changes. In a CPU
+build the option runs FJ on the CPU only and the reproducible recipe holds
+(`tests/test_execution_modes.cpp` pins it).
+
 **Any run with `threads > 1`.** This is by design, not a defect.
 
 Every heuristic runs on the same continuous parallel loop

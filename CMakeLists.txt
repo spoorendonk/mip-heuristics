@@ -168,6 +168,7 @@ add_library(mip_heuristics OBJECT
     src/contested_pdlp.cpp
     src/early_heuristics.cpp
     src/effort_ledger.cpp
+    src/fj_race.cpp
     src/fpr.cpp
     src/fpr_lp.cpp
     src/fpr_lp_refs.cpp

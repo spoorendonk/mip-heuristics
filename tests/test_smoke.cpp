@@ -255,8 +255,7 @@ TEST_CASE("Options: presolve-only defaults to false", "[options][presolve-only]"
 // and FJ still runs on the CPU.  Not a byte comparison against an
 // option-off run: FJ's workers race into one pool, so two multi-worker
 // runs differ (docs/REPRODUCIBILITY.md).  A row without FJ does not warn.
-// Until the race lands (#283) a GPU build runs the CPU chain too, without
-// the warning.
+// A GPU build races instead (#283), without the warning.
 namespace {
 constexpr const char* kBenchWarningCpuOnly = "FeasibilityJump runs on the CPU only";
 }  // namespace
@@ -296,6 +295,54 @@ TEST_CASE("Options: fj_gpu is off by default and a CPU build runs FJ on the CPU"
     REQUIRE(warnings("fj") == 1);
 #endif
 }
+
+#ifdef MIP_HEURISTICS_HAS_GPU_FJ
+// #283: with the option on, GPU climbers race FJ's CPU workers in FJ's
+// dispatch.  One CPU worker and a large FJ budget leave the climbers time
+// to land a find the pool accepts, as a slot past the CPU workers'
+// (`worker >= threads`).  egout, not p0548: there the CPU worker goes
+// stale before a climber's first feasible point, so the race ends with no
+// GPU offer; on egout the climbers land about 25 accepted finds a run, in
+// every one of 20 runs.  The dispatch is charged once, on one
+// `[Sequential] heur=fj` line, and that charge holds every slot's effort:
+// the largest `effort_at` of each slot, CPU and GPU, sums to no more.
+TEST_CASE("fj_race: GPU climbers offer as their own slots and are charged once", "[gpu][fj_gpu]") {
+    static constexpr int kThreads = 1;
+    const auto lines = solve_capturing_log("egout.mps", [](Highs& h) {
+        select_heuristics(h, "fj");
+        require_option(h, "mip_heuristic_fj_gpu", true);
+        require_option(h, "mip_heuristic_fj_effort", 20.0);
+        require_option(h, "threads", kThreads);
+        require_option(h, "log_dev_level", 3);
+    });
+    auto field = [](const std::string& line, const std::string& key) {
+        const auto at = line.find(key);
+        REQUIRE(at != std::string::npos);
+        return std::stoull(line.substr(at + key.size()));
+    };
+    std::vector<size_t> sequential;
+    std::vector<size_t> slot_effort;
+    bool gpu_offer = false;
+    for (const std::string& line : lines) {
+        REQUIRE_FALSE(line.contains(kBenchWarningCpuOnly));
+        if (line.contains("[Sequential] heur=fj ")) {
+            sequential.push_back(field(line, " effort="));
+        } else if (line.contains("[HeurSol] name=fj ")) {
+            const auto worker = static_cast<size_t>(field(line, " worker="));
+            gpu_offer = gpu_offer || worker >= static_cast<size_t>(kThreads);
+            slot_effort.resize(std::max(slot_effort.size(), worker + 1), 0);
+            slot_effort[worker] = std::max<size_t>(slot_effort[worker], field(line, " effort_at="));
+        }
+    }
+    REQUIRE(gpu_offer);
+    REQUIRE(sequential.size() == 1);
+    size_t offered = 0;
+    for (const size_t e : slot_effort) {
+        offered += e;
+    }
+    REQUIRE(offered <= sequential.front());
+}
+#endif
 
 // #178: a RINS/RENS sub-MIP copies its parent's options, so the skip is
 // keyed on `mipsolver.submip`.  The chain's work is read off the ledger's

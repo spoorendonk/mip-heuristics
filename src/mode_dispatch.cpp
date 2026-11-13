@@ -2,6 +2,7 @@
 
 #include "effort_ledger.h"
 #include "fj.h"
+#include "fj_race.h"
 #include "fpr.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
@@ -132,7 +133,13 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
      &HighsOptionsStruct::mip_heuristic_fj_patience, &HighsOptionsStruct::mip_heuristic_fj_restart,
      nullptr, &HighsOptionsStruct::mip_heuristic_fj_personas,
      &HighsOptionsStruct::mip_heuristic_fj_exchange, &HighsOptionsStruct::mip_heuristic_fj_gpu,
+// A GPU tree races GPU climbers against `fj::run` when the option is
+// on (#283); off, `fj::race` is `fj::run`.
+#ifdef MIP_HEURISTICS_HAS_GPU_FJ
+     &without_solver<&fj::race>},
+#else
      &without_solver<&fj::run>},
+#endif
     {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
      &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, nullptr, nullptr, nullptr,
      &fpr::run},
