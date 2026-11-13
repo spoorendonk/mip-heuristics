@@ -17,12 +17,13 @@ from cuopt_smoke import (
     noise_seed,
     pending,
     pin_binary,
-    pin_dev_log,
     plan,
+    record_dev_log,
     report_rows,
     run,
     solve_command,
     t_first,
+    tree_dev_log,
 )
 from parse_highs_log import HeurSolSample, Incumbent, SolveResult
 
@@ -284,7 +285,9 @@ def test_gpu_finds_are_the_slots_past_the_thread_pool():
         "find is a GPU one; 2 of 4 FJ acceptances on GPU slots; 1 runs without "
         "a thread count"
     )
-    assert cuopt_smoke.gpu_lane_rows(results, ["a", "b", "c"]) == [expected]
+    lanes = cuopt_smoke.gpu_lane_rows
+    assert lanes(results, [0], ["a", "b", "c"]) == [expected]
+    assert lanes(results, [1], ["a"])[0].startswith("fj_gpu: 0 runs,")
 
 
 def test_gpu_arms_pair_as_issue_266_asks():
@@ -296,20 +299,35 @@ def test_gpu_arms_pair_as_issue_266_asks():
 
 
 def test_a_tree_keeps_its_log_level(tmp_path: Path):
-    assert pin_dev_log(tmp_path, None, pin=False) is False
-    assert not (tmp_path / "settings.json").exists()
-    assert pin_dev_log(tmp_path, True, pin=True) is True
-    assert pin_dev_log(tmp_path, None, pin=True) is True
+    assert tree_dev_log(tmp_path, True) is True
+    record_dev_log(tmp_path, True)
+    record_dev_log(tmp_path, False)  # the first record stands
+    assert tree_dev_log(tmp_path, None) is True
     with pytest.raises(ValueError, match="dev_log=True"):
-        pin_dev_log(tmp_path, False, pin=True)
+        tree_dev_log(tmp_path, False)
 
 
 def test_a_tree_from_before_the_record_ran_without_dev_logs(tmp_path: Path):
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "highs").write_text("build")
-    assert pin_dev_log(tmp_path, None, pin=True) is False
+    assert tree_dev_log(tmp_path, None) is False
     with pytest.raises(ValueError, match="dev_log=False"):
-        pin_dev_log(tmp_path, True, pin=True)
+        tree_dev_log(tmp_path, True)
+
+
+def test_a_bad_record_is_an_error_not_a_crash(tmp_path: Path):
+    (tmp_path / "settings.json").write_text("{}")
+    with pytest.raises(ValueError, match="no boolean dev_log"):
+        tree_dev_log(tmp_path, None)
+
+
+def test_a_run_that_fails_to_pin_its_binary_records_nothing(tmp_path: Path):
+    args = build_parser().parse_args(
+        ["run", "--output", str(tmp_path), "--binary", str(tmp_path / "missing")]
+    )
+    with pytest.raises(OSError):
+        run(plan(["a"], [0], (Arm("x"),)), args, dev_log=True)
+    assert not (tmp_path / "settings.json").exists()
 
 
 def test_a_dev_log_tree_passes_the_flag_on(tmp_path: Path):

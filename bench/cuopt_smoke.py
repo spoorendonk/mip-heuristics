@@ -205,31 +205,36 @@ def pin_binary(binary: str, out: Path) -> str:
     return str(pinned)
 
 
-def pin_dev_log(out: Path, dev_log: bool | None, *, pin: bool) -> bool:
+def tree_dev_log(out: Path, dev_log: bool | None) -> bool:
     """Whether every solve of the tree runs at `log_dev_level=3`.
 
     A tree holds one log level, as it holds one binary: dev logging inflates
-    wall time, so a ratio between solves with and without it is no A/B.  `pin`
-    (a `run`) records it on first use; a flag the record contradicts raises.  A
-    tree that ran before the record existed ran without it.
+    wall time, so a ratio between solves with and without it is no A/B.  The
+    tree's first `run` records it (`record_dev_log`); a flag the record
+    contradicts raises.  A tree that ran before the record existed ran without.
     """
     record = out / "settings.json"
     if record.exists():
-        stored = bool(json.loads(record.read_text())["dev_log"])
+        stored = json.loads(record.read_text()).get("dev_log")
+        if not isinstance(stored, bool):
+            raise ValueError(f"{record} has no boolean dev_log")
     elif (out / "bin" / "highs").exists():
         stored = False
     else:
-        stored = bool(dev_log)
-        if pin:
-            out.mkdir(parents=True, exist_ok=True)
-            record.write_text(json.dumps({"dev_log": stored}) + "\n")
-        return stored
+        return bool(dev_log)
     if dev_log is not None and dev_log != stored:
         raise ValueError(
             f"{out} runs with dev_log={stored}, not {dev_log}: use a fresh "
             "--output, or leave the flag out to resume."
         )
     return stored
+
+
+def record_dev_log(out: Path, dev_log: bool) -> None:
+    """Pin the log level on the tree's first run, once its binary is pinned."""
+    record = out / "settings.json"
+    if not record.exists():
+        record.write_text(json.dumps({"dev_log": dev_log}) + "\n")
 
 
 def core_hours(runs: int, cores: int) -> float:
@@ -282,6 +287,7 @@ def run(todo: list[Solve], args: argparse.Namespace, dev_log: bool = False) -> i
     """
     cap = 1.5 * len(todo) * TIME_LIMIT if args.wall_cap is None else args.wall_cap
     args.binary = pin_binary(args.binary, args.output)
+    record_dev_log(args.output, dev_log)
     start = time.monotonic()
     for i, solve in enumerate(todo, 1):
         if time.monotonic() - start > cap:
@@ -448,13 +454,16 @@ def seed_spread(
     return lines
 
 
-def gpu_lane_rows(results: Results, instances: list[str]) -> list[str]:
+def gpu_lane_rows(
+    results: Results, seeds: list[int], instances: list[str]
+) -> list[str]:
     """Which FJ finds the GPU climbers made, per GPU arm, from `[HeurSol]`.
 
     The race gives climber `c` the trace slot `num_workers + c`, and
     `num_workers` is the thread pool's size, so an FJ acceptance from a slot at
     or past the log's thread count is a GPU one.  Needs a dev-log tree: without
-    `[HeurSol]` lines a run counts as one without FJ finds.
+    `[HeurSol]` lines a run counts as one without FJ finds.  Over `seeds`, as
+    the table is.
     """
     gpu_arms = {arm.name for arm in ARMS if FJ_GPU in arm.options}
     lines: list[str] = []
@@ -463,7 +472,8 @@ def gpu_lane_rows(results: Results, instances: list[str]) -> list[str]:
             continue
         runs = with_finds = with_gpu = first_on_gpu = unknown = 0
         accepted = on_gpu = 0
-        for seed_runs in results[arm].values():
+        for seed in seeds:
+            seed_runs = results[arm].get(seed, {})
             for instance in instances:
                 r = seed_runs.get(instance)
                 if r is None:
@@ -529,9 +539,11 @@ def report(args: argparse.Namespace) -> int:
     if len(args.seeds) > 1:
         print("\nPI ratio to main per seed, against the noise-floor rows:\n")
         print("\n".join(seed_spread(results, args.seeds, instances, integral)))
-    lanes = gpu_lane_rows(results, instances)
-    if lanes:
-        print("\nGPU FJ lanes, from [HeurSol] (a dev-log tree):\n")
+    lanes = gpu_lane_rows(results, args.seeds, instances)
+    if lanes and not tree_dev_log(args.output, None):
+        print("\nNo GPU FJ lane counts: the tree ran without --dev-log.")
+    elif lanes:
+        print("\nGPU FJ lanes, from [HeurSol]:\n")
         print("\n".join(lanes))
     return 0
 
@@ -590,7 +602,7 @@ def main() -> int:
     todo = pending(plan(instances, args.seeds, arms), args.output)
     if args.command == "run":
         try:
-            return run(todo, args, pin_dev_log(args.output, args.dev_log, pin=True))
+            return run(todo, args, tree_dev_log(args.output, args.dev_log))
         except (ValueError, OSError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
