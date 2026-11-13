@@ -18,7 +18,10 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <span>
@@ -893,5 +896,135 @@ TEST_CASE("gpu_fj: a batch is refused when it does not fit, or is misused", "[gp
     require_ok(batch->run(~std::uint64_t{0}, chunks, error), error);
     gpu_fj::Climber::State state;
     REQUIRE_FALSE(batch->read(-1, state, error));
+}
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+// One timed run's throughput, summed over its climbers.
+struct Rate {
+    double steps_per_s = 0.0;   // NaN for a CPU worker, which counts no steps
+    double effort_per_s = 0.0;  // upstream's effort, the unit GPU and CPU share
+};
+
+double seconds_since(Clock::time_point t0) {
+    return std::chrono::duration<double>(Clock::now() - t0).count();
+}
+
+// `count` GPU climbers from FJ's own start, seeds 0.., run in whole
+// chunks for at least `seconds`.
+Rate gpu_rate(const gpu_fj::DeviceModel& device, const gpu_fj::GpuFjModel& m, std::int32_t count,
+              double seconds) {
+    std::string error;
+    auto batch = gpu_fj::Climber::create(device, count, error);
+    INFO(error);
+    REQUIRE(batch != nullptr);
+    const std::vector<double> start = bound_start(m);
+    for (std::int32_t k = 0; k < count; ++k) {
+        require_ok(batch->init(k, start, static_cast<std::uint64_t>(k), error), error);
+    }
+    std::vector<gpu_fj::Climber::Chunk> chunks(static_cast<size_t>(count));
+    const Clock::time_point t0 = Clock::now();
+    double elapsed = 0.0;
+    do {
+        require_ok(batch->run(~std::uint64_t{0}, chunks, error), error);
+        elapsed = seconds_since(t0);
+    } while (elapsed < seconds &&
+             !std::ranges::all_of(chunks, [](const auto& c) { return c.finished; }));
+    double steps = 0.0;
+    double effort = 0.0;
+    for (std::int32_t k = 0; k < count; ++k) {
+        steps += static_cast<double>(read_state(*batch, k).steps);
+        effort += static_cast<double>(chunks[static_cast<size_t>(k)].total_effort);
+    }
+    return {.steps_per_s = steps / elapsed, .effort_per_s = effort / elapsed};
+}
+
+// One CPU `FjWorker` from FJ's own start, in attempts of upstream's
+// callback effort, for at least `seconds`.
+Rate cpu_rate(const Setup& s, double seconds) {
+    BestSink sink(*s.problem.integrality, 0);
+    constexpr size_t kUnlimited = std::numeric_limits<size_t>::max();
+    FjWorker fj(s.problem, s.exec, sink, kUnlimited, kUnlimited, /*seed=*/0, /*start=*/{},
+                WorkerTrace{0, 0});
+    const Clock::time_point t0 = Clock::now();
+    double elapsed = 0.0;
+    double effort = 0.0;
+    do {
+        effort += static_cast<double>(fj.run_attempt(kAttemptBudget).effort);
+        elapsed = seconds_since(t0);
+    } while (elapsed < seconds && !fj.finished());
+    return {.steps_per_s = std::numeric_limits<double>::quiet_NaN(),
+            .effort_per_s = effort / elapsed};
+}
+
+// The bench's input, read from `gpu_fj_bench.txt` in the working
+// directory: one model path per line, and an optional `seconds=N` line.
+struct BenchInput {
+    std::vector<std::string> paths;
+    double seconds = 5.0;
+};
+
+BenchInput read_bench_input() {
+    std::ifstream in("gpu_fj_bench.txt");
+    INFO("gpu_fj_bench.txt in the working directory");
+    REQUIRE(in.good());
+    BenchInput out;
+    std::string line;
+    const std::string seconds_key = "seconds=";
+    while (std::getline(in, line)) {
+        if (line.starts_with(seconds_key)) {
+            out.seconds = std::stod(line.substr(seconds_key.size()));
+        } else if (!line.empty()) {
+            out.paths.push_back(line);
+        }
+    }
+    REQUIRE_FALSE(out.paths.empty());
+    return out;
+}
+
+}  // namespace
+
+// #278: steps/s of one GPU climber and of a `default_climbers()` batch
+// against one CPU `FjWorker`, by effort/s, the unit both count.  Hidden:
+// run it by hand from a directory holding `gpu_fj_bench.txt` (see
+// `read_bench_input`; `.mps.gz` reads too), three repeats of each timed
+// run.  It prints one CSV line per instance, configuration and repeat.
+// Each model is presolved first, as FJ's dispatch sees it.
+TEST_CASE("gpu_fj: throughput of GPU climbers against a CPU FjWorker", "[.gpu_fj_bench]") {
+    constexpr int kRepeats = 3;
+    const BenchInput input = read_bench_input();
+    const double seconds = input.seconds;
+    std::string error;
+    const std::int32_t k_default = gpu_fj::default_climbers(error);
+    INFO(error);
+    REQUIRE(k_default > 0);
+    std::printf("instance,ncol,ncon,nnz,config,climbers,repeat,steps_per_s,effort_per_s\n");
+    for (const std::string& path : input.paths) {
+        INFO(path);
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        REQUIRE(highs.readModel(path) == HighsStatus::kOk);
+        REQUIRE(highs.presolve() == HighsStatus::kOk);
+        const HighsLp lp = highs.getPresolvedLp();
+        const Setup s(lp, highs.getOptions().log_options);
+        const gpu_fj::HostModel host(s.problem);
+        REQUIRE(host.legal_bounds());
+        const gpu_fj::GpuFjModel m = host.pod();
+        const auto device = upload(m);
+        const std::string name = path.substr(path.find_last_of('/') + 1);
+        auto print = [&](const char* config, std::int32_t climbers, int repeat, const Rate& r) {
+            std::printf("%s,%d,%d,%lld,%s,%d,%d,%.6g,%.6g\n", name.c_str(), m.ncol, m.ncon,
+                        static_cast<long long>(m.nnz), config, climbers, repeat, r.steps_per_s,
+                        r.effort_per_s);
+            std::fflush(stdout);
+        };
+        for (int repeat = 0; repeat < kRepeats; ++repeat) {
+            print("gpu1", 1, repeat, gpu_rate(*device, m, 1, seconds));
+            print("gpuK", k_default, repeat, gpu_rate(*device, m, k_default, seconds));
+            print("cpu1", 1, repeat, cpu_rate(s, seconds));
+        }
+    }
 }
 #endif
