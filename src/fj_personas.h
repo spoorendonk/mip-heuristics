@@ -3,6 +3,7 @@
 #include "rng.h"
 #include "util/HighsInt.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -63,6 +64,14 @@ inline double fj_bound_start(double lower, double upper) {
         return upper;
     }
     return 0.0;
+}
+
+// A column's FJ start from a point: `value` clamped into the bounds, or the
+// bound start when `value` is not finite.  `FjWorker`, the personas and the
+// GPU climbers (`fj_race`) share it, so their starts cannot drift apart.
+inline double fj_clamped_start(double lower, double upper, double value) {
+    return std::isfinite(value) ? std::max(lower, std::min(upper, value))
+                                : fj_bound_start(lower, upper);
 }
 
 // Rewrite `start` (empty: the bound start) for `persona`.  Each step keeps

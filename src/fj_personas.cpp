@@ -284,8 +284,7 @@ void apply_persona(FjPersona persona, const ProblemView& problem, const RowStruc
     for (HighsInt col = 0; col < problem.ncol; ++col) {
         const double lower = (*problem.col_lower)[col];
         const double upper = (*problem.col_upper)[col];
-        start[col] = std::isfinite(start[col]) ? std::max(lower, std::min(upper, start[col]))
-                                               : fj_bound_start(lower, upper);
+        start[col] = fj_clamped_start(lower, upper, start[col]);
     }
     if (persona == FjPersona::kExactK) {
         exact_k_start(problem, structure.exact_k, start);

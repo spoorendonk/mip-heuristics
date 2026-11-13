@@ -114,13 +114,8 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
             }
             impl_->solver.addVar(fj_var_type, lower, upper, col_cost[col]);
 
-            double initial_assignment = 0.0;
-            if (use_incumbent && std::isfinite(inc[col])) {
-                initial_assignment = std::max(lower, std::min(upper, inc[col]));
-            } else {
-                initial_assignment = fj_bound_start(lower, upper);
-            }
-            impl_->col_value[col] = initial_assignment;
+            impl_->col_value[col] =
+                fj_clamped_start(lower, upper, use_incumbent ? inc[col] : kHighsInf);
         }
 
         HighsSparseMatrix a_matrix;

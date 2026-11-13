@@ -10,7 +10,8 @@ linked from each entry.
 - **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282, #283): in a
   `MIP_HEURISTICS_CUDA` build, an option-on run races a batch of GPU
   FeasibilityJump climbers, one per streaming multiprocessor, against FJ's
-  CPU workers in FJ's presolve dispatch. Both offer into one pool, the
+  CPU workers in the main MIP's first FJ presolve dispatch (not in sub-MIPs
+  or after a root restart). Both offer into one pool, the
   climbers' effort is charged with FJ's, and the run is not reproducible,
   even at `threads=1`. A build without `MIP_HEURISTICS_CUDA` that runs FJ
   warns once per solve and runs FJ on the CPU only, as a GPU build does when

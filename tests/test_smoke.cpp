@@ -306,15 +306,23 @@ TEST_CASE("Options: fj_gpu is off by default and a CPU build runs FJ on the CPU"
 // every one of 20 runs.  The dispatch is charged once, on one
 // `[Sequential] heur=fj` line, and that charge holds every slot's effort:
 // the largest `effort_at` of each slot, CPU and GPU, sums to no more.
+// The device setup runs on the GPU thread, beside the CPU worker, and a
+// process's first one creates the CUDA context, which takes longer than
+// egout's whole CPU run; a first, discarded solve creates it, so the
+// measured race starts with only the model's upload ahead of the climbers.
 TEST_CASE("fj_race: GPU climbers offer as their own slots and are charged once", "[gpu][fj_gpu]") {
     static constexpr int kThreads = 1;
-    const auto lines = solve_capturing_log("egout.mps", [](Highs& h) {
-        select_heuristics(h, "fj");
-        require_option(h, "mip_heuristic_fj_gpu", true);
-        require_option(h, "mip_heuristic_fj_effort", 20.0);
-        require_option(h, "threads", kThreads);
-        require_option(h, "log_dev_level", 3);
-    });
+    const auto race = [] {
+        return solve_capturing_log("egout.mps", [](Highs& h) {
+            select_heuristics(h, "fj");
+            require_option(h, "mip_heuristic_fj_gpu", true);
+            require_option(h, "mip_heuristic_fj_effort", 20.0);
+            require_option(h, "threads", kThreads);
+            require_option(h, "log_dev_level", 3);
+        });
+    };
+    static_cast<void>(race());
+    const auto lines = race();
     auto field = [](const std::string& line, const std::string& key) {
         const auto at = line.find(key);
         REQUIRE(at != std::string::npos);

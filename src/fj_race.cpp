@@ -10,13 +10,12 @@
 #include "gpu/climber.h"
 #include "gpu/device_model.h"
 #include "gpu/host_model.h"
+#include "heuristic_common.h"
 #include "io/HighsIO.h"
 #include "solution_sink.h"
 #include "worker_base.h"
 
-#include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -37,12 +36,8 @@ struct GpuSide {
     std::unique_ptr<gpu_fj::Climber> batch;
 };
 
-bool start_gpu(const ProblemView& problem, GpuSide& gpu, std::string& error) {
-    gpu.host = std::make_unique<gpu_fj::HostModel>(problem);
-    if (!gpu.host->legal_bounds()) {
-        error = "a column's bounds are ones FJ refuses";
-        return false;
-    }
+// The device side after `gpu.host` is built: upload, then the batch.
+bool start_gpu(GpuSide& gpu, std::string& error) {
     const std::int32_t climbers = gpu_fj::default_climbers(error);
     if (climbers <= 0) {
         return false;
@@ -80,17 +75,14 @@ void start_point(const ProblemView& problem, const gpu_fj::GpuFjModel& model, So
     const bool use_seed = seed_point.size() == ncol;
     x.resize(ncol);
     for (size_t j = 0; j < ncol; ++j) {
-        const double lower = model.col_lower[j];
-        const double upper = model.col_upper[j];
-        x[j] = use_seed && std::isfinite(seed_point[j])
-                   ? std::max(lower, std::min(upper, seed_point[j]))
-                   : fj_bound_start(lower, upper);
+        x[j] = fj_clamped_start(model.col_lower[j], model.col_upper[j],
+                                use_seed ? seed_point[j] : kHighsInf);
     }
 }
 
 struct Climb {
     size_t effort = 0;
-    std::string error;  // empty unless a CUDA call failed
+    std::string error;  // empty unless the GPU side failed
 };
 
 // The GPU thread's whole run.  It polls only `stop` and the deadline
@@ -126,12 +118,14 @@ public:
 
 private:
     bool start_all(std::string& error) {
-        // The CPU workers take seeds from `base_seed` up; the climbers take
-        // the next `count_`, so no climber shares a CPU worker's stream.
+        // CPU worker `w` takes `random_seed + w` (`fj.cpp`'s `make_state`,
+        // `random_seed = base_seed - kBaseSeedOffset`); the climbers take
+        // the next `count_`, so no climber shares a seeded worker's stream.
         const size_t first_slot = exec_.num_workers;
+        const std::uint64_t random_seed = exec_.base_seed - kBaseSeedOffset;
         for (size_t c = 0; c < count_; ++c) {
             traces_[c].worker = static_cast<int>(first_slot + c);
-            seeds_[c] = std::uint64_t{exec_.base_seed} + first_slot + c;
+            seeds_[c] = random_seed + first_slot + c;
             if (!restart(c, error)) {
                 return false;
             }
@@ -163,7 +157,8 @@ private:
                 static_cast<void>(sink_.offer(problem_.offset + chunk.objective, best_, traces_[c],
                                               traces_[c].at(chunk.total_effort)));
             }
-            if (chunk.finished || chunk.effort_since_improvement >= budget_.worker_stale) {
+            // `FjWorker`'s stale test: strictly past the budget.
+            if (chunk.finished || chunk.effort_since_improvement > budget_.worker_stale) {
                 traces_[c].effort_base += chunk.total_effort;
                 seeds_[c] += count_;
                 if (!restart(c, error)) {
@@ -196,6 +191,33 @@ void warn_cpu_only(const ExecutionContext& exec, const std::string& error) {
                  error.c_str());
 }
 
+// The GPU thread's body: the device setup too runs here, so it never
+// delays the CPU workers.  A model whose bounds FJ refuses gets no climber
+// and no warning: `FjWorker` refuses the same bounds, so FJ runs nowhere
+// and the option changes nothing.
+Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
+                   const ExecutionContext& exec, SolutionSink& sink,
+                   const std::atomic<bool>& stop) {
+    Climb out;
+    if (exec.past_deadline()) {
+        return out;
+    }
+    GpuSide gpu;
+    gpu.host = std::make_unique<gpu_fj::HostModel>(problem);
+    if (!gpu.host->legal_bounds()) {
+        return out;
+    }
+    if (!start_gpu(gpu, out.error)) {
+        if (out.error.empty()) {
+            out.error = "device setup failed";
+        }
+        return out;
+    }
+    const gpu_fj::GpuFjModel model = gpu.host->pod();
+    Climbing climbing(*gpu.batch, model, problem, budget, exec, sink);
+    return climbing.run(stop);
+}
+
 }  // namespace
 
 DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
@@ -203,23 +225,17 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     if (!budget.fj_gpu || problem.degenerate() || budget.disabled()) {
         return run(problem, budget, exec, sink);
     }
-    GpuSide gpu;
-    std::string error;
-    if (!start_gpu(problem, gpu, error)) {
-        warn_cpu_only(exec, error);
-        return run(problem, budget, exec, sink);
-    }
-
-    const gpu_fj::GpuFjModel model = gpu.host->pod();
-    Climbing climbing(*gpu.batch, model, problem, budget, exec, sink);
     std::atomic<bool> stop{false};
     Climb climb;
-    std::exception_ptr failure;
+    // Nothing the GPU side throws ends the solve: like a CUDA error, it
+    // becomes the warning, and FJ's CPU outcome stands.
     std::thread thread([&] {
         try {
-            climb = climbing.run(stop);
+            climb = climb_on_gpu(problem, budget, exec, sink, stop);
+        } catch (const std::exception& e) {
+            climb.error = e.what();
         } catch (...) {
-            failure = std::current_exception();
+            climb.error = "an unknown exception";
         }
     });
     DispatchOutcome outcome;
@@ -232,9 +248,6 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     }
     stop.store(true, std::memory_order_relaxed);
     thread.join();
-    if (failure) {
-        std::rethrow_exception(failure);
-    }
     if (!climb.error.empty()) {
         warn_cpu_only(exec, climb.error);
     }

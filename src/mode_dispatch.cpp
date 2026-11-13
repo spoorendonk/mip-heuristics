@@ -337,7 +337,12 @@ bool run_sequential(HighsMipSolver& mipsolver) {
             slice.fj_exchange = options.*h.exchange;
         }
         if (h.gpu != nullptr) {
-            slice.fj_gpu = options.*h.gpu;
+            // The GPU races the main MIP's first dispatch only, the solve
+            // the CPU build's warning is keyed on: a sub-MIP or a root
+            // restart would redo the device setup, and re-warn on a
+            // device that already failed (#283's review).
+            slice.fj_gpu =
+                options.*h.gpu && !mipsolver.submip && mipsolver.mipdata_->numRestarts == 0;
         }
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {
