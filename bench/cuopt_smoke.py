@@ -215,7 +215,8 @@ def tree_dev_log(out: Path, dev_log: bool | None) -> bool:
     """
     record = out / "settings.json"
     if record.exists():
-        stored = json.loads(record.read_text()).get("dev_log")
+        loaded = json.loads(record.read_text())
+        stored = loaded.get("dev_log") if isinstance(loaded, dict) else None
         if not isinstance(stored, bool):
             raise ValueError(f"{record} has no boolean dev_log")
     elif (out / "bin" / "highs").exists():
@@ -520,6 +521,7 @@ def report(args: argparse.Namespace) -> int:
     if BASELINE not in results:
         print(f"no {BASELINE} runs under {args.output}", file=sys.stderr)
         return 1
+    dev_log = tree_dev_log(args.output, None)
     instances = read_instance_list(args.instances)
     solu = parse_solu_file(str(BENCH / "miplib2017-v36.solu"))
     refs = apply_reference_formula(
@@ -540,12 +542,19 @@ def report(args: argparse.Namespace) -> int:
         print("\nPI ratio to main per seed, against the noise-floor rows:\n")
         print("\n".join(seed_spread(results, args.seeds, instances, integral)))
     lanes = gpu_lane_rows(results, args.seeds, instances)
-    if lanes and not tree_dev_log(args.output, None):
+    if lanes and not dev_log:
         print("\nNo GPU FJ lane counts: the tree ran without --dev-log.")
     elif lanes:
         print("\nGPU FJ lanes, from [HeurSol]:\n")
         print("\n".join(lanes))
     return 0
+
+
+def positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{value} is not a positive count")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -565,9 +574,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--arms",
         nargs="+",
-        default=[arm.name for arm in ARMS],
+        default=[arm.name for arm in ARMS if FJ_GPU not in arm.options],
         choices=[arm.name for arm in ARMS],
-        help="Arms to run; main is what the others pair against",
+        help="Arms to run; main is what the others pair against.  The GPU FJ "
+        "arms are named only on a MIP_HEURISTICS_CUDA binary: a CPU build's "
+        "solve warns and run_benchmark records it as failed",
     )
     parser.add_argument(
         "--dev-log",
@@ -578,7 +589,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--cores",
-        type=int,
+        type=positive_int,
         default=None,
         help="Cores a solve uses, for `size` (default all; HiGHS's pool is its "
         "log's `Thread count`)",
@@ -596,7 +607,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "report":
-        return report(args)
+        try:
+            return report(args)
+        except ValueError as exc:  # a bad settings.json
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
     arms = tuple(arm for arm in ARMS if arm.name in args.arms)
     instances = read_instance_list(args.instances)
     todo = pending(plan(instances, args.seeds, arms), args.output)

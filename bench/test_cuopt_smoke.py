@@ -315,10 +315,23 @@ def test_a_tree_from_before_the_record_ran_without_dev_logs(tmp_path: Path):
         tree_dev_log(tmp_path, True)
 
 
-def test_a_bad_record_is_an_error_not_a_crash(tmp_path: Path):
-    (tmp_path / "settings.json").write_text("{}")
-    with pytest.raises(ValueError, match="no boolean dev_log"):
+@pytest.mark.parametrize("text", ["{}", "[]", "null", '"x"', "{"])
+def test_a_bad_record_is_an_error_not_a_crash(tmp_path: Path, text: str):
+    (tmp_path / "settings.json").write_text(text)
+    with pytest.raises(ValueError):
         tree_dev_log(tmp_path, None)
+
+
+def test_the_gpu_arms_run_only_when_named():
+    default = build_parser().parse_args(["run"]).arms
+    assert "fj_only" in default
+    assert "fj_gpu" not in default
+    assert "fj_only_gpu" not in default
+
+
+def test_a_core_count_is_positive():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["size", "--cores", "0"])
 
 
 def test_a_run_that_fails_to_pin_its_binary_records_nothing(tmp_path: Path):
