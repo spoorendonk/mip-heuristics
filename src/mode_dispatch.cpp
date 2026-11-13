@@ -108,6 +108,8 @@ struct HeuristicConfig {
     // (#218), FJ's alone; null for the rest.
     bool HighsOptionsStruct::* personas;
     bool HighsOptionsStruct::* exchange;
+    // `mip_heuristic_fj_gpu` (#265), FJ's alone; null for the rest.
+    bool HighsOptionsStruct::* gpu;
     DispatchOutcome (*run)(HighsMipSolver&, const ProblemView&, const HeuristicBudget&,
                            ExecutionContext&, SolutionSink&);
 };
@@ -128,27 +130,28 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
      &HighsOptionsStruct::mip_heuristic_run_feasibility_jump, true,
      &HighsOptionsStruct::mip_heuristic_fj_patience, &HighsOptionsStruct::mip_heuristic_fj_restart,
      nullptr, &HighsOptionsStruct::mip_heuristic_fj_personas,
-     &HighsOptionsStruct::mip_heuristic_fj_exchange, &without_solver<&fj::run>},
+     &HighsOptionsStruct::mip_heuristic_fj_exchange, &HighsOptionsStruct::mip_heuristic_fj_gpu,
+     &without_solver<&fj::run>},
     {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
-     &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, nullptr, nullptr,
+     &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, nullptr, nullptr, nullptr,
      &fpr::run},
     {"local_mip", kSolutionSourceLocalMIP, &HighsOptionsStruct::mip_heuristic_local_mip_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience,
      &HighsOptionsStruct::mip_heuristic_local_mip_restart,
-     &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights, nullptr, nullptr,
+     &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights, nullptr, nullptr, nullptr,
      &without_solver<&local_mip::run>},
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
      false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, nullptr, nullptr,
-     &scylla::run},
+     nullptr, &scylla::run},
     // After the four whose finds make up its population (#207).
     {"ruin", kSolutionSourceRuin, &HighsOptionsStruct::mip_heuristic_ruin_effort, nullptr, false,
-     &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr, nullptr,
+     &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr, nullptr, nullptr,
      &without_solver<&ruin_repair::run>},
     // After ruin, so it runs once the others have stalled, on a pool holding
     // what they all found (#229).
     {"recombine", kSolutionSourceRecombine, &HighsOptionsStruct::mip_heuristic_recombine_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_recombine_patience, nullptr, nullptr,
-     nullptr, nullptr, &without_solver<&recombine::run>},
+     nullptr, nullptr, nullptr, &without_solver<&recombine::run>},
 });
 
 // Whether `h` runs at all under `options` (#167).
@@ -325,6 +328,9 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         if (h.exchange != nullptr) {
             slice.fj_exchange = options.*h.exchange;
         }
+        if (h.gpu != nullptr) {
+            slice.fj_gpu = options.*h.gpu;
+        }
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {
             return h.run(mipsolver, problem, slice, exec, sink);
@@ -389,6 +395,18 @@ bool run_presolve(HighsMipSolver& mipsolver) {
                      "run.\n",
                      options.mip_heuristic_fj_effort);
     }
+
+    // The same contract (#265): a binary with no GPU FJ asked to race it
+    // runs FJ on the CPU alone, so its row would be an option-off row under
+    // an option-on name.  Once per solve: a sub-MIP inherits the option and
+    // would repeat it.
+#ifndef MIP_HEURISTICS_HAS_GPU_FJ
+    if (options.mip_heuristic_fj_gpu && !mipsolver.submip) {
+        highsLogUser(options.log_options, HighsLogType::kWarning,
+                     "mip_heuristic_fj_gpu=true needs a MIP_HEURISTICS_CUDA build; "
+                     "FeasibilityJump runs on the CPU only.\n");
+    }
+#endif
 
     return run_sequential(mipsolver);
 }

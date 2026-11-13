@@ -280,6 +280,9 @@ if(MIP_HEURISTICS_CUDA)
         --fmad=false --Werror=all-warnings
         -Xcompiler=-Wall,-Wextra,-Werror,-ffp-contract=off)
     target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics_gpu>)
+    # The adapter's dispatch reads `mip_heuristic_fj_gpu` only here; any
+    # other build warns that it runs FJ on the CPU alone (#265).
+    target_compile_definitions(mip_heuristics PRIVATE MIP_HEURISTICS_HAS_GPU_FJ=1)
 endif()
 
 # The core, installed into the export set HiGHS puts `highs` in

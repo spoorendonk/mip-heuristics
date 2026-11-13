@@ -3,6 +3,16 @@
 Notable changes to options and behaviour. Measurements live in the issues
 linked from each entry.
 
+## Unreleased
+
+### Added
+
+- **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282): asks for
+  GPU FeasibilityJump climbers raced against the CPU FJ workers. The race
+  itself is #283; until then every build runs FJ on the CPU, and a build
+  without `MIP_HEURISTICS_CUDA` warns once per solve that it does. A
+  default run is unchanged.
+
 ## v0.1.11 (2026-11-12)
 
 No option was added, removed or changed its default, and a default run is

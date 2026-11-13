@@ -209,7 +209,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 43 adds FJ's read-only `effort()` accessor to the resume patch
 # (#270): v1.16's `solve()` can end on "no move" between callbacks, and the
 # worker charges that attempt from the solver's own `totalEffort`.
-set(PATCH_VERSION "43")
+#
+# Version 44 adds `mip_heuristic_fj_gpu` (#265): a bool record, default
+# false.
+set(PATCH_VERSION "44")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -576,6 +579,7 @@ set(_patch_options
     "mip_heuristic_fj_personas:bool:false:-:Start FeasibilityJump presolve workers after the first from structural personas the model supports (cuOpt's greedy covering start, and its exact-k start followed by the covering start) instead of only from another seed"
     "mip_heuristic_fj_lp_persona:bool:false:-:Give the last worker of the dive-time fpr_lp heuristic, when it has two or more, to FeasibilityJump started from the dive's LP solution rounded at random (cuOpt's LP start persona) instead of an LP-FPR arm, when its budget holds FJ's callback period (about 488 nonzeros per worker at the default share). Needs mip_heuristic_fpr_lp_effort above 0"
     "mip_heuristic_fj_exchange:bool:false:-:Give the FeasibilityJump presolve workers on cuOpt's exchange lanes (slots 1, 7, 11 and 15) cuOpt's cardinality exchange, a compound move that sets one member of a uniform binary equality row from 1 to 0 and another from 0 to 1 so the row's count is kept"
+    "mip_heuristic_fj_gpu:bool:false:-:Race GPU FeasibilityJump climbers against the CPU FeasibilityJump presolve workers. Needs a MIP_HEURISTICS_CUDA build. Any other build warns and runs FeasibilityJump on the CPU only"
     "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it")
 
 # The upstream record block all four record insertions anchor on, spelled

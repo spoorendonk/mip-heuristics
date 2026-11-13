@@ -627,7 +627,10 @@ def write_options_file(options: dict[str, str], path: str) -> None:
 # `[bench-contract]` case in `tests/test_smoke.cpp`, which asserts it
 # against the running binary's own output — so a reword there fails the C++
 # suite rather than silently switching this detection off.
-CONFIG_IGNORED_WARNINGS = ("no heuristic will run",)
+CONFIG_IGNORED_WARNINGS = (
+    "no heuristic will run",
+    "FeasibilityJump runs on the CPU only",
+)
 
 
 def find_ignored_config_warning(output: str) -> str | None:

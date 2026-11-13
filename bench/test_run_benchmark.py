@@ -305,10 +305,10 @@ def test_a_successful_retry_clears_a_stale_err(tmp_path: Path):
 def test_the_fj_taken_away_warning_is_detected():
     """A positive FJ effort + run_feasibility_jump=false runs no heuristic.
 
-    Verbatim text from src/mode_dispatch.cpp's run_presolve, and the only
-    ignored-config warning left since #167 retired `mip_heuristic_suite`:
-    an unknown *value* was that option's failure mode, and an effort option
-    is both name-checked and range-checked by HiGHS itself.
+    Verbatim text from src/mode_dispatch.cpp's run_presolve.  #167 retired
+    `mip_heuristic_suite`'s warning: an unknown *value* was that option's
+    failure mode, and an effort option is both name-checked and
+    range-checked by HiGHS itself.
     """
     output = (
         "Running HiGHS 1.15.1\n"
@@ -318,6 +318,20 @@ def test_the_fj_taken_away_warning_is_detected():
         "  Status            Optimal\n"
     )
     assert "no heuristic will run" in find_ignored_config_warning(output)
+
+
+def test_the_gpu_fj_on_a_cpu_binary_warning_is_detected():
+    """mip_heuristic_fj_gpu=true on a binary with no GPU FJ runs CPU FJ only.
+
+    Verbatim text from src/mode_dispatch.cpp's run_presolve (#265).
+    """
+    output = (
+        "Running HiGHS 1.16.0\n"
+        "WARNING: mip_heuristic_fj_gpu=true needs a MIP_HEURISTICS_CUDA build; "
+        "FeasibilityJump runs on the CPU only.\n"
+        "  Status            Optimal\n"
+    )
+    assert "CPU only" in find_ignored_config_warning(output)
 
 
 def test_an_ordinary_log_trips_no_ignored_config_warning():

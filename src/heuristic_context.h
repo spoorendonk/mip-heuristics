@@ -395,6 +395,11 @@ struct HeuristicBudget {
     // exchange over the model's exact-k rows.
     bool fj_exchange = false;
 
+    // FJ only, default off (#265): race GPU climbers against the CPU
+    // workers.  Read only in a `MIP_HEURISTICS_CUDA` build; any other build
+    // warns in `run_presolve` and runs the CPU workers alone.
+    bool fj_gpu = false;
+
     // This heuristic was handed nothing, and must therefore do nothing
     // (issue #106).
     //
