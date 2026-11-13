@@ -4,6 +4,12 @@
 #include "parallel/HighsParallel.h"
 #include "test_common.h"
 
+#ifdef MIP_HEURISTICS_HAS_GPU_FJ
+#include "core_test_support.h"
+#include "gpu/device_model.h"
+#include "gpu/host_model.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <catch2/catch_approx.hpp>
@@ -307,22 +313,30 @@ TEST_CASE("Options: fj_gpu is off by default and a CPU build runs FJ on the CPU"
 // `[Sequential] heur=fj` line, and that charge holds every slot's effort:
 // the largest `effort_at` of each slot, CPU and GPU, sums to no more.
 // The device setup runs on the GPU thread, beside the CPU worker, and a
-// process's first one creates the CUDA context, which takes longer than
-// egout's whole CPU run; a first, discarded solve creates it, so the
-// measured race starts with only the model's upload ahead of the climbers.
+// process's first allocation creates the CUDA context, which takes longer
+// than egout's whole CPU run, and the setup stops when the race does.  So
+// the test uploads a tiny model first, which creates the context, and the
+// race starts with only egout's upload ahead of the climbers.
 TEST_CASE("fj_race: GPU climbers offer as their own slots and are charged once", "[gpu][fj_gpu]") {
     static constexpr int kThreads = 1;
-    const auto race = [] {
-        return solve_capturing_log("egout.mps", [](Highs& h) {
-            select_heuristics(h, "fj");
-            require_option(h, "mip_heuristic_fj_gpu", true);
-            require_option(h, "mip_heuristic_fj_effort", 20.0);
-            require_option(h, "threads", kThreads);
-            require_option(h, "log_dev_level", 3);
-        });
-    };
-    static_cast<void>(race());
-    const auto lines = race();
+    {
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        const HighsLp lp = core_test::maximisation_model();
+        const core_test::Setup tiny(lp, highs.getOptions().log_options);
+        const gpu_fj::HostModel host(tiny.problem);
+        std::string error;
+        const auto device = gpu_fj::DeviceModel::upload(host.pod(), error);
+        INFO(error);
+        REQUIRE(device != nullptr);
+    }
+    const auto lines = solve_capturing_log("egout.mps", [](Highs& h) {
+        select_heuristics(h, "fj");
+        require_option(h, "mip_heuristic_fj_gpu", true);
+        require_option(h, "mip_heuristic_fj_effort", 20.0);
+        require_option(h, "threads", kThreads);
+        require_option(h, "log_dev_level", 3);
+    });
     auto field = [](const std::string& line, const std::string& key) {
         const auto at = line.find(key);
         REQUIRE(at != std::string::npos);

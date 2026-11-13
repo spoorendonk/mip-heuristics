@@ -27,7 +27,9 @@ namespace fj {
 
 namespace {
 
-// The device side of one race, built on the dispatching thread.  Members
+// The device side of one race, built on the GPU thread, so its setup
+// reads nothing the dispatching thread alone may (`mipdata`,
+// `terminated()`).  Members
 // go in the order they must outlive each other: the batch reads the
 // device model, which was copied from the host model.
 struct GpuSide {
@@ -36,18 +38,27 @@ struct GpuSide {
     std::unique_ptr<gpu_fj::Climber> batch;
 };
 
-// The device side after `gpu.host` is built: upload, then the batch.
-bool start_gpu(GpuSide& gpu, std::string& error) {
+// Whether the GPU thread is to stop: the race is over or the deadline past.
+bool halted(const ExecutionContext& exec, const std::atomic<bool>& stop) {
+    return stop.load(std::memory_order_relaxed) || exec.past_deadline();
+}
+
+// The device side after `gpu.host` is built: upload, then the batch.  It
+// checks `halted` between steps, so once `fj::run` has returned the join
+// waits on at most the step in flight (#283's review); false with `error`
+// empty when it stopped so.
+bool start_gpu(GpuSide& gpu, const ExecutionContext& exec, const std::atomic<bool>& stop,
+               std::string& error) {
     const std::int32_t climbers = gpu_fj::default_climbers(error);
-    if (climbers <= 0) {
+    if (climbers <= 0 || halted(exec, stop)) {
         return false;
     }
     gpu.device = gpu_fj::DeviceModel::upload(gpu.host->pod(), error);
-    if (!gpu.device) {
+    if (!gpu.device || halted(exec, stop)) {
         return false;
     }
     gpu.batch = gpu_fj::Climber::create(*gpu.device, climbers, error);
-    if (!gpu.batch && gpu.device->has_related_table()) {
+    if (!gpu.batch && gpu.device->has_related_table() && !halted(exec, stop)) {
         // `upload` keeps the related-variable table whenever the model and
         // the table fit, but the batch is sized beside both, so a batch
         // that would fit beside the bare model can fail here (#277's
@@ -83,6 +94,8 @@ void start_point(const ProblemView& problem, const gpu_fj::GpuFjModel& model, So
 struct Climb {
     size_t effort = 0;
     std::string error;  // empty unless the GPU side failed
+    // Every climber got its start: the GPU raced, whatever stopped it.
+    bool raced = false;
 };
 
 // The GPU thread's whole run.  It polls only `stop` and the deadline
@@ -105,9 +118,9 @@ public:
 
     Climb run(const std::atomic<bool>& stop) {
         Climb out;
-        if (start_all(out.error)) {
-            while (!stop.load(std::memory_order_relaxed) && !exec_.past_deadline() &&
-                   step(out.error)) {
+        if (start_all(stop, out.error)) {
+            out.raced = true;
+            while (!halted(exec_, stop) && step(out.error)) {
             }
         }
         for (size_t c = 0; c < count_; ++c) {
@@ -117,7 +130,9 @@ public:
     }
 
 private:
-    bool start_all(std::string& error) {
+    // False, `error` empty, when halted before every climber has its start:
+    // `run` then takes no step.
+    bool start_all(const std::atomic<bool>& stop, std::string& error) {
         // CPU worker `w` takes `random_seed + w` (`fj.cpp`'s `make_state`,
         // `random_seed = base_seed - kBaseSeedOffset`); the climbers take
         // the next `count_`, so no climber shares a seeded worker's stream.
@@ -126,7 +141,7 @@ private:
         for (size_t c = 0; c < count_; ++c) {
             traces_[c].worker = static_cast<int>(first_slot + c);
             seeds_[c] = random_seed + first_slot + c;
-            if (!restart(c, error)) {
+            if (halted(exec_, stop) || !restart(c, error)) {
                 return false;
             }
         }
@@ -184,11 +199,22 @@ private:
     std::vector<double> best_;
 };
 
-void warn_cpu_only(const ExecutionContext& exec, const std::string& error) {
+// The GPU side's failure.  Before every climber started, FJ ran on the CPU
+// alone, so the warning is the bench-contract string a CPU build emits
+// (`CONFIG_IGNORED_WARNINGS`), which drops the run's row; after, the GPU
+// raced and may have offered finds, so the row stands and the warning
+// says only that the climbers stopped early.
+void warn_gpu_failure(const ExecutionContext& exec, const Climb& climb) {
+    if (climb.raced) {
+        highsLogUser(exec.log_options, HighsLogType::kWarning,
+                     "mip_heuristic_fj_gpu=true but the GPU FJ climbers stopped mid-race (%s).\n",
+                     climb.error.c_str());
+        return;
+    }
     highsLogUser(exec.log_options, HighsLogType::kWarning,
                  "mip_heuristic_fj_gpu=true but the GPU FJ stopped (%s); "
                  "FeasibilityJump runs on the CPU only.\n",
-                 error.c_str());
+                 climb.error.c_str());
 }
 
 // The GPU thread's body: the device setup too runs here, so it never
@@ -199,16 +225,19 @@ Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
                    const ExecutionContext& exec, SolutionSink& sink,
                    const std::atomic<bool>& stop) {
     Climb out;
-    if (exec.past_deadline()) {
+    if (halted(exec, stop)) {
         return out;
     }
     GpuSide gpu;
     gpu.host = std::make_unique<gpu_fj::HostModel>(problem);
-    if (!gpu.host->legal_bounds()) {
+    if (!gpu.host->legal_bounds() || halted(exec, stop)) {
         return out;
     }
-    if (!start_gpu(gpu, out.error)) {
-        if (out.error.empty()) {
+    if (!start_gpu(gpu, exec, stop, out.error)) {
+        // A setup cut short by the race's end is no failure to warn about.
+        if (halted(exec, stop)) {
+            out.error.clear();
+        } else if (out.error.empty()) {
             out.error = "device setup failed";
         }
         return out;
@@ -249,7 +278,7 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     stop.store(true, std::memory_order_relaxed);
     thread.join();
     if (!climb.error.empty()) {
-        warn_cpu_only(exec, climb.error);
+        warn_gpu_failure(exec, climb);
     }
     // Charged by the dispatcher, on this thread, with the CPU workers'.
     outcome.effort += climb.effort;

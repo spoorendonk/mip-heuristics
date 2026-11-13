@@ -181,6 +181,14 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
 // `enable_switch`, when the entry names one, is ANDed on top: upstream's
 // own `mip_heuristic_run_feasibility_jump` still means what it says, so
 // setting it false disables FeasibilityJump exactly as a zero effort does.
+// The main MIP's first presolve dispatch: not a sub-MIP (which inherits
+// the options) and not a root restart.  The only one the GPU races FJ in
+// (#283), and the one a CPU build's `mip_heuristic_fj_gpu` warning is
+// keyed on (#265), so the warning comes once per solve either way.
+bool first_main_dispatch(const HighsMipSolver& mipsolver) {
+    return !mipsolver.submip && mipsolver.mipdata_->numRestarts == 0;
+}
+
 bool entry_enabled(const HighsOptions& options, const HeuristicConfig& h) {
     if (options.*h.effort <= 0.0) {
         return false;
@@ -337,12 +345,9 @@ bool run_sequential(HighsMipSolver& mipsolver) {
             slice.fj_exchange = options.*h.exchange;
         }
         if (h.gpu != nullptr) {
-            // The GPU races the main MIP's first dispatch only, the solve
-            // the CPU build's warning is keyed on: a sub-MIP or a root
-            // restart would redo the device setup, and re-warn on a
-            // device that already failed (#283's review).
-            slice.fj_gpu =
-                options.*h.gpu && !mipsolver.submip && mipsolver.mipdata_->numRestarts == 0;
+            // A sub-MIP or a root restart would redo the device setup, and
+            // re-warn on a device that already failed (#283's review).
+            slice.fj_gpu = options.*h.gpu && first_main_dispatch(mipsolver);
         }
         sink.set_source(h.source_tag);
         run_and_charge(h.name, [&]() -> DispatchOutcome {
@@ -416,8 +421,8 @@ bool run_presolve(HighsMipSolver& mipsolver) {
     // sub-MIP inherits the option, and a root restart runs this again.
 #ifndef MIP_HEURISTICS_HAS_GPU_FJ
     static_assert(std::string_view(kChain[0].name) == "fj");
-    if (options.mip_heuristic_fj_gpu && entry_enabled(options, kChain[0]) && !mipsolver.submip &&
-        mipsolver.mipdata_->numRestarts == 0) {
+    if (options.mip_heuristic_fj_gpu && entry_enabled(options, kChain[0]) &&
+        first_main_dispatch(mipsolver)) {
         highsLogUser(options.log_options, HighsLogType::kWarning,
                      "mip_heuristic_fj_gpu=true needs a MIP_HEURISTICS_CUDA build; "
                      "FeasibilityJump runs on the CPU only.\n");
