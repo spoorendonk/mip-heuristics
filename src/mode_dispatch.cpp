@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string_view>
 
 namespace heuristics {
 
@@ -398,10 +399,13 @@ bool run_presolve(HighsMipSolver& mipsolver) {
 
     // The same contract (#265): a binary with no GPU FJ asked to race it
     // runs FJ on the CPU alone, so its row would be an option-off row under
-    // an option-on name.  Once per solve: a sub-MIP inherits the option and
-    // would repeat it.
+    // an option-on name.  Only when FJ runs at all, so a row that leaves FJ
+    // out is not discarded for naming the option.  Once per solve: a
+    // sub-MIP inherits the option, and a root restart runs this again.
 #ifndef MIP_HEURISTICS_HAS_GPU_FJ
-    if (options.mip_heuristic_fj_gpu && !mipsolver.submip) {
+    static_assert(std::string_view(kChain[0].name) == "fj");
+    if (options.mip_heuristic_fj_gpu && entry_enabled(options, kChain[0]) && !mipsolver.submip &&
+        mipsolver.mipdata_->numRestarts == 0) {
         highsLogUser(options.log_options, HighsLogType::kWarning,
                      "mip_heuristic_fj_gpu=true needs a MIP_HEURISTICS_CUDA build; "
                      "FeasibilityJump runs on the CPU only.\n");

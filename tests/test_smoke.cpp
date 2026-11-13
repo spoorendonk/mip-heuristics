@@ -8,9 +8,7 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
-#include <cstring>
 #include <string>
-#include <utility>
 
 TEST_CASE("Smoke test: solve small MIP", "[basic]") {
     // min x + y
@@ -254,15 +252,17 @@ TEST_CASE("Options: presolve-only defaults to false", "[options][presolve-only]"
 
 // #265: off by default, and in a build without the GPU FJ an option-on
 // solve warns once (a bench-contract warning, `CONFIG_IGNORED_WARNINGS`)
-// and runs the option-off chain: the same effort charged and the same
-// incumbent, bytes and all.  Until the race lands (#283) a GPU build runs
-// the option-off chain too, without the warning.
+// and FJ still runs on the CPU.  Not a byte comparison against an
+// option-off run: FJ's workers race into one pool, so two multi-worker
+// runs differ (docs/REPRODUCIBILITY.md).  A row without FJ does not warn.
+// Until the race lands (#283) a GPU build runs the CPU chain too, without
+// the warning.
 namespace {
 constexpr const char* kBenchWarningCpuOnly = "FeasibilityJump runs on the CPU only";
 }  // namespace
 
 TEST_CASE("Options: fj_gpu is off by default and a CPU build runs FJ on the CPU",
-          "[options][fj_gpu]") {
+          "[options][fj_gpu][bench-contract]") {
     Highs defaults;
     bool fj_gpu = true;
     REQUIRE(defaults.getOptionValue("mip_heuristic_fj_gpu", fj_gpu) == HighsStatus::kOk);
@@ -270,35 +270,30 @@ TEST_CASE("Options: fj_gpu is off by default and a CPU build runs FJ on the CPU"
 
     // `build_bare_mipsolver`'s precondition; a no-op once started.
     highs::parallel::initialize_scheduler();
-    auto chain = [](bool gpu) {
+    {
         Highs highs;
         highs.setOptionValue("output_flag", false);
         select_heuristics(highs, "fj");
-        require_option(highs, "mip_heuristic_fj_gpu", gpu);
+        require_option(highs, "mip_heuristic_fj_gpu", true);
         HighsCallback cb(&highs);
         auto mipsolver = build_bare_mipsolver(highs, cb);
         REQUIRE_FALSE(heuristics::run_presolve(*mipsolver));
-        return std::pair(mipsolver->mipdata_->heuristic_effort_used,
-                         mipsolver->mipdata_->incumbent);
-    };
-    const auto off = chain(false);
-    const auto on = chain(true);
-    REQUIRE(off.first > 0);
-    REQUIRE(on.first == off.first);
-    REQUIRE(on.second.size() == off.second.size());
-    REQUIRE(std::memcmp(on.second.data(), off.second.data(), off.second.size() * sizeof(double)) ==
-            0);
+        REQUIRE(mipsolver->mipdata_->heuristic_effort_used > 0);
+    }
 
-    const auto lines = solve_capturing_log("flugpl.mps", [](Highs& h) {
-        select_heuristics(h, "fj");
-        require_option(h, "mip_heuristic_fj_gpu", true);
-    });
-    const auto warnings = std::ranges::count_if(
-        lines, [&](const std::string& line) { return line.contains(kBenchWarningCpuOnly); });
+    auto warnings = [](const char* heuristics) {
+        const auto lines = solve_capturing_log("flugpl.mps", [heuristics](Highs& h) {
+            select_heuristics(h, heuristics);
+            require_option(h, "mip_heuristic_fj_gpu", true);
+        });
+        return std::ranges::count_if(
+            lines, [](const std::string& line) { return line.contains(kBenchWarningCpuOnly); });
+    };
+    REQUIRE(warnings("fpr") == 0);
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
-    REQUIRE(warnings == 0);
+    REQUIRE(warnings("fj") == 0);
 #else
-    REQUIRE(warnings == 1);
+    REQUIRE(warnings("fj") == 1);
 #endif
 }
 
@@ -329,8 +324,9 @@ TEST_CASE("Options: skip_submip_chain skips the chain in a sub-MIP only", "[opti
     CHECK(effort_charged(/*submip=*/false, /*skip=*/true) > 0);
 }
 
-// The exact substring `bench/run_benchmark.py` greps a solve's log for, as
-// `CONFIG_IGNORED_WARNINGS`.  It marks a run that solved cleanly — exit 0,
+// One of the exact substrings `bench/run_benchmark.py` greps a solve's log
+// for, as `CONFIG_IGNORED_WARNINGS`; the fj_gpu case above pins the other,
+// and both carry `[bench-contract]`.  It marks a run that solved cleanly — exit 0,
 // complete log — while ignoring the configuration it was given, so the
 // harness discards it instead of recording a results directory named for one
 // configuration and holding runs of another.

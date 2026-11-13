@@ -622,9 +622,12 @@ def write_options_file(options: dict[str, str], path: str) -> None:
 # range-checks, so that whole failure mode is now an exit-255 refusal at
 # `check_known_options` time rather than a warning to grep for.
 #
-# This string is a contract with `run_presolve` in `src/mode_dispatch.cpp`,
+# `mip_heuristic_fj_gpu=true` in a binary built without the GPU FJ (#282)
+# runs FJ on the CPU alone, so an option-on row would hold option-off runs.
+#
+# Each string is a contract with `run_presolve` in `src/mode_dispatch.cpp`,
 # which carries the matching note.  Both ends are pinned by the
-# `[bench-contract]` case in `tests/test_smoke.cpp`, which asserts it
+# `[bench-contract]` cases in `tests/test_smoke.cpp`, which assert each one
 # against the running binary's own output — so a reword there fails the C++
 # suite rather than silently switching this detection off.
 CONFIG_IGNORED_WARNINGS = (

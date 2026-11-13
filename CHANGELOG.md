@@ -10,7 +10,7 @@ linked from each entry.
 - **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282): asks for
   GPU FeasibilityJump climbers raced against the CPU FJ workers. The race
   itself is #283; until then every build runs FJ on the CPU, and a build
-  without `MIP_HEURISTICS_CUDA` warns once per solve that it does. A
+  without `MIP_HEURISTICS_CUDA` that runs FJ warns once per solve that it does. A
   default run is unchanged.
 
 ## v0.1.11 (2026-11-12)
