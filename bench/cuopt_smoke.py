@@ -26,6 +26,10 @@ held per solve and a build can run between solves:
                                               which reduces overlap with a build
                                               rather than excluding it
 
+The GPU FJ arms (#266) need a MIP_HEURISTICS_CUDA binary, and `--dev-log` on
+the tree's first run for the report's GPU-lane counts (`[HeurSol] worker=`);
+the tree pins it, since dev logging inflates every solve's wall time.
+
 Smoke only at one seed: a verdict from those runs is a choice of what to measure
 properly, never a default change.  `run_unsolved15.sh` is the measured run (#244).
 """
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import json
 import os
 import shlex
 import shutil
@@ -107,6 +112,9 @@ T_FIRST_SHIFT = 1.0
 
 Results = dict[str, dict[int, dict[str, SolveResult]]]
 
+FJ_GPU = "mip_heuristic_fj_gpu=true"
+FJ_ONLY = ("mip_heuristic_fpr_effort=0", "mip_heuristic_local_mip_effort=0")
+
 
 @dataclass(frozen=True)
 class Arm:
@@ -135,6 +143,12 @@ ARMS: tuple[Arm, ...] = (
         ("mip_heuristic_fpr_lp_effort=1.0", "mip_heuristic_fj_lp_persona=true"),
         base="fpr_lp",
     ),
+    # GPU FJ (#266): climbers raced against the CPU FJ workers, on a
+    # MIP_HEURISTICS_CUDA binary.  The FJ-only pair takes FPR and LocalMIP out,
+    # so the first incumbent is FJ's or B&B's and the race shows on its own.
+    Arm("fj_gpu", (FJ_GPU,)),
+    Arm("fj_only", FJ_ONLY),
+    Arm("fj_only_gpu", (*FJ_ONLY, FJ_GPU), base="fj_only"),
 )
 
 
@@ -191,12 +205,41 @@ def pin_binary(binary: str, out: Path) -> str:
     return str(pinned)
 
 
+def pin_dev_log(out: Path, dev_log: bool | None, *, pin: bool) -> bool:
+    """Whether every solve of the tree runs at `log_dev_level=3`.
+
+    A tree holds one log level, as it holds one binary: dev logging inflates
+    wall time, so a ratio between solves with and without it is no A/B.  `pin`
+    (a `run`) records it on first use; a flag the record contradicts raises.  A
+    tree that ran before the record existed ran without it.
+    """
+    record = out / "settings.json"
+    if record.exists():
+        stored = bool(json.loads(record.read_text())["dev_log"])
+    elif (out / "bin" / "highs").exists():
+        stored = False
+    else:
+        stored = bool(dev_log)
+        if pin:
+            out.mkdir(parents=True, exist_ok=True)
+            record.write_text(json.dumps({"dev_log": stored}) + "\n")
+        return stored
+    if dev_log is not None and dev_log != stored:
+        raise ValueError(
+            f"{out} runs with dev_log={stored}, not {dev_log}: use a fresh "
+            "--output, or leave the flag out to resume."
+        )
+    return stored
+
+
 def core_hours(runs: int, cores: int) -> float:
     """Rule 17's size: an upper bound, since a solve may end before the limit."""
     return runs * TIME_LIMIT / 3600.0 * cores
 
 
-def solve_command(solve: Solve, args: argparse.Namespace) -> list[str]:
+def solve_command(
+    solve: Solve, args: argparse.Namespace, dev_log: bool = False
+) -> list[str]:
     """One solve, from a one-line list: run_benchmark's --start counts only the
     instances it found on disk, so an index into the full list could name another.
     """
@@ -223,12 +266,14 @@ def solve_command(solve: Solve, args: argparse.Namespace) -> list[str]:
     ]
     if args.data_dir:
         command += ["--data-dir", args.data_dir]
+    if dev_log:
+        command.append("--dev-log")
     if solve.arm.options:
         command += ["--extra-options", *solve.arm.options]
     return command
 
 
-def run(todo: list[Solve], args: argparse.Namespace) -> int:
+def run(todo: list[Solve], args: argparse.Namespace, dev_log: bool = False) -> int:
     """Run every pending solve; rerun to resume.
 
     3 when the wall cap stopped it.  4 when a solve left no log: run_benchmark
@@ -246,7 +291,7 @@ def run(todo: list[Solve], args: argparse.Namespace) -> int:
             f"[{i}/{len(todo)}] {solve.arm.name} {solve.instance} seed {solve.seed}",
             flush=True,
         )
-        code = subprocess.call(solve_command(solve, args))
+        code = subprocess.call(solve_command(solve, args, dev_log))
         if code != 0:
             return code
     left = pending(todo, args.output)
@@ -403,6 +448,49 @@ def seed_spread(
     return lines
 
 
+def gpu_lane_rows(results: Results, instances: list[str]) -> list[str]:
+    """Which FJ finds the GPU climbers made, per GPU arm, from `[HeurSol]`.
+
+    The race gives climber `c` the trace slot `num_workers + c`, and
+    `num_workers` is the thread pool's size, so an FJ acceptance from a slot at
+    or past the log's thread count is a GPU one.  Needs a dev-log tree: without
+    `[HeurSol]` lines a run counts as one without FJ finds.
+    """
+    gpu_arms = {arm.name for arm in ARMS if FJ_GPU in arm.options}
+    lines: list[str] = []
+    for arm in results:
+        if arm not in gpu_arms:
+            continue
+        runs = with_finds = with_gpu = first_on_gpu = unknown = 0
+        accepted = on_gpu = 0
+        for seed_runs in results[arm].values():
+            for instance in instances:
+                r = seed_runs.get(instance)
+                if r is None:
+                    continue
+                runs += 1
+                if r.thread_count is None:
+                    unknown += 1
+                    continue
+                fj = [s for s in r.heursol_samples if s.name == "fj" and s.accepted]
+                if not fj:
+                    continue
+                gpu = [s for s in fj if s.worker >= r.thread_count]
+                with_finds += 1
+                with_gpu += bool(gpu)
+                first = min(fj, key=lambda s: (s.dispatch, s.wall_ms))
+                first_on_gpu += first.worker >= r.thread_count
+                accepted += len(fj)
+                on_gpu += len(gpu)
+        lines.append(
+            f"{arm}: {runs} runs, {with_finds} with FJ finds, {with_gpu} with GPU "
+            f"finds, {first_on_gpu} whose first FJ find is a GPU one; "
+            f"{on_gpu} of {accepted} FJ acceptances on GPU slots"
+            + (f"; {unknown} runs without a thread count" if unknown else "")
+        )
+    return lines
+
+
 TABLE_HEADER = (
     "| arm | n | PI ratio | PI median | PI 95% CI | better/tied/worse | "
     "feasible runs (arm vs base) | T1st ratio | T1st median | T1st 95% CI | "
@@ -441,6 +529,10 @@ def report(args: argparse.Namespace) -> int:
     if len(args.seeds) > 1:
         print("\nPI ratio to main per seed, against the noise-floor rows:\n")
         print("\n".join(seed_spread(results, args.seeds, instances, integral)))
+    lanes = gpu_lane_rows(results, instances)
+    if lanes:
+        print("\nGPU FJ lanes, from [HeurSol] (a dev-log tree):\n")
+        print("\n".join(lanes))
     return 0
 
 
@@ -466,6 +558,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Arms to run; main is what the others pair against",
     )
     parser.add_argument(
+        "--dev-log",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="log_dev_level=3 on every solve, for [HeurSol]; the tree's first "
+        "run pins it",
+    )
+    parser.add_argument(
+        "--cores",
+        type=int,
+        default=None,
+        help="Cores a solve uses, for `size` (default all; HiGHS's pool is its "
+        "log's `Thread count`)",
+    )
+    parser.add_argument(
         "--wall-cap",
         type=float,
         default=None,
@@ -484,11 +590,11 @@ def main() -> int:
     todo = pending(plan(instances, args.seeds, arms), args.output)
     if args.command == "run":
         try:
-            return run(todo, args)
+            return run(todo, args, pin_dev_log(args.output, args.dev_log, pin=True))
         except (ValueError, OSError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
-    cores = os.cpu_count() or 1
+    cores = args.cores or os.cpu_count() or 1
     print(
         f"{len(todo)} solves x {TIME_LIMIT:.0f} s x {cores} cores: at most "
         f"{core_hours(len(todo), cores):.1f} core-h, "

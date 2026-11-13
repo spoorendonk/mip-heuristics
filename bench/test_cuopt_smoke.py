@@ -17,13 +17,14 @@ from cuopt_smoke import (
     noise_seed,
     pending,
     pin_binary,
+    pin_dev_log,
     plan,
     report_rows,
     run,
     solve_command,
     t_first,
 )
-from parse_highs_log import Incumbent, SolveResult
+from parse_highs_log import HeurSolSample, Incumbent, SolveResult
 
 
 def solved(first: float | None) -> SolveResult:
@@ -255,3 +256,64 @@ def test_a_planned_run_without_a_pair_is_named_and_an_unplanned_one_is_not():
         f"personas: no paired run on {fires}",
         f"ruin: no paired run on {fires}",
     ]
+
+
+def fj_find(worker: int, dispatch: int = 1, wall_ms: float = 1.0) -> HeurSolSample:
+    return HeurSolSample("fj", dispatch, worker, 0, wall_ms, 1.0, True)
+
+
+def test_gpu_finds_are_the_slots_past_the_thread_pool():
+    on_gpu = solved(1.0)
+    on_gpu.thread_count = 4
+    # The CPU worker found later in the dispatch, so the first find is the GPU's.
+    on_gpu.heursol_samples = [fj_find(3, wall_ms=2.0), fj_find(4, wall_ms=1.0)]
+    on_cpu = solved(1.0)
+    on_cpu.thread_count = 4
+    on_cpu.heursol_samples = [
+        fj_find(0, wall_ms=1.0),
+        fj_find(5, wall_ms=2.0),
+        HeurSolSample("fpr", 2, 7, 0, 0.5, 1.0, True),
+    ]
+    unknown = solved(1.0)
+    results = {
+        BASELINE: {0: {"a": solved(1.0)}},
+        "fj_gpu": {0: {"a": on_gpu, "b": on_cpu, "c": unknown, "off_list": on_gpu}},
+    }
+    expected = (
+        "fj_gpu: 3 runs, 2 with FJ finds, 2 with GPU finds, 1 whose first FJ "
+        "find is a GPU one; 2 of 4 FJ acceptances on GPU slots; 1 runs without "
+        "a thread count"
+    )
+    assert cuopt_smoke.gpu_lane_rows(results, ["a", "b", "c"]) == [expected]
+
+
+def test_gpu_arms_pair_as_issue_266_asks():
+    arms = {arm.name: arm for arm in ARMS}
+    assert arms["fj_gpu"].base == BASELINE
+    assert arms["fj_only_gpu"].base == "fj_only"
+    assert set(arms["fj_only"].options) < set(arms["fj_only_gpu"].options)
+    assert cuopt_smoke.FJ_GPU in arms["fj_gpu"].options
+
+
+def test_a_tree_keeps_its_log_level(tmp_path: Path):
+    assert pin_dev_log(tmp_path, None, pin=False) is False
+    assert not (tmp_path / "settings.json").exists()
+    assert pin_dev_log(tmp_path, True, pin=True) is True
+    assert pin_dev_log(tmp_path, None, pin=True) is True
+    with pytest.raises(ValueError, match="dev_log=True"):
+        pin_dev_log(tmp_path, False, pin=True)
+
+
+def test_a_tree_from_before_the_record_ran_without_dev_logs(tmp_path: Path):
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "highs").write_text("build")
+    assert pin_dev_log(tmp_path, None, pin=True) is False
+    with pytest.raises(ValueError, match="dev_log=False"):
+        pin_dev_log(tmp_path, True, pin=True)
+
+
+def test_a_dev_log_tree_passes_the_flag_on(tmp_path: Path):
+    args = build_parser().parse_args(["run", "--output", str(tmp_path)])
+    solve = plan(["a"], [0], (Arm("x"),))[0]
+    assert "--dev-log" in solve_command(solve, args, dev_log=True)
+    assert "--dev-log" not in solve_command(solve, args)
