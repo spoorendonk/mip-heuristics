@@ -784,11 +784,18 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
     const std::int32_t total = scan_each(
         deg, tmp, [&](std::int32_t k) { return row_len(m, m.con_row[c.list[k]]); },
         [&](std::int32_t k, std::int32_t off, std::int32_t) { c.work_off[k] = off; });
-    const std::int32_t count = collect(m, c, c.list, deg, total, v, tmp);
+    // The neighbours: `v`'s related columns from the table, or collected
+    // from the touched cells without one (the same columns, in the same
+    // order).
+    const bool table = m.rel_start != nullptr;
+    const std::int32_t rel = table ? m.rel_start[v] : 0;
+    const std::int32_t count =
+        table ? m.rel_start[v + 1] - rel : collect(m, c, c.list, deg, total, v, tmp);
+    const std::int32_t* nbrs = table ? m.rel_col + rel : c.nbr;
     for (std::int32_t i = tid; i < count; i += kStepThreads) {
-        const std::int32_t u = c.nbr[i];
+        const std::int32_t u = nbrs[i];
         const double shift = c.jump[u] - c.x[u];
-        c.score[u] += gather(m, c, u, [&](std::int32_t k, std::int32_t con, double coeff) {
+        const auto term = [&](std::int32_t k, std::int32_t con, double coeff) {
             const double w = c.weight[con];
             const double old_lhs = c.old_lhs[k];
             const double new_lhs = c.new_lhs[k];
@@ -797,13 +804,24 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
             const double new_term =
                 w * (score_of(m, con, new_lhs + (coeff * shift)) - score_of(m, con, new_lhs));
             return new_term - old_term;
-        });
+        };
+        double d = 0.0;
+        if (table) {
+            // `u`'s cells in `v`'s constraints, in `gather`'s order.
+            for (std::int32_t e = m.rel_cell[rel + i]; e < m.rel_cell[rel + i + 1]; ++e) {
+                const std::int32_t k = m.cell_k[e];
+                d += term(k, c.list[k], m.col_value[m.cell_p[e]]);
+            }
+        } else {
+            d = gather(m, c, u, term);
+        }
+        c.score[u] += d;
     }
     __syncthreads();
     update_set(
-        c.good, c.good_pos, s.n_good, c.nbr, count, c.hole, tmp,
-        [&](std::int32_t i) { return c.score[c.nbr[i]] > 0.0; },
-        [&](std::int32_t i) { return !(c.score[c.nbr[i]] > 0.0); });
+        c.good, c.good_pos, s.n_good, nbrs, count, c.hole, tmp,
+        [&](std::int32_t i) { return c.score[nbrs[i]] > 0.0; },
+        [&](std::int32_t i) { return !(c.score[nbrs[i]] > 0.0); });
     // `resetMoves(v)`: the jump value on thread 0 (a sort over its
     // breakpoints), the score over `v`'s cells by the block.
     if (tid == 0) {

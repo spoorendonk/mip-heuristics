@@ -2563,6 +2563,20 @@ must move with them on a HiGHS bump.
   `cudaMemGetInfo`'s free memory less this: room for the CUDA runtime's own
   later allocations and `cudaMalloc`'s rounding.
 
+### `kRelatedMaxCells` — the related-variable table's cell cap
+
+- **File**: `src/gpu/device_model.h`
+- **Default**: `2^24` cells (at most four `int32` per cell, so 256 MiB)
+- **Meaning**: `DeviceModel::upload` builds the related-variable table
+  (#277) only when it holds at most this many cells. Its size is known up
+  front: a row of length `len` with `cons` constraints gives
+  `cons * len * (len - 1)` cells, so a model with long rows passes the cap
+  and a step scans each neighbour's whole column against the touched
+  constraints instead. A table under the cap that does not fit beside the
+  model in device memory is dropped the same way. Both paths take the same
+  steps bit for bit, so the cap moves only speed and memory. A starting
+  point, to be calibrated (#266, #278).
+
 ---
 
 ## Repair Walk (`repair_walk`)

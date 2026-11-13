@@ -498,9 +498,10 @@ std::unique_ptr<gpu_fj::Climber> climber_on(const gpu_fj::DeviceModel& device,
     return climber;
 }
 
-std::unique_ptr<gpu_fj::DeviceModel> upload(const gpu_fj::GpuFjModel& m) {
+std::unique_ptr<gpu_fj::DeviceModel> upload(
+    const gpu_fj::GpuFjModel& m, std::int64_t max_related_cells = gpu_fj::kRelatedMaxCells) {
     std::string error;
-    auto device = gpu_fj::DeviceModel::upload(m, error);
+    auto device = gpu_fj::DeviceModel::upload(m, error, max_related_cells);
     INFO(error);
     REQUIRE(device != nullptr);
     return device;
@@ -687,6 +688,48 @@ TEST_CASE("gpu_fj: after its chunks a climber's state matches a recomputation, p
         require_ok(first->read_best(0, best_a, error), error);
         require_ok(second->read_best(0, best_b, error), error);
         REQUIRE(same_bytes(best_a, best_b));
+    }
+}
+
+TEST_CASE("gpu_fj: the related-variable table takes the touched-cell scan's steps", "[gpu]") {
+    // A cap of 0 forces the fallback; both paths must agree bit for bit,
+    // since the table holds each neighbour's cells in the scan's order.
+    constexpr int kChunks = 4;
+    for (const char* instance : kInstances) {
+        INFO(instance);
+        Highs highs;
+        read(highs, instance);
+        const Setup s(highs.getLp(), highs.getOptions().log_options);
+        const gpu_fj::HostModel host(s.problem);
+        const gpu_fj::GpuFjModel m = host.pod();
+        const auto with = upload(m);
+        const auto without = upload(m, 0);
+        REQUIRE(with->has_related_table());
+        REQUIRE_FALSE(without->has_related_table());
+        const std::vector<double> start = interior_start(m);
+        const auto first = climber_on(*with, start, 11);
+        const auto second = climber_on(*without, start, 11);
+        std::string error;
+        for (int k = 0; k < kChunks; ++k) {
+            gpu_fj::Climber::Chunk a;
+            gpu_fj::Climber::Chunk b;
+            require_ok(first->run(~std::uint64_t{0}, {&a, 1}, error), error);
+            require_ok(second->run(~std::uint64_t{0}, {&b, 1}, error), error);
+            REQUIRE(a.total_effort == b.total_effort);
+            REQUIRE(a.improved == b.improved);
+        }
+        const gpu_fj::Climber::State a = read_state(*first);
+        const gpu_fj::Climber::State b = read_state(*second);
+        REQUIRE(a.steps > 0);
+        REQUIRE(a.steps == b.steps);
+        require_consistent(m, a);
+        REQUIRE(same_bytes(a.x, b.x));
+        REQUIRE(same_bytes(a.lhs, b.lhs));
+        REQUIRE(same_bytes(a.weight, b.weight));
+        REQUIRE(same_bytes(a.jump, b.jump));
+        REQUIRE(same_bytes(a.score, b.score));
+        REQUIRE(a.violated == b.violated);
+        REQUIRE(a.good == b.good);
     }
 }
 

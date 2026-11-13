@@ -15,16 +15,28 @@
 
 namespace gpu_fj {
 
+// The most cells the related-variable table may hold (#277): for each
+// column, its cells' constraints' other columns, with each one's cells in
+// those constraints.  It grows with the sum of squared row lengths, so a
+// model past the cap, or one whose table does not fit on the device, runs
+// without it: a step then scans each neighbour's whole column.
+inline constexpr std::int64_t kRelatedMaxCells = std::int64_t{1} << 24U;
+
 class DeviceModel {
 public:
-    // Copies `host` to the device, or returns null with `error` set.
-    static std::unique_ptr<DeviceModel> upload(const GpuFjModel& host, std::string& error);
+    // Copies `host` to the device, with its related-variable table when that
+    // holds at most `max_related_cells` cells and fits, or returns null with
+    // `error` set.
+    static std::unique_ptr<DeviceModel> upload(const GpuFjModel& host, std::string& error,
+                                               std::int64_t max_related_cells = kRelatedMaxCells);
     ~DeviceModel();
     DeviceModel(const DeviceModel&) = delete;
     DeviceModel& operator=(const DeviceModel&) = delete;
 
     [[nodiscard]] std::int32_t ncol() const;
     [[nodiscard]] std::int32_t ncon() const;
+    // Whether the related-variable table was uploaded.
+    [[nodiscard]] bool has_related_table() const;
 
 private:
     // Reads the device arrays.

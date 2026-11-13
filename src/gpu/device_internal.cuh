@@ -103,11 +103,24 @@ struct DeviceModelView {
     // `break_start[j] .. break_start[j + 1]`: two per constraint the column
     // is in, plus its two bounds.  `ncol + 1` starts.
     const std::int64_t* break_start;
+    // The related-variable table (#277), or null `rel_start` without one.
+    // Column `v`'s related columns are `rel_col[rel_start[v] ..
+    // rel_start[v + 1])`, in the order a move of `v` first meets them in
+    // its constraints' cells (`collect`'s).  Related entry `r`'s cells are
+    // `rel_cell[r] .. rel_cell[r + 1]`, in its column's order, each the
+    // constraint's place `cell_k` in `v`'s constraint list (as `move`
+    // builds it) and the cell's CSC position `cell_p`.
+    const std::int32_t* rel_start;
+    const std::int32_t* rel_col;
+    const std::int32_t* rel_cell;
+    const std::int32_t* cell_k;
+    const std::int32_t* cell_p;
 };
 
 struct DeviceModel::Impl {
     DeviceModelView view{};
     DeviceBuffer<std::int32_t> row_start, row_index, col_start, col_row, con_row, row_con_start;
+    DeviceBuffer<std::int32_t> rel_start, rel_col, rel_cell, cell_k, cell_p;
     DeviceBuffer<double> row_value, col_value, col_lower, col_upper, col_cost, con_rhs;
     DeviceBuffer<std::uint8_t> col_is_int;
     DeviceBuffer<ConSense> con_sense;
