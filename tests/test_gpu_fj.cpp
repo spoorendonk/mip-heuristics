@@ -902,7 +902,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// One timed run's throughput, summed over its climbers.
+// One timed run's throughput, summed over its climbers; zero when the
+// run finished in its untimed warm-up.
 struct Rate {
     double steps_per_s = 0.0;   // NaN for a CPU worker, which counts no steps
     double effort_per_s = 0.0;  // upstream's effort, the unit GPU and CPU share
@@ -925,15 +926,28 @@ Rate gpu_rate(const gpu_fj::DeviceModel& device, const gpu_fj::GpuFjModel& m, st
         require_ok(batch->init(k, start, static_cast<std::uint64_t>(k), error), error);
     }
     std::vector<gpu_fj::Climber::Chunk> chunks(static_cast<size_t>(count));
+    // One untimed chunk first: init's effort and the first launch stay out
+    // of the window, as the CPU side's model build does; both counters are
+    // taken as deltas from here.
+    auto finished = [&] {
+        return std::ranges::all_of(chunks, [](const auto& c) { return c.finished; });
+    };
+    require_ok(batch->run(~std::uint64_t{0}, chunks, error), error);
+    if (finished()) {
+        return {};
+    }
+    double steps = 0.0;
+    double effort = 0.0;
+    for (std::int32_t k = 0; k < count; ++k) {
+        steps -= static_cast<double>(read_state(*batch, k).steps);
+        effort -= static_cast<double>(chunks[static_cast<size_t>(k)].total_effort);
+    }
     const Clock::time_point t0 = Clock::now();
     double elapsed = 0.0;
     do {
         require_ok(batch->run(~std::uint64_t{0}, chunks, error), error);
         elapsed = seconds_since(t0);
-    } while (elapsed < seconds &&
-             !std::ranges::all_of(chunks, [](const auto& c) { return c.finished; }));
-    double steps = 0.0;
-    double effort = 0.0;
+    } while (elapsed < seconds && !finished());
     for (std::int32_t k = 0; k < count; ++k) {
         steps += static_cast<double>(read_state(*batch, k).steps);
         effort += static_cast<double>(chunks[static_cast<size_t>(k)].total_effort);
@@ -948,6 +962,12 @@ Rate cpu_rate(const Setup& s, double seconds) {
     constexpr size_t kUnlimited = std::numeric_limits<size_t>::max();
     FjWorker fj(s.problem, s.exec, sink, kUnlimited, kUnlimited, /*seed=*/0, /*start=*/{},
                 WorkerTrace{0, 0});
+    // One untimed attempt first: it builds FJ's model, which no effort
+    // counts, and runs upstream's init, as the GPU side's untimed chunk.
+    static_cast<void>(fj.run_attempt(kAttemptBudget));
+    if (fj.finished()) {
+        return {};
+    }
     const Clock::time_point t0 = Clock::now();
     double elapsed = 0.0;
     double effort = 0.0;
