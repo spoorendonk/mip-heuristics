@@ -5,8 +5,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cub/block/block_reduce.cuh>
 #include <cub/block/block_scan.cuh>
 #include <cub/device/device_scan.cuh>
+#include <cuda/functional>
 #include <cuda_runtime.h>
 #include <limits>
 #include <span>
@@ -237,21 +239,30 @@ __global__ void compact_kernel(std::int64_t n, const std::int32_t* flag, const s
 // ---------------------------------------------------------------------------
 // The step loop (#263): upstream's `solve`, `selectScalarVariable`,
 // `updateWeights` and `doVariableMove`, on one persistent block.  Thread 0
-// takes every decision that draws from the random stream or edits a list
-// (the violated and good sets) in upstream's order; the block spreads the
-// moved variable's (constraint, cell) work and the neighbours' score
-// updates.  A neighbour's score change is gathered over its own column
-// against the touched constraints, never summed with float atomics, so a
-// climber is deterministic.
+// takes every decision that draws from the random stream, and the moved
+// column's jump value (a sort over its breakpoints); the block spreads the
+// moved variable's (constraint, cell) work, mapped to work ids tile by
+// tile (`map_tile`), the neighbours' score updates, the violated and good
+// set edits (`update_set`) and the moved column's score.  A neighbour's
+// score change is gathered over its own column against the touched
+// constraints, and every sum is a fixed-order block reduction, never float
+// atomics, so a climber is deterministic.
 //
-// Three deviations from upstream, none in what a step computes:
+// Five deviations from upstream, none in what a step computes:
 // - Upstream adds each `modifyMove` (or weight-bump) term to a neighbour's
 //   score constraint by constraint and calls `updateGoodMoves` after each;
 //   here a neighbour's terms are summed over its column first, then added,
 //   and its good-set membership is updated once, neighbours in the order
 //   their first cell comes in the moved constraints' cells.  So a score can
-//   differ from upstream's in rounding, and the good list's order differs,
-//   which is why a GPU seed never replays a CPU one's draws.
+//   differ from upstream's in rounding.
+// - The violated and good sets are edited by the block, removals before
+//   additions (`update_set`), not item by item with swap-removes and
+//   appends interleaved.  The sets are upstream's, their order is not, so
+//   the draws over them differ; with the deviation above, this is why a
+//   GPU seed never replays a CPU one's draws.
+// - The moved column's `resetMoves` score is a block reduction over its
+//   cells, objective term last, not upstream's sum in column order: equal
+//   up to rounding.
 // - Where a weight rescale recomputes every move and upstream adds each
 //   variable to the good set in turn, the good set is rebuilt in index
 //   order.
@@ -315,10 +326,12 @@ struct ClimberView {
     double* new_lhs;
     std::int32_t* work_off;  // each touched constraint's first work id
     std::int32_t* nbr;       // the distinct columns of the touched cells
+    std::int32_t* hole;      // `update_set`'s, max(ncol, ncon) long
     Scalars* s;
 
     // Climber `k`'s arrays in a batch that lays each array out climber
-    // after climber: `ncol`, `ncon` and `nbreaks` long per climber.
+    // after climber: `ncol`, `ncon`, max(`ncol`, `ncon`) and `nbreaks` long
+    // per climber.
     __host__ __device__ ClimberView slot(std::size_t k, std::size_t ncol, std::size_t ncon,
                                          std::size_t nbreaks) const {
         const std::size_t col = k * ncol;
@@ -342,6 +355,7 @@ struct ClimberView {
                            new_lhs + con,
                            work_off + con,
                            nbr + col,
+                           hole + (k * (ncol > ncon ? ncol : ncon)),
                            s + k};
     }
 };
@@ -373,6 +387,7 @@ __device__ double score_of(const DeviceModelView& m, std::int32_t c, double lhs)
 }
 
 using BlockScan = cub::BlockScan<std::int32_t, kStepThreads>;
+using BlockReduce = cub::BlockReduce<double, kStepThreads>;
 
 // A block-wide exclusive scan over `n` items in tiles: `emit(i, offset,
 // value)` for each, offsets running across tiles.  Every thread calls it
@@ -397,25 +412,55 @@ __device__ std::int32_t scan_each(std::int32_t n, BlockScan::TempStorage& tmp, V
     return carry;
 }
 
-// The column work id `w` names: cell `w - work_off[k]` of the `k`th of the
-// `m` constraints `cons`, found by binary search over `work_off` (cuOpt's
-// work-id mapping, at block scale).  Every constraint has a cell
-// (`HostModel` gives an empty row none, as `addConstraint` does), so the
-// offsets strictly increase.
-__device__ std::int32_t work_col(const DeviceModelView& m, const ClimberView& c,
-                                 const std::int32_t* cons, std::int32_t n, std::int32_t w) {
-    std::int32_t lo = 0;
-    std::int32_t hi = n - 1;
-    while (lo < hi) {
-        const std::int32_t mid = (lo + hi + 1) / 2;
-        if (c.work_off[mid] <= w) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
+// The constraint each work id of the tile `[base, base + kStepThreads)`
+// names, into thread `t`'s `k` for work id `base + t` (cuOpt's
+// load-balanced search, at block scale, with no per-work-id binary
+// search): each constraint starting in the tile marks its start, and an
+// inclusive max-scan carries the marks forward, seeded by `first`, the
+// constraint holding work id `base - 1` (0 for the first tile).  Every
+// constraint has a cell (`HostModel` gives an empty row none, as
+// `addConstraint` does), so the offsets strictly increase and at most
+// `kStepThreads` constraints, `first + 1` onward, start in a tile.
+// Returns the tile's last constraint, the next tile's `first`, on every
+// thread.
+__device__ std::int32_t map_tile(const ClimberView& c, std::int32_t n, std::int32_t base,
+                                 std::int32_t first, BlockScan::TempStorage& tmp, std::int32_t& k) {
+    __shared__ std::int32_t mark[kStepThreads];
+    const auto t = static_cast<std::int32_t>(threadIdx.x);
+    mark[t] = -1;
+    __syncthreads();
+    const std::int32_t j = first + 1 + t;
+    if (j < n && c.work_off[j] < base + kStepThreads) {
+        mark[c.work_off[j] - base] = j;
     }
-    const std::int32_t row = m.con_row[cons[lo]];
-    return m.row_index[m.row_start[row] + (w - c.work_off[lo])];
+    __syncthreads();
+    const std::int32_t seed = t == 0 ? max(mark[0], first) : mark[t];
+    std::int32_t last = 0;
+    BlockScan(tmp).InclusiveScan(seed, k, cuda::maximum<>{}, last);
+    __syncthreads();
+    return last;
+}
+
+// `each(w, u)` on every thread for every work id `w` of constraints
+// `cons[0..n)` (`total` cells, `work_off` set), tile by tile, `u` being the
+// column of the cell `w` names (-1 past `total`).  `each` may run block
+// collectives.
+template <typename Each>
+__device__ void for_tiles(const DeviceModelView& m, const ClimberView& c, const std::int32_t* cons,
+                          std::int32_t n, std::int32_t total, BlockScan::TempStorage& tmp,
+                          Each each) {
+    std::int32_t first = 0;
+    for (std::int32_t base = 0; base < total; base += kStepThreads) {
+        std::int32_t k = 0;
+        first = map_tile(c, n, base, first, tmp, k);
+        const std::int32_t w = base + static_cast<std::int32_t>(threadIdx.x);
+        std::int32_t u = -1;
+        if (w < total) {
+            const std::int32_t row = m.con_row[cons[k]];
+            u = m.row_index[m.row_start[row] + (w - c.work_off[k])];
+        }
+        each(w, u);
+    }
 }
 
 // The distinct columns of the cells of constraints `cons[0..n)` (`total`
@@ -424,24 +469,25 @@ __device__ std::int32_t work_col(const DeviceModelView& m, const ClimberView& c,
 __device__ std::int32_t collect(const DeviceModelView& m, const ClimberView& c,
                                 const std::int32_t* cons, std::int32_t n, std::int32_t total,
                                 std::int32_t skip, BlockScan::TempStorage& tmp) {
-    for (std::int32_t w = static_cast<std::int32_t>(threadIdx.x); w < total; w += kStepThreads) {
-        const std::int32_t u = work_col(m, c, cons, n, w);
-        if (u != skip) {
+    for_tiles(m, c, cons, n, total, tmp, [&](std::int32_t w, std::int32_t u) {
+        if (u >= 0 && u != skip) {
             atomicMin(c.owner + u, static_cast<std::uint32_t>(w));
         }
-    }
+    });
     __syncthreads();
-    const std::int32_t count = scan_each(
-        total, tmp,
-        [&](std::int32_t w) {
-            const std::int32_t u = work_col(m, c, cons, n, w);
-            return u != skip && c.owner[u] == static_cast<std::uint32_t>(w) ? 1 : 0;
-        },
-        [&](std::int32_t w, std::int32_t off, std::int32_t first) {
-            if (first != 0) {
-                c.nbr[off] = work_col(m, c, cons, n, w);
-            }
-        });
+    std::int32_t count = 0;
+    for_tiles(m, c, cons, n, total, tmp, [&](std::int32_t w, std::int32_t u) {
+        const std::int32_t first =
+            u >= 0 && u != skip && c.owner[u] == static_cast<std::uint32_t>(w) ? 1 : 0;
+        std::int32_t off = 0;
+        std::int32_t tile = 0;
+        BlockScan(tmp).ExclusiveSum(first, off, tile);
+        if (first != 0) {
+            c.nbr[count + off] = u;
+        }
+        __syncthreads();
+        count += tile;
+    });
     for (std::int32_t i = static_cast<std::int32_t>(threadIdx.x); i < count; i += kStepThreads) {
         c.owner[c.nbr[i]] = kNoOwner;
     }
@@ -482,22 +528,57 @@ __device__ void update_good(const ClimberView& c, Scalars& s, std::int32_t u) {
     }
 }
 
-// `setValue`'s violated-set update for constraint `con` at `lhs`, thread 0
-// only.
-__device__ void update_violated(const DeviceModelView& m, const ClimberView& c, Scalars& s,
-                                std::int32_t con, double lhs) {
-    const double cost = score_of(m, con, lhs);
-    const std::int32_t pos = c.violated_pos[con];
-    if (cost < -m.violation_tol && pos == -1) {
-        c.violated_pos[con] = s.n_violated;
-        c.violated[s.n_violated++] = con;
+// The membership edits of set `list` (`pos`, `size`) for the distinct
+// `items[0..n)`, every thread: item `i` belongs iff `want(i)`, which reads
+// no set.  Upstream (`updateGoodMoves`, `setValue`'s violated-set update)
+// edits item by item, swap-removing and appending in turn; here the
+// removals go first, each hole below the shrunk size filled by a survivor
+// from the tail, holes in item order matched to survivors in position
+// order, and then the additions are appended in item order.  The set is
+// upstream's, its order is not.  `hole` holds up to `n` entries.
+template <typename Want>
+__device__ void update_set(std::int32_t* list, std::int32_t* pos, std::int32_t& size,
+                           const std::int32_t* items, std::int32_t n, std::int32_t* hole,
+                           BlockScan::TempStorage& tmp, Want want) {
+    const std::int32_t old_size = size;
+    const auto leaves = [&](std::int32_t i) { return pos[items[i]] != -1 && !want(i); };
+    const std::int32_t kept =
+        old_size - scan_each(
+                       n, tmp, [&](std::int32_t i) { return leaves(i) ? 1 : 0; },
+                       [](std::int32_t, std::int32_t, std::int32_t) {});
+    // The holes, and every leaver unmarked.
+    scan_each(
+        n, tmp, [&](std::int32_t i) { return leaves(i) && pos[items[i]] < kept ? 1 : 0; },
+        [&](std::int32_t i, std::int32_t off, std::int32_t is_hole) {
+            if (is_hole != 0) {
+                hole[off] = pos[items[i]];
+            }
+            if (leaves(i)) {
+                pos[items[i]] = -1;
+            }
+        });
+    // The tail's survivors, one per hole.
+    scan_each(
+        old_size - kept, tmp, [&](std::int32_t r) { return pos[list[kept + r]] != -1 ? 1 : 0; },
+        [&](std::int32_t r, std::int32_t off, std::int32_t stays) {
+            if (stays != 0) {
+                const std::int32_t e = list[kept + r];
+                list[hole[off]] = e;
+                pos[e] = hole[off];
+            }
+        });
+    const std::int32_t added = scan_each(
+        n, tmp, [&](std::int32_t i) { return pos[items[i]] == -1 && want(i) ? 1 : 0; },
+        [&](std::int32_t i, std::int32_t off, std::int32_t joins) {
+            if (joins != 0) {
+                list[kept + off] = items[i];
+                pos[items[i]] = kept + off;
+            }
+        });
+    if (threadIdx.x == 0) {
+        size = kept + added;
     }
-    if (cost >= -m.violation_tol && pos != -1) {
-        const std::int32_t last = c.violated[--s.n_violated];
-        c.violated[pos] = last;
-        c.violated_pos[last] = pos;
-        c.violated_pos[con] = -1;
-    }
+    __syncthreads();
 }
 
 // The good set from scratch, in index order.
@@ -566,11 +647,8 @@ __device__ void update_weights(const DeviceModelView& m, const ClimberView& c, S
             });
         }
         __syncthreads();
-        if (tid == 0) {
-            for (std::int32_t i = 0; i < count; ++i) {
-                update_good(c, s, c.nbr[i]);
-            }
-        }
+        update_set(c.good, c.good_pos, s.n_good, c.nbr, count, c.hole, tmp,
+                   [&](std::int32_t i) { return c.score[c.nbr[i]] > 0.0; });
         for (std::int32_t k = tid; k < nv; k += kStepThreads) {
             c.touch[c.violated[k]] = -1;
         }
@@ -652,6 +730,8 @@ __device__ std::int32_t select_at_minimum(const DeviceModelView& m, const Climbe
 __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
                      BlockScan::TempStorage& tmp, std::int32_t v) {
     __shared__ double delta_shared;
+    __shared__ double jump_shared;
+    __shared__ BlockReduce::TempStorage reduce_tmp;
     const std::int32_t tid = static_cast<std::int32_t>(threadIdx.x);
     if (tid == 0) {
         const double value = c.jump[v];
@@ -687,11 +767,9 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
         c.touch[con] = k;
     }
     __syncthreads();
-    if (tid == 0) {
-        for (std::int32_t k = 0; k < deg; ++k) {
-            update_violated(m, c, s, c.list[k], c.new_lhs[k]);
-        }
-    }
+    update_set(
+        c.violated, c.violated_pos, s.n_violated, c.list, deg, c.hole, tmp,
+        [&](std::int32_t k) { return score_of(m, c.list[k], c.new_lhs[k]) < -m.violation_tol; });
     const std::int32_t total = scan_each(
         deg, tmp, [&](std::int32_t k) { return row_len(m, m.con_row[c.list[k]]); },
         [&](std::int32_t k, std::int32_t off, std::int32_t) { c.work_off[k] = off; });
@@ -711,11 +789,27 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
         });
     }
     __syncthreads();
+    update_set(c.good, c.good_pos, s.n_good, c.nbr, count, c.hole, tmp,
+               [&](std::int32_t i) { return c.score[c.nbr[i]] > 0.0; });
+    // `resetMoves(v)`: the jump value on thread 0 (a sort over its
+    // breakpoints), the score over `v`'s cells by the block.
     if (tid == 0) {
-        for (std::int32_t i = 0; i < count; ++i) {
-            update_good(c, s, c.nbr[i]);
-        }
-        reset_move(m, v, s.objective_weight, c.x, c.lhs, c.weight, c.breaks, c.jump, c.score);
+        jump_shared = jump_value(m, v, c.x, c.lhs, c.weight, c.breaks + m.break_start[v]);
+    }
+    __syncthreads();
+    const double value = jump_shared;
+    const double shift = value - c.x[v];
+    double part = 0.0;
+    for (std::int32_t k = tid; k < deg; k += kStepThreads) {
+        const std::int32_t con = c.list[k];
+        const double lhs = c.lhs[con];
+        part +=
+            c.weight[con] * (score_of(m, con, lhs + (c.coef[k] * shift)) - score_of(m, con, lhs));
+    }
+    const double cells_score = BlockReduce(reduce_tmp).Sum(part);
+    if (tid == 0) {
+        c.jump[v] = value;
+        c.score[v] = -(s.objective_weight * m.col_cost[v] * shift) + cells_score;
         update_good(c, s, v);
         // `setValue`'s cells of each constraint, then `resetMoves`'s own.
         s.total_effort += static_cast<std::uint64_t>(total) + static_cast<std::uint64_t>(deg);
@@ -869,8 +963,9 @@ BatchBytes batch_bytes(std::size_t ncol, std::size_t ncon, std::size_t nbreaks,
         .per_climber = (ncol * ((4 * kDouble) + (4 * kInt))) +
                        // lhs, weight, coef, old_lhs, new_lhs; violated,
                        // violated_pos, touch, list, work_off.
-                       (ncon * ((5 * kDouble) + (5 * kInt))) + (nbreaks * sizeof(Break)) +
-                       sizeof(Scalars),
+                       (ncon * ((5 * kDouble) + (5 * kInt))) +
+                       // hole.
+                       (std::max(ncol, ncon) * kInt) + (nbreaks * sizeof(Break)) + sizeof(Scalars),
         // violated_flag, good_flag, offset.
         .shared = ((ncon + ncol + std::max(ncol, ncon)) * kInt) + scan_temp_bytes,
     };
@@ -902,7 +997,8 @@ struct Climber::Impl {
     // Each climber's arrays, laid out climber after climber
     // (`ClimberView::slot`).
     DeviceBuffer<double> x, lhs, weight, jump, score, best_x, coef, old_lhs, new_lhs;
-    DeviceBuffer<std::int32_t> violated, violated_pos, good, good_pos, touch, list, work_off, nbr;
+    DeviceBuffer<std::int32_t> violated, violated_pos, good, good_pos, touch, list, work_off, nbr,
+        hole;
     DeviceBuffer<std::uint32_t> owner;
     DeviceBuffer<Scalars> scalars;
     DeviceBuffer<Break> breaks;
@@ -945,7 +1041,8 @@ struct Climber::Impl {
                            score.get(),   best_x.get(),   violated.get(), violated_pos.get(),
                            good.get(),    good_pos.get(), breaks.get(),   touch.get(),
                            owner.get(),   list.get(),     coef.get(),     old_lhs.get(),
-                           new_lhs.get(), work_off.get(), nbr.get(),      scalars.get()};
+                           new_lhs.get(), work_off.get(), nbr.get(),      hole.get(),
+                           scalars.get()};
     }
 
     [[nodiscard]] ClimberView view(std::int32_t k) const {
@@ -996,6 +1093,7 @@ struct Climber::Impl {
                old_lhs.allocate(kcon, "old_lhs", error) &&
                new_lhs.allocate(kcon, "new_lhs", error) &&
                work_off.allocate(kcon, "work_off", error) && nbr.allocate(kcol, "nbr", error) &&
+               hole.allocate(k * std::max(ncol, ncon), "hole", error) &&
                scalars.allocate(k, "scalars", error) &&
                breaks.allocate(k * static_cast<std::size_t>(nbreaks), "breaks", error) &&
                violated_flag.allocate(ncon, "violated_flag", error) &&
