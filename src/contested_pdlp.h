@@ -39,10 +39,10 @@ class HighsMipSolver;
 // Lifetime invariant: the wrapped LP is built once from
 // `mipsolver.mipdata_->AR*` at construction time via
 // `pump::build_lp_relaxation`.  The LP rows / constraint matrix are
-// frozen for the lifetime of the instance — only column costs change
-// on each `solve()`.  Safe for presolve-time use (HiGHS internals are
-// immutable there); NOT safe for B&B-dive use where node bounds mutate
-// between calls.
+// frozen for the lifetime of the instance — only column costs (and, with
+// aux columns, the aux rows' lower bounds) change on each `solve()`.  Safe for presolve-time use
+// (HiGHS internals are immutable there); NOT safe for B&B-dive use where node bounds mutate between
+// calls.
 class ContestedPdlp {
 public:
     struct SolveResult {
@@ -99,6 +99,9 @@ public:
     // truncated to the `ncol` model columns, so snapshots and `x_bar` keep
     // their length, and its `row_dual` covers every row.  With it off (or
     // no column needing one) the LP is exactly the relaxation.
+    // `pdlp_iter_cap` is sized against the model's nonzeros; with aux
+    // columns it is scaled by `nnz model / nnz_lp()`, so a capped solve
+    // costs the same effort.
     ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap, bool aux_distance = false);
 
     virtual ~ContestedPdlp() = default;

@@ -61,7 +61,15 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap, 
 
     auto lp = pump::build_lp_relaxation(*model, *mipdata);
     if (aux_distance) {
+        const size_t nnz_model = nnz_lp_;
         append_aux_distance(lp, *model);
+        // The caller sizes the cap against the model's nonzeros (scylla's
+        // `compute_pdlp_iter_cap`), while each iteration is charged at
+        // `nnz_lp_`, aux nonzeros included: scale it so a capped solve
+        // still costs what the caller budgeted for (#290 review).
+        pdlp_iter_cap =
+            static_cast<HighsInt>(static_cast<double>(pdlp_iter_cap) *
+                                  static_cast<double>(nnz_model) / static_cast<double>(nnz_lp_));
     }
     set_option_or_die(highs_, "solver", "pdlp");
     set_option_or_die(highs_, "output_flag", false);

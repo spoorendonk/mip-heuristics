@@ -116,11 +116,14 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem
     max_stale_rounds_ = compute_max_stale_rounds(nnz_lp_);
 
     modified_cost_ = orig_cost;
+    // One cost per LP column, aux columns at 0, whatever the mode: a solve
+    // writes `ncol + naux` costs, so this length is the LP's, not the
+    // option's (#290 review).
+    modified_cost_.resize(ncol_ + pdlp_.aux_cols().size(), 0.0);
     cuopt_ = mipsolver_.options_mip_->mip_heuristic_scylla_cuopt_pump;
     if (cuopt_) {
         // The first solve is the plain relaxation (aux costs 0, aux rows
         // relaxed) at the loose tolerance; the projections start after it.
-        modified_cost_.resize(ncol_ + pdlp_.aux_cols().size(), 0.0);
         epsilon_ = pump::cuopt::kTolFirst;
         cuopt_alpha_ = pump::cuopt::kAlphaInit;
     }

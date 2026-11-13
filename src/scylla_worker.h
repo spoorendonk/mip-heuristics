@@ -244,8 +244,10 @@ private:
     // and `epsilon_` follows `pump::cuopt::lp_tolerance`; a solve takes
     // `cuopt_warm_primal_` (model and aux columns) instead of
     // `warm_start_col_value_`, which stays the `ncol_`-long `x_bar`, and
-    // `aux_row_lower_` for the shared LP's aux rows.  Both are empty until
-    // the first projection.
+    // `aux_row_lower_` for the shared LP's aux rows.  The warm primal is
+    // the last LP optimum after a solve and the rounding after a
+    // projection; it is empty before the first solve, and
+    // `aux_row_lower_` before the first projection.
     bool cuopt_ = false;
     double cuopt_alpha_ = 0.0;
     std::vector<double> cuopt_warm_primal_;
