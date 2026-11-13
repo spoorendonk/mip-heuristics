@@ -620,6 +620,14 @@ int drive_cuopt_alpha_chain(const char* inst, int worker_idx) {
         const int rounds_before = worker.pump_rounds_for_test();
         const AttemptResult res = worker.run_attempt(1000);
         const int n = worker.pump_rounds_for_test() - rounds_before;
+        if (!worker.finished()) {
+            // From the first solve on (one worker: every attempt solves
+            // fresh), the warm primal spans model and aux columns, also
+            // before any projection, so `solve_locked` never drops it and
+            // the row duals with it.
+            CHECK(worker.cuopt_warm_primal_size_for_test() ==
+                  static_cast<size_t>(mipsolver->model_->num_col_) + pdlp.aux_cols().size());
+        }
         if (n == 0) {
             continue;
         }

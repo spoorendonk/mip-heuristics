@@ -163,6 +163,23 @@ bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsI
         base_.finished = true;
         return true;
     }
+    if (cuopt_) {
+        // Until the next projection replaces it with the rounding, the
+        // cuOpt warm start is this LP optimum, its aux columns at the
+        // distance their current rows measure (0 on relaxed rows, where any
+        // value fits).  A round that skips the projection (fast path, empty
+        // rounding) then re-solves an unchanged LP from its own optimum,
+        // as Mexi's pump does, so `kMaxPdlpStalls` can still retire the
+        // chain; and the primal is full-length from the first solve on, so
+        // `solve_locked` never drops the row duals with it.
+        const std::vector<HighsInt>& aux = pdlp_.aux_cols();
+        cuopt_warm_primal_.assign(result.col_value.begin(), result.col_value.end());
+        for (size_t k = 0; k < aux.size(); ++k) {
+            const double target = aux_row_lower_.empty() ? -kHighsInf : aux_row_lower_[(2 * k) + 1];
+            cuopt_warm_primal_.push_back(
+                std::isfinite(target) ? std::abs(result.col_value[aux[k]] - target) : 0.0);
+        }
+    }
     warm_start_col_value_ = std::move(result.col_value);
     warm_start_row_dual_ = std::move(result.row_dual);
     warm_start_valid_ = result.value_valid && result.dual_valid;

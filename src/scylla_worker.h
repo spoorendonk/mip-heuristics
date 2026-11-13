@@ -138,6 +138,9 @@ public:
     // The cuOpt projection's alpha and the fresh pump rounds so far (#290).
     [[nodiscard]] double cuopt_alpha_for_test() const { return cuopt_alpha_; }
     [[nodiscard]] int pump_rounds_for_test() const { return K_; }
+    [[nodiscard]] size_t cuopt_warm_primal_size_for_test() const {
+        return cuopt_warm_primal_.size();
+    }
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
