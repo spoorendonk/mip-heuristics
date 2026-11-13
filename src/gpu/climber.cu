@@ -8,7 +8,6 @@
 #include <cub/block/block_reduce.cuh>
 #include <cub/block/block_scan.cuh>
 #include <cub/device/device_scan.cuh>
-#include <cuda/functional>
 #include <cuda_runtime.h>
 #include <limits>
 #include <span>
@@ -180,6 +179,14 @@ __device__ double jump_value(const DeviceModelView& m, std::int32_t j, const dou
     return best_value;
 }
 
+// A cell's term of a `resetMoves` score: constraint `c`'s weighted score
+// change when its `lhs` moves by `coeff * delta`.
+__device__ double cell_score(const DeviceModelView& m, std::int32_t c, double lhs, double weight,
+                             double coeff, double delta) {
+    return weight * (con_score(m.con_sense[c], m.con_rhs[c], lhs + (coeff * delta)) -
+                     con_score(m.con_sense[c], m.con_rhs[c], lhs));
+}
+
 // `resetMoves` for column `col`: the jump value, then its score, with
 // #139's objective term subtracted.
 __device__ void reset_move(const DeviceModelView& m, std::int32_t col, double objective_weight,
@@ -193,9 +200,7 @@ __device__ void reset_move(const DeviceModelView& m, std::int32_t col, double ob
         const std::int32_t row = m.col_row[p];
         const double coeff = m.col_value[p];
         for (std::int32_t c = m.row_con_start[row]; c < m.row_con_start[row + 1]; ++c) {
-            const double candidate = lhs[c] + (coeff * delta);
-            s += weight[c] * (con_score(m.con_sense[c], m.con_rhs[c], candidate) -
-                              con_score(m.con_sense[c], m.con_rhs[c], lhs[c]));
+            s += cell_score(m, c, lhs[c], weight[c], coeff, delta);
         }
     }
     jump[col] = value;
@@ -245,7 +250,8 @@ __global__ void compact_kernel(std::int64_t n, const std::int32_t* flag, const s
 // tile (`map_tile`), the neighbours' score updates, the violated and good
 // set edits (`update_set`) and the moved column's score.  A neighbour's
 // score change is gathered over its own column against the touched
-// constraints, and every sum is a fixed-order block reduction, never float
+// constraints in column order, and the moved column's score is a
+// fixed-order block reduction: no sum uses float atomics
 // atomics, so a climber is deterministic.
 //
 // Five deviations from upstream, none in what a step computes:
@@ -436,7 +442,8 @@ __device__ std::int32_t map_tile(const ClimberView& c, std::int32_t n, std::int3
     __syncthreads();
     const std::int32_t seed = t == 0 ? max(mark[0], first) : mark[t];
     std::int32_t last = 0;
-    BlockScan(tmp).InclusiveScan(seed, k, cuda::maximum<>{}, last);
+    BlockScan(tmp).InclusiveScan(
+        seed, k, [](std::int32_t a, std::int32_t b) { return a > b ? a : b; }, last);
     __syncthreads();
     return last;
 }
@@ -802,9 +809,7 @@ __device__ void move(const DeviceModelView& m, const ClimberView& c, Scalars& s,
     double part = 0.0;
     for (std::int32_t k = tid; k < deg; k += kStepThreads) {
         const std::int32_t con = c.list[k];
-        const double lhs = c.lhs[con];
-        part +=
-            c.weight[con] * (score_of(m, con, lhs + (c.coef[k] * shift)) - score_of(m, con, lhs));
+        part += cell_score(m, con, c.lhs[con], c.weight[con], c.coef[k], shift);
     }
     const double cells_score = BlockReduce(reduce_tmp).Sum(part);
     if (tid == 0) {
