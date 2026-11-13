@@ -148,8 +148,9 @@ struct SeededRun {
 };
 
 // Solve flugpl in the reproducible configuration (`threads=1` plus a
-// fixed `random_seed`) and fingerprint the run.
-SeededRun run_seeded(int seed) {
+// fixed `random_seed`) and fingerprint the run, `mip_heuristic_fj_gpu` set
+// to `fj_gpu`.
+SeededRun run_seeded(int seed, bool fj_gpu = false) {
     SeededRun res;
     const ScopedThreadPin pin;
     const auto lines = solve_capturing_log(
@@ -157,6 +158,7 @@ SeededRun run_seeded(int seed) {
         [&](Highs& h) {
             require_option(h, "threads", 1);
             require_option(h, "random_seed", seed);
+            require_option(h, "mip_heuristic_fj_gpu", fj_gpu);
             require_option(h, "log_dev_level", 3);
             // Same rationale as `solve_default`: the objective assertion
             // below is tighter than HiGHS's default `mip_rel_gap` (1e-4)
@@ -204,6 +206,20 @@ TEST_CASE("execution-mode: threads=1 same seed reproduces the run", "[mode-matri
     // tag is ever renamed without updating this test.
     REQUIRE_FALSE(first.effort_trace.empty());
 }
+
+#ifndef MIP_HEURISTICS_HAS_GPU_FJ
+// #282: a build without the GPU FJ runs FJ on the CPU with the option on,
+// so the reproducible run is the option-off run, effort trace and all.
+TEST_CASE("execution-mode: threads=1 fj_gpu in a CPU build matches option off",
+          "[mode-matrix][fj_gpu]") {
+    const auto off = run_seeded(7);
+    const auto on = run_seeded(7, /*fj_gpu=*/true);
+    REQUIRE(on.obj == Catch::Approx(off.obj).epsilon(1e-12));
+    REQUIRE(on.nodes == off.nodes);
+    REQUIRE(on.effort_trace == off.effort_trace);
+    REQUIRE(off.effort_trace.contains("heur=fj "));
+}
+#endif
 
 TEST_CASE("execution-mode: threads=1 different seeds take different search paths",
           "[mode-matrix]") {
