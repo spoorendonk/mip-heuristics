@@ -60,8 +60,8 @@ protected:
     SolveResult solve_locked(const std::vector<double>& /*modified_cost*/,
                              const std::vector<double>& /*warm_start_col_value*/,
                              const std::vector<double>& /*warm_start_row_dual*/,
-                             bool /*warm_start_valid*/, double /*epsilon*/,
-                             double time_limit) override {
+                             bool /*warm_start_valid*/, double /*epsilon*/, double time_limit,
+                             std::span<const double> /*aux_row_lower*/) override {
         {
             std::scoped_lock lock(limits_mtx);
             time_limits.push_back(time_limit);

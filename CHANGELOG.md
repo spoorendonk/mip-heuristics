@@ -16,6 +16,13 @@ linked from each entry.
   even at `threads=1`. A build without `MIP_HEURISTICS_CUDA` that runs FJ
   warns once per solve and runs FJ on the CPU only, as a GPU build does when
   its device setup fails. A default run is unchanged.
+- **`mip_heuristic_scylla_cuopt_pump`** (bool, default `false`; #290, part of
+  #211): Scylla's pump projects with cuOpt's technique instead of Mexi et
+  al.'s: an exact L1 distance (auxiliary columns for general integers), an
+  objective weight that decays every projection and resets on an
+  improvement, a PDLP tolerance read off how integral the last LP point is,
+  a warm start from the last rounding, and FPR with repair on every chain.
+  A default run, and a Scylla run without the option, are unchanged.
 
 ## v0.1.11 (2026-11-12)
 

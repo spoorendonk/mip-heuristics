@@ -6,6 +6,8 @@
 
 #include <cmath>
 #include <random>
+#include <span>
+#include <utility>
 #include <vector>
 
 namespace pump {
@@ -169,5 +171,142 @@ inline void perturb(std::vector<double>& x, const HighsLp& model, Rng& rng) {
         x[j] = std::max(lb[j], std::min(ub[j], x[j]));
     }
 }
+
+// cuOpt-style projection (#290, option `mip_heuristic_scylla_cuopt_pump`).
+// Technique read from NVIDIA cuOpt's feasibility pump (Apache-2.0; no code
+// copied): an exact L1 distance through auxiliary columns, an alpha that
+// decays before every projection and resets on an improving offer, and a
+// PDLP tolerance read off how integral the last LP point already is.
+namespace cuopt {
+
+inline constexpr double kAlphaInit = 0.99;
+inline constexpr double kAlphaDecay = 0.9;
+// Tolerance schedule: below each integral fraction, the next solve's
+// tolerance.  At or above the last threshold the pump uses Scylla's own
+// floor `kEpsilonFloor` (cuOpt uses its absolute tolerance there; the
+// floor is this pump's tightest solve, a recorded reading).
+inline constexpr double kIntegralFracLoose = 0.80;
+inline constexpr double kIntegralFracMid = 0.93;
+inline constexpr double kIntegralFracTight = 0.97;
+inline constexpr double kTolLoose = 0.1;
+inline constexpr double kTolMid = 0.01;
+inline constexpr double kTolTight = 1e-3;
+// The first projection has no LP point to read a fraction from; it counts
+// as fraction 0 (cuOpt starts loose too).
+inline constexpr double kTolFirst = kTolLoose;
+
+inline double lp_tolerance(double integral_fraction) {
+    if (integral_fraction < kIntegralFracLoose) {
+        return kTolLoose;
+    }
+    if (integral_fraction < kIntegralFracMid) {
+        return kTolMid;
+    }
+    if (integral_fraction < kIntegralFracTight) {
+        return kTolTight;
+    }
+    return kEpsilonFloor;
+}
+
+// Fraction of the integer columns of `x` that are integral within `feastol`;
+// 0 when there are none.
+inline double integral_fraction(std::span<const double> x,
+                                const std::vector<HighsVarType>& integrality, double feastol) {
+    HighsInt num_int = 0;
+    HighsInt num_integral = 0;
+    for (HighsInt j = 0; std::cmp_less(j, x.size()); ++j) {
+        if (!is_integer(integrality, j)) {
+            continue;
+        }
+        ++num_int;
+        if (std::abs(x[j] - std::round(x[j])) <= feastol) {
+            ++num_integral;
+        }
+    }
+    return num_int == 0 ? 0.0 : static_cast<double>(num_integral) / num_int;
+}
+
+// Does integer column `j` get an auxiliary distance column?  Only when its
+// rounding can land strictly inside its bounds: a range above 1 or an
+// infinite bound.
+inline bool needs_aux(double lb, double ub) {
+    return !std::isfinite(lb) || !std::isfinite(ub) || ub - lb > 1.0;
+}
+
+// The projection's objective over the LP with auxiliary columns
+// (`ncol + aux_cols.size()` costs, two row lowers per aux column).
+//
+// `dist` is the L1 distance to `x_hat` over the integer columns: +1 on a
+// column rounded to its lower bound (`x - l`), -1 at its upper bound
+// (`u - x`; upper checked first, so a fixed column reads -1), and for an
+// interior rounding of an aux-carrying column cost 1 on `d_k` with rows
+// `d_k - x_j >= -x_hat_j`, `d_k + x_j >= x_hat_j`.  The constants `-l`, `u`
+// only shift the objective, so they are left out of it (the LP's offset
+// does not move its argmin).  An aux column whose rounding is at a bound
+// gets cost 0 and its rows relaxed (`-inf`).  Continuous columns: 0.
+//
+// cost = (1-a)/||dist||_2 * dist + a/||c||_2 * c, each term dropped when its
+// norm is zero (the scaled term would not be finite).
+inline void build_projection(std::span<const double> orig_cost, std::span<const double> x_hat,
+                             const std::vector<HighsVarType>& integrality,
+                             std::span<const double> lb, std::span<const double> ub,
+                             std::span<const HighsInt> aux_cols, double alpha, double feastol,
+                             std::vector<double>& cost, std::vector<double>& aux_row_lower) {
+    const auto ncol = static_cast<HighsInt>(orig_cost.size());
+    const auto naux = static_cast<HighsInt>(aux_cols.size());
+    cost.assign(ncol + naux, 0.0);
+    aux_row_lower.assign(2 * static_cast<size_t>(naux), -kHighsInf);
+    // `cost` holds `dist` until the blend below.
+    for (HighsInt j = 0; j < ncol; ++j) {
+        if (!is_integer(integrality, j)) {
+            continue;
+        }
+        if (x_hat[j] >= ub[j] - feastol) {
+            cost[j] = -1.0;
+        } else if (x_hat[j] <= lb[j] + feastol) {
+            cost[j] = 1.0;
+        }
+    }
+    for (HighsInt k = 0; k < naux; ++k) {
+        const HighsInt j = aux_cols[k];
+        if (cost[j] != 0.0 || !std::isfinite(x_hat[j])) {
+            continue;
+        }
+        cost[ncol + k] = 1.0;
+        aux_row_lower[2 * static_cast<size_t>(k)] = -x_hat[j];
+        aux_row_lower[(2 * static_cast<size_t>(k)) + 1] = x_hat[j];
+    }
+    double dist_sq = 0.0;
+    for (const double d : cost) {
+        dist_sq += d * d;
+    }
+    double c_sq = 0.0;
+    for (const double c : orig_cost) {
+        c_sq += c * c;
+    }
+    const double dist_w = dist_sq > 0.0 ? (1.0 - alpha) / std::sqrt(dist_sq) : 0.0;
+    const double c_w = c_sq > 0.0 ? alpha / std::sqrt(c_sq) : 0.0;
+    for (HighsInt j = 0; j < ncol; ++j) {
+        cost[j] = (dist_w * cost[j]) + (c_w * orig_cost[j]);
+    }
+    for (HighsInt k = 0; k < naux; ++k) {
+        cost[ncol + k] *= dist_w;
+    }
+}
+
+// Warm-start primal for the next projection: the rounding `x_hat`, with
+// each aux column at the distance `|x_hat_j - x_bar_j|` to the last LP point
+// (0 where that is not finite).
+inline void build_warm_primal(std::span<const double> x_hat, std::span<const double> x_bar,
+                              std::span<const HighsInt> aux_cols, std::vector<double>& out) {
+    out.assign(x_hat.begin(), x_hat.end());
+    out.reserve(x_hat.size() + aux_cols.size());
+    for (const HighsInt j : aux_cols) {
+        const double d = std::abs(x_hat[j] - x_bar[j]);
+        out.push_back(std::isfinite(d) ? d : 0.0);
+    }
+}
+
+}  // namespace cuopt
 
 }  // namespace pump

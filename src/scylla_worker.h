@@ -135,6 +135,9 @@ public:
     // the one the blend does not move.  Dispatching-thread-only, like the
     // two above.
     [[nodiscard]] size_t cycle_history_size_for_test() const { return cycle_history_.size(); }
+    // The cuOpt projection's alpha and the fresh pump rounds so far (#290).
+    [[nodiscard]] double cuopt_alpha_for_test() const { return cuopt_alpha_; }
+    [[nodiscard]] int pump_rounds_for_test() const { return K_; }
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
@@ -148,6 +151,13 @@ private:
     // header so tests can call it independently if needed.
     bool absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsInt& iters_out,
                             const std::vector<double>*& x_bar_ptr);
+
+    // One fresh round of the cuOpt projection (#290): decay `cuopt_alpha_`,
+    // rebuild the objective and aux row lowers around `x_hat`, the warm
+    // primal from `x_hat` and `x_bar`, and the next tolerance from how
+    // integral `x_bar` is.
+    void advance_cuopt_projection(const std::vector<double>& x_hat,
+                                  const std::vector<double>& x_bar);
 
     HighsMipSolver& mipsolver_;
     // Must outlive the worker.
@@ -225,6 +235,18 @@ private:
     std::vector<double> warm_start_col_value_;
     std::vector<double> warm_start_row_dual_;
     bool warm_start_valid_ = false;
+
+    // The cuOpt projection (#290, `mip_heuristic_scylla_cuopt_pump`; the
+    // helpers are `pump::cuopt`).  `cuopt_alpha_` stands in for `alpha_K_`
+    // and `epsilon_` follows `pump::cuopt::lp_tolerance`; a solve takes
+    // `cuopt_warm_primal_` (model and aux columns) instead of
+    // `warm_start_col_value_`, which stays the `ncol_`-long `x_bar`, and
+    // `aux_row_lower_` for the shared LP's aux rows.  Both are empty until
+    // the first projection.
+    bool cuopt_ = false;
+    double cuopt_alpha_ = 0.0;
+    std::vector<double> cuopt_warm_primal_;
+    std::vector<double> aux_row_lower_;
 
     std::vector<std::vector<double>> cycle_history_;
     std::vector<double> modified_cost_;

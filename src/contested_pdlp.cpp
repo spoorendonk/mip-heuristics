@@ -48,7 +48,7 @@ void set_option_or_die(Highs& highs, const char* name, T value) {
 
 }  // namespace
 
-ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
+ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap, bool aux_distance)
     : deadline_(deadline_of(mipsolver)) {
     const auto* model = mipsolver.model_;
     auto* mipdata = mipsolver.mipdata_.get();
@@ -60,6 +60,9 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
     }
 
     auto lp = pump::build_lp_relaxation(*model, *mipdata);
+    if (aux_distance) {
+        append_aux_distance(lp, *model);
+    }
     set_option_or_die(highs_, "solver", "pdlp");
     set_option_or_die(highs_, "output_flag", false);
     // LP presolve is OFF on this instance, and the reason is a
@@ -157,6 +160,47 @@ ContestedPdlp::ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
     initialized_ = true;
 }
 
+void ContestedPdlp::append_aux_distance(HighsLp& lp, const HighsLp& model) {
+    for (HighsInt j = 0; j < ncol_; ++j) {
+        if (is_integer(model.integrality_, j) &&
+            pump::cuopt::needs_aux(model.col_lower_[j], model.col_upper_[j])) {
+            aux_cols_.push_back(j);
+        }
+    }
+    const auto naux = static_cast<HighsInt>(aux_cols_.size());
+    if (naux == 0) {
+        return;
+    }
+    // Columns: `d_k` in [0, u-l], cost 0.
+    lp.num_col_ += naux;
+    lp.a_matrix_.num_col_ = lp.num_col_;
+    for (const HighsInt j : aux_cols_) {
+        lp.col_cost_.push_back(0.0);
+        lp.col_lower_.push_back(0.0);
+        lp.col_upper_.push_back(model.col_upper_[j] - model.col_lower_[j]);
+    }
+    // Rows, row-wise like the rest of the matrix: `d_k - x_j >= .` and
+    // `d_k + x_j >= .`, relaxed until a projection sets their lowers.
+    aux_row_relaxed_.assign(2 * static_cast<size_t>(naux), -kHighsInf);
+    aux_row_upper_.assign(2 * static_cast<size_t>(naux), kHighsInf);
+    auto& a = lp.a_matrix_;
+    for (HighsInt k = 0; k < naux; ++k) {
+        const HighsInt j = aux_cols_[k];
+        for (const double sign : {-1.0, 1.0}) {
+            a.index_.push_back(ncol_ + k);
+            a.value_.push_back(1.0);
+            a.index_.push_back(j);
+            a.value_.push_back(sign);
+            a.start_.push_back(static_cast<HighsInt>(a.index_.size()));
+            lp.row_lower_.push_back(-kHighsInf);
+            lp.row_upper_.push_back(kHighsInf);
+        }
+    }
+    lp.num_row_ += 2 * naux;
+    a.num_row_ = lp.num_row_;
+    nnz_lp_ += 4 * static_cast<size_t>(naux);
+}
+
 ContestedPdlp::ContestedPdlp(ForTesting /*unused*/, Deadline deadline) : deadline_(deadline) {
     // Minimal init for unit tests: the subclass overrides `solve_locked`
     // so we never touch `highs_`.  ncol/nrow/nnz stay 0 by default;
@@ -168,10 +212,22 @@ ContestedPdlp::ContestedPdlp(ForTesting /*unused*/, Deadline deadline) : deadlin
 ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
     const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
-    double time_limit) {
+    double time_limit, std::span<const double> aux_row_lower) {
     SolveResult result;
 
-    highs_.changeColsCost(0, ncol_ - 1, modified_cost.data());
+    const auto naux = static_cast<HighsInt>(aux_cols_.size());
+    const HighsInt lp_ncol = ncol_ + naux;
+    const HighsInt lp_nrow = nrow_ + (2 * naux);
+    assert(std::cmp_equal(modified_cost.size(), lp_ncol));
+    highs_.changeColsCost(0, lp_ncol - 1, modified_cost.data());
+    if (naux > 0) {
+        // Every solve sets the aux rows: the instance is shared, so a peer's
+        // last projection must not leak into this one.
+        assert(aux_row_lower.empty() || std::cmp_equal(aux_row_lower.size(), 2 * naux));
+        const double* lower =
+            aux_row_lower.empty() ? aux_row_relaxed_.data() : aux_row_lower.data();
+        highs_.changeRowsBounds(nrow_, lp_nrow - 1, lower, aux_row_upper_.data());
+    }
 
     // The pump's epsilon schedule drives *all three* of cuPDLP-C's
     // termination tolerances, and it does so through `kkt_tolerance`
@@ -439,8 +495,8 @@ ContestedPdlp::SolveResult ContestedPdlp::solve_locked(
     // is the granularity, not one check interval.
     set_option_or_die(highs_, "time_limit", time_limit);
 
-    if (warm_start_valid && std::cmp_equal(warm_start_col_value.size(), ncol_) &&
-        std::cmp_equal(warm_start_row_dual.size(), nrow_)) {
+    if (warm_start_valid && std::cmp_equal(warm_start_col_value.size(), lp_ncol) &&
+        std::cmp_equal(warm_start_row_dual.size(), lp_nrow)) {
         HighsSolution warm;
         warm.col_value = warm_start_col_value;
         warm.row_dual = warm_start_row_dual;
@@ -490,7 +546,8 @@ HighsPresolveStatus ContestedPdlp::presolve_status_for_test() const {
 
 ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
-    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon) {
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
+    std::span<const double> aux_row_lower) {
     // The solve's time limit, read here rather than by the caller (#117).
     // `solve()` blocks on `mu_` for as long as a peer's whole solve takes,
     // and a limit computed before that wait is stale by exactly it — the
@@ -542,7 +599,13 @@ ContestedPdlp::SolveResult ContestedPdlp::run_locked_with_accounting(
     }
 
     auto result = solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
-                               warm_start_valid, epsilon, time_limit);
+                               warm_start_valid, epsilon, time_limit, aux_row_lower);
+    // The aux columns are this class's own: callers, snapshots and `x_bar`
+    // see the model columns.  Cut here rather than in `solve_locked`, so a
+    // test override of that can still read the aux values.
+    if (!aux_cols_.empty() && std::cmp_greater(result.col_value.size(), ncol_)) {
+        result.col_value.resize(ncol_);
+    }
     publish_snapshot_locked(result);
     return result;
 }
@@ -602,28 +665,30 @@ void ContestedPdlp::publish_snapshot_for_test(Snapshot snap) {
 ContestedPdlp::SolveResult ContestedPdlp::solve(const std::vector<double>& modified_cost,
                                                 const std::vector<double>& warm_start_col_value,
                                                 const std::vector<double>& warm_start_row_dual,
-                                                bool warm_start_valid, double epsilon) {
+                                                bool warm_start_valid, double epsilon,
+                                                std::span<const double> aux_row_lower) {
     SolveResult result;
     if (!initialized_) {
         return result;
     }
-    assert(static_cast<HighsInt>(modified_cost.size()) == ncol_ ||
+    assert(std::cmp_equal(modified_cost.size(), ncol_ + aux_cols_.size()) ||
            ncol_ == 0 /* test-double allows empty shapes */);
 
     std::scoped_lock lock(mu_);
     return run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                      warm_start_valid, epsilon);
+                                      warm_start_valid, epsilon, aux_row_lower);
 }
 
 ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
     const std::vector<double>& modified_cost, const std::vector<double>& warm_start_col_value,
-    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon) {
+    const std::vector<double>& warm_start_row_dual, bool warm_start_valid, double epsilon,
+    std::span<const double> aux_row_lower) {
     TrySolveResult out;
     if (!initialized_) {
         out.stale_snapshot = latest_snapshot();
         return out;
     }
-    assert(static_cast<HighsInt>(modified_cost.size()) == ncol_ ||
+    assert(std::cmp_equal(modified_cost.size(), ncol_ + aux_cols_.size()) ||
            ncol_ == 0 /* test-double allows empty shapes */);
 
     std::unique_lock<std::mutex> lock(mu_, std::try_to_lock);
@@ -637,7 +702,7 @@ ContestedPdlp::TrySolveResult ContestedPdlp::try_solve_or_snapshot(
     }
 
     out.solve = run_locked_with_accounting(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                           warm_start_valid, epsilon);
+                                           warm_start_valid, epsilon, aux_row_lower);
     out.fresh = true;
     return out;
 }

@@ -981,6 +981,38 @@ Three things to carry forward.
 
 ---
 
+### `kAlphaInit` / `kAlphaDecay` — cuOpt projection's objective weight
+
+- **File**: `src/pump_common.h` (namespace `pump::cuopt`)
+- **Default**: `0.99` / `0.9`
+- **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#290). The
+  projection's cost is `(1-a)/‖dist‖₂·dist + a/‖c‖₂·c`; `a` starts at
+  `kAlphaInit`, is multiplied by `kAlphaDecay` before every projection,
+  and goes back to `kAlphaInit` when the worker's own offer improves the
+  incumbent. Taken from cuOpt's feasibility pump; replaces `kAlpha` in the
+  variant.
+- **Suggested range**: `kAlphaInit` 0.9–1.0, `kAlphaDecay` 0.8–0.99.
+
+---
+
+### `kIntegralFracLoose` / `kIntegralFracMid` / `kIntegralFracTight`, `kTolLoose` / `kTolMid` / `kTolTight` / `kTolFirst` — cuOpt projection's PDLP tolerance
+
+- **File**: `src/pump_common.h` (namespace `pump::cuopt`)
+- **Default**: thresholds `0.80` / `0.93` / `0.97`; tolerances `0.1` /
+  `0.01` / `1e-3`; `kTolFirst` = `kTolLoose`
+- **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#290). The next
+  solve's `ε` (the same `kkt_tolerance` write as the Mexi schedule) is
+  read from the fraction of the last LP point's integer columns that are
+  integral within the MIP feasibility tolerance: below `kIntegralFracLoose`
+  → `kTolLoose`, below `kIntegralFracMid` → `kTolMid`, below
+  `kIntegralFracTight` → `kTolTight`, else `kEpsilonFloor` (where cuOpt
+  uses its absolute tolerance). The first solve has no point and uses
+  `kTolFirst`. Replaces `kEpsilonInit` / `kBeta` in the variant.
+- **Suggested range**: thresholds in (0, 1), increasing; tolerances
+  decreasing.
+
+---
+
 ### `kCycleWindow` — cycling detection history depth
 
 - **File**: `src/pump_common.h`

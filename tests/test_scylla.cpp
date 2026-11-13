@@ -10,6 +10,7 @@
 #include "parallel/HighsParallel.h"
 #include "pump_common.h"
 #include "rng.h"
+#include "scylla.h"
 #include "scylla_worker.h"
 #include "test_common.h"
 #include "util/HighsInt.h"
@@ -19,12 +20,16 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numbers>
 #include <regex>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -339,10 +344,11 @@ protected:
     SolveResult solve_locked(const std::vector<double>& modified_cost,
                              const std::vector<double>& warm_start_col_value,
                              const std::vector<double>& warm_start_row_dual, bool warm_start_valid,
-                             double epsilon, double time_limit) override {
+                             double epsilon, double time_limit,
+                             std::span<const double> aux_row_lower) override {
         calls.push_back({modified_cost, warm_start_col_value, warm_start_valid});
         return ContestedPdlp::solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
-                                           warm_start_valid, epsilon, time_limit);
+                                           warm_start_valid, epsilon, time_limit, aux_row_lower);
     }
 };
 
@@ -437,4 +443,240 @@ TEST_CASE("Scylla: the pump advances on a failed FPR rounding (#155)",
     CHECK(worker.cycle_history_size_for_test() ==
           std::min<size_t>(static_cast<size_t>(worker.fresh_solves()), pump::kCycleWindow));
     CHECK(worker.cycle_history_size_for_test() >= 2);
+}
+
+// ── cuOpt projection (#290, `mip_heuristic_scylla_cuopt_pump`) ──
+
+TEST_CASE("cuOpt projection: distance per column kind and the blend", "[scylla][cuopt]") {
+    // Columns: binary rounded to 0, binary rounded to 1, general integer
+    // [0, 10] rounded to 4 (interior, aux column 0), continuous.
+    const std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kInteger,
+                                                   HighsVarType::kInteger,
+                                                   HighsVarType::kContinuous};
+    const std::vector<double> lb = {0.0, 0.0, 0.0, 0.0};
+    const std::vector<double> ub = {1.0, 1.0, 10.0, 5.0};
+    const std::vector<HighsInt> aux_cols = {2};
+    std::vector<double> cost;
+    std::vector<double> rows;
+
+    SECTION("pure distance: c = 0 drops the objective term") {
+        const std::vector<double> c = {0.0, 0.0, 0.0, 0.0};
+        pump::cuopt::build_projection(c, std::vector<double>{0.0, 1.0, 4.0, 2.5}, integrality, lb,
+                                      ub, aux_cols, 0.5, 1e-6, cost, rows);
+        const double w = 0.5 / std::numbers::sqrt3;
+        REQUIRE(cost.size() == 5);
+        CHECK(cost[0] == Catch::Approx(w));   // at lower bound: +1
+        CHECK(cost[1] == Catch::Approx(-w));  // at upper bound: -1
+        CHECK(cost[2] == 0.0);                // interior: through its aux column
+        CHECK(cost[3] == 0.0);                // continuous
+        CHECK(cost[4] == Catch::Approx(w));   // aux d_0, cost 1 before scaling
+        REQUIRE(rows.size() == 2);
+        CHECK(rows[0] == -4.0);  // d - x >= -x_hat
+        CHECK(rows[1] == 4.0);   // d + x >= x_hat
+    }
+    SECTION("general integer at a bound: no aux cost, rows relaxed, objective blended") {
+        const std::vector<double> c = {3.0, 0.0, 0.0, 4.0};
+        pump::cuopt::build_projection(c, std::vector<double>{0.0, 1.0, 10.0, 2.5}, integrality, lb,
+                                      ub, aux_cols, 0.5, 1e-6, cost, rows);
+        const double w = 0.5 / std::numbers::sqrt3;
+        CHECK(cost[0] == Catch::Approx(w + (0.5 * 3.0 / 5.0)));
+        CHECK(cost[1] == Catch::Approx(-w));
+        CHECK(cost[2] == Catch::Approx(-w));  // at its upper bound
+        CHECK(cost[3] == Catch::Approx(0.5 * 4.0 / 5.0));
+        CHECK(cost[4] == 0.0);
+        CHECK(rows[0] == -kHighsInf);
+        CHECK(rows[1] == -kHighsInf);
+    }
+}
+
+TEST_CASE("cuOpt projection: tolerance schedule thresholds", "[scylla][cuopt]") {
+    using namespace pump::cuopt;
+    CHECK(lp_tolerance(0.0) == 0.1);
+    CHECK(lp_tolerance(0.7999) == 0.1);
+    CHECK(lp_tolerance(0.80) == 0.01);
+    CHECK(lp_tolerance(0.9299) == 0.01);
+    CHECK(lp_tolerance(0.93) == 1e-3);
+    CHECK(lp_tolerance(0.9699) == 1e-3);
+    CHECK(lp_tolerance(0.97) == pump::kEpsilonFloor);
+    CHECK(lp_tolerance(1.0) == pump::kEpsilonFloor);
+    const std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kInteger,
+                                                   HighsVarType::kContinuous};
+    CHECK(integral_fraction(std::vector<double>{1.0, 0.5, 0.3}, integrality, 1e-6) == 0.5);
+}
+
+namespace {
+
+// Keeps every solve's full LP-space primal: the aux values `ContestedPdlp`
+// cuts off before a caller sees the point.
+class AuxPdlp : public ContestedPdlp {
+public:
+    AuxPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap)
+        : ContestedPdlp(mipsolver, pdlp_iter_cap, /*aux_distance=*/true) {}
+    std::vector<double> last_full_primal;
+
+protected:
+    SolveResult solve_locked(const std::vector<double>& modified_cost,
+                             const std::vector<double>& warm_start_col_value,
+                             const std::vector<double>& warm_start_row_dual, bool warm_start_valid,
+                             double epsilon, double time_limit,
+                             std::span<const double> aux_row_lower) override {
+        auto result =
+            ContestedPdlp::solve_locked(modified_cost, warm_start_col_value, warm_start_row_dual,
+                                        warm_start_valid, epsilon, time_limit, aux_row_lower);
+        last_full_primal = result.col_value;
+        return result;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("cuOpt projection: the aux LP's distance is the L1 distance at an optimum",
+          "[scylla][cuopt][pump]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "flugpl.mps");
+    AuxPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/100000);
+    REQUIRE(pdlp.initialized());
+    const auto& aux = pdlp.aux_cols();
+    REQUIRE_FALSE(aux.empty());  // flugpl has general integers
+    const auto* model = mipsolver->model_;
+    const HighsInt ncol = model->num_col_;
+
+    // Round the relaxation's point; aux columns rounded strictly inside
+    // their bounds get live rows.
+    std::vector<double> c0 = model->col_cost_;
+    c0.resize(ncol + aux.size(), 0.0);
+    auto relax = pdlp.solve(c0, {}, {}, false, 1e-8);
+    REQUIRE(relax.value_valid);
+    std::vector<double> x_hat = relax.col_value;
+    for (HighsInt j = 0; j < ncol; ++j) {
+        if (is_integer(model->integrality_, j)) {
+            x_hat[j] = std::round(x_hat[j]);
+        }
+    }
+    std::vector<double> cost;
+    std::vector<double> rows;
+    pump::cuopt::build_projection(model->col_cost_, x_hat, model->integrality_, model->col_lower_,
+                                  model->col_upper_, aux, /*alpha=*/0.0, 1e-6, cost, rows);
+    auto proj = pdlp.solve(cost, {}, {}, false, 1e-8, rows);
+    REQUIRE(proj.value_valid);
+    REQUIRE(proj.col_value.size() == static_cast<size_t>(ncol));  // aux cut off
+    REQUIRE(pdlp.last_full_primal.size() == ncol + aux.size());
+    int live = 0;
+    for (size_t k = 0; k < aux.size(); ++k) {
+        if (rows[2 * k] == -kHighsInf) {
+            continue;
+        }
+        ++live;
+        const HighsInt j = aux[k];
+        CHECK(pdlp.last_full_primal[ncol + k] ==
+              Catch::Approx(std::abs(proj.col_value[j] - x_hat[j])).margin(1e-5));
+    }
+    CHECK(live > 0);
+}
+
+namespace {
+
+// Drives one cuOpt-variant chain attempt by attempt and checks alpha after
+// each one.  An attempt of `n` rounds with no improvement leaves alpha `n`
+// decays below where it started.  One with an improvement resets it to
+// `kAlphaInit` before that round's decay, so it ends within `n` decays of
+// `kAlphaInit`, exactly one when `n == 1`.  Returns how many `n == 1`
+// improving attempts came after the first projection: those are the ones
+// where a missing reset would show (alpha two or more decays down).
+int drive_cuopt_alpha_chain(const char* inst, int worker_idx) {
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_scylla_cuopt_pump", true);
+    HighsCallback cb(&highs);
+    auto mipsolver = inst == nullptr ? bare_mipsolver_on_parity(highs, cb)
+                                     : build_bare_mipsolver(highs, cb, inst);
+    REQUIRE(mipsolver->options_mip_->mip_heuristic_scylla_cuopt_pump);
+
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
+    ContestedPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000, /*aux_distance=*/true);
+    REQUIRE(pdlp.initialized());
+    std::vector<std::vector<HighsInt>> var_orders;
+    var_orders.reserve(kNumFprConfigs);
+    Rng order_rng(11);
+    for (int i = 0; i < kNumFprConfigs; ++i) {
+        var_orders.push_back(
+            compute_var_order(*mipsolver, kFprConfigs[i].strat.var_strategy, order_rng, nullptr));
+    }
+    constexpr size_t kBudget = size_t{1} << 20;
+    ScyllaWorker worker(*mipsolver, problem, exec, pdlp, sink, var_orders, kBudget,
+                        std::numeric_limits<size_t>::max(), /*seed=*/7, worker_idx,
+                        /*num_workers=*/1, WorkerTrace{0, 0});
+    CHECK(worker.cuopt_alpha_for_test() == pump::cuopt::kAlphaInit);
+    const double a1 = pump::cuopt::kAlphaInit * pump::cuopt::kAlphaDecay;
+    int resets_after_first = 0;
+    for (int i = 0; i < 40 && !worker.finished(); ++i) {
+        const double alpha_before = worker.cuopt_alpha_for_test();
+        const int rounds_before = worker.pump_rounds_for_test();
+        const AttemptResult res = worker.run_attempt(1000);
+        const int n = worker.pump_rounds_for_test() - rounds_before;
+        if (n == 0) {
+            continue;
+        }
+        const double alpha = worker.cuopt_alpha_for_test();
+        if (!res.found_improvement) {
+            CHECK(alpha == Catch::Approx(alpha_before * std::pow(pump::cuopt::kAlphaDecay, n)));
+        } else if (n == 1) {
+            CHECK(alpha == Catch::Approx(a1));
+            if (rounds_before >= 1) {
+                ++resets_after_first;
+            }
+        } else {
+            CHECK(alpha >= a1 * std::pow(pump::cuopt::kAlphaDecay, n - 1) * (1.0 - 1e-12));
+        }
+    }
+    if (inst == nullptr) {
+        CHECK(worker.pump_rounds_for_test() >= 2);
+    }
+    return resets_after_first;
+}
+
+}  // namespace
+
+TEST_CASE("cuOpt projection: alpha decays per projection and resets on improvement",
+          "[scylla][cuopt][pump]") {
+    highs::parallel::initialize_scheduler();
+    // Integer-infeasible: nothing improves, so alpha only decays.
+    CHECK(drive_cuopt_alpha_chain(nullptr, 0) == 0);
+    // Feasible instances, every chain: each attempt's alpha must match the
+    // relation above.  None of these chains improves after its first
+    // projection, so the reset's discriminating case is not reached here
+    // (#290 notes the gap); an improving attempt is still checked exactly.
+    for (const char* inst : {"bell5.mps", "p0548.mps"}) {
+        for (int w = 0; w < kNumFprConfigs; ++w) {
+            static_cast<void>(drive_cuopt_alpha_chain(inst, w));
+        }
+    }
+}
+
+// bell5 has general integers, so the dispatch's LP carries aux columns.
+TEST_CASE("cuOpt projection: a dispatch finds a feasible point", "[scylla][cuopt][pump]") {
+    // `HighsMipSolverData::init` reads `parallel::num_threads()`.
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_scylla_cuopt_pump", true);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "bell5.mps");
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
+    constexpr size_t kBudget = size_t{1} << 22;
+    const DispatchOutcome out = scylla::run(
+        *mipsolver, problem, make_budget(kBudget, exec.num_workers, kBudget >> 2), exec, sink);
+    CHECK(out.effort > 0);
+    // Only Scylla offered into this sink, and the bare solver has no
+    // incumbent of its own.
+    CHECK(sink.best_objective() < kHighsInf);
 }

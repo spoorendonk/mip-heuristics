@@ -116,6 +116,14 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem
     max_stale_rounds_ = compute_max_stale_rounds(nnz_lp_);
 
     modified_cost_ = orig_cost;
+    cuopt_ = mipsolver_.options_mip_->mip_heuristic_scylla_cuopt_pump;
+    if (cuopt_) {
+        // The first solve is the plain relaxation (aux costs 0, aux rows
+        // relaxed) at the loose tolerance; the projections start after it.
+        modified_cost_.resize(ncol_ + pdlp_.aux_cols().size(), 0.0);
+        epsilon_ = pump::cuopt::kTolFirst;
+        cuopt_alpha_ = pump::cuopt::kAlphaInit;
+    }
     cycle_history_.reserve(pump::kCycleWindow);
 
     // Look up this worker's variable order from the dispatch-time table.
@@ -160,6 +168,19 @@ bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsI
     warm_start_valid_ = result.value_valid && result.dual_valid;
     x_bar_ptr = &warm_start_col_value_;
     return false;
+}
+
+void ScyllaWorker::advance_cuopt_projection(const std::vector<double>& x_hat,
+                                            const std::vector<double>& x_bar) {
+    const auto* model = mipsolver_.model_;
+    const double feastol = mipsolver_.options_mip_->mip_feasibility_tolerance;
+    cuopt_alpha_ *= pump::cuopt::kAlphaDecay;
+    pump::cuopt::build_projection(model->col_cost_, x_hat, model->integrality_, model->col_lower_,
+                                  model->col_upper_, pdlp_.aux_cols(), cuopt_alpha_, feastol,
+                                  modified_cost_, aux_row_lower_);
+    pump::cuopt::build_warm_primal(x_hat, x_bar, pdlp_.aux_cols(), cuopt_warm_primal_);
+    epsilon_ = pump::cuopt::lp_tolerance(
+        pump::cuopt::integral_fraction(x_bar, model->integrality_, feastol));
 }
 
 // Cognitive complexity 99 (threshold 25).  Kept whole: one feasibility-pump chain iteration (Mexi
@@ -227,6 +248,10 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         const std::vector<double>* x_bar_ptr = nullptr;
 
         const bool must_force_fresh = consecutive_stale_rounds_ >= max_stale_rounds_;
+        // The cuOpt projection warm-starts from the last rounding (with its
+        // aux distances), not from the last LP point.
+        const std::vector<double>& warm_primal =
+            cuopt_ ? cuopt_warm_primal_ : warm_start_col_value_;
         if (must_force_fresh) {
             // Blocking path: either no one is solving (we take the
             // mutex immediately) or we wait behind one worker.  This
@@ -234,8 +259,8 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             // for its *own* modified_cost_, preventing a pathological
             // "live on a stale snapshot that never matches my objective"
             // regime.
-            auto solve_res = pdlp_.solve(modified_cost_, warm_start_col_value_,
-                                         warm_start_row_dual_, warm_start_valid_, epsilon_);
+            auto solve_res = pdlp_.solve(modified_cost_, warm_primal, warm_start_row_dual_,
+                                         warm_start_valid_, epsilon_, aux_row_lower_);
             if (absorb_fresh_solve(solve_res, iters_this_round, x_bar_ptr)) {
                 break;
             }
@@ -251,8 +276,8 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             }
         } else {
             auto try_res =
-                pdlp_.try_solve_or_snapshot(modified_cost_, warm_start_col_value_,
-                                            warm_start_row_dual_, warm_start_valid_, epsilon_);
+                pdlp_.try_solve_or_snapshot(modified_cost_, warm_primal, warm_start_row_dual_,
+                                            warm_start_valid_, epsilon_, aux_row_lower_);
             if (try_res.fresh) {
                 if (absorb_fresh_solve(try_res.solve, iters_this_round, x_bar_ptr)) {
                     break;
@@ -393,6 +418,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                         improvement_gen_->fetch_add(1, std::memory_order_relaxed);
                     }
                     attempt.found_improvement = true;
+                    cuopt_alpha_ = pump::cuopt::kAlphaInit;
                 }
                 continue;
             }
@@ -409,7 +435,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         FprConfig cfg{};
         cfg.max_effort = remaining_budget;
         cfg.cont_fallback = x_bar.data();
-        cfg.mode = named.mode;
+        // The cuOpt projection rounds with repair on every chain; the
+        // variable strategy stays the chain's own.
+        cfg.mode = cuopt_ ? FrameworkMode::kDfsrep : named.mode;
         cfg.strategy = &named.strat;
         // Algorithm 1.1 line 12 (issue #121): x_hat = fix-and-propagate(x_bar).
         // Every `kFprConfigs` entry now uses an LP-consuming value strategy
@@ -466,6 +494,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                 improvement_gen_->fetch_add(1, std::memory_order_relaxed);
             }
             attempt.found_improvement = true;
+            cuopt_alpha_ = pump::cuopt::kAlphaInit;
         }
 
         // Degenerate guard only (issue #155).  A *failed* rounding now
@@ -546,11 +575,15 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             }
             pump::record_cycle_entry(cycle_history_, K_, x_hat);
 
-            alpha_K_ *= pump::kAlpha;
-            pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality, model->col_lower_,
-                                         model->col_upper_, alpha_K_, cost_scale_, ncol_,
-                                         modified_cost_);
-            epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
+            if (cuopt_) {
+                advance_cuopt_projection(x_hat, x_bar);
+            } else {
+                alpha_K_ *= pump::kAlpha;
+                pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality,
+                                             model->col_lower_, model->col_upper_, alpha_K_,
+                                             cost_scale_, ncol_, modified_cost_);
+                epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
+            }
             ++K_;
         }
     }

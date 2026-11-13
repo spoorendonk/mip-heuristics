@@ -107,7 +107,10 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
     }
 
     const HighsInt pdlp_iter_cap = compute_pdlp_iter_cap(budget.total, problem.nnz);
-    ContestedPdlp pdlp(mipsolver, pdlp_iter_cap);
+    // `mip_heuristic_scylla_cuopt_pump` (#290): the cuOpt-style projection,
+    // whose exact L1 distance needs the auxiliary columns built here.
+    ContestedPdlp pdlp(mipsolver, pdlp_iter_cap,
+                       mipsolver.options_mip_->mip_heuristic_scylla_cuopt_pump);
     // A plain zero, not an abandoned setup: the shared LP copy failed to
     // build, which is a Scylla-specific declination and not the clock
     // cutting a dispatch short.  Only the deadline bail below reports one

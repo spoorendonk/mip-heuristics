@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <utility>
 #include <vector>
 #include <version>
@@ -87,7 +88,18 @@ public:
     // Builds the shared PDLP Highs instance from the presolved MIP
     // relaxation.  `initialized()==false` when the instance has no
     // rows / no nonzeros; callers should short-circuit.
-    ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap);
+    //
+    // `aux_distance` (#290, the cuOpt pump variant) appends one auxiliary
+    // column `d_k` per integer column `aux_cols()[k]` whose rounding can be
+    // interior (`pump::cuopt::needs_aux`), bounds `[0, u-l]` (`inf` on an
+    // infinite bound), cost 0, and two rows per aux column,
+    // `d_k - x_j >= lo_{2k}` and `d_k + x_j >= lo_{2k+1}`, built relaxed
+    // (`-inf`).  A solve then takes `ncol + naux` costs and, through
+    // `aux_row_lower`, the `2 naux` row lowers; its `col_value` comes back
+    // truncated to the `ncol` model columns, so snapshots and `x_bar` keep
+    // their length, and its `row_dual` covers every row.  With it off (or
+    // no column needing one) the LP is exactly the relaxation.
+    ContestedPdlp(HighsMipSolver& mipsolver, HighsInt pdlp_iter_cap, bool aux_distance = false);
 
     virtual ~ContestedPdlp() = default;
 
@@ -97,6 +109,9 @@ public:
     bool initialized() const { return initialized_; }
     size_t nnz_lp() const { return nnz_lp_; }
     HighsInt num_col() const { return ncol_; }
+    // Model column of each auxiliary column, in aux order (empty unless
+    // built with `aux_distance`).
+    const std::vector<HighsInt>& aux_cols() const { return aux_cols_; }
 
     // Solve PDLP with the caller's objective and warm-start.  The mutex
     // is held for the full changeColsCost + setSolution + run +
@@ -128,7 +143,7 @@ public:
     SolveResult solve(const std::vector<double>& modified_cost,
                       const std::vector<double>& warm_start_col_value,
                       const std::vector<double>& warm_start_row_dual, bool warm_start_valid,
-                      double epsilon);
+                      double epsilon, std::span<const double> aux_row_lower = {});
 
     // Non-blocking variant: `try_lock` the PDLP mutex.
     //
@@ -144,7 +159,8 @@ public:
     TrySolveResult try_solve_or_snapshot(const std::vector<double>& modified_cost,
                                          const std::vector<double>& warm_start_col_value,
                                          const std::vector<double>& warm_start_row_dual,
-                                         bool warm_start_valid, double epsilon);
+                                         bool warm_start_valid, double epsilon,
+                                         std::span<const double> aux_row_lower = {});
 
     // Latest completed Snapshot (shared ownership) or null if no solve
     // has completed yet.  Read via `std::atomic<std::shared_ptr<>>`
@@ -243,10 +259,12 @@ protected:
     // (either `solve()` or `try_solve_or_snapshot()`) already holds
     // `mu_` when this runs, and `time_limit` is the time left on the
     // deadline as of *inside* the lock, not as of the call (#117).
+    // `aux_row_lower` is empty (every aux row relaxed) or `2 naux` long.
     virtual SolveResult solve_locked(const std::vector<double>& modified_cost,
                                      const std::vector<double>& warm_start_col_value,
                                      const std::vector<double>& warm_start_row_dual,
-                                     bool warm_start_valid, double epsilon, double time_limit);
+                                     bool warm_start_valid, double epsilon, double time_limit,
+                                     std::span<const double> aux_row_lower);
 
     // Constructor for the test double: does not build the Highs LP.
     // `initialized()` is forced to true so tests can drive the lock /
@@ -279,13 +297,18 @@ private:
     SolveResult run_locked_with_accounting(const std::vector<double>& modified_cost,
                                            const std::vector<double>& warm_start_col_value,
                                            const std::vector<double>& warm_start_row_dual,
-                                           bool warm_start_valid, double epsilon);
+                                           bool warm_start_valid, double epsilon,
+                                           std::span<const double> aux_row_lower = {});
 
     // Publish the result of a just-completed solve as the latest
     // Snapshot.  Only called while `mu_` is held, so publications are
     // serialised; concurrent stale readers see the update via atomic
     // release/acquire.
     void publish_snapshot_locked(const SolveResult& result);
+
+    // The constructor's `aux_distance` half: fills `aux_cols_` and appends
+    // their columns and rows to `lp`.
+    void append_aux_distance(HighsLp& lp, const HighsLp& model);
 
     std::mutex mu_;
     Highs highs_;
@@ -297,6 +320,11 @@ private:
     size_t nnz_lp_ = 0;
     HighsInt ncol_ = 0;
     HighsInt nrow_ = 0;
+    std::vector<HighsInt> aux_cols_;
+    // `-inf` lowers / `+inf` uppers for the aux rows, `2 naux` each: the
+    // relaxed row bounds and the uppers `changeRowsBounds` needs.
+    std::vector<double> aux_row_relaxed_;
+    std::vector<double> aux_row_upper_;
 
     // Atomic shared_ptr slot.  Written only by the mutex holder,
     // concurrent with lock-free stale readers.  Using the C++20
