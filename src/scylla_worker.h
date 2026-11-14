@@ -151,11 +151,14 @@ public:
     // The cuOpt variant's cycle handling for one fresh round (#295, helpers
     // in `pump::cuopt`): unless the round's offer `improved` the incumbent,
     // record the distance from `x_bar` to the last rounding, run the two
-    // detectors on `x_hat` and perturb it on a cycle; then make it the next
-    // round's last rounding.  Replaces Mexi's `cycle_history_` in the
-    // variant.  Public so a test can drive it with constructed points.
-    void handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
-                             bool improved);
+    // detectors on `x_hat`; on a cycle run the FJ escape from it, then
+    // perturb it if the cycle persists; then make it the next round's last
+    // rounding.  Replaces Mexi's `cycle_history_` in the variant.  Returns
+    // the escape's effort, already charged to the worker's counters, and
+    // whether it improved the incumbent.  Public so a test can drive it
+    // with constructed points.
+    AttemptResult handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
+                                      bool improved);
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
@@ -181,6 +184,10 @@ private:
     // offer that improved the incumbent: alpha back to `kAlphaInit` and the
     // distance window cleared.
     void restart_cuopt_descent();
+
+    // cuOpt's `run_fj_cycle_escape` (#297): FJ from `x_hat`, which becomes
+    // the feasible point FJ found, if any.
+    AttemptResult run_cuopt_fj_escape(std::vector<double>& x_hat);
 
     HighsMipSolver& mipsolver_;
     // Must outlive the worker.

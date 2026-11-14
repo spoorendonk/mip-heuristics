@@ -1059,6 +1059,21 @@ Three things to carry forward.
 
 ---
 
+### `kFjEscapeSeconds` — cuOpt variant's FJ cycle escape limit
+
+- **File**: `src/pump_common.h` (namespace `pump::cuopt`)
+- **Default**: `3.0`
+- **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#297). On a
+  cycle, FJ runs from the rounding for `nnz + kFjEscapeSeconds *
+  ruin_repair::kRepairEffortPerSecond` effort, capped by what is left of
+  the worker's budget, before any perturbation. cuOpt's
+  `run_fj_cycle_escape` gives FJ 3 s; converted at FJ's laptop-measured
+  rate, as ruin-and-repair converts its own cuOpt seconds, so the escape is
+  reproducible. FJ's own minimum attempt (`kFjCallbackEffort`) still holds.
+- **Suggested range**: 0.5–5.
+
+---
+
 ### `kCycleWindow` — cycling detection history depth
 
 - **File**: `src/pump_common.h`

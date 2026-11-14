@@ -278,22 +278,24 @@ namespace {
 // `orig_cost` is the all-zero vector, and one pass of
 // `pump::compute_pump_objective` writes `(1 - alpha_K) * (1 - 2*x_hat[j])`
 // = +-0.1 into every binary column, so solve #2's cost differs from solve
-// #1's in every entry the moment line 15 runs at all.
-void build_parity_pump_mip(Highs& highs) {
+// #1's in every entry the moment line 15 runs at all.  `rhs = 2` makes it
+// feasible (one of the two at 1), for the cycle escape's test (#297).
+void build_parity_pump_mip(Highs& highs, double rhs) {
     highs.addVar(0.0, 1.0);
     highs.addVar(0.0, 1.0);
     highs.changeColIntegrality(0, HighsVarType::kInteger);
     highs.changeColIntegrality(1, HighsVarType::kInteger);
     const auto idx = std::to_array<HighsInt>({0, 1});
     const auto val = std::to_array<double>({2.0, 2.0});
-    highs.addRow(1.0, 1.0, 2, idx.data(), val.data());
+    highs.addRow(rhs, rhs, 2, idx.data(), val.data());
 }
 
 // Mirrors `build_bare_mipsolver` (test_common.h) minus the `readModel`:
 // no bundled instance is guaranteed to be integer-infeasible, and this
 // case needs one.
-std::unique_ptr<HighsMipSolver> bare_mipsolver_on_parity(Highs& highs, HighsCallback& cb) {
-    build_parity_pump_mip(highs);
+std::unique_ptr<HighsMipSolver> bare_mipsolver_on_parity(Highs& highs, HighsCallback& cb,
+                                                         double rhs = 1.0) {
+    build_parity_pump_mip(highs, rhs);
     // `Highs::addRow` leaves the matrix row-wise; round-trip through
     // `passModel`, whose master overload calls `ensureColwise()`.
     REQUIRE(highs.passModel(highs.getLp()) == HighsStatus::kOk);
@@ -806,9 +808,14 @@ TEST_CASE("cuOpt cycles: the worker's detectors, perturbation and restarts",
         round({1.0, 0.0});
         CHECK(worker.cuopt_assignments_size_for_test() == 3);
         CHECK(worker.cuopt_distances_size_for_test() == 2);
-        // Settled and a repeat: a cycle; the rounding and its perturbation
-        // both enter the ring, and the distances are cleared.
-        const std::vector<double> out = round({0.0, 0.0});
+        // Settled and a repeat: a cycle.  The FJ escape runs and, on this
+        // integer-infeasible model, finds nothing, so the cycle persists:
+        // the rounding and its perturbation both enter the ring, and the
+        // distances are cleared.
+        std::vector<double> out = {0.0, 0.0};
+        const AttemptResult escape = worker.handle_cuopt_cycles(out, x_bar, false);
+        CHECK(escape.effort > 0);
+        CHECK_FALSE(escape.found_improvement);
         CHECK(worker.cuopt_assignments_size_for_test() == 5);
         CHECK(worker.cuopt_distances_size_for_test() == 0);
         for (const double v : out) {
@@ -844,6 +851,52 @@ TEST_CASE("cuOpt cycles: the worker's detectors, perturbation and restarts",
         CHECK(worker.cuopt_assignments_size_for_test() == 2);
         CHECK(worker.cuopt_distances_size_for_test() == 1);
     }
+}
+
+// The FJ escape (#297) on the feasible parity model `2*x0 + 2*x1 = 2`: an
+// assignment cycle at the infeasible rounding (0, 0) reaches FJ before any
+// perturbation, and FJ's feasible point replaces the rounding, improves the
+// incumbent and restarts the descent.  No perturbation follows: FJ's point
+// is not in the ring.
+TEST_CASE("cuOpt cycles: a cycle reaches the FJ escape before perturbing",
+          "[scylla][cuopt][pump]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_scylla_cuopt_pump", true);
+    HighsCallback cb(&highs);
+    auto mipsolver = bare_mipsolver_on_parity(highs, cb, /*rhs=*/2.0);
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
+    ContestedPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000, /*aux_distance=*/true);
+    REQUIRE(pdlp.initialized());
+    std::vector<std::vector<HighsInt>> var_orders;
+    var_orders.reserve(kNumFprConfigs);
+    Rng order_rng(11);
+    for (int i = 0; i < kNumFprConfigs; ++i) {
+        var_orders.push_back(
+            compute_var_order(*mipsolver, kFprConfigs[i].strat.var_strategy, order_rng, nullptr));
+    }
+    ScyllaWorker worker(*mipsolver, problem, exec, pdlp, sink, var_orders, size_t{1} << 20,
+                        std::numeric_limits<size_t>::max(), /*seed=*/7, 0,
+                        /*num_workers=*/1, WorkerTrace{0, 0});
+    const std::vector<double> x_bar = {0.5, 0.5};
+    std::vector<double> x_hat = {0.0, 0.0};
+    CHECK(worker.handle_cuopt_cycles(x_hat, x_bar, false).effort == 0);
+    x_hat = {0.0, 0.0};
+    CHECK(worker.handle_cuopt_cycles(x_hat, x_bar, false).effort == 0);
+    worker.set_cuopt_alpha_for_test(0.01);
+    x_hat = {0.0, 0.0};
+    const AttemptResult escape = worker.handle_cuopt_cycles(x_hat, x_bar, false);
+    CHECK(escape.effort > 0);
+    CHECK(escape.found_improvement);
+    CHECK(x_hat[0] + x_hat[1] == 1.0);
+    // The cycle's rounding and FJ's point, not a perturbation of either.
+    CHECK(worker.cuopt_assignments_size_for_test() == 4);
+    CHECK(worker.cuopt_distances_size_for_test() == 0);
+    CHECK(worker.cuopt_alpha_for_test() == pump::cuopt::kAlphaInit);
 }
 
 // bell5 has general integers, so the dispatch's LP carries aux columns.

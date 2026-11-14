@@ -1,6 +1,7 @@
 #include "scylla_worker.h"
 
 #include "contested_pdlp.h"
+#include "fj_worker.h"
 #include "fpr_core.h"
 #include "fpr_strategies.h"
 #include "heuristic_common.h"
@@ -8,6 +9,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "pump_common.h"
+#include "ruin_repair.h"
 #include "solution_sink.h"
 
 #include <algorithm>
@@ -213,11 +215,49 @@ void ScyllaWorker::restart_cuopt_descent() {
     cuopt_distance_next_ = 0;
 }
 
+// cuOpt's `run_fj_cycle_escape`.  Deviations (#297): effort in place of
+// 3 s (`pump::cuopt::kFjEscapeSeconds`), capped by what is left of the
+// worker's budget; FJ's patience is that budget, as in ruin-and-repair's
+// repair, where cuOpt exits after 5000 non-improving local minima; and
+// `FjWorker` reports only feasible points, so an escape that finds none
+// leaves the rounding as it was, where cuOpt takes FJ's last assignment when
+// the rounding is still in the ring, and the cycle check that follows then
+// perturbs it.  FJ runs with its objective, as cuOpt's escape does
+// (`feasibility_run = false`), under no cutoff.
+AttemptResult ScyllaWorker::run_cuopt_fj_escape(std::vector<double>& x_hat) {
+    const size_t remaining = base_.total_budget - std::min(base_.total_budget, base_.total_effort);
+    if (remaining == 0) {
+        return {};
+    }
+    const size_t budget = std::min(
+        remaining, problem_.nnz + static_cast<size_t>(pump::cuopt::kFjEscapeSeconds *
+                                                      ruin_repair::kRepairEffortPerSecond));
+    WorkerTrace trace = trace_;
+    trace.effort_base = trace_.at(base_.total_effort);
+    FjWorker fj(problem_, exec_, sink_, budget, std::numeric_limits<size_t>::max(),
+                static_cast<uint32_t>(rng_()), x_hat, trace);
+    const AttemptResult result = fj.run_attempt(budget);
+    base_.total_effort += result.effort;
+    base_.effort_since_improvement += result.effort;
+    if (!fj.best_found().empty()) {
+        x_hat = fj.best_found();
+    }
+    if (result.found_improvement) {
+        base_.reset_staleness();
+        if (improvement_gen_ != nullptr) {
+            improvement_gen_->fetch_add(1, std::memory_order_relaxed);
+        }
+        restart_cuopt_descent();
+    }
+    return result;
+}
+
 // cuOpt's order within a descent (`run_single_fp_descent`, `restart_fp`):
 // the projection's distance is recorded before the rounding; an infeasible
 // rounding enters the ring, checked first when alpha has settled.  On either
-// cycle the restart perturbs the rounding if it is in the ring, records the
-// result there and clears the distances.  A feasible rounding ends cuOpt's
+// cycle the restart runs the FJ escape from the rounding, perturbs the
+// result if it is in the ring, records it there and clears the distances.
+// A feasible rounding ends cuOpt's
 // descent, and its next one starts from `reset()`: alpha back to its start,
 // the distances cleared.  Here the pump goes on instead, so the round that
 // improved the incumbent has already restarted the descent
@@ -228,11 +268,12 @@ void ScyllaWorker::restart_cuopt_descent() {
 // the round before this, as it does for Mexi's cycle window; the first
 // projection has no rounding to measure against, so its distance is not
 // recorded.
-void ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
-                                       bool improved) {
+AttemptResult ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat,
+                                                const std::vector<double>& x_bar, bool improved) {
     namespace cu = pump::cuopt;
     const auto* model = mipsolver_.model_;
     const auto& integrality = model->integrality_;
+    AttemptResult escape{};
     if (!improved) {
         bool distance_cycle = false;
         if (!cuopt_last_rounding_.empty()) {
@@ -241,18 +282,19 @@ void ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat, const std::ve
             cu::ring_push(cuopt_distances_, cuopt_distance_next_, cu::kDistanceWindow, d);
         }
         uint64_t h = cu::assignment_hash(x_hat, integrality);
-        bool perturb_it = false;
         bool assignment_cycle = false;
-        if (distance_cycle) {
-            perturb_it = cu::in_ring(cuopt_assignments_, h);
-        } else {
+        if (!distance_cycle) {
             assignment_cycle =
                 cu::assignment_check_due(cuopt_alpha_) && cu::in_ring(cuopt_assignments_, h);
             cu::ring_push(cuopt_assignments_, cuopt_assignment_next_, cu::kAssignmentRing, h);
-            perturb_it = assignment_cycle;
         }
         if (distance_cycle || assignment_cycle) {
-            if (perturb_it) {
+            escape = run_cuopt_fj_escape(x_hat);
+            // The cycle persists when the escape's result is in the ring:
+            // always when it left an assignment cycle's rounding as it was,
+            // which has just been pushed.
+            h = cu::assignment_hash(x_hat, integrality);
+            if (cu::in_ring(cuopt_assignments_, h)) {
                 cu::perturb(x_hat, integrality, model->col_lower_, model->col_upper_, rng_);
                 h = cu::assignment_hash(x_hat, integrality);
             }
@@ -262,6 +304,7 @@ void ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat, const std::ve
         }
     }
     cuopt_last_rounding_.assign(x_hat.begin(), x_hat.end());
+    return escape;
 }
 
 // Cognitive complexity 99 (threshold 25).  Kept whole: one feasibility-pump chain iteration (Mexi
@@ -610,7 +653,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // still stops on time.  (R2 flagged this; user-directed in
         // review round 3.)
         if (fresh && cuopt_) {
-            handle_cuopt_cycles(x_hat, x_bar, rounding_improved);
+            const AttemptResult escape = handle_cuopt_cycles(x_hat, x_bar, rounding_improved);
+            attempt.effort += escape.effort;
+            attempt.found_improvement = attempt.found_improvement || escape.found_improvement;
             advance_cuopt_projection(x_hat, x_bar);
             ++K_;
         } else if (fresh) {

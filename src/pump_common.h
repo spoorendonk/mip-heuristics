@@ -342,6 +342,10 @@ inline constexpr double kDistanceCycleRatio = 0.1;
 // Each integer column is redrawn with this probability (cuOpt's
 // `perturbate`, `change_ratio`).
 inline constexpr double kPerturbProbability = 0.1;
+// The FJ cycle escape's limit (#297): cuOpt's `run_fj_cycle_escape` gives FJ
+// 3 s.  Converted to effort at FJ's measured rate, as ruin-and-repair
+// converts its own cuOpt seconds (`ruin_repair::kRepairEffortPerSecond`).
+inline constexpr double kFjEscapeSeconds = 3.0;
 
 inline bool assignment_check_due(double alpha) {
     return (alpha / kAlphaDecay) - alpha < kAssignmentCheckStep;
