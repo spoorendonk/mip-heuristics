@@ -146,6 +146,16 @@ public:
         return cuopt_assignments_.size();
     }
     [[nodiscard]] size_t cuopt_distances_size_for_test() const { return cuopt_distances_.size(); }
+    void set_cuopt_alpha_for_test(double alpha) { cuopt_alpha_ = alpha; }
+
+    // The cuOpt variant's cycle handling for one fresh round (#295, helpers
+    // in `pump::cuopt`): unless the round's offer `improved` the incumbent,
+    // record the distance from `x_bar` to the last rounding, run the two
+    // detectors on `x_hat` and perturb it on a cycle; then make it the next
+    // round's last rounding.  Replaces Mexi's `cycle_history_` in the
+    // variant.  Public so a test can drive it with constructed points.
+    void handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
+                             bool improved);
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
@@ -167,13 +177,10 @@ private:
     void advance_cuopt_projection(const std::vector<double>& x_hat,
                                   const std::vector<double>& x_bar);
 
-    // The cuOpt variant's cycle handling for one fresh round (#295, helpers
-    // in `pump::cuopt`): record the distance from `x_bar` to the last
-    // rounding, run the two detectors on an infeasible `x_hat`, perturb it
-    // on a cycle, and make it the next round's last rounding.  Replaces
-    // Mexi's `cycle_history_` in the variant.
-    void handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
-                             bool rounding_feasible);
+    // The cuOpt variant's start of a new descent (cuOpt's `reset()`), on an
+    // offer that improved the incumbent: alpha back to `kAlphaInit` and the
+    // distance window cleared.
+    void restart_cuopt_descent();
 
     HighsMipSolver& mipsolver_;
     // Must outlive the worker.

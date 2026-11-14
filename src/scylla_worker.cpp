@@ -207,28 +207,39 @@ void ScyllaWorker::advance_cuopt_projection(const std::vector<double>& x_hat,
         pump::cuopt::integral_fraction(x_bar, model->integrality_, feastol));
 }
 
+void ScyllaWorker::restart_cuopt_descent() {
+    cuopt_alpha_ = pump::cuopt::kAlphaInit;
+    cuopt_distances_.clear();
+    cuopt_distance_next_ = 0;
+}
+
 // cuOpt's order within a descent (`run_single_fp_descent`, `restart_fp`):
-// the projection's distance is recorded before the rounding; a feasible
-// rounding ends the descent (here: was offered, and the pump goes on with
-// no cycle handling); an infeasible one enters the ring, checked first when
-// alpha has settled.  On either cycle the restart perturbs the rounding if
-// it is in the ring, records the result there and clears the distances.
-// Recorded readings: a fresh round only (stale rounds advance no pump
-// state); the integral-LP fast path ends the round before this, as it does
-// for Mexi's cycle window; the first projection has no rounding to measure
-// against, so its distance is not recorded.
+// the projection's distance is recorded before the rounding; an infeasible
+// rounding enters the ring, checked first when alpha has settled.  On either
+// cycle the restart perturbs the rounding if it is in the ring, records the
+// result there and clears the distances.  A feasible rounding ends cuOpt's
+// descent, and its next one starts from `reset()`: alpha back to its start,
+// the distances cleared.  Here the pump goes on instead, so the round that
+// improved the incumbent has already restarted the descent
+// (`restart_cuopt_descent`) and skips the detectors; a feasible rounding
+// that improved nothing could be pulled back to forever, so it is handled
+// as an infeasible one (#295 review).  Recorded readings: a fresh round
+// only (stale rounds advance no pump state); the integral-LP fast path ends
+// the round before this, as it does for Mexi's cycle window; the first
+// projection has no rounding to measure against, so its distance is not
+// recorded.
 void ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
-                                       bool rounding_feasible) {
+                                       bool improved) {
     namespace cu = pump::cuopt;
     const auto* model = mipsolver_.model_;
     const auto& integrality = model->integrality_;
-    bool distance_cycle = false;
-    if (!cuopt_last_rounding_.empty()) {
-        const double d = cu::int_l1_distance(x_bar, cuopt_last_rounding_, integrality);
-        distance_cycle = cu::distance_cycle(cuopt_distances_, d);
-        cu::ring_push(cuopt_distances_, cuopt_distance_next_, cu::kDistanceWindow, d);
-    }
-    if (!rounding_feasible) {
+    if (!improved) {
+        bool distance_cycle = false;
+        if (!cuopt_last_rounding_.empty()) {
+            const double d = cu::int_l1_distance(x_bar, cuopt_last_rounding_, integrality);
+            distance_cycle = cu::distance_cycle(cuopt_distances_, d);
+            cu::ring_push(cuopt_distances_, cuopt_distance_next_, cu::kDistanceWindow, d);
+        }
         uint64_t h = cu::assignment_hash(x_hat, integrality);
         bool perturb_it = false;
         bool assignment_cycle = false;
@@ -488,7 +499,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
                         improvement_gen_->fetch_add(1, std::memory_order_relaxed);
                     }
                     attempt.found_improvement = true;
-                    cuopt_alpha_ = pump::cuopt::kAlphaInit;
+                    restart_cuopt_descent();
                 }
                 continue;
             }
@@ -556,15 +567,17 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
 
         // Same as the fast path above: short-circuit leaves `offer`
         // called on exactly the results it was called on before (#111).
-        if (rounded.found_feasible && !rounded.solution.empty() &&
+        const bool rounding_improved =
+            rounded.found_feasible && !rounded.solution.empty() &&
             sink_.offer(rounded.objective, rounded.solution, trace_, trace_.at(base_.total_effort))
-                .improved_incumbent) {
+                .improved_incumbent;
+        if (rounding_improved) {
             base_.reset_staleness();
             if (improvement_gen_ != nullptr) {
                 improvement_gen_->fetch_add(1, std::memory_order_relaxed);
             }
             attempt.found_improvement = true;
-            cuopt_alpha_ = pump::cuopt::kAlphaInit;
+            restart_cuopt_descent();
         }
 
         // Degenerate guard only (issue #155).  A *failed* rounding now
@@ -597,7 +610,7 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // still stops on time.  (R2 flagged this; user-directed in
         // review round 3.)
         if (fresh && cuopt_) {
-            handle_cuopt_cycles(x_hat, x_bar, rounded.found_feasible);
+            handle_cuopt_cycles(x_hat, x_bar, rounding_improved);
             advance_cuopt_projection(x_hat, x_bar);
             ++K_;
         } else if (fresh) {

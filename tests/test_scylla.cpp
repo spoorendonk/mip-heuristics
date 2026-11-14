@@ -760,6 +760,92 @@ TEST_CASE("cuOpt projection: alpha decays per projection and resets on improveme
     }
 }
 
+// Drives `handle_cuopt_cycles` with constructed points on the two-binary
+// parity model: the order of checks and pushes, and what each cycle clears.
+TEST_CASE("cuOpt cycles: the worker's detectors, perturbation and restarts",
+          "[scylla][cuopt][pump]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_scylla_cuopt_pump", true);
+    HighsCallback cb(&highs);
+    auto mipsolver = bare_mipsolver_on_parity(highs, cb);
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
+    ContestedPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000, /*aux_distance=*/true);
+    REQUIRE(pdlp.initialized());
+    std::vector<std::vector<HighsInt>> var_orders;
+    var_orders.reserve(kNumFprConfigs);
+    Rng order_rng(11);
+    for (int i = 0; i < kNumFprConfigs; ++i) {
+        var_orders.push_back(
+            compute_var_order(*mipsolver, kFprConfigs[i].strat.var_strategy, order_rng, nullptr));
+    }
+    ScyllaWorker worker(*mipsolver, problem, exec, pdlp, sink, var_orders, size_t{1} << 20,
+                        std::numeric_limits<size_t>::max(), /*seed=*/7, 0,
+                        /*num_workers=*/1, WorkerTrace{0, 0});
+    const std::vector<double> x_bar = {0.5, 0.5};  // L1 distance 1 to any 0/1 point
+    const auto round = [&](std::vector<double> x_hat, bool improved = false) {
+        worker.handle_cuopt_cycles(x_hat, x_bar, improved);
+        return x_hat;
+    };
+
+    SECTION("an assignment cycle needs a settled alpha and a repeat") {
+        // The first rounding has no rounding before it: no distance.
+        round({0.0, 0.0});
+        CHECK(worker.cuopt_assignments_size_for_test() == 1);
+        CHECK(worker.cuopt_distances_size_for_test() == 0);
+        // A repeat while alpha still moves: recorded, not a cycle.
+        round({0.0, 0.0});
+        CHECK(worker.cuopt_assignments_size_for_test() == 2);
+        CHECK(worker.cuopt_distances_size_for_test() == 1);
+        worker.set_cuopt_alpha_for_test(0.01);
+        // Settled, but new: checked before it is pushed, so not a cycle.
+        round({1.0, 0.0});
+        CHECK(worker.cuopt_assignments_size_for_test() == 3);
+        CHECK(worker.cuopt_distances_size_for_test() == 2);
+        // Settled and a repeat: a cycle; the rounding and its perturbation
+        // both enter the ring, and the distances are cleared.
+        const std::vector<double> out = round({0.0, 0.0});
+        CHECK(worker.cuopt_assignments_size_for_test() == 5);
+        CHECK(worker.cuopt_distances_size_for_test() == 0);
+        for (const double v : out) {
+            CHECK((v == 0.0 || v == 1.0));
+        }
+        // The distance window restarts from empty.
+        round({1.0, 1.0});
+        CHECK(worker.cuopt_distances_size_for_test() == 1);
+    }
+
+    SECTION("a distance cycle fires on a full window, not one short") {
+        round({0.0, 0.0});
+        for (int i = 0; i < pump::cuopt::kDistanceWindow; ++i) {
+            round({0.0, 0.0});
+        }
+        // Every check so far saw fewer than `kDistanceWindow` distances.
+        CHECK(worker.cuopt_distances_size_for_test() ==
+              static_cast<size_t>(pump::cuopt::kDistanceWindow));
+        const size_t ring_before = worker.cuopt_assignments_size_for_test();
+        // Full and flat: a cycle.  The rounding is in the ring, so it is
+        // perturbed and its result pushed once; the window is cleared.
+        round({0.0, 0.0});
+        CHECK(worker.cuopt_distances_size_for_test() == 0);
+        CHECK(worker.cuopt_assignments_size_for_test() ==
+              std::min(ring_before + 1, static_cast<size_t>(pump::cuopt::kAssignmentRing)));
+    }
+
+    SECTION("an improving round skips the detectors") {
+        round({0.0, 0.0});
+        round({0.0, 0.0});
+        worker.set_cuopt_alpha_for_test(0.01);
+        round({0.0, 0.0}, /*improved=*/true);
+        CHECK(worker.cuopt_assignments_size_for_test() == 2);
+        CHECK(worker.cuopt_distances_size_for_test() == 1);
+    }
+}
+
 // bell5 has general integers, so the dispatch's LP carries aux columns.
 TEST_CASE("cuOpt projection: a dispatch finds a feasible point", "[scylla][cuopt][pump]") {
     // `HighsMipSolverData::init` reads `parallel::num_threads()`.
