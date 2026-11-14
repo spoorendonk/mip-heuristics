@@ -28,7 +28,9 @@ held per solve and a build can run between solves:
 
 The GPU FJ arms (#266) need a MIP_HEURISTICS_CUDA binary, and `--dev-log` on
 the tree's first run for the report's GPU-lane counts (`[HeurSol] worker=`);
-the tree pins it, since dev logging inflates every solve's wall time.
+the tree pins it, since dev logging inflates every solve's wall time.  The
+Scylla arms (#292) need one too, for cuPDLP on the GPU; `scylla_cuopt` reads
+against `scylla` and against main.
 
 Smoke only at one seed: a verdict from those runs is a choice of what to measure
 properly, never a default change.  `run_unsolved15.sh` is the measured run (#244).
@@ -114,6 +116,9 @@ Results = dict[str, dict[int, dict[str, SolveResult]]]
 
 FJ_GPU = "mip_heuristic_fj_gpu=true"
 FJ_ONLY = ("mip_heuristic_fpr_effort=0", "mip_heuristic_local_mip_effort=0")
+# Scylla ships off; its arms turn it on at one vanilla FJ budget, the unit of
+# every effort option, with the patience gate left at its default (off).
+SCYLLA = ("mip_heuristic_scylla_effort=1.0",)
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,14 @@ class Arm:
     options: tuple[str, ...] = ()
     instances: frozenset[str] | None = None  # None: the whole list
     base: str = BASELINE  # the arm this one's ratios are taken against
+    vs_main: bool = False  # a row against main as well, when base is not main
+    gpu: bool = False  # measured on a MIP_HEURISTICS_CUDA binary: run only if named
+
+    def bases(self) -> tuple[str, ...]:
+        """What this arm's rows read against, its base first."""
+        if self.vs_main and self.base != BASELINE:
+            return (self.base, BASELINE)
+        return (self.base,)
 
 
 ARMS: tuple[Arm, ...] = (
@@ -146,9 +159,20 @@ ARMS: tuple[Arm, ...] = (
     # GPU FJ (#266): climbers raced against the CPU FJ workers, on a
     # MIP_HEURISTICS_CUDA binary.  The FJ-only pair takes FPR and LocalMIP out,
     # so the first incumbent is FJ's or B&B's and the race shows on its own.
-    Arm("fj_gpu", (FJ_GPU,)),
+    Arm("fj_gpu", (FJ_GPU,), gpu=True),
     Arm("fj_only", FJ_ONLY),
-    Arm("fj_only_gpu", (*FJ_ONLY, FJ_GPU), base="fj_only"),
+    Arm("fj_only_gpu", (*FJ_ONLY, FJ_GPU), base="fj_only", gpu=True),
+    # The cuOpt pump variant (#211, #292): Mexi's pump on, then the same with
+    # the variant, read against main and against Mexi's pump.  PDLP runs on
+    # cuPDLP's GPU only in a MIP_HEURISTICS_CUDA binary.
+    Arm("scylla", SCYLLA, gpu=True),
+    Arm(
+        "scylla_cuopt",
+        (*SCYLLA, "mip_heuristic_scylla_cuopt_pump=true"),
+        base="scylla",
+        vs_main=True,
+        gpu=True,
+    ),
 )
 
 
@@ -373,7 +397,6 @@ def report_rows(
     shift = integral_shift()
 
     scope = {arm.name: arm.instances for arm in ARMS}
-    bases = {arm.name: arm.base for arm in ARMS}
     notes: list[str] = []
 
     def row(label: str, tree: Results, arm: str, base: str) -> str:
@@ -408,15 +431,24 @@ def report_rows(
             rows.append(row(label, noise_tree, "noise", BASELINE))
     # Arms pair on the seeds they ran, so a noise seed of `main`'s takes no part.
     for arm in results:
-        base = bases.get(arm, BASELINE)
         if arm == BASELINE or not results[arm]:
             continue
-        if not results.get(base):
-            notes.append(f"{arm}: no row, its base {base} has no runs")
-            continue
-        label = arm if base == BASELINE else f"{arm} vs {base}"
-        rows.append(row(label, results, arm, base))
+        for base in arm_bases(arm):
+            if not results.get(base):
+                notes.append(f"{arm}: no row, its base {base} has no runs")
+                continue
+            rows.append(row(comparison(arm, base), results, arm, base))
     return rows, notes
+
+
+def arm_bases(name: str) -> tuple[str, ...]:
+    """The bases of the arm called `name`; main for one ARMS does not list."""
+    arm = next((a for a in ARMS if a.name == name), None)
+    return arm.bases() if arm is not None else (BASELINE,)
+
+
+def comparison(arm: str, base: str) -> str:
+    return arm if base == BASELINE else f"{arm} vs {base}"
 
 
 def seed_spread(
@@ -429,12 +461,15 @@ def seed_spread(
     the noise-floor rows, where an arm's table row averages over its seeds.
     """
     shift = integral_shift()
-    bases = {arm.name: arm.base for arm in ARMS}
     lines: list[str] = []
-    for arm in results:
-        base = bases.get(arm, BASELINE)
-        if arm == BASELINE or not results.get(base):
-            continue
+    pairs = [
+        (arm, base)
+        for arm in results
+        if arm != BASELINE
+        for base in arm_bases(arm)
+        if results.get(base)
+    ]
+    for arm, base in pairs:
         cells: list[str] = []
         ratios: list[float] = []
         for seed in seeds:
@@ -450,8 +485,7 @@ def seed_spread(
             short = f" (n={len(pi.a)})" if len(pi.a) < len(instances) else ""
             cells.append(f"seed {seed} {ratios[-1]:.3f}{short}")
         spread = f" (range {max(ratios) - min(ratios):.3f})" if len(ratios) > 1 else ""
-        label = arm if base == BASELINE else f"{arm} vs {base}"
-        lines.append(f"{label}: {', '.join(cells)}{spread}")
+        lines.append(f"{comparison(arm, base)}: {', '.join(cells)}{spread}")
     return lines
 
 
@@ -574,11 +608,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--arms",
         nargs="+",
-        default=[arm.name for arm in ARMS if FJ_GPU not in arm.options],
+        default=[arm.name for arm in ARMS if not arm.gpu],
         choices=[arm.name for arm in ARMS],
-        help="Arms to run; main is what the others pair against.  The GPU FJ "
+        help="Arms to run; main is what the others pair against.  The GPU "
         "arms are named only on a MIP_HEURISTICS_CUDA binary: a CPU build's "
-        "solve warns and run_benchmark records it as failed",
+        "GPU FJ solve warns and run_benchmark records it as failed, and its "
+        "Scylla arms would time CPU PDLP",
     )
     parser.add_argument(
         "--dev-log",

@@ -325,8 +325,39 @@ def test_a_bad_record_is_an_error_not_a_crash(tmp_path: Path, text: str):
 def test_the_gpu_arms_run_only_when_named():
     default = build_parser().parse_args(["run"]).arms
     assert "fj_only" in default
-    assert "fj_gpu" not in default
-    assert "fj_only_gpu" not in default
+    for gpu in ("fj_gpu", "fj_only_gpu", "scylla", "scylla_cuopt"):
+        assert gpu not in default
+
+
+def test_the_scylla_arms_pair_as_issue_292_asks():
+    arms = {arm.name: arm for arm in ARMS}
+    assert arms["scylla"].bases() == (BASELINE,)
+    assert arms["scylla_cuopt"].bases() == ("scylla", BASELINE)
+    assert set(arms["scylla"].options) < set(arms["scylla_cuopt"].options)
+    assert any(
+        o.startswith("mip_heuristic_scylla_effort=") for o in arms["scylla"].options
+    )
+
+
+def test_scylla_cuopt_reads_against_scylla_and_main(monkeypatch):
+    monkeypatch.setattr(cuopt_smoke, "integral_shift", lambda: 0.0)
+    instances = ["a", "b"]
+
+    def at(t: float) -> dict:
+        return {0: {name: solved(t) for name in instances}}
+
+    results = {BASELINE: at(8.0), "scylla": at(4.0), "scylla_cuopt": at(2.0)}
+    rows, notes = report_rows(results, [0], instances, score_by_first_incumbent)
+    labels = [row.split(" | ")[0] for row in rows]
+    assert labels[-3:] == ["| scylla", "| scylla_cuopt vs scylla", "| scylla_cuopt"]
+    lines = cuopt_smoke.seed_spread(results, [0], instances, score_by_first_incumbent)
+    assert "scylla_cuopt vs scylla: seed 0 0.500" in lines
+    assert "scylla_cuopt: seed 0 0.250" in lines
+    # Without Mexi's pump the variant still reads against main.
+    del results["scylla"]
+    rows, notes = report_rows(results, [0], instances, score_by_first_incumbent)
+    assert [row.split(" | ")[0] for row in rows][-1] == "| scylla_cuopt"
+    assert "scylla_cuopt: no row, its base scylla has no runs" in notes
 
 
 def test_a_core_count_is_positive():
