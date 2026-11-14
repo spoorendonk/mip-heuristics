@@ -162,6 +162,17 @@ public:
     AttemptResult handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
                                       bool improved, size_t cap);
 
+    // cuOpt's `test_fj_feasible` for a failed rounding `x_hat` whose round
+    // (projection and rounding) cost `round_effort` (#298): adds
+    // `kFailedRoundingFjRatio` of it to the FJ credit and, once the credit
+    // reaches `kFjCallbackEffort`, runs FJ from `x_hat` on the credit (at
+    // most `cap`); `x_hat` becomes the feasible point FJ found, if any.
+    // Returns FJ's effort, already charged to the worker's counters.
+    // Public so a test can drive it with constructed points.
+    AttemptResult run_cuopt_failed_rounding_fj(std::vector<double>& x_hat, size_t round_effort,
+                                               size_t cap);
+    [[nodiscard]] size_t cuopt_fj_credit_for_test() const { return cuopt_fj_credit_; }
+
 private:
     // Shared handling of a completed PDLP solve result used by both the
     // blocking (`must_force_fresh`) branch and the non-blocking
@@ -190,6 +201,11 @@ private:
     // cuOpt's `run_fj_cycle_escape` (#297): FJ from `x_hat`, which becomes
     // the feasible point FJ found, if any; at most `cap` effort.
     AttemptResult run_cuopt_fj_escape(std::vector<double>& x_hat, size_t cap);
+
+    // FJ from `x_hat` for at most `budget`, charged to the worker; `x_hat`
+    // becomes FJ's feasible point, if any, and an improvement restarts the
+    // descent.  Shared by the cycle escape and the failed-rounding FJ.
+    AttemptResult run_cuopt_fj(std::vector<double>& x_hat, size_t budget);
 
     HighsMipSolver& mipsolver_;
     // Must outlive the worker.
@@ -289,6 +305,8 @@ private:
     std::vector<double> cuopt_distances_;
     size_t cuopt_distance_next_ = 0;
     std::vector<double> cuopt_last_rounding_;
+    // Effort owed to FJ on failed roundings (#298), not yet spent.
+    size_t cuopt_fj_credit_ = 0;
 
     // Mexi's cycle window; unused in the cuOpt variant.
     std::vector<std::vector<double>> cycle_history_;

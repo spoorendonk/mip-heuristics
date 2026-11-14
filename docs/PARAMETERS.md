@@ -1074,6 +1074,21 @@ Three things to carry forward.
 
 ---
 
+### `kFailedRoundingFjRatio` — cuOpt variant's FJ share on a failed rounding
+
+- **File**: `src/pump_common.h` (namespace `pump::cuopt`)
+- **Default**: `0.2`
+- **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#298). Each
+  failed fresh round adds this fraction of its projection (PDLP) and
+  rounding effort to an FJ credit; once the credit reaches
+  `kFjCallbackEffort`, FJ runs from that round's rounding and spends it.
+  cuOpt's `test_fj_feasible` gives FJ 0.2 of every failed round's time; the
+  credit keeps that share in aggregate, since FJ cannot stop sooner than
+  its callback period.
+- **Suggested range**: 0.05–0.5.
+
+---
+
 ### `kCycleWindow` — cycling detection history depth
 
 - **File**: `src/pump_common.h`

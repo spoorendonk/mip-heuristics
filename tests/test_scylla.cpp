@@ -1,4 +1,5 @@
 #include "contested_pdlp.h"
+#include "fj_worker.h"
 #include "fpr_core.h"
 #include "fpr_var_order.h"
 #include "heuristic_context.h"
@@ -911,6 +912,57 @@ TEST_CASE("cuOpt cycles: a cycle reaches the FJ escape before perturbing",
     // The cycle's rounding and FJ's point, not a perturbation of either.
     CHECK(worker.cuopt_assignments_size_for_test() == 4);
     CHECK(worker.cuopt_distances_size_for_test() == 0);
+    CHECK(worker.cuopt_alpha_for_test() == pump::cuopt::kAlphaInit);
+}
+
+// FJ on a failed rounding (#298), on the feasible parity model: a failed
+// round's share accrues as credit until it reaches FJ's minimum attempt,
+// and then FJ runs from the rounding and its feasible point replaces it.
+TEST_CASE("cuOpt pump: a failed rounding reaches FJ once its credit is due",
+          "[scylla][cuopt][pump]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_scylla_cuopt_pump", true);
+    HighsCallback cb(&highs);
+    auto mipsolver = bare_mipsolver_on_parity(highs, cb, /*rhs=*/2.0);
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
+    ContestedPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000, /*aux_distance=*/true);
+    REQUIRE(pdlp.initialized());
+    std::vector<std::vector<HighsInt>> var_orders;
+    var_orders.reserve(kNumFprConfigs);
+    Rng order_rng(11);
+    for (int i = 0; i < kNumFprConfigs; ++i) {
+        var_orders.push_back(
+            compute_var_order(*mipsolver, kFprConfigs[i].strat.var_strategy, order_rng, nullptr));
+    }
+    ScyllaWorker worker(*mipsolver, problem, exec, pdlp, sink, var_orders, size_t{1} << 24,
+                        std::numeric_limits<size_t>::max(), /*seed=*/7, 0,
+                        /*num_workers=*/1, WorkerTrace{0, 0});
+    // A round worth just under one FJ period at the ratio: credit only.
+    const auto share = [](size_t e) {
+        return static_cast<size_t>(pump::cuopt::kFailedRoundingFjRatio * static_cast<double>(e));
+    };
+    const size_t small = kFjCallbackEffort * 4;
+    REQUIRE(share(small) < kFjCallbackEffort);
+    std::vector<double> x_hat = {0.0, 0.0};
+    CHECK(worker.run_cuopt_failed_rounding_fj(x_hat, small, kNoCap).effort == 0);
+    CHECK(worker.cuopt_fj_credit_for_test() == share(small));
+    CHECK(x_hat == std::vector<double>{0.0, 0.0});
+    // A spent slice skips FJ too and keeps the credit.
+    CHECK(worker.run_cuopt_failed_rounding_fj(x_hat, small, /*cap=*/0).effort == 0);
+    const size_t credit = 2 * share(small);
+    REQUIRE(credit >= kFjCallbackEffort);
+    CHECK(worker.cuopt_fj_credit_for_test() == credit);
+    // Due: FJ runs from the failed rounding and finds a feasible point.
+    const AttemptResult fj = worker.run_cuopt_failed_rounding_fj(x_hat, 0, kNoCap);
+    CHECK(fj.effort > 0);
+    CHECK(fj.found_improvement);
+    CHECK(x_hat[0] + x_hat[1] == 1.0);
+    CHECK(worker.cuopt_fj_credit_for_test() == credit - std::min(credit, fj.effort));
     CHECK(worker.cuopt_alpha_for_test() == pump::cuopt::kAlphaInit);
 }
 

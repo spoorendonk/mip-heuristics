@@ -234,14 +234,38 @@ void ScyllaWorker::restart_cuopt_descent() {
 // staleness like the pump's own: with a patience option set, a fruitless
 // escape on a small model can retire the chain.
 AttemptResult ScyllaWorker::run_cuopt_fj_escape(std::vector<double>& x_hat, size_t cap) {
-    const size_t remaining =
-        std::min(cap, base_.total_budget - std::min(base_.total_budget, base_.total_effort));
-    if (remaining == 0) {
+    return run_cuopt_fj(
+        x_hat,
+        std::min(cap, problem_.nnz + static_cast<size_t>(pump::cuopt::kFjEscapeSeconds *
+                                                         ruin_repair::kRepairEffortPerSecond)));
+}
+
+// cuOpt's `test_fj_feasible`.  Deviations (#298): cuOpt runs FJ on every
+// failed rounding for 0.2 of the round's time; here FJ cannot stop before
+// `kFjCallbackEffort`, which on a small model is many rounds' worth, so the
+// share accrues as a credit and one FJ run spends it once it reaches that
+// floor, from the failed rounding at hand.  FJ runs with its objective
+// (`FjWorker` has no feasibility-only mode), where cuOpt sets
+// `feasibility_run`; its constraint weights start fresh each run, as in the
+// escape.  A failed FJ leaves the rounding, as cuOpt restores it.
+AttemptResult ScyllaWorker::run_cuopt_failed_rounding_fj(std::vector<double>& x_hat,
+                                                         size_t round_effort, size_t cap) {
+    cuopt_fj_credit_ += static_cast<size_t>(pump::cuopt::kFailedRoundingFjRatio *
+                                            static_cast<double>(round_effort));
+    if (cuopt_fj_credit_ < kFjCallbackEffort) {
         return {};
     }
-    const size_t budget = std::min(
-        remaining, problem_.nnz + static_cast<size_t>(pump::cuopt::kFjEscapeSeconds *
-                                                      ruin_repair::kRepairEffortPerSecond));
+    const AttemptResult result = run_cuopt_fj(x_hat, std::min(cap, cuopt_fj_credit_));
+    cuopt_fj_credit_ -= std::min(cuopt_fj_credit_, result.effort);
+    return result;
+}
+
+AttemptResult ScyllaWorker::run_cuopt_fj(std::vector<double>& x_hat, size_t budget) {
+    budget =
+        std::min(budget, base_.total_budget - std::min(base_.total_budget, base_.total_effort));
+    if (budget == 0) {
+        return {};
+    }
     WorkerTrace trace = trace_;
     trace.effort_base = trace_.at(base_.total_effort);
     FjWorker fj(problem_, exec_, sink_, budget, std::numeric_limits<size_t>::max(),
@@ -664,9 +688,20 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // still stops on time.  (R2 flagged this; user-directed in
         // review round 3.)
         if (fresh && cuopt_) {
-            const AttemptResult escape =
-                handle_cuopt_cycles(x_hat, x_bar, rounding_improved,
-                                    attempt_budget - std::min(attempt_budget, attempt.effort));
+            // cuOpt's order: FJ on a failed rounding first; a point it
+            // offers that improves ends the descent as an improving
+            // rounding does, so the detectors are skipped.
+            bool improved = rounding_improved;
+            if (!rounded.found_feasible) {
+                const AttemptResult fj = run_cuopt_failed_rounding_fj(
+                    x_hat, actual_effort + rounded.effort,
+                    attempt_budget - std::min(attempt_budget, attempt.effort));
+                attempt.effort += fj.effort;
+                attempt.found_improvement = attempt.found_improvement || fj.found_improvement;
+                improved = improved || fj.found_improvement;
+            }
+            const AttemptResult escape = handle_cuopt_cycles(
+                x_hat, x_bar, improved, attempt_budget - std::min(attempt_budget, attempt.effort));
             attempt.effort += escape.effort;
             attempt.found_improvement = attempt.found_improvement || escape.found_improvement;
             advance_cuopt_projection(x_hat, x_bar);
