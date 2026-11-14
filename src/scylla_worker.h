@@ -154,7 +154,8 @@ public:
     // detectors on `x_hat`; on a cycle run the FJ escape from it, then
     // perturb it if the cycle persists; then make it the next round's last
     // rounding.  Replaces Mexi's `cycle_history_` in the variant.  The
-    // escape spends at most `cap`, what is left of the attempt.  Returns
+    // escape is bounded by `cap`, what is left of the attempt, in steps of
+    // `kFjCallbackEffort` (FJ reads its budgets only at its callback).  Returns
     // the escape's effort, already charged to the worker's counters, and
     // whether it improved the incumbent.  Public so a test can drive it
     // with constructed points.

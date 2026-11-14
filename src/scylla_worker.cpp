@@ -226,8 +226,13 @@ void ScyllaWorker::restart_cuopt_descent() {
 // (`feasibility_run = false`), under no cutoff.  Each escape builds a fresh
 // `FjWorker`, so its constraint weights start fresh, where cuOpt's pump
 // keeps one FJ whose weights carry over between escapes and are damped to
-// `max(10, round(w / 10))` after each (`restart_fp`).  The escape also
-// stays within the attempt's slice (`cap`), as the rounding does.
+// `max(10, round(w / 10))` after each (`restart_fp`).  The escape is also
+// bounded by the attempt's slice (`cap`), as the rounding is, but FJ reads
+// its budgets only at its callback, so an escape that runs at all spends up
+// to `kFjCallbackEffort` whatever the slice (as ruin-and-repair's repair
+// does); only an empty slice skips it.  Its effort counts toward Scylla's
+// staleness like the pump's own: with a patience option set, a fruitless
+// escape on a small model can retire the chain.
 AttemptResult ScyllaWorker::run_cuopt_fj_escape(std::vector<double>& x_hat, size_t cap) {
     const size_t remaining =
         std::min(cap, base_.total_budget - std::min(base_.total_budget, base_.total_effort));
