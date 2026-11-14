@@ -271,6 +271,10 @@ TEST_CASE("Scylla: two different x_bar inputs round to different x_hat (#121)",
 // byte-identical LP from a byte-identical warm start.
 namespace {
 
+// No attempt slice: `handle_cuopt_cycles`'s FJ escape bounded by the
+// worker's budget alone.
+constexpr size_t kNoCap = std::numeric_limits<size_t>::max();
+
 // `2*x0 + 2*x1 = 1`, both binary: LP-feasible, integer-infeasible.  No
 // rounding of it can succeed, so *every* round in this test is a failed
 // one and the observable below is attributable to the failure path alone.
@@ -790,7 +794,7 @@ TEST_CASE("cuOpt cycles: the worker's detectors, perturbation and restarts",
                         /*num_workers=*/1, WorkerTrace{0, 0});
     const std::vector<double> x_bar = {0.5, 0.5};  // L1 distance 1 to any 0/1 point
     const auto round = [&](std::vector<double> x_hat, bool improved = false) {
-        worker.handle_cuopt_cycles(x_hat, x_bar, improved);
+        worker.handle_cuopt_cycles(x_hat, x_bar, improved, kNoCap);
         return x_hat;
     };
 
@@ -813,7 +817,7 @@ TEST_CASE("cuOpt cycles: the worker's detectors, perturbation and restarts",
         // the rounding and its perturbation both enter the ring, and the
         // distances are cleared.
         std::vector<double> out = {0.0, 0.0};
-        const AttemptResult escape = worker.handle_cuopt_cycles(out, x_bar, false);
+        const AttemptResult escape = worker.handle_cuopt_cycles(out, x_bar, false, kNoCap);
         CHECK(escape.effort > 0);
         CHECK_FALSE(escape.found_improvement);
         CHECK(worker.cuopt_assignments_size_for_test() == 5);
@@ -841,6 +845,17 @@ TEST_CASE("cuOpt cycles: the worker's detectors, perturbation and restarts",
         CHECK(worker.cuopt_distances_size_for_test() == 0);
         CHECK(worker.cuopt_assignments_size_for_test() ==
               std::min(ring_before + 1, static_cast<size_t>(pump::cuopt::kAssignmentRing)));
+    }
+
+    SECTION("a spent attempt slice skips the escape, not the perturbation") {
+        round({0.0, 0.0});
+        round({0.0, 0.0});
+        worker.set_cuopt_alpha_for_test(0.01);
+        std::vector<double> out = {0.0, 0.0};
+        CHECK(worker.handle_cuopt_cycles(out, x_bar, false, /*cap=*/0).effort == 0);
+        // The cycle still restarts: rounding and perturbation enter the ring.
+        CHECK(worker.cuopt_assignments_size_for_test() == 4);
+        CHECK(worker.cuopt_distances_size_for_test() == 0);
     }
 
     SECTION("an improving round skips the detectors") {
@@ -884,12 +899,12 @@ TEST_CASE("cuOpt cycles: a cycle reaches the FJ escape before perturbing",
                         /*num_workers=*/1, WorkerTrace{0, 0});
     const std::vector<double> x_bar = {0.5, 0.5};
     std::vector<double> x_hat = {0.0, 0.0};
-    CHECK(worker.handle_cuopt_cycles(x_hat, x_bar, false).effort == 0);
+    CHECK(worker.handle_cuopt_cycles(x_hat, x_bar, false, kNoCap).effort == 0);
     x_hat = {0.0, 0.0};
-    CHECK(worker.handle_cuopt_cycles(x_hat, x_bar, false).effort == 0);
+    CHECK(worker.handle_cuopt_cycles(x_hat, x_bar, false, kNoCap).effort == 0);
     worker.set_cuopt_alpha_for_test(0.01);
     x_hat = {0.0, 0.0};
-    const AttemptResult escape = worker.handle_cuopt_cycles(x_hat, x_bar, false);
+    const AttemptResult escape = worker.handle_cuopt_cycles(x_hat, x_bar, false, kNoCap);
     CHECK(escape.effort > 0);
     CHECK(escape.found_improvement);
     CHECK(x_hat[0] + x_hat[1] == 1.0);

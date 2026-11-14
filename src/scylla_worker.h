@@ -153,12 +153,13 @@ public:
     // record the distance from `x_bar` to the last rounding, run the two
     // detectors on `x_hat`; on a cycle run the FJ escape from it, then
     // perturb it if the cycle persists; then make it the next round's last
-    // rounding.  Replaces Mexi's `cycle_history_` in the variant.  Returns
+    // rounding.  Replaces Mexi's `cycle_history_` in the variant.  The
+    // escape spends at most `cap`, what is left of the attempt.  Returns
     // the escape's effort, already charged to the worker's counters, and
     // whether it improved the incumbent.  Public so a test can drive it
     // with constructed points.
     AttemptResult handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
-                                      bool improved);
+                                      bool improved, size_t cap);
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
@@ -186,8 +187,8 @@ private:
     void restart_cuopt_descent();
 
     // cuOpt's `run_fj_cycle_escape` (#297): FJ from `x_hat`, which becomes
-    // the feasible point FJ found, if any.
-    AttemptResult run_cuopt_fj_escape(std::vector<double>& x_hat);
+    // the feasible point FJ found, if any; at most `cap` effort.
+    AttemptResult run_cuopt_fj_escape(std::vector<double>& x_hat, size_t cap);
 
     HighsMipSolver& mipsolver_;
     // Must outlive the worker.

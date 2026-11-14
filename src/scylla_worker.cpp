@@ -223,9 +223,14 @@ void ScyllaWorker::restart_cuopt_descent() {
 // leaves the rounding as it was, where cuOpt takes FJ's last assignment when
 // the rounding is still in the ring, and the cycle check that follows then
 // perturbs it.  FJ runs with its objective, as cuOpt's escape does
-// (`feasibility_run = false`), under no cutoff.
-AttemptResult ScyllaWorker::run_cuopt_fj_escape(std::vector<double>& x_hat) {
-    const size_t remaining = base_.total_budget - std::min(base_.total_budget, base_.total_effort);
+// (`feasibility_run = false`), under no cutoff.  Each escape builds a fresh
+// `FjWorker`, so its constraint weights start fresh, where cuOpt's pump
+// keeps one FJ whose weights carry over between escapes and are damped to
+// `max(10, round(w / 10))` after each (`restart_fp`).  The escape also
+// stays within the attempt's slice (`cap`), as the rounding does.
+AttemptResult ScyllaWorker::run_cuopt_fj_escape(std::vector<double>& x_hat, size_t cap) {
+    const size_t remaining =
+        std::min(cap, base_.total_budget - std::min(base_.total_budget, base_.total_effort));
     if (remaining == 0) {
         return {};
     }
@@ -269,7 +274,8 @@ AttemptResult ScyllaWorker::run_cuopt_fj_escape(std::vector<double>& x_hat) {
 // projection has no rounding to measure against, so its distance is not
 // recorded.
 AttemptResult ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat,
-                                                const std::vector<double>& x_bar, bool improved) {
+                                                const std::vector<double>& x_bar, bool improved,
+                                                size_t cap) {
     namespace cu = pump::cuopt;
     const auto* model = mipsolver_.model_;
     const auto& integrality = model->integrality_;
@@ -289,7 +295,7 @@ AttemptResult ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat,
             cu::ring_push(cuopt_assignments_, cuopt_assignment_next_, cu::kAssignmentRing, h);
         }
         if (distance_cycle || assignment_cycle) {
-            escape = run_cuopt_fj_escape(x_hat);
+            escape = run_cuopt_fj_escape(x_hat, cap);
             // The cycle persists when the escape's result is in the ring:
             // always when it left an assignment cycle's rounding as it was,
             // which has just been pushed.
@@ -653,7 +659,9 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // still stops on time.  (R2 flagged this; user-directed in
         // review round 3.)
         if (fresh && cuopt_) {
-            const AttemptResult escape = handle_cuopt_cycles(x_hat, x_bar, rounding_improved);
+            const AttemptResult escape =
+                handle_cuopt_cycles(x_hat, x_bar, rounding_improved,
+                                    attempt_budget - std::min(attempt_budget, attempt.effort));
             attempt.effort += escape.effort;
             attempt.found_improvement = attempt.found_improvement || escape.found_improvement;
             advance_cuopt_projection(x_hat, x_bar);
