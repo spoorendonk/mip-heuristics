@@ -126,8 +126,12 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem
         // relaxed) at the loose tolerance; the projections start after it.
         epsilon_ = pump::cuopt::kTolFirst;
         cuopt_alpha_ = pump::cuopt::kAlphaInit;
+        cuopt_assignments_.reserve(pump::cuopt::kAssignmentRing);
+        cuopt_distances_.reserve(pump::cuopt::kDistanceWindow);
+        cuopt_last_rounding_.reserve(ncol_);
+    } else {
+        cycle_history_.reserve(pump::kCycleWindow);
     }
-    cycle_history_.reserve(pump::kCycleWindow);
 
     // Look up this worker's variable order from the dispatch-time table.
     // Computing it here would read the live root domain and clique table —
@@ -201,6 +205,52 @@ void ScyllaWorker::advance_cuopt_projection(const std::vector<double>& x_hat,
     pump::cuopt::build_warm_primal(x_hat, x_bar, pdlp_.aux_cols(), cuopt_warm_primal_);
     epsilon_ = pump::cuopt::lp_tolerance(
         pump::cuopt::integral_fraction(x_bar, model->integrality_, feastol));
+}
+
+// cuOpt's order within a descent (`run_single_fp_descent`, `restart_fp`):
+// the projection's distance is recorded before the rounding; a feasible
+// rounding ends the descent (here: was offered, and the pump goes on with
+// no cycle handling); an infeasible one enters the ring, checked first when
+// alpha has settled.  On either cycle the restart perturbs the rounding if
+// it is in the ring, records the result there and clears the distances.
+// Recorded readings: a fresh round only (stale rounds advance no pump
+// state); the integral-LP fast path ends the round before this, as it does
+// for Mexi's cycle window; the first projection has no rounding to measure
+// against, so its distance is not recorded.
+void ScyllaWorker::handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
+                                       bool rounding_feasible) {
+    namespace cu = pump::cuopt;
+    const auto* model = mipsolver_.model_;
+    const auto& integrality = model->integrality_;
+    bool distance_cycle = false;
+    if (!cuopt_last_rounding_.empty()) {
+        const double d = cu::int_l1_distance(x_bar, cuopt_last_rounding_, integrality);
+        distance_cycle = cu::distance_cycle(cuopt_distances_, d);
+        cu::ring_push(cuopt_distances_, cuopt_distance_next_, cu::kDistanceWindow, d);
+    }
+    if (!rounding_feasible) {
+        uint64_t h = cu::assignment_hash(x_hat, integrality);
+        bool perturb_it = false;
+        bool assignment_cycle = false;
+        if (distance_cycle) {
+            perturb_it = cu::in_ring(cuopt_assignments_, h);
+        } else {
+            assignment_cycle =
+                cu::assignment_check_due(cuopt_alpha_) && cu::in_ring(cuopt_assignments_, h);
+            cu::ring_push(cuopt_assignments_, cuopt_assignment_next_, cu::kAssignmentRing, h);
+            perturb_it = assignment_cycle;
+        }
+        if (distance_cycle || assignment_cycle) {
+            if (perturb_it) {
+                cu::perturb(x_hat, integrality, model->col_lower_, model->col_upper_, rng_);
+                h = cu::assignment_hash(x_hat, integrality);
+            }
+            cu::ring_push(cuopt_assignments_, cuopt_assignment_next_, cu::kAssignmentRing, h);
+            cuopt_distances_.clear();
+            cuopt_distance_next_ = 0;
+        }
+    }
+    cuopt_last_rounding_.assign(x_hat.begin(), x_hat.end());
 }
 
 // Cognitive complexity 99 (threshold 25).  Kept whole: one feasibility-pump chain iteration (Mexi
@@ -546,7 +596,11 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
         // is still charged above regardless, so the outer budget
         // still stops on time.  (R2 flagged this; user-directed in
         // review round 3.)
-        if (fresh) {
+        if (fresh && cuopt_) {
+            handle_cuopt_cycles(x_hat, x_bar, rounded.found_feasible);
+            advance_cuopt_projection(x_hat, x_bar);
+            ++K_;
+        } else if (fresh) {
             if (pump::detect_cycling(cycle_history_, x_hat, integrality, ncol_)) {
                 pump::perturb(x_hat, *model, rng_);
             }
@@ -595,15 +649,11 @@ AttemptResult ScyllaWorker::run_attempt(size_t attempt_budget) {
             }
             pump::record_cycle_entry(cycle_history_, K_, x_hat);
 
-            if (cuopt_) {
-                advance_cuopt_projection(x_hat, x_bar);
-            } else {
-                alpha_K_ *= pump::kAlpha;
-                pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality,
-                                             model->col_lower_, model->col_upper_, alpha_K_,
-                                             cost_scale_, ncol_, modified_cost_);
-                epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
-            }
+            alpha_K_ *= pump::kAlpha;
+            pump::compute_pump_objective(orig_cost, x_hat, x_bar, integrality, model->col_lower_,
+                                         model->col_upper_, alpha_K_, cost_scale_, ncol_,
+                                         modified_cost_);
+            epsilon_ = std::max(pump::kBeta * epsilon_, pump::kEpsilonFloor);
             ++K_;
         }
     }

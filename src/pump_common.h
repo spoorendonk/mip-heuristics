@@ -4,7 +4,10 @@
 #include "lp_data/HighsLp.h"
 #include "mip/HighsMipSolverData.h"
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <random>
 #include <span>
 #include <utility>
@@ -112,6 +115,37 @@ inline void record_cycle_entry(std::vector<std::vector<double>>& history, int co
     }
 }
 
+// The integer range a perturbation of a column at value `x` draws from:
+// `[lo, lo + irange]`, the column's integer bounds, or a window of
+// `kInfBoundShiftWindow` either side of `round(x)` when either bound is
+// infinite or the range would overflow `int64_t`.  False when there is
+// nothing to draw from: a non-finite `x` (casting NaN to int64_t is UB, and
+// `round(x) ± kInfBoundShiftWindow` would carry NaN into the draw) or fewer
+// than two integers in range.  Shared by Mexi's `perturb` and the cuOpt
+// variant's `cuopt::perturb`.
+//
+// The finite window: `kHighsInf` (== std::infinity per HiGHS HConst.h) is
+// caught by `!std::isfinite`, but adversarial user-supplied bounds at e.g.
+// ±1e20 satisfy isfinite yet still overflow int64_t (R1-3 round-5 review).
+// `kSafeInt64DoubleRange` catches both cases at once.
+inline bool perturb_range(double x, double lb, double ub, double& lo, int64_t& irange) {
+    if (!std::isfinite(x)) {
+        return false;
+    }
+    lo = std::ceil(lb);
+    double hi = std::floor(ub);
+    if (!std::isfinite(lo) || !std::isfinite(hi) || hi - lo > kSafeInt64DoubleRange) {
+        const double current = std::round(x);
+        lo = current - kInfBoundShiftWindow;
+        hi = current + kInfBoundShiftWindow;
+    }
+    if (hi <= lo) {
+        return false;
+    }
+    irange = static_cast<int64_t>(hi - lo);
+    return irange >= 1;
+}
+
 // Perturb a rounded solution to break cycling (Algorithm 1.1, line 14).
 inline void perturb(std::vector<double>& x, const HighsLp& model, Rng& rng) {
     // `kInfBoundShiftWindow` and `kSafeInt64DoubleRange` are shared
@@ -131,35 +165,12 @@ inline void perturb(std::vector<double>& x, const HighsLp& model, Rng& rng) {
         if (std::uniform_real_distribution<double>(0.0, 1.0)(rng) > kPerturbFraction) {
             continue;
         }
-        // Skip variables whose current value is non-finite (NaN or
-        // ±inf): casting NaN to int64_t is UB and `current ±
-        // kInfBoundShiftWindow` would propagate NaN through the shift
-        // arithmetic below.
-        if (!std::isfinite(x[j])) {
+        double lo = 0.0;
+        int64_t irange = 0;
+        if (!perturb_range(x[j], lb[j], ub[j], lo, irange)) {
             continue;
         }
-        double lo = std::ceil(lb[j]);
-        double hi = std::floor(ub[j]);
-        double current = std::round(x[j]);
-        // Clamp `lo`/`hi` to a finite window around the current value
-        // when either bound is non-finite OR finite-but-huge.  Without
-        // this guard the `static_cast<int64_t>(hi - lo)` below
-        // overflows: `kHighsInf` (== std::infinity per HiGHS HConst.h)
-        // is caught by `!std::isfinite`, but adversarial user-supplied
-        // bounds at e.g. ±1e20 satisfy isfinite yet still overflow
-        // int64_t (R1-3 round-5 review).  `kSafeInt64DoubleRange`
-        // catches both cases at once.
-        if (!std::isfinite(lo) || !std::isfinite(hi) || hi - lo > kSafeInt64DoubleRange) {
-            lo = current - kInfBoundShiftWindow;
-            hi = current + kInfBoundShiftWindow;
-        }
-        if (hi <= lo) {
-            continue;
-        }
-        auto irange = static_cast<int64_t>(hi - lo);
-        if (irange < 1) {
-            continue;
-        }
+        const double current = std::round(x[j]);
         int64_t shift = std::uniform_int_distribution<int64_t>(1, irange)(rng);
         x[j] = lo + std::fmod(current - lo + static_cast<double>(shift),
                               static_cast<double>(irange) + 1.0);
@@ -304,6 +315,125 @@ inline void build_warm_primal(std::span<const double> x_hat, std::span<const dou
     for (const HighsInt j : aux_cols) {
         const double d = std::abs(x_hat[j] - x_bar[j]);
         out.push_back(std::isfinite(d) ? d : 0.0);
+    }
+}
+
+// Cycle handling (#295).  cuOpt runs two detectors on each fresh round:
+//
+// - Assignment cycle: the round's (infeasible) rounding equals one of the
+//   last `kAssignmentRing` roundings on every integer column.  Checked only
+//   once alpha has nearly stopped moving, `a/kAlphaDecay - a <
+//   kAssignmentCheckStep` (before that the objective still changes enough
+//   between rounds to pull the LP point off a repeated rounding); the
+//   rounding enters the ring every round.
+// - Distance cycle: the L1 distance over the integer columns from the new
+//   LP point to the rounding its projection was pulled toward has stopped
+//   falling: once the last `kDistanceWindow` distances are recorded, a cycle
+//   when `avg - cur < kDistanceCycleRatio * avg`, `avg` over those previous
+//   distances, not counting `cur` (cuOpt's `check_distance_cycle`).
+//
+// A cycle restarts the descent: the rounding is perturbed when it is in the
+// ring (always after an assignment cycle, which has just put it there), the
+// result enters the ring, and the distance history is cleared.
+inline constexpr int kAssignmentRing = 30;
+inline constexpr double kAssignmentCheckStep = 0.005;
+inline constexpr int kDistanceWindow = 70;
+inline constexpr double kDistanceCycleRatio = 0.1;
+// Each integer column is redrawn with this probability (cuOpt's
+// `perturbate`, `change_ratio`).
+inline constexpr double kPerturbProbability = 0.1;
+
+inline bool assignment_check_due(double alpha) {
+    return (alpha / kAlphaDecay) - alpha < kAssignmentCheckStep;
+}
+
+// The ring stores a 64-bit hash of each rounding's integer columns, not the
+// rounding: 30 copies of every integer column per worker is too much memory
+// on large models, and a false match needs a 2^-64 collision.  cuOpt
+// compares the stored vectors.  Values are rounded first (integer columns
+// of a rounding are integral; `+ 0.0` folds -0 into 0).
+inline uint64_t assignment_hash(std::span<const double> x,
+                                const std::vector<HighsVarType>& integrality) {
+    uint64_t h = 0;
+    for (HighsInt j = 0; std::cmp_less(j, x.size()); ++j) {
+        if (!is_integer(integrality, j)) {
+            continue;
+        }
+        // SplitMix64's finaliser (https://prng.di.unimi.it/splitmix64.c)
+        // over the running hash xor the value's bits: order-sensitive, and
+        // one changed column changes every later step.
+        h ^= std::bit_cast<uint64_t>(std::round(x[j]) + 0.0);
+        h += 0x9e3779b97f4a7c15ULL;
+        h = (h ^ (h >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        h = (h ^ (h >> 27U)) * 0x94d049bb133111ebULL;
+        h ^= h >> 31U;
+    }
+    return h;
+}
+
+// Fixed-capacity ring, oldest entry overwritten once full.  `ring` is
+// reserved to `capacity` by its owner, so a push never allocates.
+template <typename T>
+inline void ring_push(std::vector<T>& ring, size_t& next, size_t capacity, T value) {
+    if (ring.size() < capacity) {
+        ring.push_back(value);
+    } else {
+        ring[next] = value;
+    }
+    next = (next + 1) % capacity;
+}
+
+inline bool in_ring(std::span<const uint64_t> ring, uint64_t h) {
+    return std::ranges::find(ring, h) != ring.end();
+}
+
+// L1 distance between `a` and `b` over the integer columns.
+inline double int_l1_distance(std::span<const double> a, std::span<const double> b,
+                              const std::vector<HighsVarType>& integrality) {
+    double d = 0.0;
+    for (HighsInt j = 0; std::cmp_less(j, a.size()); ++j) {
+        if (is_integer(integrality, j)) {
+            d += std::abs(a[j] - b[j]);
+        }
+    }
+    return d;
+}
+
+// `previous`: the distances recorded so far, `cur` not among them.
+inline bool distance_cycle(std::span<const double> previous, double cur) {
+    if (std::cmp_less(previous.size(), kDistanceWindow)) {
+        return false;
+    }
+    double sum = 0.0;
+    for (const double d : previous) {
+        sum += d;
+    }
+    const double avg = sum / static_cast<double>(previous.size());
+    return avg - cur < kDistanceCycleRatio * avg;
+}
+
+// cuOpt's perturbation: each integer column with probability
+// `kPerturbProbability` to a uniform integer in its bounds, the current
+// value included.  Unlike Mexi's `pump::perturb` there is no shift that
+// forces a change.  A column with an infinite or huge bound draws from
+// `perturb_range`'s finite window around its value (#291's spec), where
+// cuOpt sets it to its finite bound.
+inline void perturb(std::span<double> x, const std::vector<HighsVarType>& integrality,
+                    std::span<const double> lb, std::span<const double> ub, Rng& rng) {
+    for (HighsInt j = 0; std::cmp_less(j, x.size()); ++j) {
+        if (!is_integer(integrality, j)) {
+            continue;
+        }
+        if (std::uniform_real_distribution<double>(0.0, 1.0)(rng) > kPerturbProbability) {
+            continue;
+        }
+        double lo = 0.0;
+        int64_t irange = 0;
+        if (!perturb_range(x[j], lb[j], ub[j], lo, irange)) {
+            continue;
+        }
+        x[j] = lo + static_cast<double>(std::uniform_int_distribution<int64_t>(0, irange)(rng));
+        x[j] = std::max(lb[j], std::min(ub[j], x[j]));
     }
 }
 

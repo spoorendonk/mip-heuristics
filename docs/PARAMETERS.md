@@ -1013,6 +1013,52 @@ Three things to carry forward.
 
 ---
 
+### `kAssignmentRing` / `kAssignmentCheckStep` — cuOpt variant's assignment cycle
+
+- **File**: `src/pump_common.h` (namespace `pump::cuopt`)
+- **Default**: `30` / `0.005`
+- **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#295). Every
+  infeasible rounding of a fresh round enters a ring of the last
+  `kAssignmentRing` roundings (stored as hashes of their integer columns);
+  once alpha has nearly stopped moving, `a/kAlphaDecay - a <
+  kAssignmentCheckStep` (`a` below about 0.045), a rounding already in the
+  ring is a cycle and is perturbed. Both from cuOpt's feasibility pump
+  (`cycle_detection_length`, the alpha-difference gate); the gate keeps the
+  check off while the objective still moves enough between rounds to leave
+  a repeated rounding.
+- **Suggested range**: ring 10–100; step 0.001–0.05.
+
+---
+
+### `kDistanceWindow` / `kDistanceCycleRatio` — cuOpt variant's distance cycle
+
+- **File**: `src/pump_common.h` (namespace `pump::cuopt`)
+- **Default**: `70` / `0.1`
+- **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#295). Each
+  fresh round records the L1 distance over the integer columns from the
+  new LP point to the rounding its projection was pulled toward. Once the
+  last `kDistanceWindow` are recorded, a round whose distance `cur` has
+  `avg - cur < kDistanceCycleRatio * avg` (`avg` over the previous ones)
+  has stopped closing in: a cycle, which perturbs the rounding if it is in
+  the assignment ring and clears the distances. cuOpt's `first_stage_kk`
+  and `cycle_distance_reduction_ration`.
+- **Suggested range**: window 20–200; ratio 0.01–0.3.
+
+---
+
+### `kPerturbProbability` — cuOpt variant's perturbation rate
+
+- **File**: `src/pump_common.h` (namespace `pump::cuopt`)
+- **Default**: `0.1`
+- **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#295). On a
+  cycle each integer column is redrawn, with this probability, to a
+  uniform integer in its bounds (a window of `kInfBoundShiftWindow` around
+  its value when a bound is infinite or huge). cuOpt's `perturbate`
+  `change_ratio`; replaces `kPerturbFraction` in the variant.
+- **Suggested range**: 0.02–0.3.
+
+---
+
 ### `kCycleWindow` — cycling detection history depth
 
 - **File**: `src/pump_common.h`

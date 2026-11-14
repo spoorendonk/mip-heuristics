@@ -530,6 +530,89 @@ protected:
 
 }  // namespace
 
+TEST_CASE("cuOpt cycles: the distance detector needs a full window", "[scylla][cuopt]") {
+    using namespace pump::cuopt;
+    // One short of the window: never a cycle, however flat.
+    std::vector<double> prev(kDistanceWindow - 1, 10.0);
+    CHECK_FALSE(distance_cycle(prev, 10.0));
+    prev.push_back(10.0);
+    // Full: avg 10, a cycle once cur is above avg - 0.1 * avg = 9.
+    CHECK(distance_cycle(prev, 10.0));
+    CHECK(distance_cycle(prev, 9.5));
+    CHECK_FALSE(distance_cycle(prev, 8.5));
+    // All zero: avg - cur < 0 never holds.
+    CHECK_FALSE(distance_cycle(std::vector<double>(kDistanceWindow, 0.0), 0.0));
+    // The ring keeps the last `kDistanceWindow` and drops the oldest.
+    std::vector<double> ring;
+    ring.reserve(kDistanceWindow);
+    size_t next = 0;
+    for (int i = 0; i < kDistanceWindow + 5; ++i) {
+        ring_push(ring, next, kDistanceWindow, static_cast<double>(i));
+    }
+    CHECK(ring.size() == static_cast<size_t>(kDistanceWindow));
+    CHECK(std::ranges::find(ring, 4.0) == ring.end());
+    CHECK(std::ranges::find(ring, 5.0) != ring.end());
+}
+
+TEST_CASE("cuOpt cycles: the assignment ring and its alpha gate", "[scylla][cuopt]") {
+    using namespace pump::cuopt;
+    const std::vector<HighsVarType> integrality = {
+        HighsVarType::kInteger, HighsVarType::kContinuous, HighsVarType::kInteger};
+    // Equal on the integer columns, whatever the continuous one holds.
+    CHECK(assignment_hash(std::vector<double>{1.0, 0.25, -0.0}, integrality) ==
+          assignment_hash(std::vector<double>{1.0, 7.0, 0.0}, integrality));
+    CHECK(assignment_hash(std::vector<double>{1.0, 0.0, 2.0}, integrality) !=
+          assignment_hash(std::vector<double>{2.0, 0.0, 1.0}, integrality));
+
+    // A rounding `kAssignmentRing` rounds back is still found; one more back
+    // is not.
+    std::vector<uint64_t> ring;
+    ring.reserve(kAssignmentRing);
+    size_t next = 0;
+    const auto h = [&](int i) {
+        return assignment_hash(std::vector<double>{static_cast<double>(i), 0.0, 0.0}, integrality);
+    };
+    for (int i = 0; i < kAssignmentRing; ++i) {
+        ring_push(ring, next, kAssignmentRing, h(i));
+    }
+    CHECK(in_ring(ring, h(0)));
+    ring_push(ring, next, kAssignmentRing, h(kAssignmentRing));
+    CHECK_FALSE(in_ring(ring, h(0)));
+    CHECK(in_ring(ring, h(1)));
+
+    // The gate: a/0.9 - a = a/9 < 0.005, i.e. a < 0.045.
+    CHECK_FALSE(assignment_check_due(kAlphaInit));
+    CHECK_FALSE(assignment_check_due(0.05));
+    CHECK(assignment_check_due(0.04));
+}
+
+TEST_CASE("cuOpt cycles: the perturbation stays in bounds and on integers", "[scylla][cuopt]") {
+    const std::vector<HighsVarType> integrality = {HighsVarType::kInteger, HighsVarType::kInteger,
+                                                   HighsVarType::kContinuous,
+                                                   HighsVarType::kInteger, HighsVarType::kInteger};
+    const std::vector<double> lb = {0.0, -3.0, 0.0, -kHighsInf, 5.0};
+    const std::vector<double> ub = {1.0, 4.0, 10.0, kHighsInf, 5.0};
+    const std::vector<double> x0 = {1.0, 2.0, 3.7, 100.0, 5.0};
+    Rng rng(3);
+    int changed = 0;
+    for (int trial = 0; trial < 2000; ++trial) {
+        std::vector<double> x = x0;
+        pump::cuopt::perturb(x, integrality, lb, ub, rng);
+        CHECK(x[2] == x0[2]);
+        CHECK(x[4] == 5.0);
+        for (const int j : {0, 1, 3}) {
+            CHECK(x[j] == std::round(x[j]));
+            CHECK(x[j] >= lb[j]);
+            CHECK(x[j] <= ub[j]);
+        }
+        // The free column draws from the window around its value.
+        CHECK(std::abs(x[3] - x0[3]) <= kInfBoundShiftWindow);
+        changed += static_cast<int>(x != x0);
+    }
+    // The mechanism, not a rate: some trial redraws a column to a new value.
+    CHECK(changed > 0);
+}
+
 TEST_CASE("cuOpt projection: the aux LP's distance is the L1 distance at an optimum",
           "[scylla][cuopt][pump]") {
     highs::parallel::initialize_scheduler();
@@ -643,8 +726,18 @@ int drive_cuopt_alpha_chain(const char* inst, int worker_idx) {
             CHECK(alpha >= a1 * std::pow(pump::cuopt::kAlphaDecay, n - 1) * (1.0 - 1e-12));
         }
     }
+    // The variant's cycle state (#295) replaces Mexi's window and stays
+    // within its rings' capacities.
+    CHECK(worker.cycle_history_size_for_test() == 0);
+    CHECK(worker.cuopt_assignments_size_for_test() <=
+          static_cast<size_t>(pump::cuopt::kAssignmentRing));
+    CHECK(worker.cuopt_distances_size_for_test() <=
+          static_cast<size_t>(pump::cuopt::kDistanceWindow));
     if (inst == nullptr) {
         CHECK(worker.pump_rounds_for_test() >= 2);
+        // Integer-infeasible: every rounding is infeasible, so each fresh
+        // round enters the ring.
+        CHECK(worker.cuopt_assignments_size_for_test() >= 1);
     }
     return resets_after_first;
 }

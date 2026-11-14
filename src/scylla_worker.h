@@ -141,6 +141,11 @@ public:
     [[nodiscard]] size_t cuopt_warm_primal_size_for_test() const {
         return cuopt_warm_primal_.size();
     }
+    // The cuOpt variant's cycle rings (#295).
+    [[nodiscard]] size_t cuopt_assignments_size_for_test() const {
+        return cuopt_assignments_.size();
+    }
+    [[nodiscard]] size_t cuopt_distances_size_for_test() const { return cuopt_distances_.size(); }
 
 private:
     // Shared handling of a completed PDLP solve result used by both the
@@ -161,6 +166,14 @@ private:
     // integral `x_bar` is.
     void advance_cuopt_projection(const std::vector<double>& x_hat,
                                   const std::vector<double>& x_bar);
+
+    // The cuOpt variant's cycle handling for one fresh round (#295, helpers
+    // in `pump::cuopt`): record the distance from `x_bar` to the last
+    // rounding, run the two detectors on an infeasible `x_hat`, perturb it
+    // on a cycle, and make it the next round's last rounding.  Replaces
+    // Mexi's `cycle_history_` in the variant.
+    void handle_cuopt_cycles(std::vector<double>& x_hat, const std::vector<double>& x_bar,
+                             bool rounding_feasible);
 
     HighsMipSolver& mipsolver_;
     // Must outlive the worker.
@@ -252,7 +265,16 @@ private:
     double cuopt_alpha_ = 0.0;
     std::vector<double> cuopt_warm_primal_;
     std::vector<double> aux_row_lower_;
+    // Its cycle state (#295): hashes of the last roundings, the last L1
+    // distances, each a ring with its next write slot, and the rounding the
+    // next projection is pulled toward (empty before the first rounding).
+    std::vector<uint64_t> cuopt_assignments_;
+    size_t cuopt_assignment_next_ = 0;
+    std::vector<double> cuopt_distances_;
+    size_t cuopt_distance_next_ = 0;
+    std::vector<double> cuopt_last_rounding_;
 
+    // Mexi's cycle window; unused in the cuOpt variant.
     std::vector<std::vector<double>> cycle_history_;
     std::vector<double> modified_cost_;
     Rng rng_;
