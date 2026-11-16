@@ -1769,11 +1769,13 @@ endif()
 # several workers at once, and each sub-MIP's Scylla has its own
 # `ContestedPdlp`, so one sub-MIP's reset killed the context under another's
 # solve: a SIGSEGV in cuPDLP-C, or "context is destroyed" and a hang.  It
-# would do the same to a GPU FJ climber.  The reset frees nothing a solve
-# still holds: `PDHG_Destroy` and `problem_clear` above it release the
-# solve's own buffers and its cuBLAS/cuSPARSE handles.  The text is the same
-# in a CPU tree (the block is `#if !defined(CUPDLP_CPU)`), so it is patched
-# in both.
+# would do the same to a GPU FJ climber.  On success, `PDHG_Destroy` and
+# `problem_clear` above it release the solve's own buffers and its
+# cuBLAS/cuSPARSE handles, so the reset frees nothing a solve still holds
+# (only a failed handle destroy, which returns early from `PDHG_Clear`,
+# leaks).  The block's last CUDA error check
+# stays, as `cudaGetLastError()`.  The text is the same in a CPU tree (the
+# block is `#if !defined(CUPDLP_CPU)`), so it is patched in both.
 set(PDLP_DIR "${SOURCE_DIR}/highs/pdlp")
 file(READ "${PDLP_DIR}/CupdlpWrapper.cpp" CUPDLP_CONTENT)
 string(FIND "${CUPDLP_CONTENT}" "mip-heuristics: no cudaDeviceReset" _no_reset_found)
@@ -1787,8 +1789,14 @@ if(_no_reset_found EQUAL -1)
   }
 #endif
 ]=] [=[
+#if !defined(CUPDLP_CPU)
   // mip-heuristics: no cudaDeviceReset (#299).  It destroys the process's
   // CUDA context under every other thread still on the device.
+  if (check_cuda_call(cudaGetLastError(), __FILE__, __LINE__) != cudaSuccess) {
+    model_status = HighsModelStatus::kSolveError;
+    return HighsStatus::kError;
+  }
+#endif
 ]=]
       CUPDLP_CONTENT "${CUPDLP_CONTENT}")
 
