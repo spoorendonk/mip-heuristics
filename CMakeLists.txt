@@ -281,6 +281,11 @@ if(MIP_HEURISTICS_CUDA)
         --fmad=false --Werror=all-warnings
         -Xcompiler=-Wall,-Wextra,-Werror,-ffp-contract=off)
     target_sources(highs PRIVATE $<TARGET_OBJECTS:mip_heuristics_gpu>)
+    # The core has no device code, yet CMake device-links it against its
+    # `$<LINK_ONLY:highs>` dependency, which is built only after the core: a
+    # fresh tree failed at `nvlink: Could not open input file libhighs.a`
+    # (#299).  The device link belongs to whatever finally links `highs`.
+    set_target_properties(mip_heuristics_core PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS OFF)
     # The adapter's dispatch reads `mip_heuristic_fj_gpu` only here; any
     # other build warns that it runs FJ on the CPU alone (#265).
     target_compile_definitions(mip_heuristics PRIVATE MIP_HEURISTICS_HAS_GPU_FJ=1)

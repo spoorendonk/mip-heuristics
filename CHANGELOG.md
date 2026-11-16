@@ -24,6 +24,14 @@ linked from each entry.
   a warm start from the last rounding, and FPR with repair on every chain.
   A default run, and a Scylla run without the option, are unchanged.
 
+### Changed
+
+- **No `cudaDeviceReset()` after a GPU PDLP solve** (#299): in a
+  `MIP_HEURISTICS_CUDA` build, a Scylla run no longer crashes when RINS
+  sub-MIPs run PDLP on several threads at once. Upstream's cuPDLP-C wrapper
+  reset the device after every solve, destroying the CUDA context under the
+  other threads. A default run, and every CPU build, are unchanged.
+
 ## v0.1.11 (2026-11-12)
 
 No option was added, removed or changed its default, and a default run is

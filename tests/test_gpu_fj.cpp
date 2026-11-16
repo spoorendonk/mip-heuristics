@@ -609,6 +609,40 @@ TEST_CASE("gpu_fj: the step loop's chunks end at upstream's callback effort", "[
     STATIC_REQUIRE(gpu_fj::kCallbackEffort == kFjCallbackEffort);
 }
 
+// Upstream's cuPDLP-C wrapper ended every GPU solve in `cudaDeviceReset()`,
+// which frees every device allocation in the process and destroys the
+// context under any other thread still on the device: concurrent RINS
+// sub-MIPs, each with its own Scylla PDLP, crashed one another (#299).  The
+// patch drops the reset, so a climber uploaded before a PDLP solve still
+// reads back, and still runs, after it.
+TEST_CASE("gpu_fj: a cuPDLP solve leaves other device allocations alive (#299)", "[gpu]") {
+    Highs highs;
+    read(highs, "flugpl.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    const gpu_fj::HostModel host(s.problem);
+    const gpu_fj::GpuFjModel m = host.pod();
+    const std::vector<double> start = bound_start(m);
+    const auto device = upload(m);
+    const auto climber = climber_on(*device, start, 0);
+    const gpu_fj::Climber::State before = read_state(*climber);
+
+    Highs pdlp;
+    pdlp.setOptionValue("output_flag", false);
+    pdlp.setOptionValue("solver", "pdlp");
+    pdlp.setOptionValue("solve_relaxation", true);
+    pdlp.setOptionValue("presolve", "off");
+    REQUIRE(pdlp.passModel(highs.getLp()) == HighsStatus::kOk);
+    REQUIRE(pdlp.run() == HighsStatus::kOk);
+    REQUIRE(pdlp.getInfo().pdlp_iteration_count > 0);
+
+    size_t bitwise = 0;
+    require_state(read_state(*climber), before, bitwise);
+    std::string error;
+    require_ok(climber->init(0, start, 0, error), error);
+    require_state(read_state(*climber), before, bitwise);
+    REQUIRE(bitwise == 0);
+}
+
 TEST_CASE("gpu_fj: a climber finds a feasible point on presolved bundled MIPs", "[gpu]") {
     // The instances `fj::run_until_stopped` must solve at SCIP's patience,
     // from FJ's own start, one climber with no restart.

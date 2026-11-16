@@ -215,7 +215,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 45 adds `mip_heuristic_scylla_cuopt_pump` (#290): a bool record,
 # default false.
-set(PATCH_VERSION "45")
+#
+# Version 46 removes cuPDLP-C's `cudaDeviceReset()` at the end of every
+# solve (Patch D, #299).
+set(PATCH_VERSION "46")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -1758,3 +1761,49 @@ else()
     message(STATUS "fpr_lp B&B dive patch already applied, skipping")
 endif()
 
+
+# ── Patch D: no cudaDeviceReset at the end of a cuPDLP-C solve (#299) ──
+# Upstream's `solveLpCupdlp` ends every GPU solve with `cudaDeviceReset()`,
+# which destroys the process's primary CUDA context and frees every device
+# allocation in it, the other threads' included.  HiGHS v1.16 runs RINS on
+# several workers at once, and each sub-MIP's Scylla has its own
+# `ContestedPdlp`, so one sub-MIP's reset killed the context under another's
+# solve: a SIGSEGV in cuPDLP-C, or "context is destroyed" and a hang.  It
+# would do the same to a GPU FJ climber.  The reset frees nothing a solve
+# still holds: `PDHG_Destroy` and `problem_clear` above it release the
+# solve's own buffers and its cuBLAS/cuSPARSE handles.  The text is the same
+# in a CPU tree (the block is `#if !defined(CUPDLP_CPU)`), so it is patched
+# in both.
+set(PDLP_DIR "${SOURCE_DIR}/highs/pdlp")
+file(READ "${PDLP_DIR}/CupdlpWrapper.cpp" CUPDLP_CONTENT)
+string(FIND "${CUPDLP_CONTENT}" "mip-heuristics: no cudaDeviceReset" _no_reset_found)
+if(_no_reset_found EQUAL -1)
+    string(REPLACE [=[
+#if !defined(CUPDLP_CPU)
+  if (check_cuda_call(cudaDeviceReset(), __FILE__, __LINE__) != cudaSuccess) {
+    model_status = HighsModelStatus::kSolveError;
+    return HighsStatus::kError;
+    // CHECK_CUDA(cudaDeviceReset())
+  }
+#endif
+]=] [=[
+  // mip-heuristics: no cudaDeviceReset (#299).  It destroys the process's
+  // CUDA context under every other thread still on the device.
+]=]
+      CUPDLP_CONTENT "${CUPDLP_CONTENT}")
+
+    string(FIND "${CUPDLP_CONTENT}" "mip-heuristics: no cudaDeviceReset" _no_reset_check)
+    string(FIND "${CUPDLP_CONTENT}" "cudaDeviceReset()," _reset_left)
+    if(_no_reset_check EQUAL -1 OR NOT _reset_left EQUAL -1)
+        message(FATAL_ERROR
+            "CupdlpWrapper.cpp patch failed: the cudaDeviceReset block at the "
+            "end of solveLpCupdlp no longer matches (upstream changed it?). "
+            "Please update Patch D in third_party/highs_patch/apply_patch.cmake. "
+            "${CLEAN_REBUILD}")
+    endif()
+
+    file(WRITE "${PDLP_DIR}/CupdlpWrapper.cpp" "${CUPDLP_CONTENT}")
+    message(STATUS "Applied no-cudaDeviceReset patch to CupdlpWrapper.cpp")
+else()
+    message(STATUS "No-cudaDeviceReset patch already applied to CupdlpWrapper.cpp, skipping")
+endif()
