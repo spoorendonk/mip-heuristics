@@ -11,7 +11,6 @@
 #include "rng.h"
 #include "test_common.h"
 
-#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
 #include <limits>
@@ -68,16 +67,19 @@ constexpr double kLimit = 0.1;
 // The second limit, 5x `kLimit`.  Two things use it: `require_clock_bound`
 // below, which certifies that a `kLimit` dispatch was stopped by the clock
 // by showing the same configuration charges strictly more when given more
-// time; and the #152 ratio case at the foot of the presolve group — see the
+// time (this limit first, `kWitnessRetryLimit` if that witness was
+// starved); and the #152 ratio case at the foot of the presolve group — see the
 // note above that case for why *that* one needs the longer limit
 // specifically.
 constexpr double kRatioLimit = 0.5;
 
 // The second witness `require_clock_bound` takes when the first, at
 // `kRatioLimit`, was starved into charging no more than the `kLimit` run.
-// 5x again, so a host loaded hard enough to starve a 0.5 s run still gives
-// this one several times the `kLimit` run's work.  Only taken on that path;
-// see the note at `require_clock_bound` for why retrying is sound.
+// 5x again, for 5x the work under the same load.  It may itself be budget-
+// or cap-bound on a fast host (FJ at `kClockBindingEffort` ends near 2.75 s
+// anyway), which is harmless: that effort still exceeds a clock-bound
+// `kLimit` run's.  Only taken on that path; see the note at
+// `require_clock_bound` for why retrying is sound.
 constexpr double kWitnessRetryLimit = 5 * kRatioLimit;
 
 // Allowance above the limit for the polling cadence plus teardown.
@@ -436,7 +438,8 @@ std::string alone_at_limit(const std::string& heuristic, double effort = kClockB
 constexpr double kUnbindableEffort = 1e6;
 
 // The certification, and the check whose absence #154 was: the identical
-// configuration, given 5x the time, charges strictly more effort.
+// configuration, given more time (5x, or 25x on the retry below), charges
+// strictly more effort.
 //
 // At `threads=1` with a fixed seed a dispatch stopped by its budget or by
 // its attempt cap reports the *same* effort at every limit — measured to
@@ -450,40 +453,45 @@ constexpr double kUnbindableEffort = 1e6;
 // longer run that was descheduled into charging less than the short one and
 // call that a certification.
 //
-// The certification is *existential*, and that is what makes it load-safe
-// without trusting `[serial]`: one longer run charging strictly more is
-// proof, and a run that is not clock-bound can never produce one, since its
-// effort is the same at every limit and a starved longer run only charges
-// less.  So a witness that falls short proves nothing either way — it only
-// says that run was starved — and a second, longer one is taken
+// The certification is *existential*: one longer run charging strictly more
+// is proof, and a run that is not clock-bound can never produce one, since
+// its effort is the same at every limit and a starved longer run only
+// charges less.  So a witness that falls short proves nothing either way —
+// it may only have been starved — and one second, longer witness is taken
 // (`kWitnessRetryLimit`).  No number of witnesses can certify a budget- or
-// cap-bound dispatch, so retrying cannot turn a regression green.
+// cap-bound dispatch, so the retry cannot turn a regression green.
 //
-// Why `[serial]` alone was not enough (#279): `RUN_SERIAL` excludes other
-// ctest tests, not other processes, and on a host shared with other builds
-// a 0.5 s witness was measured charging 1.87e6 against the 0.1 s run's
-// 3.19e6 — that run had overrun to 0.286 s on one PDLP solve, Scylla's
-// granularity floor, while the witness got a fraction of a core.  The tag
-// still covers the fixture's `REQUIRE(lines.size() == 1)`; the comparison
-// no longer needs it.
+// It narrows the false failures; it does not remove them.  This is still a
+// two-sided comparison under wall-clock control, a `[serial]` case, and load
+// heavy enough to starve the 2.5 s witness too fails correct code.  The
+// retry exists because `RUN_SERIAL` excludes other ctest tests, not other
+// processes (#279): on a host shared with other builds a 0.5 s Scylla
+// witness charged 1.87e6 against the 0.1 s run's 3.19e6, the short run
+// having overrun to 0.286 s on one PDLP solve, Scylla's granularity floor.
+//
+// Taking the retry `WARN`s, so a shortfall that becomes systematic — say a
+// granularity floor that grows until one overrunning round at `kLimit`
+// outweighs a whole `kRatioLimit` run — shows in every log rather than
+// passing silently at 2.5 s extra a case.
 //
 // `effort` is the effort the caller took `at_limit` at, and is not defaulted:
 // the two runs have to be the *identical* configuration for the comparison to
 // mean anything, and a default would let a caller pair a witness taken at one
 // effort with a longer run taken at another and still pass.
 void require_clock_bound(const std::string& heuristic, double effort, const std::string& at_limit) {
+    const size_t short_effort = effort_of(at_limit);
     INFO("at " << kLimit << " s: " << at_limit);
-    std::string witnesses;
-    size_t best = 0;
-    for (const double limit : {kRatioLimit, kWitnessRetryLimit}) {
-        const std::string longer = alone_at(heuristic, effort, limit);
-        witnesses += "\n  at " + std::to_string(limit) + " s: " + longer;
-        best = std::max(best, effort_of(longer));
-        if (best > effort_of(at_limit))
-            break;
+    const std::string longer = alone_at(heuristic, effort, kRatioLimit);
+    INFO("at " << kRatioLimit << " s: " << longer);
+    if (effort_of(longer) > short_effort) {
+        SUCCEED();
+        return;
     }
-    INFO("witnesses:" << witnesses);
-    CHECK(effort_of(at_limit) < best);
+    WARN(heuristic << ": the " << kRatioLimit << " s witness charged no more than the " << kLimit
+                   << " s run; retrying at " << kWitnessRetryLimit << " s");
+    const std::string retry = alone_at(heuristic, effort, kWitnessRetryLimit);
+    INFO("at " << kWitnessRetryLimit << " s: " << retry);
+    CHECK(short_effort < effort_of(retry));
 }
 
 // The property, for one heuristic that charges effort in units an attempt
