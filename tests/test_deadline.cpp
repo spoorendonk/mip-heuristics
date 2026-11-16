@@ -11,6 +11,7 @@
 #include "rng.h"
 #include "test_common.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
 #include <limits>
@@ -71,6 +72,13 @@ constexpr double kLimit = 0.1;
 // note above that case for why *that* one needs the longer limit
 // specifically.
 constexpr double kRatioLimit = 0.5;
+
+// The second witness `require_clock_bound` takes when the first, at
+// `kRatioLimit`, was starved into charging no more than the `kLimit` run.
+// 5x again, so a host loaded hard enough to starve a 0.5 s run still gives
+// this one several times the `kLimit` run's work.  Only taken on that path;
+// see the note at `require_clock_bound` for why retrying is sound.
+constexpr double kWitnessRetryLimit = 5 * kRatioLimit;
 
 // Allowance above the limit for the polling cadence plus teardown.
 // Measured overshoot on the development machine is 0-6 ms for FJ, FPR and
@@ -440,19 +448,42 @@ constexpr double kUnbindableEffort = 1e6;
 //
 // Strict, not `!=`: a starved runner charges *less*, so `!=` would accept a
 // longer run that was descheduled into charging less than the short one and
-// call that a certification.  `[serial]` is why the increase is reliable at
-// all; it cannot be arranged by taking the clock out of the fixture, since
-// the clock is the thing under test.
+// call that a certification.
+//
+// The certification is *existential*, and that is what makes it load-safe
+// without trusting `[serial]`: one longer run charging strictly more is
+// proof, and a run that is not clock-bound can never produce one, since its
+// effort is the same at every limit and a starved longer run only charges
+// less.  So a witness that falls short proves nothing either way — it only
+// says that run was starved — and a second, longer one is taken
+// (`kWitnessRetryLimit`).  No number of witnesses can certify a budget- or
+// cap-bound dispatch, so retrying cannot turn a regression green.
+//
+// Why `[serial]` alone was not enough (#279): `RUN_SERIAL` excludes other
+// ctest tests, not other processes, and on a host shared with other builds
+// a 0.5 s witness was measured charging 1.87e6 against the 0.1 s run's
+// 3.19e6 — that run had overrun to 0.286 s on one PDLP solve, Scylla's
+// granularity floor, while the witness got a fraction of a core.  The tag
+// still covers the fixture's `REQUIRE(lines.size() == 1)`; the comparison
+// no longer needs it.
 //
 // `effort` is the effort the caller took `at_limit` at, and is not defaulted:
 // the two runs have to be the *identical* configuration for the comparison to
 // mean anything, and a default would let a caller pair a witness taken at one
 // effort with a longer run taken at another and still pass.
 void require_clock_bound(const std::string& heuristic, double effort, const std::string& at_limit) {
-    const std::string longer = alone_at(heuristic, effort, kRatioLimit);
     INFO("at " << kLimit << " s: " << at_limit);
-    INFO("at " << kRatioLimit << " s: " << longer);
-    CHECK(effort_of(at_limit) < effort_of(longer));
+    std::string witnesses;
+    size_t best = 0;
+    for (const double limit : {kRatioLimit, kWitnessRetryLimit}) {
+        const std::string longer = alone_at(heuristic, effort, limit);
+        witnesses += "\n  at " + std::to_string(limit) + " s: " + longer;
+        best = std::max(best, effort_of(longer));
+        if (best > effort_of(at_limit))
+            break;
+    }
+    INFO("witnesses:" << witnesses);
+    CHECK(effort_of(at_limit) < best);
 }
 
 // The property, for one heuristic that charges effort in units an attempt
