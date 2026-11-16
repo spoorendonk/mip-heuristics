@@ -116,10 +116,15 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
         // and report the retry's effort rather than returning 0 (see
         // `attempt_with_rebuild`).
         //
-        // No stop reason is recorded here (#303): zero effort past the
-        // deadline is not evidence the clock did it, the same inference
-        // `abandoned_setup` refuses.
+        // A slot that retires with the clock already past records the
+        // deadline (#303): at `threads=1` it is the whole dispatch, and an
+        // attempt cut at its top by `past_deadline()` returns 0 just like
+        // an exhausted one.  Peers would stop at their next poll anyway.
+        // Otherwise no reason is recorded: retiring one slot is not a stop.
         if (result.effort == 0) {
+            if (exec.past_deadline()) {
+                loop.request_stop(StopReason::kDeadline);
+            }
             break;
         }
 

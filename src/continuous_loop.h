@@ -126,12 +126,17 @@ struct ContinuousLoopState {
     // for concurrent callers.  Callers batch the poll to every other
     // attempt.  Peers observe the `stop` flag atomically.
     void poll_termination(const ExecutionContext& exec) {
-        // The clock is read first and once, so a terminator that fired
-        // before the limit is not booked as the deadline by a second read
-        // taken after the clock passed (#303).
-        if (exec.past_deadline()) {
+        // The clock is read once, before the terminator, so neither a
+        // terminator that fired before the limit is booked as the deadline
+        // nor the deadline as an interrupt by a second read (#303) — which
+        // is why this calls `terminator` directly, not `terminated()`.  The
+        // terminator still runs on every poll: it writes HiGHS's
+        // `termination_status_`.
+        const bool past = exec.past_deadline();
+        const bool interrupted = exec.terminator && exec.terminator();
+        if (past) {
             request_stop(StopReason::kDeadline);
-        } else if (exec.terminated()) {
+        } else if (interrupted) {
             request_stop(StopReason::kInterrupt);
         }
     }
