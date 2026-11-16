@@ -5,7 +5,7 @@
 // the objective weight, and every variable's jump value and score with the
 // good set built from them.  `init` builds a climber's state as upstream FJ's
 // `FeasibilityJumpSolver::init` does (`resetIncumbent`, then `resetMoves` for
-// each variable in turn), with both #139 fixes; `run` takes upstream's
+// each variable in turn), as HiGHS v1.16.0 has them; `run` takes upstream's
 // `solve` steps (#263) for every climber in one launch, one persistent thread
 // block each, up to the next point upstream calls its callback.  The blocks
 // share only the read-only model, so a climber's steps and bytes are the ones

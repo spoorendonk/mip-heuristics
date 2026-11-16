@@ -448,18 +448,20 @@ TEST_CASE("gpu_fj: a climber's init state is upstream FJ's", "[gpu]") {
 TEST_CASE("gpu_fj: a negative coefficient's valid range is swapped", "[gpu]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
-    // -x <= -3, x integer in [0, 10], from x = 0: the jump is to 3, the
-    // least move that satisfies the row.  Unswapped, the range would come
-    // out as [inf, 3], with its ends the wrong way round.
-    const HighsLp lp = tiny_lp({0.0}, {10.0}, {0.0}, {-kHighsInf}, {-3.0}, {{-1.0}}, true);
+    // -x <= -2.5, x integer in [0, 10], from x = 0: the valid range is
+    // [2.5, inf], rounded to [3, inf], so the jump is to 3, the least move
+    // that satisfies the row.  Unswapped, it would come out as [inf, 2.5],
+    // whose finite end rounds down to 2: the rhs is fractional so that the
+    // two differ.
+    const HighsLp lp = tiny_lp({0.0}, {10.0}, {0.0}, {-kHighsInf}, {-2.5}, {{-1.0}}, true);
     const Setup s(lp, highs.getOptions().log_options);
     const gpu_fj::HostModel host(s.problem);
     const std::vector<double> start = {0.0};
     const gpu_fj::Climber::State state = device_state(host.pod(), start);
     REQUIRE(state.violated == std::vector<std::int32_t>{0});
     REQUIRE(state.jump == std::vector<double>{3.0});
-    // The violation of 3 is removed at weight 1.
-    REQUIRE(state.score == std::vector<double>{3.0});
+    // The violation of 2.5 is removed at weight 1.
+    REQUIRE(state.score == std::vector<double>{2.5});
     REQUIRE(state.good == std::vector<std::int32_t>{0});
 }
 
