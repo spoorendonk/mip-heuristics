@@ -190,8 +190,7 @@ namespace {
 // the host from the model as `FjWorker` hands it to upstream: each
 // constraint's cells from the row-wise matrix, a column's cells in
 // constraint order, then `resetIncumbent`, `JumpMove::updateValue` and
-// `resetMoves` transliterated from `feasibilityjump.hh`, both #139 fixes
-// included.
+// `resetMoves` transliterated from v1.16.0's `feasibilityjump.hh`.
 class Oracle {
 public:
     Oracle(const gpu_fj::GpuFjModel& m, std::span<const double> start)
@@ -446,12 +445,12 @@ TEST_CASE("gpu_fj: a climber's init state is upstream FJ's", "[gpu]") {
     WARN(bitwise << " of " << compared << " values differ from upstream's bitwise");
 }
 
-TEST_CASE("gpu_fj: a negative coefficient's valid range is swapped (#139)", "[gpu]") {
+TEST_CASE("gpu_fj: a negative coefficient's valid range is swapped", "[gpu]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     // -x <= -3, x integer in [0, 10], from x = 0: the jump is to 3, the
-    // least move that satisfies the row.  Unswapped, the range comes out
-    // empty, the row is ignored, and x jumps to its upper bound 10.
+    // least move that satisfies the row.  Unswapped, the range would come
+    // out as [inf, 3], with its ends the wrong way round.
     const HighsLp lp = tiny_lp({0.0}, {10.0}, {0.0}, {-kHighsInf}, {-3.0}, {{-1.0}}, true);
     const Setup s(lp, highs.getOptions().log_options);
     const gpu_fj::HostModel host(s.problem);
@@ -464,13 +463,13 @@ TEST_CASE("gpu_fj: a negative coefficient's valid range is swapped (#139)", "[gp
     REQUIRE(state.good == std::vector<std::int32_t>{0});
 }
 
-TEST_CASE("gpu_fj: the objective term is subtracted from a move's score (#139)", "[gpu]") {
+TEST_CASE("gpu_fj: the objective term is subtracted from a move's score", "[gpu]") {
     Highs highs;
     highs.setOptionValue("output_flag", false);
     // Two unconstrained integers in [0, 10] at 5, minimising +x0 - x1: each
     // jumps to its lower bound, so x0's move improves the objective by 5
     // and x1's worsens it by 5.  At objective weight 1 the scores are +5
-    // and -5; upstream's added term gives -5 and +5.
+    // and -5; an added term (HiGHS before v1.16.0) would give -5 and +5.
     const HighsLp lp = tiny_lp({0.0, 0.0}, {10.0, 10.0}, {1.0, -1.0}, {}, {}, {{}, {}}, true);
     const Setup s(lp, highs.getOptions().log_options);
     const gpu_fj::HostModel host(s.problem);

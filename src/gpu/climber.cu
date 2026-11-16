@@ -99,9 +99,9 @@ __global__ void init_constraints_kernel(DeviceModelView m, const double* x, doub
     violated_flag[c] = con_score(m.con_sense[c], m.con_rhs[c], sum) < -m.violation_tol ? 1 : 0;
 }
 
-// `JumpMove::updateValue` for column `j`, with #139's negative-coefficient
-// swap.  A column's cells are its CSC entries, each row's constraints in
-// order, which is upstream's constraint order.
+// HiGHS v1.16.0's `JumpMove::updateValue` for column `j`.  A column's cells
+// are its CSC entries, each row's constraints in order, which is upstream's
+// constraint order.
 __device__ double jump_value(const DeviceModelView& m, std::int32_t j, const double* x,
                              const double* lhs, const double* weight, Break* buf) {
     const double incumbent = x[j];
@@ -125,14 +125,16 @@ __device__ double jump_value(const DeviceModelView& m, std::int32_t j, const dou
             const double residual = lhs[c] - (coeff * incumbent);
             double first = (1.0 / coeff) * (bound_first - residual);
             double second = (1.0 / coeff) * (bound_second - residual);
-            // #139: a negative coefficient reverses the range.
+            // A negative coefficient reverses the range, as upstream's
+            // `boundForValidLower` / `boundForValidUpper` do.
             if (coeff < 0.0) {
                 const double t = first;
                 first = second;
                 second = t;
             }
-            // An integer range holding no integer is not skipped: v1.16
-            // dropped v1.15's `validRange.first > validRange.second` skip.
+            // Every constraint is one-sided, so one end of the range is
+            // infinite and its integer rounding is never empty; upstream has
+            // no `first > second` skip either.
             if (is_int) {
                 first = ceil(first - m.equality_tol);
                 second = floor(second + m.equality_tol);
@@ -188,7 +190,7 @@ __device__ double cell_score(const DeviceModelView& m, std::int32_t c, double lh
 }
 
 // `resetMoves` for column `col`: the jump value, then its score, with
-// #139's objective term subtracted.
+// upstream's objective term subtracted.
 __device__ void reset_move(const DeviceModelView& m, std::int32_t col, double objective_weight,
                            const double* x, const double* lhs, const double* weight, Break* breaks,
                            double* jump, double* score) {
