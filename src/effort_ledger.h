@@ -86,8 +86,10 @@ public:
     // `outcome` means the same thing as above and reaches the same fields
     // of the same line — one line format, one parser path, on both sides of
     // the patch boundary.  The whole outcome is taken rather than its
-    // fields, so a dive caller cannot leave one out: the bail site passes
-    // `DispatchOutcome::abandoned()` and the worker path the runner's own.
+    // fields: the bail site passes `DispatchOutcome::abandoned()` and the
+    // worker path the runner's own.  `DispatchOutcome`'s members do carry
+    // defaults (`done`, not abandoned), so a new dive caller that builds one
+    // by hand must set both deliberately; spell them out, as `fpr_lp` does.
     void charge_dive(const char* name, const DispatchOutcome& outcome, bool found,
                      int64_t setup_lp_iters, size_t nnz, double t0_s, double t1_s);
 

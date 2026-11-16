@@ -444,9 +444,15 @@ constexpr double kUnbindableEffort = 1e6;
 // It is the mechanism check, not the whole case: the caller's effort bound
 // (`kAttemptCapUnits`, `kBudgetUnits`) is what says the clock stopped it
 // *mid-attempt* or *before its budget* rather than just stopped it.
+//
+// `effort > 0` is the floor the dropped witness used to give for free: a
+// deadline that read as expired on entry would stop every worker at its
+// first poll, at zero effort, and still say `deadline`.  One-sided, and a
+// starved runner that reaches the heuristic at all charges something.
 void require_clock_bound(const std::string& line) {
     INFO(line);
     CHECK(field_of(line, "stopped_by") == "deadline");
+    CHECK(effort_of(line) > 0);
 }
 
 // The property, for one heuristic that charges effort in units an attempt

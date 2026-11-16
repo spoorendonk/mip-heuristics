@@ -116,11 +116,10 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
         // and report the retry's effort rather than returning 0 (see
         // `attempt_with_rebuild`).
         //
-        // An attempt the clock cut before it charged anything is the clock's
-        // doing, not a retirement, so it is recorded as one (#303); the
-        // poll stops nothing a past deadline would not stop anyway.
+        // No stop reason is recorded here (#303): zero effort past the
+        // deadline is not evidence the clock did it, the same inference
+        // `abandoned_setup` refuses.
         if (result.effort == 0) {
-            static_cast<void>(loop.poll_deadline(exec));
             break;
         }
 

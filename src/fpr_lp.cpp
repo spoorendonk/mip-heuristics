@@ -725,8 +725,9 @@ void run(HighsMipSolver& mipsolver) {
     const auto setup_units = static_cast<size_t>(built.lp_iterations) * nnz;
     const size_t worker_budget = setup_units < setup.budget ? setup.budget - setup_units : 0;
 
-    // No worker run is a dispatch nothing stopped: `kDone`, at zero effort.
-    DispatchOutcome outcome;
+    // Skipping the workers means the setup spent the budget they would
+    // have had, so the dispatch is budget-bound (#303).
+    DispatchOutcome outcome{.stopped_by = StopReason::kBudget};
     bool found = false;
     if (worker_budget >= min_effort) {
         // The sink owns the pool, seeds it from the incumbent, and wires

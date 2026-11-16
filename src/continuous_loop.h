@@ -126,8 +126,13 @@ struct ContinuousLoopState {
     // for concurrent callers.  Callers batch the poll to every other
     // attempt.  Peers observe the `stop` flag atomically.
     void poll_termination(const ExecutionContext& exec) {
-        if (exec.terminated()) {
-            request_stop(exec.past_deadline() ? StopReason::kDeadline : StopReason::kInterrupt);
+        // The clock is read first and once, so a terminator that fired
+        // before the limit is not booked as the deadline by a second read
+        // taken after the clock passed (#303).
+        if (exec.past_deadline()) {
+            request_stop(StopReason::kDeadline);
+        } else if (exec.terminated()) {
+            request_stop(StopReason::kInterrupt);
         }
     }
 

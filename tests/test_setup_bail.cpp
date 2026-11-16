@@ -369,7 +369,7 @@ TEST_CASE("setup-bail: [Heur] ends with the dispatch's stop reason", "[setup-bai
 // `--time_limit 0.15 --options_file <log_dev_level=3, suite=fpr> bell5.mps`
 // this build emits
 //   [Heur] name=fpr_lp phase=dive start_s=0.150 end_s=0.150 effort=0
-//   wall_ms=0.0 effort_per_ms=0.000 found=0 nnz=242 abandoned_setup=1
+//   wall_ms=0.0 effort_per_ms=0.000 found=0 nnz=242 abandoned_setup=1 stopped_by=deadline
 // and `bench/parse_highs_log.py` reads it back as `abandoned_setup=True`.
 // Which limit lands in that window is a property of the machine — 0.15 s
 // hits it on the development host while 0.1 s and 0.2 s do not — so it is
