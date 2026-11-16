@@ -79,12 +79,16 @@ TEST_CASE(
 TEST_CASE("ContinuousLoopState: request_stop is idempotent and irreversible", "[continuous_loop]") {
     ContinuousLoopState loop;
     REQUIRE_FALSE(loop.stopped());
+    REQUIRE(loop.reason.load() == StopReason::kDone);
 
-    loop.request_stop();
+    loop.request_stop(StopReason::kDeadline);
     REQUIRE(loop.stopped());
 
-    loop.request_stop();
+    // The first reason is the cause (#303); a later request keeps the flag
+    // up and leaves the reason where it was.
+    loop.request_stop(StopReason::kBudget);
     REQUIRE(loop.stopped());
+    CHECK(loop.reason.load() == StopReason::kDeadline);
 
     // Subsequent no-op atomic updates must not clear the flag; `stopped`
     // is monotonically one-way until the struct goes out of scope.

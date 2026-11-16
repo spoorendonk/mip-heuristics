@@ -525,9 +525,9 @@ private:
 // snapshot.  Deviation from cuOpt, which rounds the root relaxation's
 // optimum: the LP solution here is the one the dispatch finds, as for every
 // arm's `lp_ptr` — the root's at the first dive, a dive node's at later ones.
-size_t run_workers(const ProblemView& problem, const LpFprSetup& setup,
-                   const ExecutionContext& exec, const HeuristicBudget& budget, SolutionSink& sink,
-                   bool fj_lane) {
+DispatchOutcome run_workers(const ProblemView& problem, const LpFprSetup& setup,
+                            const ExecutionContext& exec, const HeuristicBudget& budget,
+                            SolutionSink& sink, bool fj_lane) {
     g_dispatch_count.fetch_add(1, std::memory_order_relaxed);
     const int fj_slot = fj_lane ? static_cast<int>(exec.num_workers) - 1 : -1;
 
@@ -711,9 +711,8 @@ void run(HighsMipSolver& mipsolver) {
         // reach the same field from here as it does from the presolve
         // chain.
         if (built.deadline_bail) {
-            ledger.charge_dive(heuristics::kFprLpName, 0, false, built.lp_iterations, nnz, t0_s,
-                               ledger.now_s(),
-                               /*abandoned_setup=*/true);
+            ledger.charge_dive(heuristics::kFprLpName, DispatchOutcome::abandoned(), false,
+                               built.lp_iterations, nnz, t0_s, ledger.now_s());
         }
         return;
     }
@@ -726,7 +725,8 @@ void run(HighsMipSolver& mipsolver) {
     const auto setup_units = static_cast<size_t>(built.lp_iterations) * nnz;
     const size_t worker_budget = setup_units < setup.budget ? setup.budget - setup_units : 0;
 
-    size_t worker_effort = 0;
+    // No worker run is a dispatch nothing stopped: `kDone`, at zero effort.
+    DispatchOutcome outcome;
     bool found = false;
     if (worker_budget >= min_effort) {
         // The sink owns the pool, seeds it from the incumbent, and wires
@@ -773,7 +773,7 @@ void run(HighsMipSolver& mipsolver) {
         // (`nnz << 12` at most) the lane needs about `488 x workers`.
         const bool fj_lane = options.mip_heuristic_fj_lp_persona && exec.num_workers >= 2 &&
                              nnz <= kPersonaNnzLimit && budget.worker_stale > kFjCallbackEffort;
-        worker_effort = run_workers(problem, setup, exec, budget, sink, fj_lane);
+        outcome = run_workers(problem, setup, exec, budget, sink, fj_lane);
         // Read after the worker loop has joined; the sink starts at zero
         // because it is constructed per dispatch.
         found = sink.accepted() > 0;
@@ -784,13 +784,12 @@ void run(HighsMipSolver& mipsolver) {
     // envelope.  fpr_lp is the only caller of `charge_dive`; that envelope
     // depletion is what makes it compete for the vanilla heuristic budget
     // rather than draw unaccounted work.
-    // `abandoned_setup=false` stated rather than defaulted: reaching here
-    // means the setup completed, and a dispatch that then found nothing is
-    // barren in the sense the probe bins — which is the fact the bail path
-    // above denies about itself.  Both answers are spelled out at both
-    // sites (#119).
-    ledger.charge_dive(heuristics::kFprLpName, worker_effort, found, built.lp_iterations, nnz, t0_s,
-                       ledger.now_s(), /*abandoned_setup=*/false);
+    // `outcome.abandoned_setup` is false here, and that is the answer, not a
+    // default: reaching here means the setup completed, and a dispatch that
+    // then found nothing is barren in the sense the probe bins — which is
+    // the fact the bail path above denies about itself (#119).
+    ledger.charge_dive(heuristics::kFprLpName, outcome, found, built.lp_iterations, nnz, t0_s,
+                       ledger.now_s());
 }
 
 SetupProbe probe_setup(HighsMipSolver& mipsolver, size_t max_effort) {

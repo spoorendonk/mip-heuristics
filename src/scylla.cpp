@@ -169,7 +169,7 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
     std::atomic<std::uint64_t> retired_fresh{0};
     std::atomic<std::uint64_t> retired_stale{0};
 
-    size_t total_effort = run_opportunistic_loop(
+    const DispatchOutcome outcome = run_opportunistic_loop(
         exec, budget,
         [](int worker_idx, Rng& /*rng*/) -> ScyllaOppState {
             return ScyllaOppState{worker_idx, WorkerTrace{worker_idx, 0}};
@@ -209,7 +209,7 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
     log_overlap_ratio(mipsolver.options_mip_->log_options, workers,
                       retired_fresh.load(std::memory_order_relaxed),
                       retired_stale.load(std::memory_order_relaxed));
-    return {.effort = total_effort};
+    return outcome;
 }
 
 }  // namespace scylla

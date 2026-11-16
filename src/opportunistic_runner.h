@@ -99,7 +99,7 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
         size_t remaining = budget.total - std::min(budget.total, current);
         size_t run_cap = std::min(budget.attempt_cap, remaining);
         if (run_cap == 0) {
-            loop.request_stop();
+            loop.request_stop(StopReason::kBudget);
             break;
         }
 
@@ -115,7 +115,12 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
         // its peers.  A callback that can rebuild its worker should do so
         // and report the retry's effort rather than returning 0 (see
         // `attempt_with_rebuild`).
+        //
+        // An attempt the clock cut before it charged anything is the clock's
+        // doing, not a retirement, so it is recorded as one (#303); the
+        // poll stops nothing a past deadline would not stop anyway.
         if (result.effort == 0) {
+            static_cast<void>(loop.poll_deadline(exec));
             break;
         }
 
@@ -126,14 +131,15 @@ void run_slot(ContinuousLoopState& loop, const ExecutionContext& exec,
     loop.release_poller(w);
 }
 
-// Returns total effort consumed across all workers.
+// Returns total effort consumed across all workers, and why the loop
+// stopped (`ContinuousLoopState::reason`).
 template <typename MakeState, typename RunAttempt>
-[[nodiscard]] size_t run_opportunistic_loop(const ExecutionContext& exec,
-                                            const HeuristicBudget& budget, MakeState make_state,
-                                            RunAttempt run_attempt) {
+[[nodiscard]] DispatchOutcome run_opportunistic_loop(const ExecutionContext& exec,
+                                                     const HeuristicBudget& budget,
+                                                     MakeState make_state, RunAttempt run_attempt) {
     const int n = static_cast<int>(exec.num_workers);
     if (n <= 0 || budget.total == 0) {
-        return 0;
+        return {};
     }
 
     ContinuousLoopState loop;
@@ -147,7 +153,8 @@ template <typename MakeState, typename RunAttempt>
         },
         1);
 
-    return loop.total_effort.load(std::memory_order_relaxed);
+    return {.effort = loop.total_effort.load(std::memory_order_relaxed),
+            .stopped_by = loop.reason.load(std::memory_order_relaxed)};
 }
 
 // Worker slot `worker` alone, on the calling thread rather than in a

@@ -4,6 +4,7 @@
 #include <cstdint>
 
 class HighsMipSolver;
+struct DispatchOutcome;
 
 // The one place heuristic effort is booked and reported (issue #94).
 //
@@ -57,22 +58,23 @@ public:
     [[nodiscard]] double now_s() const;
 
     // A presolve-chain heuristic (FJ / FPR / LocalMIP / Scylla) consumed
-    // `effort` units between `t0_s` and `t1_s`.  `found` is whether the
-    // shared `IncumbentSink` accepted at least one of its solutions.
+    // `outcome.effort` units between `t0_s` and `t1_s`, and stopped for
+    // `outcome.stopped_by`.  `found` is whether the shared `IncumbentSink`
+    // accepted at least one of its solutions.
     //
     // The `nnz` reported on the `[Heur]` line is read from the solver
     // (`presolved_nnz`) rather than passed in, so no call site had to grow
     // an argument for it; see `book`.
     //
-    // `abandoned_setup` is `DispatchOutcome::abandoned_setup`: this
-    // dispatch never searched, because its sequential setup found the
-    // wall-clock deadline already passed (issue #119).  It is a separate
-    // argument rather than something derived from `effort == 0` here
-    // precisely because that inference is the bug — a dispatch entered
-    // with a millisecond left constructs its workers and exits at zero
-    // effort without ever bailing in setup.
-    void charge_presolve(const char* name, size_t effort, bool found, double t0_s, double t1_s,
-                         bool abandoned_setup);
+    // `outcome.abandoned_setup`: this dispatch never searched, because its
+    // sequential setup found the wall-clock deadline already passed (issue
+    // #119).  It comes from the heuristic rather than being derived from
+    // `effort == 0` here precisely because that inference is the bug — a
+    // dispatch entered with a millisecond left constructs its workers and
+    // exits at zero effort without ever bailing in setup.  The same holds
+    // for `stopped_by` (#303): only the runner saw what stopped it.
+    void charge_presolve(const char* name, const DispatchOutcome& outcome, bool found, double t0_s,
+                         double t1_s);
 
     // A B&B-dive heuristic (fpr_lp) did the same, and additionally owes
     // the shared heuristic LP-iteration envelope: its `setup_lp_iters`
@@ -81,25 +83,21 @@ public:
     // `total_lp_iterations`, mirroring how RENS/RINS flush their sub-MIP
     // LP iterations.  `nnz` must be non-zero.
     //
-    // `abandoned_setup` means the same thing as above and reaches the same
-    // field of the same line — one line format, one parser path, on both
-    // sides of the patch boundary.  It carried a default while the
-    // dive-time setup gate that passes `true` was landing separately, and
-    // that was scaffolding for one rebase rather than a statement that the
-    // answer is optional; #118 landed, so it is gone and both dive call
-    // sites spell their answer out.  **Do not give it one back.** A third
-    // dive caller would inherit `false` silently — the wrong answer for a
-    // bailing one, and an invisible wrong answer, which is the same reason
-    // `SolutionSink::offer` is `[[nodiscard]]` rather than trusting a
-    // caller to remember.
-    void charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
-                     size_t nnz, double t0_s, double t1_s, bool abandoned_setup);
+    // `outcome` means the same thing as above and reaches the same fields
+    // of the same line — one line format, one parser path, on both sides of
+    // the patch boundary.  The whole outcome is taken rather than its
+    // fields, so a dive caller cannot leave one out: the bail site passes
+    // `DispatchOutcome::abandoned()` and the worker path the runner's own.
+    void charge_dive(const char* name, const DispatchOutcome& outcome, bool found,
+                     int64_t setup_lp_iters, size_t nnz, double t0_s, double t1_s);
 
     // A heuristic on the original model while presolve ran (`EarlyFj`,
     // #205): booked like a chain entry, `phase=presolve`, but with the
     // original model's `nnz` on the `[Heur]` line, since that is the
     // matrix it searched and its budget's unit.  It never sets up on the
-    // dispatching thread, so it never abandons a setup.
+    // dispatching thread, so it never abandons a setup.  Its line carries no
+    // `stopped_by`: it runs through `fj::run_until_stopped`, whose contract
+    // (consumed outside this repository) returns effort alone.
     void charge_early(const char* name, size_t effort, bool found, size_t nnz, double t0_s,
                       double t1_s);
 
@@ -107,8 +105,10 @@ private:
     // Deliberately not `const`: it holds `HighsMipSolver&`, so it leaves
     // the ledger object untouched while mutating solver state.  The
     // suppression lives at the definition.
+    // `stopped_by` is null for a line that has no reason to report
+    // (`charge_early`), which then omits the field.
     void book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
-              double t0_s, double t1_s, bool abandoned_setup);
+              double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by);
 
     // The post-presolve MIP matrix's nonzero count; see `book`.
     [[nodiscard]] size_t presolved_nnz() const;

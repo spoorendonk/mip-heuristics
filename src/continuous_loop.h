@@ -49,6 +49,13 @@ struct ContinuousLoopState {
     std::atomic<size_t> effort_since_improvement{0};
     std::atomic<bool> stop{false};
 
+    // Why `stop` went up (#303): the first `request_stop` wins and every
+    // later one leaves it alone, since once the flag is set the other
+    // workers leave on the flag, not on a cause of their own.  `kDone`
+    // while nothing has asked, which is what a dispatch whose slots all
+    // retired on their own reports.
+    std::atomic<StopReason> reason{StopReason::kDone};
+
     // Index of the worker currently responsible for termination polling,
     // or `kNoPoller` when the seat is vacant.
     //
@@ -71,7 +78,11 @@ struct ContinuousLoopState {
 
     [[nodiscard]] bool stopped() const { return stop.load(std::memory_order_relaxed); }
 
-    void request_stop() { stop.store(true, std::memory_order_relaxed); }
+    void request_stop(StopReason why) {
+        StopReason none = StopReason::kDone;
+        reason.compare_exchange_strong(none, why, std::memory_order_relaxed);
+        stop.store(true, std::memory_order_relaxed);
+    }
 
     // True when `w` should poll: it already holds the seat, or the seat is
     // vacant and `w` wins the race to take it.  The compare-exchange is
@@ -116,7 +127,7 @@ struct ContinuousLoopState {
     // attempt.  Peers observe the `stop` flag atomically.
     void poll_termination(const ExecutionContext& exec) {
         if (exec.terminated()) {
-            request_stop();
+            request_stop(exec.past_deadline() ? StopReason::kDeadline : StopReason::kInterrupt);
         }
     }
 
@@ -129,7 +140,7 @@ struct ContinuousLoopState {
             return true;
         }
         if (exec.past_deadline()) {
-            request_stop();
+            request_stop(StopReason::kDeadline);
             return true;
         }
         return false;
@@ -161,7 +172,7 @@ struct ContinuousLoopState {
     size_t add_effort(size_t effort, size_t budget) {
         size_t new_total = total_effort.fetch_add(effort) + effort;
         if (new_total >= budget) {
-            request_stop();
+            request_stop(StopReason::kBudget);
         }
         return new_total;
     }
@@ -175,7 +186,7 @@ struct ContinuousLoopState {
             effort_since_improvement.fetch_add(effort, std::memory_order_relaxed);
         }
         if (effort_since_improvement.load(std::memory_order_relaxed) >= stale_budget) {
-            request_stop();
+            request_stop(StopReason::kPatience);
         }
     }
 };

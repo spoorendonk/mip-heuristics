@@ -261,8 +261,7 @@ std::string sole_heur_line(const std::vector<std::string>& lines) {
 TEST_CASE("setup-bail: [Heur] carries abandoned_setup on both phases", "[setup-bail]") {
     SECTION("presolve, abandoned") {
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
-            ledger.charge_presolve("fpr", 0, /*found=*/false, 0.0, 0.5,
-                                   /*abandoned_setup=*/true);
+            ledger.charge_presolve("fpr", DispatchOutcome::abandoned(), /*found=*/false, 0.0, 0.5);
         }));
         INFO(line);
         CHECK(line.contains("abandoned_setup=1"));
@@ -271,8 +270,7 @@ TEST_CASE("setup-bail: [Heur] carries abandoned_setup on both phases", "[setup-b
 
     SECTION("presolve, ran") {
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
-            ledger.charge_presolve("fpr", 0, /*found=*/false, 0.0, 0.5,
-                                   /*abandoned_setup=*/false);
+            ledger.charge_presolve("fpr", DispatchOutcome{}, /*found=*/false, 0.0, 0.5);
         }));
         INFO(line);
         // The discriminating half: same effort, same `found`, different
@@ -286,8 +284,8 @@ TEST_CASE("setup-bail: [Heur] carries abandoned_setup on both phases", "[setup-b
         // divides by it); the LP-envelope arithmetic is not what this
         // asserts.
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
-            ledger.charge_dive("fpr_lp", 0, /*found=*/false, /*setup_lp_iters=*/0,
-                               /*nnz=*/1, 0.0, 0.5, /*abandoned_setup=*/true);
+            ledger.charge_dive("fpr_lp", DispatchOutcome::abandoned(), /*found=*/false,
+                               /*setup_lp_iters=*/0, /*nnz=*/1, 0.0, 0.5);
         }));
         INFO(line);
         CHECK(line.contains("abandoned_setup=1"));
@@ -296,11 +294,51 @@ TEST_CASE("setup-bail: [Heur] carries abandoned_setup on both phases", "[setup-b
 
     SECTION("dive, ran") {
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
-            ledger.charge_dive("fpr_lp", 100, /*found=*/false, 0, 1, 0.0, 0.5,
-                               /*abandoned_setup=*/false);
+            ledger.charge_dive("fpr_lp", DispatchOutcome{.effort = 100}, /*found=*/false, 0, 1, 0.0,
+                               0.5);
         }));
         INFO(line);
         CHECK(line.contains("abandoned_setup=0"));
+    }
+}
+
+// #303: the stop reason is the line's last field, appended after
+// `abandoned_setup` so a positional parser of the older shape still reads
+// every field it knew; a bail reports the deadline; and `early_fj`, which
+// has no reason to give, omits the field rather than inventing one.
+TEST_CASE("setup-bail: [Heur] ends with the dispatch's stop reason", "[setup-bail]") {
+    const auto ends_with = [](const std::string& line, const std::string& tail) {
+        std::string trimmed = line;
+        while (!trimmed.empty() && trimmed.back() == '\n') {
+            trimmed.pop_back();
+        }
+        return trimmed.ends_with(tail);
+    };
+
+    SECTION("presolve, the runner's reason") {
+        const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
+            ledger.charge_presolve("fj",
+                                   DispatchOutcome{.effort = 7, .stopped_by = StopReason::kBudget},
+                                   false, 0.0, 0.5);
+        }));
+        INFO(line);
+        CHECK(ends_with(line, "abandoned_setup=0 stopped_by=budget"));
+    }
+
+    SECTION("dive, a bail is the deadline") {
+        const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
+            ledger.charge_dive("fpr_lp", DispatchOutcome::abandoned(), false, 0, 1, 0.0, 0.5);
+        }));
+        INFO(line);
+        CHECK(ends_with(line, "abandoned_setup=1 stopped_by=deadline"));
+    }
+
+    SECTION("early_fj omits it") {
+        const std::string line = sole_heur_line(ledger_lines(
+            [](EffortLedger& ledger) { ledger.charge_early("early_fj", 7, false, 1, 0.0, 0.5); }));
+        INFO(line);
+        CHECK_FALSE(line.contains("stopped_by="));
+        CHECK(ends_with(line, "abandoned_setup=0"));
     }
 }
 

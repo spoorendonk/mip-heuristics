@@ -552,6 +552,16 @@ def test_heur_line_without_abandoned_setup_parses_as_unknown():
     assert not sample.abandoned_setup
 
 
+def test_heur_line_carries_stopped_by():
+    """The #303 field, appended after `abandoned_setup`, and absent on older logs."""
+    line = _heur("fj", 400, abandoned=0).rstrip("\n") + " stopped_by=deadline\n"
+    (sample,) = parse_log(line).heuristic_samples
+    assert sample.stopped_by == "deadline"
+    assert sample.abandoned_setup is False
+    (legacy,) = parse_log(_heur("fj", 400, abandoned=0)).heuristic_samples
+    assert legacy.stopped_by is None
+
+
 def test_heur_line_missing_a_required_key_is_dropped():
     log = "[Heur] name=fj phase=presolve start_s=0.1 end_s=0.2 effort=5 wall_ms=1.0\n"
     assert parse_log(log).heuristic_samples == []

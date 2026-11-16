@@ -89,6 +89,10 @@ class HeuristicSample:
     # `[Heur]` line at all is a killed run (`SolveResult.killed`), `True`
     # is a bail, and `False`/`None` is a dispatch that ran.
     abandoned_setup: bool | None = None
+    # What ended the dispatch, as its runner recorded it (#303): `deadline`,
+    # `interrupt`, `budget`, `patience` or `done`.  `None` on a log written
+    # before #303, and on every `early_fj` line, which has no reason to give.
+    stopped_by: str | None = None
 
 
 @dataclass
@@ -780,11 +784,13 @@ def _tagged_fields(line: str, tag: str) -> dict[str, str] | None:
 # Per-heuristic instrumentation at log_dev_level=3, emitted next to the
 # legacy `[Sequential]` line by `EffortLedger::book`:
 #   [Heur] name=fj phase=presolve start_s=0.412 end_s=1.077 effort=8388608 \
-#          wall_ms=665.2 effort_per_ms=12610.1 found=1 nnz=2831 abandoned_setup=0
+#          wall_ms=665.2 effort_per_ms=12610.1 found=1 nnz=2831 abandoned_setup=0 \
+#          stopped_by=deadline
 # `wall_ms` may be negative: the solver clock is not monotonic, so a
 # negative sample is surfaced rather than silently skipped.  `nnz` is
-# optional, being absent from logs written before #106 added it, and
-# `abandoned_setup` likewise for logs written before #119.  Neither is in
+# optional, being absent from logs written before #106 added it,
+# `abandoned_setup` likewise for logs written before #119, and `stopped_by`
+# for logs before #303 and for `early_fj`.  None of them is in
 # `_HEUR_KEYS`: a required key drops the whole line, which would discard
 # every archived log rather than read the fields it does carry.
 _HEUR_TAG = "[Heur]"
@@ -822,6 +828,7 @@ def _parse_heur(line: str) -> HeuristicSample | None:
             # errs towards "something happened" rather than silently
             # reading as the default.
             abandoned_setup=None if abandoned is None else abandoned != "0",
+            stopped_by=fields.get("stopped_by"),
         )
     except ValueError:
         return None

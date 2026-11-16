@@ -64,12 +64,9 @@ constexpr const char* kInstance = "gesa2.mps";
 // setting.  See `kAttemptCapUnits`.
 constexpr double kLimit = 0.1;
 
-// The second limit, 5x `kLimit`.  Two things use it: `require_clock_bound`
-// below, which certifies that a `kLimit` dispatch was stopped by the clock
-// by showing the same configuration charges strictly more when given more
-// time; and the #152 ratio case at the foot of the presolve group — see the
-// note above that case for why *that* one needs the longer limit
-// specifically.
+// The second limit, 5x `kLimit`, for the #152 ratio case at the foot of the
+// presolve group — see the note above that case for why it needs the longer
+// limit specifically.
 constexpr double kRatioLimit = 0.5;
 
 // Allowance above the limit for the polling cadence plus teardown.
@@ -186,8 +183,9 @@ constexpr double kSlack = 0.20;
 // cases below do not run at `effort=1.0`: those dispatches report the *same*
 // effort at both limits, which is what a budget-bound dispatch does and what
 // a clock-bound one cannot do.  The first four rows increase 4.2-5.6x
-// between the two limits, which is the certification `require_clock_bound`
-// makes of every case that claims the clock stopped it.
+// between the two limits.  That comparison used to be how these cases
+// certified a dispatch clock-bound; the `[Heur] stopped_by=` field now says
+// so directly (#303) — see `require_clock_bound`.
 //
 // Scylla's two `kClockBindingEffort` and `kUnbindableEffort` rows used to be
 // identical to the digit, because at `threads=1` the clock-bound trajectory
@@ -427,41 +425,28 @@ std::string alone_at_limit(const std::string& heuristic, double effort = kClockB
 // get (issue #117).
 constexpr double kUnbindableEffort = 1e6;
 
-// The certification, and the check whose absence #154 was: the identical
-// configuration, given 5x the time, charges strictly more effort.
+// The certification, and the check whose absence #154 was: the dispatch
+// says the clock stopped it.
 //
-// At `threads=1` with a fixed seed a dispatch stopped by its budget or by
-// its attempt cap reports the *same* effort at every limit — measured to
-// the digit, and it is how #154 was found.  A strict increase therefore
-// cannot come from anywhere but the clock, so this certifies that the
-// `kLimit` run passed in here was clock-bound.  That run and no other: the
-// longer run may itself be budget-bound and nothing here bounds its effort,
-// which is deliberate — it is a witness, not a second assertion.
+// `stopped_by` is the runner's record of what set its stop flag first
+// (`DispatchOutcome::stopped_by`, #303), so it answers "budget or clock?"
+// about this one run.  It used to be inferred instead, by running the
+// identical configuration at 5x the limit and requiring strictly more
+// effort — sound on an idle host, since a budget-bound dispatch at
+// `threads=1` reports the same effort at every limit, but two-sided, so
+// load from outside ctest that `[serial]` cannot see broke it (#279: a
+// 0.5 s Scylla witness charging 1.87e6 against a 0.1 s run's 3.19e6).  It
+// also certified a vacuous configuration under load, since a starved short
+// run of a budget-bound one is cut below its budget and the witness then
+// reads as an increase.  The reason has neither hole: load can make the
+// clock stop a dispatch sooner, which is still the clock.
 //
-// Strict, not `!=`: a starved runner charges *less*, so `!=` would accept a
-// longer run that was descheduled into charging less than the short one and
-// call that a certification.  `[serial]` is why the increase is reliable at
-// all; it cannot be arranged by taking the clock out of the fixture, since
-// the clock is the thing under test.
-//
-// What the tag does not cover is load from outside ctest (#279): on a
-// shared host a 0.5 s Scylla witness charged 1.87e6 against a 0.1 s run's
-// 3.19e6, that run having overrun to 0.286 s on one PDLP solve.  That is
-// the residual this comparison carries, and it is not patched with a
-// retry or a longer witness: either widens what passes under exactly that
-// load, since a starved 0.1 s run of a budget-bound configuration is cut
-// below its budget and any witness that reaches it reads as an increase.
-// The fix is to assert the stop reason itself (#303).
-//
-// `effort` is the effort the caller took `at_limit` at, and is not defaulted:
-// the two runs have to be the *identical* configuration for the comparison to
-// mean anything, and a default would let a caller pair a witness taken at one
-// effort with a longer run taken at another and still pass.
-void require_clock_bound(const std::string& heuristic, double effort, const std::string& at_limit) {
-    const std::string longer = alone_at(heuristic, effort, kRatioLimit);
-    INFO("at " << kLimit << " s: " << at_limit);
-    INFO("at " << kRatioLimit << " s: " << longer);
-    CHECK(effort_of(at_limit) < effort_of(longer));
+// It is the mechanism check, not the whole case: the caller's effort bound
+// (`kAttemptCapUnits`, `kBudgetUnits`) is what says the clock stopped it
+// *mid-attempt* or *before its budget* rather than just stopped it.
+void require_clock_bound(const std::string& line) {
+    INFO(line);
+    CHECK(field_of(line, "stopped_by") == "deadline");
 }
 
 // The property, for one heuristic that charges effort in units an attempt
@@ -471,7 +456,7 @@ void require_stopped_mid_attempt(const char* heuristic) {
     INFO(line);
     CHECK(end_s_of(line) <= kLimit + kSlack);
     CHECK(effort_of(line) < kAttemptCapUnits);
-    require_clock_bound(heuristic, kClockBindingEffort, line);
+    require_clock_bound(line);
 }
 
 // The fraction of its limit a clock-bound Scylla dispatch must spend.
@@ -575,8 +560,8 @@ TEST_CASE("deadline: FPR stops at the time limit, not at its effort budget", "[d
 // So the assertion is the budget comparison the name promises, against the
 // budget this dispatch was actually given — 9779068 charged against
 // 5087232000, a 520x margin — and `require_clock_bound` is what says the
-// number on the left is a clock-bound one rather than a heuristic that
-// happened to stop early for some other reason.  Both halves are needed:
+// number on the left is a clock-bound one (`stopped_by=deadline`) rather
+// than a heuristic that happened to stop early for some other reason.  Both halves are needed:
 // at `effort=1.0` this dispatch charges 5152601 against a budget of
 // 5087232, i.e. it *exceeds* its budget and reports the same effort at
 // 0.1 s and at 5 s, so a budget comparison alone was satisfiable only
@@ -585,7 +570,7 @@ TEST_CASE("deadline: Scylla stops before spending its budget", "[deadline][seria
     const std::string line = alone_at_limit("scylla");
     INFO(line);
     CHECK(effort_of(line) < kBudgetUnits);
-    require_clock_bound("scylla", kClockBindingEffort, line);
+    require_clock_bound(line);
 }
 
 // Scylla's *lower* bound, and the one #152 was filed for: a clock-bound
@@ -649,6 +634,7 @@ TEST_CASE("deadline: a clock-bound Scylla dispatch spends its whole limit",
     // written as one.  It is the measured charge with 2x of room, which is
     // the load-safe direction for an upper bound on effort.
     CHECK(effort_of(line) < 2 * kScyllaEffortAtRatioLimit);
+    require_clock_bound(line);
     // The lower half, and the point of the case.
     CHECK(end_s_of(line) >= kMinRatio * kRatioLimit);
 }

@@ -437,7 +437,7 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         slots.construction_effort.fetch_add(primed_effort, std::memory_order_relaxed);
     }
 
-    size_t total_effort = run_opportunistic_loop(
+    DispatchOutcome outcome = run_opportunistic_loop(
         exec, budget,
         [&](int worker_idx, Rng& rng) -> LmState {
             auto seed = static_cast<uint32_t>(rng());
@@ -477,7 +477,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // LocalMIP does before the runner — the cold-start prime — is charged
     // work rather than an unwatched sequential setup, and it carries no
     // deadline bail to report (issue #119).
-    return {.effort = total_effort + slots.construction_effort.load(std::memory_order_relaxed)};
+    outcome.effort += slots.construction_effort.load(std::memory_order_relaxed);
+    return outcome;
 }
 
 size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,

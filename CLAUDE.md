@@ -60,7 +60,7 @@ When a complexity warning fires, don't extract methods mechanically. Ask what th
 
 - `TEST_CASE("name", "[tag]")` in `tests/`, not GoogleTest. Instances come from HiGHS's own `check/instances/` (`instances_dir()`).
 - Keep `ctest --progress` and `CMAKE_INSTALL_MESSAGE=LAZY`.
-- **A test that flakes under `ctest -j$(nproc)`**: (1) take the clock out of the fixture; (2) assert the mechanism (a one-sided effort bound needs nothing); (3) only then tag it `[serial]`, a reserved tag with its own `catch_discover_tests` call and `RUN_SERIAL`, the two specs partitioning the suite exactly. A *differential* effort bound is two-sided, so it is a (3) case. **Never widen a constant** to stop a flake. Details: `docs/DEVELOPMENT.md`.
+- **A test that flakes under `ctest -j$(nproc)`**: (1) take the clock out of the fixture; (2) assert the mechanism (a one-sided effort bound needs nothing); (3) only then tag it `[serial]`, a reserved tag with its own `catch_discover_tests` call and `RUN_SERIAL`, the two specs partitioning the suite exactly. A *differential* effort bound (`effort(T) < effort(5T)`) is two-sided, so it is a (3) case; record and assert the fact it infers instead (`[Heur] stopped_by=`). **Never widen a constant** to stop a flake. Details: `docs/DEVELOPMENT.md`.
 
 ## Development Workflow
 

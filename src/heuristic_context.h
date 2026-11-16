@@ -66,6 +66,49 @@ class SolutionSink;
 // mutable per-dispatch state on it would be an unsynchronised shared
 // write.  Its methods are `const`.
 
+// Why a dispatch stopped (#303), recorded at the point that stopped it
+// rather than inferred from its effort afterwards.  Inference was the
+// deadline tests' only option, and it took a second, longer run of the same
+// configuration to say "the clock did this" — a two-sided comparison that
+// load from outside ctest could break.  The reason is a one-sided fact about
+// one run.
+//
+// The runner (`ContinuousLoopState::request_stop`) keeps the *first* reason
+// that set its stop flag: once the flag is up every other worker leaves on
+// it, so later reasons are consequences, not causes.
+enum class StopReason : uint8_t {
+    // Nothing stopped it: every worker slot retired on its own (an attempt
+    // that charged nothing), or the dispatch declined to run at all.
+    kDone,
+    // `past_deadline()`: the solve's wall clock, or a caller's stop flag
+    // where one is attached (the HiGHS dispatch attaches none).  Also a
+    // setup bail (`DispatchOutcome::abandoned`), which is the same clock.
+    kDeadline,
+    // `terminated()` with the clock not yet past: the solver's terminator.
+    kInterrupt,
+    // The dispatch's effort budget is spent.
+    kBudget,
+    // The dispatch-level staleness gate, the heuristic's patience.
+    kPatience,
+};
+
+// The `[Heur] stopped_by=` spelling.
+constexpr const char* stop_reason_name(StopReason reason) {
+    switch (reason) {
+        case StopReason::kDone:
+            return "done";
+        case StopReason::kDeadline:
+            return "deadline";
+        case StopReason::kInterrupt:
+            return "interrupt";
+        case StopReason::kBudget:
+            return "budget";
+        case StopReason::kPatience:
+            return "patience";
+    }
+    return "done";
+}
+
 // What one dispatch of a heuristic did, as its runner reports it (issue
 // #119).  Used to be a bare `size_t` effort count.
 //
@@ -106,6 +149,9 @@ struct [[nodiscard]] DispatchOutcome {
     // books exactly this into `heuristic_effort_used`.
     size_t effort = 0;
 
+    // What ended the dispatch; see `StopReason`.
+    StopReason stopped_by = StopReason::kDone;
+
     // This dispatch abandoned its sequential setup on the wall-clock
     // deadline and never searched (issue #117's bail, made visible).  It
     // implies `effort == 0`, but the converse is what this field exists to
@@ -120,7 +166,9 @@ struct [[nodiscard]] DispatchOutcome {
     bool abandoned_setup = false;
 
     // The bail, spelled once so the two sites cannot disagree.
-    static DispatchOutcome abandoned() { return {.effort = 0, .abandoned_setup = true}; }
+    static DispatchOutcome abandoned() {
+        return {.effort = 0, .stopped_by = StopReason::kDeadline, .abandoned_setup = true};
+    }
 };
 
 // Read-only view of the model a heuristic searches: everything a worker

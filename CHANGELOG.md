@@ -23,6 +23,11 @@ linked from each entry.
   improvement, a PDLP tolerance read off how integral the last LP point is,
   a warm start from the last rounding, and FPR with repair on every chain.
   A default run, and a Scylla run without the option, are unchanged.
+- **`[Heur] stopped_by=`** (#303): every presolve-chain and `fpr_lp`
+  `[Heur]` line ends with what stopped the dispatch — `deadline`,
+  `interrupt`, `budget`, `patience` or `done` — appended after
+  `abandoned_setup`, so older parsers still read the line. The `early_fj`
+  line carries none. A default run's search is unchanged.
 
 ### Changed
 

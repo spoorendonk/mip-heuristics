@@ -179,19 +179,19 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // run in `build_worker`, behind the gate.  This does not touch the narrower standing caveat
     // that once construction has begun nothing bounds it — the deadline is polled between attempts,
     // not inside `FjWorker`'s constructor.
-    return {.effort = run_opportunistic_loop(
-                exec, budget,
-                [&exec, &personas](int worker_idx, Rng& /*rng*/) -> FjState {
-                    return make_state(exec, worker_idx, personas.of_slot[worker_idx],
-                                      personas.exchange_of_slot[worker_idx] != 0);
-                },
-                [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
-                    if (!state.worker || state.worker->finished()) {
-                        build_worker(state, rng, problem, budget, exec, sink, no_source,
-                                     &personas.structure);
-                    }
-                    return state.worker->run_attempt(run_cap);
-                })};
+    return run_opportunistic_loop(
+        exec, budget,
+        [&exec, &personas](int worker_idx, Rng& /*rng*/) -> FjState {
+            return make_state(exec, worker_idx, personas.of_slot[worker_idx],
+                              personas.exchange_of_slot[worker_idx] != 0);
+        },
+        [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
+            if (!state.worker || state.worker->finished()) {
+                build_worker(state, rng, problem, budget, exec, sink, no_source,
+                             &personas.structure);
+            }
+            return state.worker->run_attempt(run_cap);
+        });
 }
 
 size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,

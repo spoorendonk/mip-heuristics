@@ -419,18 +419,18 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     if (entries.size() < 2) {
         return {};
     }
-    return {.effort = run_opportunistic_loop(
-                exec, budget,
-                [&](int worker, Rng& rng) {
-                    return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker, 0});
-                },
-                [&](RecombineOperator& op, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
-                    // No step charges nothing, which retires the slot.
-                    const std::optional<RecombineStep> step = capped_step(op, exec, run_cap);
-                    return step.has_value() ? AttemptResult{.effort = step->effort,
-                                                            .found_improvement = step->improved}
-                                            : AttemptResult{};
-                })};
+    return run_opportunistic_loop(
+        exec, budget,
+        [&](int worker, Rng& rng) {
+            return RecombineOperator(problem, exec, sink, rng(), WorkerTrace{worker, 0});
+        },
+        [&](RecombineOperator& op, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
+            // No step charges nothing, which retires the slot.
+            const std::optional<RecombineStep> step = capped_step(op, exec, run_cap);
+            return step.has_value()
+                       ? AttemptResult{.effort = step->effort, .found_improvement = step->improved}
+                       : AttemptResult{};
+        });
 }
 
 size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,

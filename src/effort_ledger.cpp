@@ -1,5 +1,6 @@
 #include "effort_ledger.h"
 
+#include "heuristic_context.h"
 #include "io/HighsIO.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
@@ -10,14 +11,15 @@ double EffortLedger::now_s() const {
     return mipsolver_.timer_.read();
 }
 
-void EffortLedger::charge_presolve(const char* name, size_t effort, bool found, double t0_s,
-                                   double t1_s, bool abandoned_setup) {
-    book(name, "presolve", effort, found, presolved_nnz(), t0_s, t1_s, abandoned_setup);
+void EffortLedger::charge_presolve(const char* name, const DispatchOutcome& outcome, bool found,
+                                   double t0_s, double t1_s) {
+    book(name, "presolve", outcome.effort, found, presolved_nnz(), t0_s, t1_s,
+         outcome.abandoned_setup, stop_reason_name(outcome.stopped_by));
 }
 
 void EffortLedger::charge_early(const char* name, size_t effort, bool found, size_t nnz,
                                 double t0_s, double t1_s) {
-    book(name, "presolve", effort, found, nnz, t0_s, t1_s, false);
+    book(name, "presolve", effort, found, nnz, t0_s, t1_s, false, nullptr);
 }
 
 // The model's constraint-matrix nonzero count, taken from the same buffer
@@ -36,9 +38,10 @@ size_t EffortLedger::presolved_nnz() const {
     return mipsolver_.mipdata_->ARindex_.size();
 }
 
-void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int64_t setup_lp_iters,
-                               size_t nnz, double t0_s, double t1_s, bool abandoned_setup) {
+void EffortLedger::charge_dive(const char* name, const DispatchOutcome& outcome, bool found,
+                               int64_t setup_lp_iters, size_t nnz, double t0_s, double t1_s) {
     assert(nnz > 0);
+    const size_t effort = outcome.effort;
     auto* mipdata = mipsolver_.mipdata_.get();
     // Reference-LP iterations directly, worker effort converted at nnz
     // units per LP iteration.  This is what makes the dive heuristic
@@ -50,12 +53,13 @@ void EffortLedger::charge_dive(const char* name, size_t effort, bool found, int6
     const int64_t charged = setup_lp_iters + static_cast<int64_t>(nnz == 0 ? 0 : effort / nnz);
     mipdata->heuristic_lp_iterations += charged;
     mipdata->total_lp_iterations += charged;
-    book(name, "dive", effort, found, presolved_nnz(), t0_s, t1_s, abandoned_setup);
+    book(name, "dive", effort, found, presolved_nnz(), t0_s, t1_s, outcome.abandoned_setup,
+         stop_reason_name(outcome.stopped_by));
 }
 
 // NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
 void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
-                        double t0_s, double t1_s, bool abandoned_setup) {
+                        double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;
 
     // Two lines per observation, deliberately:
@@ -102,9 +106,20 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // shapes therefore stay distinguishable — no `[Heur]` line at all is a
     // killed run, `abandoned_setup=1` is a bail, and the field absent or
     // `0` is a dispatch that ran.
+    //
+    // `stopped_by` (#303) is appended after it for the same reason, and is
+    // the runner's record of what ended the dispatch
+    // (`DispatchOutcome::stopped_by`): `deadline`, `interrupt`, `budget`,
+    // `patience`, or `done` when every slot retired on its own.  It is what
+    // lets a reader — the deadline tests first — tell a clock-bound dispatch
+    // from a budget-bound one from this line alone, where they used to need
+    // a second, longer run of the same configuration to compare against.
+    // `early_fj` has no reason to give and its line ends at
+    // `abandoned_setup`; see `charge_early`.
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Heur] name=%s phase=%s start_s=%.3f end_s=%.3f effort=%zu wall_ms=%.1f "
-                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d\n",
+                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d%s%s\n",
                 name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0, nnz,
-                abandoned_setup ? 1 : 0);
+                abandoned_setup ? 1 : 0, stopped_by != nullptr ? " stopped_by=" : "",
+                stopped_by != nullptr ? stopped_by : "");
 }

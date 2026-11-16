@@ -1675,9 +1675,9 @@ the sequential setup abandon its work when the wall-clock deadline has
 already passed — `fpr::precompute_var_orders` and
 `scylla::precompute_config_var_orders` check the clock between variable
 orders, and the entry point returns without searching. #118 added a third,
-`fpr_lp`'s `build_setup`, which reports through an explicit `charge_dive`
-argument rather than through `DispatchOutcome`: it books its own dispatch
-and so is not on the shared runner contract. Such a dispatch
+`fpr_lp`'s `build_setup`, which books its own dispatch and so hands
+`charge_dive` a `DispatchOutcome::abandoned()` rather than returning one
+through the shared runner contract. Such a dispatch
 never ran, so it says nothing about how long this heuristic goes without
 improving; its spend is a cost of setup. It used to book an `effort=0
 found=0` line byte-identical to a barren dispatch's, which put it straight

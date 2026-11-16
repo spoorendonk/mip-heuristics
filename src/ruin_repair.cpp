@@ -308,20 +308,20 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     }
     auto no_source = [](std::vector<double>& /*out*/) { return false; };
     auto from_pool = [&sink](std::vector<double>& out) { return sink.copy_best(out); };
-    return {.effort = run_opportunistic_loop(
-                exec, budget,
-                [&problem](int worker_idx, Rng& /*rng*/) { return make_slot(problem, worker_idx); },
-                [&](Slot& slot, Rng& rng, size_t run_cap) -> AttemptResult {
-                    // No usable point and no best of its own charges at most
-                    // one check and then nothing, which retires the slot: a
-                    // dispatch whose pool holds no feasible point has nothing
-                    // to ruin.
-                    size_t effort = 0;
-                    if (!next_start_point(problem, slot, no_source, from_pool, effort)) {
-                        return {.effort = effort, .found_improvement = false};
-                    }
-                    return ruin_and_repair(problem, shared, exec, sink, slot, rng, run_cap, effort);
-                })};
+    return run_opportunistic_loop(
+        exec, budget,
+        [&problem](int worker_idx, Rng& /*rng*/) { return make_slot(problem, worker_idx); },
+        [&](Slot& slot, Rng& rng, size_t run_cap) -> AttemptResult {
+            // No usable point and no best of its own charges at most
+            // one check and then nothing, which retires the slot: a
+            // dispatch whose pool holds no feasible point has nothing
+            // to ruin.
+            size_t effort = 0;
+            if (!next_start_point(problem, slot, no_source, from_pool, effort)) {
+                return {.effort = effort, .found_improvement = false};
+            }
+            return ruin_and_repair(problem, shared, exec, sink, slot, rng, run_cap, effort);
+        });
 }
 
 size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,

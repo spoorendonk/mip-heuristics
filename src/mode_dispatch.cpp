@@ -280,8 +280,8 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         // returns zero without ever bailing in setup, and would be
         // mislabelled.  Only the bail site knows.
         const DispatchOutcome outcome = call();
-        ledger.charge_presolve(name, outcome.effort, sink.accepted() > accepted_before, t0_s,
-                               ledger.now_s(), outcome.abandoned_setup);
+        ledger.charge_presolve(name, outcome, sink.accepted() > accepted_before, t0_s,
+                               ledger.now_s());
     };
 
     // Each heuristic's inner loops also poll the deadline, but their own

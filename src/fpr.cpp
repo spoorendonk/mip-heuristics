@@ -529,20 +529,20 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
         int worker_idx;
     };
 
-    return {.effort = run_opportunistic_loop(
-                exec, budget,
-                [](int worker_idx, Rng& /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
-                [&](FprOppState& state, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
-                    auto& worker = workers[state.worker_idx];
-                    // A retired worker reports zero effort, which retires its
-                    // slot in `run_opportunistic_loop` (issue #111 gave FPR the
-                    // worker-level gate it had been doing without).  Deliberately
-                    // no `attempt_with_rebuild`: FPR's diversity already comes
-                    // from the per-attempt rotation through `kInitialFprConfigs`,
-                    // so a rebuilt worker would resume the same rotation with a
-                    // fresh patience allowance and the gate would bound nothing.
-                    return worker->run_attempt(run_cap);
-                })};
+    return run_opportunistic_loop(
+        exec, budget,
+        [](int worker_idx, Rng& /*rng*/) -> FprOppState { return FprOppState{worker_idx}; },
+        [&](FprOppState& state, Rng& /*rng*/, size_t run_cap) -> AttemptResult {
+            auto& worker = workers[state.worker_idx];
+            // A retired worker reports zero effort, which retires its
+            // slot in `run_opportunistic_loop` (issue #111 gave FPR the
+            // worker-level gate it had been doing without).  Deliberately
+            // no `attempt_with_rebuild`: FPR's diversity already comes
+            // from the per-attempt rotation through `kInitialFprConfigs`,
+            // so a rebuilt worker would resume the same rotation with a
+            // fresh patience allowance and the gate would bound nothing.
+            return worker->run_attempt(run_cap);
+        });
 }
 
 }  // namespace fpr
