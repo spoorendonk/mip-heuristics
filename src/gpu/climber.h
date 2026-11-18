@@ -34,6 +34,16 @@ inline constexpr std::int32_t kClimbersPerSm = 1;
 // `error` set.
 [[nodiscard]] std::int32_t default_climbers(std::string& error);
 
+// Creates the calling thread's current device's CUDA context (the default
+// device on a fresh thread) with `cudaDeviceScheduleBlockingSync`, so a host
+// thread waiting on the device blocks instead of spinning on a core the CPU
+// FJ workers share (#289).  On a context that already exists the flags
+// replace its own (`cudaSetDeviceFlags`).  False with `error` set on a CUDA
+// failure.  Slow on a process's first call (about 0.1-0.9 s on the laptop
+// RTX 3060) and uninterruptible, so `fj::warm_gpu` runs it off every
+// dispatch's path.
+[[nodiscard]] bool create_context(std::string& error);
+
 class Climber {
 public:
     // `climbers` climbers on `model`, which must outlive them.  The device

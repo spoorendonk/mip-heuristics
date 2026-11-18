@@ -16,16 +16,103 @@
 #include "worker_base.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fj {
 
 namespace {
+
+// How often the GPU thread looks again at a CUDA context still being
+// created: the most a race's end waits on that look.
+constexpr std::chrono::milliseconds kContextPoll{1};
+
+// The process's CUDA context, created once on a thread of its own (#289).
+// Creation is slow on a process's first call and nothing interrupts it, so
+// no dispatch waits for it: a race whose context is not ready by the time
+// the CPU workers stop ends without the GPU.
+//
+// The creation must not outlive `main`: the CUDA runtime registers its
+// exit-time teardown on its first call, which this thread makes after the
+// holder (a function-local static) exists, so the runtime is torn down
+// before the holder's destructor runs.  A creation still in flight at exit
+// then runs on a dead runtime, which hung or crashed in glibc under
+// compute-sanitizer (#289's review).  So the solve that starts it waits for
+// it at its end (`wait_gpu_warmup`), before any exit.  The destructor's join
+// is a last resort for a creation no solve waited for (`race` called
+// directly): it runs after the teardown, so it is unsafe while one is still
+// in flight.
+class ContextWarmup {
+public:
+    enum class State : std::uint8_t { kPending, kReady, kFailed };
+
+    static ContextWarmup& instance() {
+        static ContextWarmup warmup;
+        return warmup;
+    }
+
+    void start() {
+        const std::scoped_lock lock(mutex_);
+        if (!started_) {
+            // Marked only once the thread exists: a constructor that throws
+            // leaves the creation unstarted, so a later `start` retries.
+            thread_ = std::thread([this] { create(); });
+            started_ = true;
+        }
+    }
+
+    // Joins the creation thread if nobody has yet; the join itself runs
+    // outside the lock, so a `start` elsewhere never waits on it.
+    void wait() {
+        std::thread thread;
+        {
+            const std::scoped_lock lock(mutex_);
+            thread = std::move(thread_);
+        }
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
+    [[nodiscard]] State state() const { return state_.load(std::memory_order_acquire); }
+
+    // Set before `state()` reads `kFailed`, and never written after.
+    [[nodiscard]] const std::string& error() const { return error_; }
+
+    ~ContextWarmup() { wait(); }
+    ContextWarmup(const ContextWarmup&) = delete;
+    ContextWarmup& operator=(const ContextWarmup&) = delete;
+
+private:
+    ContextWarmup() = default;
+
+    void create() {
+        std::string error;
+        bool created = false;
+        try {
+            created = gpu_fj::create_context(error);
+        } catch (const std::exception& e) {
+            error = e.what();
+        } catch (...) {
+            error = "an unknown exception";
+        }
+        error_ = std::move(error);
+        state_.store(created ? State::kReady : State::kFailed, std::memory_order_release);
+    }
+
+    std::mutex mutex_;
+    bool started_ = false;  // guarded by `mutex_`, as is `thread_`
+    std::thread thread_;
+    std::atomic<State> state_{State::kPending};
+    std::string error_;
+};
 
 // The device side of one race, built on the GPU thread, so its setup
 // reads nothing the dispatching thread alone may (`mipdata`,
@@ -230,7 +317,23 @@ Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
     }
     GpuSide gpu;
     gpu.host = std::make_unique<gpu_fj::HostModel>(problem);
-    if (!gpu.host->legal_bounds() || halted(exec, stop)) {
+    if (!gpu.host->legal_bounds()) {
+        return out;
+    }
+    // The context's creation, not this race's to wait for: a race that ends
+    // first ends without the GPU, and without a warning.
+    const ContextWarmup& context = ContextWarmup::instance();
+    while (context.state() == ContextWarmup::State::kPending) {
+        if (halted(exec, stop)) {
+            return out;
+        }
+        std::this_thread::sleep_for(kContextPoll);
+    }
+    if (context.state() == ContextWarmup::State::kFailed) {
+        out.error = context.error();
+        return out;
+    }
+    if (halted(exec, stop)) {
         return out;
     }
     if (!start_gpu(gpu, exec, stop, out.error)) {
@@ -249,11 +352,21 @@ Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
 
 }  // namespace
 
+void warm_gpu() {
+    ContextWarmup::instance().start();
+}
+
+void wait_gpu_warmup() {
+    ContextWarmup::instance().wait();
+}
+
 DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
                      ExecutionContext& exec, SolutionSink& sink) {
     if (!budget.fj_gpu || problem.degenerate() || budget.disabled()) {
         return run(problem, budget, exec, sink);
     }
+    // A no-op when `EarlyFj` started it before presolve, as a solve does.
+    warm_gpu();
     std::atomic<bool> stop{false};
     Climb climb;
     // Nothing the GPU side throws ends the solve: like a CUDA error, it

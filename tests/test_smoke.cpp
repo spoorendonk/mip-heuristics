@@ -312,11 +312,11 @@ TEST_CASE("Options: fj_gpu is off by default and a CPU build runs FJ on the CPU"
 // every one of 20 runs.  The dispatch is charged once, on one
 // `[Sequential] heur=fj` line, and that charge holds every slot's effort:
 // the largest `effort_at` of each slot, CPU and GPU, sums to no more.
-// The device setup runs on the GPU thread, beside the CPU worker, and a
-// process's first allocation creates the CUDA context, which takes longer
-// than egout's whole CPU run, and the setup stops when the race does.  So
-// the test uploads a tiny model first, which creates the context, and the
-// race starts with only egout's upload ahead of the climbers.
+// The CUDA context is created off the race's path (#289), which takes
+// longer than egout's whole CPU run, and a race that ends first ends
+// without the GPU.  So the test uploads a tiny model first, which creates
+// the context, and the race starts with only egout's upload ahead of the
+// climbers.
 TEST_CASE("fj_race: GPU climbers offer as their own slots and are charged once", "[gpu][fj_gpu]") {
     static constexpr int kThreads = 1;
     {

@@ -2,6 +2,7 @@
 
 #include "effort_ledger.h"
 #include "fj.h"
+#include "fj_race.h"
 #include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "highs_context.h"
@@ -144,6 +145,14 @@ struct EarlyFj::Run {
 
 EarlyFj::EarlyFj(HighsMipSolver& mipsolver) : mipsolver_(mipsolver) {
     const HighsOptions& options = *mipsolver.options_mip_;
+    // The GPU FJ race's CUDA context, created while presolve runs (#289).
+    gpu_race_ = !mipsolver.submip && options.mip_heuristic_fj_gpu &&
+                options.mip_heuristic_fj_effort > 0.0 && options.mip_heuristic_run_feasibility_jump;
+#ifdef MIP_HEURISTICS_HAS_GPU_FJ
+    if (gpu_race_) {
+        fj::warm_gpu();
+    }
+#endif
     if (mipsolver.submip || options.mip_heuristic_early_fj_effort <= 0.0) {
         return;
     }
@@ -158,6 +167,13 @@ EarlyFj::~EarlyFj() {
         run_->stop.store(true, std::memory_order_relaxed);
         run_->thread.join();
     }
+#ifdef MIP_HEURISTICS_HAS_GPU_FJ
+    // The end of the solve, past every dispatch: the context's creation
+    // must finish before `main` returns into the runtime's teardown (#289).
+    if (gpu_race_) {
+        fj::wait_gpu_warmup();
+    }
+#endif
 }
 
 namespace {

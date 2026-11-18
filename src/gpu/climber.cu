@@ -1015,6 +1015,13 @@ std::int32_t default_climbers(std::string& error) {
     return sms * kClimbersPerSm;
 }
 
+bool create_context(std::string& error) {
+    // `cudaSetDeviceFlags` initializes an uninitialized device with the
+    // flags; `cudaFree(nullptr)` makes sure the context exists either way.
+    return ok(cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync), "create_context", error) &&
+           ok(cudaFree(nullptr), "create_context", error);
+}
+
 struct Climber::Impl {
     DeviceModelView m{};
     std::uint64_t cells = 0;  // upstream's `nNonzeros`

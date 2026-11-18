@@ -36,8 +36,14 @@ namespace heuristics {
 // too, so the run reports it; after any other presolve verdict (optimal,
 // infeasible, unbounded, out of memory) nothing is installed.
 //
+// In a `MIP_HEURISTICS_CUDA` build the constructor also starts the GPU FJ
+// race's CUDA context (`fj::warm_gpu`, #289) when `mip_heuristic_fj_gpu` is
+// set and FJ is enabled, outside a sub-MIP, whatever the early FJ option.
+//
 // The destructor stops and joins as well, so every early return of
-// `HighsMipSolver::run` leaves no thread behind.
+// `HighsMipSolver::run` leaves no thread behind.  That includes the context's
+// creation: the destructor waits for it (`fj::wait_gpu_warmup`), so a solve
+// shorter than the creation ends when the creation does.
 //
 // Not reproducible: the worker stops when presolve returns, so what it finds
 // depends on timing even at `threads=1` (docs/REPRODUCIBILITY.md).
@@ -61,6 +67,9 @@ private:
     struct Run;
     HighsMipSolver& mipsolver_;
     std::unique_ptr<Run> run_;
+    // FJ races the GPU in this solve: in a CUDA build the constructor starts
+    // `fj::warm_gpu` and the destructor waits for it.
+    bool gpu_race_ = false;
 };
 
 }  // namespace heuristics

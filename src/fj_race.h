@@ -16,7 +16,29 @@ namespace fj {
 // bench-contract `FeasibilityJump runs on the CPU only`), this is `fj::run`.
 //
 // Same runner contract as `fj::run`; see heuristic_context.h.
+//
+// The climbers need the process's CUDA context, which `warm_gpu` creates on
+// a thread of its own; the race never waits for it (#289).  Until it exists
+// the GPU thread only builds its host model and polls, so a race whose CPU
+// workers stop first ends without the GPU, unwarned.
 DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
                      ExecutionContext& exec, SolutionSink& sink);
+
+// Starts creating the CUDA context (`gpu_fj::create_context`, blocking
+// sync) on a thread of its own, once per process; later calls do nothing.
+// `EarlyFj`'s constructor calls it before presolve when the option is on,
+// so the context is usually ready by FJ's dispatch; `race` calls it too.
+// Any thread may call it: it reads nothing of the solve.
+void warm_gpu();
+
+// Waits for a creation `warm_gpu` started and joins its thread; returns at
+// once when none is running, or when another caller is already joining it
+// (two concurrent solves: the first one's wait holds that solve until the
+// creation ends, so the process still cannot exit during it).  The solve
+// that started it calls this at its end (`EarlyFj`'s destructor), so the
+// creation never runs into the CUDA runtime's exit-time teardown.  That wait
+// is the only one: it costs a solve shorter than the creation the rest of
+// it, never a dispatch.
+void wait_gpu_warmup();
 
 }  // namespace fj

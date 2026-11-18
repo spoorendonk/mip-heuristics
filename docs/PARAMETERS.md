@@ -2662,6 +2662,15 @@ must move with them on a HiGHS bump.
 - **Meaning**: `default_climbers` is the device's multiprocessor count
   times this. A starting point, to be calibrated (#266).
 
+### `kContextPoll` — how often the race looks at a context still being created
+
+- **File**: `src/fj_race.cpp`
+- **Default**: `1 ms`
+- **Meaning**: while `fj::warm_gpu`'s thread is still creating the CUDA
+  context (#289), the race's GPU thread sleeps this long between looks at
+  it, its stop flag and the deadline. The most a race's end waits on that
+  sleep; it moves no search.
+
 ### `kMemoryReserve` — free device memory a batch leaves alone
 
 - **File**: `src/gpu/device_internal.cuh`
