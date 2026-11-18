@@ -991,3 +991,23 @@ TEST_CASE("cuOpt projection: a dispatch finds a feasible point", "[scylla][cuopt
     // incumbent of its own.
     CHECK(sink.best_objective() < kHighsInf);
 }
+
+// Peers contend for the shared LP and swap its aux row bounds between solves.
+// Which of them finds a point is the schedule's call, so only the spend is
+// asserted.
+TEST_CASE("cuOpt projection: workers sharing the LP finish a dispatch", "[scylla][cuopt][pump]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs.setOptionValue("mip_heuristic_scylla_cuopt_pump", true);
+    HighsCallback cb(&highs);
+    auto mipsolver = build_bare_mipsolver(highs, cb, "bell5.mps");
+    CscMatrix csc;
+    const ProblemView problem = make_problem(*mipsolver, csc);
+    ExecutionContext exec = make_exec(*mipsolver);
+    IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
+    constexpr size_t kBudget = size_t{1} << 22;
+    const DispatchOutcome out = scylla::run(
+        *mipsolver, problem, make_budget(kBudget, exec.num_workers, kBudget), exec, sink);
+    CHECK(out.effort > 0);
+}
