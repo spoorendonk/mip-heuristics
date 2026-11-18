@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cuda_runtime.h>
+#include <functional>
 #include <limits>
 #include <string>
 #include <utility>
@@ -25,10 +26,14 @@ struct RelatedTable {
     }
 };
 
-// `host`'s related-variable table, or false when it would hold more than
-// `cap` cells.  A row of length `len` with `cons` constraints gives each of
-// its columns `cons * (len - 1)` cells, so the size is known up front.
-bool build_related(const GpuFjModel& host, std::int64_t cap, RelatedTable& t) {
+enum class Related : std::uint8_t { kBuilt, kNone, kStopped };
+
+// `host`'s related-variable table, `kNone` when it would hold more than
+// `cap` cells, or `kStopped` once `stopped` returns true.  A row of length
+// `len` with `cons` constraints gives each of its columns `cons * (len - 1)`
+// cells, so the size is known up front.
+Related build_related(const GpuFjModel& host, std::int64_t cap,
+                      const std::function<bool()>& stopped, RelatedTable& t) {
     const auto ncol = static_cast<std::size_t>(host.ncol);
     cap = std::min<std::int64_t>(cap, std::numeric_limits<std::int32_t>::max());
     std::int64_t cells = 0;
@@ -37,7 +42,7 @@ bool build_related(const GpuFjModel& host, std::int64_t cap, RelatedTable& t) {
         const std::int64_t cons = host.row_con_start[row + 1] - host.row_con_start[row];
         cells += cons * len * (len - 1);
         if (cells > cap) {
-            return false;
+            return Related::kNone;
         }
     }
     // Each row cell's CSC position.  The CSC is the row storage transposed
@@ -49,7 +54,7 @@ bool build_related(const GpuFjModel& host, std::int64_t cap, RelatedTable& t) {
             const std::int32_t u = host.row_index[q];
             const std::int32_t p = cursor[static_cast<std::size_t>(u)]++;
             if (p >= host.col_start[u + 1] || host.col_row[p] != row) {
-                return false;
+                return Related::kNone;
             }
             csc_of[static_cast<std::size_t>(q)] = p;
         }
@@ -68,6 +73,15 @@ bool build_related(const GpuFjModel& host, std::int64_t cap, RelatedTable& t) {
     t.cell.reserve(static_cast<std::size_t>(cells) + 1);
     t.cell_k.reserve(static_cast<std::size_t>(cells));
     t.cell_p.reserve(static_cast<std::size_t>(cells));
+    // Starts due, so a stop that came before the build ends it at once.
+    std::size_t unpolled = kRelatedPollCells;
+    const auto stop_due = [&unpolled, &stopped] {
+        if (unpolled < kRelatedPollCells) {
+            return false;
+        }
+        unpolled = 0;
+        return stopped && stopped();
+    };
     for (std::int32_t v = 0; v < host.ncol; ++v) {
         related.clear();
         found.clear();
@@ -75,6 +89,10 @@ bool build_related(const GpuFjModel& host, std::int64_t cap, RelatedTable& t) {
         // order: `collect`'s work ids.
         std::int32_t k = 0;
         for (std::int32_t p = host.col_start[v]; p < host.col_start[v + 1]; ++p) {
+            if (stop_due()) {
+                return Related::kStopped;
+            }
+            const std::size_t gathered = found.size();
             const std::int32_t row = host.col_row[p];
             for (std::int32_t con = host.row_con_start[row]; con < host.row_con_start[row + 1];
                  ++con, ++k) {
@@ -91,6 +109,10 @@ bool build_related(const GpuFjModel& host, std::int64_t cap, RelatedTable& t) {
                     found.push_back(Cell{at, csc_of[static_cast<std::size_t>(q)], k});
                 }
             }
+            unpolled += found.size() - gathered;
+        }
+        if (stop_due()) {
+            return Related::kStopped;
         }
         // Each related column's cells in its column's order, a row's
         // constraints in turn: `gather`'s order.
@@ -109,13 +131,14 @@ bool build_related(const GpuFjModel& host, std::int64_t cap, RelatedTable& t) {
         }
         t.start[static_cast<std::size_t>(v) + 1] = static_cast<std::int32_t>(t.col.size());
     }
-    return true;
+    return Related::kBuilt;
 }
 
 }  // namespace
 
 std::unique_ptr<DeviceModel> DeviceModel::upload(const GpuFjModel& host, std::string& error,
-                                                 std::int64_t max_related_cells) {
+                                                 std::int64_t max_related_cells,
+                                                 const std::function<bool()>& stopped) {
     auto impl = std::make_unique<Impl>();
     const auto ncol = static_cast<std::size_t>(host.ncol);
     const auto nrow = static_cast<std::size_t>(host.nrow);
@@ -145,10 +168,16 @@ std::unique_ptr<DeviceModel> DeviceModel::upload(const GpuFjModel& host, std::st
     // The table only where it fits beside the model; a model without it
     // still runs.
     RelatedTable related;
-    if (host.ncol > 0 && build_related(host, max_related_cells, related) &&
-        !fits(bytes + related.bytes(), 0, 0, "upload: related table", error)) {
-        related = RelatedTable{};
-        error.clear();
+    if (host.ncol > 0) {
+        const Related built = build_related(host, max_related_cells, stopped, related);
+        if (built == Related::kStopped) {
+            return nullptr;
+        }
+        if (built == Related::kBuilt &&
+            !fits(bytes + related.bytes(), 0, 0, "upload: related table", error)) {
+            related = RelatedTable{};
+            error.clear();
+        }
     }
     const bool uploaded =
         fits(bytes, 0, 0, "upload: model", error) &&

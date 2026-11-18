@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
@@ -727,6 +728,53 @@ TEST_CASE("gpu_fj: after its chunks a climber's state matches a recomputation, p
         require_ok(second->read_best(0, best_b, error), error);
         REQUIRE(same_bytes(best_a, best_b));
     }
+}
+
+TEST_CASE("gpu_fj: a stop ends the related-variable table's build", "[gpu]") {
+    bool periodic = false;
+    for (const char* instance : kInstances) {
+        INFO(instance);
+        Highs highs;
+        read(highs, instance);
+        const Setup s(highs.getLp(), highs.getOptions().log_options);
+        const gpu_fj::HostModel host(s.problem);
+        const gpu_fj::GpuFjModel m = host.pod();
+        std::string error;
+        int polls = 0;
+        const auto built =
+            gpu_fj::DeviceModel::upload(m, error, gpu_fj::kRelatedMaxCells, [&polls] {
+                ++polls;
+                return false;
+            });
+        INFO(error);
+        REQUIRE(built != nullptr);
+        REQUIRE(built->has_related_table());
+        // Between two looks the build gathers under `kRelatedPollCells`
+        // cells and then at most one row's, so the table's size sets how
+        // few looks it can have taken.
+        std::int64_t cells = 0;
+        std::int64_t longest_row = 0;
+        for (std::int32_t row = 0; row < m.nrow; ++row) {
+            const std::int64_t len = m.row_start[row + 1] - m.row_start[row];
+            const std::int64_t cons = m.row_con_start[row + 1] - m.row_con_start[row];
+            cells += cons * len * (len - 1);
+            longest_row = std::max(longest_row, cons * (len - 1));
+        }
+        const std::int64_t fewest =
+            cells / (static_cast<std::int64_t>(gpu_fj::kRelatedPollCells) + longest_row);
+        REQUIRE(polls >= std::max<std::int64_t>(fewest, 1));
+        periodic = periodic || fewest >= 2;
+        // Stopping at the build's last look gives up too: no partial table
+        // reaches the device, and a stop is no failure.
+        int seen = 0;
+        const auto stopped = gpu_fj::DeviceModel::upload(
+            m, error, gpu_fj::kRelatedMaxCells, [&seen, polls] { return ++seen == polls; });
+        REQUIRE(stopped == nullptr);
+        REQUIRE(error.empty());
+        REQUIRE(seen == polls);
+    }
+    // At least one instance's table is long enough to need a second look.
+    REQUIRE(periodic);
 }
 
 TEST_CASE("gpu_fj: the related-variable table takes the touched-cell scan's steps", "[gpu]") {

@@ -131,16 +131,18 @@ bool halted(const ExecutionContext& exec, const std::atomic<bool>& stop) {
 }
 
 // The device side after `gpu.host` is built: upload, then the batch.  It
-// checks `halted` between steps, so once `fj::run` has returned the join
-// waits on at most the step in flight (#283's review); false with `error`
-// empty when it stopped so.
+// checks `halted` between steps and while the upload builds its
+// related-variable table, the one long step (#304), so once `fj::run` has
+// returned the join waits on at most a short step in flight (#283's review);
+// false with `error` empty when it stopped so.
 bool start_gpu(GpuSide& gpu, const ExecutionContext& exec, const std::atomic<bool>& stop,
                std::string& error) {
     const std::int32_t climbers = gpu_fj::default_climbers(error);
     if (climbers <= 0 || halted(exec, stop)) {
         return false;
     }
-    gpu.device = gpu_fj::DeviceModel::upload(gpu.host->pod(), error);
+    gpu.device = gpu_fj::DeviceModel::upload(gpu.host->pod(), error, gpu_fj::kRelatedMaxCells,
+                                             [&exec, &stop] { return halted(exec, stop); });
     if (!gpu.device || halted(exec, stop)) {
         return false;
     }

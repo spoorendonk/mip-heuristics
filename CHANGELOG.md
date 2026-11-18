@@ -19,7 +19,8 @@ linked from each entry.
   own from before presolve, with blocking-sync scheduling, and the race
   never waits for it: where CPU FJ ends first, FJ's dispatch ends without
   the GPU. Only the solve's end waits for a creation still running
-  (#289). A default run is unchanged.
+  (#289), and the race's end stops a related-variable table still being
+  built (#304). A default run is unchanged.
 - **`mip_heuristic_scylla_cuopt_pump`** (bool, default `false`; #290, part of
   #211): Scylla's pump projects with cuOpt's technique instead of Mexi et
   al.'s: an exact L1 distance (auxiliary columns for general integers), an

@@ -2694,6 +2694,18 @@ must move with them on a HiGHS bump.
   steps bit for bit, so the cap moves only speed and memory. A starting
   point, to be calibrated (#266, #278).
 
+### `kRelatedPollCells` — cells between the table build's stop checks
+
+- **File**: `src/gpu/device_model.h`
+- **Default**: `4096` cells
+- **Meaning**: `build_related` looks at `DeviceModel::upload`'s stop
+  predicate between the rows of a column's gather and before its sort, once
+  this many cells have been gathered since the last look, and before the
+  first column's first row. The FJ race's join waits for the build to notice
+  the race's end (#304), so this sets how often it looks; one column's sort
+  runs without a look. It moves no result, since a stopped upload is
+  discarded.
+
 ---
 
 ## Repair Walk (`repair_walk`)

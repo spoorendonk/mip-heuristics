@@ -9,7 +9,9 @@
 
 #include "gpu_fj_model.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -22,13 +24,21 @@ namespace gpu_fj {
 // without it: a step then scans each neighbour's whole column.
 inline constexpr std::int64_t kRelatedMaxCells = std::int64_t{1} << 24U;
 
+// How many cells the table's build gathers between looks at `upload`'s stop
+// predicate (#304).  It looks between a column's rows, so one dense column
+// cannot hold a stop back; only that column's sort runs without a look.
+inline constexpr std::size_t kRelatedPollCells = 4096;
+
 class DeviceModel {
 public:
     // Copies `host` to the device, with its related-variable table when that
     // holds at most `max_related_cells` cells and fits, or returns null with
-    // `error` set.
+    // `error` set.  Building that table is the one long host step, so it
+    // polls `stopped` as it goes: once that returns true the upload gives
+    // up and returns null with `error` empty (#304).
     static std::unique_ptr<DeviceModel> upload(const GpuFjModel& host, std::string& error,
-                                               std::int64_t max_related_cells = kRelatedMaxCells);
+                                               std::int64_t max_related_cells = kRelatedMaxCells,
+                                               const std::function<bool()>& stopped = {});
     ~DeviceModel();
     DeviceModel(const DeviceModel&) = delete;
     DeviceModel& operator=(const DeviceModel&) = delete;
