@@ -978,10 +978,14 @@ TEST_CASE("cuOpt projection: a dispatch finds a feasible point", "[scylla][cuopt
     CscMatrix csc;
     const ProblemView problem = make_problem(*mipsolver, csc);
     ExecutionContext exec = make_exec(*mipsolver);
+    // One worker and no patience short of the budget: a single attempt costs
+    // about 2^20 here, so a tighter gate with several workers let whichever
+    // attempt returned first without a point end the dispatch.
+    exec.num_workers = 1;
     IncumbentSink sink(*mipsolver, kSolutionSourceHeuristic);
     constexpr size_t kBudget = size_t{1} << 22;
-    const DispatchOutcome out = scylla::run(
-        *mipsolver, problem, make_budget(kBudget, exec.num_workers, kBudget >> 2), exec, sink);
+    const DispatchOutcome out =
+        scylla::run(*mipsolver, problem, make_budget(kBudget, 1, kBudget), exec, sink);
     CHECK(out.effort > 0);
     // Only Scylla offered into this sink, and the bare solver has no
     // incumbent of its own.
