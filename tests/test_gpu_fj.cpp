@@ -12,9 +12,11 @@
 
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
 #include "fj_personas.h"
+#include "fj_race.h"
 #include "fj_worker.h"
 #include "gpu/climber.h"
 #include "gpu/device_model.h"
+#include "parallel/HighsParallel.h"
 
 #include <algorithm>
 #include <bit>
@@ -805,6 +807,32 @@ TEST_CASE("gpu_fj: the related-variable table's build looks inside a dense colum
     REQUIRE(built != nullptr);
     REQUIRE(built->has_related_table());
     REQUIRE(polls > m.ncol);
+}
+
+TEST_CASE("fj_race: a race no climber stepped in reports zero GPU steps", "[gpu][fj_gpu]") {
+    highs::parallel::initialize_scheduler();
+    Highs highs;
+    read(highs, "egout.mps");
+    Setup s(highs.getLp(), highs.getOptions().log_options);
+    ProblemView p = s.problem;
+    HighsInt col = 0;
+    while ((*p.integrality)[col] == HighsVarType::kContinuous) {
+        ++col;
+    }
+    // Bounds the host model refuses, so the GPU thread ends before a launch.
+    std::vector<double> lower = *p.col_lower;
+    std::vector<double> upper = *p.col_upper;
+    lower[col] = 0.2;
+    upper[col] = 0.8;
+    p.col_lower = &lower;
+    p.col_upper = &upper;
+    HeuristicBudget budget = make_budget(kAttemptBudget, 1, kAttemptBudget);
+    budget.fj_gpu = true;
+    BestSink sink(*p.integrality, 0);
+    const DispatchOutcome outcome = fj::race(p, budget, s.exec, sink);
+    fj::wait_gpu_warmup();
+    // An absent count reads as 1, so only a reported zero passes.
+    REQUIRE(outcome.gpu_steps.value_or(1) == 0);
 }
 
 TEST_CASE("gpu_fj: the related-variable table takes the touched-cell scan's steps", "[gpu]") {

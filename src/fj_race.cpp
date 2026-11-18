@@ -185,8 +185,6 @@ struct Climb {
     std::string error;  // empty unless the GPU side failed
     // Every climber got its start: the GPU raced, whatever stopped it.
     bool raced = false;
-    // Launches of the batch; zero when the race ended before the first.
-    size_t steps = 0;
 };
 
 // The GPU thread's whole run.  It polls only `stop` and the deadline
@@ -195,13 +193,15 @@ struct Climb {
 class Climbing {
 public:
     Climbing(gpu_fj::Climber& batch, const gpu_fj::GpuFjModel& model, const ProblemView& problem,
-             const HeuristicBudget& budget, const ExecutionContext& exec, SolutionSink& sink)
+             const HeuristicBudget& budget, const ExecutionContext& exec, SolutionSink& sink,
+             size_t& steps)
         : batch_(batch),
           model_(model),
           problem_(problem),
           budget_(budget),
           exec_(exec),
           sink_(sink),
+          steps_(steps),
           count_(static_cast<size_t>(batch.count())),
           traces_(count_),
           seeds_(count_),
@@ -217,7 +217,6 @@ public:
         for (size_t c = 0; c < count_; ++c) {
             out.effort += traces_[c].at(chunks_[c].total_effort);
         }
-        out.steps = steps_;
         return out;
     }
 
@@ -283,8 +282,8 @@ private:
     const HeuristicBudget& budget_;
     const ExecutionContext& exec_;
     SolutionSink& sink_;
+    size_t& steps_;
     size_t count_;
-    size_t steps_ = 0;
     std::vector<WorkerTrace> traces_;
     std::vector<std::uint64_t> seeds_;
     std::vector<gpu_fj::Climber::Chunk> chunks_;
@@ -314,10 +313,11 @@ void warn_gpu_failure(const ExecutionContext& exec, const Climb& climb) {
 // The GPU thread's body: the device setup too runs here, so it never
 // delays the CPU workers.  A model whose bounds FJ refuses gets no climber
 // and no warning: `FjWorker` refuses the same bounds, so FJ runs nowhere
-// and the option changes nothing.
+// and the option changes nothing.  `steps` counts the batch's launches; it
+// is the caller's, so the count outlives a throw.
 Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
-                   const ExecutionContext& exec, SolutionSink& sink,
-                   const std::atomic<bool>& stop) {
+                   const ExecutionContext& exec, SolutionSink& sink, const std::atomic<bool>& stop,
+                   size_t& steps) {
     Climb out;
     if (halted(exec, stop)) {
         return out;
@@ -353,7 +353,7 @@ Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
         return out;
     }
     const gpu_fj::GpuFjModel model = gpu.host->pod();
-    Climbing climbing(*gpu.batch, model, problem, budget, exec, sink);
+    Climbing climbing(*gpu.batch, model, problem, budget, exec, sink, steps);
     return climbing.run(stop);
 }
 
@@ -376,11 +376,12 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     warm_gpu();
     std::atomic<bool> stop{false};
     Climb climb;
+    size_t gpu_steps = 0;
     // Nothing the GPU side throws ends the solve: like a CUDA error, it
     // becomes the warning, and FJ's CPU outcome stands.
     std::thread thread([&] {
         try {
-            climb = climb_on_gpu(problem, budget, exec, sink, stop);
+            climb = climb_on_gpu(problem, budget, exec, sink, stop, gpu_steps);
         } catch (const std::exception& e) {
             climb.error = e.what();
         } catch (...) {
@@ -402,7 +403,7 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     }
     // Charged by the dispatcher, on this thread, with the CPU workers'.
     outcome.effort += climb.effort;
-    outcome.gpu_steps = climb.steps;
+    outcome.gpu_steps = gpu_steps;
     return outcome;
 }
 
