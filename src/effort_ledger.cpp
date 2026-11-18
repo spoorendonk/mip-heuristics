@@ -6,6 +6,7 @@
 #include "mip/HighsMipSolverData.h"
 
 #include <cassert>
+#include <string>
 
 double EffortLedger::now_s() const {
     return mipsolver_.timer_.read();
@@ -14,7 +15,7 @@ double EffortLedger::now_s() const {
 void EffortLedger::charge_presolve(const char* name, const DispatchOutcome& outcome, bool found,
                                    double t0_s, double t1_s) {
     book(name, "presolve", outcome.effort, found, presolved_nnz(), t0_s, t1_s,
-         outcome.abandoned_setup, stop_reason_name(outcome.stopped_by));
+         outcome.abandoned_setup, stop_reason_name(outcome.stopped_by), outcome.gpu_steps);
 }
 
 void EffortLedger::charge_early(const char* name, size_t effort, bool found, size_t nnz,
@@ -59,7 +60,8 @@ void EffortLedger::charge_dive(const char* name, const DispatchOutcome& outcome,
 
 // NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
 void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
-                        double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by) {
+                        double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by,
+                        std::optional<size_t> gpu_steps) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;
 
     // Two lines per observation, deliberately:
@@ -116,10 +118,16 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // a second, longer run of the same configuration to compare against.
     // `early_fj` has no reason to give and its line ends at
     // `abandoned_setup`; see `charge_early`.
+    //
+    // `gpu_steps` (#305) comes last, on FJ's line only when its GPU race
+    // ran.  `0` is a race that ended before any climber stepped, which
+    // `found` and `effort` cannot show: the CPU workers fill both.
+    const std::string gpu_field =
+        gpu_steps.has_value() ? " gpu_steps=" + std::to_string(*gpu_steps) : "";
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Heur] name=%s phase=%s start_s=%.3f end_s=%.3f effort=%zu wall_ms=%.1f "
-                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d%s%s\n",
+                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d%s%s%s\n",
                 name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0, nnz,
                 abandoned_setup ? 1 : 0, stopped_by != nullptr ? " stopped_by=" : "",
-                stopped_by != nullptr ? stopped_by : "");
+                stopped_by != nullptr ? stopped_by : "", gpu_field.c_str());
 }

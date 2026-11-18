@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 class HighsMipSolver;
 struct DispatchOutcome;
@@ -108,9 +109,11 @@ private:
     // the ledger object untouched while mutating solver state.  The
     // suppression lives at the definition.
     // `stopped_by` is null for a line that has no reason to report
-    // (`charge_early`), which then omits the field.
+    // (`charge_early`), which then omits the field; `gpu_steps` is empty,
+    // and omitted the same way, unless FJ's GPU race ran.
     void book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
-              double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by);
+              double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by,
+              std::optional<size_t> gpu_steps = std::nullopt);
 
     // The post-presolve MIP matrix's nonzero count; see `book`.
     [[nodiscard]] size_t presolved_nnz() const;

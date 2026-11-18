@@ -14,6 +14,7 @@
 #include <expected>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -164,6 +165,10 @@ struct [[nodiscard]] DispatchOutcome {
     // reports a plain zero, because none of those is a dispatch the clock
     // cut short.
     bool abandoned_setup = false;
+
+    // How many times FJ's race launched its GPU climbers (#305), empty when
+    // no race ran.  Zero is a race that ended before any climber stepped.
+    std::optional<size_t> gpu_steps;
 
     // The bail, spelled once so the two sites cannot disagree.
     static DispatchOutcome abandoned() {

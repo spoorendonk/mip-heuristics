@@ -185,6 +185,8 @@ struct Climb {
     std::string error;  // empty unless the GPU side failed
     // Every climber got its start: the GPU raced, whatever stopped it.
     bool raced = false;
+    // Launches of the batch; zero when the race ended before the first.
+    size_t steps = 0;
 };
 
 // The GPU thread's whole run.  It polls only `stop` and the deadline
@@ -215,6 +217,7 @@ public:
         for (size_t c = 0; c < count_; ++c) {
             out.effort += traces_[c].at(chunks_[c].total_effort);
         }
+        out.steps = steps_;
         return out;
     }
 
@@ -249,6 +252,7 @@ private:
         if (!batch_.run(~std::uint64_t{0}, chunks_, error)) {
             return false;
         }
+        ++steps_;
         for (size_t c = 0; c < count_; ++c) {
             const gpu_fj::Climber::Chunk& chunk = chunks_[c];
             if (chunk.improved) {
@@ -280,6 +284,7 @@ private:
     const ExecutionContext& exec_;
     SolutionSink& sink_;
     size_t count_;
+    size_t steps_ = 0;
     std::vector<WorkerTrace> traces_;
     std::vector<std::uint64_t> seeds_;
     std::vector<gpu_fj::Climber::Chunk> chunks_;
@@ -397,6 +402,7 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     }
     // Charged by the dispatcher, on this thread, with the CPU workers'.
     outcome.effort += climb.effort;
+    outcome.gpu_steps = climb.steps;
     return outcome;
 }
 

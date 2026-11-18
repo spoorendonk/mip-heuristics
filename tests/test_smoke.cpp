@@ -344,10 +344,13 @@ TEST_CASE("fj_race: GPU climbers offer as their own slots and are charged once",
     };
     std::vector<size_t> sequential;
     std::vector<size_t> slot_effort;
+    std::vector<size_t> gpu_steps;
     bool gpu_offer = false;
     for (const std::string& line : lines) {
         REQUIRE_FALSE(line.contains(kBenchWarningCpuOnly));
-        if (line.contains("[Sequential] heur=fj ")) {
+        if (line.contains("[Heur] name=fj ")) {
+            gpu_steps.push_back(field(line, " gpu_steps="));
+        } else if (line.contains("[Sequential] heur=fj ")) {
             sequential.push_back(field(line, " effort="));
         } else if (line.contains("[HeurSol] name=fj ")) {
             const auto worker = static_cast<size_t>(field(line, " worker="));
@@ -363,6 +366,20 @@ TEST_CASE("fj_race: GPU climbers offer as their own slots and are charged once",
         offered += e;
     }
     REQUIRE(offered <= sequential.front());
+    // A climber's offer means the batch was launched (#305).
+    REQUIRE(gpu_steps.size() == 1);
+    REQUIRE(gpu_steps.front() > 0);
+}
+
+TEST_CASE("fj_race: FJ's line has no GPU steps when no race ran", "[gpu][fj_gpu]") {
+    const auto lines = solve_capturing_log("egout.mps", [](Highs& h) {
+        select_heuristics(h, "fj");
+        require_option(h, "log_dev_level", 3);
+    });
+    const auto fj_line = std::ranges::find_if(
+        lines, [](const std::string& line) { return line.contains("[Heur] name=fj "); });
+    REQUIRE(fj_line != lines.end());
+    REQUIRE_FALSE(fj_line->contains("gpu_steps="));
 }
 #endif
 
