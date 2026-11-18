@@ -764,17 +764,47 @@ TEST_CASE("gpu_fj: a stop ends the related-variable table's build", "[gpu]") {
             cells / (static_cast<std::int64_t>(gpu_fj::kRelatedPollCells) + longest_row);
         REQUIRE(polls >= std::max<std::int64_t>(fewest, 1));
         periodic = periodic || fewest >= 2;
-        // Stopping at the build's last look gives up too: no partial table
-        // reaches the device, and a stop is no failure.
-        int seen = 0;
-        const auto stopped = gpu_fj::DeviceModel::upload(
-            m, error, gpu_fj::kRelatedMaxCells, [&seen, polls] { return ++seen == polls; });
-        REQUIRE(stopped == nullptr);
-        REQUIRE(error.empty());
-        REQUIRE(seen == polls);
+        // A stop at any look ends the build there: no partial table reaches
+        // the device, and a stop is no failure.
+        for (const int stop_at : {1, (polls + 1) / 2, polls}) {
+            int seen = 0;
+            const auto stopped = gpu_fj::DeviceModel::upload(
+                m, error, gpu_fj::kRelatedMaxCells, [&seen, stop_at] { return ++seen == stop_at; });
+            REQUIRE(stopped == nullptr);
+            REQUIRE(error.empty());
+            REQUIRE(seen == stop_at);
+        }
     }
     // At least one instance's table is long enough to need a second look.
     REQUIRE(periodic);
+}
+
+TEST_CASE("gpu_fj: the related-variable table's build looks inside a dense column", "[gpu]") {
+    // Every column is in every row, so each one gathers more cells than a
+    // look allows.  Looks between columns alone would number at most `ncol`.
+    constexpr std::size_t kRows = 70;
+    constexpr std::size_t kCols = 71;
+    STATIC_REQUIRE(kRows * (kCols - 1) > gpu_fj::kRelatedPollCells);
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    const HighsLp lp =
+        tiny_lp(std::vector<double>(kCols, 0.0), std::vector<double>(kCols, 1.0),
+                std::vector<double>(kCols, 0.0), std::vector<double>(kRows, -kHighsInf),
+                std::vector<double>(kRows, 1.0),
+                std::vector<std::vector<double>>(kCols, std::vector<double>(kRows, 1.0)), true);
+    const Setup s(lp, highs.getOptions().log_options);
+    const gpu_fj::HostModel host(s.problem);
+    const gpu_fj::GpuFjModel m = host.pod();
+    std::string error;
+    int polls = 0;
+    const auto built = gpu_fj::DeviceModel::upload(m, error, gpu_fj::kRelatedMaxCells, [&polls] {
+        ++polls;
+        return false;
+    });
+    INFO(error);
+    REQUIRE(built != nullptr);
+    REQUIRE(built->has_related_table());
+    REQUIRE(polls > m.ncol);
 }
 
 TEST_CASE("gpu_fj: the related-variable table takes the touched-cell scan's steps", "[gpu]") {

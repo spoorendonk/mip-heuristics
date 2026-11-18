@@ -73,7 +73,7 @@ Related build_related(const GpuFjModel& host, std::int64_t cap,
     t.cell.reserve(static_cast<std::size_t>(cells) + 1);
     t.cell_k.reserve(static_cast<std::size_t>(cells));
     t.cell_p.reserve(static_cast<std::size_t>(cells));
-    // Starts due, so a stop that came before the build ends it at once.
+    // Starts due, so the first column's first row looks.
     std::size_t unpolled = kRelatedPollCells;
     const auto stop_due = [&unpolled, &stopped] {
         if (unpolled < kRelatedPollCells) {

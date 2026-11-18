@@ -155,7 +155,7 @@ bool start_gpu(GpuSide& gpu, const ExecutionContext& exec, const std::atomic<boo
         gpu.device.reset();
         error.clear();
         gpu.device = gpu_fj::DeviceModel::upload(gpu.host->pod(), error, 0);
-        if (!gpu.device) {
+        if (!gpu.device || halted(exec, stop)) {
             return false;
         }
         gpu.batch = gpu_fj::Climber::create(*gpu.device, climbers, error);
