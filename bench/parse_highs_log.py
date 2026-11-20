@@ -738,11 +738,17 @@ _KILLED_RE = re.compile(r"^TIMEOUT: process killed (?:after ([\d.]+)s|by signal 
 # when it existed (#240).  `at ...s, passed on` is the handover
 # (`EarlyFj::finish`), dated at the end of presolve: it adds an incumbent only
 # when it repeats no `found at` line, as in a log written before #240.
+# `at ...s, dropped` is a point the presolved model rejected (#306): the solve
+# never had it, so the `found at` points go with it.
 _EARLY_FJ_FOUND_RE = re.compile(
     r"^Early FeasibilityJump on the original model: objective (\S+) found at ([\d.]+)s"
 )
 _EARLY_FJ_RE = re.compile(
-    r"^Early FeasibilityJump on the original model: objective (\S+) at ([\d.]+)s,"
+    r"^Early FeasibilityJump on the original model: objective (\S+) at ([\d.]+)s, "
+    r"passed on as the MIP start"
+)
+_EARLY_FJ_DROPPED_RE = re.compile(
+    r"^Early FeasibilityJump on the original model: objective \S+ at [\d.]+s, dropped"
 )
 
 # [Sequential] per-heuristic effort line emitted from
@@ -956,6 +962,8 @@ def parse_log(log_text: str) -> SolveResult:
     pending_heursol: dict[str, list[int]] = {}
     # A `found at` line seen, with no handover line or display-row incumbent since.
     early_fj_unhanded = False
+    # The incumbents `found at` lines added, withdrawn if the point is dropped.
+    early_fj_found: list[Incumbent] = []
 
     for line in log_text.splitlines():
         # Try MIP log data line
@@ -1015,6 +1023,17 @@ def parse_log(log_text: str) -> SolveResult:
             result.killed_after = float(m.group(1)) if m.group(1) else None
             continue
 
+        if _EARLY_FJ_DROPPED_RE.match(line):
+            # Nothing reaches the solve before the handover, so these are
+            # the only incumbents so far; a blank row may seed again.
+            result.incumbents = [
+                inc
+                for inc in result.incumbents
+                if not any(inc is found for found in early_fj_found)
+            ]
+            early_fj_found.clear()
+            continue
+
         m = _EARLY_FJ_FOUND_RE.match(line) or _EARLY_FJ_RE.match(line)
         if m:
             objective = _parse_float_or_inf(m.group(1))
@@ -1031,6 +1050,8 @@ def parse_log(log_text: str) -> SolveResult:
                         nodes=0,
                     )
                 )
+                if early_fj_unhanded:
+                    early_fj_found.append(result.incumbents[-1])
             continue
 
         # Solving report lines

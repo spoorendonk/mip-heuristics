@@ -40,7 +40,12 @@ namespace heuristics {
 // transforms and drops removed columns, so a point a reduction (a dual one,
 // say) needs another column to compensate for fails that check; it is then
 // dropped, logged as `dropped: infeasible in the presolved model`, and
-// booked `found=0`.  It is not repaired.  If presolve ended the solve on the
+// booked `found=0`.  It is not repaired, and no longer the answer of a run
+// whose search finds nothing.  The check covers the first `runSetup` only:
+// a root restart re-crushes `solution_` through the longer postsolve stack
+// unchecked, as upstream does any start or incumbent, and the restarted
+// chain's pool is seeded from that.  Its cutoff stays the first setup's,
+// which a presolved point attained.  If presolve ended the solve on the
 // time limit, nothing searches: the point is handed over unchecked in the
 // presolved space and the upper bound set to its own original-space
 // objective, so the run reports it.  After any other presolve verdict

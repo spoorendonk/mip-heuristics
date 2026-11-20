@@ -47,6 +47,8 @@ linked from each entry.
   `runSetup` takes the upper bound from the crushed point's objective. One
   that is not is dropped, with a `dropped: infeasible in the presolved
   model` log line, rather than setting a cutoff no presolved point reaches.
+  A dropped point is no longer the answer of a run whose search finds
+  nothing, and the benchmark parser withdraws its `found at` incumbents.
   A default run is unchanged.
 
 ## v0.1.11 (2026-11-12)
