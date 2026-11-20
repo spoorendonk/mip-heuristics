@@ -186,6 +186,26 @@ bool current_solution_feasible(const HighsMipSolver& mipsolver) {
            mipsolver.integrality_violation_ <= tol && mipsolver.row_violation_ <= tol;
 }
 
+// Whether `best`, crushed into the presolved space as `checkAddSolution`
+// will crush it, is feasible on the presolved model (#306).  The crush only
+// applies duplicate-column and linear transforms and drops removed columns,
+// so a point feasible on the original model can come out infeasible there,
+// e.g. when a dual reduction removed a column that another must compensate
+// for.  `checkAddSolution` judges the start by its original-space
+// violations but takes the upper bound from the crushed point's objective,
+// so such a point would set a cutoff no presolved point reaches.  The crush
+// moves only the postsolve stack's read cursor, which every crush sets
+// before it reads.
+bool feasible_when_crushed(HighsMipSolver& mipsolver, const std::vector<double>& best) {
+    const HighsLp& model = *mipsolver.model_;
+    const std::vector<double> reduced =
+        mipsolver.mipdata_->postSolveStack.getReducedPrimalSolution(best);
+    MipViolation violation{};
+    HighsCDouble objective = 0.0;
+    return reduced.size() == static_cast<std::size_t>(model.num_col_) &&
+           mipsolver.solutionFeasible(&model, reduced, nullptr, violation, objective);
+}
+
 // Hands `best` to `solution_` as `finish()` describes; whether it did.
 bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     // Presolve's own verdict decides whether there is anything to hand
@@ -208,6 +228,16 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     const auto sense = static_cast<double>(static_cast<int>(model.sense_));
     if (current_solution_feasible(mipsolver) &&
         sense * mipsolver.solution_objective_ <= sense * objective) {
+        return false;
+    }
+    // `runSetup` follows only when presolve gave no verdict.  After a
+    // time-out nothing searches: the bound set below is the point's own
+    // original-space objective, which it attains, and nothing prunes on it.
+    if (status == HighsModelStatus::kNotset && !feasible_when_crushed(mipsolver, best)) {
+        highsLogUser(mipsolver.options_mip_->log_options, HighsLogType::kInfo,
+                     "Early FeasibilityJump on the original model: objective %.12g at %.3fs, "
+                     "dropped: infeasible in the presolved model\n",
+                     objective, EffortLedger(mipsolver).now_s());
         return false;
     }
 

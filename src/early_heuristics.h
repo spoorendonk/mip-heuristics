@@ -29,12 +29,23 @@ namespace heuristics {
 // `HighsMipSolver::solution_`, when it is feasible on the original model and
 // beats what is there (a user's MIP start may be).  That is the slot a MIP
 // start occupies, so from there HiGHS does the rest: `runSetup` crushes it
-// into the presolved space as the incumbent and takes its objective as the
-// upper bound, and `solution_` stays the answer unless the search finds
-// better — including when presolve's dual reductions cut the point itself
-// off.  If presolve ended the solve on the time limit, the upper bound is set
-// too, so the run reports it; after any other presolve verdict (optimal,
-// infeasible, unbounded, out of memory) nothing is installed.
+// into the presolved space as the incumbent, which seeds the chain's pool,
+// and takes the crushed point's objective as the upper bound, and
+// `solution_` stays the answer unless the search finds better.
+//
+// What is guaranteed (#306): a handed-over point is feasible on the original
+// model and, when `runSetup` follows, its crushed image is feasible on the
+// presolved model by the same test, so the cutoff it sets is attained by a
+// presolved point.  The crush applies only duplicate-column and linear
+// transforms and drops removed columns, so a point a reduction (a dual one,
+// say) needs another column to compensate for fails that check; it is then
+// dropped, logged as `dropped: infeasible in the presolved model`, and
+// booked `found=0`.  It is not repaired.  If presolve ended the solve on the
+// time limit, nothing searches: the point is handed over unchecked in the
+// presolved space and the upper bound set to its own original-space
+// objective, so the run reports it.  After any other presolve verdict
+// (optimal, infeasible, unbounded, out of memory) nothing is installed.
+// A user's MIP start takes upstream's path, which has no such check.
 //
 // In a `MIP_HEURISTICS_CUDA` build the constructor also starts the GPU FJ
 // race's CUDA context (`fj::warm_gpu`, #289) when `mip_heuristic_fj_gpu` is

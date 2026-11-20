@@ -179,6 +179,47 @@ TEST_CASE("early FJ: its solution becomes the MIP start presolve crushes", "[ear
     REQUIRE(ms.solution_objective_ == objective);
 }
 
+// #306: `runSetup` takes the cutoff from the crushed point's objective, so a
+// point feasible on the original model whose crushed image is not feasible on
+// the presolved one must not be handed over.  No reduction in HiGHS is known
+// to produce such a point on demand, so the presolved model is made to reject
+// every point: one of its rows is pinned to an activity no point reaches.
+TEST_CASE("early FJ: a point infeasible once crushed sets no cutoff", "[early-fj]") {
+    Harness harness(/*maximise=*/false, /*capture_log=*/true);
+    HighsMipSolver& ms = *harness.mipsolver;
+    heuristics::EarlyFj early(ms);
+    harness.presolve();
+    REQUIRE(ms.modelstatus_ == HighsModelStatus::kNotset);
+    HighsLp& presolved = ms.mipdata_->presolvedModel;
+    REQUIRE(ms.model_ == &presolved);
+    REQUIRE(presolved.num_row_ > 0);
+    presolved.row_lower_[0] = 1e9;
+    presolved.row_upper_[0] = 1e9;
+    early.finish(true);
+
+    // The worker found a point feasible on the original model ...
+    REQUIRE_FALSE(harness.found_lines().empty());
+    // ... and it was dropped rather than handed over.
+    std::vector<std::string> dropped;
+    {
+        std::scoped_lock lock(harness.log.mtx);
+        std::ranges::copy_if(harness.log.lines, std::back_inserter(dropped),
+                             [](const std::string& line) {
+                                 return line.starts_with(kFoundLine) &&
+                                        line.contains("dropped: infeasible in the presolved model");
+                             });
+    }
+    REQUIRE(dropped.size() == 1);
+    REQUIRE(ms.solution_.empty());
+    REQUIRE(ms.solution_objective_ == kHighsInf);
+
+    // So `runSetup` has no start: no incumbent to seed the chain's pool and
+    // no upper bound to prune on.
+    ms.mipdata_->runSetup();
+    REQUIRE(ms.mipdata_->incumbent.empty());
+    REQUIRE(ms.mipdata_->upper_bound == kHighsInf);
+}
+
 TEST_CASE("early FJ: a point is logged when found, before presolve returns", "[early-fj]") {
     Harness harness(/*maximise=*/false, /*capture_log=*/true);
     HighsMipSolver& ms = *harness.mipsolver;

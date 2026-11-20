@@ -41,6 +41,13 @@ linked from each entry.
   sub-MIPs run PDLP on several threads at once. Upstream's cuPDLP-C wrapper
   reset the device after every solve, destroying the CUDA context under the
   other threads. A default run, and every CPU build, are unchanged.
+- **Early FJ checks its point in the presolved space** (#306): with
+  `mip_heuristic_early_fj_effort` on, the point handed to HiGHS as the MIP
+  start must also be feasible once crushed into the presolved model, since
+  `runSetup` takes the upper bound from the crushed point's objective. One
+  that is not is dropped, with a `dropped: infeasible in the presolved
+  model` log line, rather than setting a cutoff no presolved point reaches.
+  A default run is unchanged.
 
 ## v0.1.11 (2026-11-12)
 
