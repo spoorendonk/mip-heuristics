@@ -48,8 +48,9 @@ namespace heuristics {
 // (a dominated column fixed at the bound the point does not take, say) the
 // point handed over is the crushed point's postsolved image instead, logged
 // as `postsolved from its presolved image`, provided it is feasible on the
-// original model with the crushed objective; else the point is dropped, as
-// above.  The check covers the first `runSetup` only:
+// original model and its own crush, as `runSetup` will take it, is feasible
+// on the presolved model with the image's objective; else the point is
+// dropped, as above.  The check covers the first `runSetup` only:
 // a root restart re-crushes `solution_` through the longer postsolve stack
 // unchecked, as upstream does any start or incumbent, and the restarted
 // chain's pool is seeded from that.  Its cutoff stays the first setup's,
