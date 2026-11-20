@@ -3,6 +3,7 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "test_common.h"
+#include "util/HighsCDouble.h"
 
 #include <algorithm>
 #include <catch2/catch_approx.hpp>
@@ -70,7 +71,10 @@ struct Harness {
     HighsProfiling profiling;
     std::unique_ptr<HighsMipSolver> mipsolver;
 
-    explicit Harness(bool maximise = false, bool capture_log = false) {
+    // `edit` changes the model after it is read, before the MIP solver is
+    // built from it.
+    explicit Harness(bool maximise = false, bool capture_log = false,
+                     const std::function<void(Highs&)>& edit = {}) {
         // `HighsMipSolverData::init` reads `parallel::num_threads()`, as at
         // every `build_bare_mipsolver` call site.  At one thread, the
         // `threads` option below: a solve later in the same process refuses
@@ -107,6 +111,9 @@ struct Harness {
             REQUIRE(highs.changeColsCost(0, ncol - 1, cost.data()) == HighsStatus::kOk);
             REQUIRE(highs.changeObjectiveSense(ObjSense::kMaximize) == HighsStatus::kOk);
         }
+        if (edit) {
+            edit(highs);
+        }
         mipsolver = std::make_unique<HighsMipSolver>(cb, highs.getOptions(), highs.getLp(),
                                                      highs.getSolution());
         profiling.multi_threaded = false;
@@ -125,10 +132,16 @@ struct Harness {
 
     // The worker's `found at` lines, in the order they were logged.
     [[nodiscard]] std::vector<std::string> found_lines() {
+        return lines_with(kFoundLine, " found at ");
+    }
+
+    // The log lines that start with `prefix` and contain `text`.
+    [[nodiscard]] std::vector<std::string> lines_with(std::string_view prefix,
+                                                      std::string_view text) {
         std::scoped_lock lock(log.mtx);
         std::vector<std::string> found;
-        std::ranges::copy_if(log.lines, std::back_inserter(found), [](const std::string& line) {
-            return line.starts_with(kFoundLine) && line.contains(" found at ");
+        std::ranges::copy_if(log.lines, std::back_inserter(found), [&](const std::string& line) {
+            return line.starts_with(prefix) && line.contains(text);
         });
         return found;
     }
@@ -200,21 +213,86 @@ TEST_CASE("early FJ: a point infeasible once crushed sets no cutoff", "[early-fj
     // The worker found a point feasible on the original model ...
     REQUIRE_FALSE(harness.found_lines().empty());
     // ... and it was dropped rather than handed over.
-    std::vector<std::string> dropped;
-    {
-        std::scoped_lock lock(harness.log.mtx);
-        std::ranges::copy_if(harness.log.lines, std::back_inserter(dropped),
-                             [](const std::string& line) {
-                                 return line.starts_with(kFoundLine) &&
-                                        line.contains("dropped: infeasible in the presolved model");
-                             });
-    }
-    REQUIRE(dropped.size() == 1);
+    REQUIRE(harness.lines_with(kFoundLine, "dropped: infeasible in the presolved model").size() ==
+            1);
     REQUIRE(ms.solution_.empty());
     REQUIRE(ms.solution_objective_ == kHighsInf);
 
     // So `runSetup` has no start: no incumbent to seed the chain's pool and
     // no upper bound to prune on.
+    ms.mipdata_->runSetup();
+    REQUIRE(ms.mipdata_->incumbent.empty());
+    REQUIRE(ms.mipdata_->upper_bound == kHighsInf);
+}
+
+// #343: `runSetup` takes `solution_objective_` from the crushed point and keeps
+// `solution_`.  An empty binary column of negative cost, which presolve fixes
+// at 1, at 0 in the point handed over: crushing drops it, so the crushed
+// objective is `kBonus` below the point's own.  The point handed over must be
+// the crushed point's postsolved image, which takes the bonus.
+TEST_CASE("early FJ: a point presolve gives another objective is handed over postsolved",
+          "[early-fj]") {
+    constexpr double kBonus = 5.0;
+    // A feasible lseu point to hand over: its optimum, solved on its own.
+    std::vector<double> point;
+    {
+        Highs solver;
+        solver.setOptionValue("output_flag", false);
+        require_option(solver, "threads", 1);
+        REQUIRE(solver.readModel(instances_dir() + "/" + kInstance) == HighsStatus::kOk);
+        REQUIRE(solver.run() == HighsStatus::kOk);
+        REQUIRE(solver.getModelStatus() == HighsModelStatus::kOptimal);
+        point = solver.getSolution().col_value;
+    }
+    point.push_back(0.0);
+
+    Harness harness(/*maximise=*/false, /*capture_log=*/true, [](Highs& highs) {
+        REQUIRE(highs.addCol(-kBonus, 0.0, 1.0, 0, nullptr, nullptr) == HighsStatus::kOk);
+        const auto bonus_col = static_cast<HighsInt>(highs.getLp().num_col_ - 1);
+        REQUIRE(highs.changeColIntegrality(bonus_col, HighsVarType::kInteger) == HighsStatus::kOk);
+    });
+    HighsMipSolver& ms = *harness.mipsolver;
+    harness.presolve();
+    REQUIRE(ms.modelstatus_ == HighsModelStatus::kNotset);
+
+    REQUIRE(heuristics::install_early_start(ms, point));
+    REQUIRE(harness.lines_with(kFoundLine, "postsolved from its presolved image").size() == 1);
+    REQUIRE(harness.solution_feasible());
+    REQUIRE(ms.solution_.back() == Catch::Approx(1.0));
+    REQUIRE(ms.solution_objective_ == Catch::Approx(kOptimum - kBonus));
+    const std::vector<double> handed_over = ms.solution_;
+
+    // `runSetup` leaves the pair agreeing: the bound and `solution_objective_`
+    // it takes from the crushed point are what `solution_` attains.
+    ms.mipdata_->runSetup();
+    REQUIRE(ms.solution_ == handed_over);
+    REQUIRE(ms.solution_objective_ == Catch::Approx(kOptimum - kBonus));
+    REQUIRE(ms.mipdata_->upper_bound == Catch::Approx(kOptimum - kBonus - ms.model_->offset_));
+    MipViolation violation{};
+    HighsCDouble attained = 0.0;
+    REQUIRE(ms.solutionFeasible(ms.orig_model_, ms.solution_, nullptr, violation, attained));
+    REQUIRE(static_cast<double>(attained) == Catch::Approx(ms.solution_objective_));
+}
+
+// #343, when no point attains the crushed objective: the presolved model's
+// offset is moved, so every crushed point's objective is off by it and its
+// postsolved image, judged on the unchanged original model, cannot make it up.
+TEST_CASE("early FJ: a point whose crushed objective nothing attains sets no cutoff",
+          "[early-fj]") {
+    Harness harness(/*maximise=*/false, /*capture_log=*/true);
+    HighsMipSolver& ms = *harness.mipsolver;
+    heuristics::EarlyFj early(ms);
+    harness.presolve();
+    REQUIRE(ms.modelstatus_ == HighsModelStatus::kNotset);
+    ms.mipdata_->presolvedModel.offset_ += 1000.0;
+    early.finish(true);
+
+    REQUIRE_FALSE(harness.found_lines().empty());
+    REQUIRE(
+        harness.lines_with(kFoundLine, "dropped: the presolved model gives it another objective")
+            .size() == 1);
+    REQUIRE(ms.solution_.empty());
+    REQUIRE(ms.solution_objective_ == kHighsInf);
     ms.mipdata_->runSetup();
     REQUIRE(ms.mipdata_->incumbent.empty());
     REQUIRE(ms.mipdata_->upper_bound == kHighsInf);

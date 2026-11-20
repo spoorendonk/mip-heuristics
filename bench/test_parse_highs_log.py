@@ -167,6 +167,24 @@ def test_early_fj_dropped_point_is_withdrawn():
     assert result.time_to_first_feasible == 5.0
 
 
+def test_early_fj_postsolved_handover_adds_its_own_incumbent():
+    """A point handed over as its presolved image's postsolve (#343) is passed on
+    with that image's objective: a new incumbent at the handover, after the
+    `found at` ones, which stay."""
+    log = (
+        "Early FeasibilityJump on the original model: objective 20 found at 0.100s\n"
+        "Early FeasibilityJump on the original model: objective 12.5 found at 0.400s\n"
+        "Early FeasibilityJump on the original model: objective 12.5 postsolved from its "
+        "presolved image to objective 7.5\n"
+        "Early FeasibilityJump on the original model: objective 7.5 at 3.000s, passed on as the MIP start\n"
+    )
+    assert [(i.time, i.objective, i.source) for i in parse_log(log).incumbents] == [
+        (0.1, 20.0, "J"),
+        (0.4, 12.5, "J"),
+        (3.0, 7.5, "J"),
+    ]
+
+
 def test_early_fj_handover_stops_blank_rows_seeding():
     """After a handover, a periodic row rounding the objective is no new incumbent."""
     log = (

@@ -739,7 +739,9 @@ _KILLED_RE = re.compile(r"^TIMEOUT: process killed (?:after ([\d.]+)s|by signal 
 # (`EarlyFj::finish`), dated at the end of presolve: it adds an incumbent only
 # when it repeats no `found at` line, as in a log written before #240.
 # `at ...s, dropped` is a point the presolved model rejected (#306): the solve
-# never had it, so the `found at` points go with it.
+# never had it, so the `found at` points go with it.  A point postsolved from
+# its presolved image (#343) is passed on with the image's objective, so its
+# `passed on` line repeats no `found at` one and adds the image's incumbent.
 _EARLY_FJ_FOUND_RE = re.compile(
     r"^Early FeasibilityJump on the original model: objective (\S+) found at ([\d.]+)s"
 )

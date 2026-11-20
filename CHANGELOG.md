@@ -50,6 +50,13 @@ linked from each entry.
   A dropped point is no longer the answer of a run whose search finds
   nothing, and the benchmark parser withdraws its `found at` incumbents.
   A default run is unchanged.
+- **Early FJ's reported bound and vector agree** (#343): with
+  `mip_heuristic_early_fj_effort` on, a point whose crushed image has
+  another objective (presolve fixed a column it sets otherwise, say) is
+  handed over as that image's postsolve, logged as `postsolved from its
+  presolved image`, so the primal bound `runSetup` takes from the crushed
+  point is the reported vector's objective. If the postsolved point does
+  not attain it, the point is dropped. A default run is unchanged.
 
 ## v0.1.11 (2026-11-12)
 

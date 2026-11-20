@@ -8,12 +8,15 @@
 #include "highs_context.h"
 #include "io/HighsIO.h"
 #include "lp_data/HighsLp.h"
+#include "lp_data/HighsSolution.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
+#include "presolve/HighsPostsolveStack.h"
 #include "solution_sink.h"
 #include "util/HighsCDouble.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -186,28 +189,99 @@ bool current_solution_feasible(const HighsMipSolver& mipsolver) {
            mipsolver.integrality_violation_ <= tol && mipsolver.row_violation_ <= tol;
 }
 
-// Whether `best`, crushed into the presolved space as `checkAddSolution`
-// will crush it, is feasible on the presolved model (#306).  The crush only
-// applies duplicate-column and linear transforms and drops removed columns,
-// so a point feasible on the original model can come out infeasible there,
-// e.g. when a dual reduction removed a column that another must compensate
-// for.  `checkAddSolution` judges the start by its original-space
-// violations but takes the upper bound from the crushed point's objective,
-// so such a point would set a cutoff no presolved point reaches.  The crush
-// moves only the postsolve stack's read cursor, which every crush sets
-// before it reads.
-bool feasible_when_crushed(HighsMipSolver& mipsolver, const std::vector<double>& best) {
-    const HighsLp& model = *mipsolver.model_;
-    const std::vector<double> reduced =
-        mipsolver.mipdata_->postSolveStack.getReducedPrimalSolution(best);
-    MipViolation violation{};
-    HighsCDouble objective = 0.0;
-    return reduced.size() == static_cast<std::size_t>(model.num_col_) &&
-           mipsolver.solutionFeasible(&model, reduced, nullptr, violation, objective);
+// Whether `a` differs from `b` by more than `checkAddSolution`'s relative
+// tolerance, the test by which it reports a start's objective as changed.
+bool objectives_differ(const HighsMipSolver& mipsolver, double a, double b) {
+    return std::fabs(a - b) / (1.0 + std::fabs(b)) >
+           mipsolver.options_mip_->mip_feasibility_tolerance;
 }
 
-// Hands `best` to `solution_` as `finish()` describes; whether it did.
-bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
+// `point` crushed into the presolved space as `checkAddSolution` crushes a
+// start, into `crushed`: whether it is feasible on the presolved model, by the
+// test `point` passed on the original one, with its objective, in the
+// original sense as `checkAddSolution` states it, in `objective`.  The crush
+// moves only the postsolve stack's read cursor, which every crush sets before
+// it reads.
+bool crush(HighsMipSolver& mipsolver, const std::vector<double>& point,
+           std::vector<double>& crushed, double& objective) {
+    const HighsLp& presolved = *mipsolver.model_;
+    crushed = mipsolver.mipdata_->postSolveStack.getReducedPrimalSolution(point);
+    MipViolation violation{};
+    HighsCDouble quad_objective = 0.0;
+    if (crushed.size() != static_cast<std::size_t>(presolved.num_col_) ||
+        !mipsolver.solutionFeasible(&presolved, crushed, nullptr, violation, quad_objective)) {
+        return false;
+    }
+    // Presolve states its model as a minimisation; before presolve has run
+    // (a test's `finish()`) the model is still the original, in its own sense.
+    const int sense_change =
+        static_cast<int>(mipsolver.orig_model_->sense_) * static_cast<int>(presolved.sense_);
+    objective = static_cast<double>(sense_change) * static_cast<double>(quad_objective);
+    return true;
+}
+
+// The start `checkAddSolution` will make of `point`, whose original-space
+// `objective` and `violation` are given: whether there is one, with `point`,
+// `objective` and `violation` then describing it, else why not in `reason`.
+//
+// `checkAddSolution` crushes `point` into the presolved space as the
+// incumbent, takes the upper bound and `solution_objective_` from the crushed
+// point's objective, and leaves `solution_` as `point`.  The crush only
+// applies duplicate-column and linear transforms and drops removed columns,
+// so two things can come apart:
+// - The crushed point can be infeasible on the presolved model (#306), e.g.
+//   when a dual reduction removed a column that another must compensate
+//   for: it would set a cutoff no presolved point reaches.  Dropped.
+// - It can be feasible with another objective (#343), e.g. when presolve
+//   fixed a dominated column at the bound `point` does not take: the run
+//   would report the crushed objective beside a vector that does not attain
+//   it.  The crushed point is then postsolved, as `transformNewIntegerFeasible
+//   Solution` postsolves every presolved incumbent, and its image becomes the
+//   start if it passes both tests in its turn: feasible on the original model,
+//   and crushed, feasible on the presolved one with the same objective.
+//   Otherwise dropped: there is no repair LP here, unlike upstream's.
+bool presolved_start(HighsMipSolver& mipsolver, std::vector<double>& point, double& objective,
+                     MipViolation& violation, const char*& reason) {
+    HighsSolution image;
+    double crushed_objective = 0.0;
+    if (!crush(mipsolver, point, image.col_value, crushed_objective)) {
+        reason = "infeasible in the presolved model";
+        return false;
+    }
+    if (!objectives_differ(mipsolver, crushed_objective, objective)) {
+        return true;
+    }
+
+    image.value_valid = true;
+    mipsolver.mipdata_->postSolveStack.undoPrimal(*mipsolver.options_mip_, image);
+    MipViolation image_violation{};
+    HighsCDouble image_quad_objective = 0.0;
+    std::vector<double> recrushed;
+    double recrushed_objective = 0.0;
+    const bool attained =
+        mipsolver.solutionFeasible(mipsolver.orig_model_, image.col_value, nullptr, image_violation,
+                                   image_quad_objective) &&
+        crush(mipsolver, image.col_value, recrushed, recrushed_objective) &&
+        !objectives_differ(mipsolver, recrushed_objective,
+                           static_cast<double>(image_quad_objective));
+    if (!attained) {
+        reason = "the presolved model gives it another objective and no feasible point attains it";
+        return false;
+    }
+    const auto image_objective = static_cast<double>(image_quad_objective);
+    highsLogUser(mipsolver.options_mip_->log_options, HighsLogType::kInfo,
+                 "Early FeasibilityJump on the original model: objective %.12g postsolved from "
+                 "its presolved image to objective %.12g\n",
+                 objective, image_objective);
+    point = std::move(image.col_value);
+    objective = image_objective;
+    violation = image_violation;
+    return true;
+}
+
+}  // namespace
+
+bool install_early_start(HighsMipSolver& mipsolver, std::vector<double>& point) {
     // Presolve's own verdict decides whether there is anything to hand
     // over: an optimal, infeasible or unbounded model, or one presolve ran
     // out of memory on, keeps what presolve concluded.
@@ -221,27 +295,29 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     const HighsLp& model = *mipsolver.orig_model_;
     MipViolation violation{};
     HighsCDouble quad_objective = 0.0;
-    if (!mipsolver.solutionFeasible(&model, best, nullptr, violation, quad_objective)) {
+    if (!mipsolver.solutionFeasible(&model, point, nullptr, violation, quad_objective)) {
         return false;
     }
-    const auto objective = static_cast<double>(quad_objective);
+    auto objective = static_cast<double>(quad_objective);
+    // `runSetup` follows only when presolve gave no verdict.  After a
+    // time-out nothing searches: the bound set below is the point's own
+    // original-space objective, which it attains, and nothing prunes on it.
+    const char* reason = nullptr;
+    if (status == HighsModelStatus::kNotset &&
+        !presolved_start(mipsolver, point, objective, violation, reason)) {
+        highsLogUser(mipsolver.options_mip_->log_options, HighsLogType::kInfo,
+                     "Early FeasibilityJump on the original model: objective %.12g at %.3fs, "
+                     "dropped: %s\n",
+                     objective, EffortLedger(mipsolver).now_s(), reason);
+        return false;
+    }
     const auto sense = static_cast<double>(static_cast<int>(model.sense_));
     if (current_solution_feasible(mipsolver) &&
         sense * mipsolver.solution_objective_ <= sense * objective) {
         return false;
     }
-    // `runSetup` follows only when presolve gave no verdict.  After a
-    // time-out nothing searches: the bound set below is the point's own
-    // original-space objective, which it attains, and nothing prunes on it.
-    if (status == HighsModelStatus::kNotset && !feasible_when_crushed(mipsolver, best)) {
-        highsLogUser(mipsolver.options_mip_->log_options, HighsLogType::kInfo,
-                     "Early FeasibilityJump on the original model: objective %.12g at %.3fs, "
-                     "dropped: infeasible in the presolved model\n",
-                     objective, EffortLedger(mipsolver).now_s());
-        return false;
-    }
 
-    mipsolver.solution_ = std::move(best);
+    mipsolver.solution_ = std::move(point);
     mipsolver.solution_objective_ = objective;
     violation.copy(mipsolver.bound_violation_, mipsolver.row_violation_,
                    mipsolver.integrality_violation_);
@@ -268,8 +344,6 @@ bool install(HighsMipSolver& mipsolver, std::vector<double>& best) {
     return true;
 }
 
-}  // namespace
-
 void EarlyFj::finish(bool run_to_budget) {
     if (!run_ || !run_->thread.joinable()) {
         return;
@@ -286,7 +360,7 @@ void EarlyFj::finish(bool run_to_budget) {
     const bool found = run_->sink.has_value() && run_->sink->take_best_checked(best);
     // Booked as found only when it was handed over, so `found=1` means the
     // run's answer can be this worker's.
-    const bool installed = found && install(mipsolver_, best);
+    const bool installed = found && install_early_start(mipsolver_, best);
     EffortLedger ledger(mipsolver_);
     ledger.charge_early("early_fj", run_->effort, installed, run_->nnz, run_->t0_s, ledger.now_s());
 }

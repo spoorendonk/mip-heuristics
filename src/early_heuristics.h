@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 class HighsMipSolver;
 
@@ -41,7 +42,14 @@ namespace heuristics {
 // say) needs another column to compensate for fails that check; it is then
 // dropped, logged as `dropped: infeasible in the presolved model`, and
 // booked `found=0`.  It is not repaired, and no longer the answer of a run
-// whose search finds nothing.  The check covers the first `runSetup` only:
+// whose search finds nothing.  Nor does the reported pair disagree (#343):
+// `runSetup` takes `solution_objective_` from the crushed point but keeps
+// `solution_`, so where presolve gave the crushed point another objective
+// (a dominated column fixed at the bound the point does not take, say) the
+// point handed over is the crushed point's postsolved image instead, logged
+// as `postsolved from its presolved image`, provided it is feasible on the
+// original model with the crushed objective; else the point is dropped, as
+// above.  The check covers the first `runSetup` only:
 // a root restart re-crushes `solution_` through the longer postsolve stack
 // unchecked, as upstream does any start or incumbent, and the restarted
 // chain's pool is seeded from that.  Its cutoff stays the first setup's,
@@ -87,5 +95,11 @@ private:
     // `fj::warm_gpu` and the destructor waits for it.
     bool gpu_race_ = false;
 };
+
+// Hands `point`, in the original columns, to `solution_` by the tests and
+// with the log lines `finish()` hands the worker's best over by; whether it
+// did.  On the solving thread, after presolve returns.  `finish()` is its
+// caller in a solve; a test calls it with a point of its own choosing.
+bool install_early_start(HighsMipSolver& mipsolver, std::vector<double>& point);
 
 }  // namespace heuristics
