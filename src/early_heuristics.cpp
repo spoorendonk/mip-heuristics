@@ -136,7 +136,9 @@ struct EarlyFj::Run {
           exec{.num_workers = 1,
                .base_seed = heuristic_base_seed(options.random_seed),
                .deadline = deadline_of(mipsolver),
-               .log_options = options.log_options,
+               // FJ's own dev lines too go to the file and the console
+               // only (#309).
+               .log_options = streams,
                // No terminator: `terminatorTerminated` writes, and this
                // thread is not the solve's.  The stop flag and the clock
                // are the write-free halves (`ExecutionContext`).
@@ -392,13 +394,13 @@ void EarlyFj::finish(bool run_to_budget) {
         run_->stop.store(true, std::memory_order_relaxed);
     }
     run_->thread.join();
-    if (run_->error) {
-        std::rethrow_exception(run_->error);
-    }
     // Ahead of the hand-over's own lines, which a `found at` line precedes
-    // in the log file.
+    // in the log file, and of a worker exception, past which nothing would.
     if (run_->sink.has_value()) {
         run_->sink->deliver_to_callbacks(mipsolver_.options_mip_->log_options);
+    }
+    if (run_->error) {
+        std::rethrow_exception(run_->error);
     }
 
     std::vector<double> best;

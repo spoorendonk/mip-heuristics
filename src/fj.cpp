@@ -198,8 +198,10 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
             }
             AttemptResult attempt = state.worker->run_attempt(run_cap);
             // Asked even after an improving attempt, so a find from
-            // elsewhere is not carried over to reset a later one.
-            if (found_elsewhere && found_elsewhere()) {
+            // elsewhere is not carried over to reset a later one; not after
+            // a zero-effort one, which retires the slot before the runner
+            // notes it, so the find would be lost.
+            if (attempt.effort > 0 && found_elsewhere && found_elsewhere()) {
                 attempt.found_improvement = true;
             }
             return attempt;
