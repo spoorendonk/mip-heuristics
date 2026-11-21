@@ -15,12 +15,15 @@
 #include "solution_sink.h"
 #include "util/HighsCDouble.h"
 
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <exception>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -29,6 +32,17 @@ namespace heuristics {
 
 namespace {
 
+// `log_options` with its log callbacks taken out: the log file and the
+// console only.  Made on the solving thread, for the worker thread to log
+// through.
+HighsLogOptions without_callbacks(const HighsLogOptions& log_options) {
+    HighsLogOptions streams = log_options;
+    streams.user_log_callback = nullptr;
+    streams.user_callback = nullptr;
+    streams.user_callback_active = false;
+    return streams;
+}
+
 // Logs each improving point when the worker finds it (#240), since presolve
 // may hold the handover back for many seconds.  One worker offers into it, so
 // `on_accept` never runs concurrently and `best_logged_` needs no lock.
@@ -36,16 +50,19 @@ namespace {
 // What the worker thread touches of the solve is read-only for its whole
 // length: `orig_model_` (presolve works on its own copy), the options, clock 0
 // of `timer_`.  `solutionFeasible` is const and keeps its row values in a
-// local.  The log line is one `highsLogUser` call, as `[HeurSol]` is one
-// `highsLogDev` call from a worker.  The improving-solution callback is not
-// called here: it writes `callback_->data_out`, which the solving thread
-// uses too, and a user callback does not expect a second thread.
-// `runSetup` fires it for the handed-over point.
+// local.  The log line goes to the log file and the console at once, one
+// `highsLogUser` call, as `[HeurSol]` is one `highsLogDev` call from a worker.
+// Not to a log callback (#309): presolve logs on the solving thread meanwhile,
+// and a callback need not be thread-safe (a Python one, say), so the line is
+// kept for `deliver_to_callbacks`, which the solving thread calls after the
+// join.  The improving-solution callback is not called here either: it writes
+// `callback_->data_out`, which the solving thread uses too.  `runSetup` fires
+// it for the handed-over point.
 class ReportingSink final : public SolutionSink {
 public:
     ReportingSink(const std::vector<HighsVarType>& integrality, int source,
-                  const HighsMipSolver& mipsolver)
-        : SolutionSink(integrality, source), mipsolver_(mipsolver) {}
+                  const HighsMipSolver& mipsolver, const HighsLogOptions& streams)
+        : SolutionSink(integrality, source), mipsolver_(mipsolver), streams_(streams) {}
 
     // Moves the best point that passed into `out`; whether there is one.  Only
     // after the join.
@@ -55,6 +72,19 @@ public:
         }
         out = std::move(best_checked_);
         return true;
+    }
+
+    // The lines logged to the file and the console, now to the log
+    // callbacks, on the calling thread.  Only after the join, and once.
+    void deliver_to_callbacks(const HighsLogOptions& log_options) {
+        bool no_console = false;
+        HighsLogOptions callbacks = log_options;
+        callbacks.log_stream = nullptr;
+        callbacks.log_to_console = &no_console;
+        for (const std::string& line : lines_) {
+            highsLogUser(callbacks, HighsLogType::kInfo, "%s", line.c_str());
+        }
+        lines_.clear();
     }
 
 protected:
@@ -75,16 +105,21 @@ protected:
         }
         best_logged_ = objective;
         best_checked_ = solution;
-        highsLogUser(mipsolver_.options_mip_->log_options, HighsLogType::kInfo,
-                     "Early FeasibilityJump on the original model: objective %.12g found at "
-                     "%.3fs\n",
-                     static_cast<double>(quad_objective), mipsolver_.timer_.read());
+        std::array<char, 128> line{};
+        std::snprintf(line.data(), line.size(),
+                      "Early FeasibilityJump on the original model: objective %.12g found at "
+                      "%.3fs\n",
+                      static_cast<double>(quad_objective), mipsolver_.timer_.read());
+        highsLogUser(streams_, HighsLogType::kInfo, "%s", line.data());
+        lines_.emplace_back(line.data());
     }
 
 private:
     const HighsMipSolver& mipsolver_;
+    const HighsLogOptions& streams_;
     double best_logged_ = kHighsInf;
     std::vector<double> best_checked_;
+    std::vector<std::string> lines_;
 };
 
 }  // namespace
@@ -97,6 +132,7 @@ struct EarlyFj::Run {
           model(*mipsolver.orig_model_),
           options(*mipsolver.options_mip_),
           effort_option(effort),
+          streams(without_callbacks(options.log_options)),
           exec{.num_workers = 1,
                .base_seed = heuristic_base_seed(options.random_seed),
                .deadline = deadline_of(mipsolver),
@@ -121,7 +157,7 @@ struct EarlyFj::Run {
                 total, 1, patience_threshold(nnz, options.mip_heuristic_fj_patience, total));
             // The record bounds the option to the enum's range.
             budget.restart = static_cast<RestartPoint>(options.mip_heuristic_fj_restart);
-            sink.emplace(*problem->integrality, kSolutionSourceFJ, solver);
+            sink.emplace(*problem->integrality, kSolutionSourceFJ, solver, streams);
             effort = fj::run_until_stopped(*problem, budget, exec, 0, RestartSource{}, *sink);
         } catch (...) {
             error = std::current_exception();
@@ -132,6 +168,7 @@ struct EarlyFj::Run {
     const HighsLp& model;
     const HighsOptions& options;
     double effort_option;
+    HighsLogOptions streams;
     // The original model's nnz, the unit of the budget and of the `[Heur]`
     // line both: read off the model, since the view may never be built.
     size_t nnz = static_cast<size_t>(model.a_matrix_.numNz());
@@ -169,6 +206,9 @@ EarlyFj::~EarlyFj() {
     if (run_ && run_->thread.joinable()) {
         run_->stop.store(true, std::memory_order_relaxed);
         run_->thread.join();
+        if (run_->sink.has_value()) {
+            run_->sink->deliver_to_callbacks(mipsolver_.options_mip_->log_options);
+        }
     }
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
     // The end of the solve, past every dispatch: the context's creation
@@ -354,6 +394,11 @@ void EarlyFj::finish(bool run_to_budget) {
     run_->thread.join();
     if (run_->error) {
         std::rethrow_exception(run_->error);
+    }
+    // Ahead of the hand-over's own lines, which a `found at` line precedes
+    // in the log file.
+    if (run_->sink.has_value()) {
+        run_->sink->deliver_to_callbacks(mipsolver_.options_mip_->log_options);
     }
 
     std::vector<double> best;

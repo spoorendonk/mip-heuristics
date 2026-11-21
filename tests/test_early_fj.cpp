@@ -9,10 +9,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -60,6 +63,8 @@ struct Harness {
     struct LogCapture {
         std::mutex mtx;
         std::vector<std::string> lines;
+        // The thread each line was delivered on.
+        std::vector<std::thread::id> threads;
     };
     LogCapture log;
     Highs highs;
@@ -92,6 +97,7 @@ struct Harness {
                 auto* cap = static_cast<LogCapture*>(user_data);
                 std::scoped_lock lock(cap->mtx);
                 cap->lines.emplace_back(message);
+                cap->threads.push_back(std::this_thread::get_id());
             };
             REQUIRE(highs.setCallback(HighsCallbackFunctionType(log_cb), &log) == HighsStatus::kOk);
             REQUIRE(highs.startCallback(kCallbackLogging) == HighsStatus::kOk);
@@ -144,6 +150,18 @@ struct Harness {
             return line.starts_with(prefix) && line.contains(text);
         });
         return found;
+    }
+
+    // The threads the `found at` lines were delivered to the callback on.
+    [[nodiscard]] std::vector<std::thread::id> found_line_threads() {
+        std::scoped_lock lock(log.mtx);
+        std::vector<std::thread::id> threads;
+        for (size_t i = 0; i < log.lines.size(); ++i) {
+            if (log.lines[i].starts_with(kFoundLine) && log.lines[i].contains(" found at ")) {
+                threads.push_back(log.threads[i]);
+            }
+        }
+        return threads;
     }
 
     // Whether `solution_` is feasible by the test `cleanupSolve` applies.
@@ -298,28 +316,66 @@ TEST_CASE("early FJ: a point whose crushed objective nothing attains sets no cut
     REQUIRE(ms.mipdata_->upper_bound == kHighsInf);
 }
 
-TEST_CASE("early FJ: a point is logged when found, before presolve returns", "[early-fj]") {
-    Harness harness(/*maximise=*/false, /*capture_log=*/true);
-    HighsMipSolver& ms = *harness.mipsolver;
-    // Neither presolve nor `finish` has run while this waits, so the line can
-    // only have come from the worker.
-    heuristics::EarlyFj early(ms);
-    const auto give_up = std::chrono::steady_clock::now() + kFoundLineWait;
-    while (harness.found_lines().empty() && std::chrono::steady_clock::now() < give_up) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    REQUIRE_FALSE(harness.found_lines().empty());
+namespace {
 
-    early.finish(true);
-    // Non-increasing (the lines round to 12 digits), and the last is what was
-    // handed over.
-    std::vector<double> objectives;
-    for (const std::string& line : harness.found_lines()) {
-        objectives.push_back(found_objective(line));
+// The `found at` lines in the log file at `path`, so far.
+std::vector<std::string> found_lines_in(const std::filesystem::path& path) {
+    std::ifstream file(path);
+    std::vector<std::string> found;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.starts_with(kFoundLine) && line.contains(" found at ")) {
+            found.push_back(line + "\n");
+        }
     }
-    REQUIRE(std::ranges::is_sorted(objectives, std::ranges::greater{}));
-    REQUIRE(harness.solution_feasible());
-    REQUIRE(objectives.back() == Catch::Approx(ms.solution_objective_));
+    return found;
+}
+
+}  // namespace
+
+TEST_CASE("early FJ: a point is logged to the file when found, to a callback on the solving thread",
+          "[early-fj]") {
+    // One file per process: ctest runs each case in its own.
+    const std::filesystem::path log_file =
+        std::filesystem::temp_directory_path() /
+        ("mip_heuristics_early_fj_" + std::to_string(std::random_device{}()) + ".log");
+    std::vector<std::string> from_file;
+    {
+        Harness harness(/*maximise=*/false, /*capture_log=*/true, [&](Highs& highs) {
+            REQUIRE(highs.setOptionValue("log_file", log_file.string()) == HighsStatus::kOk);
+        });
+        HighsMipSolver& ms = *harness.mipsolver;
+        // Neither presolve nor `finish` has run while this waits, so the line
+        // can only have come from the worker.
+        heuristics::EarlyFj early(ms);
+        const auto give_up = std::chrono::steady_clock::now() + kFoundLineWait;
+        while (found_lines_in(log_file).empty() && std::chrono::steady_clock::now() < give_up) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        REQUIRE_FALSE(found_lines_in(log_file).empty());
+        // A log callback need not be thread-safe, so the worker leaves it
+        // the line (#309).
+        REQUIRE(harness.found_lines().empty());
+
+        early.finish(true);
+        // The same lines, on this thread, which `finish` runs on.
+        from_file = found_lines_in(log_file);
+        REQUIRE(harness.found_lines() == from_file);
+        for (const std::thread::id thread : harness.found_line_threads()) {
+            REQUIRE(thread == std::this_thread::get_id());
+        }
+        // Non-increasing (the lines round to 12 digits), and the last is what
+        // was handed over.
+        std::vector<double> objectives;
+        objectives.reserve(from_file.size());
+        for (const std::string& line : from_file) {
+            objectives.push_back(found_objective(line));
+        }
+        REQUIRE(std::ranges::is_sorted(objectives, std::ranges::greater{}));
+        REQUIRE(harness.solution_feasible());
+        REQUIRE(objectives.back() == Catch::Approx(ms.solution_objective_));
+    }
+    std::filesystem::remove(log_file);
 }
 
 TEST_CASE("early FJ: a found point is logged in the model's own sense", "[early-fj]") {
