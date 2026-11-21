@@ -290,8 +290,8 @@ Rules no change may break: workers read `problem.incumbent`, never `mipdata->inc
 
 | Doc | Covers |
 |---|---|
-| `docs/ARCHITECTURE.md` | integration model and core boundary; bumping the HiGHS tag (silently rejected option names); `fpr`, `fpr_lp`, `fj`, `local_mip`, `scylla`, `ruin_repair`, `recombine`; dispatch and its threading rules; `contested_pdlp`; shared utilities |
-| `docs/RUNTIME.md` | the patch's HiGHS options and their defaults; patience; the wall-clock deadline; `[Sequential]` / `[Heur]` / `[HeurSol]`; the ~4% anchor a micro-optimization is priced against |
+| `docs/ARCHITECTURE.md` | integration model and core boundary; how the heuristics plug into a solve (patch sites, timeline); bumping the HiGHS tag (silently rejected option names); `fpr`, `fpr_lp`, `fj`, `local_mip`, `scylla`, `ruin_repair`, `recombine`; dispatch and its threading rules; `contested_pdlp`; shared utilities |
+| `docs/RUNTIME.md` | the patch's HiGHS options and their defaults; patience; the wall-clock deadline; threads outside `threads`; `[Sequential]` / `[Heur]` / `[HeurSol]`; the ~4% anchor a micro-optimization is priced against |
 | `docs/BENCHMARKING.md` | `mipfeas`, the vanilla baseline, killed runs, configs, tuning subsets, the oracle, the release archive |
 | `docs/DEVELOPMENT.md` | the long form of the CMake, testing, workflow and build rules; the GPU build |
 | `docs/PARAMETERS.md` | every tunable `constexpr` (checked by ctest) |

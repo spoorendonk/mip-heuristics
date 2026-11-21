@@ -981,6 +981,23 @@ Three things to carry forward.
 
 ---
 
+### `mip_heuristic_scylla_cuopt_pump` — the cuOpt pump variant
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false` — ships off. #302 measured it against Mexi's pump at
+  a primal-integral ratio of 0.984 [0.949, 1.020] (25 instances, 60 s, 3
+  seeds, GPU build): indistinguishable, and neither pump produced an
+  improving incumbent in any of those solves. Scylla itself ships off,
+  and turning it on was about 2.1x worse than main on the same list.
+- **Meaning**: Read by `scylla::run` and `ScyllaWorker`, so it does nothing
+  unless `mip_heuristic_scylla_effort` is above zero. On, the pump projects
+  cuOpt's way (L1 distance, the tolerance schedule, the rounded warm start)
+  and handles cycles and failed roundings cuOpt's way (#290-#298); the
+  constants below apply only then. Off is Mexi's pump byte for byte.
+  `docs/ARCHITECTURE.md`, scylla, has the deviations.
+
+---
+
 ### `kAlphaInit` / `kAlphaDecay` — cuOpt projection's objective weight
 
 - **File**: `src/pump_common.h` (namespace `pump::cuopt`)
@@ -1612,7 +1629,9 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_recombine_effort` — recombination budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0` — ships off until #230 measures it.
+- **Default**: `0.0` — ships off: #244 measured it at a primal-integral
+  ratio of 1.037 [1.004, 1.071] against main (15 unsolved instances, 60 s,
+  3 seeds), active on 4-8 instances with no gain.
 - **Meaning**: Whole-dispatch budget for recombination, the last chain entry
   (#229). Its effort sums two units, FPR's coefficient accesses in the
   bound-prop arm and FJ's effort in the local search, equated by
@@ -1630,10 +1649,11 @@ itself is driven by a tracked target runner rather than by config names.
 ### `mip_heuristic_ruin_effort` — ruin-and-repair LNS budget
 
 - **File**: `src/mode_dispatch.cpp` (`kChain`)
-- **Default**: `0.0` — ships off until its A/B against the chain without it
-  is measured (#207).
-- **Meaning**: Whole-dispatch budget for the ruin-and-repair LNS, the last
-  chain entry, in FJ step units (each repair is a fresh FJ). Divided across
+- **Default**: `0.0` — ships off (#207): #244 measured it at a
+  primal-integral ratio of 1.005 [0.972, 1.041] against main (15 unsolved
+  instances, 60 s, 3 seeds), active on 5-8 instances with no gain.
+- **Meaning**: Whole-dispatch budget for the ruin-and-repair LNS, the chain
+  entry after Scylla and before recombination, in FJ step units (each repair is a fresh FJ). Divided across
   the workers like FPR's. A dispatch whose pool holds no feasible point
   ends at once, having charged at most one feasibility check (`nnz`) per
   worker. Every repair is a fresh FJ held to its budget (#309,
@@ -1642,6 +1662,25 @@ itself is driven by a tracked target runner rather than by config names.
   dispatch overshoots this budget by about one setup per repair. The ledger
   charges what was spent.
 - **Suggested range**: 0.1–3.
+
+---
+
+### `mip_heuristic_early_fj_effort` — early FJ budget over presolve
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `0.0` — ships off (#205). #216 measured `1.0` against main
+  at a primal-integral ratio of 2.19 [1.68, 2.86] in early FJ's favour, on 3
+  slow-presolve instances (presolve 7.8–17.4 s), 60 s, 3 seeds; final bounds
+  and statuses were unchanged, and the whole gain is in the window before
+  the hand-over, credited by the `found at` lines (#240). Fast-presolve
+  models were not measured.
+- **Meaning**: One FJ worker's budget on the **original** model while
+  presolve runs (`heuristics::EarlyFj`, not a chain entry), in the unit of
+  the chain's options but on the original model's nnz: `value * (nnz << 10)`.
+  Patience and restart point are FJ's own options. It also stops when
+  presolve returns or on the time limit, and never runs in a sub-MIP. Rules,
+  the hand-over and its checks (#306, #343): `docs/RUNTIME.md`.
+- **Suggested range**: 0.3–3. The record's ceiling is `1e6`.
 
 ---
 
@@ -2642,6 +2681,22 @@ constants that the step loop copies (`kMaxMovesToEvaluate`,
 `kRescaleBy`, `kCallbackEffort`) are upstream's values, not tunables, and
 must move with them on a HiGHS bump.
 
+### `mip_heuristic_fj_gpu` — race GPU climbers against CPU FJ
+
+- **File**: `third_party/highs_patch/apply_patch.cmake`
+- **Default**: `false` — ships off. In #305's 25 race runs (5 instances,
+  presolve-only, RTX 5070 Ti) no climber stepped (`gpu_steps=0`) and
+  nothing was found; on swath3 with the related-variable table dropped so
+  that climbers did step, FJ took 1.53x its wall time for no better outcome.
+- **Meaning**: `HeuristicBudget::fj_gpu`, through `kChain`'s `gpu` member
+  (#265). In a `MIP_HEURISTICS_CUDA` build FJ's chain entry becomes
+  `fj::race` for the main MIP's first FJ dispatch only (not a sub-MIP, not
+  after a restart): a batch of climbers on the GPU beside FJ's CPU workers,
+  offering through the same sink. The CUDA context is created on a thread
+  of its own from before presolve (#289). Any other build warns once per
+  solve and runs FJ on the CPU only. `docs/ARCHITECTURE.md`, fj, has the
+  race and its threading; `docs/RUNTIME.md`, the warnings and `gpu_steps`.
+
 ### `kStepThreads` — threads per climber block
 
 - **File**: `src/gpu/climber.cu`
@@ -2945,10 +3000,14 @@ effort option in `heuristics::entry_enabled`, through the one
 Upstream's own standalone single-threaded FJ call site never fires on a
 patched build: a patched binary runs our FJ or none. Keeping that call
 site alive would mean "our heuristics disabled" ran a *different* FJ from
-every other configuration, and it would run the uncorrected one, since the
-patch's two FeasibilityJump corrections are what both call sites share.
+every other configuration: upstream's single thread on its own budget, not
+our workers. (The two FeasibilityJump defects the patch once corrected,
+#139, are fixed upstream since HiGHS v1.16.0; the patch now only checks
+that upstream's fixes are still there.)
 
-So an options file carrying all five effort options at `0` plus
+So an options file carrying every effort option at `0` (the six chain
+entries', `mip_heuristic_fpr_lp_effort` and `mip_heuristic_early_fj_effort`)
+plus
 
     mip_heuristic_run_feasibility_jump = false
 
@@ -2967,14 +3026,24 @@ patch keeps its vanilla default of `0.05` and its vanilla meaning, so a
 patched binary at default options matches vanilla's B&B heuristic budget
 exactly; it gates RENS/RINS and `fpr_lp` together. It was briefly raised
 to `0.30` and overloaded as the presolve budget — that overload was split
-out into a presolve-only option, which in turn became the four
-per-heuristic options below.
+out into a presolve-only option, which in turn became the per-heuristic
+options below (four then, six chain entries now).
 
-The custom patch-added options are the effort budgets below, the
-`mip_heuristic_<name>_patience` gates documented above, the restart and
-persona options of FJ and LocalMIP, `mip_heuristic_presolve_only` and
-`mip_heuristic_skip_submip_chain`. There is no selection option — heuristic
-selection is the zero-pattern of the effort options.
+The custom patch-added options, all registered in `apply_patch.cmake`:
+
+- the effort budgets below: the six chain entries', `fpr_lp`'s and early
+  FJ's (`mip_heuristic_early_fj_effort`);
+- the six `mip_heuristic_<name>_patience` gates documented above;
+- the rebuild restart options: `mip_heuristic_fj_restart`,
+  `mip_heuristic_local_mip_restart`, `mip_heuristic_local_mip_restart_weights`;
+- FJ's switches: `mip_heuristic_fj_personas`, `mip_heuristic_fj_lp_persona`
+  (read by `fpr_lp`), `mip_heuristic_fj_exchange`, `mip_heuristic_fj_gpu`;
+- `mip_heuristic_scylla_cuopt_pump`;
+- `mip_heuristic_presolve_only` and `mip_heuristic_skip_submip_chain`.
+
+Every one defaults to what a default run did before it existed, except the
+searched effort and patience defaults. There is no selection option —
+heuristic selection is the zero-pattern of the effort options.
 
 `mip_heuristic_skip_submip_chain` (bool, default `false`) makes
 `heuristics::run_presolve` return before anything else in a sub-MIP
@@ -2987,12 +3056,17 @@ open benchmark question, not a measured default.
 - `mip_heuristic_fj_effort` (default `0.3317`),
   `mip_heuristic_fpr_effort` (`3.161`),
   `mip_heuristic_local_mip_effort` (`3.2865`),
-  `mip_heuristic_scylla_effort` (`0.0`, i.e. disabled) — one effort budget multiplier
-  per presolve heuristic, each a double in `[0.0, 1e6]`. See
+  `mip_heuristic_scylla_effort` (`0.0`, i.e. disabled),
+  `mip_heuristic_ruin_effort` (`0.0`),
+  `mip_heuristic_recombine_effort` (`0.0`) — one effort budget multiplier
+  per presolve-chain heuristic, each a double in `[0.0, 1e6]`. See
   "Per-Heuristic Effort Budgets" above for what each one sizes; FJ's is
   per worker, the others are per dispatch.
+- `mip_heuristic_early_fj_effort` (default `0.0`) — early FJ's one worker
+  over presolve, in the same unit on the original model's nnz; not a chain
+  entry (its entry above).
 - `mip_heuristic_fpr_lp_effort` (default `0.0`, i.e. `fpr_lp` ships **off**) — the dive-time `fpr_lp`'s
-  budget, a double in `[0.0, 1e6]` and **not in the same unit as the four
+  budget, a double in `[0.0, 1e6]` and **not in the same unit as the seven
   above** (#164). `fpr_lp` draws from upstream's RENS/RINS LP-iteration
   envelope and charges back what it spends, so its budget is zero-sum
   against those two heuristics rather than an independent allowance; the
@@ -3042,7 +3116,7 @@ open benchmark question, not a measured default.
   `min(headroom x share, cap)`. That spelling shipped first and leaves the
   per-call cap binding however large the share is, so the option could not
   express a budget that never binds — the property the `1e6` ceiling exists
-  for on all seven effort options, and the one thing this option was added to
+  for on all eight effort options, and the one thing this option was added to
   make possible. Scaling the `min` is identical at `share == 1.0`, grows
   without bound above it, and below it throttles both terms proportionally,
   which is a truer reading of "share" than throttling one. Overdrawing the
@@ -3060,8 +3134,10 @@ open benchmark question, not a measured default.
   `min`, and a second case pins that a real dispatch still reads the option
   — a pure function nothing called would pass either way.
 **There is no separate selector option.** A heuristic runs iff its own
-`mip_heuristic_<name>_effort` is above zero, so all thirty-two subsets of
-the five are expressible as the zero-pattern of five doubles — the
+`mip_heuristic_<name>_effort` is above zero, so all 128 subsets of the
+seven (the six chain entries and `fpr_lp`) are expressible as the
+zero-pattern of seven doubles, and early FJ's option switches it the same
+way outside the chain — the
 encoding the tuning search uses, and the reason a mistyped selection is an
 exit-255 refusal rather than a plausible-looking results tree: HiGHS
 name-checks and range-checks a double, where it would not validate a
@@ -3073,7 +3149,7 @@ filters the chain table through it and returns before `make_problem` when
 nothing is selected, so a fully zeroed configuration does not even build
 the shared CSC transpose. A skipped heuristic emits **no `[Sequential]` /
 `[Heur]` line**, which is why a solve at the shipped defaults traces three
-presolve heuristics rather than four. `heuristics::any_enabled` is the one
+presolve heuristics rather than six. `heuristics::any_enabled` is the one
 export, for the patched `printSolutionSourceKey`.
 
 **`fpr_lp` has its own option**, read in `fpr_lp::run`. **A configuration
