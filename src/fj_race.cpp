@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -194,7 +195,7 @@ class Climbing {
 public:
     Climbing(gpu_fj::Climber& batch, const gpu_fj::GpuFjModel& model, const ProblemView& problem,
              const HeuristicBudget& budget, const ExecutionContext& exec, SolutionSink& sink,
-             size_t& steps)
+             size_t& steps, std::atomic<bool>& found)
         : batch_(batch),
           model_(model),
           problem_(problem),
@@ -202,6 +203,7 @@ public:
           exec_(exec),
           sink_(sink),
           steps_(steps),
+          found_(found),
           count_(static_cast<size_t>(batch.count())),
           traces_(count_),
           seeds_(count_),
@@ -258,11 +260,17 @@ private:
                 if (!batch_.read_best(static_cast<std::int32_t>(c), best_, error)) {
                     return false;
                 }
-                // Discarded: like `FjWorker` (#191), a climber's patience
-                // reads FJ's own `effortSinceLastImprovement`, not the
-                // pool's verdict.
-                static_cast<void>(sink_.offer(problem_.offset + chunk.objective, best_, traces_[c],
-                                              traces_[c].at(chunk.total_effort)));
+                // Like `FjWorker` (#191), a climber's own patience reads
+                // FJ's `effortSinceLastImprovement`, not the pool's
+                // verdict.  The verdict goes to the CPU side's runner-level
+                // gate instead (#309): a find here raises the pool's best,
+                // so no CPU offer moves it until one beats this.
+                if (sink_
+                        .offer(problem_.offset + chunk.objective, best_, traces_[c],
+                               traces_[c].at(chunk.total_effort))
+                        .improved_incumbent) {
+                    found_.store(true, std::memory_order_relaxed);
+                }
             }
             // `FjWorker`'s stale test: strictly past the budget.
             if (chunk.finished || chunk.effort_since_improvement > budget_.worker_stale) {
@@ -283,6 +291,7 @@ private:
     const ExecutionContext& exec_;
     SolutionSink& sink_;
     size_t& steps_;
+    std::atomic<bool>& found_;
     size_t count_;
     std::vector<WorkerTrace> traces_;
     std::vector<std::uint64_t> seeds_;
@@ -314,10 +323,11 @@ void warn_gpu_failure(const ExecutionContext& exec, const Climb& climb) {
 // delays the CPU workers.  A model whose bounds FJ refuses gets no climber
 // and no warning: `FjWorker` refuses the same bounds, so FJ runs nowhere
 // and the option changes nothing.  `steps` counts the batch's launches; it
-// is the caller's, so the count outlives a throw.
+// is the caller's, so the count outlives a throw.  `found` is set whenever
+// a climber's offer moves the incumbent.
 Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
                    const ExecutionContext& exec, SolutionSink& sink, const std::atomic<bool>& stop,
-                   size_t& steps) {
+                   size_t& steps, std::atomic<bool>& found) {
     Climb out;
     if (halted(exec, stop)) {
         return out;
@@ -353,7 +363,7 @@ Climb climb_on_gpu(const ProblemView& problem, const HeuristicBudget& budget,
         return out;
     }
     const gpu_fj::GpuFjModel model = gpu.host->pod();
-    Climbing climbing(*gpu.batch, model, problem, budget, exec, sink, steps);
+    Climbing climbing(*gpu.batch, model, problem, budget, exec, sink, steps, found);
     return climbing.run(stop);
 }
 
@@ -377,11 +387,17 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     std::atomic<bool> stop{false};
     Climb climb;
     size_t gpu_steps = 0;
+    // A GPU find, not yet counted by a CPU attempt as progress for the
+    // runner-level patience gate (`fj::run`'s `found_elsewhere`).
+    std::atomic<bool> gpu_found{false};
+    const std::function<bool()> found_elsewhere = [&gpu_found] {
+        return gpu_found.exchange(false, std::memory_order_relaxed);
+    };
     // Nothing the GPU side throws ends the solve: like a CUDA error, it
     // becomes the warning, and FJ's CPU outcome stands.
     std::thread thread([&] {
         try {
-            climb = climb_on_gpu(problem, budget, exec, sink, stop, gpu_steps);
+            climb = climb_on_gpu(problem, budget, exec, sink, stop, gpu_steps, gpu_found);
         } catch (const std::exception& e) {
             climb.error = e.what();
         } catch (...) {
@@ -390,7 +406,7 @@ DispatchOutcome race(const ProblemView& problem, const HeuristicBudget& budget,
     });
     DispatchOutcome outcome;
     try {
-        outcome = run(problem, budget, exec, sink);
+        outcome = run(problem, budget, exec, sink, found_elsewhere);
     } catch (...) {
         stop.store(true, std::memory_order_relaxed);
         thread.join();

@@ -2,6 +2,7 @@
 #include "heuristic_context.h"
 
 #include <cstddef>
+#include <functional>
 
 class SolutionSink;
 
@@ -36,8 +37,21 @@ namespace fj {
 // worker whose behaviour is reproducible under a fixed `random_seed`.
 //
 // Implements the uniform runner contract; see heuristic_context.h.
+//
+// `found_elsewhere`, when set, is asked after every attempt whether
+// something outside these workers moved the incumbent since it was last
+// asked; a yes counts as that attempt's improvement for the runner-level
+// patience gate (#309).  `race` passes the GPU climbers' finds: they raise
+// the pool's best, after which no CPU offer moves it, so without this a
+// race's patience would run out while the GPU is still improving.  It is
+// called from the worker threads, so it must be thread-safe.  An overload
+// rather than a default argument, so the chain can take `&fj::run` as a
+// runner.
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                     ExecutionContext& exec, SolutionSink& sink);
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, SolutionSink& sink,
+                    const std::function<bool()>& found_elsewhere);
 
 // One FjWorker slot on the calling thread until `exec` says stop (#171),
 // rebuilt whenever it stalls, from `source` first.  The rebuilt worker

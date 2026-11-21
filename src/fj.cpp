@@ -158,6 +158,12 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
 
 DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                     ExecutionContext& exec, SolutionSink& sink) {
+    return run(problem, budget, exec, sink, {});
+}
+
+DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
+                    ExecutionContext& exec, SolutionSink& sink,
+                    const std::function<bool()>& found_elsewhere) {
     if (problem.degenerate() || budget.disabled()) {
         return {};
     }
@@ -190,7 +196,13 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                 build_worker(state, rng, problem, budget, exec, sink, no_source,
                              &personas.structure);
             }
-            return state.worker->run_attempt(run_cap);
+            AttemptResult attempt = state.worker->run_attempt(run_cap);
+            // Asked even after an improving attempt, so a find from
+            // elsewhere is not carried over to reset a later one.
+            if (found_elsewhere && found_elsewhere()) {
+                attempt.found_improvement = true;
+            }
+            return attempt;
         });
 }
 

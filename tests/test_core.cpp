@@ -794,6 +794,36 @@ TEST_CASE("core: fj_stall_ends_run ends the run when FJ stalls", "[core][until_s
     }
 }
 
+TEST_CASE("core: a find from elsewhere counts as progress for fj::run's patience",
+          "[core][patience]") {
+    // Nothing is ever found on this model, so the runner-level gate fires
+    // after the first attempt unless something else reports progress, as
+    // the GPU climbers do in `fj::race` (#309).
+    const HighsLp lp = unsatisfiable_model();
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    Setup s(lp, highs.getOptions().log_options);
+    constexpr size_t kTotal = 8 * kFjCallbackEffort;
+    HeuristicBudget budget = make_budget(kTotal, 1, /*stale=*/1024);
+    budget.attempt_cap = kTotal;
+
+    SECTION("no other source: ended by patience") {
+        SolutionSink sink(*s.problem.integrality, 0);
+        const DispatchOutcome outcome = fj::run(s.problem, budget, s.exec, sink);
+        REQUIRE(outcome.stopped_by == StopReason::kPatience);
+        REQUIRE(outcome.effort < kTotal);
+    }
+    SECTION("a find reported after every attempt: ended by the budget") {
+        SolutionSink sink(*s.problem.integrality, 0);
+        std::atomic<int> asked{0};
+        const DispatchOutcome outcome =
+            fj::run(s.problem, budget, s.exec, sink, [&asked] { return ++asked > 0; });
+        REQUIRE(outcome.stopped_by == StopReason::kBudget);
+        REQUIRE(outcome.effort >= kTotal);
+        REQUIRE(asked.load() > 1);
+    }
+}
+
 namespace {
 
 // SCIP's localsearch as a `run_until_stopped` budget (#203): one LocalMIP
