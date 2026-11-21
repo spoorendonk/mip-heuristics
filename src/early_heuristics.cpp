@@ -208,7 +208,10 @@ EarlyFj::~EarlyFj() {
     if (run_ && run_->thread.joinable()) {
         run_->stop.store(true, std::memory_order_relaxed);
         run_->thread.join();
-        if (run_->sink.has_value()) {
+        // Lines `finish()` did not deliver are left only by an early return
+        // or a throw (a callback's, say); a callback called again while one
+        // unwinds, from this noexcept destructor, could end the process.
+        if (run_->sink.has_value() && std::uncaught_exceptions() == 0) {
             run_->sink->deliver_to_callbacks(mipsolver_.options_mip_->log_options);
         }
     }
