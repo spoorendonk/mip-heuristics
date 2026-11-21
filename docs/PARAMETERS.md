@@ -1064,12 +1064,14 @@ Three things to carry forward.
 - **File**: `src/pump_common.h` (namespace `pump::cuopt`)
 - **Default**: `3.0`
 - **Meaning**: Only with `mip_heuristic_scylla_cuopt_pump` (#297). On a
-  cycle, FJ runs from the rounding for `nnz + kFjEscapeSeconds *
+  cycle, FJ runs from the rounding for `kFjEscapeSeconds *
   ruin_repair::kRepairEffortPerSecond` effort, capped by what is left of
   the attempt and of the worker's budget, before any perturbation. cuOpt's
   `run_fj_cycle_escape` gives FJ 3 s; converted at FJ's laptop-measured
   rate, as ruin-and-repair converts its own cuOpt seconds, so the escape is
-  reproducible. FJ's own minimum attempt (`kFjCallbackEffort`) still holds.
+  reproducible. FJ is held to that budget (#309, `FjWorker::hold_to_budget`):
+  it searches that much past its setup (two passes over FJ's nonzeros) and
+  stops within one FJ step of it.
 - **Suggested range**: 0.5–5.
 
 ---
@@ -1083,8 +1085,8 @@ Three things to carry forward.
   rounding effort to an FJ credit; once the credit reaches
   `kFjCallbackEffort`, FJ runs from that round's rounding and spends it.
   cuOpt's `test_fj_feasible` gives FJ 0.2 of every failed round's time; the
-  credit keeps that share in aggregate, since FJ cannot stop sooner than
-  its callback period.
+  credit keeps that share in aggregate, since this FJ run keeps upstream's
+  callback period (#309) and cannot stop sooner than it.
 - **Suggested range**: 0.05–0.5.
 
 ---
@@ -1268,9 +1270,9 @@ measured rate.
 
 - **File**: `src/ruin_repair.h`
 - **Default**: `0.15`, `0.02`, `2.0` (cuOpt's seconds), `2.0e8`
-- **Meaning**: `repair_budget` = `nnz + min(2, 0.15 + 0.02 * ruined) *
-  2e8` FJ effort units, further capped by the runner's per-attempt cap.
-  `nnz` pays for FJ building its start.
+- **Meaning**: `repair_budget` = `min(2, 0.15 + 0.02 * ruined) * 2e8` FJ
+  effort units, further capped by the runner's per-attempt cap. FJ's setup
+  (building its start) is paid on top by `FjWorker::hold_to_budget` (#309).
 - **Derivation of `kRepairEffortPerSecond`**: FJ alone (`threads=1`,
   `mip_heuristic_fj_effort=1`, presolve only), `[Sequential] heur=fj
   effort_per_ms` on eight instances of `bench/instances_small.txt` (mas76,
@@ -1343,7 +1345,8 @@ they differ free for FPR to complete.
 
 - **File**: `src/recombine.h`
 - **Default**: `1.0`, `0.5`
-- **Meaning**: `local_search_budget` = `nnz + seconds * kRepairEffortPerSecond`:
+- **Meaning**: `local_search_budget` = `seconds * kRepairEffortPerSecond`
+  past FJ's setup (`FjWorker::hold_to_budget`, #309):
   cuOpt's limit on FJ in `local_search_t::run_local_search`, 1 s from a
   feasible offspring and 0.5 s from an infeasible one with a feasible parent,
   which every pair here has. At most the attempt cap, as is the recombiner's
@@ -1615,10 +1618,11 @@ itself is driven by a tracked target runner rather than by config names.
   bound-prop arm and FJ's effort in the local search, equated by
   `kRewardNominalEffort`. Divided across the workers like FPR's. A dispatch
   whose pool holds fewer than two points ends at once and charges nothing.
-  Every local search is a fresh FJ, which checks its budget only at its first
-  callback (500000 effort units or a found point), so on a small model and
-  many workers a dispatch can spend several times this budget. The ledger
-  charges what was spent.
+  Every local search is a fresh FJ held to its budget (#309,
+  `FjWorker::hold_to_budget`): it searches that much past FJ's setup (two
+  passes over FJ's nonzeros) and stops within one FJ step of it, so a
+  dispatch overshoots this budget by about one setup per local search. The
+  ledger charges what was spent.
 - **Suggested range**: 0.1–3.
 
 ---
@@ -1632,10 +1636,10 @@ itself is driven by a tracked target runner rather than by config names.
   chain entry, in FJ step units (each repair is a fresh FJ). Divided across
   the workers like FPR's. A dispatch whose pool holds no feasible point
   ends at once, having charged at most one feasibility check (`nnz`) per
-  worker. Every repair is a fresh FJ, which checks its budget only at its
-  first callback (500000 effort units or a found point), so a repair costs
-  at least that much: on a small model (nnz of a few thousand) and many
-  workers a dispatch can spend several times this budget. The ledger
+  worker. Every repair is a fresh FJ held to its budget (#309,
+  `FjWorker::hold_to_budget`): it searches that much past FJ's setup (two
+  passes over FJ's nonzeros) and stops within one FJ step of it, so a
+  dispatch overshoots this budget by about one setup per repair. The ledger
   charges what was spent.
 - **Suggested range**: 0.1–3.
 
@@ -2375,10 +2379,9 @@ effort-gap distribution).
 - **Default**: `0.0` — no gate; the heuristic itself ships off.
 - **Meaning**: FJ step units without an incumbent improvement, as a
   multiple of `nnz << 10`, **whole dispatch**. One attempt is one repair of
-  at most `repair_budget`, capped by the attempt cap, but FJ checks its
-  budget only at its callback (every 500000 effort units or found point), so
-  on a small model one repair can overshoot that cap several times over and
-  the gate fires in coarser steps than the formula suggests.
+  at most `repair_budget`, capped by the attempt cap; FJ is held to it past
+  its setup (#309), so one repair overshoots that cap by FJ's setup (two
+  passes over its nonzeros) and one step.
 - **Suggested range**: 0.1–1, plus `0` for no gate. Values above
   `effort / 4` are clamped down to it.
 

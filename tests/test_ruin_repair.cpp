@@ -79,10 +79,10 @@ TEST_CASE("ruin_repair: the repair budget is cuOpt's seconds at the calibrated r
     const auto at = [](double seconds) {
         return static_cast<size_t>(seconds * kRepairEffortPerSecond);
     };
-    CHECK(repair_budget(1000, 0) == 1000 + at(0.15));
-    CHECK(repair_budget(1000, 10) == 1000 + at(0.15 + (0.02 * 10)));
+    CHECK(repair_budget(0) == at(0.15));
+    CHECK(repair_budget(10) == at(0.15 + (0.02 * 10)));
     // Capped at two seconds.
-    CHECK(repair_budget(1000, 1000) == 1000 + at(2.0));
+    CHECK(repair_budget(1000) == at(2.0));
 }
 
 TEST_CASE("ruin_repair: the ruin set takes guidance first, repeats nothing, leaves scratch zeroed",

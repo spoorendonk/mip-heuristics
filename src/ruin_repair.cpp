@@ -22,11 +22,11 @@ size_t ruin_size(size_t num_integer, size_t no_improve) {
     return std::min(num_integer, base * growth);
 }
 
-size_t repair_budget(size_t nnz, size_t ruined) {
+size_t repair_budget(size_t ruined) {
     const double seconds =
         std::min(kRepairSecondsMax,
                  kRepairSecondsBase + (kRepairSecondsPerRuined * static_cast<double>(ruined)));
-    return nnz + static_cast<size_t>(seconds * kRepairEffortPerSecond);
+    return static_cast<size_t>(seconds * kRepairEffortPerSecond);
 }
 
 void select_ruin_set(std::vector<HighsInt>& guidance, std::span<const HighsInt> integer_cols,
@@ -245,11 +245,12 @@ void ruin(const ProblemView& problem, const Shared& shared, Slot& slot, Rng& rng
 }
 
 // One repair of `slot.start` with a fresh FJ under the worker's cutoff, for
-// at most `run_cap` effort.  Keeps what FJ found if it is feasible and beats
-// the worker's best.
+// at most `run_cap` effort plus FJ's setup and one FJ step
+// (`FjWorker::hold_to_budget`, #309).  Keeps what FJ found if it is feasible
+// and beats the worker's best.
 AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                      Slot& slot, Rng& rng, size_t run_cap) {
-    const size_t budget = std::min(repair_budget(problem.nnz, slot.ruin_set.size()), run_cap);
+    const size_t budget = std::min(repair_budget(slot.ruin_set.size()), run_cap);
     // The margin is relative once the objective is large: an absolute
     // `feastol` below the objective's ulp would round away and let FJ
     // repair back to an equal objective.
@@ -259,6 +260,7 @@ AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, S
     const double cutoff = slot.best_objective - margin;
     FjWorker fj(problem, exec, sink, budget, std::numeric_limits<size_t>::max(),
                 static_cast<uint32_t>(rng()), slot.start, slot.trace, cutoff);
+    fj.hold_to_budget();
     AttemptResult result = fj.run_attempt(budget);
     slot.trace.effort_base = fj.traced_effort();
 

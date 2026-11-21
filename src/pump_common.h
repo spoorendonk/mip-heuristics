@@ -349,7 +349,8 @@ inline constexpr double kFjEscapeSeconds = 3.0;
 // FJ on a failed rounding (#298): cuOpt's `test_fj_feasible` gives FJ 0.2 of
 // the round's projection and rounding time.  Here each failed fresh round
 // adds that share of its effort to a credit, spent by one FJ run once it
-// reaches FJ's minimum attempt (`kFjCallbackEffort`).
+// reaches FJ's minimum attempt (`kFjCallbackEffort`; this run is not held to
+// its budget, #309).
 inline constexpr double kFailedRoundingFjRatio = 0.2;
 
 inline bool assignment_check_due(double alpha) {

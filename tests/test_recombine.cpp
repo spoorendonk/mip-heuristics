@@ -453,8 +453,8 @@ TEST_CASE("recombine: the operator takes no step on a pool of one", "[recombine]
 }
 
 TEST_CASE("recombine: the local search's budget is cuOpt's seconds at FJ's rate", "[recombine]") {
-    CHECK(recombine::local_search_budget(1000, true) == 1000 + 200'000'000);
-    CHECK(recombine::local_search_budget(1000, false) == 1000 + 100'000'000);
+    CHECK(recombine::local_search_budget(true) == 200'000'000);
+    CHECK(recombine::local_search_budget(false) == 100'000'000);
 }
 
 namespace {
@@ -490,7 +490,7 @@ TEST_CASE("recombine: a dispatch spends its budget from a pool of points", "[rec
 
 // The trigger: with nothing improving, the patience ends the dispatch long
 // before the budget would.  One-sided, so no clock in the fixture: FJ's
-// callback period is the only slack, and the budget is far beyond it.
+// setup and one FJ step are the only slack, and the budget is far beyond it.
 TEST_CASE("recombine: the patience ends a dispatch that stops improving", "[recombine]") {
     Highs highs;
     read(highs, "p0548.mps");

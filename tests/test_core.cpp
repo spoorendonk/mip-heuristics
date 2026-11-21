@@ -794,6 +794,84 @@ TEST_CASE("core: fj_stall_ends_run ends the run when FJ stalls", "[core][until_s
     }
 }
 
+namespace {
+
+// A sink that records the effort at which it accepted its first point.
+struct FirstEffortSink : SolutionSink {
+    explicit FirstEffortSink(const std::vector<HighsVarType>& integrality)
+        : SolutionSink(integrality, 0) {}
+    size_t first_at = 0;
+
+private:
+    void on_accept(double /*obj*/, const std::vector<double>& /*x*/, int /*source*/,
+                   const WorkerTrace& /*trace*/, size_t effort_at) override {
+        if (first_at == 0) {
+            first_at = effort_at;
+        }
+    }
+};
+
+// One attempt of a fresh FjWorker over `budget`, held to it or not, from
+// FJ's bound-based start; returns its effort.
+size_t one_fj_attempt(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
+                      size_t budget, bool held) {
+    FjWorker fj(problem, exec, sink, budget, std::numeric_limits<size_t>::max(), /*seed=*/1, {},
+                WorkerTrace{0, 0});
+    if (held) {
+        fj.hold_to_budget();
+    }
+    return fj.run_attempt(budget).effort;
+}
+
+}  // namespace
+
+TEST_CASE("core: a held FjWorker stops at a budget below FJ's callback period", "[core][fj]") {
+    Highs highs;  // for its log options only
+    highs.setOptionValue("output_flag", false);
+    constexpr size_t kBudget = 10000;
+    static_assert(kBudget < kFjCallbackEffort);
+
+    SECTION("nothing found: the budget is read at the periodic callback") {
+        const HighsLp lp = unsatisfiable_model();
+        const Setup s(lp, highs.getOptions().log_options);
+        SolutionSink sink(*s.problem.integrality, 0);
+        // FJ's setup on this model is two passes over its two nonzeros.
+        const size_t setup = 2 * s.problem.nnz;
+        const size_t held = one_fj_attempt(s.problem, s.exec, sink, kBudget, true);
+        REQUIRE(held >= setup + kBudget);
+        REQUIRE(held < setup + (2 * kBudget));
+        REQUIRE(one_fj_attempt(s.problem, s.exec, sink, kBudget, false) > kFjCallbackEffort);
+    }
+    SECTION("a find restarts upstream's period, and the budget still holds") {
+        // From the bound-based start FJ fixes one row per step and reports
+        // the one feasible point once inside the budget; nothing is found
+        // after it, so only the periodic callback can end the attempt.
+        const HighsLp lp = falling_violations_model(1024);
+        const Setup s(lp, highs.getOptions().log_options);
+        FirstEffortSink sink(*s.problem.integrality);
+        const size_t setup = 2 * s.problem.nnz;
+        constexpr size_t kLongBudget = kFjCallbackEffort / 2;
+        const size_t effort = one_fj_attempt(s.problem, s.exec, sink, kLongBudget, true);
+        REQUIRE(sink.first_at > setup);
+        REQUIRE(sink.first_at < setup + kLongBudget);
+        REQUIRE(effort >= setup + kLongBudget);
+        // Upstream's restart at the find, left alone, would put the next
+        // periodic callback a whole budget after it.
+        REQUIRE(effort < sink.first_at + kLongBudget);
+    }
+    SECTION("a budget below FJ's setup still searches past it") {
+        const HighsLp lp = falling_violations_model(1024);
+        const Setup s(lp, highs.getOptions().log_options);
+        SolutionSink sink(*s.problem.integrality, 0);
+        const size_t setup = 2 * s.problem.nnz;
+        constexpr size_t kTinyBudget = 100;
+        REQUIRE(kTinyBudget < setup);
+        const size_t effort = one_fj_attempt(s.problem, s.exec, sink, kTinyBudget, true);
+        REQUIRE(effort >= setup + kTinyBudget);
+        REQUIRE(effort < setup + kBudget);
+    }
+}
+
 TEST_CASE("core: a find from elsewhere counts as progress for fj::run's patience",
           "[core][patience]") {
     // Nothing is ever found on this model, so the runner-level gate fires

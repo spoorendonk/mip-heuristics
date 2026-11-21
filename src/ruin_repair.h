@@ -68,10 +68,9 @@ inline constexpr size_t kRuinBaseMax = 40;
 inline constexpr size_t kRuinGrowthPeriod = 6;
 inline constexpr size_t kRuinGrowthMax = 6;
 
-// The repair's FJ effort: the FJ model's nonzeros, which FJ charges for
-// building its start, plus cuOpt's `min(2 s, 0.15 s + 0.02 s * ruined)` at
-// `kRepairEffortPerSecond`, laptop-measured FJ effort per second on one
-// thread (see `docs/PARAMETERS.md`).
+// The repair's FJ effort past FJ's setup: cuOpt's
+// `min(2 s, 0.15 s + 0.02 s * ruined)` at `kRepairEffortPerSecond`, laptop-measured FJ effort per
+// second on one thread (see `docs/PARAMETERS.md`).
 inline constexpr double kRepairSecondsBase = 0.15;
 inline constexpr double kRepairSecondsPerRuined = 0.02;
 inline constexpr double kRepairSecondsMax = 2.0;
@@ -85,8 +84,9 @@ inline constexpr int kWaitForSeedMs = 1;
 // after `no_improve` repairs in a row that found nothing.
 [[nodiscard]] size_t ruin_size(size_t num_integer, size_t no_improve);
 
-// The repair's FJ effort for `ruined` columns on a model of `nnz` nonzeros.
-[[nodiscard]] size_t repair_budget(size_t nnz, size_t ruined);
+// The repair's FJ effort for `ruined` columns, past FJ's setup (which
+// `FjWorker::hold_to_budget` adds on top, #309).
+[[nodiscard]] size_t repair_budget(size_t ruined);
 
 // The columns to ruin, into `out`: the shuffled `guidance` first, then
 // uniform draws from `integer_cols`, without repeats, until `size` columns

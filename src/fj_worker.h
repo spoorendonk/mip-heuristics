@@ -15,8 +15,8 @@ class SolutionSink;
 
 // Upstream FJ's `CALLBACK_EFFORT` (`feasibilityjump.hh`): FjWorker reads
 // its budgets, its stall counter and the clock only at FJ's callback, so
-// no FJ attempt stops sooner than this many effort units.  A caller whose
-// budget is smaller than one period cannot hold FJ to it.
+// an attempt stops no sooner than this many effort units, unless its caller
+// holds it to its budget with `FjWorker::hold_to_budget` (#309).
 constexpr size_t kFjCallbackEffort = 500000;
 
 // FeasibilityJump worker.  Owns a FeasibilityJumpSolver
@@ -59,6 +59,17 @@ public:
 
     // Run FJ for up to attempt_budget effort, then pause via callback.
     AttemptResult run_attempt(size_t attempt_budget);
+
+    // Holds each attempt to its budget (#309): FJ's callback period is set
+    // to what is left of it, at most `kFjCallbackEffort`, and set again at
+    // every callback that lets FJ continue, so an attempt stops within one
+    // FJ step of `attempt_budget` past FJ's setup.  The setup, two passes
+    // over FJ's nonzeros that its `init()` charges, is added to the first
+    // attempt's budget and to the total, so a budget below it still
+    // searches; a held attempt spends at most setup + budget + one step.
+    // For the one-shot callers (ruin's repair, recombine's local search,
+    // Scylla's cycle escape); FJ's own dispatch keeps upstream's period.
+    void hold_to_budget() { hold_to_budget_ = true; }
 
     [[nodiscard]] bool finished() const { return base_.finished; }
 
@@ -105,6 +116,9 @@ private:
     WorkerBudgetState base_;
     // Trace-only slot identity; see `WorkerTrace` in worker_base.h.
     const WorkerTrace trace_;
+    // The nonzeros handed to FJ's model, cutoff row included.
+    size_t fj_nonzeros_ = 0;
+    bool hold_to_budget_ = false;
     bool initialized_ = false;
     bool first_solve_done_ = false;
 };

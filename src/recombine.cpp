@@ -290,9 +290,9 @@ Offspring RecombineOperator::recombine(RecombinerArm arm, const SolutionPool::En
     return offspring;
 }
 
-size_t local_search_budget(size_t nnz, bool feasible) {
+size_t local_search_budget(bool feasible) {
     const double seconds = feasible ? kLsSecondsFeasible : kLsSecondsInfeasible;
-    return nnz + static_cast<size_t>(seconds * ruin_repair::kRepairEffortPerSecond);
+    return static_cast<size_t>(seconds * ruin_repair::kRepairEffortPerSecond);
 }
 
 size_t RecombineOperator::take_external(const RestartSource& source) {
@@ -365,9 +365,10 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
         return result;
     }
 
-    const size_t ls_budget = std::min(local_search_budget(problem_.nnz, feasible), ls_cap);
+    const size_t ls_budget = std::min(local_search_budget(feasible), ls_cap);
     FjWorker fj(problem_, exec_, sink_, ls_budget, std::numeric_limits<size_t>::max(),
                 static_cast<uint32_t>(rng_()), offspring_, trace_);
+    fj.hold_to_budget();
     const AttemptResult ls = fj.run_attempt(ls_budget);
     result.effort += ls.effort;
     result.improved = result.improved || ls.found_improvement;

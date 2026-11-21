@@ -131,10 +131,12 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 if (has_finite_lower) {
                     impl_->solver.addConstraint(RowType::Gte, row_lower[row], row_num_nz, row_index,
                                                 row_value, 0);
+                    fj_nonzeros_ += static_cast<size_t>(row_num_nz);
                 }
                 if (has_finite_upper) {
                     impl_->solver.addConstraint(RowType::Lte, row_upper[row], row_num_nz, row_index,
                                                 row_value, 0);
+                    fj_nonzeros_ += static_cast<size_t>(row_num_nz);
                 }
             }
         }
@@ -154,6 +156,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
                 impl_->solver.addConstraint(RowType::Lte, cutoff_ - problem_.offset,
                                             static_cast<int>(cost_index.size()), cost_index.data(),
                                             cost_value.data(), 0);
+                fj_nonzeros_ += cost_index.size();
             }
         }
 
@@ -202,6 +205,25 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     bool improved_incumbent = false;
     bool stalled = false;
 
+    // A held worker's limits (`hold_to_budget`, #309): its budgets count
+    // search past FJ's setup, which `init()` charges as two passes over the
+    // model's nonzeros (with no continuous relaxation, FJ keeps every
+    // coefficient it is given).  Unheld, the setup counts against them and
+    // FJ keeps upstream's period, as before.
+    const auto saturating_add = [](size_t a, size_t b) {
+        return a > std::numeric_limits<size_t>::max() - b ? std::numeric_limits<size_t>::max()
+                                                          : a + b;
+    };
+    const size_t setup = hold_to_budget_ ? 2 * fj_nonzeros_ : 0;
+    const size_t attempt_limit = saturating_add(attempt_budget, resume ? 0 : setup);
+    const size_t total_limit = saturating_add(base_.total_budget, setup);
+    const auto hold_period = [&](size_t consumed) {
+        if (hold_to_budget_) {
+            impl_->solver.setCallbackEffort(std::min(kFjCallbackEffort, attempt_limit - consumed));
+        }
+    };
+    hold_period(0);
+
     auto callback = [&](FJStatus status) -> CallbackControlFlow {
         attempt_effort_consumed = status.totalEffort - base_.total_effort;
 
@@ -247,8 +269,8 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         // check is tight; at 80 of them it is `nnz * 8192` and FJ was
         // measured 1.4-2.0x past the limit, twice to an external SIGKILL.
         //
-        // This costs one clock read per `CALLBACK_EFFORT` (500000) effort
-        // units, which is upstream FJ's own callback cadence — not a
+        // This costs one clock read per callback period (upstream's 500000
+        // unless `hold_to_budget` lowered it), FJ's own cadence — not a
         // per-iteration read.  `past_deadline()` is the write-free half of
         // `ExecutionContext::terminated()` and needs no poller seat.
         //
@@ -282,13 +304,16 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
         }
 
         // Pause at the attempt boundary.
-        if (attempt_effort_consumed >= attempt_budget) {
+        if (attempt_effort_consumed >= attempt_limit) {
             return CallbackControlFlow::Terminate;
         }
         // Total budget exceeded.
-        if (status.totalEffort > base_.total_budget) {
+        if (status.totalEffort > total_limit) {
             return CallbackControlFlow::Terminate;
         }
+        // Upstream restarts its period at every callback, a solution's too,
+        // so a held worker's next one is set to what is left of the attempt.
+        hold_period(attempt_effort_consumed);
         return CallbackControlFlow::Continue;
     };
 
@@ -331,7 +356,7 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     // `worker_stale` on every bundled MIP at SCIP's `128 x nnz`.  So only
     // the total half of `WorkerBudgetState` is charged here.
     base_.total_effort += attempt_effort_consumed;
-    if (stalled || base_.exhausted()) {
+    if (stalled || base_.total_effort >= total_limit) {
         base_.finished = true;
     }
 

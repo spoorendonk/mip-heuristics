@@ -154,8 +154,8 @@ public:
     // detectors on `x_hat`; on a cycle run the FJ escape from it, then
     // perturb it if the cycle persists; then make it the next round's last
     // rounding.  Replaces Mexi's `cycle_history_` in the variant.  The
-    // escape is bounded by `cap`, what is left of the attempt, in steps of
-    // `kFjCallbackEffort` (FJ reads its budgets only at its callback).  Returns
+    // escape is bounded by `cap`, what is left of the attempt, plus FJ's
+    // setup and one FJ step (`FjWorker::hold_to_budget`, #309).  Returns
     // the escape's effort, already charged to the worker's counters, and
     // whether it improved the incumbent.  Public so a test can drive it
     // with constructed points.
@@ -199,13 +199,16 @@ private:
     void restart_cuopt_descent();
 
     // cuOpt's `run_fj_cycle_escape` (#297): FJ from `x_hat`, which becomes
-    // the feasible point FJ found, if any; at most `cap` effort.
+    // the feasible point FJ found, if any; at most `cap` effort plus FJ's
+    // setup and one FJ step.
     AttemptResult run_cuopt_fj_escape(std::vector<double>& x_hat, size_t cap);
 
-    // FJ from `x_hat` for at most `budget`, charged to the worker; `x_hat`
-    // becomes FJ's feasible point, if any, and an improvement restarts the
-    // descent.  Shared by the cycle escape and the failed-rounding FJ.
-    AttemptResult run_cuopt_fj(std::vector<double>& x_hat, size_t budget);
+    // FJ from `x_hat` for `budget`, charged to the worker; `x_hat` becomes
+    // FJ's feasible point, if any, and an improvement restarts the descent.
+    // Shared by the cycle escape, held to its budget
+    // (`FjWorker::hold_to_budget`), and the failed-rounding FJ, which keeps
+    // upstream's callback period so each run searches at least one.
+    AttemptResult run_cuopt_fj(std::vector<double>& x_hat, size_t budget, bool hold_to_budget);
 
     HighsMipSolver& mipsolver_;
     // Must outlive the worker.

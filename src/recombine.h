@@ -211,10 +211,9 @@ private:
 inline constexpr double kLsSecondsFeasible = 1.0;
 inline constexpr double kLsSecondsInfeasible = 0.5;
 
-// The local search's FJ effort from an offspring on a model of `nnz`
-// nonzeros: the nonzeros FJ charges for building its start, plus cuOpt's
-// limit above.
-[[nodiscard]] size_t local_search_budget(size_t nnz, bool feasible);
+// The local search's FJ effort from an offspring: cuOpt's limit above, past
+// FJ's setup (which `FjWorker::hold_to_budget` adds on top, #309).
+[[nodiscard]] size_t local_search_budget(bool feasible);
 
 // What one `RecombineOperator::step` did.  `objective` is the best feasible
 // objective the step produced, the offspring's or FJ's from it, or
@@ -276,13 +275,13 @@ public:
 
     // One step, with `recombine_effort` capping the bound-prop recombiner's
     // search and `ls_cap` FJ's `local_search_budget`.  None with fewer than
-    // two pool entries, and then no arm is pulled.  `ls_cap` is not a cap
-    // below FJ's callback period: FJ tests its budget only at a callback, on
-    // a reported point or every 500000 effort, so a step spends up to that
-    // much whatever is passed; `RecombineStep::effort` reports what was
-    // spent.  `deadline` governs the recombiner and the check before FJ,
-    // `exec`'s clock FJ itself, so a `deadline` tighter than `exec`'s does
-    // not interrupt FJ.
+    // two pool entries, and then no arm is pulled.  FJ tests its budget only
+    // at a callback, and is held to the local search's budget
+    // (`FjWorker::hold_to_budget`, #309), so FJ overshoots `ls_cap` by at
+    // most its setup (two passes over its nonzeros) and one step;
+    // `RecombineStep::effort` reports what was spent.  `deadline` governs the recombiner and the
+    // check before FJ, `exec`'s clock FJ itself, so a `deadline` tighter than `exec`'s does not
+    // interrupt FJ.
     [[nodiscard]] std::optional<RecombineStep> step(size_t recombine_effort, size_t ls_cap,
                                                     const Deadline& deadline);
 

@@ -218,7 +218,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 46 removes cuPDLP-C's `cudaDeviceReset()` at the end of every
 # solve (Patch D, #299).
-set(PATCH_VERSION "46")
+#
+# Version 47 makes FJ's callback period a settable member (#309):
+# `FeasibilityJumpSolver::setCallbackEffort`, default upstream's 500000.
+set(PATCH_VERSION "47")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -1172,6 +1175,45 @@ if(_fj_resume_found EQUAL -1)
     message(STATUS "Applied resume parameter patch to feasibilityjump.hh")
 else()
     message(STATUS "Resume parameter patch already applied to feasibilityjump.hh, skipping")
+endif()
+
+# ── Patch feasibilityjump.hh: a settable callback period (#309) ──
+# Upstream's `CALLBACK_EFFORT` is a local constant of `user_terminate`, and
+# the callback is where a caller reads its budgets, so no run could stop
+# below 500000 effort units.  It becomes the member `callbackEffort`, at
+# the same default, with a setter: `FjWorker` lowers it for a one-shot run
+# whose whole budget is smaller.  Unset, the solver is upstream's.
+file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_HH)
+
+string(FIND "${FJ_HH}" "setCallbackEffort" _fj_cb_found)
+if(_fj_cb_found EQUAL -1)
+    set(_fj_cb_member_old "  size_t effortAtLastCallback = 0;\n")
+    set(_fj_cb_member_new
+        "  size_t effortAtLastCallback = 0;\n  // mip-heuristics (#309): upstream's CALLBACK_EFFORT, settable.\n  size_t callbackEffort = 500000;  // Originally 500000\n")
+    set(_fj_cb_setter_old
+        "\n public:\n  FeasibilityJumpSolver(const HighsLogOptions& _logOptions,")
+    set(_fj_cb_setter_new
+        "\n public:\n  // mip-heuristics (#309): the effort between two callbacks that carry no\n  // solution, so a caller's budget below upstream's period still holds.\n  void setCallbackEffort(size_t effort) { callbackEffort = effort; }\n\n  FeasibilityJumpSolver(const HighsLogOptions& _logOptions,")
+    set(_fj_cb_use_old
+        "    const int CALLBACK_EFFORT = 500000;  // Originally 500000\n    if (solution != nullptr ||\n        totalEffort - effortAtLastCallback > CALLBACK_EFFORT) {")
+    set(_fj_cb_use_new
+        "    if (solution != nullptr ||\n        totalEffort - effortAtLastCallback > callbackEffort) {")
+    foreach(_anchor _fj_cb_member_old _fj_cb_setter_old _fj_cb_use_old)
+        string(FIND "${FJ_HH}" "${${_anchor}}" _fj_cb_anchor_at)
+        if(_fj_cb_anchor_at EQUAL -1)
+            message(FATAL_ERROR
+                "feasibilityjump.hh patch failed: the callback-period anchor "
+                "${_anchor} no longer matches (upstream reformat?). Re-anchor "
+                "the #309 patch. ${CLEAN_REBUILD}")
+        endif()
+    endforeach()
+    string(REPLACE "${_fj_cb_member_old}" "${_fj_cb_member_new}" FJ_HH "${FJ_HH}")
+    string(REPLACE "${_fj_cb_setter_old}" "${_fj_cb_setter_new}" FJ_HH "${FJ_HH}")
+    string(REPLACE "${_fj_cb_use_old}" "${_fj_cb_use_new}" FJ_HH "${FJ_HH}")
+    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_HH}")
+    message(STATUS "Applied callback-period patch to feasibilityjump.hh")
+else()
+    message(STATUS "Callback-period patch already applied to feasibilityjump.hh, skipping")
 endif()
 
 # ── Patch feasibilityjump.hh: cuOpt's cardinality exchange (#218) ──
