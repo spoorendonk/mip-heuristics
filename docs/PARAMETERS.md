@@ -11,11 +11,12 @@ reference that carries a line number, because those drifted on essentially
 every refactor. Renaming a constant here means updating its entry in the same
 commit.
 
-For the runtime options a user actually sets (the five
-`mip_heuristic_<name>_effort` budgets, the four
+For the runtime options a user actually sets (the eight
+`mip_heuristic_<name>_effort` budgets, the six
 `mip_heuristic_<name>_patience` gates, `mip_heuristic_presolve_only`,
-`mip_heuristic_skip_submip_chain`, the three rebuild restart options and
-upstream's own `mip_heuristic_effort`),
+`mip_heuristic_skip_submip_chain`, the three rebuild restart options, FJ's
+four switches, `mip_heuristic_scylla_cuopt_pump` and upstream's own
+`mip_heuristic_effort`),
 see the closing section of this file
 and `README.md`. **Heuristic selection is those effort options and nothing
 else**: a value at or below zero means the heuristic does not run. For what is and is not reproducible when
@@ -1686,7 +1687,8 @@ itself is driven by a tracked target runner rather than by config names.
 
 ### Where these defaults come from, and how to re-derive them
 
-The four effort defaults above are **inherited**, not measured: FJ's is
+The four FJ, FPR, LocalMIP and Scylla effort defaults above (ruin,
+recombination and early FJ ship at `0`) were **inherited**, not measured: FJ's is
 vanilla HiGHS's hardcoded `nnz << 10` per-worker limit, and the other three
 are `0.30 x w/Sw` for weights proportional to a geomean `effort_per_ms`
 measured on a different instance set. #113's calibration probe measured them
@@ -1814,7 +1816,7 @@ not assert the quarter.
 
 ### A budget that cannot bind
 
-All five effort records are bounded at **`1e6`**, not at `1.0`. Nothing
+All eight effort records are bounded at **`1e6`**, not at `1.0`. Nothing
 ships or tunes above `1.0` — the suggested ranges above are the real
 operating range — but one measurement needs a value outside it.
 
@@ -1822,7 +1824,7 @@ operating range — but one measurement needs a value outside it.
 (its total budget) and `stale()` (its staleness gate). Set the gate to `0`
 and hand the heuristic a budget it cannot reach, and neither fires, so the
 solver's wall clock becomes the *single* stopping rule — the same one for
-all four heuristics on every instance. That is what #113's calibration
+every heuristic on every instance. That is what #113's calibration
 probe runs at, and it is the difference between measuring a heuristic and
 measuring the setting being derived from it: at any binding budget the
 trace stops where the budget stops, and each heuristic's budget binds at a
@@ -3042,7 +3044,8 @@ The custom patch-added options, all registered in `apply_patch.cmake`:
 - `mip_heuristic_presolve_only` and `mip_heuristic_skip_submip_chain`.
 
 Every one defaults to what a default run did before it existed, except the
-searched effort and patience defaults. There is no selection option —
+searched effort and patience defaults and `mip_heuristic_fpr_lp_effort`,
+whose `0` is measured (below). There is no selection option —
 heuristic selection is the zero-pattern of the effort options.
 
 `mip_heuristic_skip_submip_chain` (bool, default `false`) makes
