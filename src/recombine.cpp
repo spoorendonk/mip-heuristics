@@ -1,5 +1,6 @@
 #include "recombine.h"
 
+#include "fj_worker.h"
 #include "heuristic_common.h"
 #include "opportunistic_runner.h"
 #include "ruin_repair.h"
@@ -260,6 +261,8 @@ RecombineOperator::RecombineOperator(const ProblemView& problem, const Execution
     entries_.reserve(kPoolCapacity);
     offspring_.reserve(static_cast<size_t>(problem.ncol));
 }
+
+RecombineOperator::~RecombineOperator() = default;
 
 Offspring RecombineOperator::recombine(RecombinerArm arm, const SolutionPool::EntryRef& first,
                                        const SolutionPool::EntryRef& second,

@@ -56,16 +56,21 @@ FjWorker::~FjWorker() = default;
 
 void FjWorker::reset(std::span<const double> start, uint32_t seed, size_t total_budget,
                      size_t stale_budget, WorkerTrace trace, double cutoff) {
-    assert(std::isfinite(cutoff) == std::isfinite(cutoff_));
+    // Whether the model has a cutoff row is fixed at construction, so a reset
+    // that would add or drop one is refused: the worker finishes.
+    const bool cutoff_kind_changed = std::isfinite(cutoff) != std::isfinite(cutoff_);
+    assert(!cutoff_kind_changed);
     start_.assign(start.begin(), start.end());
     seed_ = seed;
-    cutoff_ = cutoff;
+    if (!cutoff_kind_changed) {
+        cutoff_ = cutoff;
+    }
     trace_ = trace;
     best_found_.clear();
     best_found_objective_ = std::numeric_limits<double>::infinity();
     base_ = WorkerBudgetState{.total_budget = total_budget, .stale_budget = stale_budget};
     // A model whose build was refused stays refused.
-    base_.finished = problem_.degenerate() || (initialized_ && !impl_);
+    base_.finished = problem_.degenerate() || (initialized_ && !impl_) || cutoff_kind_changed;
     first_solve_done_ = false;
     if (impl_) {
         impl_->solver.resetWeights();

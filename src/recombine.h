@@ -1,5 +1,4 @@
 #pragma once
-#include "fj_worker.h"
 #include "fpr_core.h"
 #include "heuristic_context.h"
 #include "prop_engine.h"
@@ -16,6 +15,7 @@
 
 struct Deadline;
 struct ExecutionContext;
+class FjWorker;
 class SolutionSink;
 
 // Recombination of two solutions (#209, after NVIDIA cuOpt's diversity
@@ -274,6 +274,12 @@ class RecombineOperator {
 public:
     RecombineOperator(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                       uint64_t seed, WorkerTrace trace);
+    // Out of line, where `FjWorker` is complete.
+    ~RecombineOperator();
+    RecombineOperator(RecombineOperator&&) = delete;
+    RecombineOperator(const RecombineOperator&) = delete;
+    RecombineOperator& operator=(const RecombineOperator&) = delete;
+    RecombineOperator& operator=(RecombineOperator&&) = delete;
 
     // One step, with `recombine_effort` capping the bound-prop recombiner's
     // search and `ls_cap` FJ's `local_search_budget`.  None with fewer than
@@ -321,8 +327,8 @@ private:
     std::vector<double> external_;
     std::vector<double> last_external_;
     // The local search's FJ, its model built on the first step that reaches
-    // it and reset for every later one (#316).  Behind a pointer: `FjWorker`
-    // does not move, and the operator does.
+    // it and reset for every later one (#316).  Behind a pointer: it is
+    // built only once a step reaches it, and this header only declares it.
     std::unique_ptr<FjWorker> fj_;
 };
 

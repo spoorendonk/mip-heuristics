@@ -63,9 +63,11 @@ public:
     // with these arguments would run it, budgets and effort counted afresh
     // (#316): ruin's repair and recombine's local search keep one worker
     // per slot instead of building FJ's model for every attempt.  FJ's
-    // constraint weights go back to 1 too.  The cutoff row is in the model
-    // or not from the first attempt on, so `cutoff` must be finite exactly
-    // when the constructor's was; a finite one moves the row's RHS.
+    // constraint weights go back to 1 too.  `test_fj_reuse.cpp` checks this
+    // without exchange rows only, as ruin and recombine pass none.  The
+    // cutoff row is in the model or not from construction on, so `cutoff`
+    // must be finite exactly when the constructor's was, else the reset is
+    // refused and the worker finishes; a finite one moves the row's RHS.
     // `hold_to_budget` stays set.  `start` is copied into the worker's own
     // buffer, so a reset allocates nothing once that has grown.
     void reset(std::span<const double> start, uint32_t seed, size_t total_budget,
