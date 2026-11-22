@@ -5,23 +5,23 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2609.22938-b31b1b.svg)](https://arxiv.org/abs/2609.22938)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22837481.svg)](https://doi.org/10.5281/zenodo.22837481)
 
-A unified open-source reference implementation and empirical evaluation of four primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant. All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.16.0 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions.
+A unified open-source reference implementation and empirical evaluation of four primal heuristics — FeasibilityJump, FPR, LocalMIP and Scylla — inside one solver, plus `fpr_lp`, FPR's LP-guided variant, and a set of opt-in additions after NVIDIA cuOpt (ruin-and-repair, recombination, early FJ, FJ personas, a GPU FJ race, cuOpt's pump; [below](#opt-in-features-cuopt-programme)). All of them are integrated into [HiGHS](https://github.com/ERGO-Code/HiGHS) v1.16.0 via a patched build, behind a common integration interface with shared budgeting and solution submission, so they can be measured against each other under identical conditions.
 
 The implementation accompanying: S. Spoorendonk, [*Presolve heuristics in HiGHS: implementation and computational study*](https://arxiv.org/abs/2609.22938), arXiv:2609.22938, 2026. The four heuristics are the published ones listed under [References](#references).
 
-The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: on the `mipfeas` benchmark (233 instances, 600 s) the patched solver improves the primal-integral SGM by 23.7% over the full set and by 12.9% on the instances never used for tuning — it reaches a good solution *sooner*. At the time limit it is only slightly ahead.
+The contribution is the open implementations and the comparable measurements, not a solver configuration that beats HiGHS: on the `mipfeas` benchmark (233 instances, 600 s; release v0.1.0 on HiGHS v1.15.1, see [Results](#results)) the patched solver improves the primal-integral SGM by 23.7% over the full set and by 12.9% on the instances never used for tuning — it reaches a good solution *sooner*. At the time limit it is only slightly ahead.
 
 **Documentation**: [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) (what is reproducible, and the `mipfeas` protocol) · [`docs/PARAMETERS.md`](docs/PARAMETERS.md) (every tunable constant) · [`bench/README.md`](bench/README.md) (the harness and the campaign) · [`docs/README.md`](docs/README.md) (source papers).
 
 ## Key Features
 
-- **Four presolve heuristics behind one runner contract** — FeasibilityJump, FPR, LocalMIP and Scylla share effort budgeting, a solution pool, a wall-clock deadline and continuous parallel workers, so a comparison between them is a comparison of the algorithms.
-- **A fifth at branch-and-bound dive time** — `fpr_lp`, FPR's LP-guided variant (paper Classes 2–3), drawing from upstream's own RENS/RINS envelope and charging back what it spends.
+- **Six presolve heuristics behind one runner contract** — FeasibilityJump, FPR, LocalMIP and Scylla, then ruin-and-repair and recombination, share effort budgeting, a solution pool, a wall-clock deadline and continuous parallel workers, so a comparison between them is a comparison of the algorithms.
+- **One more at branch-and-bound dive time** — `fpr_lp`, FPR's LP-guided variant (paper Classes 2–3), drawing from upstream's own RENS/RINS envelope and charging back what it spends.
 - **Compiled into HiGHS, not bolted on** — a patched build of v1.16.0. At default options a patched binary matches vanilla's B&B heuristic budget exactly, and `bench/check_vanilla_equivalence.py` proves the injection perturbs neither presolve, B&B nor the LP path.
-- **Paper-faithful, with the deviations written down** — every departure is recorded beside the code and in [`docs/PARAMETERS.md`](docs/PARAMETERS.md). Two upstream FeasibilityJump defects are corrected so the search matches its paper.
+- **Paper-faithful, with the deviations written down** — every departure is recorded beside the code and in [`docs/PARAMETERS.md`](docs/PARAMETERS.md). Two FeasibilityJump defects this project corrected (#139) are upstream since HiGHS v1.16.0; the patch checks they are still there.
 - **One budget unit** — effort and patience are both multiples of `nnz << 10`, vanilla HiGHS's own single-thread FJ limit, so `effort = 1.0` means one vanilla FJ budget and `patience < effort` reads on its face.
-- **Selection *is* the budget** — a heuristic runs iff its effort option is above zero, so all thirty-two subsets of the five are a zero-pattern of five doubles. No selector option, no rebuild.
-- **Defaults that were measured** — searched over eight parameters and confirmed on a held-out instance set, not chosen by hand. Scylla and `fpr_lp` ship disabled because the measurement said so.
+- **Selection *is* the budget** — a heuristic runs iff its effort option is above zero, so all 128 subsets of the seven are a zero-pattern of seven doubles. No selector option, no rebuild.
+- **Defaults that were measured** — searched over eight parameters and confirmed on a held-out instance set, not chosen by hand. Scylla and `fpr_lp` ship disabled because the measurement said so, and every later addition ships off with its verdict beside it.
 - **A presolve-only mode** — exits before the root LP, ~25x cheaper than a full solve, and the only way to measure the chain without branch-and-bound diluting it.
 
 ## Quick Start
@@ -51,12 +51,12 @@ mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heu
 
 ## Heuristics
 
-**FeasibilityJump** — LP-free Lagrangian heuristic. HiGHS's own FJ implementation, routed through our parallel infrastructure for effort budgeting and shared solution-pool integration, with two defects in `feasibilityjump.hh` corrected by `third_party/highs_patch/apply_patch.cmake` so that the search matches the paper:
+**FeasibilityJump** — LP-free Lagrangian heuristic. HiGHS's own FJ implementation, routed through our parallel infrastructure for effort budgeting and shared solution-pool integration. This project corrected two defects in `feasibilityjump.hh` so that the search matches the paper (#139); since HiGHS v1.16.0 both corrections are upstream's own, and `third_party/highs_patch/apply_patch.cmake` no longer makes them but refuses a tree that has lost them:
 
   * the jump value for a row with a **negative coefficient**. Forming the row's valid range divides both endpoints of the row's bound interval by the variable's coefficient, which reverses the interval when that coefficient is negative; without a swap the range comes out empty and the row contributes neither a critical value nor a slope, where eq. (5)/(6) give the critical value an explicit negative-coefficient case and Algorithm 1 accumulates the pre-bound slope by that sign. The correction is one conditional swap, placed before the integer ceil/floor. Damage concentrates on general integers and continuous columns; binaries are barely affected, since the jump is the opposite bound either way.
   * the **sign of the objective term** in the move score. Sect. 2.6 makes the score a minimised sum and every other term is improvement-positive, so the term is negated at both sites that spell it.
 
-  Pinned by `tests/test_fj_jump_value.cpp` and `tests/test_fj_objective_sign.cpp`, and by a post-check inside the patch script that refuses a half-applied patch. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)).
+  Pinned by `tests/test_fj_jump_value.cpp` and `tests/test_fj_objective_sign.cpp`, and by the patch script's spelling check. Based on Luteberget, Sartor, *Mathematical Programming Computation* 15, 365–388, 2023 ([doi:10.1007/s12532-023-00234-8](https://doi.org/10.1007/s12532-023-00234-8)).
 
 **FPR (Fix, Propagate, and Repair)** — LP-free DFS tree search that fixes integer variables one at a time, propagates bounds at each node, repairs the partial assignment whenever a fixing or its propagation leaves a constraint unsatisfiable — shifting whole variable domains rather than values, since most variables are not yet fixed — and backtracks on infeasibility. After the DFS, WalkSAT and RepairSearch repair any violations that remain in the completed solution. The presolve variant (paper Class 1) runs multiple strategy configurations in parallel. Based on Salvagnin, Roberti, Fischetti, *Mathematical Programming Computation* 17, 111–139, 2025 ([doi:10.1007/s12532-024-00269-5](https://doi.org/10.1007/s12532-024-00269-5)). The full backtracking + WalkSAT + RepairSearch pipeline is not present in HiGHS, SCIP, or CBC.
 
@@ -66,15 +66,15 @@ mip-heuristics patch active (custom MIP presolve heuristics; spoorendonk/mip-heu
 
 **Scylla** — PDLP-based feasibility pump: alternates approximate LP solves (PDLP) with FPR rounding, progressive objective blending, and cycling perturbation. N independent pump chains share one mutex-guarded PDLP instance; workers that lose the lock round against the most-recent stale snapshot to stay productive. Based on Mexi et al., *OR Proceedings 2023* ([doi:10.1007/978-3-031-58405-3_9](https://doi.org/10.1007/978-3-031-58405-3_9)); same concept as cuOpt (arXiv:2510.20499). This is a CPU/HiGHS reference implementation — no novelty claim, but it is the only publicly available CPU implementation.
 
-**ruin** — ruin-and-repair large-neighbourhood search: takes the pool's best point, resets a few integer columns (those where the newest incumbent differs from the worker's own best first), and repairs with a fresh FeasibilityJump under an objective cutoff, so anything it reports beats that worker's best. Runs after Scylla in the chain, on what the others found. After the CPU LNS worker in NVIDIA cuOpt (read for technique, no code copied). Ships off until measured (#207).
+**ruin** — ruin-and-repair large-neighbourhood search: takes the pool's best point, resets a few integer columns (those where the newest incumbent differs from the worker's own best first), and repairs with a fresh FeasibilityJump under an objective cutoff, so anything it reports beats that worker's best. Runs after Scylla in the chain, on what the others found. After the CPU LNS worker in NVIDIA cuOpt (read for technique, no code copied). Its finds carry the solution-source letter `N`. Ships off: #244 measured no gain (primal integral 1.005 [0.972, 1.041] against main).
 
-**recombine** — recombination on stagnation: draws two pool points, recombines them with the bound-prop recombiner or one of the pool's two crossovers, chosen by a UCB bandit, and runs FeasibilityJump from the offspring. Runs last, once the others have stalled, on what they all found, and stops on its patience. After the diversity manager in NVIDIA cuOpt (read for technique, no code copied). Ships off until measured (#209).
+**recombine** — recombination on stagnation: draws two pool points, recombines them with the bound-prop recombiner or one of the pool's two crossovers, chosen by a UCB bandit, and runs FeasibilityJump from the offspring. Runs last, once the others have stalled, on what they all found, and stops on its patience. After the diversity manager in NVIDIA cuOpt (read for technique, no code copied). Its finds carry the letter `O`. Ships off: #244 measured it slightly worse (1.037 [1.004, 1.071] against main).
 
 Reference PDFs are in `docs/`.
 
 ## Configuration
 
-The presolve heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla → ruin → recombine, each with its own **effort** budget and its own **patience** — the improvement-free effort it tolerates before giving up — so one can be tuned without moving the others. Both are multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so `effort = 1.0` is exactly one vanilla FJ budget and `patience < effort` reads on its face. Each heuristic parallelises the same way: continuous workers that self-terminate, with no barrier between them and no bit-identical guarantee across runs.
+The presolve heuristics always run as the fixed chain FJ → FPR → LocalMIP → Scylla → ruin → recombine, each with its own **effort** budget and its own **patience** — the improvement-free effort it tolerates before giving up — so one can be tuned without moving the others. Where the chain and the dive-time hook sit in a solve, and which threads they start, is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#how-the-heuristics-plug-into-a-solve). Both are multiples of `nnz << 10`, vanilla HiGHS's own single-thread FeasibilityJump limit, so `effort = 1.0` is exactly one vanilla FJ budget and `patience < effort` reads on its face. Each heuristic parallelises the same way: continuous workers that self-terminate, with no barrier between them and no bit-identical guarantee across runs.
 
 | heuristic | effort option | default | patience option | default | |
 |---|---|---|---|---|---|
@@ -82,14 +82,14 @@ The presolve heuristics always run as the fixed chain FJ → FPR → LocalMIP �
 | `fpr` | `mip_heuristic_fpr_effort` | 3.1610 | `mip_heuristic_fpr_patience` | 0.3372 | |
 | `local_mip` | `mip_heuristic_local_mip_effort` | 3.2865 | `mip_heuristic_local_mip_patience` | 3.1943 | above its own ceiling, so the clamp `effort/4` = 0.8216 applies |
 | `scylla` | `mip_heuristic_scylla_effort` | **0.0** | `mip_heuristic_scylla_patience` | 0.0 | **disabled** |
-| `ruin` | `mip_heuristic_ruin_effort` | **0.0** | `mip_heuristic_ruin_patience` | 0.0 | **off** until measured (#207) |
-| `recombine` | `mip_heuristic_recombine_effort` | **0.0** | `mip_heuristic_recombine_patience` | 0.0 | **off** until measured (#209) |
+| `ruin` | `mip_heuristic_ruin_effort` | **0.0** | `mip_heuristic_ruin_patience` | 0.0 | **off**; no measured gain (#244) |
+| `recombine` | `mip_heuristic_recombine_effort` | **0.0** | `mip_heuristic_recombine_patience` | 0.0 | **off**; measured slightly worse (#244) |
 | `fpr_lp` | `mip_heuristic_fpr_lp_effort` | **0.0** | — | — | **disabled**; a share of a different envelope, see below |
 | `early_fj` | `mip_heuristic_early_fj_effort` | **0.0** | `mip_heuristic_fj_patience` | 0.0 | **off**; FJ on the original model while presolve runs, see below |
 
 **What ships is three of the seven.** The defaults are `B'-mix-cheapest`, the configuration the joint search selected and held-out validation confirmed ([stage 3](#reproducing)).
 
-**Scylla ships disabled, and that is a measurement.** It produced zero accepted incumbents across ~380 runs on 233 instances while dispatching on every solve, and it is absent from all 14 survivors of the configuration search. The implementation is maintained and tested; it is the *budget* that is zero, so raising the option re-enables the heuristic with no rebuild.
+**Scylla ships disabled, and that is a measurement.** It produced zero accepted incumbents across ~380 runs on 233 instances while dispatching on every solve, and it is absent from all 14 survivors of the configuration search. A later smoke in a GPU build agrees: on 25 instances at 60 s and 3 seeds, a run with Scylla on had 2.125 [1.559, 2.898] times main's primal integral, and neither of its pumps found an improving incumbent (#302). The implementation is maintained and tested; it is the *budget* that is zero, so raising the option re-enables the heuristic with no rebuild.
 
 **`fpr_lp` ships disabled for a different reason**, and its option is in a different unit. It runs at B&B dive time and draws from upstream's RENS/RINS LP-iteration envelope (`mip_heuristic_effort`), charging back what it spends — so its budget is zero-sum against those two rather than an independent allowance, and `mip_heuristic_fpr_lp_effort` is its **share of that envelope**. A call is sized at `share x min(remaining headroom, per-call cap)`, so `1.0` takes the whole slice and a share above `1.0` grows the budget without bound. Overdrawing is self-correcting: the charge-back depletes the counters the headroom is read from, so the next call finds none and skips. `0` returns above every read and write of those counters, which is what makes an `fpr_lp` ablation leave RENS and RINS exactly as they were. It ships at `0` because given the whole envelope it produces accepted incumbents, and inside the shipped chain it produces none ([stage 4](#reproducing)).
 
@@ -112,7 +112,7 @@ Because `scylla`, `ruin`, `recombine` and `fpr_lp` ship at `0`, enabling one tak
 
 **Zeroing every effort is an ablation, not a vanilla baseline.** It disables our presolve heuristics and `fpr_lp`, but the binary around it is still the patched one. It also runs **no FeasibilityJump at all**: upstream's standalone FJ call site never fires on a patched build, so FJ is ours or it is absent. Use it to measure what the chain contributes on this binary; a vanilla comparison needs a separately built unpatched HiGHS (`bench/run_benchmark.py --vanilla-binary`, which refuses a binary carrying the patch marker).
 
-Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside the five zeros for the **pure patch-overhead** configuration. That is what `bench/check_vanilla_equivalence.py` compares against an unpatched binary with FeasibilityJump likewise disabled, and it *requires* the two to agree: same objective, same node count, same total and heuristic LP iterations, and an empty log diff once wall-clock content is normalised away. It is a gate, not a recorded result — it needs a second binary, so it cannot run in CI and every release re-runs it. What it establishes when green is that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP path.
+Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside the zero efforts of the `off` config (`ruin`, `recombine` and early FJ already ship at zero) for the **pure patch-overhead** configuration. That is what `bench/check_vanilla_equivalence.py` compares against an unpatched binary with FeasibilityJump likewise disabled, and it *requires* the two to agree: same objective, same node count, same total and heuristic LP iterations, and an empty log diff once wall-clock content is normalised away. It is a gate, not a recorded result — it needs a second binary, so it cannot run in CI and every release re-runs it. What it establishes when green is that injecting the heuristics does not perturb HiGHS's presolve, B&B or LP path.
 
 ### Other options
 
@@ -120,19 +120,40 @@ Put `mip_heuristic_run_feasibility_jump = false` in the options file alongside t
 
 `mip_heuristic_skip_submip_chain` (bool, default `false`) runs no presolve heuristic inside a RINS/RENS sub-MIP, which otherwise inherits the parent's options and runs the whole chain again on the sub-problem (#178). The default keeps today's behaviour; whether turning it on helps the primal integral is not yet measured.
 
-`mip_heuristic_fj_restart` and `mip_heuristic_local_mip_restart` (int, default `0`) choose what a FJ or LocalMIP worker restarts from when the runner rebuilds it (#200): `0` is today's restart (LocalMIP: a pool draw, perturbed; FJ: the pool's best); `1` is the pool's best, unperturbed, as Local-MIP v2's default and CP-SAT's violation local search restart; `2` is Local-MIP v2's `hybrid` restart, each column the best's value or a random one within its bounds, 50/50. `mip_heuristic_local_mip_restart_weights` (bool, default `false`) starts a rebuilt LocalMIP worker's weights, with probability ½, at a draw from {1, 2} instead of 1, after CP-SAT's restart weight draw. The defaults leave every run unchanged; which arm to ship is measured in #201. `docs/PARAMETERS.md` has the details and references.
+`mip_heuristic_fj_restart` and `mip_heuristic_local_mip_restart` (int, default `0`) choose what a FJ or LocalMIP worker restarts from when the runner rebuilds it (#200): `0` is today's restart (LocalMIP: a pool draw, perturbed; FJ: the pool's best); `1` is the pool's best, unperturbed, as Local-MIP v2's default and CP-SAT's violation local search restart; `2` is Local-MIP v2's `hybrid` restart, each column the best's value or a random one within its bounds, 50/50. `mip_heuristic_local_mip_restart_weights` (bool, default `false`) starts a rebuilt LocalMIP worker's weights, with probability ½, at a draw from {1, 2} instead of 1, after CP-SAT's restart weight draw. #201 measured the three arms on the 90 tuning instances, presolve-only, and found no gain over the default restart, so every default stands. `docs/PARAMETERS.md` has the details and references.
+
+`mip_heuristic_effort` keeps **vanilla semantics and its vanilla default of 0.05**: it is upstream's B&B dive-heuristic envelope, which gates RENS/RINS and `fpr_lp` alike. A patched binary at default options matches vanilla's B&B heuristic budget exactly.
+
+### Opt-in features (cuOpt programme)
+
+These options add techniques read from [NVIDIA cuOpt](https://github.com/NVIDIA/cuopt); no code was copied. **All of them are off by default**, and none of them has earned a default yet. Their verdicts are smoke-level: 3 to 25 instances, 60 s or presolve-only, at most 3 seeds (5 repetitions in #305), one machine each. A ratio near 1 means no effect that size of run can show, not no effect. A ratio is the feature arm's primal integral over its baseline's (main, unless the cell names another baseline), lower is better, with its 95% CI.
+
+| Feature | Option | Default | What it does | Measured | Issues |
+|---|---|---|---|---|---|
+| Early FJ | `mip_heuristic_early_fj_effort` | `0` | One FJ worker on the original model while presolve runs; its best point becomes the MIP start | 2.19x better [1.68, 2.86] (main over early FJ) on 3 slow-presolve instances, as logged by the `found at` lines; final bounds unchanged; a fast presolve not measured | #205 #215 #216 #240 |
+| FJ personas | `mip_heuristic_fj_personas` | `false` | Covering and exact-k starts on FJ's presolve workers 1 and 2 | 0.989 [0.974, 1.005] on the 11 of 25 instances where a persona fires (#206); 1.004 [0.991, 1.018] on 7 exact-k instances (#249) | #206 #249 |
+| FJ LP persona | `mip_heuristic_fj_lp_persona` | `false` | `fpr_lp`'s last worker runs FJ from the dive's rounded LP point | 1.009 [0.999, 1.019] against `fpr_lp` on, 19 instances | #217 |
+| FJ exchange | `mip_heuristic_fj_exchange` | `false` | A swap move on uniform binary equality rows, on cuOpt's exchange lanes | 1.008 [0.995, 1.022], 7 exact-k instances | #218 #249 |
+| Ruin-and-repair | `mip_heuristic_ruin_effort`, `_patience` | `0` | Chain stage after Scylla: ruin the pool's best, repair with FJ under a cutoff; letter `N` | 1.005 [0.972, 1.041], 15 instances main does not solve | #207 #219 #244 |
+| Recombination | `mip_heuristic_recombine_effort`, `_patience` | `0` | Last chain stage: a UCB bandit over three recombiners, then FJ; letter `O` | 1.037 [1.004, 1.071], the same 15 | #209 #227 #229 #244 |
+| cuOpt pump | `mip_heuristic_scylla_cuopt_pump` | `false` | cuOpt's projection, tolerance schedule, cycle detectors and FJ escapes in Scylla's pump; needs Scylla on | 0.984 [0.949, 1.020] against Mexi's pump, 25 instances; Scylla on is 2.125 [1.559, 2.898] against main, and neither pump found an improving incumbent | #290 #295 #297 #298 #302 |
+| GPU FJ race | `mip_heuristic_fj_gpu` | `false` | GPU climbers beside CPU FJ in the main MIP's first FJ dispatch; [GPU build](#gpu-build) only | Not yet measured racing. Before #289, 1.41 [1.10, 1.81] on 25 instances, while creating the CUDA context held FJ's dispatch up; the climbers raced on 3 of them and found nothing. Since #289, no climber stepped in 25 of 25 race runs (`gpu_steps=0`, 5 instances, #305) | #210 #283 #288 #289 #304 #305 |
 
 `mip_heuristic_fj_personas` (bool, default `false`) starts FJ's presolve workers after the first from structural personas, after NVIDIA cuOpt's CPU FJ portfolio (#206): a greedy covering start when the model has covering, partitioning or `= k` / `>= k` cardinality rows, and an exact-k start followed by it when it has uniform binary equality rows; the remaining workers stay seeded copies. `docs/PARAMETERS.md` (FJ Personas) has the details. `mip_heuristic_fj_lp_persona` (bool, default `false`, #217) adds cuOpt's LP start persona at dive time: with `fpr_lp` on and two or more workers, its last worker runs FJ from the dive's LP solution, randomly rounded. The lane needs a dispatch large enough to hold FJ's 500000-unit callback period per slot, about `488 x workers` nonzeros at the default `fpr_lp` share, and stays off below that and above `kPersonaNnzLimit` nonzeros.
 
 `mip_heuristic_fj_exchange` (bool, default `false`) gives FJ's workers on cuOpt's exchange lanes a compound move (#218): one binary of a uniform binary equality row off and another on, in one step, so the row stays satisfied. It is independent of the personas; `docs/PARAMETERS.md` (FJ Exchange) has the details.
 
-`mip_heuristic_fj_gpu` (bool, default `false`, #265) asks for GPU FeasibilityJump climbers raced against FJ's CPU workers, in a `-DMIP_HEURISTICS_CUDA=ON` build. In such a build the climbers run on their own thread and offer into the same pool, and an option-on run is not reproducible, even at `threads=1`. A build without the GPU FJ runs FJ on the CPU only and warns `FeasibilityJump runs on the CPU only`, which the bench harness treats as a run that ignored its configuration.
+`mip_heuristic_fj_gpu` (bool, default `false`, #265) asks for GPU FeasibilityJump climbers raced against FJ's CPU workers, in a `-DMIP_HEURISTICS_CUDA=ON` build. In such a build the climbers run on their own thread and offer into the same pool, and an option-on run is not reproducible, even at `threads=1`. The GPU races the main MIP's first FJ dispatch only, not a sub-MIP and not a dispatch after a root restart. **Read `gpu_steps=` on FJ's `[Heur]` line before crediting the GPU with anything**: `0` is a race in which no climber launched, so the run says nothing about the GPU (`docs/RUNTIME.md`, Observability). A build without the GPU FJ runs FJ on the CPU only and warns `FeasibilityJump runs on the CPU only`, which the bench harness treats as a run that ignored its configuration.
 
-`mip_heuristic_scylla_cuopt_pump` (bool, default `false`, #290) switches Scylla's pump to NVIDIA cuOpt's projection: an exact L1 distance to the rounding through auxiliary columns for general integers, an objective weight that decays every projection and resets on an improvement, a PDLP tolerance read off how integral the last LP point is, and FPR with repair as the rounding. It only matters when Scylla runs.
+`mip_heuristic_scylla_cuopt_pump` (bool, default `false`, #290) switches Scylla's pump to NVIDIA cuOpt's projection: an exact L1 distance to the rounding through auxiliary columns for general integers, an objective weight that decays every projection and resets on an improvement, a PDLP tolerance read off how integral the last LP point is, a warm start from the last rounding, and FPR with repair as the rounding. Two cycle detectors, a ring of recent infeasible roundings and a window of L1 distances (#295), run an FJ escape before the pump perturbs (#297), and a rounding FPR cannot repair gets an FJ attempt too (#298). It only matters when Scylla runs.
 
-`mip_heuristic_early_fj_effort` (double, default `0`, off) runs one FeasibilityJump worker on the **original, unpresolved model** while HiGHS presolves it (#205; cuOpt's "run no-relaxation heuristics before presolve"), in the same `nnz << 10` unit as the presolve options. Each improving point is logged when found (`objective <O> found at <T>s`), which on a slow presolve can be many seconds before HiGHS can use it (#240). When presolve returns, the worker stops and its best feasible solution becomes the solve's MIP start if it is also feasible once crushed into the presolved space (#306; otherwise it is dropped), as the crushed point's postsolved image when presolve gives the crushed point another objective (#343): HiGHS crushes it there, and keeps the original-space copy as the answer if nothing better is found. It is not part of the chain or its zero-pattern, and it is not reproducible even at `threads=1`, since it stops when presolve does. Whether it pays is measured on #205.
+`mip_heuristic_early_fj_effort` (double, default `0`, off) runs one FeasibilityJump worker on the **original, unpresolved model** while HiGHS presolves it (#205; cuOpt's "run no-relaxation heuristics before presolve"), in the same `nnz << 10` unit as the presolve options. Each improving point is logged when found (`objective <O> found at <T>s`), which on a slow presolve can be many seconds before HiGHS can use it (#240). When presolve returns, the worker stops and its best feasible solution becomes the solve's MIP start if it is also feasible once crushed into the presolved space (#306; otherwise it is dropped), as the crushed point's postsolved image when presolve gives the crushed point another objective (#343): HiGHS crushes it there, and keeps the original-space copy as the answer if nothing better is found. It is not part of the chain or its zero-pattern, and it is not reproducible even at `threads=1`, since it stops when presolve does. #216 measured it on 3 instances with a slow presolve (table above); a fast presolve is not measured.
 
-`mip_heuristic_effort` keeps **vanilla semantics and its vanilla default of 0.05**: it is upstream's B&B dive-heuristic envelope, which gates RENS/RINS and `fpr_lp` alike. A patched binary at default options matches vanilla's B&B heuristic budget exactly.
+**One related change is always on.** Since v0.1.8 the solution pool refuses a twin (#204): an offer whose integer columns match an entry's replaces that entry if it is better, and is refused otherwise, so copies of one assignment no longer take several slots. It changes a default run; no A/B of it was posted.
+
+**Removed after measurement:** the objective cut (primal integral 1.091), line-segment search (no significant gain, #252) and the CDCL lane (0.986 [0.969, 1.003]). The [CHANGELOG](CHANGELOG.md) (v0.1.9) has the options they took with them.
+
+**Reading a run.** HiGHS's log tags every new incumbent with a solution-source letter, and with any of ours enabled its `Src:` key lists ours too: `J` FJ, the GPU climbers included (upstream's own FJ, also `J`, never runs in a patched build), `A` FPR, `M` LocalMIP, `G` Scylla, `N` ruin, `O` recombine and `D` `fpr_lp`. Every other letter is HiGHS's own. At `log_dev_level=3`, each heuristic's `[Heur]` line ends with `stopped_by=` (what ended its dispatch: `deadline`, `interrupt`, `budget`, `patience` or `done`) and, on FJ's line when the GPU raced, `gpu_steps=`. Early FJ logs each improving point as `objective <O> found at <T>s` and then what the hand-over did with the best one. [`docs/RUNTIME.md`](docs/RUNTIME.md) (Observability) has every field.
 
 ### Reproducible runs
 
@@ -142,7 +163,7 @@ One caveat for library embedders (not CLI users): HiGHS's task executor is a pro
 
 ## Results
 
-233 instances, 600 s, one seed, 16 workers, CPU build. `mipfeas` is a MIP
+**These are release v0.1.0's results, on HiGHS v1.15.1.** They have not been re-run since the move to v1.16.0 (#267), which changed upstream's presolve, B&B and multi-worker search, nor with any of the [opt-in features](#opt-in-features-cuopt-programme), which came later. 233 instances, 600 s, one seed, 16 workers, CPU build. `mipfeas` is a MIP
 feasibility benchmark — 233 instances from the MIPLIB 2017 benchmark collection
 with the known-infeasible ones excluded, scored by the primal integral —
 introduced by Bussieck and Dirkse in
@@ -222,8 +243,9 @@ first solution a later heuristic found a better one, LocalMIP on 62 and FPR on
 That does **not** make this a result about parallelism. Our FJ differs from
 vanilla's in three confounded ways — 16 opportunistic workers against one call,
 a per-worker budget totalling ~5x vanilla's single allowance, and the two
-corrected upstream defects ([#159](https://github.com/spoorendonk/mip-heuristics/issues/159),
-[#160](https://github.com/spoorendonk/mip-heuristics/issues/160)) — and vanilla
+upstream defects the patch corrected at v0.1.0 ([#159](https://github.com/spoorendonk/mip-heuristics/issues/159),
+[#160](https://github.com/spoorendonk/mip-heuristics/issues/160); upstream since
+v1.16.0, so a v1.16.0 vanilla has them fixed too) — and vanilla
 runs its own FJ, so the comparison already includes FJ-vs-FJ.
 
 ## Build Options
@@ -235,8 +257,30 @@ runs its own FJ, so the comparison already includes FJ-vs-FJ.
 | `-DMIP_HEURISTICS_INSTRUMENT=OFF` | follows `MIP_HEURISTICS_BUILD_TESTS` | Compile out the LocalMIP warm-start and deadline-poll counters. They are read by five tests, so on a fresh cache they are on wherever the tests are built and off as a subproject; turn them off at top level only when measuring their overhead in a production build. |
 | `-DMIP_HEURISTICS_BUILD_TESTS=ON` | top-level only | Build and register the Catch2 suite, the bench and docs checks and the lint gates. On when this is the top-level project, off as a subproject. |
 | `-DMIP_HEURISTICS_INSTALL_GIT_HOOKS=OFF` | top-level only | Leave this checkout's `core.hooksPath` alone. On when this is the top-level project, off as a subproject. |
-| `-DMIP_HEURISTICS_CUDA=ON` | `OFF` | Enable cuPDLP GPU backend for Scylla. Requires `CUDA_HOME` exported; **fails the configure** rather than falling back to CPU, because GPU vs CPU is a compile-time `#ifdef` in HiGHS and a silent fallback would be indistinguishable at the command line. Build into a separate tree and verify with `ldd build-gpu/bin/highs \| grep cudart`. |
+| `-DMIP_HEURISTICS_CUDA=ON` | `OFF` | Build the GPU tree: HiGHS's cuPDLP GPU backend, which Scylla's PDLP uses, and the GPU FeasibilityJump that `mip_heuristic_fj_gpu` races. Requires `CUDA_HOME` exported; **fails the configure** rather than falling back to CPU. See [GPU build](#gpu-build). |
+| `-DMIP_HEURISTICS_CUDA_ARCHITECTURES=<list>` | `native` | The GPU FJ device code's targets, in a `MIP_HEURISTICS_CUDA` build: `native` is the building machine's GPU; pass a list such as `86` to build for another. HiGHS's cuPDLP sets its own. |
 | `-DMIP_HEURISTICS_EXTRA_HIGHS_PATCHES=<a.cmake;b.cmake>` | empty | A parent project's own HiGHS patch scripts (absolute paths), run in list order after the built-in patch in the same fetch patch step, each as `cmake -DSOURCE_DIR=<HiGHS tree> -DPATCH_SCRIPT_SHA=<its SHA-256> -P <script>`. See [As a subproject](#as-a-subproject). |
+
+### GPU build
+
+`-DMIP_HEURISTICS_CUDA=ON` builds two GPU paths into the same `highs`: HiGHS's cuPDLP backend, so every PDLP solve, Scylla's included, runs on the GPU, and the GPU FeasibilityJump climbers (`src/gpu/`) that `mip_heuristic_fj_gpu` races against CPU FJ. Nothing else changes: a GPU binary at default options runs no GPU code of ours, since both features ship off.
+
+**Requirements.** nvcc, and `CUDA_HOME` exported (HiGHS derives its CUDA library and include paths from it). Its suite runs green with CUDA 13.1 on an RTX 5070 Ti (Linux, GCC 15.2, #289), and it was built and smoked on a laptop RTX 3060 with GCC 15 as nvcc's host compiler (#266); CUDA 13.0 fails CMake's nvcc check against glibc 2.42 or later (#289).
+
+```bash
+export CUDA_HOME=/usr/local/cuda
+cmake -B build-gpu -DCMAKE_BUILD_TYPE=Release -DMIP_HEURISTICS_CUDA=ON
+cmake --build build-gpu -j$(nproc)
+ldd build-gpu/bin/highs | grep cudart         # the binary links the CUDA runtime
+```
+
+Build into a tree of its own. `MIP_HEURISTICS_CUDA_ARCHITECTURES` (default `native`) picks the device code's targets for a machine other than the building one.
+
+**A configure failure is fatal.** A missing nvcc or `CUDA_HOME`, or a HiGHS config that does not come out GPU-enabled, stops the configure: GPU or CPU PDLP is a compile-time `#ifdef` in HiGHS, so a silent fallback would yield a CPU binary that looks like a GPU one at the command line.
+
+**At run time, without a usable device**, `mip_heuristic_fj_gpu` falls back to CPU FJ and warns `mip_heuristic_fj_gpu=true but the GPU FJ stopped (<reason>); FeasibilityJump runs on the CPU only.`, the string a CPU build warns too, which makes the bench harness drop the run. A failure after the climbers started warns `... climbers stopped mid-race` instead, and the run stands. The CUDA context is created once per process on a thread of its own, from before presolve; no FJ dispatch waits for it, but the solve's end does, so a solve shorter than the creation (about 0.1 to 0.9 s) ends when the creation does. A run with the option on is not reproducible, even at `threads=1`. Scylla's PDLP has no run-time CPU fallback in a GPU build. `docs/RUNTIME.md` (`mip_heuristic_fj_gpu`) and `docs/ARCHITECTURE.md` (fj) have the details.
+
+**Tests.** The device cases are tagged `[gpu]`, built only in a GPU tree, run serially, and fail rather than skip without a usable device. `git push` runs only the CPU tree's suite, so a change to `src/gpu/`, a `.cu`/`.cuh` file or the CUDA CMake runs `ctest --test-dir build-gpu` by hand ([`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md), GPU build).
 
 ### As a subproject
 

@@ -27,7 +27,18 @@ linked from each entry.
   objective weight that decays every projection and resets on an
   improvement, a PDLP tolerance read off how integral the last LP point is,
   a warm start from the last rounding, and FPR with repair on every chain.
-  A default run, and a Scylla run without the option, are unchanged.
+  Two cycle detectors, a ring of recent infeasible roundings and a window
+  of L1 distances, replace Mexi's three-deep window (#295); on a cycle the
+  pump runs FJ from the rounding before it perturbs (#297), and a rounding
+  FPR cannot repair gets an FJ attempt too (#298). #302 measured it level
+  with Mexi's pump (primal integral 0.984 [0.949, 1.020], 25 instances),
+  with Scylla on at 2.125 [1.559, 2.898] against main and no improving
+  incumbent from either pump. A default run, and a Scylla run without the
+  option, are unchanged.
+- **`[Heur] gpu_steps=`** (#305): when FJ's GPU race ran, FJ's `[Heur]`
+  line ends with how many times the climbers launched; `0` is a race in
+  which no climber stepped. Measured with it, the race stepped no climber
+  in 25 of 25 runs on 5 instances. A default run is unchanged.
 - **`[Heur] stopped_by=`** (#303): every presolve-chain and `fpr_lp`
   `[Heur]` line ends with what stopped the dispatch — `deadline`,
   `interrupt`, `budget`, `patience` or `done` — appended after
@@ -57,6 +68,20 @@ linked from each entry.
   presolved image`, so the primal bound `runSetup` takes from the crushed
   point is the reported vector's objective. If the postsolved point does
   not attain it, the point is dropped. A default run is unchanged.
+- **Early FJ calls log callbacks on the solving thread only** (#309): its
+  `found at` lines still go to the console and the log file as found, and
+  reach a user log callback after the worker is joined, ahead of the
+  hand-over's lines. A default run is unchanged.
+- **One-shot FJ runs hold to their budget** (#309): ruin's repair,
+  recombination's local search and the cuOpt pump's cycle escape stop
+  within one FJ step past FJ's setup plus their budget, where they could
+  overshoot a budget below FJ's 500000-effort callback period (patch
+  version 47). All three are off by default; a default run is unchanged.
+- **A GPU find counts as FJ's progress** (#309): with
+  `mip_heuristic_fj_gpu` and `mip_heuristic_fj_patience` above zero, a
+  climber's improving offer resets the runner's patience gate, which
+  could otherwise run out while the GPU was still improving. A default
+  run is unchanged.
 
 ## v0.1.11 (2026-11-12)
 
@@ -87,6 +112,11 @@ unchanged.
   makes them, and upstream's version of the negative-coefficient fix also
   drops the empty-interval skip and the equality row's `(rhs, rhs)`
   interval. No option was added, removed or changed its default.
+- **`MIP_HEURISTICS_CUDA` also builds the GPU FeasibilityJump** (#210,
+  #261, #262): besides HiGHS's cuPDLP backend, a GPU tree compiles the
+  `mip_heuristics_gpu` device code into `highs`, its targets set by the
+  new `MIP_HEURISTICS_CUDA_ARCHITECTURES` (default `native`), with `[gpu]`
+  tests. Nothing calls it in this release; CPU builds are unchanged.
 
 ## v0.1.9 (2026-11-11)
 
@@ -97,12 +127,15 @@ All off by default, so default runs are unchanged.
 - **Recombination** (#209, #227, #229, #234, #235): a presolve chain stage
   after ruin-and-repair that recombines pool solutions, enabled by
   `mip_heuristic_recombine_effort` above zero, with
-  `mip_heuristic_recombine_patience` (both default 0).
+  `mip_heuristic_recombine_patience` (both default 0). Its finds carry the
+  solution-source letter `O`. #244 later measured it slightly worse than
+  main (primal integral 1.037 [1.004, 1.071], 15 instances).
 - **FJ's LP start persona** (#217): `mip_heuristic_fj_lp_persona` (default
   `false`); with `fpr_lp` on, its last worker runs FJ from the dive's LP
   solution, randomly rounded.
 - **FJ's cardinality exchange** (#218): `mip_heuristic_fj_exchange` (default
-  `false`), a compound move on uniform binary equality rows.
+  `false`), a compound move on uniform binary equality rows. #249
+  measured no gain (1.008 [0.995, 1.022] against main, 7 instances).
 
 ### Removed
 
@@ -126,3 +159,43 @@ All off by default, so default runs are unchanged.
   measured no significant gain (primal integral 0.986 [0.969, 1.003]).
   Added and removed since v0.1.8, so no tagged release accepts the option
   name.
+
+## v0.1.8 (2026-11-11)
+
+### Added
+
+All off by default, so default runs are unchanged by these.
+
+- **Early FeasibilityJump** (#205, #215): `mip_heuristic_early_fj_effort`
+  (double, default 0) runs one FJ worker on the original model while
+  HiGHS presolves it, and hands its best feasible point to HiGHS as the
+  MIP start when presolve returns. It is not part of the chain. #216 later
+  measured it 2.19x better on the primal integral [1.68, 2.86] on 3
+  slow-presolve instances, as logged by its `found at` lines (#240), with
+  final bounds unchanged.
+- **FJ personas** (#206): `mip_heuristic_fj_personas` (default `false`)
+  starts FJ's presolve workers 1 and 2 from a greedy covering start and an
+  exact-k start where the model has rows they can act on. #206 measured
+  about 1% better on the 11 of 25 instances where a persona fires (not
+  significant, p = 0.15), and #249 1.004 [0.991, 1.018] on 7 exact-k
+  instances.
+- **Ruin-and-repair** (#207, #219): a presolve chain stage after Scylla,
+  enabled by `mip_heuristic_ruin_effort` above zero, with
+  `mip_heuristic_ruin_patience` (both default 0). It resets a few integer
+  columns of the pool's best point and repairs with FJ under an objective
+  cutoff. Its finds carry the new solution-source letter `N`. #244 later
+  measured no gain (1.005 [0.972, 1.041], 15 instances).
+- **Objective cut** (#208, #221, #222): `mip_heuristic_objective_cut`,
+  `_rel` and `_abs`. Removed in v0.1.9, which says why.
+
+### Changed
+
+- **The solution pool refuses a twin** (#204): an offer whose integer
+  columns match an entry's replaces that entry if it is better, and is
+  refused otherwise, where the pool used to admit every offer while
+  filling, so copies of one assignment took several slots. **This changes
+  a default run.** No A/B of it was posted.
+- **macOS and Apple clang build** (#214), and our targets compile with
+  `-ffp-contract=off`: on arm64 the compilers fused multiply-adds by
+  default and FJ's incremental activities drifted. Baseline x86-64 has no
+  FMA, so a Linux run is unchanged.
