@@ -30,8 +30,9 @@ linked from each entry.
   Two cycle detectors, a ring of recent infeasible roundings and a window
   of L1 distances, replace Mexi's three-deep window (#295); on a cycle the
   pump runs FJ from the rounding before it perturbs (#297), and each
-  rounding FPR cannot repair earns FJ a share of time, spent on one FJ run
-  once it is due (#298). #302 measured it level with Mexi's pump (primal
+  rounding FPR cannot repair earns FJ 0.2 of the round's projection and
+  rounding effort as a credit, spent on one FJ run from a failed rounding
+  once the credit reaches FJ's callback period (#298). #302 measured it level with Mexi's pump (primal
   integral 0.984 [0.949, 1.020], 25 instances); with Scylla on it was
   2.092 [1.538, 2.844] against main (Mexi's pump: 2.125), and neither pump
   found an improving incumbent. A default run, and a Scylla run without the
