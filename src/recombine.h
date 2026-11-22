@@ -1,4 +1,5 @@
 #pragma once
+#include "fj_worker.h"
 #include "fpr_core.h"
 #include "heuristic_context.h"
 #include "prop_engine.h"
@@ -9,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -318,6 +320,10 @@ private:
     std::vector<double> offspring_;
     std::vector<double> external_;
     std::vector<double> last_external_;
+    // The local search's FJ, its model built on the first step that reaches
+    // it and reset for every later one (#316).  Behind a pointer: `FjWorker`
+    // does not move, and the operator does.
+    std::unique_ptr<FjWorker> fj_;
 };
 
 // The presolve chain's runner (#229), last in the chain: `exec.num_workers`

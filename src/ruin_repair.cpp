@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <random>
 #include <thread>
 #include <utility>
@@ -141,6 +142,9 @@ struct Slot {
     std::vector<uint8_t> chosen;
     size_t no_improve = 0;
     WorkerTrace trace;
+    // The slot's FJ, its model built on the first repair and reset for every
+    // later one (#316).  Behind a pointer: `FjWorker` does not move.
+    std::unique_ptr<FjWorker> fj;
 };
 
 Slot make_slot(const ProblemView& problem, int worker) {
@@ -244,10 +248,10 @@ void ruin(const ProblemView& problem, const Shared& shared, Slot& slot, Rng& rng
     }
 }
 
-// One repair of `slot.start` with a fresh FJ under the worker's cutoff, for
-// at most `run_cap` effort plus FJ's setup and one FJ step
-// (`FjWorker::hold_to_budget`, #309).  Keeps what FJ found if it is feasible
-// and beats the worker's best.
+// One repair of `slot.start` under the worker's cutoff, by the slot's FJ
+// reset to a fresh search, for at most `run_cap` effort plus FJ's setup and
+// one FJ step (`FjWorker::hold_to_budget`, #309).  Keeps what FJ found if it
+// is feasible and beats the worker's best.
 AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, SolutionSink& sink,
                      Slot& slot, Rng& rng, size_t run_cap) {
     const size_t budget = std::min(repair_budget(slot.ruin_set.size()), run_cap);
@@ -258,9 +262,16 @@ AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, S
                           std::max(problem.feastol, std::abs(slot.best_objective) *
                                                         std::numeric_limits<double>::epsilon());
     const double cutoff = slot.best_objective - margin;
-    FjWorker fj(problem, exec, sink, budget, std::numeric_limits<size_t>::max(),
-                static_cast<uint32_t>(rng()), slot.start, slot.trace, cutoff);
-    fj.hold_to_budget();
+    const auto seed = static_cast<uint32_t>(rng());
+    constexpr size_t kNoPatience = std::numeric_limits<size_t>::max();
+    if (!slot.fj) {
+        slot.fj = std::make_unique<FjWorker>(problem, exec, sink, budget, kNoPatience, seed,
+                                             slot.start, slot.trace, cutoff);
+        slot.fj->hold_to_budget();
+    } else {
+        slot.fj->reset(slot.start, seed, budget, kNoPatience, slot.trace, cutoff);
+    }
+    FjWorker& fj = *slot.fj;
     AttemptResult result = fj.run_attempt(budget);
     slot.trace.effort_base = fj.traced_effort();
 

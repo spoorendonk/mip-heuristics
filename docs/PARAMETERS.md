@@ -1638,7 +1638,8 @@ itself is driven by a tracked target runner rather than by config names.
   bound-prop arm and FJ's effort in the local search, equated by
   `kRewardNominalEffort`. Divided across the workers like FPR's. A dispatch
   whose pool holds fewer than two points ends at once and charges nothing.
-  Every local search is a fresh FJ held to its budget (#309,
+  Every local search is a fresh FJ search, on the one model each worker
+  builds and resets (#316), held to its budget (#309,
   `FjWorker::hold_to_budget`): it searches that much past FJ's setup (two
   passes over FJ's nonzeros) and stops within one FJ step of it, so a
   dispatch overshoots this budget by about one setup per local search. The
@@ -1654,10 +1655,11 @@ itself is driven by a tracked target runner rather than by config names.
   primal-integral ratio of 1.005 [0.972, 1.041] against main (15 unsolved
   instances, 60 s, 3 seeds), active on 5-8 instances with no gain.
 - **Meaning**: Whole-dispatch budget for the ruin-and-repair LNS, the chain
-  entry after Scylla and before recombination, in FJ step units (each repair is a fresh FJ). Divided across
+  entry after Scylla and before recombination, in FJ step units (each repair is a fresh FJ search). Divided across
   the workers like FPR's. A dispatch whose pool holds no feasible point
   ends at once, having charged at most one feasibility check (`nnz`) per
-  worker. Every repair is a fresh FJ held to its budget (#309,
+  worker. Every repair is a fresh FJ search, on the one model each worker
+  builds and resets (#316), held to its budget (#309,
   `FjWorker::hold_to_budget`): it searches that much past FJ's setup (two
   passes over FJ's nonzeros) and stops within one FJ step of it, so a
   dispatch overshoots this budget by about one setup per repair. The ledger
@@ -2161,8 +2163,8 @@ carries the same coverage gap #117's setup bail-outs do.
   expiry from a failure, and they are why the bounded half of that setup
   no longer hides the unbounded half.
 - **FJ's per-worker solver construction**, unchanged from #114: the
-  `createRowwise` / `addVar` / `addConstraint` / `init` sequence runs
-  before the first callback can fire.
+  `addVar` / `addConstraint` / `init` sequence runs before the first
+  callback can fire.
 
 None of this un-truncates the chain: `run_sequential` skips a heuristic
 once the deadline has passed, so a heuristic that legitimately spends the

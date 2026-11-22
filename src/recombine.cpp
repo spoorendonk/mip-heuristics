@@ -1,6 +1,5 @@
 #include "recombine.h"
 
-#include "fj_worker.h"
 #include "heuristic_common.h"
 #include "opportunistic_runner.h"
 #include "ruin_repair.h"
@@ -10,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <span>
 #include <thread>
 
@@ -366,9 +366,16 @@ std::optional<RecombineStep> RecombineOperator::step(size_t recombine_effort, si
     }
 
     const size_t ls_budget = std::min(local_search_budget(feasible), ls_cap);
-    FjWorker fj(problem_, exec_, sink_, ls_budget, std::numeric_limits<size_t>::max(),
-                static_cast<uint32_t>(rng_()), offspring_, trace_);
-    fj.hold_to_budget();
+    const auto seed = static_cast<uint32_t>(rng_());
+    constexpr size_t kNoPatience = std::numeric_limits<size_t>::max();
+    if (!fj_) {
+        fj_ = std::make_unique<FjWorker>(problem_, exec_, sink_, ls_budget, kNoPatience, seed,
+                                         offspring_, trace_);
+        fj_->hold_to_budget();
+    } else {
+        fj_->reset(offspring_, seed, ls_budget, kNoPatience, trace_);
+    }
+    FjWorker& fj = *fj_;
     const AttemptResult ls = fj.run_attempt(ls_budget);
     result.effort += ls.effort;
     result.improved = result.improved || ls.found_improvement;

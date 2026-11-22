@@ -26,8 +26,9 @@ class SolutionSink;
 //   3. ruins `ruin_size(...)` non-fixed integer columns, from the shuffled
 //      guidance pool first and then uniformly: each takes, on an even coin,
 //      the population best's value, or else a uniform integer in its bounds;
-//   4. repairs with a fresh `FjWorker` from the ruined point, every column
-//      free, under the objective cutoff `best - kCutoffMarginFeastols *
+//   4. repairs with a fresh FJ search from the ruined point (the worker's
+//      one `FjWorker`, reset, #316), every column free, under the objective
+//      cutoff `best - kCutoffMarginFeastols *
 //      max(feastol, |best| * DBL_EPSILON)`, for `repair_budget(...)` FJ
 //      effort units; any point FJ reports is strictly better than the
 //      worker's best and goes to the sink as FJ finds it.
@@ -41,8 +42,8 @@ class SolutionSink;
 //   - cuOpt's bound-aware "geometric" repair for disjunctive models
 //     (`configure_cpufj_lns_geometry`) is not carried over;
 //   - guidance and the coin's population branch compare against the
-//     worker's best, not FJ's current assignment, which a fresh FJ per
-//     repair does not keep.  The population's best is usually the worker's
+//     worker's best, not FJ's current assignment, which a fresh FJ search
+//     per repair does not keep.  The population's best is usually the worker's
 //     own best (its improvements reach the pool first), so both act only
 //     after a peer's or the source's better point is adopted; otherwise
 //     about half the ruin set keeps its value (see `ruin` in the .cpp).

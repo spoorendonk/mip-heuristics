@@ -67,8 +67,8 @@ std::optional<ProblemError> check_shape(const HighsLp& m) {
 }
 
 // The matrix, as HiGHS's `assessMatrix` sees it: column-wise with the
-// model's own dimensions (FJ's `createRowwise` reads the matrix's
-// `num_col_`/`num_row_`), starts that begin at 0, are monotone and cover
+// model's own dimensions (HiGHS's `HighsSparseMatrix` routines read the
+// matrix's `num_col_`/`num_row_`), starts that begin at 0, are monotone and cover
 // exactly the index and value arrays, row indices in range and not repeated
 // within a column, and coefficients finite and below `kLargeMatrixValue`.
 std::optional<ProblemError> check_matrix(const HighsLp& m) {

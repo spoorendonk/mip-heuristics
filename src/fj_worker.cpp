@@ -9,8 +9,11 @@
 #include "structure.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -51,147 +54,189 @@ FjWorker::FjWorker(const ProblemView& problem, const ExecutionContext& exec, Sol
 
 FjWorker::~FjWorker() = default;
 
-// Cognitive complexity 50 (threshold 25).  Kept whole: one FeasibilityJump attempt: budget slicing,
-// staleness detection and solver rebuild are interleaved with upstream FJ's callback contract,
-// which resumes the solver mid-run.
-// Decomposing it would move work across a worker's inner loop, and the
-// closeout takes no unmeasured performance risk; the standards also rank
-// fidelity to the reference algorithm above mechanical extraction.
+void FjWorker::reset(std::span<const double> start, uint32_t seed, size_t total_budget,
+                     size_t stale_budget, WorkerTrace trace, double cutoff) {
+    assert(std::isfinite(cutoff) == std::isfinite(cutoff_));
+    start_.assign(start.begin(), start.end());
+    seed_ = seed;
+    cutoff_ = cutoff;
+    trace_ = trace;
+    best_found_.clear();
+    best_found_objective_ = std::numeric_limits<double>::infinity();
+    base_ = WorkerBudgetState{.total_budget = total_budget, .stale_budget = stale_budget};
+    // A model whose build was refused stays refused.
+    base_.finished = problem_.degenerate() || (initialized_ && !impl_);
+    first_solve_done_ = false;
+    if (impl_) {
+        impl_->solver.resetWeights();
+        impl_->solver.resetSearch(static_cast<int>(seed_));
+    }
+}
+
+namespace {
+
+// Column `col`'s bounds as FJ takes them: an integer column's rounded
+// inward within `feastol`.
+std::pair<double, double> fj_bounds(const ProblemView& problem, HighsInt col) {
+    double lower = (*problem.col_lower)[col];
+    double upper = (*problem.col_upper)[col];
+    if ((*problem.integrality)[col] != HighsVarType::kContinuous) {
+        lower = std::ceil(lower - problem.feastol);
+        upper = std::floor(upper + problem.feastol);
+    }
+    return {lower, upper};
+}
+
+}  // namespace
+
+void FjWorker::build_model() {
+    impl_ = std::make_unique<Impl>(exec_.log_options, static_cast<int>(seed_), problem_.epsilon,
+                                   problem_.feastol);
+    impl_->col_value.resize(problem_.ncol, 0.0);
+    if (!add_columns()) {
+        impl_.reset();
+        return;
+    }
+    add_rows();
+    // The cutoff row goes in before the exchange groups, which size their
+    // per-row scratch from the rows present.
+    add_cutoff_row();
+    add_exchange_groups();
+}
+
+bool FjWorker::add_columns() {
+    // The view's minimisation form (#170), so FJ's own minimised objective
+    // is the view's up to the offset, with no sense to correct for.
+    const std::vector<double>& col_cost = *problem_.col_cost;
+    const std::vector<HighsVarType>& integrality = *problem_.integrality;
+    for (HighsInt col = 0; col < problem_.ncol; ++col) {
+        const auto [lower, upper] = fj_bounds(problem_, col);
+        const bool legal_bounds = lower <= upper && lower < kHighsInf && upper > -kHighsInf &&
+                                  !std::isnan(lower) && !std::isnan(upper);
+        if (!legal_bounds) {
+            return false;
+        }
+        const VarType fj_var_type =
+            integrality[col] == HighsVarType::kContinuous ? VarType::Continuous : VarType::Integer;
+        impl_->solver.addVar(fj_var_type, lower, upper, col_cost[col]);
+    }
+    return true;
+}
+
+void FjWorker::add_rows() {
+    // The view's row-wise matrix, not a transpose of its own (#316): both
+    // are the same column-order counting sort of the column-wise matrix
+    // (`highsSparseTranspose`, `HighsSparseMatrix::createRowwise`), so each
+    // row's coefficients reach FJ in the same order (`test_fj_reuse.cpp`).
+    const std::vector<double>& row_lower = *problem_.row_lower;
+    const std::vector<double>& row_upper = *problem_.row_upper;
+    const std::vector<HighsInt>& ar_start = *problem_.ar_start;
+    const HighsInt* ar_index = problem_.ar_index->data();
+    const double* ar_value = problem_.ar_value->data();
+    for (HighsInt row = 0; row < problem_.nrow; ++row) {
+        const HighsInt row_num_nz = ar_start[row + 1] - ar_start[row];
+        const HighsInt* row_index = ar_index + ar_start[row];
+        const double* row_value = ar_value + ar_start[row];
+        if (std::isfinite(row_lower[row])) {
+            impl_->solver.addConstraint(RowType::Gte, row_lower[row], row_num_nz, row_index,
+                                        row_value, 0);
+            fj_nonzeros_ += static_cast<size_t>(row_num_nz);
+        }
+        if (std::isfinite(row_upper[row])) {
+            impl_->solver.addConstraint(RowType::Lte, row_upper[row], row_num_nz, row_index,
+                                        row_value, 0);
+            fj_nonzeros_ += static_cast<size_t>(row_num_nz);
+        }
+    }
+}
+
+void FjWorker::add_cutoff_row() {
+    // Its RHS is set before every search that does not resume.
+    if (!std::isfinite(cutoff_)) {
+        return;
+    }
+    const std::vector<double>& col_cost = *problem_.col_cost;
+    std::vector<HighsInt> cost_index;
+    std::vector<double> cost_value;
+    for (HighsInt col = 0; col < problem_.ncol; ++col) {
+        if (col_cost[col] != 0.0) {
+            cost_index.push_back(col);
+            cost_value.push_back(col_cost[col]);
+        }
+    }
+    if (!cost_index.empty()) {
+        cutoff_row_ = impl_->solver.addConstraint(RowType::Lte, cutoff_ - problem_.offset,
+                                                  static_cast<int>(cost_index.size()),
+                                                  cost_index.data(), cost_value.data(), 0);
+        fj_nonzeros_ += cost_index.size();
+    }
+}
+
+void FjWorker::add_exchange_groups() {
+    // The exchange groups (#218): each exact-k row's columns, all binary.
+    // A row with `k = 0` or `k = width` has every column fixed by it, so
+    // no pair: it would only take a draw.
+    if (exchange_rows_.empty()) {
+        return;
+    }
+    const std::vector<HighsInt>& ar_start = *problem_.ar_start;
+    const std::vector<HighsInt>& index = *problem_.ar_index;
+    const auto exchangeable = [&](const ExactKRow& r) {
+        return r.k >= 1 && r.k < ar_start[r.row + 1] - ar_start[r.row];
+    };
+    size_t num_rows = 0;
+    size_t num_members = 0;
+    for (const ExactKRow& r : exchange_rows_) {
+        if (exchangeable(r)) {
+            ++num_rows;
+            num_members += static_cast<size_t>(ar_start[r.row + 1] - ar_start[r.row]);
+        }
+    }
+    std::vector<uint32_t> offsets{0};
+    std::vector<uint32_t> members;
+    offsets.reserve(num_rows + 1);
+    members.reserve(num_members);
+    for (const ExactKRow& r : exchange_rows_) {
+        if (!exchangeable(r)) {
+            continue;
+        }
+        for (HighsInt p = ar_start[r.row]; p < ar_start[r.row + 1]; ++p) {
+            members.push_back(static_cast<uint32_t>(index[p]));
+        }
+        offsets.push_back(static_cast<uint32_t>(members.size()));
+    }
+    impl_->solver.setExchangeGroups(std::move(offsets), std::move(members));
+}
+
+void FjWorker::fill_start() {
+    // The caller's resolved start, not `mipdata->incumbent`: a peer
+    // worker's accepted solution rewrites the live vector while this loop
+    // indexes it (issue #98).
+    const bool use_start = !start_.empty();
+    for (HighsInt col = 0; col < problem_.ncol; ++col) {
+        const auto [lower, upper] = fj_bounds(problem_, col);
+        impl_->col_value[col] = fj_clamped_start(lower, upper, use_start ? start_[col] : kHighsInf);
+    }
+}
+
+// Cognitive complexity 29 (threshold 25).  Kept whole: one FeasibilityJump
+// attempt, whose budget slicing and staleness detection are interleaved with
+// upstream FJ's callback contract, which resumes the solver mid-run.  The
+// model build is split out (`build_model`); what is left is one callback.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
     if (base_.finished) {
         return {};
     }
 
-    const HighsLp* model = problem_.model;
-    const double feastol = problem_.feastol;
-    const double epsilon = problem_.epsilon;
-    // The view's minimisation form (#170), so FJ's own minimised objective
-    // is the view's up to the offset, with no sense to correct for.
-    const std::vector<double>& col_cost = *problem_.col_cost;
-    const std::vector<HighsVarType>& integrality = *problem_.integrality;
-    const std::vector<double>& row_lower = *problem_.row_lower;
-    const std::vector<double>& row_upper = *problem_.row_upper;
-
-    // First attempt: build the solver and initial assignments.
+    // First attempt: build the solver.
     if (!initialized_) {
         initialized_ = true;
-
 #ifdef HIGHSINT64
         base_.finished = true;
         return {};
 #endif
-
-        impl_ =
-            std::make_unique<Impl>(exec_.log_options, static_cast<int>(seed_), epsilon, feastol);
-
-        impl_->col_value.resize(model->num_col_, 0.0);
-
-        // The caller's resolved start, not `mipdata->incumbent`: a peer
-        // worker's accepted solution rewrites the live vector while this loop
-        // indexes it (issue #98).
-        const auto& inc = start_;
-        const bool use_incumbent = !inc.empty();
-
-        for (HighsInt col = 0; col < model->num_col_; ++col) {
-            double lower = (*problem_.col_lower)[col];
-            double upper = (*problem_.col_upper)[col];
-
-            VarType fj_var_type;
-            if (integrality[col] == HighsVarType::kContinuous) {
-                fj_var_type = VarType::Continuous;
-            } else {
-                fj_var_type = VarType::Integer;
-                lower = std::ceil(lower - feastol);
-                upper = std::floor(upper + feastol);
-            }
-
-            const bool legal_bounds = lower <= upper && lower < kHighsInf && upper > -kHighsInf &&
-                                      !std::isnan(lower) && !std::isnan(upper);
-            if (!legal_bounds) {
-                base_.finished = true;
-                return {};
-            }
-            impl_->solver.addVar(fj_var_type, lower, upper, col_cost[col]);
-
-            impl_->col_value[col] =
-                fj_clamped_start(lower, upper, use_incumbent ? inc[col] : kHighsInf);
-        }
-
-        HighsSparseMatrix a_matrix;
-        a_matrix.createRowwise(model->a_matrix_);
-
-        for (HighsInt row = 0; row < model->num_row_; ++row) {
-            bool has_finite_lower = std::isfinite(row_lower[row]);
-            bool has_finite_upper = std::isfinite(row_upper[row]);
-            if (has_finite_lower || has_finite_upper) {
-                HighsInt row_num_nz = a_matrix.start_[row + 1] - a_matrix.start_[row];
-                auto* row_index = a_matrix.index_.data() + a_matrix.start_[row];
-                auto* row_value = a_matrix.value_.data() + a_matrix.start_[row];
-                if (has_finite_lower) {
-                    impl_->solver.addConstraint(RowType::Gte, row_lower[row], row_num_nz, row_index,
-                                                row_value, 0);
-                    fj_nonzeros_ += static_cast<size_t>(row_num_nz);
-                }
-                if (has_finite_upper) {
-                    impl_->solver.addConstraint(RowType::Lte, row_upper[row], row_num_nz, row_index,
-                                                row_value, 0);
-                    fj_nonzeros_ += static_cast<size_t>(row_num_nz);
-                }
-            }
-        }
-
-        // The cutoff row goes in before the exchange groups, which size their
-        // per-row scratch from the rows present.
-        if (std::isfinite(cutoff_)) {
-            std::vector<HighsInt> cost_index;
-            std::vector<double> cost_value;
-            for (HighsInt col = 0; col < model->num_col_; ++col) {
-                if (col_cost[col] != 0.0) {
-                    cost_index.push_back(col);
-                    cost_value.push_back(col_cost[col]);
-                }
-            }
-            if (!cost_index.empty()) {
-                impl_->solver.addConstraint(RowType::Lte, cutoff_ - problem_.offset,
-                                            static_cast<int>(cost_index.size()), cost_index.data(),
-                                            cost_value.data(), 0);
-                fj_nonzeros_ += cost_index.size();
-            }
-        }
-
-        // The exchange groups (#218): each exact-k row's columns, all binary.
-        // A row with `k = 0` or `k = width` has every column fixed by it, so
-        // no pair: it would only take a draw.
-        if (!exchange_rows_.empty()) {
-            const std::vector<HighsInt>& ar_start = *problem_.ar_start;
-            const std::vector<HighsInt>& ar_index = *problem_.ar_index;
-            const auto exchangeable = [&](const ExactKRow& r) {
-                return r.k >= 1 && r.k < ar_start[r.row + 1] - ar_start[r.row];
-            };
-            size_t num_rows = 0;
-            size_t num_members = 0;
-            for (const ExactKRow& r : exchange_rows_) {
-                if (exchangeable(r)) {
-                    ++num_rows;
-                    num_members += static_cast<size_t>(ar_start[r.row + 1] - ar_start[r.row]);
-                }
-            }
-            std::vector<uint32_t> offsets{0};
-            std::vector<uint32_t> members;
-            offsets.reserve(num_rows + 1);
-            members.reserve(num_members);
-            for (const ExactKRow& r : exchange_rows_) {
-                if (!exchangeable(r)) {
-                    continue;
-                }
-                for (HighsInt p = ar_start[r.row]; p < ar_start[r.row + 1]; ++p) {
-                    members.push_back(static_cast<uint32_t>(ar_index[p]));
-                }
-                offsets.push_back(static_cast<uint32_t>(members.size()));
-            }
-            impl_->solver.setExchangeGroups(std::move(offsets), std::move(members));
-        }
+        build_model();
     }
 
     if (!impl_) {
@@ -201,6 +246,12 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
 
     // Capture state for the callback closure.
     const bool resume = first_solve_done_;
+    if (!resume) {
+        fill_start();
+        if (cutoff_row_ >= 0) {
+            impl_->solver.setConstraintRhs(cutoff_row_, cutoff_ - problem_.offset);
+        }
+    }
     size_t attempt_effort_consumed = 0;
     bool improved_incumbent = false;
     bool stalled = false;

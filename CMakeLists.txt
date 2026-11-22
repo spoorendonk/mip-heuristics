@@ -463,7 +463,7 @@ endif()
 # case: no clock read here is bounded on both sides.
 add_executable(mip_heuristics_core_tests tests/test_core.cpp tests/test_fj_personas.cpp
     tests/test_paths.cpp tests/test_ruin_repair.cpp tests/test_recombine.cpp
-    tests/test_fj_exchange.cpp tests/test_core_standalone.cpp)
+    tests/test_fj_exchange.cpp tests/test_fj_reuse.cpp tests/test_core_standalone.cpp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mip_heuristics_core_tests PRIVATE -Werror=unused-result -Werror=switch
                                                             ${_mip_fp_flags})

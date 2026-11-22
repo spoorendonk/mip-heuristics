@@ -221,7 +221,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 #
 # Version 47 makes FJ's callback period a settable member (#309):
 # `FeasibilityJumpSolver::setCallbackEffort`, default upstream's 500000.
-set(PATCH_VERSION "47")
+#
+# Version 48 lets one FJ model serve many searches (#316): `resetWeights`,
+# `resetSearch` and `setConstraintRhs`, a `const` `addConstraint`, and the
+# built row moved rather than copied.
+set(PATCH_VERSION "48")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -1567,6 +1571,112 @@ if(_fj_ex_found EQUAL -1)
     message(STATUS "Applied cardinality-exchange patch to feasibilityjump.hh")
 else()
     message(STATUS "Cardinality-exchange patch already applied to feasibilityjump.hh, skipping")
+endif()
+
+# ── Patch feasibilityjump.hh: one model, many searches (#316) ──
+# Ruin's repair and recombine's local search used to build and free a whole
+# solver per attempt.  `resetWeights` and `resetSearch` put a built solver
+# back to what a fresh one of the same model starts its search with (`init`
+# resets the incumbent, the LHSs and the move scores, but none of this), and
+# `setConstraintRhs` moves ruin's cutoff row between searches.
+# `addConstraint` takes its coefficients by `const` pointer, so `FjWorker`
+# hands it the view's row-wise matrix instead of a second transpose, and
+# moves the row it built into place instead of copying it twice.  None of
+# it changes a search: a solver neither reset nor given a new RHS is
+# upstream's.  Pinned by `tests/test_fj_reuse.cpp`.
+file(READ "${MIP_DIR}/feasibilityjump.hh" FJ_RE)
+string(FIND "${FJ_RE}" "void resetSearch(" _fj_re_found)
+if(_fj_re_found EQUAL -1)
+    set(_fj_re_sig_old [=[
+  int addConstraint(RowType sense, double rhs, int numCoeffs, int* rowVarIdxs,
+                    double* rowCoeffs, int relax_continuous) {
+]=])
+    set(_fj_re_sig_new [=[
+  int addConstraint(RowType sense, double rhs, int numCoeffs,
+                    const int* rowVarIdxs, const double* rowCoeffs,
+                    int relax_continuous) {
+]=])
+    set(_fj_re_copy_old [=[
+    newConstraint.coeffs = coeffs;
+]=])
+    set(_fj_re_copy_new [=[
+    newConstraint.coeffs = std::move(coeffs);
+]=])
+    set(_fj_re_push_old [=[
+    constraints.push_back(newConstraint);
+]=])
+    set(_fj_re_push_new [=[
+    constraints.push_back(std::move(newConstraint));
+]=])
+    set(_fj_re_api_old [=[
+  size_t effort() const { return totalEffort; }
+]=])
+    set(_fj_re_api_new [=[
+  size_t effort() const { return totalEffort; }
+
+  // mip-heuristics (#316): one model, many searches.  A fresh solver starts
+  // with every constraint weight at 1, the objective weight at 0 and the
+  // weight increment at 1, which `resetWeights` restores.  `resetSearch`
+  // restores the rest of a fresh solver's search state: every best-so-far
+  // and effort mark, `totalEffort` included, so callbacks and reported
+  // effort fall where a fresh solver's do; the good set and its index
+  // (`init` clears the set and leaves the index stale); the exchange's step
+  // counter; the rng, reseeded with `seed`.  The model, the exchange groups
+  // and the callback period stay.  Both, then a `solve` that does not
+  // resume, search exactly as a fresh solver built with `seed`; skipping
+  // `resetWeights` keeps the weights the last search learned.
+  void resetWeights() {
+    for (auto& c : problem.constraints) c.weight = 1.0;
+    objectiveWeight = 0.0;
+    weightUpdateIncrement = 1.0;
+  }
+
+  void resetSearch(int seed) {
+    rng.seed(seed);
+    bestObjective = std::numeric_limits<double>::infinity();
+    bestViolationScore = SIZE_MAX;
+    effortAtLastCallback = 0;
+    effortAtLastImprovement = 0;
+    effortAtLastLogging = 0;
+    totalEffort = 0;
+    nBumps = 0;
+    need_logging_header = true;
+    goodVarsSet.clear();
+    std::fill(goodVarsSetIdx.begin(), goodVarsSetIdx.end(), -1);
+    exchangeStep = 0;
+    nExchangeMoves = 0;
+  }
+
+  // mip-heuristics (#316): the right-hand side of row `idx`, the index
+  // `addConstraint` returned, for a cutoff row that moves between searches.
+  // Read from the next `solve` that does not resume.
+  void setConstraintRhs(int idx, double rhs) {
+    problem.constraints[idx].rhs = rhs;
+  }
+]=])
+    foreach(_a sig copy push api)
+        string(FIND "${FJ_RE}" "${_fj_re_${_a}_old}" _fj_re_${_a}_at)
+        if(_fj_re_${_a}_at EQUAL -1)
+            message(FATAL_ERROR
+                "feasibilityjump.hh patch failed: the #316 anchor '${_a}' no "
+                "longer matches (upstream reformat?). Re-anchor the block. "
+                "${CLEAN_REBUILD}")
+        endif()
+        string(REPLACE "${_fj_re_${_a}_old}" "${_fj_re_${_a}_new}" FJ_RE "${FJ_RE}")
+    endforeach()
+    # The signature anchor is `Problem`'s and the solver's wrapper's alike;
+    # one left non-const would refuse the view's buffers at compile time,
+    # but say which.
+    string(FIND "${FJ_RE}" "int numCoeffs, int* rowVarIdxs" _fj_re_left)
+    if(NOT _fj_re_left EQUAL -1)
+        message(FATAL_ERROR
+            "feasibilityjump.hh patch failed: an addConstraint signature is "
+            "still non-const after the #316 block. ${CLEAN_REBUILD}")
+    endif()
+    file(WRITE "${MIP_DIR}/feasibilityjump.hh" "${FJ_RE}")
+    message(STATUS "Applied reusable-model patch to feasibilityjump.hh")
+else()
+    message(STATUS "Reusable-model patch already applied to feasibilityjump.hh, skipping")
 endif()
 
 # Note: upstream's standalone `feasibilityJump()` is *not* patched to charge
