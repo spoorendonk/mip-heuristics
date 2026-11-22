@@ -29,11 +29,12 @@ linked from each entry.
   a warm start from the last rounding, and FPR with repair on every chain.
   Two cycle detectors, a ring of recent infeasible roundings and a window
   of L1 distances, replace Mexi's three-deep window (#295); on a cycle the
-  pump runs FJ from the rounding before it perturbs (#297), and a rounding
-  FPR cannot repair gets an FJ attempt too (#298). #302 measured it level
-  with Mexi's pump (primal integral 0.984 [0.949, 1.020], 25 instances),
-  with Scylla on at 2.125 [1.559, 2.898] against main and no improving
-  incumbent from either pump. A default run, and a Scylla run without the
+  pump runs FJ from the rounding before it perturbs (#297), and each
+  rounding FPR cannot repair earns FJ a share of time, spent on one FJ run
+  once it is due (#298). #302 measured it level with Mexi's pump (primal
+  integral 0.984 [0.949, 1.020], 25 instances); with Scylla on it was
+  2.092 [1.538, 2.844] against main (Mexi's pump: 2.125), and neither pump
+  found an improving incumbent. A default run, and a Scylla run without the
   option, are unchanged.
 - **`[Heur] gpu_steps=`** (#305): when FJ's GPU race ran, FJ's `[Heur]`
   line ends with how many times the climbers launched; `0` is a race in
@@ -135,7 +136,8 @@ All off by default, so default runs are unchanged.
   solution, randomly rounded.
 - **FJ's cardinality exchange** (#218): `mip_heuristic_fj_exchange` (default
   `false`), a compound move on uniform binary equality rows. #249
-  measured no gain (1.008 [0.995, 1.022] against main, 7 instances).
+  measured no gain (1.008 [0.995, 1.022] with personas on too, against
+  main, 7 instances).
 
 ### Removed
 
@@ -171,8 +173,9 @@ All off by default, so default runs are unchanged by these.
   HiGHS presolves it, and hands its best feasible point to HiGHS as the
   MIP start when presolve returns. It is not part of the chain. #216 later
   measured it 2.19x better on the primal integral [1.68, 2.86] on 3
-  slow-presolve instances, as logged by its `found at` lines (#240), with
-  final bounds unchanged.
+  slow-presolve instances, as logged by its `found at` lines (#240); HiGHS
+  gets the point only when presolve ends, about when main finds its
+  first, and final bounds were unchanged.
 - **FJ personas** (#206): `mip_heuristic_fj_personas` (default `false`)
   starts FJ's presolve workers 1 and 2 from a greedy covering start and an
   exact-k start where the model has rows they can act on. #206 measured
