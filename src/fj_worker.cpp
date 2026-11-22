@@ -163,6 +163,8 @@ void FjWorker::add_cutoff_row() {
     const std::vector<double>& col_cost = *problem_.col_cost;
     std::vector<HighsInt> cost_index;
     std::vector<double> cost_value;
+    cost_index.reserve(static_cast<size_t>(problem_.ncol));
+    cost_value.reserve(static_cast<size_t>(problem_.ncol));
     for (HighsInt col = 0; col < problem_.ncol; ++col) {
         if (col_cost[col] != 0.0) {
             cost_index.push_back(col);

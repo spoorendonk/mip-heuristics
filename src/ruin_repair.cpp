@@ -269,6 +269,10 @@ AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, S
                                              slot.start, slot.trace, cutoff);
         slot.fj->hold_to_budget();
     } else {
+        // A reset is exactly a fresh FJ: weights and assignment do not carry
+        // over.  A choice, and a deviation from cuOpt, whose one long-lived
+        // climber keeps its weights across repairs; kept so reuse changes no
+        // result.
         slot.fj->reset(slot.start, seed, budget, kNoPatience, slot.trace, cutoff);
     }
     FjWorker& fj = *slot.fj;
