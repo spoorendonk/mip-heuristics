@@ -142,6 +142,17 @@ ScyllaWorker::ScyllaWorker(HighsMipSolver& mipsolver, const ProblemView& problem
     var_order_ = &var_orders[fpr_config_index_];
 }
 
+ScyllaWorker::~ScyllaWorker() = default;
+
+void ScyllaWorker::take_fj(ScyllaWorker& retired) {
+    assert(&retired.problem_ == &problem_ && &retired.exec_ == &exec_ && &retired.sink_ == &sink_);
+    fj_ = std::move(retired.fj_);
+}
+
+void ScyllaWorker::drop_fj_for_test() {
+    fj_.reset();
+}
+
 bool ScyllaWorker::absorb_fresh_solve(ContestedPdlp::SolveResult& result, HighsInt& iters_out,
                                       const std::vector<double>*& x_bar_ptr) {
     if (result.status == HighsStatus::kError) {
@@ -223,10 +234,11 @@ void ScyllaWorker::restart_cuopt_descent() {
 // leaves the rounding as it was, where cuOpt takes FJ's last assignment when
 // the rounding is still in the ring, and the cycle check that follows then
 // perturbs it.  FJ runs with its objective, as cuOpt's escape does
-// (`feasibility_run = false`), under no cutoff.  Each escape builds a fresh
-// `FjWorker`, so its constraint weights start fresh, where cuOpt's pump
-// keeps one FJ whose weights carry over between escapes and are damped to
-// `max(10, round(w / 10))` after each (`restart_fp`).  The escape is also
+// (`feasibility_run = false`), under no cutoff.  Like cuOpt's pump, the
+// worker keeps one FJ (#323), but each escape resets it to a fresh search,
+// so its constraint weights start fresh, where cuOpt's carry over between
+// escapes and are damped to `max(10, round(w / 10))` after each
+// (`restart_fp`).  The escape is also
 // bounded by the attempt's slice (`cap`), as the rounding is: FJ is held to
 // the escape's budget (#309, `FjWorker::hold_to_budget`), so it searches
 // that much past its setup (two passes over FJ's nonzeros) and stops within
@@ -271,16 +283,19 @@ AttemptResult ScyllaWorker::run_cuopt_fj(std::vector<double>& x_hat, size_t budg
     }
     WorkerTrace trace = trace_;
     trace.effort_base = trace_.at(base_.total_effort);
-    FjWorker fj(problem_, exec_, sink_, budget, std::numeric_limits<size_t>::max(),
-                static_cast<uint32_t>(rng_()), x_hat, trace);
-    if (hold_to_budget) {
-        fj.hold_to_budget();
+    const auto seed = static_cast<uint32_t>(rng_());
+    if (fj_) {
+        fj_->reset(x_hat, seed, budget, std::numeric_limits<size_t>::max(), trace);
+    } else {
+        fj_ = std::make_unique<FjWorker>(problem_, exec_, sink_, budget,
+                                         std::numeric_limits<size_t>::max(), seed, x_hat, trace);
     }
-    const AttemptResult result = fj.run_attempt(budget);
+    fj_->hold_to_budget(hold_to_budget);
+    const AttemptResult result = fj_->run_attempt(budget);
     base_.total_effort += result.effort;
     base_.effort_since_improvement += result.effort;
-    if (!fj.best_found().empty()) {
-        x_hat = fj.best_found();
+    if (!fj_->best_found().empty()) {
+        x_hat = fj_->best_found();
     }
     if (result.found_improvement) {
         base_.reset_staleness();

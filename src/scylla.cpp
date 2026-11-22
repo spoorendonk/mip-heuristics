@@ -192,9 +192,12 @@ DispatchOutcome run(HighsMipSolver& mipsolver, const ProblemView& problem,
                 // path).  `pdlp` is shared, so warm-start etc. are
                 // reinitialized from scratch but the underlying LP stays.
                 auto new_seed = static_cast<uint32_t>(rng());
-                worker = std::make_unique<ScyllaWorker>(
+                auto fresh = std::make_unique<ScyllaWorker>(
                     mipsolver, problem, exec, pdlp, sink, var_orders, budget.total, budget.stale,
                     new_seed, state.worker_idx, n, state.trace, &improvement_gen);
+                // The pump's FJ model stays with the slot (#323).
+                fresh->take_fj(*worker);
+                worker = std::move(fresh);
             });
             // Report a nominal 1 unit when the chain is still alive but the
             // attempt produced no measurable effort (e.g. a PDLP stall that has

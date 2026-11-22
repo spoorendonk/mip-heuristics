@@ -9,6 +9,7 @@
 #include "structure.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -92,9 +93,16 @@ std::pair<double, double> fj_bounds(const ProblemView& problem, HighsInt col) {
     return {lower, upper};
 }
 
+std::atomic<size_t> g_models_built{0};
+
 }  // namespace
 
+size_t FjWorker::models_built() {
+    return g_models_built.load(std::memory_order_relaxed);
+}
+
 void FjWorker::build_model() {
+    g_models_built.fetch_add(1, std::memory_order_relaxed);
     impl_ = std::make_unique<Impl>(exec_.log_options, static_cast<int>(seed_), problem_.epsilon,
                                    problem_.feastol);
     impl_->col_value.resize(problem_.ncol, 0.0);
@@ -280,6 +288,11 @@ AttemptResult FjWorker::run_attempt(size_t attempt_budget) {
             impl_->solver.setCallbackEffort(std::min(kFjCallbackEffort, attempt_limit - consumed));
         }
     };
+    // An unheld attempt takes upstream's period back from a held one before
+    // it on this model (#323); a fresh solver starts with it.
+    if (!hold_to_budget_) {
+        impl_->solver.setCallbackEffort(kFjCallbackEffort);
+    }
     hold_period(0);
 
     auto callback = [&](FJStatus status) -> CallbackControlFlow {

@@ -3,9 +3,11 @@
 // it is built from is the one FJ used to transpose for itself.
 
 #include "core_test_support.h"
+#include "fj.h"
 #include "fj_worker.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "structure.h"
 #include "test_paths.h"
 #include "util/HighsSparseMatrix.h"
 
@@ -86,10 +88,20 @@ struct Args {
     double cutoff;
 };
 
+// Whether a search is held to its budget: never, always, or every other
+// search, as the Scylla pump's escape and failed-rounding FJ share one
+// worker (#323).
+enum class Hold : uint8_t { kNever, kAlways, kAlternate };
+
+bool held(Hold hold, int k) {
+    return hold == Hold::kAlways || (hold == Hold::kAlternate && k % 2 == 0);
+}
+
 // Runs `kSearches` searches on `s` twice, once through one worker reset
 // between searches and once through a fresh worker per search, and checks
 // they match search for search, offer for offer.
-void check_reuse_matches_fresh(const Setup& s, bool cut, bool hold) {
+void check_reuse_matches_fresh(const Setup& s, bool cut, Hold hold,
+                               std::span<const ExactKRow> exchange = {}) {
     const double inf = std::numeric_limits<double>::infinity();
     OfferLog reused_sink(*s.problem.integrality, 0);
     OfferLog fresh_sink(*s.problem.integrality, 0);
@@ -113,18 +125,16 @@ void check_reuse_matches_fresh(const Setup& s, bool cut, bool hold) {
         }
 
         if (!reused) {
-            reused =
-                std::make_unique<FjWorker>(s.problem, s.exec, reused_sink, args.total, args.stale,
-                                           args.seed, args.start, args.trace, args.cutoff);
-            if (hold) {
-                reused->hold_to_budget();
-            }
+            reused = std::make_unique<FjWorker>(s.problem, s.exec, reused_sink, args.total,
+                                                args.stale, args.seed, args.start, args.trace,
+                                                args.cutoff, exchange);
         } else {
             reused->reset(args.start, args.seed, args.total, args.stale, args.trace, args.cutoff);
         }
+        reused->hold_to_budget(held(hold, k));
         FjWorker fresh(s.problem, s.exec, fresh_sink, args.total, args.stale, args.seed, args.start,
-                       args.trace, args.cutoff);
-        if (hold) {
+                       args.trace, args.cutoff, exchange);
+        if (held(hold, k)) {
             fresh.hold_to_budget();
         }
 
@@ -165,14 +175,85 @@ TEST_CASE("fj_reuse: a reset FjWorker searches as a fresh one", "[fj][fj_reuse]"
     };
     for (const Case c : {Case{"lseu.mps", true}, Case{"gt2.mps", false}, Case{"p01.mps", false},
                          Case{"qap04.mps", true}}) {
-        for (const bool hold : {true, false}) {
-            INFO(c.instance << " cut=" << c.cut << " hold=" << hold);
+        for (const Hold hold : {Hold::kAlways, Hold::kNever, Hold::kAlternate}) {
+            INFO(c.instance << " cut=" << c.cut << " hold=" << static_cast<int>(hold));
             Highs highs;
             highs.setOptionValue("output_flag", false);
             REQUIRE(highs.readModel(instances_dir() + "/" + c.instance) == HighsStatus::kOk);
             const Setup s(highs.getLp(), highs.getOptions().log_options);
             check_reuse_matches_fresh(s, c.cut, hold);
         }
+    }
+}
+
+TEST_CASE("fj_reuse: a reset FjWorker with exchange rows searches as a fresh one",
+          "[fj][fj_reuse]") {
+    // An exchange slot of `fj::run` keeps its exact-k rows across rebuilds
+    // (#323), so the exchange's step counter and scratch must reset too.
+    for (const char* instance : {"issue-2095.mps"}) {
+        INFO(instance);
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        REQUIRE(highs.readModel(instances_dir() + "/" + instance) == HighsStatus::kOk);
+        const Setup s(highs.getLp(), highs.getOptions().log_options);
+        const RowStructure structure = detect_structure(s.problem);
+        REQUIRE_FALSE(structure.exact_k.empty());
+        check_reuse_matches_fresh(s, /*cut=*/false, Hold::kNever, structure.exact_k);
+    }
+}
+
+namespace {
+
+// One `fj::run_until_stopped` slot on `instance`, rebuilt on every stall and
+// on every 5th attempt (`restart_now`), and how many FJ models it built.
+struct SlotRun {
+    std::vector<OfferLog::Offer> offers;
+    size_t effort = 0;
+    size_t models = 0;
+};
+
+SlotRun run_slot(const Setup& s, bool fresh_rebuilds) {
+    constexpr size_t kAttempt = size_t{1} << 17;
+    // A small patience, so a worker that stops finding retires on FJ's own
+    // stall and is rebuilt, besides the `restart_now` rebuilds.
+    HeuristicBudget budget = make_until_stopped_budget(kAttempt, /*patience=*/size_t{1} << 20);
+    budget.total = kAttempt * 96;
+    ExecutionContext exec = s.exec;
+    int asked = 0;
+    exec.restart_now = [&asked] { return ++asked % 5 == 0; };
+    OfferLog sink(*s.problem.integrality, 0);
+    fj::set_fresh_rebuilds_for_test(fresh_rebuilds);
+    const size_t models_before = FjWorker::models_built();
+    SlotRun out;
+    out.effort =
+        fj::run_until_stopped(s.problem, budget, exec, /*worker=*/0, RestartSource{}, sink);
+    out.models = FjWorker::models_built() - models_before;
+    fj::set_fresh_rebuilds_for_test(false);
+    out.offers = sink.offers;
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("fj_reuse: a run_until_stopped slot resets its worker as it rebuilt one",
+          "[fj][fj_reuse][until_stopped]") {
+    // A slot's rebuilds (#323) reset its one worker: the same offers, effort
+    // and `[HeurSol]` trace (each offer's `effort_at`) as a slot that builds
+    // a new worker each time, from one model.
+    for (const char* instance : {"lseu.mps", "gt2.mps", "p01.mps"}) {
+        INFO(instance);
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        REQUIRE(highs.readModel(instances_dir() + "/" + instance) == HighsStatus::kOk);
+        const Setup s(highs.getLp(), highs.getOptions().log_options);
+        const SlotRun rebuilt = run_slot(s, /*fresh_rebuilds=*/true);
+        const SlotRun reset = run_slot(s, /*fresh_rebuilds=*/false);
+        // Not vacuous: the slot rebuilt several times and found something.
+        CHECK(rebuilt.models >= 4);
+        CHECK(reset.models == 1);
+        CHECK_FALSE(rebuilt.offers.empty());
+        CHECK(reset.effort == rebuilt.effort);
+        CHECK(reset.offers == rebuilt.offers);
     }
 }
 

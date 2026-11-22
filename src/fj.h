@@ -60,4 +60,11 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
 [[nodiscard]] size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,
                                        const ExecutionContext& exec, int worker,
                                        const RestartSource& source, SolutionSink& sink);
+
+// A slot keeps its `FjWorker`, and so FJ's model, across rebuilds and
+// resets it (#323).  Test hook: `true` builds a new worker per rebuild
+// instead, as before #323, so a test can check that a reset slot searches
+// as a rebuilt one.  Process-global; set it only with no dispatch running.
+void set_fresh_rebuilds_for_test(bool fresh);
+
 }  // namespace fj

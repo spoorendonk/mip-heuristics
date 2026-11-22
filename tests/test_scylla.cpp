@@ -13,6 +13,7 @@
 #include "rng.h"
 #include "scylla.h"
 #include "scylla_worker.h"
+#include "solution_sink.h"
 #include "test_common.h"
 #include "util/HighsInt.h"
 #include "worker_base.h"
@@ -964,6 +965,118 @@ TEST_CASE("cuOpt pump: a failed rounding reaches FJ once its credit is due",
     CHECK(x_hat[0] + x_hat[1] == 1.0);
     CHECK(worker.cuopt_fj_credit_for_test() == credit - std::min(credit, fj.effort));
     CHECK(worker.cuopt_alpha_for_test() == pump::cuopt::kAlphaInit);
+}
+
+namespace {
+
+// Every offer the sink accepted: objective, point and reported effort.
+class PumpOfferLog : public SolutionSink {
+public:
+    using SolutionSink::SolutionSink;
+    struct Offer {
+        double objective;
+        std::vector<double> x;
+        size_t effort_at;
+        bool operator==(const Offer&) const = default;
+    };
+    std::mutex mtx;
+    std::vector<Offer> offers;
+
+private:
+    void on_accept(double obj, const std::vector<double>& x, int /*source*/,
+                   const WorkerTrace& /*trace*/, size_t effort_at) override {
+        std::scoped_lock guard(mtx);
+        offers.push_back({obj, x, effort_at});
+    }
+};
+
+// One escape or failed-rounding FJ run's results.
+struct PumpFjRun {
+    size_t effort;
+    bool improved;
+    std::vector<double> x_hat;
+    bool operator==(const PumpFjRun&) const = default;
+};
+
+}  // namespace
+
+// The pump keeps one FJ for its escape and its failed-rounding FJ (#323):
+// a worker that resets it searches as one that builds a fresh FJ for every
+// run, run for run and offer for offer, with the escape held to its budget
+// and the failed-rounding FJ not, on the same model.
+TEST_CASE("cuOpt pump: one reset FJ escapes as fresh ones do", "[scylla][cuopt][pump]") {
+    highs::parallel::initialize_scheduler();
+    for (const char* inst : {"gt2.mps", "p01.mps"}) {
+        INFO(inst);
+        Highs highs;
+        highs.setOptionValue("output_flag", false);
+        highs.setOptionValue("mip_heuristic_scylla_cuopt_pump", true);
+        HighsCallback cb(&highs);
+        auto mipsolver = build_bare_mipsolver(highs, cb, inst);
+        CscMatrix csc;
+        const ProblemView problem = make_problem(*mipsolver, csc);
+        ExecutionContext exec = make_exec(*mipsolver);
+        ContestedPdlp pdlp(*mipsolver, /*pdlp_iter_cap=*/1000, /*aux_distance=*/true);
+        REQUIRE(pdlp.initialized());
+        std::vector<std::vector<HighsInt>> var_orders;
+        var_orders.reserve(kNumFprConfigs);
+        Rng order_rng(11);
+        for (int i = 0; i < kNumFprConfigs; ++i) {
+            var_orders.push_back(compute_var_order(*mipsolver, kFprConfigs[i].strat.var_strategy,
+                                                   order_rng, nullptr));
+        }
+        PumpOfferLog kept_sink(*problem.integrality, 0);
+        PumpOfferLog fresh_sink(*problem.integrality, 0);
+        const auto make_worker = [&](SolutionSink& sink) {
+            return std::make_unique<ScyllaWorker>(
+                *mipsolver, problem, exec, pdlp, sink, var_orders, size_t{1} << 26,
+                std::numeric_limits<size_t>::max(),
+                /*seed=*/7, 0, /*num_workers=*/1, WorkerTrace{0, 0});
+        };
+        auto kept = make_worker(kept_sink);
+        auto fresh = make_worker(fresh_sink);
+        // The rounding every run starts from: 0 clamped into each column's
+        // bounds.  The first call records it in the ring; with alpha settled,
+        // every later one is an assignment cycle, so it runs the escape.
+        std::vector<double> x0(static_cast<size_t>(problem.ncol));
+        for (HighsInt j = 0; j < problem.ncol; ++j) {
+            x0[j] = std::clamp(0.0, (*problem.col_lower)[j], (*problem.col_upper)[j]);
+        }
+        constexpr size_t kSlice = size_t{1} << 21;
+        // A round worth twice FJ's period at the ratio, so each failed
+        // rounding's FJ is due.
+        const auto due = static_cast<size_t>(2.0 * static_cast<double>(kFjCallbackEffort) /
+                                             pump::cuopt::kFailedRoundingFjRatio);
+        const auto run = [&](ScyllaWorker& w, bool escape, bool drop) {
+            if (drop) {
+                w.drop_fj_for_test();
+            }
+            w.set_cuopt_alpha_for_test(0.01);
+            std::vector<double> x = x0;
+            const AttemptResult r = escape ? w.handle_cuopt_cycles(x, x0, false, kSlice)
+                                           : w.run_cuopt_failed_rounding_fj(x, due, kSlice);
+            return PumpFjRun{r.effort, r.found_improvement, x};
+        };
+        int escapes = 0;
+        int failed_rounding_runs = 0;
+        for (int i = 0; i < 10; ++i) {
+            const bool escape = i % 2 == 0;
+            INFO("run " << i << (escape ? " escape" : " failed rounding"));
+            const PumpFjRun a = run(*kept, escape, /*drop=*/false);
+            const PumpFjRun b = run(*fresh, escape, /*drop=*/true);
+            CHECK(a == b);
+            if (a.effort > 0) {
+                ++(escape ? escapes : failed_rounding_runs);
+            }
+        }
+        REQUIRE(kept_sink.offers == fresh_sink.offers);
+        // Not vacuous: both kinds ran FJ several times on the kept worker,
+        // and FJ found something.
+        CHECK_FALSE(kept_sink.offers.empty());
+        CHECK(escapes >= 3);
+        CHECK(failed_rounding_runs >= 3);
+        CHECK(kept->total_effort() == fresh->total_effort());
+    }
 }
 
 // bell5 has general integers, so the dispatch's LP carries aux columns.

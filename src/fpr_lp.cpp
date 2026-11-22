@@ -549,12 +549,15 @@ DispatchOutcome run_workers(const ProblemView& problem, const LpFprSetup& setup,
         if (!lp_rounded_start(problem, setup.lp_solution, rng, start) && !sink.copy_best(start)) {
             start = problem.incumbent;
         }
+        // A rebuild resets the lane's worker, keeping FJ's model (#323).
         if (state.fj) {
             state.trace.effort_base = state.fj->traced_effort();
+            state.fj->reset(start, seed, budget.per_worker, budget.worker_stale, state.trace);
+        } else {
+            state.fj = std::make_unique<FjWorker>(problem, exec, sink, budget.per_worker,
+                                                  budget.worker_stale, seed, std::move(start),
+                                                  state.trace);
         }
-        state.fj =
-            std::make_unique<FjWorker>(problem, exec, sink, budget.per_worker, budget.worker_stale,
-                                       seed, std::move(start), state.trace);
         g_fj_lane_builds.fetch_add(1, std::memory_order_relaxed);
     };
 

@@ -41,8 +41,8 @@ void run(HighsMipSolver& mipsolver);
 // workers.  Process-global; reset before each test that inspects it.
 struct DispatchCounts {
     size_t dispatches = 0;
-    // FJ workers the LP persona's lane built (#217,
-    // `mip_heuristic_fj_lp_persona`), replacements included.
+    // FJ searches the LP persona's lane started (#217,
+    // `mip_heuristic_fj_lp_persona`), resets of its worker included (#323).
     size_t fj_lane_builds = 0;
 };
 DispatchCounts dispatch_counts();

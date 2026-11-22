@@ -62,14 +62,15 @@ public:
     // same problem, exec, sink, cutoff's finiteness and exchange rows and
     // with these arguments would run it, budgets and effort counted afresh
     // (#316): ruin's repair and recombine's local search keep one worker
-    // per slot instead of building FJ's model for every attempt.  FJ's
+    // per slot instead of building FJ's model for every attempt, and so do
+    // FJ's own slots, fpr_lp's FJ lane and the Scylla pump (#323).  FJ's
     // constraint weights go back to 1 too.  `test_fj_reuse.cpp` checks this
-    // without exchange rows only, as ruin and recombine pass none.  The
-    // cutoff row is in the model or not from construction on, so `cutoff`
-    // must be finite exactly when the constructor's was, else the reset is
-    // refused and the worker finishes; a finite one moves the row's RHS.
-    // `hold_to_budget` stays set.  `start` is copied into the worker's own
-    // buffer, so a reset allocates nothing once that has grown.
+    // with and without exchange rows.  The cutoff row is in the model or not
+    // from construction on, so `cutoff` must be finite exactly when the
+    // constructor's was, else the reset is refused and the worker finishes;
+    // a finite one moves the row's RHS.  `hold_to_budget` stays as it was.
+    // `start` is copied into the worker's own buffer, so a reset allocates
+    // nothing once that has grown.
     void reset(std::span<const double> start, uint32_t seed, size_t total_budget,
                size_t stale_budget, WorkerTrace trace,
                double cutoff = std::numeric_limits<double>::infinity());
@@ -86,7 +87,14 @@ public:
     // searches; a held attempt spends at most setup + budget + one step.
     // For the one-shot callers (ruin's repair, recombine's local search,
     // Scylla's cycle escape); FJ's own dispatch keeps upstream's period.
-    void hold_to_budget() { hold_to_budget_ = true; }
+    // `false` lets go again: the next attempt takes upstream's period back,
+    // as the Scylla pump's failed-rounding FJ does on the worker its escape
+    // holds (#323).
+    void hold_to_budget(bool hold = true) { hold_to_budget_ = hold; }
+
+    // Test hook (#323): FJ models built in this process so far, so a test
+    // can tell a reset worker from a rebuilt one.
+    [[nodiscard]] static size_t models_built();
 
     [[nodiscard]] bool finished() const { return base_.finished; }
 

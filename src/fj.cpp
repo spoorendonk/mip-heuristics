@@ -21,6 +21,9 @@ namespace fj {
 
 namespace {
 
+// `set_fresh_rebuilds_for_test`.
+bool g_fresh_rebuilds = false;
+
 struct FjState {
     std::unique_ptr<FjWorker> worker;
     uint32_t initial_seed = 0;
@@ -149,6 +152,12 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
     const std::span<const ExactKRow> exchange_rows =
         state.exchange && structure != nullptr ? std::span<const ExactKRow>(structure->exact_k)
                                                : std::span<const ExactKRow>();
+    // The model, the exchange rows and the absent cutoff are the slot's, so
+    // a rebuild resets the worker it has (#323): as a fresh one would search.
+    if (state.worker && !g_fresh_rebuilds) {
+        state.worker->reset(start, seed, budget.per_worker, budget.worker_stale, state.trace);
+        return;
+    }
     state.worker = std::make_unique<FjWorker>(
         problem, exec, sink, budget.per_worker, budget.worker_stale, seed, std::move(start),
         state.trace, std::numeric_limits<double>::infinity(), exchange_rows);
@@ -235,6 +244,10 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             }
             return attempt_with_rebuild(state.worker, run_cap, rebuild);
         });
+}
+
+void set_fresh_rebuilds_for_test(bool fresh) {
+    g_fresh_rebuilds = fresh;
 }
 
 }  // namespace fj

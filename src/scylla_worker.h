@@ -16,6 +16,7 @@
 #include <memory>
 #include <vector>
 
+class FjWorker;
 class HighsMipSolver;
 class SolutionSink;
 struct ExecutionContext;
@@ -105,6 +106,15 @@ public:
                  const std::vector<std::vector<HighsInt>>& var_orders, size_t total_budget,
                  size_t stale_budget, uint32_t seed, int worker_idx, int num_workers,
                  WorkerTrace trace, std::atomic<uint64_t>* improvement_gen = nullptr);
+    ~ScyllaWorker();
+
+    // The pump's FJ (#323): this worker takes `retired`'s, model and all,
+    // when `scylla::run` rebuilds its slot.  Both must share the problem,
+    // exec and sink, as one slot's workers do.
+    void take_fj(ScyllaWorker& retired);
+    // Test hook (#323): drop the pump's FJ, so its next run builds one, as
+    // every run did before #323.
+    void drop_fj_for_test();
 
     // Run iterations until attempt_budget effort is consumed.  Sets
     // base_.finished when the worker cannot make further progress.
@@ -310,6 +320,9 @@ private:
     std::vector<double> cuopt_last_rounding_;
     // Effort owed to FJ on failed roundings (#298), not yet spent.
     size_t cuopt_fj_credit_ = 0;
+    // The FJ both of those run (#323), built by the first and reset by every
+    // later one: FJ's model once per slot, not once per run.
+    std::unique_ptr<FjWorker> fj_;
 
     // Mexi's cycle window; unused in the cuOpt variant.
     std::vector<std::vector<double>> cycle_history_;
