@@ -422,6 +422,30 @@ TEST_CASE("ruin_repair: an unchanged pool best is checked once, a new one again"
     CHECK(bests * 2 < static_cast<size_t>(kAttempts));
 }
 
+TEST_CASE("ruin_repair: an infeasible pool best is refused, not ruined",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const HighsLp& lp = highs.getLp();
+    const Setup s(lp, highs.getOptions().log_options);
+    const std::vector<double> bad = lp.col_lower_;
+    REQUIRE_FALSE(is_feasible(lp, bad));
+    RecordingSink sink(*s.problem.integrality, 0);
+    static_cast<void>(sink.offer(s.problem.objective(bad), bad, WorkerTrace{0, 0}, 0));
+    sink.objectives.clear();
+    sink.points.clear();
+
+    // The pool's only point is infeasible and the slot has no best of its
+    // own, so it checks that point once, refuses it and waits: it charges
+    // one check and ruins nothing.
+    const Attempts run =
+        run_attempts(s, sink, 5, [](int /*call*/, std::vector<double>&) { return false; });
+    REQUIRE(run.calls == 5);
+    CHECK(run.checks == 1);
+    CHECK(run.effort == static_cast<size_t>(s.problem.nnz));
+    CHECK(sink.objectives.empty());
+}
+
 TEST_CASE("ruin_repair: an unchanged source point is checked once",
           "[ruin_repair][until_stopped]") {
     Highs highs;
@@ -447,6 +471,8 @@ TEST_CASE("ruin_repair: checking once ruins as checking every attempt did",
     const Setup s(highs.getLp(), highs.getOptions().log_options);
     const std::vector<double> seed = first_fj_point(s);
     const double seed_objective = s.problem.objective(seed);
+    const std::vector<double> bad = highs.getLp().col_lower_;
+    REQUIRE_FALSE(is_feasible(highs.getLp(), bad));
     constexpr int kAttempts = 40;
     const auto run = [&](bool recheck, RecordingSink& sink) {
         static_cast<void>(sink.offer(seed_objective, seed, WorkerTrace{0, 0}, 0));
@@ -459,12 +485,13 @@ TEST_CASE("ruin_repair: checking once ruins as checking every attempt did",
             Recheck& operator=(Recheck&&) = delete;
             ~Recheck() { ruin_repair::set_recheck_for_test(false); }
         } const guard(recheck);
-        // The seed from the source on odd attempts, the pool otherwise.
+        // The pool on even attempts; from the source, the seed and an
+        // infeasible point by turns, so both rejected caches run too.
         return run_attempts(s, sink, kAttempts, [&](int call, std::vector<double>& out) {
             if (call % 2 == 0) {
                 return false;
             }
-            out = seed;
+            out = call % 4 == 1 ? bad : seed;
             return true;
         });
     };

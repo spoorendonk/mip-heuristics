@@ -99,8 +99,9 @@ std::atomic<size_t> g_population_checks{0};
 std::atomic<bool> g_recheck{false};
 
 // Whether a repair can search at all: `FjWorker::run_attempt` returns at
-// once under 64-bit `HighsInt`, and a slot whose attempts still charge a
-// feasibility check would never retire.
+// once under 64-bit `HighsInt`, and a slot whose attempts charge a
+// feasibility check each (a source handing out new points, say) would
+// never retire.
 #ifdef HIGHSINT64
 constexpr bool kRepairSearches = false;
 #else
