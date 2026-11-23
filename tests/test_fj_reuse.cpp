@@ -222,13 +222,19 @@ SlotRun run_slot(const Setup& s, bool fresh_rebuilds) {
     int asked = 0;
     exec.restart_now = [&asked] { return ++asked % 5 == 0; };
     OfferLog sink(*s.problem.integrality, 0);
-    fj::set_fresh_rebuilds_for_test(fresh_rebuilds);
+    // Restores the shipped path even if the run throws, so a failure here
+    // cannot leak fresh rebuilds into later test cases.
+    struct FreshRebuilds {
+        explicit FreshRebuilds(bool on) { fj::set_fresh_rebuilds_for_test(on); }
+        FreshRebuilds(const FreshRebuilds&) = delete;
+        FreshRebuilds& operator=(const FreshRebuilds&) = delete;
+        ~FreshRebuilds() { fj::set_fresh_rebuilds_for_test(false); }
+    } const fresh_guard(fresh_rebuilds);
     const size_t models_before = FjWorker::models_built();
     SlotRun out;
     out.effort =
         fj::run_until_stopped(s.problem, budget, exec, /*worker=*/0, RestartSource{}, sink);
     out.models = FjWorker::models_built() - models_before;
-    fj::set_fresh_rebuilds_for_test(false);
     out.offers = sink.offers;
     return out;
 }

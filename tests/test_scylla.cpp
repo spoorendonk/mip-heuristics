@@ -1059,10 +1059,21 @@ TEST_CASE("cuOpt pump: one reset FJ escapes as fresh ones do", "[scylla][cuopt][
         };
         int escapes = 0;
         int failed_rounding_runs = 0;
+        size_t kept_models = 0;
         for (int i = 0; i < 10; ++i) {
             const bool escape = i % 2 == 0;
             INFO("run " << i << (escape ? " escape" : " failed rounding"));
+            if (i == 5) {
+                // The slot rebuilds its worker, as `scylla::run` does: the
+                // kept FJ passes to the new worker, the fresh side starts over.
+                auto rebuilt = make_worker(kept_sink);
+                rebuilt->take_fj(*kept);
+                kept = std::move(rebuilt);
+                fresh = make_worker(fresh_sink);
+            }
+            const size_t before = FjWorker::models_built();
             const PumpFjRun a = run(*kept, escape, /*drop=*/false);
+            kept_models += FjWorker::models_built() - before;
             const PumpFjRun b = run(*fresh, escape, /*drop=*/true);
             CHECK(a == b);
             if (a.effort > 0) {
@@ -1075,6 +1086,8 @@ TEST_CASE("cuOpt pump: one reset FJ escapes as fresh ones do", "[scylla][cuopt][
         CHECK_FALSE(kept_sink.offers.empty());
         CHECK(escapes >= 3);
         CHECK(failed_rounding_runs >= 3);
+        // One model for the slot, across its rebuild.
+        CHECK(kept_models == 1);
         CHECK(kept->total_effort() == fresh->total_effort());
     }
 }
