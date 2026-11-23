@@ -57,6 +57,8 @@ struct Personas {
     RowStructure structure;
     std::vector<FjPersona> of_slot;
     std::vector<uint8_t> exchange_of_slot;
+    // The detection pass's charge (#326): one read of every nonzero.
+    size_t effort = 0;
 };
 
 Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget,
@@ -66,13 +68,15 @@ Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget
     out.exchange_of_slot.assign(exec.num_workers, 0);
     // Where `assign_personas` would seed every slot anyway, and slot 1, the
     // first exchange lane, does not exist, skip the O(nnz) detection pass.
-    // `kPersonaNnzLimit` bounds the pass for the exchange as well: it is
-    // uncharged and runs before the deadline is first polled.
+    // `kPersonaNnzLimit` bounds the pass for the exchange as well: it is one
+    // pass, charged to FJ's effort, and not cut short by the deadline, which
+    // is polled once ahead of it — the dispatch would stop at its first poll.
     if (!(budget.fj_personas || budget.fj_exchange) || exec.num_workers < 2 ||
-        problem.nnz > kPersonaNnzLimit) {
+        problem.nnz > kPersonaNnzLimit || exec.past_deadline()) {
         return out;
     }
     out.structure = detect_structure(problem);
+    out.effort = problem.nnz;
     if (budget.fj_personas) {
         out.of_slot = assign_personas(out.structure, problem.nnz, exec.num_workers);
     }
@@ -97,10 +101,20 @@ Personas plan_personas(const ProblemView& problem, const HeuristicBudget& budget
     return out;
 }
 
-// Put a fresh worker in the slot, replacing a finished one.
-void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
-                  const HeuristicBudget& budget, const ExecutionContext& exec, SolutionSink& sink,
-                  const RestartSource& source, const RowStructure* structure = nullptr) {
+// What building a slot's start cost (#326): `StartBudget`'s charge, and
+// whether the deadline cut it short.  Zero for every start but a persona's.
+struct StartCharge {
+    size_t effort = 0;
+    bool cut = false;
+};
+
+// Put a fresh worker in the slot, replacing a finished one.  A persona
+// start's charge comes back for the caller to add to the attempt, and is
+// already taken off the worker's own budget and added to its trace base.
+StartCharge build_worker(FjState& state, Rng& rng, const ProblemView& problem,
+                         const HeuristicBudget& budget, const ExecutionContext& exec,
+                         SolutionSink& sink, const RestartSource& source,
+                         const RowStructure* structure = nullptr) {
     // A slot's first worker is not a restart, so `budget.restart` is not
     // read for it (#200).
     const bool restart = !state.first_creation;
@@ -133,16 +147,23 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
         }
     }
     // A persona rewrites the first worker's start only (#206).
+    StartCharge charge;
     if (!restart && state.persona != FjPersona::kSeeded && structure != nullptr) {
-        apply_persona(state.persona, problem, *structure, start);
+        StartBudget start_budget(exec);
+        apply_persona(state.persona, problem, *structure, start, start_budget);
+        charge = {.effort = start_budget.effort(), .cut = start_budget.expired()};
     }
     // Carry the outgoing worker's charge into the replacement's trace base,
     // so the `[HeurSol] effort_at` of this slot keeps rising instead of
     // restarting with the fresh `WorkerBudgetState` (#106).  Nothing about
-    // what the budget counts changes: `base_` still starts at zero.
+    // what the budget counts changes: `base_` still starts at zero.  A
+    // persona start's charge goes in the base too, and comes off the
+    // worker's budget, since FJ's own counter cannot start above zero.
     if (state.worker) {
         state.trace.effort_base = state.worker->traced_effort();
     }
+    state.trace.effort_base += charge.effort;
+    const size_t per_worker = budget.per_worker - std::min(budget.per_worker, charge.effort);
     // `budget.worker_stale` is this worker's share of the dispatch's
     // absolute patience ceiling (issue #111) — the `nnz << 8` FJ used to
     // compute from its own copy of the matrix, now sized once alongside every
@@ -155,12 +176,13 @@ void build_worker(FjState& state, Rng& rng, const ProblemView& problem,
     // The model, the exchange rows and the absent cutoff are the slot's, so
     // a rebuild resets the worker it has (#323): as a fresh one would search.
     if (state.worker && !g_fresh_rebuilds) {
-        state.worker->reset(start, seed, budget.per_worker, budget.worker_stale, state.trace);
-        return;
+        state.worker->reset(start, seed, per_worker, budget.worker_stale, state.trace);
+        return charge;
     }
     state.worker = std::make_unique<FjWorker>(
-        problem, exec, sink, budget.per_worker, budget.worker_stale, seed, std::move(start),
-        state.trace, std::numeric_limits<double>::infinity(), exchange_rows);
+        problem, exec, sink, per_worker, budget.worker_stale, seed, std::move(start), state.trace,
+        std::numeric_limits<double>::infinity(), exchange_rows);
+    return charge;
 }
 
 }  // namespace
@@ -189,23 +211,36 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
     // nothing ahead of that gate to give up on, where FPR and Scylla
     // precompute variable orders ahead of it and therefore can (#117).
     // The persona plan above (#206) is the one exception, and not worth a
-    // bail: one O(nnz) classification pass, and only with
-    // `mip_heuristic_fj_personas` or `mip_heuristic_fj_exchange` on; the persona starts themselves
-    // run in `build_worker`, behind the gate.  This does not touch the narrower standing caveat
-    // that once construction has begun nothing bounds it — the deadline is polled between attempts,
-    // not inside `FjWorker`'s constructor.
-    return run_opportunistic_loop(
-        exec, budget,
+    // bail: one O(nnz) classification pass, only with
+    // `mip_heuristic_fj_personas` or `mip_heuristic_fj_exchange` on, skipped
+    // past the deadline, and charged to this dispatch, out of its total
+    // (#326).  The persona starts themselves run in `build_worker`, behind
+    // the gate, charged to the slot's first attempt, and stop at the
+    // deadline.  This does not touch the narrower standing caveat that once
+    // construction has begun nothing bounds it — the deadline is polled
+    // between attempts, not inside `FjWorker`'s constructor.
+    HeuristicBudget search = budget;
+    search.total -= std::min(search.total, personas.effort);
+    DispatchOutcome outcome = run_opportunistic_loop(
+        exec, search,
         [&exec, &personas](int worker_idx, Rng& /*rng*/) -> FjState {
             return make_state(exec, worker_idx, personas.of_slot[worker_idx],
                               personas.exchange_of_slot[worker_idx] != 0);
         },
         [&](FjState& state, Rng& rng, size_t run_cap) -> AttemptResult {
+            StartCharge start;
             if (!state.worker || state.worker->finished()) {
-                build_worker(state, rng, problem, budget, exec, sink, no_source,
-                             &personas.structure);
+                start = build_worker(state, rng, problem, budget, exec, sink, no_source,
+                                     &personas.structure);
             }
-            AttemptResult attempt = state.worker->run_attempt(run_cap);
+            // A start the deadline cut short ends the attempt with its
+            // charge alone; the runner then stops on the clock (#326).
+            if (start.cut) {
+                return {.effort = start.effort};
+            }
+            AttemptResult attempt =
+                state.worker->run_attempt(run_cap - std::min(run_cap, start.effort));
+            attempt.effort += start.effort;
             // Asked even after an improving attempt, so a find from
             // elsewhere is not carried over to reset a later one; not after
             // a zero-effort one, which retires the slot before the runner
@@ -215,6 +250,8 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
             }
             return attempt;
         });
+    outcome.effort += personas.effort;
+    return outcome;
 }
 
 size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,

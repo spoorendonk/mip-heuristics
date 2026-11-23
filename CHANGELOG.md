@@ -84,6 +84,13 @@ linked from each entry.
   climber's improving offer resets the runner's patience gate, which
   could otherwise run out while the GPU was still improving. A default
   run is unchanged.
+- **FJ's persona starts are charged and stop at the deadline** (#326): with
+  `mip_heuristic_fj_personas` or `mip_heuristic_fj_exchange` on, the row
+  structure pass counts against FJ's effort, and with personas on each
+  persona start is charged to its slot's first attempt and stops at the
+  solve's deadline. Solves with either option on may differ at fixed seeds,
+  since FJ's budget now runs out sooner. Both are off by default; a default
+  run is unchanged.
 
 ## v0.1.11 (2026-11-12)
 

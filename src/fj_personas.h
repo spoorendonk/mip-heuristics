@@ -13,14 +13,51 @@
 struct ProblemView;
 struct RowStructure;
 struct ExactKRow;
+struct ExecutionContext;
+
+// How often a start polls the deadline: every this many units of its charge.
+inline constexpr size_t kStartPollEffort = 100'000;
+
+// What building an FJ start costs, and when it must stop (#326): the
+// coefficients and sorted entries it reads, in FJ's effort unit, and the
+// solve's deadline (`ExecutionContext::past_deadline`), polled at the first
+// charge and then every `kStartPollEffort` units.  `fj::run` adds the charge
+// to the slot's first attempt.  The deadline, not a clock of the start's own
+// (cuOpt's 0.4 s and 0.5 s), which would make the start depend on the
+// machine.  A step the deadline cuts short keeps its input: the start is the
+// last step's result that finished, or the one it was handed.  Every start a
+// slot builds before its first attempt takes one of these.
+class StartBudget {
+public:
+    explicit StartBudget(const ExecutionContext& exec) : exec_(exec) {}
+
+    // Charge `effort`; true once the deadline has passed, and from then on.
+    bool charge(size_t effort) {
+        effort_ += effort;
+        if (!expired_ && effort_ >= next_poll_) {
+            poll();
+        }
+        return expired_;
+    }
+    [[nodiscard]] bool expired() const { return expired_; }
+    [[nodiscard]] size_t effort() const { return effort_; }
+
+private:
+    void poll();
+
+    const ExecutionContext& exec_;
+    size_t effort_ = 0;
+    size_t next_poll_ = 0;
+    bool expired_ = false;
+};
 
 // FJ lane personas (#206, cuOpt's CPU FJ portfolio, `portfolio.cpp`
 // `apply_lane_diversification`): a slot's first worker starts from a point
 // built for the structure the model has, instead of only from another
 // seed.  Starts only — the moves are upstream FJ's.  Rebuilt workers
-// restart from the pool as before.  Building a start is not charged to FJ's
-// effort and polls no deadline: it is a few passes over the rows, capped by
-// `kPersonaNnzLimit`.
+// restart from the pool as before.  Building a start is charged to FJ's
+// effort and polls the deadline, through a `StartBudget`; it is a few passes
+// over the rows, capped by `kPersonaNnzLimit`.
 enum class FjPersona : uint8_t {
     // The plain start: the resolved point, else each column's bound.
     kSeeded,
@@ -76,16 +113,17 @@ inline double fj_clamped_start(double lower, double upper, double value) {
 
 // Rewrite `start` (empty: the bound start) for `persona`.  Each step keeps
 // its result only if it leaves fewer violated rows than it found, as
-// cuOpt's do, so a feasible start comes back unchanged.  Reads the view
-// only; safe on any thread.
+// cuOpt's do, so a feasible start comes back unchanged.  Charged to
+// `budget`; a deadline already passed returns `start` as it came.  Reads the
+// view only; safe on any thread.
 void apply_persona(FjPersona persona, const ProblemView& problem, const RowStructure& structure,
-                   std::vector<double>& start);
+                   std::vector<double>& start, StartBudget& budget);
 
 // The two steps, exposed for the tests.  Both return whether they kept
-// their result.  `x` must be a full point.
-bool greedy_covering_start(const ProblemView& problem, std::vector<double>& x);
+// their result, never one the deadline cut short.  `x` must be a full point.
+bool greedy_covering_start(const ProblemView& problem, std::vector<double>& x, StartBudget& budget);
 bool exact_k_start(const ProblemView& problem, std::span<const ExactKRow> rows,
-                   std::vector<double>& x);
+                   std::vector<double>& x, StartBudget& budget);
 
 // cuOpt's LP start (#217): `cpu/setup/lp.cpp` `apply_lp_rounded_start`,
 // whose pump (`cpu/search/fp.cpp` `run_cpu_feasibility_pump`) runs only
@@ -100,5 +138,7 @@ bool exact_k_start(const ProblemView& problem, std::span<const ExactKRow> rows,
 bool lp_rounded_start(const ProblemView& problem, std::span<const double> lp_x, Rng& rng,
                       std::vector<double>& out);
 
-// Rows of `problem` violated at `x` by more than `feastol`.
-HighsInt count_violated_rows(const ProblemView& problem, const std::vector<double>& x);
+// Rows of `problem` violated at `x` by more than `feastol`, charged to
+// `budget`; a partial count once it has expired.
+HighsInt count_violated_rows(const ProblemView& problem, const std::vector<double>& x,
+                             StartBudget& budget);

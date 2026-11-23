@@ -3,14 +3,23 @@
 // hand-built models small enough to check by eye.
 
 #include "core_test_support.h"
+#include "fj.h"
 #include "fj_personas.h"
+#include "fj_worker.h"
+#include "heuristic_common.h"
 #include "heuristic_context.h"
 #include "Highs.h"
+#include "parallel/HighsParallel.h"
 #include "structure.h"
+#include "test_paths.h"
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -123,9 +132,10 @@ TEST_CASE("personas: the covering start repairs a chain cover from all zeros",
     Highs highs;
     const Setup s(lp, highs.getOptions().log_options);
     std::vector<double> x(4, 0.0);
-    REQUIRE(count_violated_rows(s.problem, x) == 3);
-    REQUIRE(greedy_covering_start(s.problem, x));
-    CHECK(count_violated_rows(s.problem, x) == 0);
+    StartBudget budget(s.exec);
+    REQUIRE(count_violated_rows(s.problem, x, budget) == 3);
+    REQUIRE(greedy_covering_start(s.problem, x, budget));
+    CHECK(count_violated_rows(s.problem, x, budget) == 0);
     CHECK(is_feasible(lp, x));
 }
 
@@ -136,7 +146,8 @@ TEST_CASE("personas: a start the covering step cannot improve comes back unchang
     const Setup s(lp, highs.getOptions().log_options);
     const std::vector<double> feasible = {0, 1, 1, 0};
     std::vector<double> x = feasible;
-    CHECK_FALSE(greedy_covering_start(s.problem, x));
+    StartBudget budget(s.exec);
+    CHECK_FALSE(greedy_covering_start(s.problem, x, budget));
     CHECK(x == feasible);
 }
 
@@ -152,7 +163,8 @@ TEST_CASE("personas: the exact-k start fills narrow rows first, low degree first
     const RowStructure structure = detect_structure(s.problem);
     REQUIRE(structure.exact_k.size() == 2);
     std::vector<double> x(4, 0.0);
-    REQUIRE(exact_k_start(s.problem, structure.exact_k, x));
+    StartBudget budget(s.exec);
+    REQUIRE(exact_k_start(s.problem, structure.exact_k, x, budget));
     CHECK(x == std::vector<double>{1, 0, 0, 1});
 }
 
@@ -165,7 +177,8 @@ TEST_CASE("personas: an exact-k start that leaves no fewer violated rows is drop
     const Setup s(lp, highs.getOptions().log_options);
     const RowStructure structure = detect_structure(s.problem);
     std::vector<double> x = {0, 1};
-    CHECK_FALSE(exact_k_start(s.problem, structure.exact_k, x));
+    StartBudget budget(s.exec);
+    CHECK_FALSE(exact_k_start(s.problem, structure.exact_k, x, budget));
     CHECK(x == std::vector<double>{0, 1});
 }
 
@@ -176,9 +189,121 @@ TEST_CASE("personas: an empty start becomes the bound start, then the persona's"
     const Setup s(lp, highs.getOptions().log_options);
     const RowStructure structure = detect_structure(s.problem);
     std::vector<double> start;
-    apply_persona(FjPersona::kCovering, s.problem, structure, start);
+    StartBudget budget(s.exec);
+    apply_persona(FjPersona::kCovering, s.problem, structure, start, budget);
     REQUIRE(start.size() == 4);
     CHECK(is_feasible(lp, start));
+}
+
+// ── The start's charge and deadline (#326) ──
+
+TEST_CASE("personas: a start on a bundled MIP is charged its passes over the rows",
+          "[core][fj_personas]") {
+    // issue-2095's `= 1` binary rows bind from below and are exact-k rows.
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    REQUIRE(highs.readModel(instances_dir() + "/issue-2095.mps") == HighsStatus::kOk);
+    const HighsLp& lp = highs.getLp();
+    const Setup s(lp, highs.getOptions().log_options);
+    const RowStructure structure = detect_structure(s.problem);
+    REQUIRE(structure.lower_bound_rows > 0);
+    for (const FjPersona persona : {FjPersona::kCovering, FjPersona::kExactK}) {
+        std::vector<double> start;
+        StartBudget budget(s.exec);
+        apply_persona(persona, s.problem, structure, start, budget);
+        CHECK_FALSE(budget.expired());
+        // At least the covering step's two counts of every row.
+        CHECK(budget.effort() >= 2 * s.problem.nnz);
+    }
+    // A seeded slot builds no start, so is charged nothing.
+    std::vector<double> start;
+    StartBudget seeded(s.exec);
+    apply_persona(FjPersona::kSeeded, s.problem, structure, start, seeded);
+    CHECK(seeded.effort() == 0);
+}
+
+TEST_CASE("personas: a start past the deadline returns at once, unchanged", "[core][fj_personas]") {
+    const HighsLp lp = chain_cover();
+    Highs highs;
+    Setup s(lp, highs.getOptions().log_options);
+    const std::atomic<bool> stopped{true};
+    s.exec.stop = &stopped;
+    const RowStructure structure = detect_structure(s.problem);
+    const std::vector<double> zeros(4, 0.0);
+    for (const FjPersona persona : {FjPersona::kCovering, FjPersona::kExactK}) {
+        std::vector<double> start = zeros;
+        StartBudget budget(s.exec);
+        apply_persona(persona, s.problem, structure, start, budget);
+        CHECK(budget.expired());
+        CHECK(budget.effort() == 0);
+        CHECK(start == zeros);
+        std::vector<double> empty;
+        StartBudget again(s.exec);
+        apply_persona(persona, s.problem, structure, empty, again);
+        CHECK(empty.empty());
+    }
+    // Each step keeps its input, never a result the deadline cut short.
+    std::vector<double> x = zeros;
+    StartBudget budget(s.exec);
+    CHECK_FALSE(greedy_covering_start(s.problem, x, budget));
+    CHECK_FALSE(exact_k_start(s.problem, structure.exact_k, x, budget));
+    CHECK(x == zeros);
+}
+
+TEST_CASE("personas: fj::run charges the structure pass and the start to the dispatch",
+          "[core][fj_personas]") {
+    // x0 + x1 >= 1 and x0 + x1 <= 0 over binaries: a covering row, and no
+    // feasible point, so nothing reaches the pool and every slot's first
+    // attempt is the same whatever the threads do.  A search total of one
+    // unit lets each slot that starts before the first attempt ends run that
+    // attempt alone, so the dispatch's effort is the structure pass plus one
+    // of three sums of first attempts, each slot's computed here by a worker
+    // built as `fj::run` builds it.
+    const HighsLp lp =
+        binary_model(2, {{1, kHighsInf, {{0, 1}, {1, 1}}}, {-kHighsInf, 0, {{0, 1}, {1, 1}}}});
+    Highs highs;
+    highs.setOptionValue("output_flag", false);
+    highs::parallel::initialize_scheduler();
+    Setup s(lp, highs.getOptions().log_options);
+    s.exec.num_workers = 2;
+    const RowStructure structure = detect_structure(s.problem);
+    REQUIRE(assign_personas(structure, s.problem.nnz, 2) ==
+            std::vector<FjPersona>{FjPersona::kSeeded, FjPersona::kCovering});
+
+    constexpr size_t kLarge = size_t{1} << 40;
+    const HeuristicBudget budget{.total = s.problem.nnz + 1,
+                                 .per_worker = kLarge,
+                                 .attempt_cap = kLarge,
+                                 .stale = kLarge,
+                                 .worker_stale = kLarge,
+                                 .fj_personas = true};
+
+    std::vector<double> persona_start;
+    StartBudget start_budget(s.exec);
+    apply_persona(FjPersona::kCovering, s.problem, structure, persona_start, start_budget);
+    const size_t start_effort = start_budget.effort();
+    REQUIRE(start_effort > 0);
+
+    const uint32_t seed = s.exec.base_seed - kBaseSeedOffset;
+    SolutionSink scratch(*s.problem.integrality, 0);
+    FjWorker slot0(s.problem, s.exec, scratch, kLarge, kLarge, seed, {}, WorkerTrace{0, 0});
+    const size_t first0 = slot0.run_attempt(1).effort;
+    FjWorker slot1(s.problem, s.exec, scratch, kLarge - start_effort, kLarge, seed + 1,
+                   persona_start, WorkerTrace{1, start_effort});
+    const size_t first1 = slot1.run_attempt(0).effort;
+    REQUIRE(scratch.accepted() == 0);
+
+    const size_t pass = s.problem.nnz;
+    const std::set<size_t> charged = {pass + first0, pass + start_effort + first1,
+                                      pass + first0 + start_effort + first1};
+    // The same three without the two charges, so a match above is one only
+    // a dispatch that books them can make.
+    for (const size_t uncharged : {first0, first1, first0 + first1}) {
+        REQUIRE_FALSE(charged.contains(uncharged));
+    }
+    SolutionSink sink(*s.problem.integrality, 0);
+    const DispatchOutcome outcome = fj::run(s.problem, budget, s.exec, sink);
+    CHECK(charged.contains(outcome.effort));
 }
 
 TEST_CASE("personas: slots take what the structure supports, slot 0 always seeded",

@@ -5,6 +5,7 @@
 #include "structure.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <numeric>
 #include <optional>
@@ -14,17 +15,29 @@
 // Deviations from cuOpt's starts (`cpu/starts/covering.cpp`,
 // `cpu/starts/cardinality.cpp`), all for reproducibility or to read this
 // model's tolerances:
-// - No wall-clock budget (cuOpt: 0.4 s covering, 0.5 s exact-k).  A start
-//   is O(rows log rows + passes * nnz log width), and `kPersonaNnzLimit`
-//   is cuOpt's own size gate; a clock would make the start, and so the
-//   whole FJ trajectory, depend on the machine.
+// - No wall-clock budget of its own (cuOpt: 0.4 s covering, 0.5 s exact-k).
+//   A start is O(rows log rows + passes * nnz log width), and
+//   `kPersonaNnzLimit` is cuOpt's own size gate; a clock would make the
+//   start, and so the whole FJ trajectory, depend on the machine.  It is
+//   charged to FJ's effort and stops at the solve's deadline instead
+//   (`StartBudget`, #326), which changes only a run the clock ends.
 // - Stable sorts, so ties break by row or entry order on every standard
 //   library rather than by `std::sort`'s implementation.
 // - `problem.feastol` where cuOpt hard-codes `1e-6` (HiGHS's default
 //   `mip_feasibility_tolerance` is that value), and a plain row sum where it
 //   uses a compensated one.
 
+void StartBudget::poll() {
+    next_poll_ = effort_ + kStartPollEffort;
+    expired_ = exec_.past_deadline();
+}
+
 namespace {
+
+// A sort's charge: `n log2 n` entries read.
+size_t sort_effort(size_t n) {
+    return n * static_cast<size_t>(std::bit_width(n));
+}
 
 double row_activity(const ProblemView& problem, HighsInt row, const std::vector<double>& x) {
     double sum = 0.0;
@@ -107,12 +120,19 @@ std::optional<Violation> violated_side(double lb, double ub, double sum, double 
 }
 
 // One covering pass over `order`: each row violated at `x` repaired by
-// cuOpt's greedy one-step moves, equalities driven to their side.
+// cuOpt's greedy one-step moves, equalities driven to their side.  Each row
+// is charged its width plus one, so an empty row is charged too; a repaired
+// one its width again and the sort of its moves.
 void covering_pass(const ProblemView& problem, const std::vector<HighsInt>& order,
-                   std::vector<double>& x, std::vector<RepairMove>& candidates) {
+                   std::vector<double>& x, std::vector<RepairMove>& candidates,
+                   StartBudget& budget) {
     const double tol = problem.feastol;
     for (const HighsInt row : order) {
-        if (row_width(problem, row) == 0) {
+        const HighsInt width = row_width(problem, row);
+        if (budget.charge(static_cast<size_t>(width) + 1)) {
+            return;
+        }
+        if (width == 0) {
             continue;
         }
         double sum = row_activity(problem, row, x);
@@ -123,6 +143,7 @@ void covering_pass(const ProblemView& problem, const std::vector<HighsInt>& orde
         }
         const auto [direction, target] = *violation;
         collect_repair_moves(problem, row, direction, x, candidates);
+        budget.charge(static_cast<size_t>(width) + sort_effort(candidates.size()));
         for (const RepairMove& m : candidates) {
             if (direction > 0 ? sum >= target - tol : sum <= target + tol) {
                 break;
@@ -133,61 +154,37 @@ void covering_pass(const ProblemView& problem, const std::vector<HighsInt>& orde
     }
 }
 
-}  // namespace
-
-HighsInt count_violated_rows(const ProblemView& problem, const std::vector<double>& x) {
-    HighsInt violated = 0;
-    for (HighsInt row = 0; row < problem.nrow; ++row) {
-        violated += is_row_violated(row_activity(problem, row, x), (*problem.row_lower)[row],
-                                    (*problem.row_upper)[row], problem.feastol)
-                        ? 1
-                        : 0;
-    }
-    return violated;
-}
-
-bool greedy_covering_start(const ProblemView& problem, std::vector<double>& x) {
-    const HighsInt baseline = count_violated_rows(problem, x);
-    std::vector<double> candidate = x;
-    std::vector<HighsInt> order(static_cast<size_t>(problem.nrow));
-    std::ranges::iota(order, HighsInt{0});
-    std::ranges::stable_sort(order, [&](HighsInt a, HighsInt b) {
-        return row_width(problem, a) < row_width(problem, b);
-    });
-    std::vector<RepairMove> candidates;
-    for (int pass = 0; pass < kCoveringPasses; ++pass) {
-        covering_pass(problem, order, candidate, candidates);
-    }
-    if (count_violated_rows(problem, candidate) >= baseline) {
-        return false;
-    }
-    x = std::move(candidate);
-    return true;
-}
-
-bool exact_k_start(const ProblemView& problem, std::span<const ExactKRow> rows,
-                   std::vector<double>& x) {
-    if (rows.empty()) {
-        return false;
-    }
-    std::vector<ExactKRow> by_width(rows.begin(), rows.end());
-    std::ranges::stable_sort(by_width, [&](const ExactKRow& a, const ExactKRow& b) {
-        return row_width(problem, a.row) < row_width(problem, b.row);
-    });
-
+// How many exact-k rows each column appears in. A deadline cut leaves it
+// partial; the caller checks `budget.expired()`.
+std::vector<HighsInt> exact_k_degrees(const ProblemView& problem, std::span<const ExactKRow> rows,
+                                      StartBudget& budget) {
     const auto& start = *problem.ar_start;
     const auto& index = *problem.ar_index;
     std::vector<HighsInt> degree(static_cast<size_t>(problem.ncol), 0);
-    for (const ExactKRow& r : by_width) {
+    for (const ExactKRow& r : rows) {
+        if (budget.charge(static_cast<size_t>(row_width(problem, r.row)) + 1)) {
+            break;
+        }
         for (HighsInt p = start[r.row]; p < start[r.row + 1]; ++p) {
             ++degree[index[p]];
         }
     }
+    return degree;
+}
 
-    // -1 undecided, else the column's value.
+// Each column's decided value, -1 if undecided: rows in order, each fixing
+// its free columns, lowest degree first, to reach exactly k ones. A deadline
+// cut leaves it partial; the caller checks `budget.expired()`.
+std::vector<int8_t> exact_k_states(const ProblemView& problem, std::span<const ExactKRow> rows,
+                                   const std::vector<HighsInt>& degree, StartBudget& budget) {
+    const auto& start = *problem.ar_start;
+    const auto& index = *problem.ar_index;
     std::vector<int8_t> state(static_cast<size_t>(problem.ncol), -1);
     std::vector<HighsInt> free_vars;
-    for (const ExactKRow& r : by_width) {
+    for (const ExactKRow& r : rows) {
+        if (budget.charge(static_cast<size_t>(row_width(problem, r.row)) + 1)) {
+            break;
+        }
         HighsInt selected = 0;
         free_vars.clear();
         for (HighsInt p = start[r.row]; p < start[r.row + 1]; ++p) {
@@ -203,19 +200,88 @@ bool exact_k_start(const ProblemView& problem, std::span<const ExactKRow> rows,
         }
         std::ranges::stable_sort(free_vars,
                                  [&](HighsInt a, HighsInt b) { return degree[a] < degree[b]; });
+        budget.charge(sort_effort(free_vars.size()));
         for (size_t i = 0; i < free_vars.size(); ++i) {
             state[free_vars[i]] = static_cast<int8_t>(std::cmp_less(i, needed) ? 1 : 0);
         }
     }
+    return state;
+}
 
-    const HighsInt baseline = count_violated_rows(problem, x);
+}  // namespace
+
+HighsInt count_violated_rows(const ProblemView& problem, const std::vector<double>& x,
+                             StartBudget& budget) {
+    HighsInt violated = 0;
+    for (HighsInt row = 0; row < problem.nrow; ++row) {
+        if (budget.charge(static_cast<size_t>(row_width(problem, row)) + 1)) {
+            break;
+        }
+        violated += is_row_violated(row_activity(problem, row, x), (*problem.row_lower)[row],
+                                    (*problem.row_upper)[row], problem.feastol)
+                        ? 1
+                        : 0;
+    }
+    return violated;
+}
+
+bool greedy_covering_start(const ProblemView& problem, std::vector<double>& x,
+                           StartBudget& budget) {
+    const HighsInt baseline = count_violated_rows(problem, x, budget);
+    if (budget.expired()) {
+        return false;
+    }
+    std::vector<double> candidate = x;
+    std::vector<HighsInt> order(static_cast<size_t>(problem.nrow));
+    std::ranges::iota(order, HighsInt{0});
+    std::ranges::stable_sort(order, [&](HighsInt a, HighsInt b) {
+        return row_width(problem, a) < row_width(problem, b);
+    });
+    budget.charge(sort_effort(order.size()));
+    std::vector<RepairMove> candidates;
+    for (int pass = 0; pass < kCoveringPasses && !budget.expired(); ++pass) {
+        covering_pass(problem, order, candidate, candidates, budget);
+    }
+    const HighsInt violated = count_violated_rows(problem, candidate, budget);
+    if (budget.expired() || violated >= baseline) {
+        return false;
+    }
+    x = std::move(candidate);
+    return true;
+}
+
+bool exact_k_start(const ProblemView& problem, std::span<const ExactKRow> rows,
+                   std::vector<double>& x, StartBudget& budget) {
+    if (rows.empty()) {
+        return false;
+    }
+    std::vector<ExactKRow> by_width(rows.begin(), rows.end());
+    std::ranges::stable_sort(by_width, [&](const ExactKRow& a, const ExactKRow& b) {
+        return row_width(problem, a.row) < row_width(problem, b.row);
+    });
+    if (budget.charge(sort_effort(by_width.size()))) {
+        return false;
+    }
+
+    const std::vector<HighsInt> degree = exact_k_degrees(problem, by_width, budget);
+    if (budget.expired()) {
+        return false;
+    }
+    const std::vector<int8_t> state = exact_k_states(problem, by_width, degree, budget);
+    if (budget.expired()) {
+        return false;
+    }
+
+    const HighsInt baseline = count_violated_rows(problem, x, budget);
     std::vector<double> candidate = x;
     for (HighsInt var = 0; var < problem.ncol; ++var) {
         if (state[var] >= 0) {
             candidate[var] = state[var];
         }
     }
-    if (count_violated_rows(problem, candidate) >= baseline) {
+    budget.charge(static_cast<size_t>(problem.ncol));
+    const HighsInt violated = count_violated_rows(problem, candidate, budget);
+    if (budget.expired() || violated >= baseline) {
         return false;
     }
     x = std::move(candidate);
@@ -273,8 +339,9 @@ bool lp_rounded_start(const ProblemView& problem, std::span<const double> lp_x, 
 }
 
 void apply_persona(FjPersona persona, const ProblemView& problem, const RowStructure& structure,
-                   std::vector<double>& start) {
-    if (persona == FjPersona::kSeeded) {
+                   std::vector<double>& start, StartBudget& budget) {
+    // The zero charge polls the deadline before anything is touched.
+    if (persona == FjPersona::kSeeded || budget.charge(0)) {
         return;
     }
     // The point `FjWorker` would start from: the resolved one clamped into
@@ -286,8 +353,9 @@ void apply_persona(FjPersona persona, const ProblemView& problem, const RowStruc
         const double upper = (*problem.col_upper)[col];
         start[col] = fj_clamped_start(lower, upper, start[col]);
     }
+    budget.charge(static_cast<size_t>(problem.ncol));
     if (persona == FjPersona::kExactK) {
-        exact_k_start(problem, structure.exact_k, start);
+        exact_k_start(problem, structure.exact_k, start, budget);
     }
-    greedy_covering_start(problem, start);
+    greedy_covering_start(problem, start, budget);
 }

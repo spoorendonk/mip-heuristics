@@ -2545,15 +2545,21 @@ the exact-k start then the covering start (cuOpt's lane 8) when an exact-k
 row with `k >= 1` exists — and the rest stay seeded copies. Only a slot's first worker
 takes its persona; rebuilds restart from the pool as before. Each start
 keeps its result only if it leaves fewer violated rows than it found, so a
-feasible start passes through unchanged. The starts are not charged to
-FJ's effort: they are one pass of detection plus O(passes · nnz log width)
-per persona slot, gated by `kPersonaNnzLimit`. With the option on, a
-`[FjPersonas]` verbose line gives the row counts and slot assignment.
+feasible start passes through unchanged. The starts are charged to FJ's
+effort (#326): the detection pass, one read of every nonzero, comes out of
+the dispatch's total, and each persona start — its passes over the rows,
+O(passes · nnz log width), gated by `kPersonaNnzLimit` — is added to its
+slot's first attempt and taken off that worker's own budget (`StartBudget`).
+A start polls the solve's deadline and stops there, keeping the last step
+that finished; the detection pass is skipped past the deadline. With the
+option on, a `[FjPersonas]` verbose line gives the row counts and slot
+assignment.
 
 **Deviations** (beside the code in `src/fj_personas.cpp`): no wall-clock
-start budget (cuOpt: 0.4 s covering, 0.5 s exact-k), so the start is
-reproducible; stable sorts; `feastol` where cuOpt hard-codes `1e-6`; a
-plain rather than compensated row sum.
+start budget of its own (cuOpt: 0.4 s covering, 0.5 s exact-k), so the
+start is reproducible unless the solve's deadline ends it; stable sorts;
+`feastol` where cuOpt hard-codes `1e-6`; a plain rather than compensated
+row sum.
 
 ### `mip_heuristic_fj_personas` — FJ's structural personas
 
@@ -2575,6 +2581,14 @@ plain rather than compensated row sum.
 - **Default**: `2`
 - **Meaning**: cuOpt's `max_passes` of the greedy covering start: passes
   over the rows, shortest first.
+
+### `kStartPollEffort`
+
+- **File**: `src/fj_personas.h`
+- **Default**: `100'000`
+- **Meaning**: how often a persona start polls the deadline
+  (`StartBudget`, #326): at its first charge, then every this many units of
+  it, a fifth of FJ's own callback period (`kFjCallbackEffort`).
 
 ### `kExactKTol`, `kCountTol`, `kExactKMaxWidth`
 
