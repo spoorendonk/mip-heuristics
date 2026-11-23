@@ -6,6 +6,7 @@
 #include "solution_sink.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -92,6 +93,11 @@ bool is_feasible(const ProblemView& problem, const std::vector<double>& x) {
 
 namespace {
 
+// `population_checks` and `set_recheck_for_test`.  Relaxed: read and set
+// only between dispatches, by a test.
+std::atomic<size_t> g_population_checks{0};
+std::atomic<bool> g_recheck{false};
+
 // Whether a repair can search at all: `FjWorker::run_attempt` returns at
 // once under 64-bit `HighsInt`, and a slot whose attempts still charge a
 // feasibility check would never retire.
@@ -130,12 +136,20 @@ Shared make_shared_state(const ProblemView& problem) {
 struct Slot {
     std::vector<double> best;
     double best_objective = std::numeric_limits<double>::infinity();
-    std::vector<double> population;
+    // The caller's `RestartSource`'s point, copied in by `take_restart`.
+    std::vector<double> source_point;
     // The last point from each population source (the pool; the caller's
     // `RestartSource`) that failed `is_feasible`, so the same point is not
     // checked again on every attempt (cuOpt's `rejected_seed`).
     std::vector<double> rejected;
     std::vector<double> rejected_source;
+    // The last point from each source that passed `is_feasible`, so the
+    // usual case, an unchanged feasible best, is not checked again either
+    // (#324).  The pool's by its immutable entry: holding it keeps the
+    // address from being reused.  The source's by value, as it hands out
+    // copies.
+    SolutionPool::SolutionPtr verified;
+    std::vector<double> verified_source;
     std::vector<double> start;
     std::vector<HighsInt> guidance;
     std::vector<HighsInt> ruin_set;
@@ -154,47 +168,78 @@ Slot make_slot(const ProblemView& problem, int worker) {
     return slot;
 }
 
-// Into `slot.population`, the point `fetch` gives if it is usable: found
-// and feasible.  `rejected` is that source's last infeasible point.
-// `effort` is charged `nnz` for a feasibility check.
-template <typename Fetch>
-bool usable_point(const ProblemView& problem, Slot& slot, Fetch& fetch,
-                  std::vector<double>& rejected, size_t& effort) {
-    if (!fetch(slot.population) || slot.population == rejected) {
-        return false;
-    }
+// Whether `x` is feasible, charging `effort` `nnz` for the check.
+bool checked_feasible(const ProblemView& problem, const std::vector<double>& x, size_t& effort) {
+    g_population_checks.fetch_add(1, std::memory_order_relaxed);
     effort += problem.nnz;
-    if (!is_feasible(problem, slot.population)) {
-        rejected = slot.population;
-        return false;
-    }
-    rejected.clear();
-    return true;
+    return is_feasible(problem, x);
 }
 
-// Into `slot.population`, the point to ruin from: the caller's source's if
-// usable, else the pool's best if usable, else the worker's own best.  An
-// infeasible point (the pool admits without checking; a source may hand out
-// anything) must not idle a slot when a feasible one is to hand.
-template <typename FromSource, typename FromPool>
-bool next_start_point(const ProblemView& problem, Slot& slot, FromSource& from_source,
-                      FromPool& from_pool, size_t& effort) {
-    if (usable_point(problem, slot, from_source, slot.rejected_source, effort) ||
-        usable_point(problem, slot, from_pool, slot.rejected, effort)) {
-        return true;
+// The caller's source's point if it is usable (found and feasible), else
+// null.  A point equal to the last one that passed is not checked again.
+template <typename FromSource>
+const std::vector<double>* usable_source_point(const ProblemView& problem, Slot& slot,
+                                               FromSource& from_source, size_t& effort) {
+    if (!from_source(slot.source_point) || slot.source_point == slot.rejected_source) {
+        return nullptr;
     }
-    if (slot.best.empty()) {
-        return false;
+    if (g_recheck.load(std::memory_order_relaxed) || slot.source_point != slot.verified_source) {
+        if (!checked_feasible(problem, slot.source_point, effort)) {
+            slot.rejected_source = slot.source_point;
+            return nullptr;
+        }
+        slot.verified_source = slot.source_point;
     }
-    slot.population = slot.best;
-    return true;
+    slot.rejected_source.clear();
+    return &slot.source_point;
+}
+
+// The pool's best if it is usable (found and feasible), else null.  Read
+// by pointer, so the entry that passed last time costs neither a copy nor
+// a check.
+const std::vector<double>* usable_pool_point(const ProblemView& problem, Slot& slot,
+                                             SolutionSink& sink, size_t& effort) {
+    SolutionPool::SolutionPtr best = sink.best_ref();
+    if (!best) {
+        return nullptr;
+    }
+    if (g_recheck.load(std::memory_order_relaxed) || best != slot.verified) {
+        if (*best == slot.rejected) {
+            return nullptr;
+        }
+        if (!checked_feasible(problem, *best, effort)) {
+            slot.rejected = *best;
+            return nullptr;
+        }
+        slot.verified = std::move(best);
+    }
+    slot.rejected.clear();
+    return slot.verified.get();
+}
+
+// The point to ruin from: the caller's source's if usable, else the pool's
+// best if usable, else the worker's own best; null if none.  An infeasible
+// point (the pool admits without checking; a source may hand out anything)
+// must not idle a slot when a feasible one is to hand.
+template <typename FromSource>
+const std::vector<double>* next_start_point(const ProblemView& problem, Slot& slot,
+                                            FromSource& from_source, SolutionSink& sink,
+                                            size_t& effort) {
+    if (const auto* point = usable_source_point(problem, slot, from_source, effort)) {
+        return point;
+    }
+    if (const auto* point = usable_pool_point(problem, slot, sink, effort)) {
+        return point;
+    }
+    return slot.best.empty() ? nullptr : &slot.best;
 }
 
 // The ruined start, into `slot.start`, from the worker's best and the
-// population point in `slot.population`.  Adopts the population point first
-// if it beats the worker's best.
-void ruin(const ProblemView& problem, const Shared& shared, Slot& slot, Rng& rng) {
-    const double population_objective = problem.objective(slot.population);
+// population point `population`, which may be the worker's best itself.
+// Adopts the population point first if it beats the worker's best.
+void ruin(const ProblemView& problem, const Shared& shared, Slot& slot,
+          const std::vector<double>& population, Rng& rng) {
+    const double population_objective = problem.objective(population);
     if (slot.best.empty() || population_objective + kObjectiveEpsilon < slot.best_objective) {
         // cuOpt compares its climber's current assignment (`h_assignment`)
         // here while its comment says "this climber's own best-known point";
@@ -212,12 +257,12 @@ void ruin(const ProblemView& problem, const Shared& shared, Slot& slot, Rng& rng
         slot.guidance.clear();
         if (!slot.best.empty()) {
             for (const HighsInt j : shared.integer_cols) {
-                if (std::abs(slot.best[j] - slot.population[j]) > problem.feastol) {
+                if (std::abs(slot.best[j] - population[j]) > problem.feastol) {
                     slot.guidance.push_back(j);
                 }
             }
         }
-        slot.best = slot.population;
+        slot.best = population;
         slot.best_objective = population_objective;
         slot.no_improve = 0;
     }
@@ -230,7 +275,7 @@ void ruin(const ProblemView& problem, const Shared& shared, Slot& slot, Rng& rng
     std::bernoulli_distribution coin(0.5);
     for (const HighsInt j : slot.ruin_set) {
         if (coin(rng)) {
-            slot.start[j] = slot.population[j];
+            slot.start[j] = population[j];
             continue;
         }
         const double lo = std::ceil((*problem.col_lower)[j]);
@@ -299,14 +344,15 @@ AttemptResult repair(const ProblemView& problem, const ExecutionContext& exec, S
     return result;
 }
 
-// A ruin and a repair from `slot.population`, the usable point
-// `next_population_point` just fetched; `check_effort` is what fetching it
+// A ruin and a repair from `population`, the usable point
+// `next_start_point` just fetched; `check_effort` is what fetching it
 // charged.
 AttemptResult ruin_and_repair(const ProblemView& problem, const Shared& shared,
                               const ExecutionContext& exec, SolutionSink& sink, Slot& slot,
-                              Rng& rng, size_t run_cap, size_t check_effort) {
+                              const std::vector<double>& population, Rng& rng, size_t run_cap,
+                              size_t check_effort) {
     slot.trace.effort_base += check_effort;
-    ruin(problem, shared, slot, rng);
+    ruin(problem, shared, slot, population, rng);
     AttemptResult result = repair(problem, exec, sink, slot, rng, run_cap);
     result.effort += check_effort;
     return result;
@@ -324,7 +370,6 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
         return {};
     }
     auto no_source = [](std::vector<double>& /*out*/) { return false; };
-    auto from_pool = [&sink](std::vector<double>& out) { return sink.copy_best(out); };
     return run_opportunistic_loop(
         exec, budget,
         [&problem](int worker_idx, Rng& /*rng*/) { return make_slot(problem, worker_idx); },
@@ -334,10 +379,13 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
             // dispatch whose pool holds no feasible point has nothing
             // to ruin.
             size_t effort = 0;
-            if (!next_start_point(problem, slot, no_source, from_pool, effort)) {
+            const std::vector<double>* population =
+                next_start_point(problem, slot, no_source, sink, effort);
+            if (population == nullptr) {
                 return {.effort = effort, .found_improvement = false};
             }
-            return ruin_and_repair(problem, shared, exec, sink, slot, rng, run_cap, effort);
+            return ruin_and_repair(problem, shared, exec, sink, slot, *population, rng, run_cap,
+                                   effort);
         });
 }
 
@@ -358,19 +406,29 @@ size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budg
             auto from_source = [&](std::vector<double>& out) {
                 return take_restart(source, rng, out, problem);
             };
-            auto from_pool = [&sink](std::vector<double>& out) { return sink.copy_best(out); };
             // Wait for a usable point, as cuOpt's worker does, rather than
             // return zero effort, which would end the run.  This thread
             // holds the poller seat, so the wait polls the terminator too.
             size_t effort = 0;
-            while (!next_start_point(problem, slot, from_source, from_pool, effort)) {
+            const std::vector<double>* population = nullptr;
+            while ((population = next_start_point(problem, slot, from_source, sink, effort)) ==
+                   nullptr) {
                 if (exec.terminated()) {
                     return {.effort = effort, .found_improvement = false};
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(kWaitForSeedMs));
             }
-            return ruin_and_repair(problem, shared, exec, sink, slot, rng, run_cap, effort);
+            return ruin_and_repair(problem, shared, exec, sink, slot, *population, rng, run_cap,
+                                   effort);
         });
+}
+
+size_t population_checks() {
+    return g_population_checks.load(std::memory_order_relaxed);
+}
+
+void set_recheck_for_test(bool recheck) {
+    g_recheck.store(recheck, std::memory_order_relaxed);
 }
 
 }  // namespace ruin_repair

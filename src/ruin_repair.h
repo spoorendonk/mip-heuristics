@@ -18,7 +18,8 @@ class SolutionSink;
 //   1. reads the population's best point — the caller's `RestartSource`
 //      under `run_until_stopped`, else the sink's pool — and checks it is
 //      feasible, falling back to the worker's own best when that point is
-//      unusable;
+//      unusable; a point that passed or failed the last check of its source
+//      is not checked again (#324; cuOpt caches only the failure);
 //   2. adopts it when it beats the worker's own best by `kObjectiveEpsilon`
 //      (or the worker has none), and then makes the *guidance pool* the
 //      integer columns where the worker's old best disagrees with it;
@@ -117,5 +118,13 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
 [[nodiscard]] size_t run_until_stopped(const ProblemView& problem, const HeuristicBudget& budget,
                                        const ExecutionContext& exec, int worker,
                                        const RestartSource& source, SolutionSink& sink);
+
+// Test hooks (#324).  How many population points every slot of the process
+// has checked with `is_feasible` so far (the repair's check of FJ's point
+// is not counted).  `set_recheck_for_test(true)` checks the population
+// point on every attempt, as before #324, until set back; set it only
+// between dispatches.
+[[nodiscard]] size_t population_checks();
+void set_recheck_for_test(bool recheck);
 
 }  // namespace ruin_repair

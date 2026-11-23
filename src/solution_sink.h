@@ -124,6 +124,8 @@ public:
         return pool_.get_restart(rng, out, policy);
     }
     bool copy_best(std::vector<double>& out) { return pool_.copy_best(out); }
+    // The pool's best by pointer (`SolutionPool::best_ref`).
+    [[nodiscard]] SolutionPool::SolutionPtr best_ref() { return pool_.best_ref(); }
     // The pool's entries by pointer, best first (`SolutionPool::entry_refs`).
     void entry_refs(std::vector<SolutionPool::EntryRef>& out) { pool_.entry_refs(out); }
 

@@ -18,6 +18,7 @@
 #include <limits>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace core_test;
@@ -29,18 +30,20 @@ void read(Highs& highs, const char* instance) {
     REQUIRE(highs.readModel(instances_dir() + "/" + instance) == HighsStatus::kOk);
 }
 
-// Every objective the sink accepted, in order.
+// Every objective and point the sink accepted, in order.
 class RecordingSink : public SolutionSink {
 public:
     using SolutionSink::SolutionSink;
     std::mutex mtx;
     std::vector<double> objectives;
+    std::vector<std::vector<double>> points;
 
 private:
-    void on_accept(double obj, const std::vector<double>& /*x*/, int /*source*/,
+    void on_accept(double obj, const std::vector<double>& x, int /*source*/,
                    const WorkerTrace& /*trace*/, size_t /*effort_at*/) override {
         std::scoped_lock guard(mtx);
         objectives.push_back(obj);
+        points.push_back(x);
     }
 };
 
@@ -343,4 +346,141 @@ TEST_CASE("ruin_repair: a caller's slot ruins the source's point", "[ruin_repair
     REQUIRE(sink.found);
     CHECK(sink.objective < seed_objective);
     CHECK(is_feasible(lp, sink.solution));
+}
+
+namespace {
+
+// What `attempts` attempts of one `run_until_stopped` slot did: its effort
+// and how many population points it checked.
+struct Attempts {
+    size_t effort = 0;
+    size_t checks = 0;
+    int calls = 0;
+};
+
+// One `run_until_stopped` slot for `attempts` attempts: `source` runs at
+// the start of each, as the slot asks for its point, and is told which.
+template <typename Source>
+Attempts run_attempts(const Setup& s, SolutionSink& sink, int attempts, Source&& source) {
+    std::atomic<bool> stop{false};
+    ExecutionContext exec = s.exec;
+    exec.stop = &stop;
+    Attempts out;
+    const RestartSource counted = [&](Rng& /*rng*/, std::vector<double>& x) {
+        ++out.calls;
+        if (out.calls >= attempts) {
+            stop.store(true);
+        }
+        return source(out.calls, x);
+    };
+    const size_t checks_before = ruin_repair::population_checks();
+    out.effort = ruin_repair::run_until_stopped(
+        s.problem, make_until_stopped_budget(kBudget, kBudget), exec, /*worker=*/0, counted, sink);
+    out.checks = ruin_repair::population_checks() - checks_before;
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("ruin_repair: an unchanged pool best is checked once, a new one again",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const HighsLp& lp = highs.getLp();
+    const Setup s(lp, highs.getOptions().log_options);
+    const std::vector<double> seed = first_fj_point(s);
+    const std::vector<double> bad = lp.col_lower_;
+    REQUIRE_FALSE(is_feasible(lp, bad));
+    BestSink sink(*s.problem.integrality, 0);
+    static_cast<void>(sink.offer(s.problem.objective(seed), seed, WorkerTrace{0, 0}, 0));
+
+    // No source point, so every attempt reads the pool.  Halfway, an
+    // infeasible point better than anything feasible becomes the pool's
+    // best; it is checked, refused, and not checked again.  Every best the
+    // slot meets costs exactly one check.
+    constexpr int kAttempts = 40;
+    constexpr int kBadAt = 20;
+    SolutionPool::SolutionPtr last;
+    size_t bests = 0;
+    const Attempts run = run_attempts(s, sink, kAttempts, [&](int call, std::vector<double>&) {
+        if (call == kBadAt) {
+            static_cast<void>(sink.offer(s.problem.objective(bad), bad, WorkerTrace{0, 0}, 0));
+            REQUIRE(*sink.best_ref() == bad);
+        }
+        SolutionPool::SolutionPtr best = sink.best_ref();
+        if (best != last) {
+            ++bests;
+            last = std::move(best);
+        }
+        return false;
+    });
+    REQUIRE(run.calls == kAttempts);
+    CHECK(*sink.best_ref() == bad);
+    CHECK(run.checks == bests);
+    // Not vacuous: most attempts met a best they had checked before.
+    CHECK(bests >= 2);
+    CHECK(bests * 2 < static_cast<size_t>(kAttempts));
+}
+
+TEST_CASE("ruin_repair: an unchanged source point is checked once",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    const std::vector<double> seed = first_fj_point(s);
+    BestSink sink(*s.problem.integrality, 0);
+    const Attempts run = run_attempts(s, sink, 30, [&](int /*call*/, std::vector<double>& out) {
+        out = seed;
+        return true;
+    });
+    REQUIRE(run.calls == 30);
+    CHECK(run.checks == 1);
+}
+
+// The cache changes what an attempt charges and nothing else: the same
+// attempts pick the same points and offer the same improvements, and the
+// effort differs by exactly the checks saved.
+TEST_CASE("ruin_repair: checking once ruins as checking every attempt did",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const Setup s(highs.getLp(), highs.getOptions().log_options);
+    const std::vector<double> seed = first_fj_point(s);
+    const double seed_objective = s.problem.objective(seed);
+    constexpr int kAttempts = 40;
+    const auto run = [&](bool recheck, RecordingSink& sink) {
+        static_cast<void>(sink.offer(seed_objective, seed, WorkerTrace{0, 0}, 0));
+        // Restored even if the run throws, so no later case rechecks.
+        struct Recheck {
+            explicit Recheck(bool on) { ruin_repair::set_recheck_for_test(on); }
+            Recheck(const Recheck&) = delete;
+            Recheck& operator=(const Recheck&) = delete;
+            Recheck(Recheck&&) = delete;
+            Recheck& operator=(Recheck&&) = delete;
+            ~Recheck() { ruin_repair::set_recheck_for_test(false); }
+        } const guard(recheck);
+        // The seed from the source on odd attempts, the pool otherwise.
+        return run_attempts(s, sink, kAttempts, [&](int call, std::vector<double>& out) {
+            if (call % 2 == 0) {
+                return false;
+            }
+            out = seed;
+            return true;
+        });
+    };
+    RecordingSink cached_sink(*s.problem.integrality, 0);
+    RecordingSink rechecked_sink(*s.problem.integrality, 0);
+    const Attempts cached = run(false, cached_sink);
+    const Attempts rechecked = run(true, rechecked_sink);
+    REQUIRE(cached.calls == kAttempts);
+    REQUIRE(rechecked.calls == kAttempts);
+    CHECK(cached_sink.objectives == rechecked_sink.objectives);
+    CHECK(cached_sink.points == rechecked_sink.points);
+    // Before #324 every source point was checked, each attempt it came.
+    CHECK(rechecked.checks >= static_cast<size_t>(kAttempts / 2));
+    REQUIRE(cached.checks < rechecked.checks);
+    CHECK(rechecked.effort - cached.effort ==
+          (rechecked.checks - cached.checks) * static_cast<size_t>(s.problem.nnz));
+    // Not vacuous: the slot improved on the seed.
+    CHECK(cached_sink.objectives.size() >= 2);
 }

@@ -529,16 +529,20 @@ std::vector<SolutionPool::Entry> SolutionPool::sorted_entries() {
 }
 
 bool SolutionPool::copy_best(std::vector<double>& out) {
-    SolutionPtr best;
-    {
-        std::scoped_lock lock(mtx_);
-        if (entries_.empty()) {
-            return false;
-        }
-        best = entries_[0].solution;  // best — entries_ kept sorted by try_add.
+    const SolutionPtr best = best_ref();
+    if (!best) {
+        return false;
     }
     out = *best;
     return true;
+}
+
+SolutionPool::SolutionPtr SolutionPool::best_ref() {
+    std::scoped_lock lock(mtx_);
+    if (entries_.empty()) {
+        return nullptr;
+    }
+    return entries_[0].solution;  // best — entries_ kept sorted by try_add.
 }
 
 int SolutionPool::size() {

@@ -198,6 +198,12 @@ public:
     // needs the top-ranked warm-start.
     bool copy_best(std::vector<double>& out);
 
+    // The best entry's solution by pointer, or null while the pool is empty;
+    // the lock covers one pointer copy.  Entries are immutable and a held
+    // pointer keeps its vector alive, so a caller can tell by identity
+    // whether the best has moved since it last looked (#324).
+    [[nodiscard]] SolutionPtr best_ref();
+
     int size();
 
     // Test seam: called by `try_add` between a scan and the hold
