@@ -18,8 +18,9 @@ class SolutionSink;
 //   1. reads the population's best point — the caller's `RestartSource`
 //      under `run_until_stopped`, else the sink's pool — and checks it is
 //      feasible, falling back to the worker's own best when that point is
-//      unusable; a point that passed or failed the last check of its source
-//      is not checked again (#324; cuOpt caches only the failure);
+//      unusable; the last point of each source that passed, and the last
+//      that failed, are not checked again (#324; cuOpt caches only the
+//      failure);
 //   2. adopts it when it beats the worker's own best by `kObjectiveEpsilon`
 //      (or the worker has none), and then makes the *guidance pool* the
 //      integer columns where the worker's old best disagrees with it;

@@ -446,6 +446,40 @@ TEST_CASE("ruin_repair: an infeasible pool best is refused, not ruined",
     CHECK(sink.objectives.empty());
 }
 
+TEST_CASE("ruin_repair: a refused source point is not checked again",
+          "[ruin_repair][until_stopped]") {
+    Highs highs;
+    read(highs, "egout.mps");
+    const HighsLp& lp = highs.getLp();
+    const Setup s(lp, highs.getOptions().log_options);
+    const std::vector<double> seed = first_fj_point(s);
+    const std::vector<double> bad = lp.col_lower_;
+    REQUIRE_FALSE(is_feasible(lp, bad));
+    BestSink sink(*s.problem.integrality, 0);
+    static_cast<void>(sink.offer(s.problem.objective(seed), seed, WorkerTrace{0, 0}, 0));
+
+    // The source hands out the same infeasible point every attempt, so each
+    // attempt falls through to the pool: one check of the source point in
+    // all, and one per distinct pool best.
+    constexpr int kAttempts = 30;
+    SolutionPool::SolutionPtr last;
+    size_t bests = 0;
+    const Attempts run =
+        run_attempts(s, sink, kAttempts, [&](int /*call*/, std::vector<double>& out) {
+            SolutionPool::SolutionPtr best = sink.best_ref();
+            if (best != last) {
+                ++bests;
+                last = std::move(best);
+            }
+            out = bad;
+            return true;
+        });
+    REQUIRE(run.calls == kAttempts);
+    CHECK(run.checks == 1 + bests);
+    // Not vacuous: most attempts met a source point refused before.
+    CHECK(bests * 2 < static_cast<size_t>(kAttempts));
+}
+
 TEST_CASE("ruin_repair: an unchanged source point is checked once",
           "[ruin_repair][until_stopped]") {
     Highs highs;
@@ -486,7 +520,7 @@ TEST_CASE("ruin_repair: checking once ruins as checking every attempt did",
             ~Recheck() { ruin_repair::set_recheck_for_test(false); }
         } const guard(recheck);
         // The pool on even attempts; from the source, the seed and an
-        // infeasible point by turns, so both rejected caches run too.
+        // infeasible point by turns.
         return run_attempts(s, sink, kAttempts, [&](int call, std::vector<double>& out) {
             if (call % 2 == 0) {
                 return false;
