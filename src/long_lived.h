@@ -50,9 +50,10 @@ void drain_long_lived(HighsMipSolver& mipsolver);
 void start_long_lived(HighsMipSolver& mipsolver);
 
 // Stop the owner (every thread joined) and book its slots' effort with
-// `stopped_by=restart`.  The first line of `performRestart`, before it
-// overwrites the presolved model the slots read.  Nothing starts again for
-// the rest of the solve.
+// `stopped_by=restart`, then drain what they queued while it is still in
+// this space.  The first line of `performRestart`, before it overwrites
+// the presolved model the slots read and before `numRestarts` moves.
+// Nothing starts again for the rest of the solve.
 void restart_long_lived(HighsMipSolver& mipsolver);
 
 // Stop the owner (every thread joined), book its slots' effort with

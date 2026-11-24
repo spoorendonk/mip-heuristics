@@ -134,7 +134,7 @@ LongLivedOwner::LongLivedOwner(HighsMipSolver& mipsolver)
 }
 
 LongLivedOwner::~LongLivedOwner() {
-    stop();
+    join_threads();
 }
 
 void LongLivedOwner::set_start_hook(StartHook hook) {
@@ -158,7 +158,7 @@ void LongLivedOwner::start_slots(std::span<const LongLivedSlotSpec> specs) {
     if (specs.empty() || stop_requested() || deadline_.expired() || view_.has_value()) {
         return;
     }
-    view_.emplace(make_problem(mipsolver_, csc_));
+    const ProblemView& view = view_.emplace(make_problem(mipsolver_, csc_));
     // The stop flag on the deadline too, for the sub-algorithms that poll a
     // `Deadline` and not `exec` (recombine's bound-prop arm, FPR's DFS).
     Deadline deadline = deadline_;
@@ -169,7 +169,7 @@ void LongLivedOwner::start_slots(std::span<const LongLivedSlotSpec> specs) {
         Slot* slot =
             slots_.emplace_back(std::make_unique<Slot>(mipsolver_, *this, spec, deadline)).get();
         slot->start_s = timer->read();
-        start([slot, timer, &problem = *view_](LongLivedOwner& /*owner*/) {
+        start([slot, timer, &problem = view](LongLivedOwner& /*owner*/) {
             try {
                 slot->effort = slot->spec.run(problem, slot->spec.budget, slot->exec,
                                               slot->spec.worker, slot->source, slot->sink);
@@ -213,6 +213,10 @@ void LongLivedOwner::stop() {
     if (!stop_requested()) {
         stop_s_ = mipsolver_.timer_.read();
     }
+    join_threads();
+}
+
+void LongLivedOwner::join_threads() {
     stop_.store(true, std::memory_order_release);
     for (std::thread& thread : threads_) {
         thread.join();
@@ -394,6 +398,10 @@ void restart_long_lived(HighsMipSolver& mipsolver) {
     }
     owner->stop();
     owner->charge_slots(SlotStop::kRestart);
+    // Before `numRestarts` moves and the model is replaced: what the slots
+    // queued since the last poll point is still in this space, and the
+    // first drain after the restart would drop it as an older epoch's.
+    owner->drain();
 }
 
 void stop_long_lived(HighsMipSolver& mipsolver) {

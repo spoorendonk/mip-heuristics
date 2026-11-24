@@ -8,9 +8,13 @@
 // overwrites) while B&B can run.**  `addIncumbent` asserts
 // `!parallelLockActive()` and writes every B&B worker's bounds, so a
 // heuristic thread that called it would race the search.  A producer
-// therefore touches three things only: the `SolutionQueue`, the owner's
-// stop flag and deadline, and a `LongLivedSink` built for it on the
-// solving thread.  Everything that reaches HiGHS goes through `drain`.
+// therefore touches four things only: the `SolutionQueue`, the owner's
+// stop flag and deadline, a `LongLivedSink` built for it on the solving
+// thread, and the slots' `ProblemView` (#356).  The view points into
+// `model_` and `mipdata`'s row-wise matrix and locks, which only
+// `runSetup` and `performRestart` write: it is built after the one and
+// every slot is joined at the top of the other (`restart_long_lived`).
+// Everything that reaches HiGHS goes through `drain`.
 
 #include "deadline.h"
 #include "heuristic_context.h"
@@ -235,6 +239,9 @@ private:
     // A running slot; long_lived.cpp.
     struct Slot;
 
+    // Set the stop flag and join every owner thread.  `stop` without the
+    // clock read, for the destructor, which must not throw.
+    void join_threads();
     void publish();
     // Replace the pool if HiGHS has restarted since it was built.
     void sync_epoch();

@@ -113,6 +113,12 @@ start at all, depends on how long presolve took on that machine. It is off by
 default, so every reproducible configuration above is unchanged; a run that
 turns it on is compared by spread over seeds, like a `threads > 1` run.
 
+**Long-lived slots (`mip_heuristic_long_lived_threads > 0`, #356) are not
+reproducible at any thread count** for the same reason: they run on threads
+of their own beside B&B, and which of their points the solving thread
+installs, and at which poll point, depends on timing. Off by default
+(`0`), and compared by spread over seeds when on.
+
 ## Why `threads=1` is not the benchmark configuration
 
 It collapses each heuristic to a single worker. That is the right setting for a

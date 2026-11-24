@@ -96,9 +96,13 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     const double effort_per_ms =
         (effort > 0 && wall_ms > 0.0) ? static_cast<double>(effort) / wall_ms : 0.0;
     const HighsLogOptions& log_options = mipsolver_.options_mip_->log_options;
-    highsLogDev(log_options, HighsLogType::kVerbose,
-                "[Sequential] heur=%s effort=%zu wall_ms=%.1f effort_per_ms=%.3f\n", name, effort,
-                wall_ms, effort_per_ms);
+    // Not for a long-lived slot: the positional line has no phase, so its
+    // whole-solve rate would read as a chain dispatch's.
+    if (!slot.has_value()) {
+        highsLogDev(log_options, HighsLogType::kVerbose,
+                    "[Sequential] heur=%s effort=%zu wall_ms=%.1f effort_per_ms=%.3f\n", name,
+                    effort, wall_ms, effort_per_ms);
+    }
     // `nnz` and `abandoned_setup` are appended rather than inserted:
     // `[Heur]` was a positional pattern for two issues, and anything still
     // matching a prefix of it keeps working.

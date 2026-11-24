@@ -494,7 +494,12 @@ class SolveResult:
                     samples=[],
                     total_effort=None if closing is None else closing.effort,
                     nnz=nnz,
-                    workers=self.thread_count,
+                    # A long-lived slot is one worker, whatever `threads` is.
+                    workers=(
+                        1
+                        if closing is not None and closing.phase == "longlived"
+                        else self.thread_count
+                    ),
                     nnz_missing_reason=reason,
                 )
                 traces[key] = trace
