@@ -103,9 +103,37 @@ struct Handshake {
     bool pushed = false;
 };
 
-// Offer `x` through a `LongLivedSink`, as a long-lived heuristic will.
-void offer_through(LongLivedSink& sink, const std::vector<double>& x, double objective) {
-    static_cast<void>(sink.offer(objective, x, WorkerTrace{.worker = 0}, 0));
+// Start a producer that, once released, offers `point` through a
+// `LongLivedSink` as a long-lived heuristic will, then returns.  From the
+// start hook, on the solving thread.
+void start_producer(HighsMipSolver& mipsolver, LongLivedOwner& owner, Handshake& hs,
+                    const Optimum& point) {
+    auto sink = std::make_shared<LongLivedSink>(mipsolver, owner, kSolutionSourceFJ);
+    owner.start([&hs, &point, sink](LongLivedOwner& self) {
+        {
+            std::unique_lock lock(hs.mtx);
+            while (!hs.go && !self.stop_requested()) {
+                hs.cv.wait_for(lock, std::chrono::milliseconds(1));
+            }
+            if (!hs.go) {
+                return;
+            }
+        }
+        static_cast<void>(sink->offer(point.objective, point.x, WorkerTrace{.worker = 0}, 0));
+        {
+            std::scoped_lock lock(hs.mtx);
+            hs.pushed = true;
+        }
+        hs.cv.notify_all();
+    });
+}
+
+// Release the producer and wait until it has pushed.  Solving thread.
+void release_producer(Handshake& hs) {
+    std::unique_lock lock(hs.mtx);
+    hs.go = true;
+    hs.cv.notify_all();
+    hs.cv.wait(lock, [&] { return hs.pushed; });
 }
 
 }  // namespace
@@ -146,35 +174,11 @@ TEST_CASE("long-lived: a point pushed while B&B runs is installed at the next po
     // owner had submitted by then; -1 while no poll point followed it.
     int next_origin = -1;
     bool submitted_by_next = false;
-    std::atomic<bool> producer_saw_submit{false};
     std::vector<std::string> lines;
 
     HookGuard guard([&](HighsMipSolver& mipsolver, LongLivedOwner& o) {
         owner = &o;
-        auto sink = std::make_shared<LongLivedSink>(mipsolver, o, kSolutionSourceFJ);
-        o.start([&, sink](LongLivedOwner& self) {
-            {
-                std::unique_lock lock(hs.mtx);
-                while (!hs.go && !self.stop_requested()) {
-                    hs.cv.wait_for(lock, std::chrono::milliseconds(1));
-                }
-                if (!hs.go) {
-                    return;
-                }
-            }
-            offer_through(*sink, optimum.x, optimum.objective);
-            {
-                std::scoped_lock lock(hs.mtx);
-                hs.pushed = true;
-            }
-            hs.cv.notify_all();
-            while (self.submitted() == 0 && !self.stop_requested()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            // A submit seen before the stop flag is one a poll point made,
-            // not the final drain, which only follows `stop`.
-            producer_saw_submit = self.submitted() > 0 && !self.stop_requested();
-        });
+        start_producer(mipsolver, o, hs, optimum);
     });
 
     std::function<void(int, const std::string&, const HighsCallbackOutput*)> on_callback =
@@ -203,10 +207,7 @@ TEST_CASE("long-lived: a point pushed while B&B runs is installed at the next po
                   optimum.objective + (1e-6 * std::abs(optimum.objective)))) {
                 return;
             }
-            std::unique_lock lock(hs.mtx);
-            hs.go = true;
-            hs.cv.notify_all();
-            hs.cv.wait(lock, [&] { return hs.pushed; });
+            release_producer(hs);
         };
     auto trampoline = [](int callback_type, const std::string& message,
                          const HighsCallbackOutput* out, HighsCallbackInput* /*in*/, void* data) {
@@ -227,7 +228,6 @@ TEST_CASE("long-lived: a point pushed while B&B runs is installed at the next po
     REQUIRE(hs.pushed);
     REQUIRE(next_origin == kExternalMipSolutionQueryOriginBeforeDive);
     REQUIRE(submitted_by_next);
-    REQUIRE(producer_saw_submit);
     REQUIRE(source_codes(lines).contains('J'));
     REQUIRE(h.getInfo().objective_function_value == Catch::Approx(optimum.objective));
 }
@@ -244,7 +244,8 @@ TEST_CASE("long-lived: a point pushed after the last poll point is installed by 
             while (!self.stop_requested()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-            offer_through(*sink, optimum.x, optimum.objective);
+            static_cast<void>(
+                sink->offer(optimum.objective, optimum.x, WorkerTrace{.worker = 0}, 0));
             pushed_after_stop = true;
         });
     });

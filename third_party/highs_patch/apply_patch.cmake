@@ -2010,10 +2010,13 @@ if(_ll_found EQUAL -1)
     # The drain at the B&B loop's poll can prune every open node; the root
     # pass then pops without testing the queue again (`popBestBoundNode` on
     # an empty queue reads `nodes[-1]`).  No worker holds a node at the loop
-    # top, so an empty queue there is the loop's own exit.
+    # top, so an empty queue there is the loop's own exit, taken as the
+    # loop's later empty-queue `break` takes it: lower bound and display
+    # line first, so an infeasible-domain `clear()` in `addIncumbent` does
+    # not leave the dual bound below the incumbent.
     string(REPLACE
       "          solution_objective_, kExternalMipSolutionQueryOriginBeforeDive);\n"
-      "          solution_objective_, kExternalMipSolutionQueryOriginBeforeDive);\n    // mip-heuristics (#332): the drain may have pruned every open node.\n    if (mipdata_->nodequeue.empty()) break;\n"
+      "          solution_objective_, kExternalMipSolutionQueryOriginBeforeDive);\n    // mip-heuristics (#332): the drain may have pruned every open node.\n    if (mipdata_->nodequeue.empty()) {\n      mipdata_->updateLowerBound(std::min(\n          mipdata_->upper_bound, mipdata_->nodequeue.getBestLowerBound()));\n      mipdata_->printDisplayLine();\n      break;\n    }\n"
       LL_CPP "${LL_CPP}")
     string(REPLACE
       "void HighsMipSolver::cleanupSolve() {\n"
