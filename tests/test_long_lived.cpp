@@ -406,6 +406,7 @@ TEST_CASE("long-lived pool: two sinks over one pool keep their own tags while of
     // Each sink offers `kPerSink` points told apart by the integer value
     // at `marker`: no two are twins, and together they fill the pool, so
     // every offer is admitted whatever order the two threads interleave.
+    static_assert(kPoolCapacity % 2 == 0, "the two sinks fill the pool exactly");
     constexpr int kPerSink = kPoolCapacity / 2;
     const std::array<int, 2> tags{kSolutionSourceFJ, kSolutionSourceLocalMIP};
     auto tag_of = [&](const std::vector<double>& x) {
