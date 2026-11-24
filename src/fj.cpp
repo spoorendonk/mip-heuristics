@@ -234,12 +234,14 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
                                      &personas.structure);
             }
             // A start the deadline cut short ends the attempt with its
-            // charge alone; the runner then stops on the clock (#326).
-            if (start.cut) {
+            // charge alone, and the runner then stops on the clock (#326).
+            // So does one that fills the cap: FJ checks its limit only at a
+            // callback, so a zero-cap attempt would still cost a callback
+            // period and break the runner's attempt_cap bound.
+            if (start.cut || start.effort >= run_cap) {
                 return {.effort = start.effort};
             }
-            AttemptResult attempt =
-                state.worker->run_attempt(run_cap - std::min(run_cap, start.effort));
+            AttemptResult attempt = state.worker->run_attempt(run_cap - start.effort);
             attempt.effort += start.effort;
             // Asked even after an improving attempt, so a find from
             // elsewhere is not carried over to reset a later one; not after

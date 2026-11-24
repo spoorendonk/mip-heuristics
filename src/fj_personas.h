@@ -25,8 +25,9 @@ inline constexpr size_t kStartPollEffort = 100'000;
 // to the slot's first attempt.  The deadline, not a clock of the start's own
 // (cuOpt's 0.4 s and 0.5 s), which would make the start depend on the
 // machine.  A step the deadline cuts short keeps its input: the start is the
-// last step's result that finished, or the one it was handed.  Every start a
-// slot builds before its first attempt takes one of these.
+// last step's result that finished, or the one it was handed.  Every persona start
+// `fj::run` builds before a slot's first attempt takes one of these; a start
+// built elsewhere (`fpr_lp`'s LP-rounded one) is charged by its own caller.
 class StartBudget {
 public:
     explicit StartBudget(const ExecutionContext& exec) : exec_(exec) {}

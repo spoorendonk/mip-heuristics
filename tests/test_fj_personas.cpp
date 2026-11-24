@@ -257,8 +257,11 @@ TEST_CASE("personas: fj::run charges the structure pass and the start to the dis
     // attempt is the same whatever the threads do.  A search total of one
     // unit lets each slot that starts before the first attempt ends run that
     // attempt alone, so the dispatch's effort is the structure pass plus one
-    // of three sums of first attempts, each slot's computed here by a worker
-    // built as `fj::run` builds it.
+    // of three sums of first attempts: slot 0's, computed here by a worker
+    // built as `fj::run` builds it, and slot 1's, its start's charge alone,
+    // since that fills the one-unit cap.  This pins the pass on every
+    // schedule and the start's charge only when slot 1 runs, which it may
+    // not when slot 0 ends first; the charge itself is pinned above.
     const HighsLp lp =
         binary_model(2, {{1, kHighsInf, {{0, 1}, {1, 1}}}, {-kHighsInf, 0, {{0, 1}, {1, 1}}}});
     Highs highs;
@@ -288,16 +291,17 @@ TEST_CASE("personas: fj::run charges the structure pass and the start to the dis
     SolutionSink scratch(*s.problem.integrality, 0);
     FjWorker slot0(s.problem, s.exec, scratch, kLarge, kLarge, seed, {}, WorkerTrace{0, 0});
     const size_t first0 = slot0.run_attempt(1).effort;
-    FjWorker slot1(s.problem, s.exec, scratch, kLarge - start_effort, kLarge, seed + 1,
-                   persona_start, WorkerTrace{1, start_effort});
-    const size_t first1 = slot1.run_attempt(0).effort;
+    // Slot 1 as a dispatch charging neither would build and run it.
+    FjWorker free1(s.problem, s.exec, scratch, kLarge, kLarge, seed + 1, persona_start,
+                   WorkerTrace{1, 0});
+    const size_t first1 = free1.run_attempt(1).effort;
     REQUIRE(scratch.accepted() == 0);
 
     const size_t pass = s.problem.nnz;
-    const std::set<size_t> charged = {pass + first0, pass + start_effort + first1,
-                                      pass + first0 + start_effort + first1};
-    // The same three without the two charges, so a match above is one only
-    // a dispatch that books them can make.
+    const std::set<size_t> charged = {pass + first0, pass + start_effort,
+                                      pass + first0 + start_effort};
+    // What that dispatch would report, so a match above is one only a
+    // dispatch that books the charges can make.
     for (const size_t uncharged : {first0, first1, first0 + first1}) {
         REQUIRE_FALSE(charged.contains(uncharged));
     }
