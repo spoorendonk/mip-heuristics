@@ -284,7 +284,7 @@ HiGHS v1.16.0 is fetched at build time and patched from `third_party/highs_patch
 
 The presolve chain is FJ → FPR → LocalMIP → Scylla → ruin → recombine (`kChain` in `src/mode_dispatch.cpp`), each on continuous parallel workers; `fpr_lp` runs at dive time inside the RENS/RINS LP-iteration envelope. A heuristic runs only if its `mip_heuristic_<name>_effort` is above zero (FJ also needs upstream's `mip_heuristic_run_feasibility_jump`).
 
-Rules no change may break: workers read `problem.incumbent`, never `mipdata->incumbent`; `compute_var_order` and clique-table reads run on the dispatching thread only; `terminated()` is seat-holder-only while `past_deadline()` is safe on any thread; the effort ledger is charged from the dispatching thread only; once B&B can run, only the solving thread calls `trySolution` or reads `mipdata` or `model_` — a long-lived thread queues through `LongLivedSink` and the drain installs (`long_lived_owner.h`); headers inserted into HiGHS's own sources (`fpr_lp.h`, `mode_dispatch.h`, `long_lived.h`) stay C++11.
+Rules no change may break: workers read `problem.incumbent`, never `mipdata->incumbent`; `compute_var_order` and clique-table reads run on the dispatching thread only; `terminated()` is seat-holder-only while `past_deadline()` is safe on any thread; the effort ledger is charged from the dispatching thread only; beside running B&B, only the solving thread calls `trySolution` or reads `mipdata` or `model_` — a long-lived thread queues through `LongLivedSink` and the drain installs (`long_lived_owner.h`); headers inserted into HiGHS's own sources (`fpr_lp.h`, `mode_dispatch.h`, `long_lived.h`) stay C++11.
 
 **Read the matching doc before changing the code it covers** — its rules bind as this file's do:
 

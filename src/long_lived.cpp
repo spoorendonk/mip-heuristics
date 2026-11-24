@@ -78,7 +78,14 @@ LongLivedOwner::LongLivedOwner(HighsMipSolver& mipsolver)
     drained_.reserve(kLongLivedQueueCapacity);
     publish();
     if (start_hook()) {
-        start_hook()(mipsolver_, *this);
+        // A hook that throws after `start` leaves the destructor unrun:
+        // join here, or the joinable thread terminates the test binary.
+        try {
+            start_hook()(mipsolver_, *this);
+        } catch (...) {
+            stop();
+            throw;
+        }
     }
 }
 
@@ -129,17 +136,16 @@ void LongLivedOwner::publish() {
 }
 
 void LongLivedOwner::drain() {
+    // Publishing first drops every entry from before a restart, and the
+    // queue refuses older epochs from then on, so what `take` hands over
+    // is all of the current epoch.
+    publish();
     queue_.take(drained_);
     HighsMipSolverData& mipdata = *mipsolver_.mipdata_;
-    const int epoch = mipdata.numRestarts;
     const bool sees_all = callback_sees_all(mipsolver_);
     std::ranges::stable_sort(drained_, {},
                              [](const SolutionQueue::Entry& e) { return rank(e.objective); });
     for (const SolutionQueue::Entry& entry : drained_) {
-        if (entry.epoch != epoch) {
-            dropped_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
         // Against the live bound, which the entries before this one may
         // have lowered: best-first, so a later entry rarely gets through.
         if (!sees_all && !may_improve(entry.objective, highs_bound(mipsolver_))) {

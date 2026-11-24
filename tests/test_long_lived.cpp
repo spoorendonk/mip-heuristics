@@ -13,6 +13,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -312,9 +313,15 @@ struct BareOwner {
         owner = std::make_unique<LongLivedOwner>(*mipsolver);
     }
 
+    // Pushes from a producer thread of its own; the objective is taken here,
+    // on the solving thread, since a producer may not read `model_`.
     [[nodiscard]] bool push(const Optimum& point, int epoch) const {
-        return owner->queue().push(epoch, kSolutionSourceFJ,
-                                   highs_objective(mipsolver->model_->col_cost_, point.x), point.x);
+        const HighsObjective objective = highs_objective(mipsolver->model_->col_cost_, point.x);
+        bool queued = false;
+        std::thread producer(
+            [&] { queued = owner->queue().push(epoch, kSolutionSourceFJ, objective, point.x); });
+        producer.join();
+        return queued;
     }
 
     int solution_callbacks = 0;
@@ -322,18 +329,31 @@ struct BareOwner {
 
 }  // namespace
 
-TEST_CASE("long-lived: an entry from an older epoch is dropped at the drain", "[long-lived]") {
-    const Optimum optimum = solve_for_optimum("flugpl.mps");
-    BareOwner bare("flugpl.mps", false);
-    REQUIRE(bare.push(optimum, 0));
-    bare.mipsolver->mipdata_->numRestarts = 1;
-    bare.owner->drain();
+// The drain publishes `numRestarts` before it takes the queue, so this is
+// the whole of the epoch rule; a restart is what moves the epoch, and the
+// test does not write HiGHS's counter to fake one.
+TEST_CASE("long-lived: publishing a later epoch drops the older epoch's entries", "[long-lived]") {
+    heuristics::SolutionQueue queue;
+    const std::vector<double> x{1.0, 0.0};
+    const HighsObjective objective{.value = 1.0, .magnitude = 1.0};
+    auto push_from_producer = [&](int epoch) {
+        bool queued = false;
+        std::thread producer([&] { queued = queue.push(epoch, kSolutionSourceFJ, objective, x); });
+        producer.join();
+        return queued;
+    };
+    const double inf = std::numeric_limits<double>::infinity();
 
-    REQUIRE(bare.owner->dropped() == 1);
-    REQUIRE(bare.owner->submitted() == 0);
-    REQUIRE(bare.mipsolver->mipdata_->incumbent.empty());
-    // Published at epoch 1, so the queue refuses epoch 0 outright.
-    REQUIRE_FALSE(bare.push(optimum, 0));
+    REQUIRE(push_from_producer(0));
+    REQUIRE(push_from_producer(0));
+    REQUIRE(queue.publish(1, inf, false) == 2);
+    REQUIRE_FALSE(push_from_producer(0));
+    REQUIRE(push_from_producer(1));
+
+    std::vector<heuristics::SolutionQueue::Entry> taken;
+    queue.take(taken);
+    REQUIRE(taken.size() == 1);
+    REQUIRE(taken.front().epoch == 1);
 }
 
 TEST_CASE("long-lived: a non-improving entry reaches trySolution only for the solution callback",

@@ -113,10 +113,11 @@ public:
     // `stop`.
     void rethrow();
 
-    // Take the queue and hand HiGHS, best first, every entry of the
-    // current epoch that may still improve its bound (all of them while
-    // the MIP solution callback sees every `trySolution`), each under its
-    // own source tag; then republish the bound.  Solving thread.
+    // Publish the current epoch (dropping older entries), take the queue
+    // and hand HiGHS, best first, every entry that may still improve its
+    // bound (all of them while the MIP solution callback sees every
+    // `trySolution`), each under its own source tag; then republish the
+    // bound.  Solving thread.
     void drain();
 
     // Producer side, any thread.
@@ -163,6 +164,11 @@ private:
 // `mipdata` and no `model_`.  It belongs to one epoch: a point it queues
 // after a restart is in the old space and is dropped at the drain, so a
 // producer that outlives a restart needs a new sink.
+//
+// Its `[HeurSol]` line goes out on the producer's thread while B&B logs on
+// the solving thread; `HighsSink::trace_offer` says why the line still
+// arrives whole, and a user log callback already sees concurrent calls
+// from a dispatch's workers.
 class LongLivedSink final : public HighsSink {
 public:
     LongLivedSink(HighsMipSolver& mipsolver, LongLivedOwner& owner, int source);

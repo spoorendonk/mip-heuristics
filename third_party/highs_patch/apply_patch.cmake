@@ -227,7 +227,9 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # built row moved rather than copied.
 #
 # Version 49 adds `mip_heuristic_long_lived` (#332): a bool record, default
-# false, and Patch E's long-lived owner, drain and stop sites.
+# false, and Patch E's long-lived owner, drain and stop sites, the B&B
+# loop's exit when a drain empties the node queue, and the user-solution
+# callback's post-drain objective.
 set(PATCH_VERSION "49")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
@@ -2005,6 +2007,14 @@ if(_ll_found EQUAL -1)
       "  HighsMipWorker& master_worker = mipdata_->workers[0];\n\nrestart:\n"
       "  HighsMipWorker& master_worker = mipdata_->workers[0];\n  heuristics::LongLived long_lived(*this);  // mip-heuristics (#332)\n\nrestart:\n"
       LL_CPP "${LL_CPP}")
+    # The drain at the B&B loop's poll can prune every open node; the root
+    # pass then pops without testing the queue again (`popBestBoundNode` on
+    # an empty queue reads `nodes[-1]`).  No worker holds a node at the loop
+    # top, so an empty queue there is the loop's own exit.
+    string(REPLACE
+      "          solution_objective_, kExternalMipSolutionQueryOriginBeforeDive);\n"
+      "          solution_objective_, kExternalMipSolutionQueryOriginBeforeDive);\n    // mip-heuristics (#332): the drain may have pruned every open node.\n    if (mipdata_->nodequeue.empty()) break;\n"
+      LL_CPP "${LL_CPP}")
     string(REPLACE
       "void HighsMipSolver::cleanupSolve() {\n"
       "void HighsMipSolver::cleanupSolve() {\n  heuristics::stop_long_lived(*this);  // mip-heuristics (#332)\n"
@@ -2017,6 +2027,12 @@ if(_ll_found EQUAL -1)
       "    const ExternalMipSolutionQueryOrigin external_solution_query_origin) {\n  assert(!mipsolver.submip);\n"
       "    const ExternalMipSolutionQueryOrigin external_solution_query_origin) {\n  assert(!mipsolver.submip);\n  heuristics::drain_long_lived(mipsolver);  // mip-heuristics (#332)\n"
       LL_DATA "${LL_DATA}")
+    # Every caller passes `solution_objective_`, read before the drain could
+    # improve it; the user-solution callback reads it after.
+    string(REPLACE
+      "  if (use_callback) {\n    setCallbackDataOut(mipsolver_objective_value);\n"
+      "  if (use_callback) {\n    // mip-heuristics (#332): after the drain, which may have improved it.\n    setCallbackDataOut(mipsolver.long_lived_ != nullptr\n                           ? mipsolver.solution_objective_\n                           : mipsolver_objective_value);\n"
+      LL_DATA "${LL_DATA}")
 
     foreach(_ll_check
             "LL_H|class LongLivedOwner;"
@@ -2024,8 +2040,10 @@ if(_ll_found EQUAL -1)
             "LL_CPP|#include \"long_lived.h\""
             "LL_CPP|heuristics::LongLived long_lived(*this)"
             "LL_CPP|heuristics::stop_long_lived(*this)"
+            "LL_CPP|the drain may have pruned every open node"
             "LL_DATA|#include \"long_lived.h\""
-            "LL_DATA|heuristics::drain_long_lived(mipsolver)")
+            "LL_DATA|heuristics::drain_long_lived(mipsolver)"
+            "LL_DATA|? mipsolver.solution_objective_")
         string(REGEX REPLACE "^([^|]+)\\|.*$" "\\1" _ll_var "${_ll_check}")
         string(REGEX REPLACE "^[^|]+\\|(.*)$" "\\1" _ll_text "${_ll_check}")
         string(FIND "${${_ll_var}}" "${_ll_text}" _ll_at)
