@@ -509,8 +509,12 @@ TEST_CASE("long-lived pool: every drain of a solve leaves HiGHS's incumbent the 
         owner = &o;
     });
 
+    // Recorded in the callback and asserted after `run`: a throw from the
+    // callback would unwind through HiGHS.
     int checked = 0;
-    int highs_found = 0;
+    int mismatched = 0;
+    bool heuristic_led = false;
+    int highs_after_heuristic = 0;
     std::vector<std::string> lines;
     std::function<void(int, const std::string&)> on_callback = [&](int callback_type,
                                                                    const std::string& message) {
@@ -525,11 +529,16 @@ TEST_CASE("long-lived pool: every drain of a solve leaves HiGHS's incumbent the 
         const std::vector<double>& incumbent = solver->mipdata_->incumbent;
         std::vector<double> best;
         Rng rng(0);
-        REQUIRE(owner->restart_source(SolutionPool::RestartPolicy::kBestOnly)(rng, best));
-        REQUIRE(pool_objective(*solver, best) == Catch::Approx(pool_objective(*solver, incumbent)));
+        const bool served =
+            owner->restart_source(SolutionPool::RestartPolicy::kBestOnly)(rng, best);
+        mismatched +=
+            static_cast<int>(!served || pool_objective(*solver, best) !=
+                                            Catch::Approx(pool_objective(*solver, incumbent)));
         std::vector<SolutionPool::EntryRef> members;
         owner->pool()->entry_refs(members);
-        highs_found += static_cast<int>(members.front().source == kSolutionSourceHeuristic);
+        const bool highs_leads = members.front().source == kSolutionSourceHeuristic;
+        highs_after_heuristic += static_cast<int>(highs_leads && heuristic_led);
+        heuristic_led = heuristic_led || !highs_leads;
         ++checked;
     };
     auto trampoline = [](int callback_type, const std::string& message,
@@ -554,8 +563,11 @@ TEST_CASE("long-lived pool: every drain of a solve leaves HiGHS's incumbent the 
     REQUIRE(h.run() == HighsStatus::kOk);
 
     REQUIRE(checked > 0);
-    // HiGHS improved on the chain at least once, and that point led the pool.
-    REQUIRE(highs_found > 0);
+    REQUIRE(mismatched == 0);
+    // A heuristic's point led the pool at one drain and HiGHS's at a later
+    // one: B&B improved on the chain, and that point reached the pool.
+    REQUIRE(heuristic_led);
+    REQUIRE(highs_after_heuristic > 0);
     // The final line lists the members best first: the chain's seeding left
     // at least one of its own heuristics' points.
     const auto line = std::ranges::find_if(

@@ -94,9 +94,10 @@ private:
 // presolved space, so the first call after one replaces the pool with an
 // empty one over the new columns.  A producer still holding the old pool
 // keeps it alive and offers into it harmlessly; its queued points are
-// dropped at the drain.  Within an epoch the pool holds every new HiGHS
-// incumbent, whatever found it (`drain`), and the chain's final pool
-// (`seed`).
+// dropped at the drain.  Within an epoch the pool holds HiGHS's latest
+// incumbent at each drain where the bound moved, whatever found it
+// (`drain`; incumbents found between two drains reach it as the last), and
+// the chain's final pool (`seed`).
 //
 // No producer calls `terminatorTerminated()`: it writes
 // (`ExecutionContext::terminator`, heuristic_context.h).  The solving
@@ -139,13 +140,17 @@ public:
     // bound.  Solving thread.
     void drain();
 
-    // The current epoch's shared pool, for a `LongLivedSink`.  Solving
-    // thread.
+    // The current epoch's shared pool, for a `LongLivedSink`.  A restart's
+    // fresh pool is fed the incumbent when it is swapped in, so it is never
+    // empty while HiGHS has one.  Solving thread.
     [[nodiscard]] const std::shared_ptr<SolutionPool>& pool();
 
     // A `RestartSource` over the current epoch's pool, by `policy`
     // (`SolutionPool::get_restart`): the best member, or a diverse one.
-    // Built on the solving thread; callable from any thread.
+    // Built on the solving thread; callable from any thread.  Bound to the
+    // epoch it was built in: after a restart it still serves that epoch's
+    // points, in the old presolved space, so a producer builds a new one
+    // with its new sink.
     [[nodiscard]] RestartSource restart_source(SolutionPool::RestartPolicy policy);
 
     // Copy the chain's final pool into the shared one, each entry under its

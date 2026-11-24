@@ -150,6 +150,11 @@ void LongLivedOwner::sync_epoch() {
     pool_ = make_solution_pool(mipsolver_.model_->integrality_);
     pool_epoch_ = epoch;
     fed_bound_ = std::numeric_limits<double>::infinity();
+    // The fresh pool holds the incumbent from the start, as the first
+    // epoch's does from the constructor: a sink built over an empty one
+    // would count every offer as an improvement, and a restart source would
+    // find no best member.
+    feed_incumbent(kSolutionSourceHeuristic);
 }
 
 void LongLivedOwner::feed_incumbent(int origin) {

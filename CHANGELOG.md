@@ -15,8 +15,8 @@ linked from each entry.
   long-lived yet, so an option-on run finds what a default run does; a
   default run allocates nothing and starts no thread. The owner also keeps
   one solution pool per epoch for its producers (#333): seeded from the
-  presolve chain's final pool, and given every new HiGHS incumbent at the
-  next drain.
+  presolve chain's final pool, and given HiGHS's latest incumbent at each
+  drain where the bound moved.
 - **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282, #283): in a
   `MIP_HEURISTICS_CUDA` build, an option-on run races a batch of GPU
   FeasibilityJump climbers, one per streaming multiprocessor, against FJ's
