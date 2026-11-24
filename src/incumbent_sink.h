@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <vector>
@@ -44,13 +45,19 @@ struct HighsObjective {
 // on the solving thread, or under a lock that serialises `trySolution`.
 [[nodiscard]] double highs_bound(const HighsMipSolver& mipsolver);
 
+// The objective a pool inside a HiGHS solve ranks `x` by: `offset_ + c·x`
+// over the presolved model, the `ProblemView`'s minimisation form.  Reads
+// `model_`: on the solving thread.
+[[nodiscard]] double pool_objective(const HighsMipSolver& mipsolver, const std::vector<double>& x);
+
 // Whether the MIP solution callback sees every `trySolution` that is
 // feasible, improving or not, so that no call may be skipped.
 [[nodiscard]] bool callback_sees_all(const HighsMipSolver& mipsolver);
 
-// What every `SolutionSink` inside a HiGHS solve shares: the pool seeded
-// from the incumbent, the source tag's `[HeurSol]` dispatch context, and the
-// trace line itself.  Where an accepted solution goes is the subclass's:
+// What every `SolutionSink` inside a HiGHS solve shares: a pool seeded from
+// the incumbent (or one its owner keeps, #333), the source tag's `[HeurSol]`
+// dispatch context, and the trace line itself.  Where an accepted solution
+// goes is the subclass's:
 // `IncumbentSink` submits it to HiGHS at once, `LongLivedSink`
 // (long_lived_owner.h) queues it for the solving thread.
 class HighsSink : public SolutionSink {
@@ -68,6 +75,9 @@ protected:
     // says otherwise.  On the solving thread, with no worker running: it
     // reads the live `mipdata->incumbent`.
     HighsSink(HighsMipSolver& mipsolver, int source);
+    // Over `pool`, never null, which its owner keeps current and seeds; a
+    // dispatch opens as above.
+    HighsSink(HighsMipSolver& mipsolver, std::shared_ptr<SolutionPool> pool, int source);
 
     // Take the next process-global dispatch id, remember the heuristic name
     // the tag maps to, stamp the dispatch's start on the solver clock, and

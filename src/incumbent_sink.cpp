@@ -80,6 +80,15 @@ double highs_bound(const HighsMipSolver& mipsolver) {
     return mipdata.incumbent.empty() ? kHighsInf : mipdata.upper_bound;
 }
 
+double pool_objective(const HighsMipSolver& mipsolver, const std::vector<double>& x) {
+    const HighsLp& model = *mipsolver.model_;
+    double obj = model.offset_;
+    for (HighsInt j = 0; j < model.num_col_; ++j) {
+        obj += model.col_cost_[j] * x[j];
+    }
+    return obj;
+}
+
 bool callback_sees_all(const HighsMipSolver& mipsolver) {
     return !mipsolver.submip && mipsolver.callback_->user_callback &&
            mipsolver.callback_->active[kCallbackMipSolution] != 0;
@@ -98,18 +107,19 @@ HighsSink::HighsSink(HighsMipSolver& mipsolver, int source)
     // workers read the dispatch snapshot instead (`ProblemView::incumbent`,
     // issue #98).  Tagged with the generic kSolutionSourceHeuristic so
     // nothing downstream misattributes it.
-    const HighsLp* model = mipsolver.model_;
     const std::vector<double>& incumbent = mipsolver.mipdata_->incumbent;
     if (!incumbent.empty()) {
-        double obj = model->offset_;
-        for (HighsInt j = 0; j < model->num_col_; ++j) {
-            obj += model->col_cost_[j] * incumbent[j];
-        }
-        static_cast<void>(pool_.try_add(obj, incumbent, kSolutionSourceHeuristic));
+        static_cast<void>(pool_->try_add(pool_objective(mipsolver, incumbent), incumbent,
+                                         kSolutionSourceHeuristic));
     }
 
     // Constructing a sink opens a dispatch: `fpr_lp` builds one per dive
     // and never calls `set_source`, so this is that path's only boundary.
+    begin_dispatch(source);
+}
+
+HighsSink::HighsSink(HighsMipSolver& mipsolver, std::shared_ptr<SolutionPool> pool, int source)
+    : SolutionSink(std::move(pool), source), mipsolver_(mipsolver) {
     begin_dispatch(source);
 }
 

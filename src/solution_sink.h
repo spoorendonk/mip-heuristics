@@ -7,7 +7,14 @@
 
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <vector>
+
+// A `kPoolCapacity` pool over columns of `integrality`
+// (`*ProblemView::integrality`), the mask diversity-aware admission measures
+// Hamming distance on.
+[[nodiscard]] std::shared_ptr<SolutionPool> make_solution_pool(
+    const std::vector<HighsVarType>& integrality);
 
 // The one place a heuristic worker hands a solution back.
 //
@@ -15,18 +22,22 @@
 // (#170): the pool ranks lower as better, and for a maximisation model
 // every objective here is the negated original one.
 //
-// Owns the shared `SolutionPool` and the tag its entries are attributed
-// with, and counts what the pool accepted.  What happens to an accepted
+// Holds the `SolutionPool` its workers share and the tag its entries are
+// attributed with, and counts what the pool accepted.  The pool is its own
+// unless it was handed one: the sinks of long-lived heuristics running at
+// once share their owner's pool, each offering under its own tag (#333),
+// which the pool stores per entry.  What happens to an accepted
 // solution beyond the pool is `on_accept`'s, which does nothing here: the
 // HiGHS adapter (`IncumbentSink`) submits it to the solver there, and a
 // caller running the workers on a model it owns (#170) overrides it to
 // take the solutions wherever it wants them.
 class SolutionSink {
 public:
-    // A pool over columns of `integrality` (`*ProblemView::integrality`),
-    // the mask diversity-aware admission measures Hamming distance on.
-    // `source` tags everything offered.
+    // A pool of its own, `make_solution_pool(integrality)`.  `source` tags
+    // everything offered.
     SolutionSink(const std::vector<HighsVarType>& integrality, int source);
+    // Over `pool`, never null, which other sinks may share.
+    SolutionSink(std::shared_ptr<SolutionPool> pool, int source);
     virtual ~SolutionSink() = default;
 
     SolutionSink(const SolutionSink&) = delete;
@@ -121,18 +132,18 @@ public:
     // thread-safe (the pool takes its own lock).
     bool get_restart(Rng& rng, std::vector<double>& out,
                      SolutionPool::RestartPolicy policy = SolutionPool::RestartPolicy::kMixed) {
-        return pool_.get_restart(rng, out, policy);
+        return pool_->get_restart(rng, out, policy);
     }
-    bool copy_best(std::vector<double>& out) { return pool_.copy_best(out); }
+    bool copy_best(std::vector<double>& out) { return pool_->copy_best(out); }
     // The pool's best by pointer (`SolutionPool::best_ref`).
-    [[nodiscard]] SolutionPool::SolutionPtr best_ref() { return pool_.best_ref(); }
+    [[nodiscard]] SolutionPool::SolutionPtr best_ref() { return pool_->best_ref(); }
     // The pool's entries by pointer, best first (`SolutionPool::entry_refs`).
-    void entry_refs(std::vector<SolutionPool::EntryRef>& out) { pool_.entry_refs(out); }
+    void entry_refs(std::vector<SolutionPool::EntryRef>& out) { pool_->entry_refs(out); }
 
     // The pool's best objective, or `kHighsInf` while it holds nothing.
     // Thread-safe (the pool lock), so poll it at a heuristic's own polling
     // cadence, not per step.
-    [[nodiscard]] double best_objective() { return pool_.snapshot().best_objective; }
+    [[nodiscard]] double best_objective() { return pool_->snapshot().best_objective; }
 
 protected:
     // Called once per accepted offer, on the offering worker's thread,
@@ -142,7 +153,8 @@ protected:
     virtual void on_accept(double objective, const std::vector<double>& solution, int source,
                            const WorkerTrace& trace, size_t effort_at);
 
-    SolutionPool pool_;
+    // Never null.
+    std::shared_ptr<SolutionPool> pool_;
     // Tag for everything offered.  Written only between parallel regions
     // (`IncumbentSink::set_source`).
     int source_;

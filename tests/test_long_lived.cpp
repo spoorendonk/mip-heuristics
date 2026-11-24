@@ -6,6 +6,8 @@
 #include "mip/HighsMipSolverData.h"
 #include "test_common.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <functional>
+#include <latch>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -386,4 +389,178 @@ TEST_CASE("long-lived: a non-improving entry reaches trySolution only for the so
         REQUIRE(highs_bound(*bare.mipsolver) == Catch::Approx(optimum.objective));
         REQUIRE(bare.push(worse, 0));
     }
+}
+
+TEST_CASE("long-lived pool: two sinks over one pool keep their own tags while offering at once",
+          "[long-lived]") {
+    BareOwner bare("egout.mps", false);
+    const HighsLp& model = *bare.mipsolver->model_;
+    HighsInt marker = -1;
+    for (HighsInt j = 0; j < model.num_col_ && marker < 0; ++j) {
+        if (model.integrality_[j] != HighsVarType::kContinuous) {
+            marker = j;
+        }
+    }
+    REQUIRE(marker >= 0);
+
+    // Each sink offers `kPerSink` points told apart by the integer value
+    // at `marker`: no two are twins, and together they fill the pool, so
+    // every offer is admitted whatever order the two threads interleave.
+    constexpr int kPerSink = kPoolCapacity / 2;
+    const std::array<int, 2> tags{kSolutionSourceFJ, kSolutionSourceLocalMIP};
+    auto tag_of = [&](const std::vector<double>& x) {
+        return tags[static_cast<size_t>(x[marker] - 1.0) / kPerSink];
+    };
+    std::array<std::unique_ptr<LongLivedSink>, 2> sinks;
+    for (size_t s = 0; s < 2; ++s) {
+        sinks[s] = std::make_unique<LongLivedSink>(*bare.mipsolver, *bare.owner, tags[s]);
+    }
+    std::latch start(2);
+    std::array<int, 2> accepted{0, 0};
+    std::vector<std::thread> producers;
+    producers.reserve(2);
+    for (size_t s = 0; s < 2; ++s) {
+        producers.emplace_back([&, s] {
+            std::vector<double> x(model.num_col_, 0.0);
+            start.arrive_and_wait();
+            for (int i = 0; i < kPerSink; ++i) {
+                const int id = (static_cast<int>(s) * kPerSink) + i;
+                x[marker] = id + 1.0;
+                accepted[s] += static_cast<int>(
+                    sinks[s]->offer(100.0 - id, x, WorkerTrace{.worker = 0}, 0).accepted);
+            }
+        });
+    }
+    for (std::thread& producer : producers) {
+        producer.join();
+    }
+    REQUIRE(accepted == std::array<int, 2>{kPerSink, kPerSink});
+
+    std::vector<SolutionPool::EntryRef> members;
+    bare.owner->pool()->entry_refs(members);
+    REQUIRE(members.size() == static_cast<size_t>(kPoolCapacity));
+    for (const SolutionPool::EntryRef& member : members) {
+        REQUIRE(member.source == tag_of(*member.solution));
+    }
+    // And each accepted point went on to the queue under the same tag.
+    std::vector<heuristics::SolutionQueue::Entry> queued;
+    bare.owner->queue().take(queued);
+    REQUIRE(queued.size() == static_cast<size_t>(kPoolCapacity));
+    for (const heuristics::SolutionQueue::Entry& entry : queued) {
+        REQUIRE(entry.source == tag_of(entry.x));
+    }
+}
+
+TEST_CASE("long-lived pool: a B&B incumbent after the chain reaches the pool at the next drain",
+          "[long-lived]") {
+    const char* inst = "egout.mps";
+    const Optimum optimum = solve_for_optimum(inst);
+    const Optimum worse = first_incumbent(inst, optimum.objective);
+    BareOwner bare(inst, false);
+    HighsMipSolver& mipsolver = *bare.mipsolver;
+
+    // The chain's sink, as `run_sequential` holds it when it returns: it
+    // found `worse`, which HiGHS took as its incumbent.
+    {
+        IncumbentSink chain(mipsolver, kSolutionSourceFPR);
+        REQUIRE(
+            chain.offer(pool_objective(mipsolver, worse.x), worse.x, WorkerTrace{.worker = 0}, 0)
+                .accepted);
+        bare.owner->seed(chain);
+    }
+    std::vector<SolutionPool::EntryRef> members;
+    bare.owner->pool()->entry_refs(members);
+    REQUIRE(members.size() == 1);
+    REQUIRE(members.front().source == kSolutionSourceFPR);
+
+    // B&B then finds the optimum, on the solving thread, as a node does.
+    mipsolver.mipdata_->trySolution(optimum.x, kSolutionSourceBranching);
+    REQUIRE(highs_bound(mipsolver) == Catch::Approx(optimum.objective));
+    bare.owner->pool()->entry_refs(members);
+    REQUIRE(members.size() == 1);
+
+    bare.owner->drain();
+    bare.owner->pool()->entry_refs(members);
+    REQUIRE(members.size() == 2);
+    REQUIRE(members.front().source == kSolutionSourceHeuristic);
+    REQUIRE(*members.front().solution == mipsolver.mipdata_->incumbent);
+    REQUIRE(members.back().source == kSolutionSourceFPR);
+
+    // The restart source hands it out, and a producer thread may call it.
+    const RestartSource source = bare.owner->restart_source(SolutionPool::RestartPolicy::kBestOnly);
+    std::vector<double> restart;
+    bool served = false;
+    std::thread producer([&] {
+        Rng rng(1);
+        served = source(rng, restart);
+    });
+    producer.join();
+    REQUIRE(served);
+    REQUIRE(restart == mipsolver.mipdata_->incumbent);
+}
+
+TEST_CASE("long-lived pool: every drain of a solve leaves HiGHS's incumbent the pool's best",
+          "[long-lived]") {
+    const char* inst = "bell5.mps";
+    HighsMipSolver* solver = nullptr;
+    LongLivedOwner* owner = nullptr;
+    HookGuard guard([&](HighsMipSolver& mipsolver, LongLivedOwner& o) {
+        solver = &mipsolver;
+        owner = &o;
+    });
+
+    int checked = 0;
+    int highs_found = 0;
+    std::vector<std::string> lines;
+    std::function<void(int, const std::string&)> on_callback = [&](int callback_type,
+                                                                   const std::string& message) {
+        if (callback_type == kCallbackLogging) {
+            lines.push_back(message);
+            return;
+        }
+        if (callback_type != kCallbackMipUserSolution || solver->mipdata_->incumbent.empty()) {
+            return;
+        }
+        // The callback runs right after the drain, on the solving thread.
+        const std::vector<double>& incumbent = solver->mipdata_->incumbent;
+        std::vector<double> best;
+        Rng rng(0);
+        REQUIRE(owner->restart_source(SolutionPool::RestartPolicy::kBestOnly)(rng, best));
+        REQUIRE(pool_objective(*solver, best) == Catch::Approx(pool_objective(*solver, incumbent)));
+        std::vector<SolutionPool::EntryRef> members;
+        owner->pool()->entry_refs(members);
+        highs_found += static_cast<int>(members.front().source == kSolutionSourceHeuristic);
+        ++checked;
+    };
+    auto trampoline = [](int callback_type, const std::string& message,
+                         const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                         void* data) {
+        (*static_cast<decltype(on_callback)*>(data))(callback_type, message);
+    };
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    require_option(h, "threads", 1);
+    require_option(h, "random_seed", 0);
+    require_option(h, "presolve", std::string("off"));
+    require_option(h, "mip_allow_restart", false);
+    require_option(h, "log_dev_level", 3);
+    require_option(h, "mip_heuristic_long_lived", true);
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(trampoline), &on_callback) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackMipUserSolution) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kOk);
+
+    REQUIRE(checked > 0);
+    // HiGHS improved on the chain at least once, and that point led the pool.
+    REQUIRE(highs_found > 0);
+    // The final line lists the members best first: the chain's seeding left
+    // at least one of its own heuristics' points.
+    const auto line = std::ranges::find_if(
+        lines, [](const std::string& l) { return l.contains("[LongLivedPool] "); });
+    REQUIRE(line != lines.end());
+    const std::string origins = line->substr(line->find("origins=") + 8);
+    REQUIRE(origins.find_first_of("JAM") != std::string::npos);
 }

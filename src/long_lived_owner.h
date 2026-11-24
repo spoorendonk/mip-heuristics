@@ -13,13 +13,16 @@
 // solving thread.  Everything that reaches HiGHS goes through `drain`.
 
 #include "deadline.h"
+#include "heuristic_context.h"
 #include "incumbent_sink.h"
+#include "solution_pool.h"
 
 #include <atomic>
 #include <cstddef>
 #include <exception>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -81,10 +84,19 @@ private:
 };
 
 // What `LongLived` (long_lived.h) allocates when the option is on: the
-// queue, the producers' stop flag, and the threads it joins at
-// `cleanupSolve`.  Constructed, started, drained and stopped on the
-// solving thread; producers see only `stop_requested`, `past_deadline`
-// and the queue.
+// queue, the solution pool every producer shares (#333), the producers'
+// stop flag, and the threads it joins at `cleanupSolve`.  Constructed,
+// started, drained and stopped on the solving thread; producers see only
+// `stop_requested`, `past_deadline`, the queue and the pool, the last
+// through the sinks and restart sources built for them.
+//
+// The pool belongs to one epoch, as a sink does: a restart changes the
+// presolved space, so the first call after one replaces the pool with an
+// empty one over the new columns.  A producer still holding the old pool
+// keeps it alive and offers into it harmlessly; its queued points are
+// dropped at the drain.  Within an epoch the pool holds every new HiGHS
+// incumbent, whatever found it (`drain`), and the chain's final pool
+// (`seed`).
 //
 // No producer calls `terminatorTerminated()`: it writes
 // (`ExecutionContext::terminator`, heuristic_context.h).  The solving
@@ -113,12 +125,38 @@ public:
     // `stop`.
     void rethrow();
 
-    // Publish the current epoch (dropping older entries), take the queue
-    // and hand HiGHS, best first, every entry that may still improve its
-    // bound (all of them while the MIP solution callback sees every
-    // `trySolution`), each under its own source tag; then republish the
+    // Admit HiGHS's incumbent to the pool if its bound has fallen since the
+    // pool last saw it.  HiGHS does not record which of its components
+    // found an incumbent, so B&B, its own heuristics, sub-MIPs and
+    // `fpr_lp`'s dives share one origin, `kSolutionSourceHeuristic`, the
+    // generic tag `HighsSink` already seeds the incumbent with.  Then publish the current epoch
+    // (dropping older entries), take the queue and hand HiGHS, best first,
+    // every entry that may still improve its bound (all of them while the
+    // MIP solution callback sees every `trySolution`), each under its own
+    // source tag.  Then admit the incumbent again if an entry moved it,
+    // under that entry's tag: it is in the pool already unless evicted
+    // since, and the twin rule keeps a second copy out.  Last, republish the
     // bound.  Solving thread.
     void drain();
+
+    // The current epoch's shared pool, for a `LongLivedSink`.  Solving
+    // thread.
+    [[nodiscard]] const std::shared_ptr<SolutionPool>& pool();
+
+    // A `RestartSource` over the current epoch's pool, by `policy`
+    // (`SolutionPool::get_restart`): the best member, or a diverse one.
+    // Built on the solving thread; callable from any thread.
+    [[nodiscard]] RestartSource restart_source(SolutionPool::RestartPolicy policy);
+
+    // Copy the chain's final pool into the shared one, each entry under its
+    // own tag, then admit the incumbent.  On the solving thread, when the
+    // presolve chain returns (`run_sequential`).
+    void seed(SolutionSink& chain);
+
+    // One `[LongLivedPool]` dev-verbose line: the epoch, the members and
+    // their origins best first, as HiGHS's display-line source codes.
+    // Solving thread.
+    void log_pool();
 
     // Producer side, any thread.
     [[nodiscard]] bool stop_requested() const { return stop_.load(std::memory_order_acquire); }
@@ -140,9 +178,22 @@ public:
 
 private:
     void publish();
+    // Replace the pool if HiGHS has restarted since it was built.
+    void sync_epoch();
+    // Admit `mipdata->incumbent` under `origin` if HiGHS's bound is below
+    // the one last fed.
+    void feed_incumbent(int origin);
 
     HighsMipSolver& mipsolver_;
     SolutionQueue queue_;
+    // Read and replaced on the solving thread only; producers hold copies.
+    std::shared_ptr<SolutionPool> pool_;
+    // `numRestarts` of the space `pool_` is in.
+    int pool_epoch_;
+    // `highs_bound` when the incumbent was last fed, +inf in a new epoch.
+    double fed_bound_ = std::numeric_limits<double>::infinity();
+    // `seed`'s and `log_pool`'s scratch.
+    std::vector<SolutionPool::EntryRef> refs_;
     // `time_limit` on the solver's clock, `const`-readable from any thread.
     Deadline deadline_;
     std::atomic<bool> stop_{false};
@@ -159,11 +210,14 @@ private:
 // the solution for the solving thread instead of calling `trySolution`,
 // and traces it as `IncumbentSink` does (`HighsSink::trace_offer`).
 //
-// Built on the solving thread, which is where it reads the incumbent (the
-// pool seed), the objective and the epoch; after that it reads no
-// `mipdata` and no `model_`.  It belongs to one epoch: a point it queues
-// after a restart is in the old space and is dropped at the drain, so a
-// producer that outlives a restart needs a new sink.
+// It offers into the owner's shared pool under its own tag, so sinks of
+// heuristics running at once keep their attributions apart (#333).
+//
+// Built on the solving thread, which is where it takes the pool and reads
+// the objective and the epoch; after that it reads no `mipdata` and no
+// `model_`.  It belongs to one epoch: a point it queues after a restart is
+// in the old space and is dropped at the drain, so a producer that
+// outlives a restart needs a new sink.
 //
 // Its `[HeurSol]` line goes out on the producer's thread while B&B logs on
 // the solving thread; `HighsSink::trace_offer` says why the line still

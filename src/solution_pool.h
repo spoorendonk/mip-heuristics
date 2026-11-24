@@ -138,13 +138,22 @@ public:
     //
     // Without a mask, rule 0 and rule 2 do not apply.
     //
+    // `Admission::kAlways` is for a new incumbent of the solve (#333): it is
+    // never refused for want of diversity, so rule 2 becomes "replace the
+    // worst entry", which is never the best while the pool holds two.  Rule
+    // 0 still applies: a twin the point does not beat by the margin already
+    // holds its integer assignment, and a second copy would only crowd the
+    // pool.
+    //
     // The scan for twins, or for rule 2 the full Hamming scan, runs outside
     // the lock, on a pointer snapshot of the entries, and its verdict is applied only if the pool
     // has not changed since (`generation_`); otherwise the decision is taken
     // again against the new entries, rescanning only the ones the earlier
     // scan has not seen.  So each offer is decided exactly as one hold of
     // the lock over the whole decision would decide it.
-    [[nodiscard]] AddResult try_add(double obj, SolutionPtr sol, int source);
+    enum class Admission { kPolicy, kAlways };
+    [[nodiscard]] AddResult try_add(double obj, SolutionPtr sol, int source,
+                                    Admission admission = Admission::kPolicy);
 
     // The same, for a caller holding the vector: it is copied into a
     // `shared_ptr` before the lock is taken, offered or not.

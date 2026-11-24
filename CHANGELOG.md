@@ -13,7 +13,10 @@ linked from each entry.
   solutions, and only HiGHS's solving thread installs them, at the
   external-solution poll points and once more at the end. No heuristic runs
   long-lived yet, so an option-on run finds what a default run does; a
-  default run allocates nothing and starts no thread.
+  default run allocates nothing and starts no thread. The owner also keeps
+  one solution pool per epoch for its producers (#333): seeded from the
+  presolve chain's final pool, and given every new HiGHS incumbent at the
+  next drain.
 - **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282, #283): in a
   `MIP_HEURISTICS_CUDA` build, an option-on run races a batch of GPU
   FeasibilityJump climbers, one per streaming multiprocessor, against FJ's

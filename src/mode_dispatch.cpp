@@ -10,6 +10,7 @@
 #include "incumbent_sink.h"
 #include "io/HighsIO.h"
 #include "local_mip.h"
+#include "long_lived_owner.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 #include "recombine.h"
@@ -355,6 +356,10 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         });
     }
 
+    // Long-lived mode keeps the chain's pool beyond this dispatch (#333).
+    if (mipsolver.long_lived_ != nullptr) {
+        mipsolver.long_lived_->seed(sink);
+    }
     return false;
 }
 

@@ -151,7 +151,9 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, const std::vector<doub
 // lock and the scan's state through helpers.  Not a hot path for the lock's sake: the
 // argument is lock scope, not throughput.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int source) {
+SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int source,
+                                              Admission admission) {
+    const bool always = admission == Admission::kAlways;
     // A non-finite objective or point is refused outright (#174): every
     // decision below orders by objective, and a NaN one would be admitted,
     // ranked and handed to crossover and every later comparison.  Checked
@@ -249,11 +251,11 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
             if (!masked) {
                 if (!full) {
                     insert_sorted();
-                } else if (!dominated) {
+                } else if (!dominated || always) {
                     // Standard path: improves on worst — replace worst.
                     replace(std::ssize(entries_) - 1);
                 }
-            } else if (dominated && !in_band) {
+            } else if (dominated && !in_band && !always) {
                 // Refused without a scan: no path below can admit it.
             } else if (scanned && scanned_generation == generation_) {
                 // The scan describes these very entries: decide.
@@ -281,8 +283,11 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                     }
                 } else if (!full) {
                     insert_sorted();
-                } else if (!dominated) {
-                    replace(std::ssize(entries_) - 1);  // the standard path
+                } else if (!dominated || always) {
+                    // The standard path; for an incumbent, also the one a
+                    // dominated offer takes.  At a capacity of two or more
+                    // the worst entry of a full pool is not the best.
+                    replace(std::ssize(entries_) - 1);
                 } else {
                     // Diversity-aware path: accept if the offer is
                     // sufficiently diverse from every entry.
@@ -305,7 +310,9 @@ SolutionPool::AddResult SolutionPool::try_add(double obj, SolutionPtr sol, int s
                     stale_mask = std::exchange(mask, integer_mask_);
                     mask_changed = true;
                 }
-                diversity_scan = dominated;
+                // An incumbent is never judged on diversity: only its twin
+                // matters.
+                diversity_scan = dominated && !always;
                 scanned_generation = generation_;
                 need_scan = true;
             }
