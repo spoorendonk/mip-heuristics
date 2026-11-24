@@ -7,6 +7,13 @@ linked from each entry.
 
 ### Added
 
+- **`mip_heuristic_long_lived`** (bool, default `false`; #332, part of
+  #311): the skeleton of long-lived mode. With it on, the main MIP's solve
+  keeps an owner from setup to `cleanupSolve` whose threads queue
+  solutions, and only HiGHS's solving thread installs them, at the
+  external-solution poll points and once more at the end. No heuristic runs
+  long-lived yet, so an option-on run finds what a default run does; a
+  default run allocates nothing and starts no thread.
 - **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282, #283): in a
   `MIP_HEURISTICS_CUDA` build, an option-on run races a batch of GPU
   FeasibilityJump climbers, one per streaming multiprocessor, against FJ's

@@ -1393,6 +1393,21 @@ they differ free for FPR to complete.
 
 ---
 
+### `kLongLivedQueueCapacity` — long-lived mode's solution queue size
+
+- **File**: `src/long_lived_owner.h`
+- **Default**: `16`
+- **Meaning**: Most solutions `SolutionQueue` holds between two drains of
+  the solving thread (`mip_heuristic_long_lived`, #332). A drain runs at
+  every external-solution poll point, one before each B&B node batch, so
+  the queue only bridges one batch. When full, a point replaces the worst
+  entry if it ranks better (a NaN objective ranks last), else it is
+  refused, so a producer that outruns the drain loses its worst points.
+- **Suggested range**: 4–64. Smaller loses more of a burst; larger holds
+  more `x` copies, each O(n), under the queue's lock.
+
+---
+
 ### `kImprovementObjMargin` — what counts as moving the pool's best
 
 - **File**: `src/solution_pool.h`

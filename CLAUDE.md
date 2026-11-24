@@ -280,11 +280,11 @@ GPU build (`-DMIP_HEURISTICS_CUDA=ON`, requires `CUDA_HOME`, fails rather than f
 HiGHS v1.16.0 is fetched at build time and patched from `third_party/highs_patch/`. **Bump `PATCH_VERSION` on any change to inserted text and clean-rebuild** (`rm -rf build/_deps/highs-src build/_deps/highs-subbuild build/CMakeCache.txt`, then re-configure); older patch layouts are refused, not upgraded. Two layers:
 
 - **`mip_heuristics_core`** (STATIC): FJ, LocalMIP, ruin-and-repair, recombination, FPR's search, `SolutionPool`/`SolutionSink`, the runner scaffold and the model view (`heuristic_context.h`). It needs no `HighsMipSolver`; `core_boundary` enforces that. A new core file, headers included, goes in the core target's list.
-- **`mip_heuristics`** (OBJECT, injected into `highs`): the adapter — `mode_dispatch`, `IncumbentSink`, `effort_ledger`, `highs_context.h`, FPR's dispatch, `fpr_lp`, Scylla, `ContestedPdlp`.
+- **`mip_heuristics`** (OBJECT, injected into `highs`): the adapter — `mode_dispatch`, `IncumbentSink`, `long_lived`, `effort_ledger`, `highs_context.h`, FPR's dispatch, `fpr_lp`, Scylla, `ContestedPdlp`.
 
 The presolve chain is FJ → FPR → LocalMIP → Scylla → ruin → recombine (`kChain` in `src/mode_dispatch.cpp`), each on continuous parallel workers; `fpr_lp` runs at dive time inside the RENS/RINS LP-iteration envelope. A heuristic runs only if its `mip_heuristic_<name>_effort` is above zero (FJ also needs upstream's `mip_heuristic_run_feasibility_jump`).
 
-Rules no change may break: workers read `problem.incumbent`, never `mipdata->incumbent`; `compute_var_order` and clique-table reads run on the dispatching thread only; `terminated()` is seat-holder-only while `past_deadline()` is safe on any thread; the effort ledger is charged from the dispatching thread only; headers inserted into HiGHS's own sources (`fpr_lp.h`, `mode_dispatch.h`) stay C++11.
+Rules no change may break: workers read `problem.incumbent`, never `mipdata->incumbent`; `compute_var_order` and clique-table reads run on the dispatching thread only; `terminated()` is seat-holder-only while `past_deadline()` is safe on any thread; the effort ledger is charged from the dispatching thread only; once B&B can run, only the solving thread calls `trySolution` or reads `mipdata` or `model_` — a long-lived thread queues through `LongLivedSink` and the drain installs (`long_lived_owner.h`); headers inserted into HiGHS's own sources (`fpr_lp.h`, `mode_dispatch.h`, `long_lived.h`) stay C++11.
 
 **Read the matching doc before changing the code it covers** — its rules bind as this file's do:
 

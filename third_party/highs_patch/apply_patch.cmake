@@ -225,7 +225,10 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 48 lets one FJ model serve many searches (#316): `resetWeights`,
 # `resetSearch` and `setConstraintRhs`, a `const` `addConstraint`, and the
 # built row moved rather than copied.
-set(PATCH_VERSION "48")
+#
+# Version 49 adds `mip_heuristic_long_lived` (#332): a bool record, default
+# false, and Patch E's long-lived owner, drain and stop sites.
+set(PATCH_VERSION "49")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -594,7 +597,8 @@ set(_patch_options
     "mip_heuristic_fj_exchange:bool:false:-:Give the FeasibilityJump presolve workers on cuOpt's exchange lanes (slots 1, 7, 11 and 15) cuOpt's cardinality exchange, a compound move that sets one member of a uniform binary equality row from 1 to 0 and another from 0 to 1 so the row's count is kept"
     "mip_heuristic_scylla_cuopt_pump:bool:false:-:Run the Scylla presolve heuristic's pump as cuOpt's: an L1 distance projection blended with the objective, its weight reset on each improvement, a PDLP tolerance set by how integral the last LP point is, a warm start from the rounding, and fix-and-propagate with repair on every chain. Needs mip_heuristic_scylla_effort above 0"
     "mip_heuristic_fj_gpu:bool:false:-:Race GPU FeasibilityJump climbers against the CPU FeasibilityJump presolve workers. Needs a MIP_HEURISTICS_CUDA build. Any other build warns and runs FeasibilityJump on the CPU only"
-    "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it")
+    "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it"
+    "mip_heuristic_long_lived:bool:false:-:Keep an owner for heuristics that run on threads of their own beside branch and bound for the main MIP's whole solve, whose solutions the solving thread installs at HiGHS's external-solution poll points and once more at the end. No heuristic runs long-lived yet. The default false allocates nothing and starts no thread")
 
 # The upstream record block all four record insertions anchor on, spelled
 # once: four copies of a four-line exact-match string is four chances for
@@ -1966,4 +1970,78 @@ if(_no_reset_found EQUAL -1)
     message(STATUS "Applied no-cudaDeviceReset patch to CupdlpWrapper.cpp")
 else()
     message(STATUS "No-cudaDeviceReset patch already applied to CupdlpWrapper.cpp, skipping")
+endif()
+
+
+# ── Patch E: long-lived mode's owner, drain and stop sites (#332) ──
+# One solve-scoped owner (`heuristics::LongLived`, src/long_lived.h) for the
+# main MIP, from just after the master worker exists to the start of
+# `cleanupSolve`.  Declared before the `restart:` label, which only a
+# backward `goto` reaches, so one owner spans every restart.  The drain goes
+# at the top of `queryExternalSolution`, the one function all seven of
+# HiGHS's external-solution poll points call (all `!submip`, none with the
+# parallel lock held).  `cleanupSolve` stops it first: every exit of `run`
+# after setup goes through it, and its postsolve must see the last drain.
+# In a sub-MIP, or with the option off, the pointer stays null and every
+# call is a null test.
+file(READ "${MIP_DIR}/HighsMipSolver.h" LL_H)
+file(READ "${MIP_DIR}/HighsMipSolver.cpp" LL_CPP)
+file(READ "${MIP_DIR}/HighsMipSolverData.cpp" LL_DATA)
+string(FIND "${LL_CPP}" "heuristics::LongLived" _ll_found)
+if(_ll_found EQUAL -1)
+    string(REPLACE
+      "class HighsMipSolver {\n"
+      "namespace heuristics {\nclass LongLivedOwner;  // mip-heuristics (#332)\n}\n\nclass HighsMipSolver {\n"
+      LL_H "${LL_H}")
+    string(REPLACE
+      "  std::unique_ptr<HighsMipSolverData> mipdata_;\n"
+      "  std::unique_ptr<HighsMipSolverData> mipdata_;\n  // mip-heuristics (#332): the long-lived owner while the main MIP's solve\n  // runs with mip_heuristic_long_lived, else null.\n  heuristics::LongLivedOwner* long_lived_ = nullptr;\n"
+      LL_H "${LL_H}")
+    string(REPLACE
+      "#include \"mode_dispatch.h\"\n"
+      "#include \"long_lived.h\"\n#include \"mode_dispatch.h\"\n"
+      LL_CPP "${LL_CPP}")
+    string(REPLACE
+      "  HighsMipWorker& master_worker = mipdata_->workers[0];\n\nrestart:\n"
+      "  HighsMipWorker& master_worker = mipdata_->workers[0];\n  heuristics::LongLived long_lived(*this);  // mip-heuristics (#332)\n\nrestart:\n"
+      LL_CPP "${LL_CPP}")
+    string(REPLACE
+      "void HighsMipSolver::cleanupSolve() {\n"
+      "void HighsMipSolver::cleanupSolve() {\n  heuristics::stop_long_lived(*this);  // mip-heuristics (#332)\n"
+      LL_CPP "${LL_CPP}")
+    string(REPLACE
+      "#include \"mode_dispatch.h\"\n"
+      "#include \"long_lived.h\"\n#include \"mode_dispatch.h\"\n"
+      LL_DATA "${LL_DATA}")
+    string(REPLACE
+      "    const ExternalMipSolutionQueryOrigin external_solution_query_origin) {\n  assert(!mipsolver.submip);\n"
+      "    const ExternalMipSolutionQueryOrigin external_solution_query_origin) {\n  assert(!mipsolver.submip);\n  heuristics::drain_long_lived(mipsolver);  // mip-heuristics (#332)\n"
+      LL_DATA "${LL_DATA}")
+
+    foreach(_ll_check
+            "LL_H|class LongLivedOwner;"
+            "LL_H|heuristics::LongLivedOwner* long_lived_"
+            "LL_CPP|#include \"long_lived.h\""
+            "LL_CPP|heuristics::LongLived long_lived(*this)"
+            "LL_CPP|heuristics::stop_long_lived(*this)"
+            "LL_DATA|#include \"long_lived.h\""
+            "LL_DATA|heuristics::drain_long_lived(mipsolver)")
+        string(REGEX REPLACE "^([^|]+)\\|.*$" "\\1" _ll_var "${_ll_check}")
+        string(REGEX REPLACE "^[^|]+\\|(.*)$" "\\1" _ll_text "${_ll_check}")
+        string(FIND "${${_ll_var}}" "${_ll_text}" _ll_at)
+        if(_ll_at EQUAL -1)
+            message(FATAL_ERROR
+                "Long-lived patch sanity check failed: '${_ll_text}' not found "
+                "after patching (upstream changed the anchor?). "
+                "Please update Patch E in third_party/highs_patch/apply_patch.cmake. "
+                "${CLEAN_REBUILD}")
+        endif()
+    endforeach()
+
+    file(WRITE "${MIP_DIR}/HighsMipSolver.h" "${LL_H}")
+    file(WRITE "${MIP_DIR}/HighsMipSolver.cpp" "${LL_CPP}")
+    file(WRITE "${MIP_DIR}/HighsMipSolverData.cpp" "${LL_DATA}")
+    message(STATUS "Applied long-lived patch to HighsMipSolver.h/.cpp and HighsMipSolverData.cpp")
+else()
+    message(STATUS "Long-lived patch already applied, skipping")
 endif()

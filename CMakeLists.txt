@@ -174,6 +174,7 @@ add_library(mip_heuristics OBJECT
     src/fpr_lp_refs.cpp
     src/fpr_var_order.cpp
     src/incumbent_sink.cpp
+    src/long_lived.cpp
     src/mode_dispatch.cpp
     src/scylla_worker.cpp
     src/scylla.cpp
@@ -361,6 +362,7 @@ add_executable(mip_heuristics_tests
     tests/test_problem_view.cpp
     tests/test_early_fj.cpp
     tests/test_gpu_fj.cpp
+    tests/test_long_lived.cpp
 )
 # Same guard as `mip_heuristics` above — a test that drops the verdict
 # would model the bug rather than catch it. `-Werror=switch` joins it for

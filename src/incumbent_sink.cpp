@@ -65,7 +65,27 @@ const char* name_for_source(int source) {
 
 }  // namespace
 
-IncumbentSink::IncumbentSink(HighsMipSolver& mipsolver, int source)
+HighsObjective highs_objective(std::span<const double> cost, const std::vector<double>& solution) {
+    HighsCDouble obj = 0;
+    double magnitude = 0.0;
+    for (size_t i = 0; i != cost.size(); ++i) {
+        obj += static_cast<HighsCDouble>(cost[i]) * solution[i];
+        magnitude += std::abs(cost[i] * solution[i]);
+    }
+    return {.value = static_cast<double>(obj), .magnitude = magnitude};
+}
+
+double highs_bound(const HighsMipSolver& mipsolver) {
+    const HighsMipSolverData& mipdata = *mipsolver.mipdata_;
+    return mipdata.incumbent.empty() ? kHighsInf : mipdata.upper_bound;
+}
+
+bool callback_sees_all(const HighsMipSolver& mipsolver) {
+    return !mipsolver.submip && mipsolver.callback_->user_callback &&
+           mipsolver.callback_->active[kCallbackMipSolution] != 0;
+}
+
+HighsSink::HighsSink(HighsMipSolver& mipsolver, int source)
     : SolutionSink(mipsolver.model_->integrality_, source), mipsolver_(mipsolver) {
     // Seed the pool with the current incumbent, straight into the pool
     // rather than through `offer`: it came from HiGHS, so re-submitting it
@@ -74,7 +94,7 @@ IncumbentSink::IncumbentSink(HighsMipSolver& mipsolver, int source)
     // staleness counter for the verdict to feed, and it must not be
     // counted as production by anything.  Reads the live
     // `mipdata->incumbent`, which is legal only because every sink is
-    // constructed on the dispatching thread before any worker starts;
+    // constructed on the solving thread before any worker starts;
     // workers read the dispatch snapshot instead (`ProblemView::incumbent`,
     // issue #98).  Tagged with the generic kSolutionSourceHeuristic so
     // nothing downstream misattributes it.
@@ -93,7 +113,7 @@ IncumbentSink::IncumbentSink(HighsMipSolver& mipsolver, int source)
     begin_dispatch(source);
 }
 
-void IncumbentSink::begin_dispatch(int source) {
+void HighsSink::begin_dispatch(int source) {
     source_ = source;
     dispatch_name_ = name_for_source(source);
     dispatch_id_ = g_next_dispatch_id.fetch_add(1, std::memory_order_relaxed);
@@ -105,43 +125,28 @@ void IncumbentSink::begin_dispatch(int source) {
     // `system_clock`), so `wall_ms` may come out negative; the bench parser
     // accepts the sign rather than dropping the sample.
     dispatch_start_s_ = mipsolver_.timer_.read();
-    // Read here, where no worker runs and `upper_bound` needs no lock.  No
-    // sink outlives a restart (one per `run_sequential`, one per `fpr_lp`
-    // dive), so between here and the last `on_accept` only `trySolution`,
-    // under `highs_mtx_`, moves the bound.
-    callback_sees_all_ = !mipsolver_.submip && mipsolver_.callback_->user_callback &&
-                         mipsolver_.callback_->active[kCallbackMipSolution] != 0;
+    // Read here, where no worker runs.  The callback's registration does
+    // not change during a solve.
+    callback_sees_all_ = callback_sees_all(mipsolver_);
+}
+
+IncumbentSink::IncumbentSink(HighsMipSolver& mipsolver, int source) : HighsSink(mipsolver, source) {
     sync_highs_bound();
 }
 
 void IncumbentSink::sync_highs_bound() {
-    const HighsMipSolverData& mipdata = *mipsolver_.mipdata_;
-    highs_bound_.store(mipdata.incumbent.empty() ? kHighsInf : mipdata.upper_bound,
-                       std::memory_order_relaxed);
+    // No `IncumbentSink` outlives a restart (one per `run_sequential`, one
+    // per `fpr_lp` dive), so between a dispatch boundary and the last
+    // `on_accept` only `trySolution`, under `highs_mtx_`, moves the bound.
+    highs_bound_.store(highs_bound(mipsolver_), std::memory_order_relaxed);
 }
 
 bool IncumbentSink::reaches_highs(const std::vector<double>& solution) const {
     if (callback_sees_all_ || std::cmp_not_equal(solution.size(), mipsolver_.numCol())) {
         return true;
     }
-    // `trySolution`'s own objective, term for term and in the same order:
-    // each product taken in `HighsCDouble`, as HiGHS does since v1.16.0.
-    // Not promised bit for bit, though: HiGHS's sources are built without
-    // this project's `-ffp-contract=off`, so the two builds may round the
-    // compensated arithmetic differently.  Any such difference is a few ulps
-    // of `magnitude` at most; skipping only past `kSlack` times it (some
-    // 4500 ulps) keeps every offer HiGHS could store.  The negated `>=`
-    // lets a NaN through, as `trySolution` would.
-    constexpr double kSlack = 1e-12;
-    HighsCDouble obj = 0;
-    double magnitude = 0.0;
-    for (HighsInt i = 0; i != mipsolver_.numCol(); ++i) {
-        const double cost = mipsolver_.colCost(i);
-        obj += static_cast<HighsCDouble>(cost) * solution[i];
-        magnitude += std::abs(cost * solution[i]);
-    }
-    const double bound = highs_bound_.load(std::memory_order_relaxed);
-    return !(static_cast<double>(obj) >= bound + (kSlack * magnitude));
+    return may_improve(highs_objective(mipsolver_.model_->col_cost_, solution),
+                       highs_bound_.load(std::memory_order_relaxed));
 }
 
 void IncumbentSink::on_accept(double objective, const std::vector<double>& solution, int source,
@@ -154,8 +159,7 @@ void IncumbentSink::on_accept(double objective, const std::vector<double>& solut
     trace_offer(trace, effort_at, objective);
 }
 
-void IncumbentSink::trace_offer(const WorkerTrace& trace, size_t effort_at,
-                                double objective) const {
+void HighsSink::trace_offer(const WorkerTrace& trace, size_t effort_at, double objective) const {
     // Only accepted offers are traced (#113): this runs from `on_accept`.  Every consumer reads
     // acceptances — the productive/stale split, the inter-acceptance gap
     // distribution, and the informative-set split all filter to `accepted` —
