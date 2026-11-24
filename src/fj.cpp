@@ -236,8 +236,9 @@ DispatchOutcome run(const ProblemView& problem, const HeuristicBudget& budget,
             // A start the deadline cut short ends the attempt with its
             // charge alone, and the runner then stops on the clock (#326).
             // So does one that fills the cap: FJ checks its limit only at a
-            // callback, so a zero-cap attempt would still cost a callback
-            // period and break the runner's attempt_cap bound.
+            // callback, so a zero-cap attempt would add a callback period on
+            // top.  The attempt still reports the whole start, which can
+            // exceed run_cap: the work was done, so it is booked.
             if (start.cut || start.effort >= run_cap) {
                 return {.effort = start.effort};
             }

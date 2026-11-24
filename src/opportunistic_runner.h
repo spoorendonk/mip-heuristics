@@ -33,8 +33,10 @@
 //     every worker on every iteration — see `ContinuousLoopState`.
 //   - Budget overshoot: concurrent workers can overshoot `budget.total`
 //     by up to `n * budget.attempt_cap` because each worker checks
-//     the atomic total before starting an attempt.  Bounded overshoot
-//     is acceptable for heuristic effort accounting.
+//     the atomic total before starting an attempt, plus whatever a slot's
+//     first attempt books beyond its cap for building its start (FJ's
+//     persona starts, #326).  Bounded overshoot is acceptable for
+//     heuristic effort accounting.
 //
 // (`run_opportunistic_loop` itself is declared below `attempt_with_rebuild`.)
 //

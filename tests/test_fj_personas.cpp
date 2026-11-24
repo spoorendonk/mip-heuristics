@@ -246,7 +246,18 @@ TEST_CASE("personas: a start past the deadline returns at once, unchanged", "[co
     std::vector<double> x = zeros;
     StartBudget budget(s.exec);
     CHECK_FALSE(greedy_covering_start(s.problem, x, budget));
-    CHECK_FALSE(exact_k_start(s.problem, structure.exact_k, x, budget));
+    CHECK(x == zeros);
+    // chain_cover has no exact-k rows, so the exact-k step is cut on a model
+    // that has them, or it would stop at its empty-rows exit instead.
+    const HighsLp exact =
+        binary_model(4, {{1, 1, {{0, 1}, {1, 1}, {2, 1}}}, {1, 1, {{2, 1}, {3, 1}}}});
+    Setup e(exact, highs.getOptions().log_options);
+    e.exec.stop = &stopped;
+    const RowStructure exact_structure = detect_structure(e.problem);
+    REQUIRE_FALSE(exact_structure.exact_k.empty());
+    StartBudget exact_budget(e.exec);
+    CHECK_FALSE(exact_k_start(e.problem, exact_structure.exact_k, x, exact_budget));
+    CHECK(exact_budget.expired());
     CHECK(x == zeros);
 }
 
