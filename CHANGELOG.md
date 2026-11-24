@@ -12,11 +12,20 @@ linked from each entry.
   keeps an owner from setup to `cleanupSolve` whose threads queue
   solutions, and only HiGHS's solving thread installs them, at the
   external-solution poll points and once more at the end. No heuristic runs
-  long-lived yet, so an option-on run finds what a default run does; a
+  long-lived unless `mip_heuristic_long_lived_threads` asks for it; a
   default run allocates nothing and starts no thread. The owner also keeps
   one solution pool per epoch for its producers (#333): seeded from the
   presolve chain's final pool, and given HiGHS's latest incumbent at each
   drain where the bound moved.
+- **`mip_heuristic_long_lived_threads`** (int, default `0`; #356, part of
+  #334): with `mip_heuristic_long_lived` on, that many threads run
+  FeasibilityJump, LocalMIP, ruin-and-repair and recombine (dealt
+  round-robin over those whose effort is above zero) beside B&B, from the
+  end of the presolve heuristics until the first restart, the time limit
+  or the end of the solve, each seeded from the owner's pool and queueing
+  what it finds. Each slot books one `[Heur] phase=longlived` line with
+  `stopped_by`, its `dispatch` and `join_ms`. Not resumed after a restart
+  yet (#357). A default run is unchanged: `0` starts none.
 - **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282, #283): in a
   `MIP_HEURISTICS_CUDA` build, an option-on run races a batch of GPU
   FeasibilityJump climbers, one per streaming multiprocessor, against FJ's

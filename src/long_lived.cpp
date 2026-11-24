@@ -1,8 +1,11 @@
 #include "long_lived.h"
 
+#include "effort_ledger.h"
+#include "heuristic_common.h"
 #include "highs_context.h"
 #include "io/HighsIO.h"
 #include "long_lived_owner.h"
+#include "lp_data/HConst.h"
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
@@ -10,6 +13,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -47,15 +51,22 @@ bool SolutionQueue::push(int epoch, int source, const HighsObjective& objective,
         entries_.push_back({.epoch = epoch, .source = source, .objective = objective, .x = x});
         return true;
     }
-    auto worst =
-        std::ranges::max_element(entries_, {}, [](const Entry& e) { return rank(e.objective); });
-    if (!(key < rank(worst->objective))) {
-        return false;
+    // An entry of an older epoch than the point's goes first, whatever its
+    // rank: the next drain drops it anyway, and objectives of two spaces do
+    // not compare.
+    auto victim =
+        std::ranges::find_if(entries_, [epoch](const Entry& e) { return e.epoch < epoch; });
+    if (victim == entries_.end()) {
+        victim = std::ranges::max_element(entries_, {},
+                                          [](const Entry& e) { return rank(e.objective); });
+        if (!(key < rank(victim->objective))) {
+            return false;
+        }
     }
-    worst->epoch = epoch;
-    worst->source = source;
-    worst->objective = objective;
-    worst->x.assign(x.begin(), x.end());
+    victim->epoch = epoch;
+    victim->source = source;
+    victim->objective = objective;
+    victim->x.assign(x.begin(), x.end());
     return true;
 }
 
@@ -75,6 +86,32 @@ size_t SolutionQueue::publish(int epoch, double bound, bool callback_sees_all) {
     callback_sees_all_ = callback_sees_all;
     return std::erase_if(entries_, [epoch](const Entry& e) { return e.epoch < epoch; });
 }
+
+// A running slot.  Built on the solving thread; `effort` and `end_s` are
+// written on the slot's thread and read after the join.
+struct LongLivedOwner::Slot {
+    Slot(HighsMipSolver& mipsolver, LongLivedOwner& owner, const LongLivedSlotSpec& slot_spec,
+         const Deadline& deadline)
+        : spec(slot_spec),
+          sink(mipsolver, owner, slot_spec.source),
+          source(owner.restart_source(slot_spec.policy)),
+          exec{.num_workers = 1,
+               .base_seed = heuristic_base_seed(mipsolver.options_mip_->random_seed),
+               .deadline = deadline,
+               .log_options = mipsolver.options_mip_->log_options,
+               // No terminator: `terminatorTerminated` writes, and only the
+               // solving thread may.
+               .terminator = {},
+               .stop = &owner.stop_} {}
+
+    LongLivedSlotSpec spec;
+    LongLivedSink sink;
+    RestartSource source;
+    ExecutionContext exec;
+    double start_s = 0.0;
+    size_t effort = 0;
+    double end_s = 0.0;
+};
 
 LongLivedOwner::LongLivedOwner(HighsMipSolver& mipsolver)
     : mipsolver_(mipsolver),
@@ -117,7 +154,65 @@ void LongLivedOwner::start(std::function<void(LongLivedOwner&)> body) {
     });
 }
 
+void LongLivedOwner::start_slots(std::span<const LongLivedSlotSpec> specs) {
+    if (specs.empty() || stop_requested() || deadline_.expired() || view_.has_value()) {
+        return;
+    }
+    view_.emplace(make_problem(mipsolver_, csc_));
+    // The stop flag on the deadline too, for the sub-algorithms that poll a
+    // `Deadline` and not `exec` (recombine's bound-prop arm, FPR's DFS).
+    Deadline deadline = deadline_;
+    deadline.stop = &stop_;
+    const HighsTimer* timer = &mipsolver_.timer_;
+    slots_.reserve(specs.size());
+    for (const LongLivedSlotSpec& spec : specs) {
+        Slot* slot =
+            slots_.emplace_back(std::make_unique<Slot>(mipsolver_, *this, spec, deadline)).get();
+        slot->start_s = timer->read();
+        start([slot, timer, &problem = *view_](LongLivedOwner& /*owner*/) {
+            try {
+                slot->effort = slot->spec.run(problem, slot->spec.budget, slot->exec,
+                                              slot->spec.worker, slot->source, slot->sink);
+            } catch (...) {
+                slot->end_s = timer->read();
+                throw;
+            }
+            slot->end_s = timer->read();
+        });
+    }
+}
+
+void LongLivedOwner::charge_slots(SlotStop why) {
+    if (slots_.empty()) {
+        return;
+    }
+    const double limit = deadline_.timer != nullptr ? deadline_.limit : kHighsInf;
+    // What a slot that was still running had to stop for: the first of the
+    // time limit and the owner's stop.
+    const double trigger = std::min(stop_s_, limit);
+    const char* reason = "end";
+    if (limit <= stop_s_) {
+        reason = "deadline";
+    } else if (why == SlotStop::kRestart) {
+        reason = "restart";
+    }
+    EffortLedger ledger(mipsolver_);
+    for (const std::unique_ptr<Slot>& slot : slots_) {
+        const bool stopped = slot->end_s >= trigger;
+        const double join_ms = stopped ? (slot->end_s - trigger) * 1000.0 : 0.0;
+        ledger.charge_long_lived(slot->spec.name, slot->effort, slot->sink.accepted() > 0,
+                                 slot->start_s, slot->end_s, stopped ? reason : "done",
+                                 slot->sink.dispatch_id(), join_ms);
+    }
+    slots_.clear();
+    view_.reset();
+    csc_ = CscMatrix{};
+}
+
 void LongLivedOwner::stop() {
+    if (!stop_requested()) {
+        stop_s_ = mipsolver_.timer_.read();
+    }
     stop_.store(true, std::memory_order_release);
     for (std::thread& thread : threads_) {
         thread.join();
@@ -283,12 +378,31 @@ void drain_long_lived(HighsMipSolver& mipsolver) {
     }
 }
 
+void start_long_lived(HighsMipSolver& mipsolver) {
+    LongLivedOwner* owner = mipsolver.long_lived_;
+    const HighsOptions& options = *mipsolver.options_mip_;
+    if (owner == nullptr || options.mip_heuristic_long_lived_threads <= 0) {
+        return;
+    }
+    owner->start_slots(long_lived_slot_specs(options, mipsolver.mipdata_->ARindex_.size()));
+}
+
+void restart_long_lived(HighsMipSolver& mipsolver) {
+    LongLivedOwner* owner = mipsolver.long_lived_;
+    if (owner == nullptr) {
+        return;
+    }
+    owner->stop();
+    owner->charge_slots(SlotStop::kRestart);
+}
+
 void stop_long_lived(HighsMipSolver& mipsolver) {
     LongLivedOwner* owner = mipsolver.long_lived_;
     if (owner == nullptr) {
         return;
     }
     owner->stop();
+    owner->charge_slots(SlotStop::kEnd);
     owner->drain();
     owner->log_pool();
     owner->rethrow();

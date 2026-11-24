@@ -8,8 +8,10 @@
 // `LongLivedOwner` (long_lived_owner.h) from just after setup to the start
 // of `cleanupSolve`: heuristic threads of its own push solutions to its
 // queue, and the solving thread drains that queue into `trySolution` at
-// HiGHS's existing poll points.  With the option off, or in a sub-MIP,
-// nothing is allocated and every call here is a null test.
+// HiGHS's existing poll points.  `mip_heuristic_long_lived_threads` slots of
+// FJ, LocalMIP, ruin and recombine are such threads (#356).  With the option
+// off, or in a sub-MIP, nothing is allocated and every call here is a null
+// test.
 
 #include <memory>
 
@@ -41,10 +43,23 @@ private:
 // of HiGHS's external-solution poll points reaches.
 void drain_long_lived(HighsMipSolver& mipsolver);
 
-// Stop the owner (every thread joined), then drain once more, so a
-// solution pushed after the last poll point is still installed.  The first
-// line of `cleanupSolve`, which every exit of `run` goes through after
-// setup.  Rethrows the first exception a producer thread ended with.
+// Start the long-lived slots `mip_heuristic_long_lived_threads` asks for
+// (#356), once the presolve chain has returned and before the root node.
+// Nothing without an owner, with 0 threads, after a restart (which stops
+// the owner for good), or past the deadline.
+void start_long_lived(HighsMipSolver& mipsolver);
+
+// Stop the owner (every thread joined) and book its slots' effort with
+// `stopped_by=restart`.  The first line of `performRestart`, before it
+// overwrites the presolved model the slots read.  Nothing starts again for
+// the rest of the solve.
+void restart_long_lived(HighsMipSolver& mipsolver);
+
+// Stop the owner (every thread joined), book its slots' effort with
+// `stopped_by=end` (or `deadline`), then drain once more, so a solution
+// pushed after the last poll point is still installed.  The first line of
+// `cleanupSolve`, which every exit of `run` goes through after setup.
+// Rethrows the first exception a producer thread ended with.
 void stop_long_lived(HighsMipSolver& mipsolver);
 
 }  // namespace heuristics

@@ -5,7 +5,9 @@
 #include "mip/HighsMipSolver.h"
 #include "mip/HighsMipSolverData.h"
 
+#include <array>
 #include <cassert>
+#include <cstdio>
 #include <string>
 
 double EffortLedger::now_s() const {
@@ -21,6 +23,13 @@ void EffortLedger::charge_presolve(const char* name, const DispatchOutcome& outc
 void EffortLedger::charge_early(const char* name, size_t effort, bool found, size_t nnz,
                                 double t0_s, double t1_s) {
     book(name, "presolve", effort, found, nnz, t0_s, t1_s, false, nullptr);
+}
+
+void EffortLedger::charge_long_lived(const char* name, size_t effort, bool found, double t0_s,
+                                     double t1_s, const char* stopped_by, uint64_t dispatch,
+                                     double join_ms) {
+    book(name, "longlived", effort, found, presolved_nnz(), t0_s, t1_s, false, stopped_by,
+         std::nullopt, SlotFields{.dispatch = dispatch, .join_ms = join_ms});
 }
 
 // The model's constraint-matrix nonzero count, taken from the same buffer
@@ -61,7 +70,7 @@ void EffortLedger::charge_dive(const char* name, const DispatchOutcome& outcome,
 // NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
 void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
                         double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by,
-                        std::optional<size_t> gpu_steps) {
+                        std::optional<size_t> gpu_steps, std::optional<SlotFields> slot) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;
 
     // Two lines per observation, deliberately:
@@ -122,12 +131,23 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // `gpu_steps` (#305) comes last, on FJ's line only when its GPU race
     // ran.  `0` is a race that ended before any climber stepped, which
     // `found` and `effort` cannot show: the CPU workers fill both.
+    //
+    // `dispatch` and `join_ms` (#356) are on a long-lived slot's line only,
+    // last: the slot sink's `[HeurSol]` dispatch id, which binds its offers
+    // to this line, and how long the slot ran past the stop or the time
+    // limit, the bound a stop's latency is documented against
+    // (docs/RUNTIME.md).
     const std::string gpu_field =
         gpu_steps.has_value() ? " gpu_steps=" + std::to_string(*gpu_steps) : "";
+    std::array<char, 64> slot_field{};
+    if (slot.has_value()) {
+        std::snprintf(slot_field.data(), slot_field.size(), " dispatch=%llu join_ms=%.1f",
+                      static_cast<unsigned long long>(slot->dispatch), slot->join_ms);
+    }
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Heur] name=%s phase=%s start_s=%.3f end_s=%.3f effort=%zu wall_ms=%.1f "
-                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d%s%s%s\n",
+                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d%s%s%s%s\n",
                 name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0, nnz,
                 abandoned_setup ? 1 : 0, stopped_by != nullptr ? " stopped_by=" : "",
-                stopped_by != nullptr ? stopped_by : "", gpu_field.c_str());
+                stopped_by != nullptr ? stopped_by : "", gpu_field.c_str(), slot_field.data());
 }

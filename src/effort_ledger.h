@@ -104,16 +104,35 @@ public:
     void charge_early(const char* name, size_t effort, bool found, size_t nnz, double t0_s,
                       double t1_s);
 
+    // A long-lived slot beside B&B (#356), booked once it is joined:
+    // `phase=longlived`, with the presolved `nnz`, its `stopped_by`
+    // (`deadline`, `restart`, `end` or `done`; `LongLivedOwner::charge_slots`),
+    // then `dispatch`, its sink's `[HeurSol]` dispatch id — several slots of
+    // one heuristic run at once, so the parser binds a slot's offers by it
+    // rather than by name — and `join_ms`, how long it took to return after
+    // it was told to stop, appended last.  It sets up on its own thread, so
+    // it never abandons a setup.
+    void charge_long_lived(const char* name, size_t effort, bool found, double t0_s, double t1_s,
+                           const char* stopped_by, uint64_t dispatch, double join_ms);
+
 private:
+    // The fields only a long-lived slot's `[Heur]` line carries.
+    struct SlotFields {
+        uint64_t dispatch = 0;
+        double join_ms = 0.0;
+    };
+
     // Deliberately not `const`: it holds `HighsMipSolver&`, so it leaves
     // the ledger object untouched while mutating solver state.  The
     // suppression lives at the definition.
     // `stopped_by` is null for a line that has no reason to report
     // (`charge_early`), which then omits the field; `gpu_steps` is empty,
-    // and omitted the same way, unless FJ's GPU race ran.
+    // and omitted the same way, unless FJ's GPU race ran; `slot` is empty,
+    // and omitted, except on a long-lived slot's line.
     void book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
               double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by,
-              std::optional<size_t> gpu_steps = std::nullopt);
+              std::optional<size_t> gpu_steps = std::nullopt,
+              std::optional<SlotFields> slot = std::nullopt);
 
     // The post-presolve MIP matrix's nonzero count; see `book`.
     [[nodiscard]] size_t presolved_nnz() const;

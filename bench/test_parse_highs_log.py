@@ -705,6 +705,48 @@ def test_dispatch_trace_binds_to_its_own_heur_line_across_a_silent_dispatch():
     assert traces == {("fpr", 2): 222, ("fpr_lp", 5): 333, ("fpr_lp", 6): 444}
 
 
+def _slot(name, effort, dispatch, stopped_by="restart", join_ms=0.4):
+    """A long-lived slot's `[Heur]` line (#356)."""
+    return _heur(name, effort, phase="longlived", abandoned=0).rstrip("\n") + (
+        f" stopped_by={stopped_by} dispatch={dispatch} join_ms={join_ms}\n"
+    )
+
+
+def test_longlived_line_carries_dispatch_and_join_ms():
+    """The #356 fields: on a slot's line, and absent from every other."""
+    (slot,) = parse_log(_slot("fj", 400, 17, join_ms=1.5)).heuristic_samples
+    assert (slot.phase, slot.stopped_by) == ("longlived", "restart")
+    assert (slot.dispatch, slot.join_ms) == (17, 1.5)
+    (chain,) = parse_log(_heur("fj", 400, abandoned=0)).heuristic_samples
+    assert (chain.dispatch, chain.join_ms) == (None, None)
+
+
+def test_longlived_slots_of_one_name_bind_their_own_offers():
+    """Two fj slots run at once, so their offers interleave under one name.
+
+    Binding by name alone would hand both slots' offers to whichever slot's
+    line comes first; the slot line's `dispatch` binds each to its own.
+    """
+    log = (
+        _heursol("fj", 8, 0, 10, 1.0, 5.0, 1)
+        + _heursol("fj", 9, 1, 20, 1.0, 4.0, 1)
+        + _heursol("fj", 8, 0, 30, 1.0, 3.0, 1)
+        + _slot("fj", 111, 8)
+        + _slot("fj", 222, 9)
+    )
+    result = parse_log(log)
+    assert [s.heur_index for s in result.heursol_samples] == [0, 1, 0]
+    traces = {(t.name, t.dispatch): t.total_effort for t in result.dispatch_traces()}
+    assert traces == {("fj", 8): 111, ("fj", 9): 222}
+
+
+def test_a_slot_line_leaves_a_later_chain_dispatch_its_offers():
+    """Offers of another dispatch stay pending past a slot's line."""
+    log = _heursol("fj", 3, 0, 10, 1.0, 5.0, 1) + _slot("fj", 111, 8) + _heur("fj", 333)
+    (offer,) = parse_log(log).heursol_samples
+    assert offer.heur_index == 1
+
+
 def test_dispatch_trace_without_a_heur_line_has_no_total():
     """A killed run is truncated mid-dispatch; the trace survives, the total does not."""
     log = _heursol("fpr", 2, 0, 10, 1.0, 5.0, 1)

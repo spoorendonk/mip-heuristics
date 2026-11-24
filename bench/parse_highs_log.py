@@ -49,7 +49,7 @@ class HeuristicSample:
     """
 
     name: str  # fj, fpr, local_mip, scylla, ruin, recombine, fpr_lp
-    phase: str  # presolve | dive
+    phase: str  # presolve | dive | longlived
     start_s: float
     end_s: float
     effort: int
@@ -90,9 +90,20 @@ class HeuristicSample:
     # is a bail, and `False`/`None` is a dispatch that ran.
     abandoned_setup: bool | None = None
     # What ended the dispatch, as its runner recorded it (#303): `deadline`,
-    # `interrupt`, `budget`, `patience` or `done`.  `None` on a log written
+    # `interrupt`, `budget`, `patience` or `done`; a `longlived` slot (#356)
+    # reports `deadline`, `restart` (B&B restarted), `end` (B&B finished) or
+    # `done` (it returned before any of them).  `None` on a log written
     # before #303, and on every `early_fj` line, which has no reason to give.
     stopped_by: str | None = None
+    # A `longlived` slot's own `[HeurSol]` dispatch id (#356).  Several slots
+    # of one heuristic run at once, so their offers interleave under one
+    # name and bind to their line by this id, not by position.  None on
+    # every other line, whose offers bind by name (see `parse_log`).
+    dispatch: int | None = None
+    # How long a `longlived` slot ran past its stop or the time limit, in ms
+    # (#356): the bound a stop's latency is documented against.  None on
+    # every other line.
+    join_ms: float | None = None
 
 
 @dataclass
@@ -794,11 +805,14 @@ def _tagged_fields(line: str, tag: str) -> dict[str, str] | None:
 #   [Heur] name=fj phase=presolve start_s=0.412 end_s=1.077 effort=8388608 \
 #          wall_ms=665.2 effort_per_ms=12610.1 found=1 nnz=2831 abandoned_setup=0 \
 #          stopped_by=deadline
+# A long-lived slot's line (#356) is `phase=longlived` and ends
+#          ... stopped_by=restart dispatch=17 join_ms=0.4
 # `wall_ms` may be negative: the solver clock is not monotonic, so a
 # negative sample is surfaced rather than silently skipped.  `nnz` is
 # optional, being absent from logs written before #106 added it,
-# `abandoned_setup` likewise for logs written before #119, and `stopped_by`
-# for logs before #303 and for `early_fj`.  None of them is in
+# `abandoned_setup` likewise for logs written before #119, `stopped_by`
+# for logs before #303 and for `early_fj`, and `dispatch` and `join_ms`
+# on every line but a long-lived slot's.  None of them is in
 # `_HEUR_KEYS`: a required key drops the whole line, which would discard
 # every archived log rather than read the fields it does carry.
 _HEUR_TAG = "[Heur]"
@@ -822,6 +836,8 @@ def _parse_heur(line: str) -> HeuristicSample | None:
     try:
         nnz = fields.get("nnz")
         abandoned = fields.get("abandoned_setup")
+        dispatch = fields.get("dispatch")
+        join_ms = fields.get("join_ms")
         return HeuristicSample(
             name=fields["name"],
             phase=fields["phase"],
@@ -837,6 +853,8 @@ def _parse_heur(line: str) -> HeuristicSample | None:
             # reading as the default.
             abandoned_setup=None if abandoned is None else abandoned != "0",
             stopped_by=fields.get("stopped_by"),
+            dispatch=None if dispatch is None else int(dispatch),
+            join_ms=None if join_ms is None else float(join_ms),
         )
     except ValueError:
         return None
@@ -961,6 +979,8 @@ def parse_log(log_text: str) -> SolveResult:
     # it and follow the previous one for that name, so binding on that line
     # is exact — and, unlike zipping the two lists, it survives a dispatch
     # that offered nothing (which emits `[Heur]` and no `[HeurSol]` at all).
+    # A long-lived slot's line carries its `dispatch` and takes only that
+    # dispatch's offers: several slots of one name run at once (#356).
     pending_heursol: dict[str, list[int]] = {}
     # A `found at` line seen, with no handover line or display-row incumbent since.
     early_fj_unhanded = False
@@ -1125,7 +1145,22 @@ def parse_log(log_text: str) -> SolveResult:
         heur = _parse_heur(line)
         if heur is not None:
             heur_index = len(result.heuristic_samples)
-            for i in pending_heursol.pop(heur.name, []):
+            pending = pending_heursol.pop(heur.name, [])
+            if heur.dispatch is not None:
+                mine = [
+                    i
+                    for i in pending
+                    if result.heursol_samples[i].dispatch == heur.dispatch
+                ]
+                other = [
+                    i
+                    for i in pending
+                    if result.heursol_samples[i].dispatch != heur.dispatch
+                ]
+                if other:
+                    pending_heursol[heur.name] = other
+                pending = mine
+            for i in pending:
                 result.heursol_samples[i].heur_index = heur_index
             result.heuristic_samples.append(heur)
             continue

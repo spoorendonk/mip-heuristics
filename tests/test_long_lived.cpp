@@ -577,3 +577,181 @@ TEST_CASE("long-lived pool: every drain of a solve leaves HiGHS's incumbent the 
     const std::string origins = line->substr(line->find("origins=") + 8);
     REQUIRE(origins.find_first_of("JAM") != std::string::npos);
 }
+
+TEST_CASE("long-lived: a full queue gives an older epoch's entry up for a newer one",
+          "[long-lived]") {
+    heuristics::SolutionQueue queue;
+    const std::vector<double> x{1.0, 0.0};
+    const HighsObjective good{.value = 1.0, .magnitude = 1.0};
+    const HighsObjective worse{.value = 2.0, .magnitude = 1.0};
+    for (size_t i = 0; i < heuristics::kLongLivedQueueCapacity; ++i) {
+        REQUIRE(queue.push(0, kSolutionSourceFJ, good, x));
+    }
+    // By rank alone the worse point is refused: every entry beats it.
+    REQUIRE_FALSE(queue.push(0, kSolutionSourceFJ, worse, x));
+    REQUIRE(queue.push(1, kSolutionSourceFJ, worse, x));
+
+    std::vector<heuristics::SolutionQueue::Entry> taken;
+    queue.take(taken);
+    REQUIRE(taken.size() == heuristics::kLongLivedQueueCapacity);
+    REQUIRE(std::ranges::count_if(taken, [](const auto& e) { return e.epoch == 1; }) == 1);
+}
+
+namespace {
+
+// The `[Heur]` lines of long-lived slots (#356) among `lines`.
+std::vector<std::string> slot_lines(const std::vector<std::string>& lines) {
+    std::vector<std::string> out;
+    for (const std::string& line : lines) {
+        if (line.contains("[Heur] ") && line.contains(" phase=longlived ")) {
+            out.push_back(line);
+        }
+    }
+    return out;
+}
+
+// The value of `key` on a `key=value` trace line, empty when it is absent.
+std::string field(const std::string& line, const std::string& key) {
+    const std::string tag = " " + key + "=";
+    const size_t pos = line.find(tag);
+    if (pos == std::string::npos) {
+        return {};
+    }
+    const size_t begin = pos + tag.size();
+    return line.substr(begin, line.find_first_of(" \n", begin) - begin);
+}
+
+size_t count_field(const std::vector<std::string>& lines, const std::string& key,
+                   const std::string& value) {
+    return static_cast<size_t>(
+        std::ranges::count_if(lines, [&](const std::string& l) { return field(l, key) == value; }));
+}
+
+void slots_on(Highs& h, int threads) {
+    require_option(h, "threads", 1);
+    require_option(h, "random_seed", 0);
+    require_option(h, "log_dev_level", 3);
+    require_option(h, "mip_heuristic_long_lived", true);
+    require_option(h, "mip_heuristic_long_lived_threads", threads);
+}
+
+}  // namespace
+
+TEST_CASE("long-lived slots: the thread count exists and is 0 by default", "[long-lived]") {
+    Highs h;
+    h.setOptionValue("output_flag", false);
+    HighsInt threads = -1;
+    REQUIRE(h.getOptionValue("mip_heuristic_long_lived_threads", threads) == HighsStatus::kOk);
+    REQUIRE(threads == 0);
+}
+
+TEST_CASE("long-lived slots: they start only when both options ask for them", "[long-lived]") {
+    struct Case {
+        bool on;
+        int threads;
+        size_t slots;
+    };
+    for (const Case c :
+         {Case{.on = true, .threads = 0, .slots = 0}, Case{.on = false, .threads = 4, .slots = 0},
+          Case{.on = true, .threads = 4, .slots = 4}}) {
+        const auto lines = solve_capturing_log("flugpl.mps", [&](Highs& h) {
+            slots_on(h, c.threads);
+            require_option(h, "mip_heuristic_long_lived", c.on);
+        });
+        // The trace is on, so a missing slot line is not a missing trace.
+        REQUIRE(log_contains(lines, "[Heur] name=fj phase=presolve "));
+        REQUIRE(slot_lines(lines).size() == c.slots);
+    }
+}
+
+TEST_CASE("long-lived slots: one line per thread, booked at the end of the solve", "[long-lived]") {
+    // Slots start from the owner, which only the main MIP has ("an owner
+    // exists only with the option on, once per solve"); a sub-MIP logs
+    // nothing here, so this line count could not show one anyway.
+    const auto lines = solve_capturing_log("bell5.mps", [](Highs& h) {
+        slots_on(h, 4);
+        require_option(h, "mip_allow_restart", false);
+    });
+    const auto slots = slot_lines(lines);
+    REQUIRE(slots.size() == 4);
+    // Dealt round-robin over the heuristics whose effort is above zero: FJ
+    // and LocalMIP at the defaults.
+    REQUIRE(count_field(slots, "name", "fj") == 2);
+    REQUIRE(count_field(slots, "name", "local_mip") == 2);
+    REQUIRE(count_field(slots, "stopped_by", "end") + count_field(slots, "stopped_by", "done") ==
+            4);
+    for (const std::string& slot : slots) {
+        REQUIRE_FALSE(field(slot, "dispatch").empty());
+        REQUIRE_FALSE(field(slot, "join_ms").empty());
+    }
+}
+
+TEST_CASE("long-lived slots: the time limit stops every slot, and their points reach HiGHS",
+          "[long-lived]") {
+    // issue-3166 is far from solved at the limit, so B&B is still running
+    // when it passes.
+    LongLivedOwner* owner = nullptr;
+    HookGuard guard([&](HighsMipSolver& /*mipsolver*/, LongLivedOwner& o) { owner = &o; });
+    std::mutex mtx;
+    std::vector<std::string> lines;
+    // What the owner had submitted when it logged its pool, after the final
+    // drain.
+    size_t submitted = 0;
+    std::function<void(int, const std::string&)> on_callback = [&](int callback_type,
+                                                                   const std::string& message) {
+        if (callback_type != kCallbackLogging) {
+            return;
+        }
+        std::scoped_lock lock(mtx);
+        lines.push_back(message);
+        // The pool line is logged on the solving thread, after the final drain.
+        if (message.contains("[LongLivedPool] ")) {
+            submitted = owner->submitted();
+        }
+    };
+    auto trampoline = [](int callback_type, const std::string& message,
+                         const HighsCallbackOutput* /*out*/, HighsCallbackInput* /*in*/,
+                         void* data) {
+        (*static_cast<decltype(on_callback)*>(data))(callback_type, message);
+    };
+
+    Highs h;
+    h.setOptionValue("output_flag", true);
+    h.setOptionValue("log_to_console", false);
+    slots_on(h, 2);
+    require_option(h, "time_limit", 3.0);
+    REQUIRE(h.setCallback(HighsCallbackFunctionType(trampoline), &on_callback) == HighsStatus::kOk);
+    REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
+    // With the solution callback on, the drain submits every queued point
+    // (`callback_sees_all`), so a slot's accepted point is a submitted one.
+    REQUIRE(h.startCallback(kCallbackMipSolution) == HighsStatus::kOk);
+    REQUIRE(h.readModel(instances_dir() + "/issue-3166.mps") == HighsStatus::kOk);
+    REQUIRE(h.run() == HighsStatus::kWarning);
+    REQUIRE(h.getModelStatus() == HighsModelStatus::kTimeLimit);
+
+    std::scoped_lock lock(mtx);
+    const auto slots = slot_lines(lines);
+    REQUIRE(slots.size() == 2);
+    REQUIRE(count_field(slots, "stopped_by", "deadline") == 2);
+    REQUIRE(count_field(slots, "found", "1") > 0);
+    REQUIRE(submitted > 0);
+}
+
+TEST_CASE("long-lived slots: the first restart stops every slot for good", "[long-lived]") {
+    // lseu restarts twice early in B&B; slots of #356 stop at the first and
+    // do not start again.
+    double objective = 0.0;
+    HighsModelStatus status = HighsModelStatus::kNotset;
+    const auto lines = solve_capturing_log(
+        "lseu.mps", [](Highs& h) { slots_on(h, 2); },
+        [&](Highs& h) {
+            status = h.getModelStatus();
+            objective = h.getInfo().objective_function_value;
+        });
+    REQUIRE(log_contains(lines, "restarting"));
+    const auto slots = slot_lines(lines);
+    REQUIRE(slots.size() == 2);
+    REQUIRE(count_field(slots, "stopped_by", "restart") == 2);
+    REQUIRE(status == HighsModelStatus::kOptimal);
+    REQUIRE(objective == Catch::Approx(1120.0));
+}

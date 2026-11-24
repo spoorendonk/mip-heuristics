@@ -3,6 +3,8 @@
 #include "lp_data/HConst.h"
 #include "util/HighsTimer.h"
 
+#include <atomic>
+
 // The solve's wall-clock deadline, in the form a *sub-algorithm* polls it
 // (issue #117).
 //
@@ -30,7 +32,17 @@ struct Deadline {
     const HighsTimer* timer = nullptr;
     double limit = 0.0;
 
-    [[nodiscard]] bool expired() const { return timer != nullptr && timer->read() >= limit; }
+    // A caller's stop flag, or null (#356).  Set, it expires the deadline
+    // as the clock does, so a sub-algorithm that takes a `Deadline` and no
+    // `ExecutionContext` (recombine's bound-prop arm, FPR's DFS) sees a
+    // long-lived slot's stop on its own poll cadence.  A relaxed load, like
+    // `ExecutionContext::stop`; `remaining()` does not read it.
+    const std::atomic<bool>* stop = nullptr;
+
+    [[nodiscard]] bool expired() const {
+        return (stop != nullptr && stop->load(std::memory_order_relaxed)) ||
+               (timer != nullptr && timer->read() >= limit);
+    }
 
     // Seconds left, `kHighsInf` when there is no limit, never negative.
     // For sub-solvers that take a time limit rather than a predicate — and

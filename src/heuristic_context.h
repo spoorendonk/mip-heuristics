@@ -547,8 +547,9 @@ struct ExecutionContext {
     // thread may poll it, and it is polled wherever the deadline is — inside
     // an attempt as well as between attempts, which is what bounds a stop's
     // latency by a worker's poll cadence rather than by one attempt's budget.
-    // A sub-algorithm given a `Deadline` does not see it: recombine's bound-prop
-    // arm is the one such case under `run_until_stopped` (see that contract).
+    // A sub-algorithm given a `Deadline` sees it only when the caller also
+    // puts it on `deadline.stop`, as a long-lived slot does (#356); without
+    // that, recombine's bound-prop arm waits out its recombination.
     const std::atomic<bool>* stop = nullptr;
 
     // Where LocalMIP's workers retain their least-violated infeasible point
@@ -676,10 +677,11 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // within one poll interval, except while a worker is being built: FJ's
 // solver construction and LocalMIP's cold-start construction sweep (one
 // O(nnz) pass) poll nothing, as in the presolve dispatch.  The other
-// exception is recombine's bound-prop arm: it takes a `Deadline`, which reads
-// the clock and not the flag, so a stop waits out the recombination in
-// progress.  `attempt_cap`, at most `kRewardNominalEffort`, caps only its DFS,
-// not its propagation or leaf repair, so that wait is no hard bound.  A worker is
+// exception is recombine's bound-prop arm: it takes a `Deadline`, which sees
+// the flag only when the caller puts it on `exec.deadline.stop` as well.
+// Without that a stop waits out the recombination in progress, and
+// `attempt_cap`, at most `kRewardNominalEffort`, caps only its DFS, not its
+// propagation or leaf repair, so that wait is no hard bound.  A worker is
 // rebuilt when it stalls (`budget.worker_stale`; for FJ against its own
 // `effortSinceLastImprovement`, for LocalMIP against effort since the
 // sink's best moved) or spends `budget.per_worker`, unless a
@@ -739,6 +741,12 @@ inline HeuristicBudget make_budget(size_t total, size_t num_workers, size_t stal
 // to another sink's pool crossover.  Empty means no source; the presolve
 // dispatch passes an empty one.
 using RestartSource = std::function<bool(Rng& rng, std::vector<double>& out)>;
+
+// A heuristic's `run_until_stopped`, as the contract above spells it: what a
+// long-lived slot runs (#356).
+using UntilStopped = size_t (*)(const ProblemView& problem, const HeuristicBudget& budget,
+                                const ExecutionContext& exec, int worker,
+                                const RestartSource& source, SolutionSink& sink);
 
 // `source`'s point into `out`, rounded and clamped into `problem` as the
 // contract above says, when there is a source and its point is usable;

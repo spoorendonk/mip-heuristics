@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <string_view>
+#include <vector>
 
 namespace heuristics {
 
@@ -115,6 +116,14 @@ struct HeuristicConfig {
     bool HighsOptionsStruct::* gpu;
     DispatchOutcome (*run)(HighsMipSolver&, const ProblemView&, const HeuristicBudget&,
                            ExecutionContext&, SolutionSink&);
+    // What a long-lived slot of this heuristic runs (#356), or null for the
+    // two with no `run_until_stopped` (FPR, Scylla), which get no slot.
+    UntilStopped until_stopped;
+    // Which member of the shared pool a slot's `RestartSource` serves: FJ
+    // and LocalMIP a mixed draw, for diversity; ruin the best, which it
+    // ruins (as cuOpt's does).  Recombine draws its parents from the sink's
+    // pool, which is the shared one, so its source only re-offers a member.
+    SolutionPool::RestartPolicy slot_policy;
 };
 
 // FJ and LocalMIP run in the heuristic core, on the view alone; FPR and
@@ -128,6 +137,8 @@ DispatchOutcome without_solver(HighsMipSolver& /*mipsolver*/, const ProblemView&
     return Run(problem, budget, exec, sink);
 }
 
+using Policy = SolutionPool::RestartPolicy;
+
 constexpr auto kChain = std::to_array<HeuristicConfig>({
     {"fj", kSolutionSourceFJ, &HighsOptionsStruct::mip_heuristic_fj_effort,
      &HighsOptionsStruct::mip_heuristic_run_feasibility_jump, true,
@@ -137,30 +148,32 @@ constexpr auto kChain = std::to_array<HeuristicConfig>({
 // A GPU tree races GPU climbers against `fj::run` when the option is
 // on (#283); off, `fj::race` is `fj::run`.
 #ifdef MIP_HEURISTICS_HAS_GPU_FJ
-     &without_solver<&fj::race>},
+     &without_solver<&fj::race>,
 #else
-     &without_solver<&fj::run>},
+     &without_solver<&fj::run>,
 #endif
+     &fj::run_until_stopped, Policy::kMixed},
     {"fpr", kSolutionSourceFPR, &HighsOptionsStruct::mip_heuristic_fpr_effort, nullptr, false,
      &HighsOptionsStruct::mip_heuristic_fpr_patience, nullptr, nullptr, nullptr, nullptr, nullptr,
-     &fpr::run},
+     &fpr::run, nullptr, Policy::kMixed},
     {"local_mip", kSolutionSourceLocalMIP, &HighsOptionsStruct::mip_heuristic_local_mip_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_local_mip_patience,
      &HighsOptionsStruct::mip_heuristic_local_mip_restart,
      &HighsOptionsStruct::mip_heuristic_local_mip_restart_weights, nullptr, nullptr, nullptr,
-     &without_solver<&local_mip::run>},
+     &without_solver<&local_mip::run>, &local_mip::run_until_stopped, Policy::kMixed},
     {"scylla", kSolutionSourceScylla, &HighsOptionsStruct::mip_heuristic_scylla_effort, nullptr,
      false, &HighsOptionsStruct::mip_heuristic_scylla_patience, nullptr, nullptr, nullptr, nullptr,
-     nullptr, &scylla::run},
+     nullptr, &scylla::run, nullptr, Policy::kMixed},
     // After the four whose finds make up its population (#207).
     {"ruin", kSolutionSourceRuin, &HighsOptionsStruct::mip_heuristic_ruin_effort, nullptr, false,
      &HighsOptionsStruct::mip_heuristic_ruin_patience, nullptr, nullptr, nullptr, nullptr, nullptr,
-     &without_solver<&ruin_repair::run>},
+     &without_solver<&ruin_repair::run>, &ruin_repair::run_until_stopped, Policy::kBestOnly},
     // After ruin, so it runs once the others have stalled, on a pool holding
     // what they all found (#229).
     {"recombine", kSolutionSourceRecombine, &HighsOptionsStruct::mip_heuristic_recombine_effort,
      nullptr, false, &HighsOptionsStruct::mip_heuristic_recombine_patience, nullptr, nullptr,
-     nullptr, nullptr, nullptr, &without_solver<&recombine::run>},
+     nullptr, nullptr, nullptr, &without_solver<&recombine::run>, &recombine::run_until_stopped,
+     Policy::kBestOnly},
 });
 
 // Whether `h` runs at all under `options` (#167).
@@ -195,6 +208,19 @@ bool entry_enabled(const HighsOptions& options, const HeuristicConfig& h) {
         return false;
     }
     return h.enable_switch == nullptr || options.*h.enable_switch;
+}
+
+// `h`'s restart options onto `budget`, which the chain and a long-lived slot
+// both read.
+void apply_restart_options(const HighsOptions& options, const HeuristicConfig& h,
+                           HeuristicBudget& budget) {
+    if (h.restart != nullptr) {
+        // The record bounds the option to the enum's range.
+        budget.restart = static_cast<RestartPoint>(options.*h.restart);
+    }
+    if (h.restart_weights != nullptr) {
+        budget.randomize_restart_weights = options.*h.restart_weights;
+    }
 }
 
 // Each enabled heuristic runs in turn, with its own effort budget and the
@@ -332,13 +358,7 @@ bool run_sequential(HighsMipSolver& mipsolver) {
                                    : patience_option;
         HeuristicBudget slice = make_budget(
             total, exec.num_workers, patience_threshold(problem.nnz, patience_per_base, total));
-        if (h.restart != nullptr) {
-            // The record bounds the option to the enum's range.
-            slice.restart = static_cast<RestartPoint>(options.*h.restart);
-        }
-        if (h.restart_weights != nullptr) {
-            slice.randomize_restart_weights = options.*h.restart_weights;
-        }
+        apply_restart_options(options, h, slice);
         if (h.personas != nullptr) {
             slice.fj_personas = options.*h.personas;
         }
@@ -378,6 +398,39 @@ bool any_enabled(const HighsOptions& options) {
         }
     }
     return options.mip_heuristic_fpr_lp_effort > 0.0;
+}
+
+std::vector<LongLivedSlotSpec> long_lived_slot_specs(const HighsOptions& options, size_t nnz) {
+    std::vector<const HeuristicConfig*> eligible;
+    for (const HeuristicConfig& h : kChain) {
+        if (h.until_stopped != nullptr && entry_enabled(options, h)) {
+            eligible.push_back(&h);
+        }
+    }
+    std::vector<LongLivedSlotSpec> specs;
+    if (eligible.empty() || options.mip_heuristic_long_lived_threads <= 0) {
+        return specs;
+    }
+    const auto threads = static_cast<size_t>(options.mip_heuristic_long_lived_threads);
+    specs.reserve(threads);
+    for (size_t i = 0; i < threads; ++i) {
+        const HeuristicConfig& h = *eligible[i % eligible.size()];
+        // One chain worker's attempt cap and patience at N = 1, as early FJ
+        // sizes its budget: the effort option already means one worker's
+        // allowance at N = 1, whether or not it is per worker in the chain.
+        const size_t total = heuristic_effort_budget(nnz, options.*h.effort);
+        const HeuristicBudget chain =
+            make_budget(total, 1, patience_threshold(nnz, options.*h.patience, total));
+        HeuristicBudget budget = make_until_stopped_budget(chain.attempt_cap, chain.worker_stale);
+        apply_restart_options(options, h, budget);
+        specs.push_back({.name = h.name,
+                         .source = h.source_tag,
+                         .run = h.until_stopped,
+                         .budget = budget,
+                         .policy = h.slot_policy,
+                         .worker = static_cast<int>(i / eligible.size())});
+    }
+    return specs;
 }
 
 bool run_presolve(HighsMipSolver& mipsolver) {

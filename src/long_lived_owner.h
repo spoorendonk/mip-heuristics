@@ -19,17 +19,47 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <span>
 #include <thread>
 #include <vector>
 
 class HighsMipSolver;
+class HighsOptions;
 
 namespace heuristics {
+
+// One long-lived slot (#356): heuristic `name` running `run` as slot `worker`
+// of its kind, offering under `source`, restarting from the shared pool by
+// `policy`.
+struct LongLivedSlotSpec {
+    const char* name = nullptr;
+    int source = 0;
+    UntilStopped run = nullptr;
+    HeuristicBudget budget;
+    SolutionPool::RestartPolicy policy = SolutionPool::RestartPolicy::kMixed;
+    int worker = 0;
+};
+
+// The slots `options` asks for, on a model of `nnz` nonzeros:
+// `mip_heuristic_long_lived_threads` of them, dealt round-robin in chain
+// order to FJ, LocalMIP, ruin and recombine, those whose effort option is
+// above zero (FJ also needs `mip_heuristic_run_feasibility_jump`).  Slot `i`
+// of a heuristic is its worker `i`, for its seed.  Each gets one chain
+// worker's attempt cap and patience at one worker, and no other ceiling.
+// Empty when the option is 0 or none of the four runs.  Defined beside the
+// chain table (mode_dispatch.cpp).
+[[nodiscard]] std::vector<LongLivedSlotSpec> long_lived_slot_specs(const HighsOptions& options,
+                                                                   size_t nnz);
+
+// Why the slots were stopped, for their `[Heur] stopped_by`.
+enum class SlotStop : uint8_t { kRestart, kEnd };
 
 // Most solutions the queue holds between two drains.  A poll point comes
 // before every B&B node batch, so the queue only has to bridge one batch
@@ -61,7 +91,8 @@ public:
     // Producer side, any thread.  Refuses a point from an older epoch, or
     // one of the current epoch that cannot improve the published bound
     // (unless the MIP solution callback sees every `trySolution`).  When
-    // full, the point replaces the worst entry if it ranks better, else it
+    // full, the point replaces an entry of an older epoch than its own if
+    // there is one (#356), else the worst entry if it ranks better, else it
     // is refused.  A NaN objective ranks as +inf.  Returns whether it was
     // queued.
     [[nodiscard]] bool push(int epoch, int source, const HighsObjective& objective,
@@ -118,9 +149,28 @@ public:
     // kept and rethrown by `rethrow`.  Solving thread, before `stop`.
     void start(std::function<void(LongLivedOwner&)> body);
 
-    // Raise the stop flag and join every thread.  Idempotent.  Solving
+    // Raise the stop flag and join every thread.  Idempotent: the first
+    // call's time is the one `charge_slots` measures joins from.  Solving
     // thread.
     void stop();
+
+    // Start one thread per spec (#356), each running its heuristic's
+    // `run_until_stopped` over one view of the presolved model, built here
+    // and shared by every slot, with a `LongLivedSink` and a restart source
+    // of its own.  Each slot's `exec` carries the owner's stop flag (on its
+    // deadline too, for recombine's bound-prop arm and its FPR DFS), the
+    // solve's deadline, no terminator and one worker.  Does nothing when
+    // `specs` is empty, the owner is stopped (a restart stops it for good),
+    // or the deadline has passed.  Solving thread, once the presolve chain
+    // has returned; at most once per owner.
+    void start_slots(std::span<const LongLivedSlotSpec> specs);
+
+    // Book every slot's effort, one `[Heur] phase=longlived` line each, and
+    // drop the slots.  `stopped_by` is `deadline` when the time limit came
+    // before the stop, else `why` (`restart` or `end`), or `done` when the
+    // slot returned before either; `join_ms` is how long after the first of
+    // the two it returned, 0 for `done`.  Solving thread, after `stop`.
+    void charge_slots(SlotStop why);
 
     // Rethrow the first exception a producer ended with, if any.  After
     // `stop`.
@@ -182,6 +232,9 @@ public:
     static void set_start_hook(StartHook hook);
 
 private:
+    // A running slot; long_lived.cpp.
+    struct Slot;
+
     void publish();
     // Replace the pool if HiGHS has restarted since it was built.
     void sync_epoch();
@@ -202,6 +255,14 @@ private:
     // `time_limit` on the solver's clock, `const`-readable from any thread.
     Deadline deadline_;
     std::atomic<bool> stop_{false};
+    // The solver's clock at the first `stop`.
+    double stop_s_ = 0.0;
+    // The slots' view and the transpose it reads, built by `start_slots`
+    // and valid until a restart overwrites `model_`, which stops the slots
+    // first.  The destructor joins every thread before a member goes.
+    CscMatrix csc_;
+    std::optional<ProblemView> view_;
+    std::vector<std::unique_ptr<Slot>> slots_;
     std::vector<std::thread> threads_;
     std::mutex error_mtx_;
     std::exception_ptr error_;
