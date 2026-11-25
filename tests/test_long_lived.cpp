@@ -775,8 +775,8 @@ TEST_CASE("long-lived slots: the time limit stops every slot, and their points r
 
 TEST_CASE("long-lived slots: a restart pauses every slot and they resume in the new space",
           "[long-lived]") {
-    // lseu restarts at the root; each restart pauses both slots (one
-    // `stopped_by=restart` line each) and resumes them over the new model
+    // lseu restarts at the root; each restart pauses both slots (one line
+    // each) and, when the solve goes on, resumes them over the new model
     // (#361), so the solve books one more pair of lines at its end.
     const OwnerSolve solve = solve_with_owner("lseu.mps", [](Highs& h) { slots_on(h, 2); });
     REQUIRE(solve.run_status == HighsStatus::kOk);
@@ -790,15 +790,25 @@ TEST_CASE("long-lived slots: a restart pauses every slot and they resume in the 
                    l.contains("Restarting search from the root node");
         }));
     REQUIRE(restarts >= 1);
+    // A restart's presolve can finish the solve itself (once a slot
+    // installed the optimum), and then nothing resumes after it.  `runSetup`
+    // logs this line only when the solve goes on, which is exactly when the
+    // slots resume (no limit is set, so `terminate()` stays false).
+    const auto setups = static_cast<size_t>(std::ranges::count_if(
+        solve.lines, [](const std::string& l) { return l.contains("Model after restart has "); }));
+    REQUIRE((setups == restarts || setups + 1 == restarts));
     const auto slots = slot_lines(solve.lines);
-    REQUIRE(count_field(slots, "stopped_by", "restart") == 2 * restarts);
-    // The pause pairs, then the end's pair when the solve went on past the
-    // last restart.  A restart's presolve can finish the solve itself (once
-    // a slot installed the optimum), and then nothing resumes after it.
-    const bool went_on = slots.size() == 2 * (restarts + 1);
-    REQUIRE((went_on || slots.size() == 2 * restarts));
-    for (size_t i = 2 * restarts; i < slots.size(); ++i) {
-        REQUIRE(field(slots[i], "stopped_by") != "restart");
+    // A pair per phase: the first, and one per resume.  The phase a restart
+    // ends books `restart`, or `done` for a slot that returned on its own
+    // first; the phase after the last resume ends with the solve.
+    REQUIRE(slots.size() == 2 * (setups + 1));
+    for (size_t i = 0; i < slots.size(); ++i) {
+        const std::string why = field(slots[i], "stopped_by");
+        if (i < 2 * restarts) {
+            REQUIRE((why == "restart" || why == "done"));
+        } else {
+            REQUIRE(why != "restart");
+        }
     }
     // The lines of one phase come together, two per phase, each after every
     // drain of its phase and before the next phase starts.  A resumed slot
@@ -815,9 +825,7 @@ TEST_CASE("long-lived slots: a restart pauses every slot and they resume in the 
         }
         before = after;
     }
-    // A resume is seen either as the end's pair or, with no end pair, as a
-    // second pause pair: restart k > 1 pauses only what resumed after k - 1.
-    if (!went_on && restarts < 2) {
+    if (setups == 0) {
         SKIP("the only restart's presolve finished the solve: no resume to observe");
     }
 }
