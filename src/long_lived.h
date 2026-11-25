@@ -45,20 +45,26 @@ void drain_long_lived(HighsMipSolver& mipsolver);
 
 // Start the long-lived slots `mip_heuristic_long_lived_threads` asks for
 // (#356), once the presolve chain has returned and before the root node.
-// Nothing without an owner, with 0 threads, after a restart (which stops
-// the owner for good), or past the deadline.
+// Nothing without an owner, with 0 threads, while the owner is paused, when
+// the slots already run (after a restart's resume), or past the deadline.
 void start_long_lived(HighsMipSolver& mipsolver);
 
-// Stop the owner (every thread joined) and book its slots' effort with
-// `stopped_by=restart`, then drain what they queued while it is still in
-// this space.  The first line of `performRestart`, before it overwrites
+// Pause the owner (every thread joined), drain what its slots queued while
+// it is still in this space, then book their effort with
+// `stopped_by=restart`.  The first line of `performRestart`, before it overwrites
 // the presolved model the slots read and before `numRestarts` moves.
-// Nothing starts again for the rest of the solve.
 void restart_long_lived(HighsMipSolver& mipsolver);
 
-// Stop the owner (every thread joined), book its slots' effort with
-// `stopped_by=end` (or `deadline`), then drain once more, so a solution
-// pushed after the last poll point is still installed.  The first line of
+// Resume a paused owner (#361): its slots start again over the new
+// presolved model, each with a sink and restart source of the new epoch.
+// In `performRestart` once `runSetup` has built the new model, only when
+// the solve goes on (`modelstatus_` unset, not `terminate()`); one place
+// for all four of its call sites.
+void resume_long_lived(HighsMipSolver& mipsolver);
+
+// Stop the owner (every thread joined), drain once more, so a solution
+// pushed after the last poll point is still installed, then book its
+// slots' effort with `stopped_by=end` (or `deadline`).  The first line of
 // `cleanupSolve`, which every exit of `run` goes through after setup.
 // Rethrows the first exception a producer thread ended with.
 void stop_long_lived(HighsMipSolver& mipsolver);

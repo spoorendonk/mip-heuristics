@@ -234,7 +234,11 @@ file(READ "${LP_DATA_DIR}/HighsOptions.h" OPTIONS_CONTENT)
 # Version 50 adds `mip_heuristic_long_lived_threads` (#356): an int record,
 # default 0, and Patch E's slot start (after the presolve chain) and restart
 # stop (the top of `performRestart`).
-set(PATCH_VERSION "50")
+#
+# Version 51 adds Patch E's slot resume in `performRestart`, after
+# `runSetup` (#361), and says in the threads option's description that the
+# slots pause across a restart rather than stop at the first.
+set(PATCH_VERSION "51")
 string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version ${PATCH_VERSION}" _patch_version_found)
 if(_patch_version_found EQUAL -1)
     string(FIND "${OPTIONS_CONTENT}" "mip-heuristics patch version" _patch_marker_found)
@@ -605,7 +609,7 @@ set(_patch_options
     "mip_heuristic_fj_gpu:bool:false:-:Race GPU FeasibilityJump climbers against the CPU FeasibilityJump presolve workers. Needs a MIP_HEURISTICS_CUDA build. Any other build warns and runs FeasibilityJump on the CPU only"
     "mip_heuristic_early_fj_effort:double:0.0:${kEffortMax}:Effort budget multiplier for FeasibilityJump on the original model while presolve runs, one worker on a thread of its own, as a multiple of the original model's nnz<<10. It stops when presolve returns, and its best solution becomes the MIP start, kept in original space as the answer unless the solve finds better. The default 0 disables it"
     "mip_heuristic_long_lived:bool:false:-:Keep an owner for heuristics that run on threads of their own beside branch and bound for the main MIP's whole solve, whose solutions the solving thread installs at HiGHS's external-solution poll points and once more at the end. mip_heuristic_long_lived_threads sets how many such threads run. The default false allocates nothing and starts no thread"
-    "mip_heuristic_long_lived_threads:int:0:kHighsIInf:Number of long-lived heuristic threads beside branch and bound, dealt round-robin to FeasibilityJump, LocalMIP, ruin-and-repair and recombine, those whose effort option is above zero, from the end of the presolve heuristics until the first restart or the end of the solve. Needs mip_heuristic_long_lived. The default 0 starts none")
+    "mip_heuristic_long_lived_threads:int:0:kHighsIInf:Number of long-lived heuristic threads beside branch and bound, dealt round-robin to FeasibilityJump, LocalMIP, ruin-and-repair and recombine, those whose effort option is above zero, from the end of the presolve heuristics to the end of the solve, paused across each restart. Needs mip_heuristic_long_lived. The default 0 starts none")
 
 # The upstream record block all four record insertions anchor on, spelled
 # once: four copies of a four-line exact-match string is four chances for
@@ -2029,8 +2033,10 @@ if(_ll_found EQUAL -1)
       LL_CPP "${LL_CPP}")
     # The slots start once the presolve chain has returned (#356), past its
     # presolve-only exit; a restart's `goto restart` reaches this again and
-    # starts nothing, the owner being stopped.  They stop at the top of
-    # `performRestart`, before it overwrites the presolved model they read.
+    # starts nothing, the slots running already.  They pause at the top of
+    # `performRestart`, before it overwrites the presolved model they read,
+    # and resume once its `runSetup` has built the new one (#361): the one
+    # place every restart, at the root or in B&B, goes through.
     string(REPLACE
       "\n\n    // End of pre-root-node heuristics\n"
       "\n    heuristics::start_long_lived(*this);  // mip-heuristics (#356)\n\n    // End of pre-root-node heuristics\n"
@@ -2038,6 +2044,10 @@ if(_ll_found EQUAL -1)
     string(REPLACE
       "void HighsMipSolverData::performRestart() {\n"
       "void HighsMipSolverData::performRestart() {\n  heuristics::restart_long_lived(mipsolver);  // mip-heuristics (#356)\n"
+      LL_DATA "${LL_DATA}")
+    string(REPLACE
+      "  runSetup();\n  if (mipsolver.terminate()) return;\n\n  postSolveStack.removeCutsFromModel(numCuts);\n"
+      "  runSetup();\n  if (mipsolver.terminate()) return;\n\n  postSolveStack.removeCutsFromModel(numCuts);\n  heuristics::resume_long_lived(mipsolver);  // mip-heuristics (#361)\n"
       LL_DATA "${LL_DATA}")
     string(REPLACE
       "#include \"mode_dispatch.h\"\n"
@@ -2065,6 +2075,7 @@ if(_ll_found EQUAL -1)
             "LL_DATA|#include \"long_lived.h\""
             "LL_DATA|heuristics::drain_long_lived(mipsolver)"
             "LL_DATA|heuristics::restart_long_lived(mipsolver)"
+            "LL_DATA|heuristics::resume_long_lived(mipsolver)"
             "LL_DATA|? mipsolver.solution_objective_")
         string(REGEX REPLACE "^([^|]+)\\|.*$" "\\1" _ll_var "${_ll_check}")
         string(REGEX REPLACE "^[^|]+\\|(.*)$" "\\1" _ll_text "${_ll_check}")

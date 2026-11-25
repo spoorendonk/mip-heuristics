@@ -10,6 +10,7 @@
 #include "mip/HighsMipSolverData.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -216,6 +217,15 @@ void LongLivedOwner::stop() {
     join_threads();
 }
 
+void LongLivedOwner::resume() {
+    assert(threads_.empty() && slots_.empty());
+    stop_.store(false, std::memory_order_release);
+    // The new epoch's pool, fed the new space's incumbent, before a sink is
+    // built over it; and the queue filtering against this epoch's bound.
+    sync_epoch();
+    publish();
+}
+
 void LongLivedOwner::join_threads() {
     stop_.store(true, std::memory_order_release);
     for (std::thread& thread : threads_) {
@@ -397,11 +407,22 @@ void restart_long_lived(HighsMipSolver& mipsolver) {
         return;
     }
     owner->stop();
-    owner->charge_slots(SlotStop::kRestart);
     // Before `numRestarts` moves and the model is replaced: what the slots
     // queued since the last poll point is still in this space, and the
     // first drain after the restart would drop it as an older epoch's.
+    // Before the booking, so each `[Heur]` line follows its phase's drains.
     owner->drain();
+    owner->charge_slots(SlotStop::kRestart);
+}
+
+void resume_long_lived(HighsMipSolver& mipsolver) {
+    LongLivedOwner* owner = mipsolver.long_lived_;
+    if (owner == nullptr || mipsolver.modelstatus_ != HighsModelStatus::kNotset ||
+        mipsolver.terminate()) {
+        return;
+    }
+    owner->resume();
+    start_long_lived(mipsolver);
 }
 
 void stop_long_lived(HighsMipSolver& mipsolver) {
@@ -410,8 +431,8 @@ void stop_long_lived(HighsMipSolver& mipsolver) {
         return;
     }
     owner->stop();
-    owner->charge_slots(SlotStop::kEnd);
     owner->drain();
+    owner->charge_slots(SlotStop::kEnd);
     owner->log_pool();
     owner->rethrow();
 }

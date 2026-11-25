@@ -12,8 +12,10 @@
 // stop flag and deadline, a `LongLivedSink` built for it on the solving
 // thread, and the slots' `ProblemView` (#356).  The view points into
 // `model_` and `mipdata`'s row-wise matrix and locks, which only
-// `runSetup` and `performRestart` write: it is built after the one and
-// every slot is joined at the top of the other (`restart_long_lived`).
+// `runSetup` and `performRestart` write: it is built after the one, every
+// slot is joined at the top of the other (`restart_long_lived`), and a new
+// one is built over the new model once its `runSetup` has run
+// (`resume_long_lived`, #361).
 // Everything that reaches HiGHS goes through `drain`.
 
 #include "deadline.h"
@@ -153,20 +155,27 @@ public:
     // kept and rethrown by `rethrow`.  Solving thread, before `stop`.
     void start(std::function<void(LongLivedOwner&)> body);
 
-    // Raise the stop flag and join every thread.  Idempotent: the first
-    // call's time is the one `charge_slots` measures joins from.  Solving
-    // thread.
+    // Raise the stop flag and join every thread.  Idempotent until the next
+    // `resume`: the first call's time is the one `charge_slots` measures
+    // joins from.  Solving thread.
     void stop();
+
+    // Lower the stop flag after a restart's `stop` and `charge_slots`
+    // (#361), so `start_slots` can start the slots again over the new
+    // presolved model, and publish the new epoch to the queue.  Solving
+    // thread, every thread joined.
+    void resume();
 
     // Start one thread per spec (#356), each running its heuristic's
     // `run_until_stopped` over one view of the presolved model, built here
     // and shared by every slot, with a `LongLivedSink` and a restart source
     // of its own.  Each slot's `exec` carries the owner's stop flag (on its
     // deadline too, for recombine's bound-prop arm and its FPR DFS), the
-    // solve's deadline, no terminator and one worker.  Does nothing when
-    // `specs` is empty, the owner is stopped (a restart stops it for good),
+    // solve's deadline, no terminator and one worker.  Each sink and source
+    // belongs to the epoch it is built in.  Does nothing when `specs` is
+    // empty, the owner is stopped (until `resume`), the slots already run,
     // or the deadline has passed.  Solving thread, once the presolve chain
-    // has returned; at most once per owner.
+    // has returned or after a restart's `resume`.
     void start_slots(std::span<const LongLivedSlotSpec> specs);
 
     // Book every slot's effort, one `[Heur] phase=longlived` line each, and
@@ -262,11 +271,12 @@ private:
     // `time_limit` on the solver's clock, `const`-readable from any thread.
     Deadline deadline_;
     std::atomic<bool> stop_{false};
-    // The solver's clock at the first `stop`.
+    // The solver's clock at the first `stop` since the last `resume`.
     double stop_s_ = 0.0;
     // The slots' view and the transpose it reads, built by `start_slots`
     // and valid until a restart overwrites `model_`, which stops the slots
-    // first.  The destructor joins every thread before a member goes.
+    // first and drops both (`charge_slots`).  The destructor joins every
+    // thread before a member goes.
     CscMatrix csc_;
     std::optional<ProblemView> view_;
     std::vector<std::unique_ptr<Slot>> slots_;

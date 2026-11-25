@@ -686,27 +686,43 @@ TEST_CASE("long-lived slots: one line per thread, booked at the end of the solve
     }
 }
 
-TEST_CASE("long-lived slots: the time limit stops every slot, and their points reach HiGHS",
-          "[long-lived]") {
-    // issue-3166 is far from solved at the limit, so B&B is still running
-    // when it passes.
-    LongLivedOwner* owner = nullptr;
-    HookGuard guard([&](HighsMipSolver& /*mipsolver*/, LongLivedOwner& o) { owner = &o; });
-    std::mutex mtx;
+namespace {
+
+// A slots-on solve of `inst` whose log is captured, with the MIP solution
+// callback on: the drain then submits every queued point
+// (`callback_sees_all`), so a slot's accepted point is a submitted one.
+struct OwnerSolve {
     std::vector<std::string> lines;
     // What the owner had submitted when it logged its pool, after the final
     // drain.
     size_t submitted = 0;
+    // What it had submitted as each slot line was logged, after that
+    // phase's drains (`restart_long_lived`, `stop_long_lived`).
+    std::vector<size_t> submitted_at_slot_line;
+    HighsStatus run_status = HighsStatus::kError;
+    HighsModelStatus status = HighsModelStatus::kNotset;
+    double objective = 0.0;
+};
+
+template <typename Configure>
+OwnerSolve solve_with_owner(const char* inst, Configure&& configure) {
+    LongLivedOwner* owner = nullptr;
+    HookGuard guard([&](HighsMipSolver& /*mipsolver*/, LongLivedOwner& o) { owner = &o; });
+    std::mutex mtx;
+    OwnerSolve out;
     std::function<void(int, const std::string&)> on_callback = [&](int callback_type,
                                                                    const std::string& message) {
         if (callback_type != kCallbackLogging) {
             return;
         }
         std::scoped_lock lock(mtx);
-        lines.push_back(message);
+        out.lines.push_back(message);
         // The pool line is logged on the solving thread, after the final drain.
         if (message.contains("[LongLivedPool] ")) {
-            submitted = owner->submitted();
+            out.submitted = owner->submitted();
+        }
+        if (message.contains("[Heur] ") && message.contains(" phase=longlived ")) {
+            out.submitted_at_slot_line.push_back(owner->submitted());
         }
     };
     auto trampoline = [](int callback_type, const std::string& message,
@@ -718,47 +734,83 @@ TEST_CASE("long-lived slots: the time limit stops every slot, and their points r
     Highs h;
     h.setOptionValue("output_flag", true);
     h.setOptionValue("log_to_console", false);
-    slots_on(h, 2);
-    // The chain cut to FJ's short dispatch, so it ends well inside the
-    // limit and the slots (two FJ) start.
-    require_option(h, "mip_heuristic_fpr_effort", 0.0);
-    require_option(h, "mip_heuristic_local_mip_effort", 0.0);
-    require_option(h, "time_limit", 3.0);
+    configure(h);
     REQUIRE(h.setCallback(HighsCallbackFunctionType(trampoline), &on_callback) == HighsStatus::kOk);
     REQUIRE(h.startCallback(kCallbackLogging) == HighsStatus::kOk);
-    // With the solution callback on, the drain submits every queued point
-    // (`callback_sees_all`), so a slot's accepted point is a submitted one.
     REQUIRE(h.startCallback(kCallbackMipSolution) == HighsStatus::kOk);
-    REQUIRE(h.readModel(instances_dir() + "/issue-3166.mps") == HighsStatus::kOk);
-    REQUIRE(h.run() == HighsStatus::kWarning);
-    REQUIRE(h.getModelStatus() == HighsModelStatus::kTimeLimit);
-
+    REQUIRE(h.readModel(instances_dir() + "/" + inst) == HighsStatus::kOk);
+    out.run_status = h.run();
+    out.status = h.getModelStatus();
+    out.objective = h.getInfo().objective_function_value;
     std::scoped_lock lock(mtx);
-    const auto slots = slot_lines(lines);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("long-lived slots: the time limit stops every slot, and their points reach HiGHS",
+          "[long-lived]") {
+    // issue-3166 is far from solved at the limit, so B&B is still running
+    // when it passes.
+    const OwnerSolve solve = solve_with_owner("issue-3166.mps", [](Highs& h) {
+        slots_on(h, 2);
+        // The chain cut to FJ's short dispatch, so it ends well inside the
+        // limit and the slots (two FJ) start.
+        require_option(h, "mip_heuristic_fpr_effort", 0.0);
+        require_option(h, "mip_heuristic_local_mip_effort", 0.0);
+        require_option(h, "time_limit", 3.0);
+    });
+    REQUIRE(solve.run_status == HighsStatus::kWarning);
+    REQUIRE(solve.status == HighsModelStatus::kTimeLimit);
+
+    const auto slots = slot_lines(solve.lines);
     REQUIRE(slots.size() == 2);
     REQUIRE(count_field(slots, "stopped_by", "deadline") == 2);
     // One-sided: whether a slot finds anything in the time left is not the
     // mechanism; that a found point is submitted is.
     if (count_field(slots, "found", "1") > 0) {
-        REQUIRE(submitted > 0);
+        REQUIRE(solve.submitted > 0);
     }
 }
 
-TEST_CASE("long-lived slots: the first restart stops every slot for good", "[long-lived]") {
-    // lseu restarts twice early in B&B; slots of #356 stop at the first and
-    // do not start again.
-    double objective = 0.0;
-    HighsModelStatus status = HighsModelStatus::kNotset;
-    const auto lines = solve_capturing_log(
-        "lseu.mps", [](Highs& h) { slots_on(h, 2); },
-        [&](Highs& h) {
-            status = h.getModelStatus();
-            objective = h.getInfo().objective_function_value;
-        });
-    REQUIRE(log_contains(lines, "restarting"));
-    const auto slots = slot_lines(lines);
-    REQUIRE(slots.size() == 2);
-    REQUIRE(count_field(slots, "stopped_by", "restart") == 2);
-    REQUIRE(status == HighsModelStatus::kOptimal);
-    REQUIRE(objective == Catch::Approx(1120.0));
+TEST_CASE("long-lived slots: a restart pauses every slot and they resume in the new space",
+          "[long-lived]") {
+    // lseu restarts at the root; each restart pauses both slots (one
+    // `stopped_by=restart` line each) and resumes them over the new model
+    // (#361), so the solve books one more pair of lines at its end.
+    const OwnerSolve solve = solve_with_owner("lseu.mps", [](Highs& h) { slots_on(h, 2); });
+    REQUIRE(solve.run_status == HighsStatus::kOk);
+    REQUIRE(solve.status == HighsModelStatus::kOptimal);
+    REQUIRE(solve.objective == Catch::Approx(1120.0));
+
+    // Every `performRestart` follows one of these two messages.
+    const auto restarts =
+        static_cast<size_t>(std::ranges::count_if(solve.lines, [](const std::string& l) {
+            return l.contains(" inactive integer columns, restarting") ||
+                   l.contains("Restarting search from the root node");
+        }));
+    REQUIRE(restarts >= 1);
+    const auto slots = slot_lines(solve.lines);
+    REQUIRE(count_field(slots, "stopped_by", "restart") == 2 * restarts);
+    // The pause pairs, then the end's pair: resumed after every restart, the
+    // last too, since the solve went on past it.
+    REQUIRE(slots.size() == 2 * (restarts + 1));
+    for (size_t i = 2 * restarts; i < slots.size(); ++i) {
+        REQUIRE(field(slots[i], "stopped_by") != "restart");
+    }
+    // The lines of one phase come together, two per phase, each after every
+    // drain of its phase and before the next phase starts.  A resumed slot
+    // offering into an old epoch's queue would have every point refused:
+    // with the callback on, a phase whose slots found a point submits at
+    // least one.  One-sided: whether a phase finds anything is not the
+    // mechanism.
+    REQUIRE(solve.submitted_at_slot_line.size() == slots.size());
+    size_t before = 0;
+    for (size_t i = 0; i + 1 < slots.size(); i += 2) {
+        const size_t after = solve.submitted_at_slot_line[i];
+        if (field(slots[i], "found") == "1" || field(slots[i + 1], "found") == "1") {
+            REQUIRE(after > before);
+        }
+        before = after;
+    }
 }

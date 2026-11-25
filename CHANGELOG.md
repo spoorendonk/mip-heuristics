@@ -21,11 +21,13 @@ linked from each entry.
   #334): with `mip_heuristic_long_lived` on, that many threads run
   FeasibilityJump, LocalMIP, ruin-and-repair and recombine (dealt
   round-robin over those whose effort is above zero) beside B&B, from the
-  end of the presolve heuristics until the first restart, the time limit
-  or the end of the solve, each seeded from the owner's pool and queueing
-  what it finds. Each slot books one `[Heur] phase=longlived` line with
-  `stopped_by`, its `dispatch` and `join_ms`. Not resumed after a restart
-  yet (#357). A default run is unchanged: `0` starts none.
+  end of the presolve heuristics to the time limit or the end of the
+  solve, each seeded from the owner's pool and queueing what it finds. A
+  restart pauses them and they resume over the new presolved model once
+  its setup has run (#361), each on a sink and pool of the new epoch. Each
+  slot books one `[Heur] phase=longlived` line per pause and at the end,
+  with `stopped_by`, its `dispatch` and `join_ms`. A default run is
+  unchanged: `0` starts none.
 - **`mip_heuristic_fj_gpu`** (bool, default `false`; #265, #282, #283): in a
   `MIP_HEURISTICS_CUDA` build, an option-on run races a batch of GPU
   FeasibilityJump climbers, one per streaming multiprocessor, against FJ's
