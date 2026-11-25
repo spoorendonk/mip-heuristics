@@ -261,7 +261,8 @@ std::string sole_heur_line(const std::vector<std::string>& lines) {
 TEST_CASE("setup-bail: [Heur] carries abandoned_setup on both phases", "[setup-bail]") {
     SECTION("presolve, abandoned") {
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
-            ledger.charge_presolve("fpr", DispatchOutcome::abandoned(), /*found=*/false, 0.0, 0.5);
+            ledger.charge_presolve("fpr", DispatchOutcome::abandoned(), /*found=*/false, 0.0, 0.5,
+                                   /*dispatch=*/0);
         }));
         INFO(line);
         CHECK(line.contains("abandoned_setup=1"));
@@ -270,7 +271,8 @@ TEST_CASE("setup-bail: [Heur] carries abandoned_setup on both phases", "[setup-b
 
     SECTION("presolve, ran") {
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
-            ledger.charge_presolve("fpr", DispatchOutcome{}, /*found=*/false, 0.0, 0.5);
+            ledger.charge_presolve("fpr", DispatchOutcome{}, /*found=*/false, 0.0, 0.5,
+                                   /*dispatch=*/0);
         }));
         INFO(line);
         // The discriminating half: same effort, same `found`, different
@@ -319,10 +321,11 @@ TEST_CASE("setup-bail: [Heur] ends with the dispatch's stop reason", "[setup-bai
         const std::string line = sole_heur_line(ledger_lines([](EffortLedger& ledger) {
             ledger.charge_presolve("fj",
                                    DispatchOutcome{.effort = 7, .stopped_by = StopReason::kBudget},
-                                   false, 0.0, 0.5);
+                                   false, 0.0, 0.5, /*dispatch=*/3);
         }));
         INFO(line);
-        CHECK(ends_with(line, "abandoned_setup=0 stopped_by=budget"));
+        // A chain entry's dispatch id (#361) is the one field after it.
+        CHECK(ends_with(line, "abandoned_setup=0 stopped_by=budget dispatch=3"));
     }
 
     SECTION("dive, a bail is the deadline") {

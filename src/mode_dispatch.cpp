@@ -308,7 +308,7 @@ bool run_sequential(HighsMipSolver& mipsolver) {
         // mislabelled.  Only the bail site knows.
         const DispatchOutcome outcome = call();
         ledger.charge_presolve(name, outcome, sink.accepted() > accepted_before, t0_s,
-                               ledger.now_s());
+                               ledger.now_s(), sink.dispatch_id());
     };
 
     // Each heuristic's inner loops also poll the deadline, but their own

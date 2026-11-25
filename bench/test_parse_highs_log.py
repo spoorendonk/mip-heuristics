@@ -712,13 +712,22 @@ def _slot(name, effort, dispatch, stopped_by="restart", join_ms=0.4):
     )
 
 
+def _chain(name, effort, dispatch):
+    """A chain entry's `[Heur]` line, which carries its dispatch (#361)."""
+    return _heur(name, effort, abandoned=0).rstrip("\n") + (
+        f" stopped_by=done dispatch={dispatch}\n"
+    )
+
+
 def test_longlived_line_carries_dispatch_and_join_ms():
-    """The #356 fields: on a slot's line, and absent from every other."""
+    """The #356 fields: on a slot's line; a chain line carries `dispatch` alone."""
     (slot,) = parse_log(_slot("fj", 400, 17, join_ms=1.5)).heuristic_samples
     assert (slot.phase, slot.stopped_by) == ("longlived", "restart")
     assert (slot.dispatch, slot.join_ms) == (17, 1.5)
     (chain,) = parse_log(_heur("fj", 400, abandoned=0)).heuristic_samples
     assert (chain.dispatch, chain.join_ms) == (None, None)
+    (chain,) = parse_log(_chain("fj", 400, 3)).heuristic_samples
+    assert (chain.dispatch, chain.join_ms) == (3, None)
 
 
 def test_longlived_slots_of_one_name_bind_their_own_offers():
@@ -745,6 +754,24 @@ def test_a_slot_line_leaves_a_later_chain_dispatch_its_offers():
     log = _heursol("fj", 3, 0, 10, 1.0, 5.0, 1) + _slot("fj", 111, 8) + _heur("fj", 333)
     (offer,) = parse_log(log).heursol_samples
     assert offer.heur_index == 1
+
+
+def test_a_chain_line_leaves_a_resumed_slot_its_offers():
+    """After a B&B restart, resumed slots run beside the rerun chain (#361).
+
+    A slot's offer logged before the chain entry of its name closes must
+    stay the slot's: the chain line takes only its own dispatch's offers.
+    """
+    log = (
+        _heursol("fj", 8, 0, 10, 1.0, 5.0, 1)  # the resumed slot
+        + _heursol("fj", 3, 0, 20, 1.0, 4.0, 1)  # the rerun chain's fj
+        + _chain("fj", 333, 3)
+        + _slot("fj", 111, 8)
+    )
+    result = parse_log(log)
+    assert [s.heur_index for s in result.heursol_samples] == [1, 0]
+    traces = {(t.name, t.dispatch): t.total_effort for t in result.dispatch_traces()}
+    assert traces == {("fj", 8): 111, ("fj", 3): 333}
 
 
 def test_dispatch_trace_without_a_heur_line_has_no_total():

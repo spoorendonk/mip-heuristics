@@ -74,8 +74,11 @@ public:
     // dispatch entered with a millisecond left constructs its workers and
     // exits at zero effort without ever bailing in setup.  The same holds
     // for `stopped_by` (#303): only the runner saw what stopped it.
+    // `dispatch` is the sink's `[HeurSol]` dispatch id for this entry, which
+    // the line carries so its offers bind to it and not to a same-name
+    // long-lived slot running at once (#361).
     void charge_presolve(const char* name, const DispatchOutcome& outcome, bool found, double t0_s,
-                         double t1_s);
+                         double t1_s, uint64_t dispatch);
 
     // A B&B-dive heuristic (fpr_lp) did the same, and additionally owes
     // the shared heuristic LP-iteration envelope: its `setup_lp_iters`
@@ -116,23 +119,19 @@ public:
                            const char* stopped_by, uint64_t dispatch, double join_ms);
 
 private:
-    // The fields only a long-lived slot's `[Heur]` line carries.
-    struct SlotFields {
-        uint64_t dispatch = 0;
-        double join_ms = 0.0;
-    };
-
     // Deliberately not `const`: it holds `HighsMipSolver&`, so it leaves
     // the ledger object untouched while mutating solver state.  The
     // suppression lives at the definition.
     // `stopped_by` is null for a line that has no reason to report
     // (`charge_early`), which then omits the field; `gpu_steps` is empty,
-    // and omitted the same way, unless FJ's GPU race ran; `slot` is empty,
-    // and omitted, except on a long-lived slot's line.
+    // and omitted the same way, unless FJ's GPU race ran; `dispatch` is
+    // empty, and omitted, except on a chain entry's and a long-lived slot's
+    // line, and `join_ms` except on a slot's.
     void book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
               double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by,
               std::optional<size_t> gpu_steps = std::nullopt,
-              std::optional<SlotFields> slot = std::nullopt);
+              std::optional<uint64_t> dispatch = std::nullopt,
+              std::optional<double> join_ms = std::nullopt);
 
     // The post-presolve MIP matrix's nonzero count; see `book`.
     [[nodiscard]] size_t presolved_nnz() const;

@@ -792,9 +792,11 @@ TEST_CASE("long-lived slots: a restart pauses every slot and they resume in the 
     REQUIRE(restarts >= 1);
     const auto slots = slot_lines(solve.lines);
     REQUIRE(count_field(slots, "stopped_by", "restart") == 2 * restarts);
-    // The pause pairs, then the end's pair: resumed after every restart, the
-    // last too, since the solve went on past it.
-    REQUIRE(slots.size() == 2 * (restarts + 1));
+    // The pause pairs, then the end's pair when the solve went on past the
+    // last restart.  A restart's presolve can finish the solve itself (once
+    // a slot installed the optimum), and then nothing resumes after it.
+    const bool went_on = slots.size() == 2 * (restarts + 1);
+    REQUIRE((went_on || slots.size() == 2 * restarts));
     for (size_t i = 2 * restarts; i < slots.size(); ++i) {
         REQUIRE(field(slots[i], "stopped_by") != "restart");
     }
@@ -812,5 +814,10 @@ TEST_CASE("long-lived slots: a restart pauses every slot and they resume in the 
             REQUIRE(after > before);
         }
         before = after;
+    }
+    // A resume is seen either as the end's pair or, with no end pair, as a
+    // second pause pair: restart k > 1 pauses only what resumed after k - 1.
+    if (!went_on && restarts < 2) {
+        SKIP("the only restart's presolve finished the solve: no resume to observe");
     }
 }

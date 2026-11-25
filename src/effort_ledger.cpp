@@ -15,9 +15,10 @@ double EffortLedger::now_s() const {
 }
 
 void EffortLedger::charge_presolve(const char* name, const DispatchOutcome& outcome, bool found,
-                                   double t0_s, double t1_s) {
+                                   double t0_s, double t1_s, uint64_t dispatch) {
     book(name, "presolve", outcome.effort, found, presolved_nnz(), t0_s, t1_s,
-         outcome.abandoned_setup, stop_reason_name(outcome.stopped_by), outcome.gpu_steps);
+         outcome.abandoned_setup, stop_reason_name(outcome.stopped_by), outcome.gpu_steps,
+         dispatch);
 }
 
 void EffortLedger::charge_early(const char* name, size_t effort, bool found, size_t nnz,
@@ -29,7 +30,7 @@ void EffortLedger::charge_long_lived(const char* name, size_t effort, bool found
                                      double t1_s, const char* stopped_by, uint64_t dispatch,
                                      double join_ms) {
     book(name, "longlived", effort, found, presolved_nnz(), t0_s, t1_s, false, stopped_by,
-         std::nullopt, SlotFields{.dispatch = dispatch, .join_ms = join_ms});
+         std::nullopt, dispatch, join_ms);
 }
 
 // The model's constraint-matrix nonzero count, taken from the same buffer
@@ -70,7 +71,8 @@ void EffortLedger::charge_dive(const char* name, const DispatchOutcome& outcome,
 // NOLINTNEXTLINE(readability-make-member-function-const): see the declaration in effort_ledger.h.
 void EffortLedger::book(const char* name, const char* phase, size_t effort, bool found, size_t nnz,
                         double t0_s, double t1_s, bool abandoned_setup, const char* stopped_by,
-                        std::optional<size_t> gpu_steps, std::optional<SlotFields> slot) {
+                        std::optional<size_t> gpu_steps, std::optional<uint64_t> dispatch,
+                        std::optional<double> join_ms) {
     mipsolver_.mipdata_->heuristic_effort_used += effort;
 
     // Two lines per observation, deliberately:
@@ -97,8 +99,9 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
         (effort > 0 && wall_ms > 0.0) ? static_cast<double>(effort) / wall_ms : 0.0;
     const HighsLogOptions& log_options = mipsolver_.options_mip_->log_options;
     // Not for a long-lived slot: the positional line has no phase, so its
-    // whole-solve rate would read as a chain dispatch's.
-    if (!slot.has_value()) {
+    // whole-solve rate would read as a chain dispatch's.  `join_ms` is on a
+    // slot's line alone.
+    if (!join_ms.has_value()) {
         highsLogDev(log_options, HighsLogType::kVerbose,
                     "[Sequential] heur=%s effort=%zu wall_ms=%.1f effort_per_ms=%.3f\n", name,
                     effort, wall_ms, effort_per_ms);
@@ -136,22 +139,27 @@ void EffortLedger::book(const char* name, const char* phase, size_t effort, bool
     // ran.  `0` is a race that ended before any climber stepped, which
     // `found` and `effort` cannot show: the CPU workers fill both.
     //
-    // `dispatch` and `join_ms` (#356) are on a long-lived slot's line only,
-    // last: the slot sink's `[HeurSol]` dispatch id, which binds its offers
-    // to this line, and how long the slot ran past the stop or the time
+    // `dispatch` (#356) is last on a chain entry's and a long-lived slot's
+    // line: the sink's `[HeurSol]` dispatch id, which binds its offers to
+    // this line.  Slots and the chain share names and, after a B&B restart,
+    // run at once (#361), so binding by name alone would hand a slot's
+    // offers to the rerun chain's line.  `join_ms` (#356), on a slot's line
+    // only and after it, is how long the slot ran past the stop or the time
     // limit, the bound a stop's latency is documented against
     // (docs/RUNTIME.md).
     const std::string gpu_field =
         gpu_steps.has_value() ? " gpu_steps=" + std::to_string(*gpu_steps) : "";
-    std::array<char, 64> slot_field{};
-    if (slot.has_value()) {
-        std::snprintf(slot_field.data(), slot_field.size(), " dispatch=%llu join_ms=%.1f",
-                      static_cast<unsigned long long>(slot->dispatch), slot->join_ms);
+    const std::string dispatch_field =
+        dispatch.has_value() ? " dispatch=" + std::to_string(*dispatch) : "";
+    std::array<char, 32> join_field{};
+    if (join_ms.has_value()) {
+        std::snprintf(join_field.data(), join_field.size(), " join_ms=%.1f", *join_ms);
     }
     highsLogDev(log_options, HighsLogType::kVerbose,
                 "[Heur] name=%s phase=%s start_s=%.3f end_s=%.3f effort=%zu wall_ms=%.1f "
-                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d%s%s%s%s\n",
+                "effort_per_ms=%.3f found=%d nnz=%zu abandoned_setup=%d%s%s%s%s%s\n",
                 name, phase, t0_s, t1_s, effort, wall_ms, effort_per_ms, found ? 1 : 0, nnz,
                 abandoned_setup ? 1 : 0, stopped_by != nullptr ? " stopped_by=" : "",
-                stopped_by != nullptr ? stopped_by : "", gpu_field.c_str(), slot_field.data());
+                stopped_by != nullptr ? stopped_by : "", gpu_field.c_str(), dispatch_field.c_str(),
+                join_field.data());
 }
